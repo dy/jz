@@ -3274,7 +3274,8 @@ typed-store bounds. A local's storage is decided once from that value
 is one, or where it holds integers of any size and every read re-applies
 ToInt32 (`collectBareEscapes`: a bitwise or Math.imul/clz32 operand, the value
 stored to an integer element, a copy into such a local; a closure's reads are
-reads, and a bounded result excuses no operand, `a % 7` reading a's number), a
+reads, a bounded result excuses no operand, `a % 7` reading a's number, and an
+assignment read as a number reads its target's, `a = b = k + 1`), a
 Number otherwise. The word each write's carrier gives the local (exprType) is
 provisional, never a proof; a Boolean keeps its 0 or 1 by its kind, and a
 checked integer read no use can tell from zero holds the element or zero, an
@@ -3288,7 +3289,12 @@ field or element read and a dynamic callee's result prove nothing by
 themselves. Carriers enter the walk as values where the
 summary holds them to numbers: a word parameter's and a word module binding's
 word, a call's word result, a code unit read in bounds, a sized property, a
-word field. Over a counted loop it bounds a name every
+word field. The integer levels (`type/int-certain.js`: `rep.intCertain`, the
+slot census, a callee's parameter, until the proof serves those readers) answer
+for the writes one body holds: a name it writes and does not declare (a module
+binding, a capture, a closure's parameter) starts from what is known of every
+write of it, its storage's word or its declarer's level, never from its own
+integer writes. Over a counted loop the proof bounds a name every
 write of which steps it by the trips times each way's most step (integers
 exactly, a Number stepped by constants on a binary grid). A test of a name's truth
 (`while (x--)`, `if (left)`) refines it, and a test that writes leaves its writes

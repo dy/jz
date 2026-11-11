@@ -67,7 +67,7 @@ Rules for every change here:
 |---|---|---|---|
 | 0 | Base: land `v1`, split the suite over cores, spelling gate, two-sided ratchet per host | main green on the four legs, pushed | done (e7b8b62f4) |
 | 1 | Normalize loops on the AST (flipped tests, step spellings, `while (true)` with a leading break, guarded `do…while`; `do…while` first-class instead of flagged) | corpus styles in the gate have no gap beyond the default's; form lists in `loop-model.js`/`static.js` shrink to the one form | landed: `src/normalize.js`, gate 243 -> 84 gaps, no corpus style with a gap the default lacks. Left: a caller after kinds (a counter declared from a parameter is no Number by syntax, so the readers keep `i += 1`, `i = i + 1`), and `do…while` first-class. 1b briefed and running (`.work/phase-1b-normalize.md`) |
-| 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a landed: the table is `src/summary/num-range.js` (`{lo, hi, int, nz, nan, gap}`, no rule reads a name), every `%` rule but two reads it (left: integral-loops' symbolic hull, the summary's `keepHull`), ring `% M` equals the mask spelling (2/27), `mixed` back to 2264/1060. `src/` +49 lines net. 2b landed: the proof's environment holds table values and is the reader behind every local's lifetime range, a sum's trip bound and the widening's word test; `stampBodyRanges`, `fractionalLoopRange`, `outerDeclInits` and the widening's own `held`/`boundOf` are deleted (`src/` 59 lines fewer over the phase); the proof's bitwise, shift and mask rules are the table's. Ring "step first" 35 -> 4 at level 2 and 37 -> 29 at speed (canonical 2 and 27), dot and map `for i<=N-1` and `i!==N` vectorize, 76 gaps of 470, `mixed` 2250/1046; proof time -23% over the 94 single-file bench cases (3.8% of compile), total within noise on a loaded machine. Still scans: a countdown in an arm of `\|\|`/`&&` (`stampCountdowns`: the proof refines neither arm), and the emitter's own `intExprRange`/`forCounterRange` and `extractRefinements` (it asks about nodes the proof never walked: plan rewrites, inlined copies, version twins). 2c and 2d briefed and running (`.work/phase-2c-local-type.md`). Left: 2c the local's type decided once (the proof's lifetime value published whole, `int`/`nz`/`nan`, and the carriers entering it as values: a call's word, a typed read's element numbers; then the widening's `grew` loop is one decision), 2d `int-certain` deleted. Open cells: ring "step first" keeps the copy `q = p` (2 ops; needs the update sunk below `q`'s reads, a scheduling change), `reverse i--` is refused by the vectorizer's exit-shape check (optimize/vectorize/addr-model.js, phase 6), `offset idx i-1` keeps 4 and 2 ops, not analyzed |
+| 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a landed: the table is `src/summary/num-range.js` (`{lo, hi, int, nz, nan, gap}`, no rule reads a name), every `%` rule but two reads it (left: integral-loops' symbolic hull, the summary's `keepHull`), ring `% M` equals the mask spelling (2/27), `mixed` back to 2264/1060. `src/` +49 lines net. 2b landed: the proof's environment holds table values and is the reader behind every local's lifetime range, a sum's trip bound and the widening's word test; `stampBodyRanges`, `fractionalLoopRange`, `outerDeclInits` and the widening's own `held`/`boundOf` are deleted (`src/` 59 lines fewer over the phase); the proof's bitwise, shift and mask rules are the table's. Ring "step first" 35 -> 4 at level 2 and 37 -> 29 at speed (canonical 2 and 27), dot and map `for i<=N-1` and `i!==N` vectorize, 76 gaps of 470, `mixed` 2250/1046; proof time -23% over the 94 single-file bench cases (3.8% of compile), total within noise on a loaded machine. Still scans: a countdown in an arm of `\|\|`/`&&` (`stampCountdowns`: the proof refines neither arm), and the emitter's own `intExprRange`/`forCounterRange` and `extractRefinements` (it asks about nodes the proof never walked: plan rewrites, inlined copies, version twins). 2c landed: a local's storage is one decision over the proof's lifetime value (`analyze/body-facts.js` `widenLocalTypes`: a word where every number it holds is one, or where it holds integers and every read re-applies ToInt32), a module global's the same over the whole program (`plan/scope.js` `inferModuleIntGlobals`: the proof per flow under the hypothesis that the candidates still standing are words; the fraction classifier, the integer default and the `int-global-truncation` warning are deleted), carriers enter the proof as values (a word parameter's, a call's, a sized property's, a code unit's), and the widening's hypothesis loop and integer levels are gone; `src/` 209 lines fewer, `mixed` 2234/1045, bench bytes -802 at size and -9,313 at speed (the landing tree: core 7,285, level 0 7,068, level 3 7,082, wasi 7,157, generated 68, self-compile 89; the earlier phases' batteries equal but 3c's review battery, 2 diffs -> 0). 2d is not done: `type/int-certain.js` stays with seven readers (briefed, `.work/phase-2d-int-certain.md`): its level 1 is an integer wherever finite, which the table's `int` does not carry, and four readers decide for bindings written in more than one flow. Until then its levels are grounded: a name a body writes and does not declare starts from what is known of all its writes. Open cells: ring "step first" keeps the copy `q = p` (2 ops; needs the update sunk below `q`'s reads, a scheduling change), `reverse i--` is refused by the vectorizer's exit-shape check (optimize/vectorize/addr-model.js, phase 6), `offset idx i-1` keeps 4 and 2 ops, not analyzed |
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | briefed and running (`.work/phase-4-compile-time.md`): the rule is byte identity with the memo off, in any order of compiles; watr's part comes as a patch, not installed |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | |
@@ -205,6 +205,55 @@ change, not the suite, before committing them. And a brief of mine decided a mec
 (the written local "stays a local") without first asking what else relies on its
 opposite: a brief names the outcome and the rule that must keep holding, and the
 reviewer's battery is written against the rule, not against the feature.
+
+## Found on the way (2026-11-11)
+
+The review of 2c: 5,234 programs against Node at six levels, written against the rule
+(a word holds what JS holds at every read) before reading the change, plus probes of
+each class it met. 2c's own batteries answered 0 diffs and held neither regression.
+
+- A regression of 2c: the value of an assignment was read from the word its target
+  keeps. A module global is a word wherever every read takes its word, whatever it
+  holds, so `G = H = k / 2; return G`, `return (G = k / 2)`, `h(G = k / 2)` and
+  `if ((G = k / 2) > 0.25)` answered 0 for 0.5. The integer forms were on `main`:
+  `a = b = (k | 0) + 1; return a` answered -2^31 for 2^31. The escape scan
+  (analyze-scans.js) took the assignment's operand for read and not its target; an
+  assignment read as a number is a read of its target now.
+- A regression of 2c: `const a = k >>> 0; const b = a - 1` answered -2 for 4294967294
+  (12 forms; `(a - 1) % 7` on `main`). The emitter's proof that `a - k` fits a word
+  bounds one side, which holds of a signed word; an unsigned local's range, published
+  since 2c, gave it the lower side and nothing asked for the upper
+  (emit/i32-bounds.js). A read of an unsigned local is marked wrap-safe whatever reads
+  it (ir/vars.js), so the guard beside the proof never held it back.
+- On `main`, every level, not met by 2c: a name with an integer write in sight was an
+  integer though other code writes it (type/int-certain.js started each name a body
+  defines as a strict word, lowered by the defs of that body alone). `G = 0; w(5);
+  return Math.round(G)` answered 1.5 where `w` adds 0.25 to the module's `G`; `T[G]`
+  read the first element for 0.5 in an array, a typed array and a string;
+  `G === Math.floor(G)` held for a fraction a closure, a callback or a generator
+  stored; a local a sibling closure writes read the same way; and a closure's
+  parameter its body also writes was an integer by that write (`[0.5, 1.5].forEach(x
+  => { if (x > 100) x = 1; s += Math.round(x) })` answered 2 for 3). Grounded now; the
+  precision given up (a module global stored as a Number whose every write is an
+  integer is floored again; a closure's parameter rewritten to a word reads as a
+  Number) is 2d's to return.
+- Open, on `main`: `for (let i = 0; i < k; i++) { let i = 5; c += i }` never returns
+  (the body's own `let i` is taken for the loop's; one more pair of braces and it
+  answers). In prepare, where 1b's agent is at work: after 1b.
+- Open, on `main`, levels 2 and over: `let i = null, c = 0; for (; i < 3; i += 1) c++`
+  runs 0 times for 3. The test compares the null box, a NaN, where its number is 0
+  (a shadow local `inum` is declared and not read there: compile/num-shadow.js).
+- Open, on `main`: `do i++; while (c)` and `do { … } while (c) stmt` are compile errors
+  ("Unclosed (", "Unclosed {"); both are JS. Not traced to jz or the parser package.
+- Open, from 2c's agent, not checked here: `await null` does not let another call run
+  before the function resumes.
+- Not a defect: a comparator's arguments arrive in another order than V8's.
+
+The causes this time: a read that is not written as one (an assignment's value), a
+proof of one side taken for both once a fact it never had arrived, and a classifier
+answering for the writes it could see. The last two were sound only while something
+else was missing: publishing a true range and admitting a true word each exposed a
+reader that had relied on its absence.
 
 ## Decisions taken
 
