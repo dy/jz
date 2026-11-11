@@ -31,6 +31,7 @@ import { activeBoundsAssumption, activeBoundsFrame } from '../src/type/canonical
 import { frameNode } from '../src/function.js'
 import { requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { captureCallback, makeCallback, callbackElem, idxArg, arrArg, sortComparator } from './array/callback.js'
+import { runsInPlace } from '../src/compile/in-place.js'
 import { typedStoreHeadWat } from './array.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
 import { callbackSetup, isUndefinedNode } from './array/from.js'
@@ -3333,11 +3334,11 @@ export default (ctx) => {
   // reduceResult), as an array's does. A BigInt or open element kind keeps the
   // closure ABI and its argument boxing (argOf). `lead` counts the parameters
   // before the element (reduce's accumulator).
-  // An arrow the walk runs in place (compile/in-place.js) has a receiver the
-  // summary holds to Numbers: it runs inline over the runtime walk too.
+  // An arrow that runs in place (compile/in-place.js) over a receiver the
+  // summary holds to Numbers runs inline over the runtime walk too.
   const typedCallback = (arr, fn, cbLoc, thisArg, lead = []) => {
-    const r = resolveElem(arr)
-    return (r ? !r.isBigInt : ctx.func.inPlace?.has(fn))
+    const r = resolveElem(arr), view = r ? null : ctx.summary?.at(ctx.func.current)
+    return (r ? !r.isBigInt : runsInPlace(fn) && view?.valOfExpr(arr) === VAL.TYPED && typedElemKind(view.kindOfExpr(arr)) === NUMBER)
       ? makeCallback(fn, [...lead, { val: VAL.NUMBER }, { val: VAL.NUMBER }, { val: VAL.TYPED }], callbackElem(arr, lead.length), thisArg)
       : captureCallback(fn, cbLoc, thisArg)
   }

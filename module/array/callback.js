@@ -18,7 +18,7 @@
 import { DBG_INVARIANTS } from '../../src/debug.js'
 import { arrayLoop, typed, asF64, UNDEF_NAN, temp, throwTypeErrorIR, ptrTypeEq, undefExpr } from '../../src/ir.js'
 import { emit, emitVoid, storedValue } from '../../src/bridge.js'
-import { bodyParts, declaredNames } from '../../src/compile/in-place.js'
+import { bodyParts, declaredNames, runsInPlace } from '../../src/compile/in-place.js'
 import { withControlFrame } from '../../src/compile/flow-state.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
@@ -144,10 +144,10 @@ const localRead = (ir) => Array.isArray(ir) && ir[0] === 'local.get' && typeof i
 // value dropped. An arrow runs inline, its parameters substituted by the walk's
 // locals or fresh ones: no closure, no call_indirect, no argument array, its
 // captures the function's own locals. It does where its body is a pure
-// expression, and where the analysis found the walk calling it in place
-// (compile/in-place.js): then its statements run in the walk, a local of the
-// function it writes is that local, and its value is its last `return`.
-// Anything else is a closure call (ctx.closure.call).
+// expression, and where it runs in place (compile/in-place.js): then its
+// statements run in the walk, a local of the function it writes is read and
+// written through its cell as the function's own code does, and its value is
+// its last `return`. Anything else is a closure call (ctx.closure.call).
 // usedParams: boolean array (inline only): callers can skip computing args for unused params.
 // Each inlined local reads, to the summary, as the parameter it holds: the
 // kind the solve bound it to at every call (summary/index.js arrayCallback,
@@ -159,7 +159,7 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
-    if (ctx.func.inPlace?.has(fn) || raw.every(p => typeof p === 'string') && isPureExpr(body) &&
+    if (runsInPlace(fn) || raw.every(p => typeof p === 'string') && isPureExpr(body) &&
         (!representationProgramHasBigint(ctx) || hasInlineCarriers(body, ctx.summary?.at(fn[1])))) {
       const usedParams = raw.map(p => exprUses(body, p))
       const { stmts: run, value } = bodyParts(body)

@@ -26,6 +26,7 @@ import {
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { reuseLoads, narrowByteLoads } from './reuse-loads.js'
 import { promoteGlobals } from './globals.js'
+import { promoteCells } from './cells.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
 import { hoistTypedDecode } from './typed-decode.js'
@@ -77,6 +78,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // (CSE, fused rewrite, LICM temp-splitting) strips array properties — the tag
   // only survives untouched nodes.
   if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn)
+  // Before every pass that reads locals: a cell no closure took is one of them.
+  if (!cfg || cfg.promoteCells !== false) promoteCells(fn)
   // Before the lifts read the sums: a canon only arithmetic reads is its value.
   if (!cfg || cfg.nanCanon !== false) stripDeadCanons(fn)
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)

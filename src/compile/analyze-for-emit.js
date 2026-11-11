@@ -602,7 +602,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     block,
     locals: ctx.func.locals,
     boxed: ctx.func.boxed,
-    inPlace: ctx.func.inPlace,
     cellTypes,
     flatObjects: ctx.func.flatObjects,
     fieldCaches: ctx.func.fieldCaches,

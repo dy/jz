@@ -44,7 +44,6 @@ export function createActiveFunction({
     typedLen: null,
     lenBoundOf: null,
     boxed: new Map(),
-    inPlace: null,       // the arrows a walk runs in place (compile/in-place.js), found by boxedCaptures, inlined by makeCallback
     cellTypes: null,
     flatObjects: null,
     fieldCaches: null,   // cse temp → the field read it holds (compile/cse-load.js); a push rebinds the field
@@ -162,7 +161,7 @@ export function isInactiveFunction(ctx) {
     frame.atModuleScope === false && frame.closure === false && frame.freshObjects === null && emptyMap(frame.locals) && frame.localReps === null &&
     frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
-    emptyMap(frame.boxed) && unallocated(frame.inPlace) &&
+    emptyMap(frame.boxed) &&
     unallocated(frame.cellTypes) && unallocated(frame.flatObjects) &&
     unallocated(frame.sliceViews) && unallocated(frame.arrayViews) && frame.restView === null && unallocated(frame.leanHashLocals) && unallocated(frame.i32HashLocals) &&
     unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxInits === null &&

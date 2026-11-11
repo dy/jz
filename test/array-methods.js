@@ -568,13 +568,15 @@ test('.forEach: its value is undefined on every receiver, and its callback write
 })
 
 // A callback written in place for an array's or a typed array's walk runs in
-// that walk (compile/in-place.js): its statements are the function's, a local it
-// writes stays a local, and what it declares is new each round. Over an array,
-// a typed array and a parameter, every method answers as JS does: block bodies
-// with a value and without, writes of every kind, rounds that change a kind,
-// loops, labels, switch and try inside, a throw, a receiver it stores into,
-// closures made inside (the closure stays) and after, another closure reading
-// or writing what it writes.
+// that walk (compile/in-place.js): its statements are the function's, and what
+// it declares is new each round. A local it writes is a closure's write to
+// every analysis, held in its cell, and a local again in the optimizer where no
+// closure took the cell (optimize/cells.js). Over an array, a typed array and a
+// parameter, every method answers as JS does: block bodies with a value and
+// without, writes of every kind, rounds that change a kind or a shape the
+// declaration gave, loops, labels, switch and try inside, a throw, a receiver
+// it stores into, closures made inside (the closure stays) and after, another
+// closure reading or writing what it writes.
 test('array callbacks: a callback a walk runs in place writes the function\'s own locals', () => {
   const BODIES = {
     each: `let s = 0, n = 0; t.forEach((x, i) => { const d = x - i; s += d * d; n++ }); return [s, n]`,
@@ -589,6 +591,10 @@ test('array callbacks: a callback a walk runs in place writes the function\'s ow
     value: `let s = 0; const r = t.forEach(x => { s += x; return s }); const q = t.forEach(x => s += x); return [r, q, s, t.forEach(x => {}, (s = 100, null)), s]`,
     nested: `let s = 0; t.forEach(x => { [1, 2].forEach(x => { s += x }) }); t.forEach((x, i) => { t.forEach((y, j) => { s += i * 10 + j }) }); return s`,
     self: `t.forEach((x, i, a) => { a[i] = x * 2 }); return Array.from(t)`,
+    // (an object of another shape, an array-like for an array, a typed array of another element: the declaration's layout answered `o.b` as undefined and `o.a` as x)
+    shapes: `let o = { a: 1 }, p = { a: 1 }, r = [1, 2], q = new Int32Array(2); t.forEach(x => { o = { b: x }; p = { a: 2, b: x }; r = { length: 7 }; q = new Float64Array([x + 0.5]) }); return [o.a, o.b, p.a, p.b, r.length, q[0]]`,
+    // (a local of no initializer, new each round of a loop, that the callback writes on one round: undefined and 0 on the others, its cell or the local that replaced it written before it is read)
+    fresh: `let s = ''; for (let r = 0; r < 3; r++) { let u, n = 0; t.forEach((x, i) => { if (r === 1 && i === 0) { u = x; n = (n + 1) | 0 } }); s += (u === undefined ? 'u' : u) + ':' + n + ',' } return s`,
     // (a helper the plan splices into the callback: its value declares the call's argument)
     spliced: `let s = 0; t.forEach(x => { s = twice(s, x) }); return [s, Array.from(t.map(x => twice(x, 1))), t.some(x => owns({ x: 1 }, 'x' + x))]`,
   }
@@ -604,6 +610,42 @@ test('array callbacks: a callback a walk runs in place writes the function\'s ow
   // The walk holds the sum in a local: no closure, no cell.
   const wat = funcWat(compile(`export let f = (n) => { const a = new Float64Array(n); let s = 0; a.forEach((x, i) => { s += x * i }); return s }`, { optimize: 2, wat: true }), 'f')
   ok(!wat.includes('call_indirect') && !wat.includes('cell_'), 'forEach runs its block in the walk')
+})
+
+// Every emitter that builds a callback runs an arrow of plain value where it
+// calls it: a sort's comparator, a chained walk's two callbacks, flatMap's, and
+// an expression body that writes. Each write lands once a call, in call order.
+test('array callbacks: a comparator, a chained walk and an expression body that writes run in place', () => {
+  const src = `export let sorts = (k) => {
+    const r = [3, 1, k, 2], t = new Float64Array([3, 1, k, 2]), o = [{ v: 3 }, { v: 1 }, { v: k }]
+    let c = 0, last = -1
+    r.sort((p, q) => { c++; const d = p - q; return d })
+    t.sort((p, q) => { last = p; return q - p })
+    o.sort((p, q) => { const d = p.v - q.v; return d })
+    return [r, Array.from(t), o.map(e => e.v), c > 0, last >= 0, [3, 1, k].toSorted((p, q) => { const d = q - p; return d })]
+  }
+  export let chains = (k) => {
+    let c = 0
+    const a = [1, 2, 3, 4].map(x => { c++; return x * k }).filter(x => { c += 10; return x > 2 })
+    const b = [1, 2, 3, 4].filter(x => { c++; return x > k }).map(x => { c += 10; return x * 2 })
+    const m = [1, 2, 3].map(x => { c++; return x + k }).reduce((s, x) => { c += 10; return s + x }, 0)
+    const f = [1, 2, 3].flatMap(x => { c += x; return [x, c] })
+    return [a, b, m, f, c]
+  }
+  export let exprs = (k) => {
+    let s = 0, c = 0, last = 0, seen = 0
+    const one = [1, 2, 3], two = [1, 2, k]
+    one.forEach(x => s += x * k)
+    one.forEach(() => c++)
+    two.forEach(x => last = x)
+    const r = one.map(x => s += x), any = one.some(x => (seen = x) > k)
+    return [s, c, last, r, any, seen, one.reduce((a, x) => (c++, a + x), k), c]
+  }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) for (const k of [0, 1, 2.5, 5]) is(got[name](k), want[name](k), `${name}(${k}), O${optimize}`)
+  }
 })
 
 // A closure an expression-bodied function makes writes the function's parameter through its cell, as one a block makes.

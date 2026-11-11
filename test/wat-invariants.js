@@ -148,6 +148,18 @@ test('ablation: promoteGlobals snapshots a repeatedly-read global to one functio
   ok(count(parse(src, 2), gGet) <= 1, 'INVARIANT: global read once, snapshotted to a local, with pass ON')
 })
 
+test('ablation: promoteCells holds in a local a cell no closure took', () => {
+  // An arrow writes `s`, so it is a cell to every analysis. The walk ran the arrow in
+  // place (compile/in-place.js) and made no closure: the cell's address only addresses
+  // its own loads and stores. In `g` a closure reads the same sum: the cell stays.
+  const src = `export let f = (n) => { const a = new Float64Array(n); let s = 0; a.forEach((x, i) => { s += x * i }); return s }
+  let sink; export let g = (n) => { const a = new Float64Array(n); let s = 0; sink = () => s; a.forEach((x, i) => { s += x * i }); return s }`
+  const cell = (n) => n[0] === 'call' && n[1] === '$__alloc' && n[2]?.[0] === 'i32.const' && Number(n[2][1]) === 8
+  const cells = (opts) => count(parse(src, { watr: false, coalesceLocals: false, ...opts }), cell)
+  is(cells({ promoteCells: false }), 2, 'control: both sums are cells with pass OFF')
+  is(cells({}), 1, 'INVARIANT: only the sum a closure reads is a cell with pass ON')
+})
+
 test('promoteGlobals preserves the raw-i64 carrier of repeated host-global reads', () => {
   // Host globals cross the JS↔wasm boundary as i64 so the engine cannot
   // canonicalize an external-reference NaN box. Three reads trigger the global

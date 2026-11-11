@@ -44,6 +44,7 @@ import { unrollTrips } from '../src/optimize/unroll-trips.js'
 import { hoistVectorConsts } from '../src/optimize/vectorize/hoist-consts.js'
 import { wordRanges, loopTrips } from '../src/optimize/word-ranges.js'
 import { constBases } from '../src/optimize/const-bases.js'
+import { promoteCells } from '../src/optimize/cells.js'
 import { foldWords, funcWat, run, oracle, compileInProcess, jz, compile } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -9718,4 +9719,71 @@ export let f = () => {
   const w = compile(hist, { wat: true, optimize: 'speed' })
   is((w.match(/\(i32\.(?:load|store) offset=\d{3,}\s+\(i32\.shl/g) || []).length, 2, 'the count increment loads and stores at its address')
   is(run(hist, { optimize: 'speed' }).f(), oracle(hist).f())
+})
+
+// A cell is 8 bytes from `$__alloc`, their address in an i32 local, read and
+// written through plain loads and stores of one type. Where the address goes
+// nowhere else the value lives in the local; any other use of the address, a
+// second type, or a write of another address keeps the cell.
+test('promoteCells: a cell is a local only where its address goes nowhere', () => {
+  const g = (n) => ['local.get', n], alloc = (n = 8) => ['call', '$__alloc', ['i32.const', n]]
+  const fn = (decls, ...body) => ['func', '$f', ['param', '$p', 'f64'], ['param', '$e', 'i32'], ['result', 'f64'], ...decls.map(([n, t]) => ['local', n, t]), ...body]
+  const C = '$' + T + 'cell_s', H = '$' + T + 'held_s'
+  const after = (f) => { promoteCells(f); return JSON.stringify(f) }
+  const kept = (why, decls, ...body) => is(after(fn(decls, ...body)), JSON.stringify(fn(decls, ...body)), why)
+  const cell = (c = C) => [['local.set', c, alloc()], ['f64.store', g(c), g('$p')]]
+
+  is(after(fn([[C, 'i32']], ...cell(), ['f64.store', g(C), ['f64.add', ['f64.load', g(C)], g('$p')]], ['f64.load', g(C)])),
+    JSON.stringify(fn([[H, 'f64']], ['nop'], ['local.set', H, g('$p')], ['local.set', H, ['f64.add', g(H), g('$p')]], g(H))),
+    'the allocation is nothing, a load the local, a store its write, the declaration the value\'s type')
+  is(after(fn([[C, 'i32']], ['local.set', C, alloc()], ['i32.store', g(C), ['i32.const', 7]], ['f64.convert_i32_s', ['i32.load', g(C)]])),
+    JSON.stringify(fn([[H, 'i32']], ['nop'], ['local.set', H, ['i32.const', 7]], ['f64.convert_i32_s', g(H)])), 'a cell of a word is an i32 local')
+  is(after(fn([['$t', 'i32']], ...cell('$t'), ['f64.load', g('$t')])),
+    JSON.stringify(fn([['$t', 'f64']], ['nop'], ['local.set', '$t', g('$p')], g('$t'))), 'a local of another name keeps it')
+  is(after(fn([[C, 'i32']], ['loop', '$L', ...cell(), ['br_if', '$L', ['f64.lt', ['f64.load', g(C)], ['f64.const', 0]]]], ['f64.load', g(C)])),
+    JSON.stringify(fn([[H, 'f64']], ['loop', '$L', ['nop'], ['local.set', H, g('$p')], ['br_if', '$L', ['f64.lt', g(H), ['f64.const', 0]]]], g(H))),
+    'a fresh cell each round is the one local')
+  // the same node under two parents (the optimizer's passes share subtrees) reads the local under both
+  const shared = ['f64.load', g(C)]
+  is(after(fn([[C, 'i32']], ...cell(), ['f64.add', shared, shared])),
+    JSON.stringify(fn([[H, 'f64']], ['nop'], ['local.set', H, g('$p')], ['f64.add', g(H), g(H)])), 'a shared read is rewritten once for both parents')
+  // two cells: the one whose address a closure's environment takes stays, the other goes
+  is(after(fn([[C, 'i32'], ['$d', 'i32']], ...cell(), ...cell('$d'), ['i32.store', g('$e'), g('$d')], ['f64.add', ['f64.load', g(C)], ['f64.load', g('$d')]])),
+    JSON.stringify(fn([[H, 'f64'], ['$d', 'i32']], ['nop'], ['local.set', H, g('$p')], ...cell('$d'), ['i32.store', g('$e'), g('$d')], ['f64.add', g(H), ['f64.load', g('$d')]])),
+    'each cell is judged alone')
+
+  kept('an address stored as a value', [[C, 'i32']], ...cell(), ['i32.store', g('$e'), g(C)], ['f64.load', g(C)])
+  kept('an address stored into its own cell', [[C, 'i32']], ['local.set', C, alloc()], ['i32.store', g(C), g(C)], ['f64.convert_i32_s', ['i32.load', g(C)]])
+  kept('an address passed to a call', [[C, 'i32']], ...cell(), ['call', '$__durable_cell_snap', g(C)], ['f64.load', g(C)])
+  kept('an address compared', [[C, 'i32']], ...cell(), ['if', ['i32.lt_u', g(C), ['global.get', '$__heap_reset']], ['then', ['nop']]], ['f64.load', g(C)])
+  kept('an address copied to another local', [[C, 'i32'], ['$t', 'i32']], ...cell(), ['local.set', '$t', g(C)], ['f64.load', g('$t')])
+  kept('an address computed on', [[C, 'i32']], ...cell(), ['f64.load', ['i32.add', g(C), ['i32.const', 0]]])
+  kept('a local also given another address', [[C, 'i32']], ...cell(), ['local.set', C, g('$e')], ['f64.load', g(C)])
+  kept('a local only ever given another address', [[C, 'i32']], ['local.set', C, g('$e')], ['f64.store', g(C), g('$p')], ['f64.load', g(C)])
+  kept('a local never given an address', [[C, 'i32']], ['f64.load', g(C)])
+  kept('an allocation through a tee', [[C, 'i32']], ['f64.store', ['local.tee', C, alloc()], g('$p')], ['f64.load', g(C)])
+  kept('an allocation of another size', [[C, 'i32']], ['local.set', C, alloc(16)], ['f64.store', g(C), g('$p')], ['f64.load', g(C)])
+  kept('a cell read as two types', [[C, 'i32']], ...cell(), ['f64.convert_i32_s', ['i32.load', g(C)]])
+  kept('a load of another width', [[C, 'i32']], ...cell(), ['f64.convert_i64_s', ['i64.load', g(C)]])
+  kept('a load at an offset', [[C, 'i32']], ...cell(), ['f64.load', 'offset=8', g(C)])
+  kept('a parameter', [], ['f64.store', g('$e'), g('$p')], ['f64.load', g('$e')])
+  kept('a function of no locals', [], g('$p'))
+  kept('an allocation nothing reads', [[C, 'i32']], ['local.set', C, alloc()], g('$p'))
+
+  // the rewritten function answers as the original: a sum kept in a cell over a counted loop
+  const source = `(module (memory 1) (global $heap (mut i32) (i32.const 16))
+    (func $__alloc (param $n i32) (result i32) (global.get $heap) (global.set $heap (i32.add (global.get $heap) (local.get $n))))
+    (func $f (export "f") (param $p f64) (param $n i32) (result f64) (local $c i32) (local $i i32)
+      (local.set $c (call $__alloc (i32.const 8)))
+      (f64.store (local.get $c) (f64.const 0.5))
+      (block $B (loop $L (br_if $B (i32.ge_s (local.get $i) (local.get $n)))
+        (f64.store (local.get $c) (f64.add (f64.load (local.get $c)) (f64.mul (local.get $p) (f64.convert_i32_s (local.get $i)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $L)))
+      (f64.load (local.get $c))))`
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(source)))).exports.f
+  const tree = parseWat(source), f = findFunc(tree, '$f')
+  promoteCells(f)
+  ok(!JSON.stringify(f).includes('$__alloc') && !JSON.stringify(f).includes('f64.load'), 'the cell is gone')
+  const run2 = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports.f
+  for (const [p, n] of [[1.5, 0], [1.5, 1], [-0.25, 7], [1e300, 3], [NaN, 2]]) is(run2(p, n), before(p, n), `f(${p}, ${n})`)
 })

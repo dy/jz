@@ -1026,18 +1026,20 @@ all references. Allocation enters a conditional arm only when every reference
 is inside it. Shared cells stay before the branch, and loop capture handling
 keeps ownership of per-iteration cells. A skipped closure branch allocates no
 storage for its captured locals.
-An arrow written as the callback of an array's or a typed array's walk
-(`forEach`, `map`, `filter`, `reduce`, `reduceRight`, `some`, `every`,
-`find*`) runs in place (compile/in-place.js): its receiver a present array
-or a typed array of Numbers with no own member of the method's name, its value
-plain (no `return`, or one as its last statement), its parameters unwritten
-and no function made in it. `boxedCaptures` records it and boxes nothing for
-it, so a local it writes stays a local; `makeCallback` emits its statements
-in the walk, its parameters the walk's locals, its declarations locals of the
-function that read as their bindings (`aliasDeclared`), under a control frame,
-and the flow overlay counts its writes as a loop's (emit/dispatch.js
-`nestedWritesOf`). A closure the emitter makes of an arrow that writes a local
-held by value is an error, not a lost write (emit/call.js `'=>'`).
+An arrow written as the callback of a walk the emitter builds (`forEach`,
+`map`, `filter`, `reduce`, `some`, `find*`, `Array.from`'s mapper) runs in
+place (compile/in-place.js) where its value is plain (no `return`, or one as
+its last statement), its parameters are unwritten and it makes no function:
+`makeCallback` emits its statements in the walk, its parameters the walk's
+locals, its declarations locals of the function that read as their bindings
+(`aliasDeclared`), under a control frame. That is the emitter's choice alone.
+To every analysis the arrow is the closure it is written as, and a local it
+writes is boxed: the scans that stop at an arrow rely on that, so no analysis
+is told of the choice. The inlined statements read and write the cell as the
+function's own code does, and where no closure took the cell the optimizer
+holds its value in a local (optimize/cells.js `promoteCells`), which a
+reduction reads as its accumulator. A closure that writes a local its maker
+holds in no cell is an error, not a lost write (emit/call.js `'=>'`).
 Captured for-head declarations evaluate together in their original lexical
 scope before iteration carriers are initialized. Later initializer writes and
 closures retain that initial environment. Each iteration creates fresh cells

@@ -82,6 +82,7 @@ export const PASS_NAMES = [
   'propagateLocals',          // watr local propagation after link, including the fast cleanup profile
   'coalesceLocals',           // watr shares non-overlapping local slots, including level 1
   'promoteGlobals',          // read-only global.get → local for multi-read globals
+  'promoteCells',             // a closure cell whose address only addresses its own loads and stores: the value in a local (optimize/cells.js)
   'sortLocalsByUse',
   'specializeMkptr',
   'internStrings',            // slice/substring results probe the static-literal pool: equal-content → canonical bits (bit-eq fast paths)

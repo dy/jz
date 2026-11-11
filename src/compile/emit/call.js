@@ -524,10 +524,9 @@ export const callOps = {
     for (const def of Object.values(defaults)) findFreeVars(def, paramSet, captures)
 
     // A local the closure writes is held in a cell (analyze-scans.js boxedCaptures):
-    // one held by value is an arrow the analysis found a walk running in place
-    // (compile/in-place.js) that reached the emitter as a value, its writes lost.
+    // one it would hold by value is a body that analysis never read, its writes lost.
     const lost = captures.find(c => !ctx.func.boxed?.has(c) && isReassigned(body, c))
-    if (lost != null) throw new Error(`an arrow writing ${lost} reached a closure where the analysis ran it in place`)
+    if (lost != null) throw new Error(`a closure writes ${lost}, which its maker holds in no cell`)
     // Pass closure info including rest param and defaults.
     // self: the capture that is the closure itself, a binding no cell holds
     const self = binding != null && captures.includes(binding) && !ctx.func.boxed?.has(binding) ? binding : null

@@ -69,7 +69,7 @@ const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', 
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
-  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, coalesceLocals: true, fusedRewrite: true,
+  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, coalesceLocals: true, fusedRewrite: true, promoteCells: true,
     // The formerly-implicit emit-time transforms ran at every truthy cfg — L1 keeps them.
     inlineToNum: true, hashRmwFusion: true, inplaceStore: true,
     devirtClosureTables: true, devirtDynProps: true, devirtSchemaReads: true }),
