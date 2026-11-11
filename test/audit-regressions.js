@@ -1999,3 +1999,31 @@ test('audit: Array.isArray of a value that may be missing asks the value', () =>
   // (an array that is present is one by the fact, with no test of its tag)
   ok(!compile(`export let f = (k) => { const a = [k, k + 1]; return Array.isArray(a) ? a.length : -1 }`, { optimize: 0, wat: true }).includes('__ptr_type'), 'a present array answers without a tag test')
 })
+
+// A literal split into names declares each slot where the literal was. A slot a
+// statement writes is no `const`, whatever declared the literal: `const a = [1, 2]`
+// fixes the array, not what it holds. Declared `const`, the slot was its
+// initializer to every reader of declarations, and an index read through it was
+// held inside its array by the 2 it started as: the load ran with no bounds
+// test, on whatever the slot held by then.
+test('audit: a literal\'s slot that is written is read as what it holds', () => {
+  const top = `const A = [10, 20, 30, 0, 3], T = new Float64Array([10, 20, 30, 40])\n`
+  const cases = [
+    `export let f = (x) => { const a = [1, 2]; a[1] = Math.floor(x); return A[a[1]] === undefined ? -1 : A[a[1]] }`,
+    `export let f = (x) => { const a = [1, 2]; a[1] = Math.floor(x); const w = a[1]; return A[w] === undefined ? -1 : A[w] }`,
+    `export let f = (x) => { const a = [1, 2]; a[1] = x | 0; const w = a[1]; return T[w] === undefined ? -1 : T[w] }`,
+    `export let f = (x) => { const a = [1, 2]; a[1] += Math.floor(x); return A[a[1]] === undefined ? -1 : A[a[1]] }`,
+    `export let f = (x) => { const a = [1, 2]; if (x > 2) a[1]++; return A[a[1] + 2] === undefined ? -1 : A[a[1] + 2] }`,
+    `export let f = (x) => { const o = { w: 2 }; if (x === x) o.w = Math.floor(x); return A[o.w] === undefined ? -1 : A[o.w] }`,
+    `export let f = (x) => { const o = { w: 2, t: 1 }; o.w = x | 0; const w = o.w; return T[w] === undefined ? -1 : T[w] }`,
+    `export let f = (x) => { const a = [1, 2]; a[1] = Math.floor(x); let c = 0; for (let i = 0; i < a[1] && i < 9; i++) c++; return c }`,
+  ]
+  for (const body of cases) for (const optimize of levels(0, 1, 2, 'speed')) {
+    const src = top + body, host = oracle(src), got = jz(src, { optimize }).exports
+    for (const x of [1, 3, 4, 5, -1, 1073741824, -2147483648, NaN, Infinity]) is(got.f(x), host.f(x), `${body} for ${x} at ${optimize}`)
+  }
+  if (onKernel()) return
+  // (a slot nothing writes is still its initializer: the read beside the written one is the constant's)
+  const wat = compile(top + `export let f = (x) => { const a = [1, 2]; a[0] = Math.floor(x); return A[a[1]] + a[0] }`, { optimize: 'size', wat: true })
+  ok(!/\$f[\s\S]*?i32\.lt_u[\s\S]*?\(func /.test(wat.slice(wat.indexOf('(func $f'))), 'an unwritten slot indexes with no bounds test')
+})

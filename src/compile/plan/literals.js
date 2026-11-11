@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callbackReadsArray, collectBareRefs, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer, callArgs,
+  callbackReadsArray, collectBareRefs, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, collectAssignedNames, hasControlTransfer, callArgs,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -842,6 +842,39 @@ export const analyzeFreshTypedGlobals = (ast) => {
   ctx.scope.freshTypedGlobals = fresh.size ? new Set([...fresh].map(n => `$${n}`)) : null
 }
 
+// The slots of a literal split into names, declared where the literal was. A slot
+// a statement writes (`a[1] = v`, `o.w++`) is a `let` whatever declared the
+// literal: `const a = [1, 2]` fixes the array, not its elements, and a `const`
+// is its initializer for good to every reader of declarations (an index read
+// through the slot was held inside its array by the 2 it started as). The
+// slots keep their order, so the initializers run as the literal's did.
+const slotDecls = (op, decls, written) => {
+  const out = []
+  for (const d of decls) {
+    const o = written.has(d[1]) ? 'let' : op, last = out[out.length - 1]
+    if (last && last[0] === o) last.push(d)
+    else out.push([o, d])
+  }
+  return out
+}
+/** `stmts` with each split literal's declaration (`decls`: statement index → its
+ *  slots' declarators, null for a bare `let`'s names) in place, the other
+ *  statements as `rewrite` leaves them. */
+const withSlots = (stmts, decls, rewrite) => {
+  const rest = stmts.map((st, i) => decls.has(i) ? null : rewrite(st))
+  const written = new Set()
+  for (const st of rest) collectAssignedNames(st, written)
+  for (const c of decls.values()) if (c.decls) for (const d of c.decls) collectAssignedNames(d[2], written)
+  const out = []
+  for (let i = 0; i < stmts.length; i++) {
+    const c = decls.get(i)
+    if (!c) out.push(rest[i])
+    else if (c.bare) out.push(['let', ...c.bare])
+    else out.push(...slotDecls(c.op, c.decls, written))
+  }
+  return out
+}
+
 const scalarizeArrayLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
@@ -880,22 +913,10 @@ const scalarizeArrayLiteralSeq = (seq) => {
     arrays.set(name, temps)
   }
 
-  const out = []
-  for (let i = 0; i < stmts.length; i++) {
-    const entry = [...candidates.entries()].find(([, c]) => c.index === i)
-    if (entry) {
-      const [name, c] = entry
-      const temps = arrays.get(name)
-      if (temps.length) {
-        out.push([c.op, ...temps.map((tmp, k) =>
-          ['=', tmp, rewriteScalarArrayUses(c.elems[k], arrays)])])
-      }
-      changed = true
-      continue
-    }
-    out.push(rewriteScalarArrayUses(stmts[i], arrays))
-  }
-  return [';', ...out]
+  const decls = new Map()
+  for (const [name, c] of candidates) decls.set(c.index, { op: c.op,
+    decls: arrays.get(name).map((tmp, k) => ['=', tmp, rewriteScalarArrayUses(c.elems[k], arrays)]) })
+  return [';', ...withSlots(stmts, decls, st => rewriteScalarArrayUses(st, arrays))]
 }
 
 /** The literal every path through `st` assigns to `name` before reading it
@@ -987,23 +1008,13 @@ const scalarizeObjectLiteralSeq = (seq, facts) => {
     for (const alias of c.aliases) objects.set(alias, fields)
   }
 
-  const out = []
-  for (let i = 0; i < stmts.length; i++) {
-    const entry = [...candidates.entries()].find(([, c]) => c.index === i)
-    if (entry) {
-      const [, c] = entry
-      const fields = objects.get(entry[0])
-      if (c.bare) out.push(['let', ...fields.values()])
-      else if (c.props.names.length) {
-        out.push([c.op, ...c.props.names.map((prop, k) =>
-          ['=', fields.get(prop), rewriteScalarObjectUses(c.props.values[k], objects)])])
-      }
-      changed = true
-      continue
-    }
-    out.push(rewriteScalarObjectUses(stmts[i], objects))
+  const decls = new Map()
+  for (const [name, c] of candidates) {
+    const fields = objects.get(name)
+    decls.set(c.index, c.bare ? { bare: [...fields.values()] } : { op: c.op,
+      decls: c.props.names.map((prop, k) => ['=', fields.get(prop), rewriteScalarObjectUses(c.props.values[k], objects)]) })
   }
-  return [';', ...out]
+  return [';', ...withSlots(stmts, decls, st => rewriteScalarObjectUses(st, objects))]
 }
 
 function scalarizeObjectLiterals(node, facts) {
