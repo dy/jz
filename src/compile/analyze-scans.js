@@ -1305,7 +1305,8 @@ function bareEscapeScan(body, wide) {
     }
     if (ESCAPE_EDGE_OPS.has(op) && typeof node[1] === 'string') {
       edge(node[1], node[2])
-      if (op !== '=') escape(node[1])
+      // (an assignment's value is the number assigned, which the word kept of it is not: `a = b = k + 1`)
+      if (op !== '=' || mode === 'value' || mode === 'cmp') escape(node[1])
       walk(node[2], op !== '=' ? 'value' : mode === 'stmt' ? 'edge' : mode)
       return
     }

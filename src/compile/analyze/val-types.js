@@ -1,7 +1,7 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
 import { OPTF, ctx } from '../../ctx.js'
 import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR } from '../../ast.js'
-import { VAL, meetRange, updateRep } from '../../reps.js'
+import { VAL, meetRange, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMaps } from '../../type.js'
@@ -463,7 +463,8 @@ export function analyzeIntCertain(body) {
       return ctx.schema.slotIntCertainAt(obj, prop)
     }
     : undefined
-  const { certain, missable } = intCertainMaps(body, captured, slotIntOf)
+  // (a capture's level is its declarer's, which holds every closure's writes: closure-emit.js seeds it)
+  const { certain, missable } = intCertainMaps(body, captured, slotIntOf, name => repOf(name)?.intCertain === true ? 1 : 0)
   for (const [name, l] of certain) if (l && !boolTagged(name)) updateRep(name, { intCertain: true })
   for (const [name, l] of missable) if (l && !certain.get(name) && !boolTagged(name)) updateRep(name, { intOrMiss: true })
 }

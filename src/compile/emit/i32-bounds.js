@@ -121,16 +121,21 @@ function boundedLo(n) {
 // moves AWAY from, so it needs no bound at all. This is why a ONE-SIDED
 // resolver (boundedHi/boundedLo) suffices here where addRangeFitsI32 needs a
 // full closed hull on BOTH operands: X's un-provable far side is provably
-// irrelevant for THIS specific shape, not assumed away.
+// irrelevant for THIS specific shape, not assumed away. That far side is a
+// signed word's: an unsigned word's top is past 2^31 (`a = k >>> 0; a - 1` at
+// 4294967295 is 4294967294, which no signed word holds), so its far side is
+// bounded as its near one is.
+const unsignedWord = (n) => typeof n === 'string' && !!(repOf(n)?.unsigned || ctx.func?.refinements?.get(n)?.unsigned)
+const topFits = (n, k) => { if (!unsignedWord(n)) return true; const hi = boundedHi(n); return hi != null && hi + k <= 0x7fffffff }
 export const addLiteralFitsI32 = (aAst, bAst) => {
   const k = constIntExpr(bAst)
   if (k == null || !Number.isInteger(k)) return false
   if (k >= 0) { const hi = boundedHi(aAst); return hi != null && hi + k <= 0x7fffffff }
-  const lo = boundedLo(aAst); return lo != null && lo + k >= -0x80000000
+  const lo = boundedLo(aAst); return lo != null && lo + k >= -0x80000000 && topFits(aAst, k)
 }
 export const subLiteralFitsI32 = (aAst, bAst) => {
   const k = constIntExpr(bAst)
   if (k == null || !Number.isInteger(k)) return false
-  if (k >= 0) { const lo = boundedLo(aAst); return lo != null && lo - k >= -0x80000000 }
+  if (k >= 0) { const lo = boundedLo(aAst); return lo != null && lo - k >= -0x80000000 && topFits(aAst, -k) }
   const hi = boundedHi(aAst); return hi != null && hi - k <= 0x7fffffff
 }

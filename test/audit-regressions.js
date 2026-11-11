@@ -1738,3 +1738,89 @@ test('audit: a sum past one word stays a Number wherever a read observes its num
       is(got[name](...args), host[name](...args), `${name}(${args}) at ${optimize}`)
   }
 })
+
+// The value of an assignment is the number assigned. A name every read of which
+// takes its word keeps a word of it, so the assignment's own value, read as a
+// number, is a read that does not (each of these answered -2^31 for 2^31, or 0
+// for 0.5, at every level).
+test('audit: an assignment read as a number answers the number assigned, not the word its target keeps', () => {
+  const src = `let G = 0, H = 0
+    const h = (x) => x
+    export let chain = (k) => { let a = 0, b = 0; a = b = (k | 0) + 1; return a }
+    export let decl = (k) => { let b = 0; const a = (b = (k | 0) + 1); return a }
+    export let global = (k) => { const a = (G = (k | 0) + 1); return a }
+    export let fraction = (k) => { G = H = k / 2; return G }
+    export let returned = (k) => (G = k / 2)
+    export let passed = (k) => h(G = k / 2)
+    export let tested = (k) => { if ((G = k / 2) > 0.25) return 1; return 0 }
+    export let chosen = (k) => { G = k > 9 ? 0 : (H = k / 2); return G }
+    export let summed = (k) => { G = k / 2; return (G | 0) + (G = k / 4) }
+    export let converted = (k) => { let b = 0; return ((b = (k | 0) + 1) | 0) + (b | 0) }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (const name in host) for (const k of [1, 2147483647, -2147483648, 3]) is(got[name](k), host[name](k), `${name}(${k}) at ${optimize}`)
+  }
+})
+
+// An unsigned word's top is past 2^31: `a - 1` over `a = k >>> 0` is no signed
+// word's difference though its lower side fits one (4294967294 answered -2 at
+// every level once the local's range was known; the remainder of it did on
+// every tree).
+test('audit: an unsigned word less a literal is no signed word', () => {
+  const src = `export let sub = (k) => { const a = k >>> 0; const b = a - 1; return b }
+    export let addNeg = (k) => { const a = k >>> 0; const b = a + -1; return b }
+    export let stepped = (k) => { let a = k >>> 0; a -= 1; return a }
+    export let halved = (k) => { const a = k >>> 0; return (a - 1) / 2 }
+    export let compared = (k) => { const a = k >>> 0; return a - 1 > 0 ? 1 : 0 }
+    export let rem = (k) => { const a = k >>> 0; return (a - 1) % 7 }
+    export let elem = (k) => { const u = new Uint32Array(1); u[0] = k; const a = u[0]; return a - 1 }
+    export let literal = (k) => { const a = 4294967295; const b = a - 1; return b + (k & 0) }
+    export let summed = (k) => { const a = k >>> 0; let s = 0; for (let i = 0; i < 2; i++) s += a - 1; return s }
+    export let back = (k) => { const a = k >>> 0; return (a - 1) >>> 0 }
+    export let up = (k) => { const a = k >>> 0; const b = a + 1; return b }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (const name in host) for (const k of [4294967295, 0, 2147483648, 5]) is(got[name](k), host[name](k), `${name}(${k}) at ${optimize}`)
+  }
+})
+
+// A name is an integer where every write of it is one. A module binding any
+// function may write, a local a sibling closure writes and a closure's own
+// parameter have writes the body at hand does not hold: its own integer
+// writes say nothing of those (`Math.round` answered 1.5 and `T[0.5]` the
+// first element, at every level).
+test('audit: a name other code writes is no integer by the writes in sight', () => {
+  const cases = [
+    `let G = 0; const w = (d) => { G += 0.25; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(5); return Math.round(G) + k }`,
+    `let G = 0; const w = (d) => { G -= 0.25; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(5); return Math.ceil(G) + k }`,
+    `let G = 0; const T = [10, 20, 30]; const w = (d) => { G += 0.5; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(0); return (T[G] === undefined ? 100 : T[G]) + k }`,
+    `let G = 0; const T = new Float64Array(3).fill(7); const w = (d) => { G += 0.5; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(0); return (T[G] === undefined ? 100 : T[G]) + k }`,
+    `let G = 0; const w = (d) => { G += 0.5; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(0); return ('abc'[G] === 'a' ? 1 : 0) + k }`,
+    `let G = 0; const w = (d) => { G += 0.5; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(0); const a = G; return Math.round(a) + k }`,
+    `let G = 0; export let f = (k) => { const p = () => () => { G = 0.5 }; G = 0; p()(); return (G === Math.floor(G) ? 1 : 0) + k }`,
+    `let G = 0; export let f = (k) => { G = 0; [1, 2].find((x) => { G = x / 4; return false }); return (G === Math.floor(G) ? 1 : 0) + k }`,
+    `let G = 0; function* gw() { G = 0.5; yield 1; G += 0.25 }; export let f = (k) => { G = 0; for (const v of gw()) {} return (G === Math.floor(G) ? 1 : 0) + k }`,
+    `let G = 0; export let set = (x) => { G = x }; export let f = (k) => { const a = G; G = 0; return Math.round(a) + k }`,
+    `export let f = (k) => { let a = 0.5; const bump = () => { a += 1.5 }; const g = () => { a = 0; bump(); return Math.round(a) }; return g() + k }`,
+    `export let f = (k) => { const T = [10, 20, 30]; let a = 0; const bump = () => { a += 0.5 }; const g = () => { a = 0; bump(); return T[a] === undefined ? 100 : T[a] }; return g() + k }`,
+    `export let f = (k) => { let a = 0; const g = () => { a = 0; return () => (a === Math.floor(a) ? 1 : 0) }; const r = g(); a = 0.5; return r() + k }`,
+    `export let f = (k) => { let a = 0; const w = (d) => { a += 0.25; if (d > 0) w(d - 1) }; const g = () => { a = 0; w(5); return Math.round(a) }; return g() + k }`,
+    `let n = 5; const g = (n) => { const h = () => { n = n + 1; return Math.round(n) }; return h() }; export let f = (k) => g(0.5) + k + n`,
+    // (a closure's parameter: its first value is the caller's)
+    `export let f = (k) => { const g = (i) => { if (i > 100) i = 1; return Math.round(i) }; const o = { g }; return o.g(0.5) + k }`,
+    `export let f = (k) => { let s = 0; [0.5, 1.5].forEach((x) => { if (x > 100) x = 1; s += Math.round(x) }); return s + k }`,
+    `export let f = (k) => { const T = [10, 20]; const g = (i) => { if (i > 100) i = 1; return T[i] === undefined ? 100 : T[i] }; const o = { g }; return o.g(0.5) + k }`,
+    `function* g(i) { if (i > 100) i = 1; yield Math.round(i) } export let f = (k) => { let s = 0; for (const v of g(0.5)) s += v; return s + k }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    host.set?.(1.5); got.set?.(1.5)
+    is(got.f(0), host.f(0), `${src} at ${optimize}`)
+  }
+  if (onKernel()) return
+  // (a capture every closure steps by one is an integer still: its declarer holds all of its writes)
+  const kept = `export let f = (k) => { let pos = 0; const next = () => { pos++; return Math.floor(pos) }; const o = { next }; o.next(); return o.next() + k }`
+  ok(!compile(kept, { optimize: 0, wat: true }).includes('f64.floor'), 'an integral capture is floored by no instruction')
+})

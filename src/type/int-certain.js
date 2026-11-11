@@ -8,7 +8,7 @@
  *
  * @module type/int-certain
  */
-import { walkAst, takeScratchMap, releaseScratchMap } from '../ast.js'
+import { walkAst, takeScratchMap, releaseScratchMap, takeScratchSet, releaseScratchSet } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
@@ -61,7 +61,10 @@ const noteExactDivs = (test, arm) => {
 // The defs this collection makes of the steps a loop test bounds (type/
 // bounded-counters.js), fresh nodes: each at a level no wider than its binding's.
 const boundedRhs = new WeakSet()
-function collectIntDefs(body, capturedNames, defs, steps) {
+// `own`, when given, takes the names `body` declares itself: every write to one
+// of them is among the defs. A name written here and declared elsewhere (a module
+// binding, an enclosing function's local) has writes this body does not hold.
+function collectIntDefs(body, capturedNames, defs, steps, own) {
   const bounded = (name, step) => { const rhs = ['+', name, step]; boundedRhs.add(rhs); return rhs }
   const pushDef = (name, rhs, inArrow) => {
     if (inArrow && !capturedNames.has(name)) return
@@ -79,8 +82,11 @@ function collectIntDefs(body, capturedNames, defs, steps) {
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const decl = n[i]
-        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') pushDef(decl[1], decl[2], inArrow)
-        else if (typeof decl === 'string' && ctx.summary?.at(body).bindingKindOf(decl) !== NUMBER) pushDef(decl, null, inArrow)
+        const name = typeof decl === 'string' ? decl : Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' ? decl[1] : null
+        if (name == null) continue
+        if (!inArrow) own?.add(name)
+        if (decl !== name) pushDef(name, decl[2], inArrow)
+        else if (ctx.summary?.at(body).bindingKindOf(name) !== NUMBER) pushDef(name, null, inArrow)
       }
     } else if (op === '=' && typeof n[1] === 'string') {
       pushDef(n[1], steps?.has(n) ? bounded(n[1], n[2][1] === n[1] ? n[2][2] : n[2][1]) : n[2], inArrow)
@@ -207,16 +213,27 @@ const _slotLevelAdapter = (slotIntOf) => slotIntOf
 export const intLevelOf = (expr, levels, readPresent) => makeIntLevelExpr(levels, null, readPresent)(expr)
 
 export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, params = ctx.func.current?.params, steps = null) {
-  const defs = takeScratchMap()
-  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params, steps) } finally { releaseScratchMap(defs) }
+  const defs = takeScratchMap(), own = takeScratchSet()
+  try {
+    collectIntDefs(body, capturedNames, defs, steps, own)
+    return levelsOfDefs(defs, slotLevelOf, readPresent, params, own)
+  } finally { releaseScratchSet(own); releaseScratchMap(defs) }
 }
-function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params, steps) {
-  collectIntDefs(body, capturedNames, defs, steps)
-  return levelsOfDefs(defs, slotLevelOf, readPresent, params)
-}
-function levelsOfDefs(defs, slotLevelOf, readPresent, params) {
+// `own`: the names the body declares, every write of which is among `defs`.
+// `outer(name)`: the level of a name declared elsewhere, as what holds every
+// write of it found (the enclosing function, for a closure's capture).
+function levelsOfDefs(defs, slotLevelOf, readPresent, params, own, outer) {
   const levels = new Map()
-  for (const name of defs.keys()) levels.set(name, 2)
+  // A name starts as a strict word and each def lowers it, so the fixpoint
+  // answers for the defs it holds and no others. A module binding any function
+  // may write, a captured local its declarer and every closure of it may, and
+  // a closure's parameter have writes this body does not hold (a callee's, a
+  // sibling closure's, the caller's argument): each starts from what is known
+  // of all of them, its word where its storage is one.
+  for (const name of defs.keys()) {
+    const global = ctx.scope.globals?.get(name)
+    levels.set(name, own.has(name) && !global?.mut ? 2 : global?.type === 'i32' ? 2 : outer?.(name) ?? 0)
+  }
   // A parameter has no def in `body` — its entry value is whatever the caller
   // passed. For an f64 param (JS-number ABI) that is an arbitrary real, so a
   // reassigned f64 param is NOT integer-certain: a self/int reassignment
@@ -265,16 +282,17 @@ const ANY_READ = { has: () => true }
  *  projection is intCertain) in `certain`, and in `missable` the names integral
  *  wherever their integer typed reads are present (`let r = offs[g]; … r++`):
  *  a miss leaves undefined, which arithmetic carries as NaN, never a fraction.
- *  One def collection feeds both. */
-export function intCertainMaps(body, capturedNames, slotIntOf) {
-  const defs = takeScratchMap()
+ *  One def collection feeds both. `outer(name)` is the level of a name the
+ *  body writes and does not declare (levelsOfDefs). */
+export function intCertainMaps(body, capturedNames, slotIntOf, outer) {
+  const defs = takeScratchMap(), own = takeScratchSet()
   try {
-    collectIntDefs(body, capturedNames, defs)
+    collectIntDefs(body, capturedNames, defs, null, own)
     const slots = _slotLevelAdapter(slotIntOf), params = ctx.func.current?.params
-    const certain = levelsOfDefs(defs, slots, undefined, params)
-    const missable = levelsOfDefs(defs, slots, ANY_READ, params)
+    const certain = levelsOfDefs(defs, slots, undefined, params, own, outer)
+    const missable = levelsOfDefs(defs, slots, ANY_READ, params, own, outer)
     return { certain, missable }
-  } finally { releaseScratchMap(defs) }
+  } finally { releaseScratchSet(own); releaseScratchMap(defs) }
 }
 
 /** Returns `expr => 0|1|2` over `body`'s level fixpoint (slot census / raw-i32 consumers).
