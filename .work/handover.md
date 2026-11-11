@@ -181,6 +181,8 @@ b70b0a25e land-3c                            the landing branch of 3c, an ancest
 108607457 worktree-agent-aab0781eee3f918ab   phase 2b, landed as 9ff0ffb2d, 7b43e61f3, 4cb52818a, 0e726f28e
 0922b6a92 worktree-agent-a71932a5e8dfc1e8a   phase 2c, landed as 9ea3a640c, corrected by b0f52ced0 (the branch goes on to 2d)
 b0f52ced0 land-2c                            the landing branch of 2c, an ancestor of main
+69fdca41f worktree-agent-a94139a3c3b6dc7cb   phase 1b, landed as 0b3f3b09e, 69fdca41f (fast-forward)
+4aaaddbc3 land-1b                            the tree 1b's batteries ran on: main's tree at 69fdca41f under other commits, not an ancestor
 ```
 
 `wasi-proc-exit` (process.exit under host:'wasi') landed as 751665c63, 803529fff,
