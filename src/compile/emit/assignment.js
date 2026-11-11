@@ -156,14 +156,10 @@ function stagedReference(name, update = true, rhs) {
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
 export const putReference = (ref, value, source = ref) => ref[0] === '[]'
   ? emitElementAssign(ref[1], ref[2], value, source) : emitPropertyAssign(ref[1], ref[2], value)
-// The write through a staged reference, at the expectation of the assignment:
-// staging emitted the reference's parts, each at its own (`t[i++] = 1` in a
-// loop's test kept the step's 'void' and stored no value to compare).
+// The write through a staged reference, after the staging's own statements.
 const staged = (name, update, rhs, write) => {
-  const expect = ctx.func._expect, s = stagedReference(name, update, rhs)
-  if (!s) return null
-  ctx.func._expect = expect
-  return afterStaging(s.pre, write(s.ref))
+  const s = stagedReference(name, update, rhs)
+  return s ? afterStaging(s.pre, write(s.ref)) : null
 }
 /** Lower a compound member write through its staged reference: `build` receives the reference to read and write. */
 export function throughReference(name, rhs, build) {
