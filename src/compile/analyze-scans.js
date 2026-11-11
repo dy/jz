@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap, refsAny } from '../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -1225,17 +1225,16 @@ const mathFnName = (callee) =>
  *  storage is safe only with a closed i32 hull or when every use applies a
  *  word conversion. Comparisons observe magnitude too: being compared never
  *  proves a counter cannot overflow. Definition edges carry this demand back
- *  to their arithmetic sources; crossClosure includes module-global readers. */
-export function collectBareEscapes(body, locals, crossClosure) {
-  // The global census spans functions; definition edges belong to one body.
-  return bareEscapeScan(body, crossClosure, null, !crossClosure).escaped()
+ *  to their arithmetic sources; a closure's reads are among the body's. */
+export function collectBareEscapes(body) {
+  return bareEscapeScan(body, null).escaped()
 }
 
 /** One scan per body keeps definition edges scoped; observed module globals
  *  carry their magnitude demand across bodies. Explicitly wide globals cannot
  *  borrow a same-named local's range from the current overlay. */
 export function collectGlobalBareEscapes(bodies, isGlobal, wide) {
-  const scans = bodies.map(body => bareEscapeScan(body, true, wide, true))
+  const scans = bodies.map(body => bareEscapeScan(body, wide))
   const out = new Set(), queue = []
   const take = (names) => { for (const name of names) if (isGlobal(name) && !out.has(name)) { out.add(name); queue.push(name) } }
   for (const scan of scans) take(scan.escaped())
@@ -1243,14 +1242,12 @@ export function collectGlobalBareEscapes(bodies, isGlobal, wide) {
   return out
 }
 
-const THROUGH_ARROWS = { skipArrow: false }
-
-function bareEscapeScan(body, crossClosure, wide, keepEdges) {
+function bareEscapeScan(body, wide) {
   let escaped = null
   const edges = new Map(), queue = []
   let collecting = true, drained = 0
   const edge = (name, rhs) => {
-    if (!collecting || !keepEdges) return
+    if (!collecting) return
     if (!edges.has(name)) edges.set(name, [])
     edges.get(name).push(rhs)
   }
@@ -1267,7 +1264,8 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
     if (typeof node === 'string') { if (mode === 'value' || mode === 'cmp') escape(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') { if (crossClosure) walk(node[2], isBlockBody(node[2]) ? 'stmt' : 'value'); return }  // local mode: separate scope/body; global mode: descend (see doc)
+    // (a closure's reads are reads of what it captures, whenever it runs)
+    if (op === '=>') { walk(node[2], isBlockBody(node[2]) ? 'stmt' : 'value'); return }
     if (op === ';' || ((op === '{}' || op === ',') && mode === 'stmt')) {
       for (let i = 1; i < node.length; i++) walk(node[i], 'stmt')
       return
@@ -1316,18 +1314,10 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
       for (let i = 1; i < node.length; i++) walk(node[i], op === ',' ? mode : 'value')
       return
     }
-    mode = 'value'   // fell out of an idx/edge-affine chain (or already were in 'value' mode)
-    // a bounded result says nothing of a wide operand a comparison inside it reads
-    if (escapeInRangeI32(node) && !(wide && refsAny(node, wide, THROUGH_ARROWS))) { tests(node); return }
-    for (let i = 1; i < node.length; i++) walk(node[i], mode)
-  }
-  // What a bounded result still observes: the test of each conditional inside
-  // it, whose arms alone bound it (`a < 0 ? 1 : 0` is [0, 1] whatever `a` is).
-  const tests = (node) => {
-    if (!Array.isArray(node) || node[0] === '=>') return
-    const cond = node[0] === '?:' && node.length === 4
-    if (cond) walk(node[1], 'value')
-    for (let i = cond ? 2 : 1; i < node.length; i++) tests(node[i])
+    // Fell out of an idx/edge-affine chain (or already in 'value' mode). A
+    // bounded result excuses no operand: `a % 7` and `a < 0 ? 1 : 0` read a's
+    // whole number, not its word.
+    for (let i = 1; i < node.length; i++) walk(node[i], 'value')
   }
   // A value copied through locals still escapes from each arithmetic source.
   const drain = () => { for (; drained < queue.length; drained++) for (const rhs of edges.get(queue[drained]) || []) walk(rhs, 'value') }

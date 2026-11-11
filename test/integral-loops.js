@@ -688,7 +688,10 @@ test('integral loops: a ring counter is a cursor with a floor, and a loop under 
   if (belowOpt(2)) return
   const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
   ok(/call \$math\.log_v/.test(frame) && /f64x2\.mul/.test(frame), 'the iterated-map reduction lifts the pixel loop (log → $math.log_v)')
-  ok(/\(local \$si\S* i32\)/.test(frame) && !/\(local \$si\S* f64\)/.test(frame), 'the ring counter is a word in every copy')
+  // (`SEQLEN` holds the parameter's Number, 3.5 among them: the copies its
+  // integrality versions keep the counter a word, the original loop, which runs
+  // for a fraction or NaN, compares it with that Number)
+  ok(/\(local \$si\S+ i32\)/.test(frame), 'the ring counter is a word in the copies the bound versions')
 })
 
 // The copy's words, read off the planned body: the plan pass rewrites in place,

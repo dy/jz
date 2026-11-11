@@ -344,42 +344,27 @@ test('warnings: simd-why-not is off by default (noisy — opt-in only)', () => {
   is(warningsFor(remMap).filter(w => w.code === 'simd-why-not').length, 0)
 })
 
-test('warnings: int-global-truncation when a scalar global is i32-narrowed from a param', () => {
-  // jz infers integer module globals to i32 (the size/index/stride perf win). A
-  // scalar global fed from a parameter may hold a fractional Number that the i32
-  // carrier truncates: an opt-in advisory where the global stays a word, which
-  // it does while every read takes its word (`i & N`). A read of its magnitude
-  // keeps it a Number, a comparison under a conditional among them: there
-  // `N = 2.5` answers as the source does, and no advisory is due.
-  const ws = warningsFor(`let N = 0
+// A module global fed from a parameter holds what the source holds: a word only
+// where every read takes its word (`i & N`, ToInt32 of the Number each time), a
+// Number where a read sees its magnitude (a comparison, a copy into a result).
+// No storage truncates a fraction, so no advisory is due.
+test('module globals: a parameter-fed global answers its Number at every read', () => {
+  const masked = jz(`let N = 0
     export let init = (n) => { N = n; return 0 }
-    export let inside = (i) => i & N`)
-  const trunc = ws.filter(w => w.code === 'int-global-truncation')
-  ok(trunc.length >= 1, 'fires for a param-fed i32-narrowed global')
-  ok(/Float64Array/.test(trunc[0].message), 'points to Float64Array for fractional state')
-  const compared = `let N = 0
+    export let inside = (i) => i & N`).exports
+  masked.init(2.5)
+  is([masked.inside(3), masked.inside(7)], [3 & 2.5, 7 & 2.5], 'a word read takes its word')
+  const m = jz(`let N = 0
     export let init = (n) => { N = n; return 0 }
-    export let inside = (i) => i < N ? 1 : 0`
-  is(warningsFor(compared).filter(w => w.code === 'int-global-truncation').length, 0, 'a compared global is no word: nothing to warn of')
-  const m = jz(compared).exports
+    export let inside = (i) => i < N ? 1 : 0`).exports
   m.init(2.5)
   is([m.inside(2), m.inside(3)], [1, 0], 'and its fraction is compared')
-})
-
-test('warnings: filter state read back as a value stays f64 and draws no advisory', () => {
-  // `x1` reaches the result through `out`: a copy is a read, so the state is exact.
-  const src = `let x1 = 0, y1 = 0
-    export let process = (inp, b0) => { let out = b0 * inp + x1; x1 = inp; y1 = out; return out }`
-  is(warningsFor(src).filter(w => w.code === 'int-global-truncation' && /'x1'/.test(w.message)).length, 0)
-  const { process } = jz(src).exports
+  const { process } = jz(`let x1 = 0, y1 = 0
+    export let process = (inp, b0) => { let out = b0 * inp + x1; x1 = inp; y1 = out; return out }`).exports
   process(0.75, 0.5)
-  is(process(0.25, 0.5), 0.5 * 0.25 + 0.75)
-})
-
-test('warnings: no int-global-truncation for a self-contained integer counter', () => {
-  // `n = n + 1` references no parameter → no advisory (avoids false alarms on pure counters).
-  const ws = warningsFor('let n = 0; export let next = () => { n = n + 1; return n }')
-  is(ws.filter(w => w.code === 'int-global-truncation').length, 0)
+  is(process(0.25, 0.5), 0.5 * 0.25 + 0.75, 'filter state read back as a value')
+  const { next } = jz('let n = 0; export let next = () => { n = n + 1; return n }').exports
+  is([next(), next()], [1, 2], 'a counter')
 })
 
 test('warnings: deopt-prop-read names a property read with no static slot', () => {

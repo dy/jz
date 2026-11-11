@@ -8,8 +8,12 @@ import { typedStaticLen } from '../src/type/loop-versioning.js'
 import { minAdvanceBudget, maxAdvanceBudget } from '../src/type/canonical-bounds.js'
 import { MUTATE_OPS } from '../src/ast.js'
 import { scanIntervalIdx } from '../src/type/interval-proof.js'
+import { nrSpan } from '../src/summary/num-range.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
+
+// A lifetime's integer hull, as a range publishes it (body-facts.js): never -0; undefined where no walk reached it.
+const hullOf = (v) => v === undefined ? v : v?.nz ? nrSpan(v) : null
 
 const compare = (source, inputs) => {
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
@@ -292,7 +296,7 @@ test('counter width: interval binding hulls include every stable read and write'
     ctx.func = createActiveFunction({ body })
     try { scanIntervalIdx(body, () => null, { bindings }) }
     finally { ctx.func = prior }
-    is(bindings.get('i'), expected, name)
+    is(hullOf(bindings.get('i')), expected, name)
   }
 })
 
@@ -432,7 +436,7 @@ test('counter width: companion while cursors need progress on every continuing p
     ctx.func = createActiveFunction({ body })
     try { scanIntervalIdx(body, name => name === 'a' ? 4 : null, { out: proven, bindings: hulls }) }
     finally { ctx.func = prior }
-    return { hit: proven.has(read), hull: hulls.get('op') }
+    return { hit: proven.has(read), hull: hullOf(hulls.get('op')) }
   }
   is(trial(['++', 'ip']), { hit: true, hull: [0, 4] }, 'post-increment read excludes the final landing')
   const consts = ctx.scope.consts, constInts = ctx.scope.constInts, globals = ctx.scope.globalTypes
@@ -486,7 +490,7 @@ test('counter width: loop budgets cannot hide writes through module bindings', (
       const proven = new Set(), hulls = new Map([['op', undefined]])
       scanIntervalIdx(body, name => name === 'a' ? 4 : null, { out: proven, bindings: hulls })
       ok(!proven.has(read), `${global}: the call can invalidate the trip or cursor budget`)
-      is(hulls.get('op'), null, 'the complete lifetime remains unknown')
+      is(hullOf(hulls.get('op')), null, 'the complete lifetime is no hull')
     }
   } finally { ctx.func = prior; ctx.scope.globalTypes = globals }
 

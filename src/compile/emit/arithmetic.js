@@ -15,8 +15,6 @@ import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux, bitOf, TAGS
 import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
-import { intLevelMap } from '../../type/int-certain.js'
-const strictInts = new WeakMap()   // a body → its names' integer levels (int-certain.js), read by the remainder's magnitude bound
 // whether an expression is at least one in magnitude: a literal, or a name or expression the range solver holds off (-1, 1)
 const atLeastOne = (e) => {
   if (Array.isArray(e) && e[0] == null) return typeof e[1] === 'number' && Math.abs(e[1]) >= 1
@@ -63,8 +61,8 @@ const i32Magnitude = (e, depth = 0) => {
     // a hull the range solver holds (a counter under its bound, a stamped declaration)
     const r = intExprRange(e) ?? counterRanges(body).get(e)
     if (r) return Math.max(-r[0], r[1])
-    // an int32 word, or a name every write of which is a strict int32 (a counter)
-    if (ctx.func.locals?.get(e) === 'i32' || (strictInts.get(body) ?? strictInts.set(body, intLevelMap(body)).get(body)).get(e) === 2) return 2 ** 31
+    // an int32 word (a name whose every number is one has its range above, the proof's)
+    if (ctx.func.locals?.get(e) === 'i32') return 2 ** 31
     // a name only its declaration writes, from such an expression (`srcIdx = upIdx - k`), is bounded as it is;
     // one every write of which is a plain assignment of such an expression by the largest of them
     if (depth >= 4) return null

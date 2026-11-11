@@ -18,8 +18,11 @@ import { intLiteralValue, typedCtorRawOf, intExprRange } from '../static.js'
 import { typedElemAux, TYPED_ELEM_F16_FLAG, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { nrBinary, nrUnary, nrMath, nrInts, nrPoint, nrValue, nrJoin, nrEqual, nrSpan, nrWord } from '../summary/num-range.js'
 import { exprType } from './expr-type.js'
-import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from './canonical-bounds.js'
-import { K, bitOf, TAGS, NULL_BITS } from '../summary/kind.js'
+import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget, scanBoundedLoops } from './canonical-bounds.js'
+import { K, NUMBER, bitOf, TAGS, NULL_BITS, core } from '../summary/kind.js'
+import { VAL, lookupValType } from '../reps.js'
+import { propValType } from '../kind-traits.js'
+import { typedStorageNameCtor } from '../typed-context.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
 // The conv2d/blur shape class: every dimension folds to a literal, every index is a
@@ -57,7 +60,30 @@ const widen = (a, b, K = null) => nrValue(
 const opened = (v) => v.lo === -Infinity || v.lo === I32_MIN || v.hi === Infinity || v.hi === I32_MAX
 // A theorem that caps a name from above alone: no fact of its values but the cap.
 const capOnly = (hi) => nrValue(-Infinity, hi, false, false, true)
-const WORD_VALUE = nrInts(I32_MIN, I32_MAX)
+const WORD_VALUE = nrInts(I32_MIN, I32_MAX), UWORD_VALUE = nrInts(0, 2 ** 32 - 1)
+// A carrier's word holds a number only where the summary holds the value to
+// numbers: a test's word is a Boolean, which no arithmetic reads as its 0 or 1
+// before converting it (`t[a < b]` reads the key "true").
+const numeric = (e) => core(ctx.summary?.at(ctx.func.current)?.kindOfExpr(e) ?? K.NONE) === NUMBER
+// What a call's carrier holds: a user function's word result (signed, or the
+// unsigned word it is flagged to carry), a lane, and a code unit read in
+// bounds (`inBounds`: the proof is of a string receiver's own method).
+const I32_LANES = new Set(['i32x4.lane', 'v128.anyTrue', 'v128.allTrue'])
+const callNumbers = (e, inBounds) => {
+  const c = e[1]
+  if (Array.isArray(c)) return c[0] === '.' && c[2] === 'charCodeAt' && inBounds(c) ? nrInts(0, 65535) : null
+  if (typeof c !== 'string' || !numeric(e)) return null
+  if (I32_LANES.has(c)) return WORD_VALUE
+  const sig = ctx.funcs.map?.get(c)?.sig
+  return sig?.results?.length === 1 && sig.results[0] === 'i32' && sig.ptrKind == null ? sig.unsignedResult ? UWORD_VALUE : WORD_VALUE : null
+}
+// What a member read's carrier holds: a sized property of a receiver its
+// representation knows (`.length` of a string, `.size`, `.byteLength`: a
+// count, read as the word `__len` gives), a field every store of which is a
+// word where the summary holds it to numbers (a Boolean field's word is none).
+const memberNumbers = (e) =>
+  propValType(e[2], lookupValType(e[1]), e[2] === 'length' ? typedStorageNameCtor(ctx, e[1]) : null) === VAL.NUMBER ||
+  ctx.schema?.slotI32CertainAt?.(e[1], e[2]) && numeric(e) ? WORD_VALUE : null
 // The one integer a value is, or null; whether a pair is inside one word.
 const point = (v) => v && v.int && !v.nan && v.lo === v.hi ? v.lo : null
 const inWord = (h) => h != null && h[0] >= I32_MIN && h[1] <= I32_MAX
@@ -85,17 +111,18 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
  *    null means unknown. Repeated structural keys join conservatively.
  *  - `out`: a key string proven at every occurrence and each access NODE proven
  *    at its own position; `ranges`, the hull of each key no length discharged.
- *  - `bindings`: whole-binding hulls by name (the numbers of a local over its
- *    lifetime, a word's pair); a read before a known definition and any unknown
- *    write poison the result.
- *  - `written`: what each write of a name stores, by node (the numbers of a
- *    local at a write, as values).
+ *  - `bindings`: the numbers of each named local over its lifetime, as values;
+ *    a read before a known definition and any unknown write poison the result
+ *    (null).
  *  - `misses`: each unproven access of known length as [lo, hi, L], its hull
  *    over the walk (null bounds where unknown), for a guard to test.
+ *  - `written`: what each write of a name stores, by node (a declarator, an
+ *    assignment, a step), as values.
  *  `present(node)` answers for element reads another prover holds in bounds;
- *  `assume(name)` gives the value of a name wherever the walk knows no more
- *  of it (a storage hypothesis). The emitter's branch refinements are no
- *  fact of the whole body: the walk reads none. */
+ *  `assume(name)` gives the value of a name wherever the walk knows no more of
+ *  it, a closure's writes or a call's notwithstanding: a hypothesis over every
+ *  write of a module binding, which the caller verifies. The emitter's branch
+ *  refinements are no fact of the whole body: the walk reads none. */
 export function scanIntervalIdx(body, lens, facts = {}) {
   const refinements = ctx.func.refinements
   ctx.func.refinements = null
@@ -160,6 +187,8 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
+  // the names the body declares: none of them is the module binding it may shadow
+  const owned = new Set()
   const needed = !out && !written && (calls || stores || bindings) ? new Set() : null
   const collectClosureWrites = (n, inClosure) => {
     if (typeof n === 'string') return bindings?.has(n) ?? false
@@ -167,8 +196,8 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     const into = inClosure || n[0] === '=>'
     if (n[0] === 'let' || n[0] === 'const') for (let k = 1; k < n.length; k++) {
       const d = n[k]
-      if (typeof d === 'string') declared.add(d)
-      else if (Array.isArray(d) && d[0] === '=') collectNames(d[1], declared)
+      if (typeof d === 'string') { declared.add(d); owned.add(d) }
+      else if (Array.isArray(d) && d[0] === '=') { collectNames(d[1], declared); collectNames(d[1], owned) }
     }
     if (MUTATE_OPS.has(n[0])) {
       if (typeof n[1] === 'string') declared.add(n[1])
@@ -207,8 +236,25 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     return w
   }
   const activeFacts = new Map()   // name → a theorem's value: a loop's cursor budget, a rewrite pass's stamp (peel)
-  // What a name holds where the walk knows no more: the caller's hypothesis.
-  const valueOf = (name) => env.get(name) ?? (assume && !closureWrites.has(name) ? assume(name) : null)
+  // What a name holds where the walk knows no more: the caller's hypothesis, or
+  // what its carrier holds, as exprType reads it: a word parameter's or a word
+  // module binding's word (a call can write the binding, never past its word).
+  const params = ctx.func.current?.params
+  const carried = (name) => {
+    if (closureWrites.has(name) || owned.has(name)) return null
+    const p = params?.find(q => q.name === name)
+    if (p) return p.type === 'i32' && p.ptrKind == null && numeric(name) ? WORD_VALUE : null
+    return ctx.scope?.globalTypes?.get?.(name) === 'i32' && ctx.scope.globalValTypes?.get(name) === VAL.NUMBER ? WORD_VALUE : null
+  }
+  const valueOf = (name) => env.get(name) ?? assume?.(name) ?? carried(name)
+  // The code unit reads this body's loops hold in bounds, as the walk finds
+  // them: inBoundsCharCodeAt's per-body memo is emission's, and an analysis
+  // ahead of a caller-proven length bound must not fill it.
+  let codeUnits = null
+  const inBoundsCode = (c) => {
+    if (!codeUnits) { codeUnits = new Set(); scanBoundedLoops(body, codeUnits) }
+    return codeUnits.has(c)
+  }
   // Preserve range facts through an immutable named guard:
   // `const inside = x >= 0 && x < W; if (inside) out[x] = 1`.
   // A definition is usable only while every referenced binding is unchanged;
@@ -269,13 +315,11 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     return null
   }
   const ARITH = new Set(['+', '-', '*', '/', '<<', '>>', '>>>', '&', '%', '|', '^'])
-  const SHIFTS = new Set(['<<', '>>', '>>>', '|', '^'])
-  const holds = (v, op) => !!v && !v.nan && v.lo >= (op === '>>>' ? 0 : I32_MIN) && v.hi <= (op === '>>>' ? 2 ** 32 - 1 : I32_MAX)
   const ev = (e) => {
     if (typeof e === 'string') recordBinding(e, closureWrites.has(e) ? null : env.get(e))
     const c = constNum(e)
     if (c) return c
-    if (typeof e === 'string') return closureWrites.has(e) ? null : coupledEnv.get(e)?.h ?? valueOf(e)
+    if (typeof e === 'string') return closureWrites.has(e) ? assume?.(e) ?? null : coupledEnv.get(e)?.h ?? valueOf(e)
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
     // An element hull describes a present value only. Retaining it across
@@ -342,16 +386,25 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
       hullInto(afterThen)
       return a && b ? nrJoin(a, b) : null
     }
-    // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
-    // visit so its env effects and access proofs are processed, value unknown
+    // A short circuit is one of its operands, the right one where the left let
+    // it run (its writes joined with the path that skipped it).
+    if ((op === '&&' || op === '||' || op === '??') && e.length === 3) {
+      const a = ev(x), save = new Map(env)
+      if (op === '&&') { for (const r of refineAll(x)) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
+      else if (op === '||') { const r = refine(x, true); if (r && !closureWrites.has(r[0])) env.set(r[0], r[1]) }
+      const b = ev(y)
+      hullInto(save)
+      return a && b ? nrJoin(a, b) : null
+    }
+    if (op === ',') { for (let k = 1; k < e.length - 1; k++) visit(e[k]); return ev(e[e.length - 1]) }
+    // A call's and a member read's carrier (callNumbers, memberNumbers).
+    if (op === '()' && e.length === 3) { visit(e); return callNumbers(e, inBoundsCode) }
+    if (op === '.' && e.length === 3 && typeof x === 'string' && typeof e[2] === 'string') { visit(e); return memberNumbers(e) }
+    // any non-arithmetic node (assignment, indexing…) routes through visit so
+    // its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
+    // (a shift or a field reads each operand as its word, whatever it is: the table's rule)
     const A = ev(x), B = ev(y)
-    // (a shift or a field of a number the walk does not know, or one its type
-    // does not hold, keeps no bound but the conversion's own: ToInt32's and
-    // ToUint32's word, `x | 0`, `x >> 0`, `x >>> 0`; a mask bounds any operand.
-    // The type's whole range is no fact of the program's numbers: a guard on it
-    // holds for no real length)
-    if (SHIFTS.has(op) && !(holds(A, op) && holds(B, op)) && !(point(B) === 0 && op !== '<<' && op !== '^')) return null
     const side = stepSide.get(e)
     if (side) logStep(side[0], side[1] === 2 ? B : A)
     return nrBinary(op, A, B)
@@ -1397,14 +1450,19 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
       for (let k = 1; k < n.length; k++) {
         const d = n[k]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
-          setEnv(d[1], ev(d[2]))
+          const v = ev(d[2])
+          setEnv(d[1], v)
+          recordWrite(d, v)
           // Bare-name conditions resolve through stable, single-assignment guards.
           if (op === 'const' && Array.isArray(d[2]) && RANGE_GUARD_OPS.has(d[2][0]) && stableRangeExpr(d[2])) {
             const free = new Set(); collectNames(d[2], free)
             if (![...free].some(f => closureWrites.has(f))) boolDefs.set(d[1], { def: d[2], free })
           }
         }
-        else if (typeof d === 'string') { invalidateBool(d); env.delete(d); recordBinding(d, null) }
+        // (a bare declaration holds undefined: no number, unless the summary holds
+        // the binding to numbers, assigned on every path before a read: a read
+        // before the walk knows a write poisons it then)
+        else if (typeof d === 'string') { invalidateBool(d); env.delete(d); if (ctx.summary?.at(ctx.func.current)?.bindingKindOf(d) !== NUMBER) recordBinding(d, null) }
         else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) { invalidateBool(x); env.delete(x); recordBinding(x, null) } }
       }
       return
@@ -1412,8 +1470,9 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     if (op === '=' && typeof n[1] === 'string') {
       if (symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])   // past the increment: window closed
       if (coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
-      setEnv(n[1], ev(n[2]))
-      recordWrite(n, env.get(n[1]))
+      const v = ev(n[2])
+      setEnv(n[1], v)
+      recordWrite(n, v)
       if (assigned.length) noteAssigned(n[1], true)
       return
     }
@@ -1441,7 +1500,7 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
         else if (ARITH.has(op.slice(0, -1))) nv = ev([op.slice(0, -1), n[1], n[2]])
         else for (let k = 2; k < n.length; k++) visit(n[k])
         setEnv(n[1], nv)
-        recordWrite(n, env.get(n[1]))
+        recordWrite(n, nv)
         if (assigned.length) noteAssigned(n[1], false)
       }
       else {
@@ -1519,15 +1578,7 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     // lookahead read is bounds-guarded by its sibling conjunct), `||`'s rhs only
     // where lhs FAILED. Reads inside the rhs prove under that refinement; writes
     // there ran conditionally, so the exit state joins both possibilities.
-    if ((op === '&&' || op === '||') && n.length === 3) {
-      visit(n[1])
-      const save = new Map(env)
-      if (op === '&&') { for (const r of refineAll(n[1])) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
-      else { const r = refine(n[1], true); if (r && !closureWrites.has(r[0])) env.set(r[0], r[1]) }
-      visit(n[2])
-      hullInto(save)
-      return
-    }
+    if ((op === '&&' || op === '||' || op === '??') && n.length === 3) { ev(n); return }
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       if (calls?.has(n) && op === '()') {
         visit(n[1])
@@ -1566,8 +1617,6 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     for (const name of popped) activeFacts.delete(name)
   }
   visit(Array.isArray(body) && body[0] === '=>' ? body[body.length - 1] : body)
-  // (a binding's hull may authorize a signed word's storage: an integer's never -0)
-  if (bindings) for (const [name, v] of bindings) if (v !== undefined) bindings.set(name, v?.nz ? nrSpan(v) : null)
 }
 
 /** Per-iteration motion of `name` in a loop body: P/N bound all its positive and
@@ -1740,13 +1789,12 @@ export function intervalMisses(ctx, body = ctx.func?.body) {
   return misses
 }
 
-/** What each write of a name in `body` stores, by node: the numbers of local
- *  `x` at a write, where every name `assume(name)` answers holds that value
- *  wherever the walk knows no more (a storage hypothesis, a word). A write the
+/** What each write in `body` stores, by node, where every name `assume(name)`
+ *  answers holds that value wherever the walk knows no more of it. A write the
  *  walk does not reach is absent. */
-export function writtenNumbers(body, lens, assume) {
+export function writtenNumbers(body, assume) {
   const written = new Map()
-  scanIntervalIdx(body, lens, { entry: paramEntry(), written, assume })
+  scanIntervalIdx(body, () => null, { entry: paramEntry(), written, assume })
   return written
 }
 

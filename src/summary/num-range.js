@@ -86,9 +86,11 @@ const nonNegative = v => v.lo >= 0 && v.nz
 const words = (lo, hi) => make(lo, hi, true, true, false)
 
 // What ToInt32 (ToUint32 where `top` is 2^32 - 1) makes of a value: its
-// integer part where the type holds every value (NaN and -0 to 0), any word else.
+// integer part where the type holds every value (NaN and -0 to 0), one
+// number's own word (a shift by -1 is by 31), any word else.
 const toWord = (v, top = I32_MAX) => {
   const all = top === I32_MAX ? WORD : UWORD
+  if (v && v.lo === v.hi && !v.nan) { const w = top === I32_MAX ? v.lo | 0 : v.lo >>> 0; return words(w, w) }
   if (!v || !(v.lo >= (top === I32_MAX ? I32_MIN : 0) && v.hi <= top || empty(v))) return all
   if (empty(v)) return words(0, 0)
   const lo = Math.trunc(v.lo) || 0, hi = Math.trunc(v.hi) || 0

@@ -16,8 +16,8 @@ import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../ki
 import { K, NUMBER, core, hasTag, isNullable, tagOf } from '../../summary/kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { foldIntCompare } from '../../ir/numeric.js'
-import { nonNegIntLiteral } from '../../static.js'
-import { typedIdxProven } from '../../type.js'
+import { nonNegIntLiteral, intExprRange } from '../../static.js'
+import { typedIdxProven, exprType } from '../../type.js'
 import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { numberOrMissing } from './arithmetic.js'
@@ -167,21 +167,32 @@ function stringLiteral(node) {
 }
 
 // Index expressions where peepholing `s[k] === 'X'` to char-byte compare is
-// semantics-preserving: must produce a non-negative *integer* at run time so
-// `__str_length u> k` bounds-checks the same range JS would. Out-of-range
-// (negative or ≥ len) falls into the `else 0` arm — matches `undefined === 'X'`.
+// semantics-preserving: must be a *number* whose word the unsigned test
+// `__str_length u> k` reads as the index JS reads: a word, or an integer below
+// 2^32 (its word's unsigned value). Out-of-range (negative or ≥ len) falls into
+// the `else 0` arm, as `undefined === 'X'` does. An integer past those, an
+// infinity or NaN would wrap to an element, and a Boolean names none (`s[true]`).
 function intIndexIR(key) {
   const lit = nonNegIntLiteral(key)
   if (lit != null) return ['i32.const', lit]
-  // intCertain name: forward-prop says every defining RHS is integer-shaped.
-  // Captures loop variables (`for(let i=0;;i++)`), `let k = j + 1`, etc.
-  if (typeof key === 'string' && repOf(key)?.intCertain) return asI32(emit(key))
-  // intCertain schema slot read `o.x`: every observed write is integer-shaped,
-  // so the loaded f64 represents an int — fold into the byte-compare fast path.
+  if (core(ctx.summary?.at(ctx.func.current)?.kindOfExpr(key) ?? K.NONE) !== NUMBER) return null
+  // a word local (a counter) or a name whose integers the test reads exactly
+  if (typeof key === 'string' && (exprType(key, ctx.func.locals) === 'i32' || indexHull(intExprRange(key)))) return asI32(emit(key))
+  // an integral name of no such bound (a counter under a length of no known
+  // receiver): its word below 2^31, else -1, which names no element (NaN, an
+  // infinity and an integer past it read none)
+  if (typeof key === 'string' && repOf(key)?.intCertain === true) {
+    const t = temp('ik'), k = ['local.get', `$${t}`]
+    return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(key))],
+      ['select', asI32(typed(k, 'f64')), ['i32.const', -1],
+        ['i32.and', ['f64.ge', k, ['f64.const', 0]], ['f64.lt', k, ['f64.const', 2147483648]]]]], 'i32')
+  }
+  // a schema slot every store of which is a word
   if (Array.isArray(key) && key[0] === '.' && typeof key[1] === 'string' && typeof key[2] === 'string' &&
-      ctx.schema.slotIntCertainAt?.(key[1], key[2]) === true) return asI32(emit(key))
+      ctx.schema.slotI32CertainAt?.(key[1], key[2])) return asI32(emit(key))
   return null
 }
+const indexHull = (r) => !!r && r[0] >= -0x80000000 && r[1] <= 0xffffffff
 
 function emitSingleCharIndexCmp(a, b, negate = false) {
   const leftLit = stringLiteral(a)

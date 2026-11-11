@@ -12,6 +12,10 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { NUMBER, NULLISH, ABSENT, STRING, BOOL, ANY, K, kind, join } from '../src/summary/kind.js'
+import { nrSpan } from '../src/summary/num-range.js'
+
+// A lifetime's integer hull, as a range publishes it (body-facts.js): never -0; undefined where no walk reached it.
+const hullOf = (v) => v === undefined ? v : v?.nz ? nrSpan(v) : null
 
 test('interval proof: signed recurrence budgets use whole-loop operands and every prefix', () => {
   const prior = ctx.func
@@ -32,7 +36,7 @@ test('interval proof: signed recurrence budgets use whole-loop operands and ever
     ctx.func.typedElem=new Map([['src','new.Int32Array']])
     ctx.func.localReps=new Map([['src',{arrayElemRange:[-1,1]}]])
     scanIntervalIdx(body, name=>name==='src'?4:null, { calls, bindings })
-    is(bindings.get('sum'),expected,label)
+    is(hullOf(bindings.get('sum')),expected,label)
   } } finally {ctx.func=prior}
 })
 
@@ -48,7 +52,7 @@ test('interval proof: signed recurrence operands include transient counters and 
       ['while',['<','iv',4],[';',...statements]],after]
     ctx.func=createActiveFunction({body})
     scanIntervalIdx(body, ()=>null, { calls, bindings })
-    is(bindings.get('sum'),null,label)
+    is(hullOf(bindings.get('sum')),null,label)
   } } finally {ctx.func=prior}
   // The transient past the word is a number the walk follows: the reset takes
   // every one of them, and the sum never moves from 1.
@@ -56,7 +60,7 @@ test('interval proof: signed recurrence operands include transient counters and 
   const body=[';', ['let',['=','sum',1],['=','iv',0],['=','cursor',3]],
     ['while',['<','iv',4],[';',['+=','cursor',2147483647],['if',['>=','cursor',4],['=','cursor',0]],['+=','sum','cursor'],['++','iv']]],after]
   try { ctx.func=createActiveFunction({body}); scanIntervalIdx(body, ()=>null, { calls, bindings }) } finally { ctx.func=prior }
-  is(bindings.get('sum'),[1,1],'paired ring transient')
+  is(hullOf(bindings.get('sum')),[1,1],'paired ring transient')
 })
 
 test('interval proof: module element hulls retain a bounded signed accumulator', () => {
@@ -235,8 +239,8 @@ test('interval proof: zero-count signed shifts establish complete counter bounds
       const calls = new Map([[inside, undefined], [after, undefined]])
       const bindings = new Map([['bound', undefined], ['i', undefined]])
       scanIntervalIdx(body, () => null, { calls, entry: new Map([['n', n]]), bindings })
-      is(bindings.get('bound'), [-2147483648, 2147483647], `${op}: an unknown call result becomes a word`)
-      is(bindings.get('i'), [0, 2147483647], `${op}: the stored counter includes its final landing`)
+      is(hullOf(bindings.get('bound')), [-2147483648, 2147483647], `${op}: an unknown call result becomes a word`)
+      is(hullOf(bindings.get('i')), [0, 2147483647], `${op}: the stored counter includes its final landing`)
       is(calls.get(inside), [[0, 2147483646]], `${op}: the body excludes the bound`)
       is(calls.get(after), [[0, 2147483647]], `${op}: zero work and completed work share the exit hull`)
     }
@@ -279,7 +283,7 @@ test('interval proof: revisited loop syntax reads live entries and each scan own
     const scan=(seed, lens=()=>16, tree=body)=>{
       const out=new Set(),calls=new Map([[call,undefined]]),bindings=new Map([['j',undefined]])
       scanIntervalIdx(tree, lens, { out, calls, entry: new Map([['seed',seed]]), bindings })
-      return [calls.get(call),bindings.get('j'),out.has(read)]
+      return [calls.get(call),hullOf(bindings.get('j')),out.has(read)]
     }
     const first=scan([0,0])
     is(first,[[[0,5]],[0,6],true],'both occurrences contribute their current initializer value')
@@ -319,7 +323,7 @@ test('interval proof: pure shifted bounds keep word storage separate from their 
       scanIntervalIdx(body, () => null, { calls, entry: new Map([['n', [-2147483648, 2147483647]]]), bindings })
       is(calls.get(inside), [insideWant], `${op}: the body excludes the bound`)
       is(calls.get(after), [exitWant], `${op}: the final increment remains visible`)
-      is(bindings.get('i'), bindingWant, `${op}: a wide landing cannot narrow the binding`)
+      is(hullOf(bindings.get('i')), bindingWant, `${op}: a wide landing cannot narrow the binding`)
       // ((n + 1) - 1 of a word n is n: past the word in between, a word again)
       is(calls.get(scalar), [[0, 0], [-2147483648, 2147483647]], 'an intermediate past the word leaves the word it returns to')
     } finally { ctx.func = prior; ctx.scope.globalTypes = globals }

@@ -1696,3 +1696,45 @@ test('audit: an arm that adds to a local\'s initial zero reads zero, not a dead 
     for (const name in host) for (const k of [3, 9, 4, 0]) is(got[name](k), host[name](k), `${name}(${k}) at ${optimize}`)
   }
 })
+
+// A module global is a word only where every value the program writes to it is
+// one or every read takes its word: a closure's or a callback's parameter, a
+// host import's result, a field, an element and a run-time callee's result
+// prove nothing by themselves (each of these answered 3 for 3.5, or 1.5 as 1).
+test('audit: a module global holds what a closure, a callback or a source of no known numbers wrote', () => {
+  const cases = [
+    [`let S = 0; export let f = () => { const add = (x) => { S += x }; S = 0; add(1.5); add(2); return S }`, []],
+    [`let S = 0; [1.5, 2].forEach(x => { S += x }); export let f = () => S`, []],
+    [`let S = 0; export let f = () => { [1.5, 2].map(x => { S += x; return x }); return S }`, []],
+    [`let S = 0; const each = (r) => { r.forEach(x => { S += x }) }; each([1.5, 2]); export let f = () => S`, []],
+    [`let G = 0; export let f = (v) => { const put = (x) => { G = x }; put(v); return [G + 0.5, 1 / G] }`, [1.5]],
+    [`let G = 0; export let f = (v) => { const o = { a: v }; G = o.a; return [G, G > 2147483647 ? 1 : 0] }`, [4294967296]],
+    [`let G = 0; const fs = [(x) => x, (x) => x * 2]; export let f = (v) => { G = fs[v > 2 ? 1 : 0](v); return G + 0.5 }`, [1.25]],
+    // (a bound an export's parameter sets: 3 resets for Node's 2 where `S` held 3)
+    [`let S = 5; export let set = (len) => { if (len < 2) len = 2; S = len }; export let f = (v) => { set(v); let si = 0, c = 0; for (let i = 0; i < 9; i++) { si = si + 1; if (si >= S) { si = 0; c++ } } return c }`, [3.5]],
+  ]
+  for (const [src, args] of cases) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed'))
+    is(jz(src, { optimize }).exports.f(...args), oracle(src).f(...args), `${src} at ${optimize}`)
+})
+
+// A local's storage is decided once, from the numbers the interval proof finds
+// it holds: a sum past one word stays a Number though its operands are words,
+// where a remainder reads it (its result is bounded, its operand is not) or a
+// closure does. A character key is a number and a word (`s[true]` and
+// `s[2 ** 32]` read no element), and a Boolean binding is no number at all.
+test('audit: a sum past one word stays a Number wherever a read observes its number', () => {
+  const src = `const sub = (a, b) => (a | 0) - (b | 0)
+    export let rem = (k) => { const a = 3 + (k | 0); return a % 7 }
+    export let inlined = (k, n) => { const a = sub(k, n); return a % 7 }
+    export let captured = (k) => { const t = (k | 0) + (k | 0); const g = () => t; return [t | 0, g()] }
+    export let wide = (k) => { const s = 'abc'; const i = (k | 0) * 4; return s[i] === 'a' ? 1 : 0 }
+    export let floored = (k, n) => { const s = 'abc'; const i = Math.floor(k / n); return s[i] === 'a' ? 1 : 0 }
+    export let truth = (k, n) => { const s = 'ab'; const b = k > n; return s[b] === 'b' ? 1 : 0 }
+    export let same = (k, n) => { const a = [2]; const x = a[k], y = a[k]; const eq = (p, q) => p === q || p !== p && q !== q; return [eq(x, y), eq(NaN, NaN), eq(x, n)] }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (const name in host) for (const args of [[2147483647, 1], [-2147483648, 1], [1073741824, 0], [-3, 0], [6, NaN], [0, 1]])
+      is(got[name](...args), host[name](...args), `${name}(${args}) at ${optimize}`)
+  }
+})

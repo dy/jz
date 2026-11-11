@@ -3267,17 +3267,34 @@ walk only where it can change something: the head's entry is the seeded state (a
 counted loop's counter is no name the join widens), a pass that would start where
 an earlier one did reads that one's end, and narrowing runs only where the
 widening carried a name past its edges' hull. It answers a local's numbers over its lifetime (binding
-hulls: every local of every body at every level, published as `rep.range` where
-they are integers never -0) and what each write stores (`writtenNumbers`, which
-local widening reads under its storage hypothesis), and supplies index proofs and
-call-argument and typed-store bounds. Over a counted loop it bounds a name every
+values: every local of every body at every level, published as `rep.range` where
+they are integers never -0), and supplies index proofs and call-argument and
+typed-store bounds. A local's storage is decided once from that value
+(`analyze/body-facts.js` widenLocalTypes): a word where every number it holds
+is one, or where it holds integers of any size and every read re-applies
+ToInt32 (`collectBareEscapes`: a bitwise or Math.imul/clz32 operand, the value
+stored to an integer element, a copy into such a local; a closure's reads are
+reads, and a bounded result excuses no operand, `a % 7` reading a's number), a
+Number otherwise. The word each write's carrier gives the local (exprType) is
+provisional, never a proof; a Boolean keeps its 0 or 1 by its kind, and a
+checked integer read no use can tell from zero holds the element or zero, an
+element's number either way. A module global (`plan/scope.js`
+inferModuleIntGlobals) takes the same rule over the whole program: a word where
+every value written to it, in each flow a write runs in (the module's
+statements, each function, each closure), is one by the walk under the
+hypothesis that the candidates still standing hold words (`writtenNumbers`),
+or where every read re-applies ToInt32; a parameter, a host import's result, a
+field or element read and a dynamic callee's result prove nothing by
+themselves. Carriers enter the walk as values where the
+summary holds them to numbers: a word parameter's and a word module binding's
+word, a call's word result, a code unit read in bounds, a sized property, a
+word field. Over a counted loop it bounds a name every
 write of which steps it by the trips times each way's most step (integers
 exactly, a Number stepped by constants on a binary grid). A test of a name's truth
 (`while (x--)`, `if (left)`) refines it, and a test that writes leaves its writes
-on the exit edge. A shift or a bit field of a number it does not hold keeps no
-bound but the conversion's own (`x | 0`, `x >>> 0`) and a mask's: the type's
-whole range is no fact of the program's numbers, and a guard on it holds for no
-real length. `intervalRanges` enables the interprocedural scalar/element fixpoint
+on the exit edge. A shift or a bit field reads each operand as its word, whatever
+the walk knows of it (the table's rule): `x >> 24` is within [-128, 127] for any
+`x`. `intervalRanges` enables the interprocedural scalar/element fixpoint
 at O2/O3/size. O0/O1 omit those optional certificates; typed-read presence,
 signed-zero/overflow vetoes and conservative ABI validation still run. Already proved summary bounds also retain the magnitude of signed-word
 parameters; the interval budget controls the separate caller solve, not these
@@ -6301,7 +6318,7 @@ node kept one, else the message): `heap-return`, `heap-loop`, `deopt-generic`,
 read lowered and the receiver's candidate shapes), `class-generic` (a class
 kept as closures and why), `shape-lost` (the first cause the summary lost an
 object layout by, with the function and statement), `host-global`,
-`jsstring-declined`, `int-global-truncation`; `simd-why-not`
+`jsstring-declined`; `simd-why-not`
 and `rewind-why-not` need `why`. Warnings are delivered after the pipeline
 returns, so a warning callback may compile again; a compile attempted while
 the pipeline is active is rejected.

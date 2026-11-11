@@ -8,27 +8,27 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { ASSIGN_OPS, MUTATE_OPS, I32_MIN, I32_MAX, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
-import { exprType, intLevelMap } from '../../type.js'
+import { exprType } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { definitelyAssigned } from '../../summary/definite.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
   scanObjectArrayFacts, isFreshArrayCtor, stampLoopCounterRanges, stampCountdowns,
-  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
+  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
 import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
 import { typedElementKey } from '../../typed-provenance.js'
 import { isPresentNumber, boolTagged } from '../../kind.js'
-import { scanIntervalIdx, writtenNumbers, functionLens, paramEntry, invalidateIntervalProof } from '../../type/interval-proof.js'
-import { nrInts, nrWord } from '../../summary/num-range.js'
+import { scanIntervalIdx, functionLens, paramEntry, invalidateIntervalProof } from '../../type/interval-proof.js'
+import { nrSpan, nrWord } from '../../summary/num-range.js'
 import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
@@ -104,20 +104,21 @@ export function analyzeBody(body, storage = true) {
  * proofs. A later full query upgrades the same epoch's cached observations. */
 export const analyzeValueFacts = body => analyzeBody(body, false)
 
-// The numbers of every local over its lifetime come from the interval proof
-// (its binding hulls), each name not bounded already asked.
+// The numbers of every local over its lifetime come from the interval proof:
+// they decide its storage (widenLocalTypes) and bound its reads (its range).
 const bindingRequests = (locals) => {
   let requests
-  for (const name of locals.keys()) if (!ctx.func.localReps?.get(name)?.range) (requests ||= new Map()).set(name, undefined)
+  for (const name of locals.keys()) (requests ||= new Map()).set(name, undefined)
   return requests
 }
 // A body's element counts: its own locals' as the walk tracked them, the function's for the rest.
 const bodyLens = (locals, typedLens) => n => locals.has(n) ? typedLens?.get(n) ?? null : functionLens(n)
 // The element reads other provers hold in bounds (the canonical scans, the guards).
-const presentBy = (nodes) => n => nodes.has(n) || getFactStore().guardProven.has(n)
+const presentBy = (nodes, missBlind) => n => nodes.has(n) || missBlind.has(n) || getFactStore().guardProven.has(n)
 const publishBindingHulls = hulls => {
   if (hulls) for (const name of hulls.keys()) {
-    const range = hulls.get(name)
+    // (a range is an integer hull, never -0: a word's storage may read it)
+    const v = hulls.get(name), range = v?.nz ? nrSpan(v) : null
     if (!range) continue
     // Independent whole-binding proofs meet. A fractional recurrence may
     // bound its word projection more tightly than the integer interpreter.
@@ -131,27 +132,27 @@ function refineStorageFacts(body, facts, cache) {
     const pending = facts.__storagePending, hulls = new Map(pending.hulls)
     for (const [name, range] of pending.ranges) updateRep(name, { range })
     const lens = bodyLens(facts.locals, facts.typedLens)
-    scanIntervalIdx(body, lens, { entry: paramEntry(), bindings: hulls, present: presentBy(facts.readPresent) })
+    scanIntervalIdx(body, lens, { entry: paramEntry(), bindings: hulls, present: presentBy(facts.readPresent, pending.missBlind) })
     // Copy only the storage map; kind/schema/length observations remain shared
     // and previously returned maps stay immutable. No declaration walk repeats.
     const locals = new Map(pending.locals)
     stampLoopCounterRanges(body)
     stampCountdowns(body)
     publishBindingHulls(hulls)
-    const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent, lens)
+    const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent, hulls, pending.missBlind)
     result = { ...facts, locals, unsignedLocals, wordLocals, __storagePending: null }
   }))
   cache.set(body, result)
   return result
 }
 
-function finalizeLocals(body, locals, valTypes, presentNodes, lens) {
+function finalizeLocals(body, locals, valTypes, presentNodes, lifetimes, missBlind) {
   const unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
     typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
   for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
   const wordLocals = ctx.transform.optimize?.wordLocals
     ? narrowWordLocals(body, locals, nm => valTypes.get(nm) === VAL.NUMBER, wordStoreOf(body, locals)) : EMPTY_BODY_FACT_SET
-  widenLocalTypes(body, locals, presentNodes, unsignedLocals, wordLocals, lens)
+  widenLocalTypes(body, locals, valTypes, presentNodes, unsignedLocals, wordLocals, lifetimes, missBlind)
   // A narrowing above retypes a never-reassigned decl whose initializer
   // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
   // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
@@ -282,13 +283,13 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   // after the body's constructor/length tracker has settled. Canonical proofs
   // use node identity so an access outside the loop cannot borrow its bound.
   const typedReads = [], presentNodes = new Set()
-  let presentKeys, bindingHulls
+  let presentKeys, bindingHulls, missBlind = EMPTY_BODY_FACT_SET
   const readPresent = e => {
     if (!presentKeys) {
       presentKeys = new Set()
       if (typedReads.length) scanBoundedArrIdx(body, null, null, presentNodes, summary)
       scanIntervalIdx(body, bodyLens(locals, typedLens), { out: typedReads.length ? presentKeys : null, entry: paramEntry(),
-        bindings: bindingHulls, present: presentBy(presentNodes) })
+        bindings: bindingHulls, present: presentBy(presentNodes, missBlind) })
     }
     if (!e) return false
     return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2])) || getFactStore().guardProven.has(e)
@@ -566,6 +567,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     const requestedHulls = bindingRequests(locals)
     if (storage || typedReads.length) bindingHulls = requestedHulls
     else deferredHulls = requestedHulls
+    missBlind = missBlindReads(body, locals)
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
     if (bindingHulls && !presentKeys) readPresent(null)
     // a counter bounded by a length the walk typed (`i < a.length` over a typed
@@ -581,9 +583,9 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
         const range = ctx.func.localReps?.get(name)?.range
         if (range) ranges.set(name, range)
       }
-      storagePending = { hulls: deferredHulls, locals: new Map(locals), ranges }
+      storagePending = { hulls: deferredHulls, locals: new Map(locals), ranges, missBlind }
     }
-    ;[unsignedLocals, wordLocals] = finalizeLocals(body, locals, valTypes, presentNodes, bodyLens(locals, typedLens))
+    ;[unsignedLocals, wordLocals] = finalizeLocals(body, locals, valTypes, presentNodes, bindingHulls, missBlind)
   }))
 
   // SRoA: dissolve non-escaping object-literal bindings into field locals.
@@ -675,10 +677,12 @@ function sigFingerprint(sig) {
 /**
  * Post-walk wasm-type widening over `locals`, in place — analyzeBody stage 2.
  *
- * Pass A/B widen comparisons and assignments after their inputs widen.
- * Integer certainty permits word storage provisionally; Pass D checks every
- * magnitude-observing use (including comparisons) against its closed range.
- * A loop's bounded copy carries its own proof through stampLoopCounterRanges.
+ * Pass A/B widen comparisons and assignments after their inputs widen: a
+ * word is the carrier every write gives the local, provisionally. Then the
+ * one decision: a local stays a word where the interval proof finds every
+ * value it holds over its lifetime one (`lifetimes`, its binding values), or
+ * where it holds integers of any size and every read of it re-applies
+ * ToInt32 (no bare escape); it is a Number otherwise.
  */
 const WIDEN_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
 /** A use that is the value stored, its result discarded, to an integer element
@@ -690,33 +694,38 @@ const wordStoreOf = (body, locals) => u => {
   const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
   return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
 }
-const WORD_NUMS = nrInts(I32_MIN, I32_MAX)
-function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals, lens) {
+/** The checked integer reads a binding is declared from, once, every use of
+ *  which asks for its word or cannot tell a missing element from zero (a test
+ *  undefined and zero answer alike, a step a test excluded both from:
+ *  analyze-scans.js). The binding keeps the word, the bounds check stays and
+ *  its missing arm is zero at the conversion: an element's number either way,
+ *  as the proof reads it. */
+function missBlindReads(body, locals) {
+  let out = null
+  const wordStore = wordStoreOf(body, locals)
+  for (const binding of scanBindingUses(body).values()) {
+    const init = binding[BINDING_USE_INIT], uses = binding[BINDING_USE_USES]
+    if (binding[BINDING_USE_DECLS] !== 1 || !Array.isArray(init) || init[0] !== '[]' || !uses?.length || exprType(init, locals) !== 'i32') continue
+    if (uses.every(u => u[BINDING_USE_KIND] === USE.WORD || wordStore(u) || u[BINDING_USE_MISS] === true ||
+        u[BINDING_USE_KIND] === USE.BOOL_TEST && u[BINDING_USE_OP] !== 'typeof')) (out ||= new Set()).add(init)
+  }
+  return out ?? EMPTY_BODY_FACT_SET
+}
+function widenLocalTypes(body, locals, valTypes, readPresent, unsignedLocals, wordLocals, lifetimes, missBlind) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
   // Names this scope's own locals map might be reassigned FROM INSIDE A NESTED
   // ARROW — a captured, mutated variable. analyzeBody runs before boxedCaptures
   // populates ctx.func.boxed, so recompute the same "some arrow writes this
-  // name" fact locally via findMutations (which already doesn't skip `=>`).
-  // Threaded into intCertainMap and both widening walks below: none of them
-  // used to look past a `=>` boundary, so `let env = 0; let set = () => { env
-  // = 1.5 }` never saw the closure-body float write — `env` stayed provably-int
-  // (keepI32 exempted it from Pass A, Pass B never re-checked its only visible
-  // def, the never-a-def-of-1.5 one), and the ENCLOSING FUNCTION's own result
-  // then narrowed to i32 (narrowI32Results trusts this same `locals` map),
-  // silently truncating the return. Gated on nestedNames.size so the common
-  // case (no nested reassignment anywhere) keeps the original, cheaper walk.
+  // name" fact locally via findMutations (which already doesn't skip `=>`):
+  // both widening walks below look past a `=>` for them, where a closure's
+  // float write (`let env = 0; let set = () => { env = 1.5 }`) widens the
+  // local the enclosing function's result narrowing reads. The proof holds
+  // no value of such a name.
   const nestedNames = new Set()
   findMutations(body, locals, nestedNames)
-  // Raw levels (not the collapsed intCertainMap boolean): level 2 (STRICT
-  // i32-range-safe by construction — literals, bitwise ops, comparisons,
-  // Math.imul/clz32) needs no further check below, but level 1 (integral,
-  // UNBOUNDED magnitude — `id *= 100000`, `id += d`) rests on the SAME
-  // magnitude-blind "every read re-applies ToInt32" premise
-  // collectI32SafeIndexVars' back-propagation does, and Pass D below closes
-  // the identical gap for it (see .work/archive/todo.md KNOWN GAP #1 sibling note).
-  const intLevels = intLevelMap(body, nestedNames, null, readPresent)
+  const numbersOf = (name) => lifetimes?.get(name) ?? null
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
-  const keepI32 = (name) => unsignedLocals.has(name) || wordLocals.has(name) || i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
+  const keepI32 = (name) => unsignedLocals.has(name) || wordLocals.has(name) || i32SafeIdx.has(name) || (!!numbersOf(name)?.int && !f64IdxVars.has(name))
   const widenPass = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -733,24 +742,10 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals, 
 
   // Width lost by a typed read or unsigned value must propagate through
   // copies/arithmetic, even when an index use would otherwise permit wrapping.
-  let uses
-  const wordStore = wordStoreOf(body, locals)
-  const wordUse = u => u[BINDING_USE_KIND] === USE.WORD || wordStore(u)
-  // A use that cannot tell a missing element from zero: a test undefined and
-  // zero answer alike, or a step a test excluded both from (analyze-scans.js).
-  const missUse = u => u[BINDING_USE_MISS] === true || u[BINDING_USE_KIND] === USE.BOOL_TEST && u[BINDING_USE_OP] !== 'typeof'
+  // A checked integer read no use can tell from zero keeps its word (missBlindReads).
   const widenValue = (name, rhs) => {
-    if (locals.get(name) !== 'i32' || unsignedLocals.has(name) || wordLocals.has(name) ||
+    if (locals.get(name) !== 'i32' || unsignedLocals.has(name) || wordLocals.has(name) || missBlind.has(rhs) ||
         exprType(rhs, locals, null, false, body, readPresent) !== 'f64') return false
-    // A checked integer read may lose absence only when every use already
-    // asks for its word or cannot tell a missing element from zero. Keep the
-    // bounds check; its missing arm becomes zero at the local's conversion
-    // instead of round-tripping through f64.
-    if (Array.isArray(rhs) && rhs[0] === '[]' && exprType(rhs, locals) === 'i32') {
-      uses ||= scanBindingUses(body)
-      const binding = uses.get(name), reads = binding?.[BINDING_USE_USES]
-      if (binding?.[BINDING_USE_DECLS] === 1 && reads?.length && reads.every(u => wordUse(u) || missUse(u))) return false
-    }
     // A closed magnitude hull cannot override the producer's zero-sign or
     // presence proof. Explicit word-only consumers were handled above.
     locals.set(name, 'f64')
@@ -789,39 +784,16 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals, 
     recheck(body)
   }
 
-  // Integer arithmetic may exceed one word. A comparison observes that width
-  // just like a returned value; only a proved hull or word-only uses keep i32.
-  // The arithmetic is a name's of level 1, a sum whose word exprType holds by
-  // its operands' carriers alone (strictly, by no hull), and a copy of either:
-  // the levels have none for a term they cannot name an integer (a module
-  // binding, a call's word), so `a += K` is no level 1 and still a word to its
-  // storage. `wide` is the storage with each such name taken as the Number.
-  const open = new Set(), wide = new Map(locals)
-  for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { open.add(name); wide.set(name, 'f64') }
-  // A write is a word where the interval proof finds the value it stores one,
-  // every name still a word to the storage holding one wherever the proof knows
-  // no more: `rep--` under `while (rep > 0)`, `i++` under `i < n` (a word bounds
-  // `i` one below the word's top), a remainder, a mask. The proof walks again
-  // as the storage opens.
-  let words = null, grew = true
-  const wordWrite = (n) => nrWord((words ??= writtenNumbers(body, lens,
-    name => exprType(name, wide, null, true, body, readPresent) === 'i32' ? WORD_NUMS : null)).get(n))
-  const sums = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>') { if (nestedNames.size) sums(node[2]); return }
-    if (MUTATE_OPS.has(op) && typeof node[1] === 'string' && wide.get(node[1]) === 'i32') {
-      const name = node[1], rhs = effectiveWriteValue(op, name, node[2])
-      if (exprType(rhs, locals, null, false, body, readPresent) === 'i32' && exprType(rhs, wide, null, true, body, readPresent) === 'f64' && !wordWrite(node)) {
-        open.add(name); wide.set(name, 'f64'); grew = true
-      }
-    }
-    for (let i = 1; i < node.length; i++) sums(node[i])
-  }
-  while (grew) { grew = false; words = null; sums(body) }
-  if (open.size) {
-    const bareEscapes = collectBareEscapes(body, locals)
-    for (const name of open) if (bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')
+  // The decision: a carrier is no proof, since integer arithmetic may exceed
+  // one word and a comparison observes that width just like a returned value.
+  // An unsigned or word-only local is its own word (narrowUint32, narrowWordLocals),
+  // and a Boolean one its 0 or 1 (no number: Pass E keeps one beside its atoms).
+  let bareEscapes = null
+  for (const [name, type] of locals) {
+    if (type !== 'i32' || unsignedLocals.has(name) || wordLocals.has(name) || valTypes.get(name) === VAL.BOOL) continue
+    const v = numbersOf(name)
+    if (nrWord(v) || v?.int && !(bareEscapes ??= collectBareEscapes(body)).has(name)) continue
+    locals.set(name, 'f64')
   }
   // Pass E: a binding that carries its Booleans as atoms (kind.js boolTagged,
   // emit/dispatch.js boolCarrier) is stored as the tagged f64, never the raw

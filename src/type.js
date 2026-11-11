@@ -25,18 +25,16 @@
  *    (emit.js `mulFitsI32` via opBound; here via intExprRange). f64-exactness
  *    (≤2^53) is NOT sufficient: an f64-exact product can still wrap i32.mul.
  * 3. `+`/`-` TWO-TIER: the magnitude-blind "both operands i32 ⇒ i32" answer is
- *    sound for STORAGE-type decisions (every read of i32 storage re-applies
- *    ToInt32 — ir.js routes i32 targets through `toI32`). Only callers deciding
- *    whether a value escapes BARE (no further ToInt32 sink) pass `strict=true`,
- *    which adds `*`'s magnitude bound (emit.js `addFitsI32`: opBound(a)+
- *    opBound(b) ≤ 2^31−1 — triangle inequality covers `-`). Making `+`/`-`
- *    unconditionally strict costs the hottest accumulation shapes 8/10
- *    perf-ratchet rows — the tier split is load-bearing, not an oversight.
- * 4. BARE-ESCAPE STORAGE RULE: a var keeps i32 storage only if every later
- *    value-position read is index-positioned, ToInt32-rooted, a tracked edge's
- *    affine RHS, statically in-range, or comparison-governed —
- *    `collectBareEscapes` (analyze-scans.js) is the single authority both
- *    storage commitments consult.
+ *    a local's PROVISIONAL carrier only, never its storage: a word read back
+ *    is not the sum JS holds. Callers that need the value itself (emission's
+ *    i32.add, a result, an argument) pass `strict=true`, which adds `*`'s
+ *    magnitude bound (emit.js `addFitsI32`: opBound(a)+opBound(b) ≤ 2^31−1;
+ *    the triangle inequality covers `-`).
+ * 4. STORAGE RULE: a local is a word where the interval proof finds every
+ *    number it holds over its lifetime one, or where it holds integers and
+ *    every read re-applies ToInt32 (`collectBareEscapes`, analyze-scans.js,
+ *    the authority the local and the module-global decisions consult); a
+ *    Number otherwise (compile/analyze/body-facts.js widenLocalTypes).
  *
  * Stable barrel — every name below lived directly in this file before the
  * `type/` split (`.work/archive/type-split.md`); every consumer import is unchanged.

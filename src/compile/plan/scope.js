@@ -9,7 +9,7 @@
  *
  *   - `moduleGlobalKinds`         — module-global kinds from the program summary
  *   - `unboxConstTypedGlobals`     — const typed-array → unboxed i32 offset
- *   - `inferModuleIntGlobals`      — purpose-focused f64→i32 numeric demotion
+ *   - `inferModuleIntGlobals`      — a numeric global proven a word: f64→i32
  *   - `flattenFuncNamespaces`      — `f.prop` slot SROA + dead-write drop
  *   - `devirtGlobalCalls`          — `call_indirect $global` → direct `call`
  *   - `resolveClosureWidth`        — uniform closure ABI width
@@ -18,18 +18,21 @@
  * @module compile/plan/scope
  */
 
-import { ctx, warn, declGlobal } from '../../ctx.js'
+import { ctx, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
-import { typedStaticLen, intLevelMap } from '../../type.js'
+import { typedStaticLen } from '../../type.js'
 import { K, tagOf, paramOf, isNullable, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
 import { liftedPropOf } from '../analyze/func-namespaces.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
+import { writtenNumbers } from '../../type/interval-proof.js'
+import { nrInts, nrWord } from '../../summary/num-range.js'
+import { enterActiveFunction, restoreActiveFunction } from '../active-function.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { includeForNamedCall, includeForGenericMethod, isNamedCallee } from '../../autoload.js'
 import { liveFunctions } from './scratch.js'
@@ -236,332 +239,76 @@ export const unboxConstTypedGlobals = () => {
   }
 }
 
-// Integer-global type inference — narrow purpose-focused numeric module globals
-// (counters, sizes, strides, indices: `N`, `width`, `offset`, …) from f64 to i32.
-//
-// Principle: in purpose-focused code an integer-initialized numeric global is an
-// integer unless an assignment *proves* it fractional. Sizes/strides/indices are
-// the overwhelming majority; demanding the user annotate them (asm.js `x | 0`)
-// defeats clean code. So we assume i32 and demote only on positive proof of a
-// fraction — a non-integer literal, `/` or `**`, a float-valued `Math.*`, or a
-// reference to an already-fractional value. (jz already truncates fractional
-// array indices, so a stray fraction in an integer slot is a pre-existing bug,
-// not one this introduces; a future advisory can flag it.)
-//
-// The proof follows the value to its source: through a local to its
-// definitions, through a call to what the callee returns (a function reached
-// by name or through a binding written once) and to its arguments. A host
-// import, a parameter and a dynamic callee keep the integer default. A
-// constant outside the i32 range is no integer of this kind either: such a
-// global stays f64 unless every read is a ToInt32 sink.
-//
-// The payoff cascades: an i32 `width` makes `mem[y*width+x]` a fully-i32 index
-// (the per-access `trunc_sat` and the index-counter widen both vanish), and an
-// i32 `N` makes the loop guard `i < N` pure-i32 (no per-iteration convert),
-// unlocking SIMD — all from idiomatic source, no hints.
-const FRACTIONAL_MATH = new Set([
-  'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
-  'sqrt', 'cbrt', 'exp', 'expm1', 'log', 'log2', 'log10', 'log1p',
-  'pow', 'hypot', 'random', 'fround',
-])
-// Integer for every finite operand.
-const INTEGRAL_MATH = new Set(['floor', 'ceil', 'round', 'trunc', 'imul', 'clz32'])
-const INT_COERCE_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>', '~'])
-const BOOL_RESULT_OPS = new Set([...COMPARE_OPS, '!', 'in', 'instanceof'])
-const FRAC_COMPOUND = new Set(['/=', '**='])
-const INT_COMPOUND = new Set(['&=', '|=', '^=', '<<=', '>>=', '>>>='])
-
+// Integer-global type inference: a numeric module global is stored as a word
+// (i32) only where every value the program writes to it, anywhere, is one, or
+// where every read of it re-applies ToInt32 (`collectGlobalBareEscapes`: a
+// bitwise or Math.imul/clz32 operand, the value stored to an integer element,
+// a copy into such a binding); a Number otherwise. The values are the interval
+// proof's at each write, in the flow the write runs in: the module's own
+// statements, each function and each closure, every candidate still standing
+// a word wherever a walk knows no more of it (a greatest fixpoint over the
+// candidates: a write that read one dropped walks again). A parameter, a host
+// import's result, a field or an element read and a dynamic callee's result
+// hold the numbers the summary and the walk give them, none where they give
+// none. An i32 `width` makes `mem[y*width+x]` a fully-i32 index and an i32 `N`
+// the guard `i < N` pure-i32: where the program proves them.
+const GLOBAL_WORD = nrInts(I32_MIN, I32_MAX)
+// (a read the global census excuses by no range: a module binding's word is the writes' proof)
+const ALL_WIDE = { has: () => true }
 export const inferModuleIntGlobals = (ast) => {
   if (!ctx.scope.userGlobals?.size) return
-  // Candidates: mutable f64 scalar globals with positive numeric-initializer
-  // evidence and not a function. (const-folded / typed-pointer globals already
-  // carry a non-`(mut f64)` decl, so they're excluded.)
-  const candidates = new Set()
-  // A binding a read may find unassigned or nullish, where some read observes
-  // that (a presence test, a copy into another binding) and is no numeric
-  // coercion: its `undefined` needs the f64 carrier, an i32 would read 0.
+  // Candidates: mutable f64 scalar globals, not a function, every value the
+  // program stores in which the summary holds a Number (const-folded and typed
+  // pointer globals already carry a non-`(mut f64)` decl). A read that may find
+  // one unassigned or nullish and observes that (a presence test, a copy into
+  // another binding) needs the f64 carrier: an i32 would read 0; one whose
+  // every read converts reads 0 as the source does, and that one alone.
   const view = ctx.summary?.at(null)
-  const observedMissing = (name) => {
-    const k = view?.kindOf(name)
-    return k != null && (hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH)) && !view.numericDemand(name)
-  }
+  const candidates = new Set(), missing = new Set()
   for (const name of ctx.scope.userGlobals) {
-    const decl = ctx.scope.globals.get(name)
-    if (!(decl?.mut && decl.type === 'f64')) continue
-    if (ctx.scope.globalValTypes?.get(name) !== VAL.NUMBER) continue
-    if (ctx.funcs.names?.has(name)) continue
-    if (observedMissing(name)) continue
+    const decl = ctx.scope.globals.get(name), k = view?.kindOf(name)
+    if (!(decl?.mut && decl.type === 'f64') || ctx.funcs.names?.has(name)) continue
+    if (ctx.scope.globalValTypes?.get(name) !== VAL.NUMBER || k == null || tagOf(core(k)) !== K.NUMBER) continue
+    if (hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH)) { if (!view.numericDemand(name)) continue; missing.add(name) }
     candidates.add(name)
   }
   if (!candidates.size) return
-
-  const fractional = new Set()
-  // A body's own definitions, by name: a local carries what was assigned to it.
-  const defsOf = new Map()
-  const localDefs = (body) => {
-    let defs = defsOf.get(body)
-    if (defs) return defs
-    defsOf.set(body, defs = new Map())
-    const def = (name, rhs) => {
-      if (typeof name !== 'string' || ctx.scope.globals.has(name)) return
-      if (!defs.has(name)) defs.set(name, [])
-      defs.get(name).push(rhs)
-    }
-    walkAst(body, { enter: n => {
-      const op = n[0]
-      if (op === 'let' || op === 'const') {
-        for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=') def(n[i][1], n[i][2])
-      } else if (FRAC_COMPOUND.has(op)) def(n[1], [op])
-      else if (ASSIGN_OPS.has(op) && !INT_COMPOUND.has(op)) def(n[1], n[2])
+  // Every flow a write may run in: the module's statements, each function, and
+  // each closure among them (a flow of its own: it runs whenever it is called),
+  // with the candidates each writes. A write no walk values (a pattern's, a
+  // loop head's) proves no word.
+  const words = new Set([...candidates].filter(name => !missing.has(name))), flows = []
+  const unvalued = (n) => { if (typeof n === 'string') words.delete(n); else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) unvalued(n[i]) }
+  const gather = (root, sig) => {
+    const writes = new Set()
+    walkAst(root, { enter: n => {
+      if (n[0] === '=>') { gather(n[2], sig); return false }
+      if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') { if (candidates.has(n[1])) writes.add(n[1]) }
+      else if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') unvalued(n[1])
+      else if (n[0] === 'for' && Array.isArray(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) unvalued(n[1][1])
+      else if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=' && candidates.has(n[i][1])) writes.add(n[i][1])
     } })
-    return defs
+    if (writes.size) flows.push({ body: root, sig, writes })
   }
-  const visiting = new Set()
-  const refIsFractional = (ref, scope) => {
-    if (candidates.has(ref)) return fractional.has(ref)
-    const gt = ctx.scope.globalTypes?.get(ref)
-    if (gt === 'i32') return false
-    if (gt === 'f64') {
-      const vt = ctx.scope.globalValTypes?.get(ref)
-      return vt === VAL.NUMBER || vt == null  // a fractional f64 number; pointers aren't
-    }
-    const defs = scope?.body && !scope.params?.has(ref) ? localDefs(scope.body).get(ref) : null
-    if (!defs || visiting.has(ref)) return false  // param / unknown numeric → assume integer
-    visiting.add(ref)
-    const frac = defs.some(rhs => producesFraction(rhs, scope))
-    visiting.delete(ref)
-    return frac
-  }
-  // The function a callee names: itself, or the one a write-once binding holds.
-  const calleeOf = (callee, seen = new Set()) => {
-    if (typeof callee !== 'string' || seen.has(callee)) return null
-    seen.add(callee)
-    const fn = ctx.funcs.map.get(callee)
-    if (fn) return fn.body && !fn.raw ? fn : null
-    const held = holds.get(callee)
-    return held?.length === 1 ? calleeOf(held[0], seen) : null
-  }
-  const returning = new Set()
-  const returnsFraction = (fn) => {
-    if (returning.has(fn)) return false
-    returning.add(fn)
-    const scope = { params: new Set((fn.sig?.params || []).map(p => p.name)), fn: fn.name, body: fn.body }
-    const frac = (isBlockBody(fn.body) ? returnExprs(fn.body) : [fn.body]).some(r => producesFraction(r, scope))
-    returning.delete(fn)
-    return frac
-  }
-  // Does `e` provably evaluate to a non-integer? Integer-coercing ops (bitwise,
-  // shifts) and comparisons launder any fraction; only the *value*-bearing
-  // branches of ternary/logical ops carry it.
-  // Post-prepare, `Math.PI` / `Math.sqrt(x)` arrive as FLAT math keys — the bare
-  // string 'math.PI' in value position, 'math.sqrt' as a string callee — not the
-  // raw ['.','Math','sqrt'] shape. Missing them assumed INTEGER and i32-demoted
-  // module consts like `export const TWO_PI = Math.PI * 2` in DEP modules (their
-  // inits prep before this scan), truncating 6.283… → 6 at init.
-  const FRACTIONAL_MATH_CONSTS = new Set(['PI', 'E', 'LN2', 'LN10', 'LOG2E', 'LOG10E', 'SQRT2', 'SQRT1_2'])
-  const fractionalMathKey = (k) => typeof k === 'string' && k.startsWith('math.')
-    && (FRACTIONAL_MATH.has(k.slice(5)) || FRACTIONAL_MATH_CONSTS.has(k.slice(5)))
-  const EXCEEDS_I32_CALLS = new Set(['Date.now', 'performance.now', 'console.now', 'console.perfNow', 'Date.parse', 'Date.UTC'])
-  // The receiver of an element read holds fractions: a float typed array (a
-  // module's, `ctx.scope.globalTypedElem`, or one a local constructs) or an
-  // array literal with a fractional element. stdlib's constants read a float
-  // view a word store just filled (`UINT32[0] = 0x7f800000; PINF = FLOAT32[0]`).
-  const FLOAT_TYPED = /^(?:new\.)?Float(?:16|32|64)Array$/
-  const holdsFraction = (base, scope, seen = new Set()) => {
-    if (typeof base !== 'string' || seen.has(base)) return false
-    seen.add(base)
-    const ctor = ctx.scope.globalTypedElem?.get(base)
-    if (ctor) return FLOAT_TYPED.test(ctor)
-    const defs = scope?.body && !scope.params?.has(base) ? localDefs(scope.body).get(base) : null
-    return !!defs?.some(rhs => Array.isArray(rhs) && (
-      (rhs[0] === '()' && typeof rhs[1] === 'string' && FLOAT_TYPED.test(rhs[1])) ||
-      (rhs[0] === 'new' && FLOAT_TYPED.test(Array.isArray(rhs[1]) ? rhs[1][1] : rhs[1])) ||
-      (rhs[0] === '[' && rhs.slice(1).some(el => producesFraction(el, scope))) ||
-      (typeof rhs === 'string' && holdsFraction(rhs, scope, seen))))
-  }
-  const producesFraction = (e, scope) => {
-    if (e == null) return false
-    if (typeof e === 'number') return !Number.isInteger(e)
-    if (typeof e === 'string') return refIsFractional(e, scope) || fractionalMathKey(e)
-    if (!Array.isArray(e)) return false
-    const op = e[0]
-    if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
-    if (op === '[]' && e.length === 3) return holdsFraction(e[1], scope)
-    if (op === 'nan' || op === '/' || op === '**' || FRAC_COMPOUND.has(op)) return true   // NaN is parse.js's marker, not an integer
-    if (INT_COERCE_OPS.has(op) || BOOL_RESULT_OPS.has(op)) return false
-    if (op === '=>') return false
-    if (op === '?:') return producesFraction(e[2], scope) || producesFraction(e[3], scope)
-    if (op === '&&' || op === '||' || op === '??') return producesFraction(e[1], scope) || producesFraction(e[2], scope)
-    if (op === '()') {
-      const callee = e[1]
-      if (Array.isArray(callee) && callee[0] === '?') return producesFraction(callee[2], scope) || producesFraction(callee[3], scope)
-      if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && FRACTIONAL_MATH.has(callee[2])) return true
-      if (fractionalMathKey(callee)) return true
-      const math = typeof callee === 'string' && callee.startsWith('math.') ? callee.slice(5)
-        : Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' ? callee[2] : null
-      if (math != null) return !INTEGRAL_MATH.has(math) && producesFraction(e[2], scope)   // abs, min, max, sign carry their operand's
-      const fn = calleeOf(callee)
-      if (fn) return returnsFraction(fn) || producesFraction(e[2], scope)
-      // Integer-valued but EXCEEDS the i32 range: epoch/monotonic-millisecond
-      // clocks (~1.7e12). The integer default would wrap them mod 2^32 at the
-      // i32 global store — the old saturating coercion masked this by clamping
-      // to INT32_MAX ("t > 0" stayed accidentally true); the ES-correct wrap
-      // surfaces it. Disqualify like a fractional producer.
-      if (typeof callee === 'string' && EXCEEDS_I32_CALLS.has(callee)) return true
-      if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' &&
-          EXCEEDS_I32_CALLS.has(`${callee[1]}.${callee[2]}`)) return true
-      // A callee this pass cannot name (a host import, a function selected at
-      // init) is assumed integral, unless an argument carries a fraction it may
-      // pass on: stdlib's float32 constants are `f32(ONE / HUGE)` through a
-      // selected fround.
-      return producesFraction(e[2], scope)
-    }
-    for (let i = 1; i < e.length; i++) if (producesFraction(e[i], scope)) return true
-    return false
-  }
-
-  // A numeric-initialized global later assigned a provably non-numeric value
-  // (string/object/array/arrow/`new`/boolean literal) must stay the f64 NaN-box
-  // carrier — narrowing it to i32 would corrupt the boxed value. Disqualify it.
-  const looksNonNumeric = (e) => {
-    if (!Array.isArray(e)) return false
-    const op = e[0]
-    if (op == null) { const v = e[1]; return typeof v === 'string' || typeof v === 'boolean' }
-    // `[` is prepare's array-literal form.
-    return op === '{}' || op === '[' || op === '=>' || op === 'new' || op === 'str' || op === 'strcat'
-  }
-
-  // Collect every assignment RHS (init + reassignments, program-wide). `fromParam`
-  // records (global → the function it was assigned a parameter-derived value in) —
-  // a parameter is an f64 of unknown integrality, so an i32-narrowed global fed from
-  // one may silently truncate a fractional Number (DSP/filter state). We do NOT
-  // demote on this (the integer default is the load-bearing index/size perf win);
-  // we surface it on the opt-in warn channel below.
-  const rhsByName = new Map()
-  const fromParam = new Map()
-  // every value written to a module global that is not a candidate: a callee may be one
-  const holds = new Map()
-  for (const name of candidates) rhsByName.set(name, [])
-  const record = (name, rhs, scope) => {
-    if (!candidates.has(name)) {
-      if (ctx.scope.globals.has(name)) { if (!holds.has(name)) holds.set(name, []); holds.get(name).push(rhs) }
-      return
-    }
-    if (looksNonNumeric(rhs)) { candidates.delete(name); rhsByName.delete(name); return }
-    rhsByName.get(name)?.push([rhs, scope])
-    if (scope?.params && !fromParam.has(name) && refsAny(rhs, scope.params, { skipBindingPositions: true }))
-      fromParam.set(name, scope.fn)
-  }
-  // `scope` is fixed for the whole call (never changes mid-tree, not even at
-  // `=>` — the only variation is which top-level root it's invoked on below),
-  // so it closes over `enter` rather than threading through a boundary param.
-  const walk = (node, scope) => walkAst(node, { enter: n => {
-    const op = n[0]
-    if (op === '=' && typeof n[1] === 'string') record(n[1], n[2], scope)
-    else if ((op === 'let' || op === 'const') && n.length > 1) {
-      for (let i = 1; i < n.length; i++) {
-        const d = n[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') record(d[1], d[2], scope)
-      }
-    } else if (ASSIGN_OPS.has(op) && op !== '=' && typeof n[1] === 'string' && candidates.has(n[1])) {
-      if (FRAC_COMPOUND.has(op)) fractional.add(n[1])               // `/=`, `**=` → fractional outright
-      else if (!INT_COMPOUND.has(op)) record(n[1], n[2], scope)  // `+= -= *= %= ||= &&= ??=` → as their rhs
-    } else if (ASSIGN_OPS.has(op) && op !== '=' && typeof n[1] === 'string') record(n[1], [op], scope)   // a binding written twice holds no one function
-  }})
-  walk(ast, null)
-  // DEP-module top-level inits live in ctx.module.moduleInits, NOT the entry ast —
-  // without walking them a dep's `export const TWO_PI = Math.PI * 2` records no
-  // RHS at all and the integer default i32-demotes it (init truncated 6.283 → 6).
-  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) walk(init, null)
-  for (const f of ctx.funcs.list) {
-    if (!f.body || f.raw) continue
-    walk(f.body, { params: new Set((f.sig?.params || []).map(p => p.name)), fn: f.name, body: f.body })
-  }
-
-  // Fixpoint: demote any candidate with a provably-fractional assignment; repeat
-  // so fractionality propagates through globals that reference each other.
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const name of candidates) {
-      if (fractional.has(name)) continue
-      if (rhsByName.get(name).some(([rhs, scope]) => producesFraction(rhs, scope))) { fractional.add(name); changed = true }
+  gather(ast, null)
+  for (const init of ctx.module.moduleInits || []) gather(init, null)
+  const funcs = ctx.funcs.list.filter(f => f.body && !f.raw)
+  for (const f of funcs) gather(f.body, f.sig)
+  for (let dropped = true; dropped && words.size;) {
+    dropped = false
+    const assume = name => words.has(name) ? GLOBAL_WORD : null
+    for (const { body, sig, writes } of flows) {
+      if (![...writes].some(name => words.has(name))) continue
+      const prev = enterActiveFunction(ctx, { sig, body })
+      let written
+      try { written = writtenNumbers(body, assume) } finally { restoreActiveFunction(ctx, prev) }
+      for (const [node, v] of written) if (words.has(node[1]) && !nrWord(v)) { words.delete(node[1]); dropped = true }
     }
   }
-
-  // A constant written outside the i32 range: settled constants resolve by name.
-  const constOf = name => ctx.scope.constNums?.get(name) ?? ctx.scope.constInts?.get(name) ?? null
-  let wide = null
-  for (const name of candidates) {
-    if (fractional.has(name)) continue
-    for (const [rhs] of rhsByName.get(name)) {
-      const value = constNumExpr(rhs, constOf)
-      if (value != null && !(value >= I32_MIN && value <= I32_MAX)) { (wide ||= new Set()).add(name); break }
-    }
-  }
-
-  // Bare-escape veto (module-global twin of widenLocalTypes Pass D,
-  // .work/archive/todo.md's KNOWN GAP #1 sibling): `producesFraction` above only
-  // proves each candidate INTEGRAL — the same "level 1: integral-closed,
-  // range-open" verdict intLevelMap gives a local's `+`/`-`/`*` chain, never
-  // a magnitude bound. i32 storage is sound for a value ONLY as long as
-  // every read re-applies the same ToInt32 the writes did (declGlobal's own
-  // load-bearing tradeoff, identical to type.js's widening-invariant local one) — broken the
-  // instant an integral-but-unbounded global (`counter *= 100000`) is ALSO
-  // read bare with no governing comparison ANYWHERE. A local's relevant
-  // scope for that proof is its one function body; a global's is the WHOLE
-  // PROGRAM, since its storage outlives any one function — so both checks
-  // below run over module-init code + every function body concatenated.
-  //
-  // Two-tier, mirroring intLevelMap's own lattice exactly (Pass D's own
-  // "level 2 needs no check" exemption, generalized to program scope):
-  //   - level 2 (STRICT i32-range-safe by construction — every write is an
-  //     int32-range literal, a bitwise/comparison result, or Math.imul/
-  //     clz32) needs no escape check: every value it can ever hold already
-  //     fits i32, regardless of where it's read. `intLevelMap` over the
-  //     SAME whole-program body computes this per name via its own
-  //     min-fixpoint over every def's RHS (a namesake local elsewhere can
-  //     only pull a shared bucket's level DOWN via that min, never falsely
-  //     UP — safe direction only, matches this file's own "over-inclusive
-  //     only makes it MORE conservative" convention).
-  //   - level < 2 (level 1 "integral, range-open", or 0): needs
-  //     collectBareEscapes' full proof — index-positioned, ToInt32-rooted,
-  //     statically in-range (intExprRange), or governed by SOME comparison
-  //     anywhere in the whole-program scan (the loop-counter tolerance
-  //     widenLocalTypes' CMP_OPS pass already accepts, generalized to
-  //     program-wide governance the same way the escape scope itself is) —
-  //     via collectBareEscapes' crossClosure mode, so an escape hiding
-  //     inside an inline arrow (never lifted to its own ctx.funcs.list
-  //     entry) is still caught.
-  //
-  // The census scans body by body (collectGlobalBareEscapes): a copy is an edge
-  // of the body it sits in, and a global blamed in one body blames its sources
-  // in the others, so `const d = G` at module level and `x * d` in a function
-  // keep G exact.
-  let strictLevel = null, bareEscaped = null
-  if (candidates.size) {
-    const funcBodies = []
-    for (const f of ctx.funcs.list) if (f.body && !f.raw) funcBodies.push(isBlockBody(f.body) ? f.body : ['return', f.body])
-    const bodies = [ast, ...(ctx.module.moduleInits || []), ...funcBodies]
-    strictLevel = intLevelMap([';', ...bodies])
-    if (wide || [...candidates].some(n => strictLevel.get(n) !== 2))
-      bareEscaped = collectGlobalBareEscapes(bodies, name => ctx.scope.globals.has(name), wide)
-  }
-
+  const bodies = [ast, ...(ctx.module.moduleInits || []), ...funcs.map(f => isBlockBody(f.body) ? f.body : ['return', f.body])]
+  const escaped = collectGlobalBareEscapes(bodies, name => ctx.scope.globals.has(name), ALL_WIDE)
   let retyped = false
-  for (const name of candidates) {
-    if (fractional.has(name)) continue
-    if ((wide?.has(name) || strictLevel.get(name) !== 2) && bareEscaped.has(name)) continue
-    declGlobal(name, 'i32')
-    retyped = true
-    // Advisory only (off unless opts.warnings): the value flows in from a parameter,
-    // which may be a fractional Number that the i32 carrier truncates.
-    if (ctx.warnings && fromParam.has(name))
-      warn('int-global-truncation',
-        `module global '${name}' is inferred i32 (integer) but is assigned from a parameter — if it can hold a fractional Number (e.g. DSP/filter state), the fraction is truncated; store fractional state in a Float64Array instead`,
-        { fn: fromParam.get(name) })
-  }
+  for (const name of candidates) if (words.has(name) || !escaped.has(name)) { declGlobal(name, 'i32'); retyped = true }
   return retyped
 }
 
