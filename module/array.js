@@ -300,9 +300,10 @@ export default (ctx) => {
   // Statically-known ARRAY values must answer from the FACT, not the carrier —
   // a rep-narrowed array (raw base local, e.g. a slice() result) is not a
   // NaN-box, so the runtime tag test would read a plain number and say false.
+  // (a binding that may be null or undefined beside its arrays answers by what it holds)
   ctx.core.emit['Array.isArray'] = (x) => {
     const vt = valTypeOf(x)
-    if (vt === VAL.ARRAY) {
+    if (vt === VAL.ARRAY && !(typeof x === 'string' && (repOf(x)?.nullable || repOfGlobal(x)?.nullable))) {
       const v = emit(x)
       return isPureIR(v) ? typed(['i32.const', 1], 'i32')
         : typed(['block', ['result', 'i32'], ['drop', asF64(v)], ['i32.const', 1]], 'i32')

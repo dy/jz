@@ -1911,3 +1911,23 @@ test('audit: -0 passed by one call is not the 0 of another', () => {
   for (const src of cases) for (const optimize of levels(0, 1, 2, 'size', 'speed'))
     is(jz(src, { optimize }).exports.f(0), oracle(src).f(0), `${src} at ${optimize}`)
 })
+
+// A module binding that holds a Number, a string or a Boolean, and null or
+// undefined after some write, is no value of the kind alone: what names its kind
+// or reads it as one (`Object.is(X, NaN)`, `typeof X`, `X < 'b'`, `X ?? 9`,
+// `Array.isArray(X)` of an array binding) answered for the kind.
+test('audit: a module binding that may be nullish is read as what it holds', () => {
+  const cases = [
+    `let X = NaN\nexport let f = (k) => { X = NaN; if (k > 3) X = null; return (Object.is(X, NaN) ? 1 : 0) + (Object.is(X, null) ? 10 : 0) }`,
+    `let X = 1\nexport let f = (k) => { X = 1; if (k > 3) X = undefined; return (Object.is(X, NaN) ? 1 : 0) + (Object.is(X, X) ? 10 : 0) + (X === undefined ? 100 : 0) }`,
+    `let X = NaN, Y = NaN\nexport let f = (k) => { X = NaN; Y = NaN; if (k > 3) X = null; if (k > 5) Y = undefined; return (Object.is(X, Y) ? 1 : 0) + (X === Y ? 10 : 0) + (X == Y ? 100 : 0) }`,
+    `let X = 'ab'\nexport let f = (k) => { X = 'ab'; if (k > 3) X = null; return (X < 'b' ? 1 : 0) + (X + 'x').length * 10 }`,
+    `let X = true\nexport let f = (k) => { X = true; if (k > 3) X = null; return (typeof X === 'boolean' ? 1 : 0) + ((X ?? 9) === 9 ? 10 : 0) }`,
+    `let X = [1, 2]\nexport let f = (k) => { X = [1, 2]; if (k > 3) X = null; return (Array.isArray(X) ? 1 : 0) + (X === null ? 10 : 0) }`,
+    `let X = 1\nexport let f = (k) => { X = 1; if (k > 3) X = null; return X + 1 + (X < 1 ? 10 : 0) + (X | 0) * 100 }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 4, 6]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
+  }
+})

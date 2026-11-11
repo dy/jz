@@ -155,6 +155,7 @@ export function foldModuleConstants(ast) {
  *  table `const T = [1.5, …]` reads numbers; `C[i][j]` one level down): the
  *  kind when no producer is nullish, holes as presence, a typed element's
  *  constructor, an array element's own element kind. */
+const VALUE_TAGS = new Set([K.NUMBER, K.STRING, K.BOOL])
 export const moduleGlobalKinds = (summary) => {
   if (!summary || !ctx.scope.userGlobals?.size) return
   for (const name of ctx.scope.userGlobals) {
@@ -162,7 +163,12 @@ export const moduleGlobalKinds = (summary) => {
     const k = summary.kindOf(name)
     if (tagOf(k) === K.NONE) continue
     if (isNullable(k)) updateGlobalRep(name, { nullable: true })
-    const vt = valOf(core(k))
+    // A Number, a string or a Boolean that may be null or undefined is a value of
+    // its own, as a local's is (summary/kind.js valBesidePresence): its readers
+    // convert it, compare it and name its kind by what it holds. A heap kind is
+    // claimed beside `nullable`, which its readers ask (`let cache = null`, filled
+    // once), and a BigInt, whose comparison with a Number the claim alone compiles.
+    const vt = isNullable(k) && VALUE_TAGS.has(tagOf(core(k))) ? null : valOf(core(k))
     const vts = ctx.scope.globalValTypes ||= new Map()
     // HASH and payload-less OBJECT are semantic object-family answers, not
     // physical allocation proofs. Leave them to the dictionary/schema plan.
