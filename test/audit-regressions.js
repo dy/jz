@@ -1898,3 +1898,16 @@ test('audit: a binding written null and undefined holds either', () => {
     for (const k of [0, 6, 9]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
   }
 })
+
+// -0 is no integer a word holds, and `===` takes it for 0: a parameter every call
+// passes one integer reads as that constant, and `g(-0)` beside `g(0)` made both -0.
+test('audit: -0 passed by one call is not the 0 of another', () => {
+  const cases = [
+    `const g = (p) => 1 / p\nexport let f = (k) => (g(-0) < 0 ? 1 : 0) + (g(0) > 0 ? 10 : 0) + k`,
+    `const g = (p) => Object.is(p, -0) ? 1 : 0\nexport let f = (k) => g(-0) + g(0) * 10 + k`,
+    `const g = (p, q) => (Object.is(p, 0) ? 1 : 0) + (Object.is(q, -0) ? 10 : 0) + (Object.is(p, q) ? 100 : 0)\nexport let f = (k) => g(0, -0) + g(-0, 0) * 1000 + k`,
+    `const g = (p) => 1 / p\nexport let f = (k) => (g(-0) < 0 ? 1 : 0) + (g(-0) < 0 ? 10 : 0) + k`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 'size', 'speed'))
+    is(jz(src, { optimize }).exports.f(0), oracle(src).f(0), `${src} at ${optimize}`)
+})

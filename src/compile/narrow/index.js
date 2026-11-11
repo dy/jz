@@ -153,7 +153,8 @@ export default function narrowSignatures(programFacts, ast) {
     else if (Array.isArray(arg) && arg[0] == null && typeof arg[1] === 'number') raw = arg[1]
     else if (Array.isArray(arg) && arg[0] === 'u-' && typeof arg[1] === 'number') raw = -arg[1]
     else if (typeof arg === 'string' && ctx.scope.constInts?.has(arg)) raw = ctx.scope.constInts.get(arg)
-    return (raw != null && Number.isInteger(raw) && raw >= I32_MIN && raw <= I32_MAX) ? raw : null
+    // (-0 is no integer a word holds, and `===` takes it for the 0 of another call)
+    return (raw != null && Number.isInteger(raw) && !Object.is(raw, -0) && raw >= I32_MIN && raw <= I32_MAX) ? raw : null
   }
 
   // Parameter names/order stay fixed during narrowing. Index them once, but
