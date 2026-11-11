@@ -9,7 +9,7 @@ import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { ctx, reset } from '../src/ctx.js'
 import { targetProfileFor } from '../src/session.js'
 import { emitter, emissionHooks } from '../src/compile/emit.js'
-import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
+import { analyzeValTypes, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
 import { summarize, K, kind } from '../src/summary/index.js'
@@ -961,8 +961,9 @@ test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
 })
 
 // ============================================================================
-// intCertain lattice — pure analysis, no codegen impact. Pins the forward-
-// propagation rule against AST inputs.
+// intCertain: pure analysis, no codegen impact. Pins what the interval
+// proof's lifetime value of a binding says (analyze/body-facts.js): integral
+// wherever finite, flow by flow; a Boolean is no number.
 // ============================================================================
 
 // Run analyzer against a single user-defined arrow body. Returns a Proxy that
@@ -981,14 +982,16 @@ function runAnalyze(code, paramVals) {
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.funcs.list[0]
   const body = fn.body
-  ctx.func.locals = analyzeBody(body).locals
   // BindingId totality renames locals/params to `name<T>f<id>_<n>` — resolve a
   // test's source spelling to the actual binding key (unique bare prefix).
   const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
   const resolveLocal = (name) => keys().find(k => k === name) ?? keys().find(k => k.startsWith(name + T)) ?? name
   if (paramVals) for (const [n, v] of Object.entries(paramVals)) updateRep(resolveLocal(n), { val: v })
+  // (the function's own frame: what the walk publishes stays on its reps)
+  ctx.func.body = body
+  ctx.func.current = fn.sig
+  ctx.func.locals = analyzeBody(body).locals
   analyzeValTypes(body)
-  analyzeIntCertain(body)
   return new Proxy({}, { get: (_, name) => repOf(resolveLocal(name))?.intCertain === true })
 }
 
@@ -997,9 +1000,9 @@ test('intCertain: integer literal init', () => {
   is(r.i, true); is(r.j, false)
 })
 
-test('intCertain: bitwise / comparison results are int', () => {
+test('intCertain: bitwise results are int, a comparison is no number', () => {
   const r = runAnalyze('let f = () => { let x = 5 | 0; let y = 3 & 1; let z = 1 < 2 }')
-  is(r.x, true); is(r.y, true); is(r.z, true)
+  is(r.x, true); is(r.y, true); is(r.z, false)
 })
 
 test('intCertain: closure under +,-,*,% with int operands', () => {
@@ -1022,9 +1025,10 @@ test('intCertain: reassignment with non-int RHS poisons', () => {
   is(r.i, false)
 })
 
-test('intCertain: poison is sticky across all defs (order-insensitive)', () => {
+test('intCertain: a binding is every value it holds; a read sees the value then', () => {
+  // (i holds 0 and 1.5 over its life; j is declared while i holds 0)
   const r = runAnalyze('let f = () => { let i = 0; let j = i + 1; i = 1.5 }')
-  is(r.i, false); is(r.j, false)
+  is(r.i, false); is(r.j, true)
 })
 
 test('intCertain: `++` / `--` preserve', () => {

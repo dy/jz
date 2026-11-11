@@ -18,7 +18,7 @@ import { valTypeOf } from '../src/kind.js'
 import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
 import { typedIdxProven, typedIdxWhole, idxKey, exprType } from '../src/type.js'
 import { constIntExpr, intExprRange } from '../src/static.js'
-import { VAL, lookupValType, repOf } from '../src/reps.js'
+import { VAL, lookupValType, repOf, intCertainOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux, RESIZABLE_MARK, VIEW_TRACKS } from '../layout.js'
 import { ctx as ctxRef, err, inc, PTR, LAYOUT, HEAP, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -2450,7 +2450,7 @@ export default (ctx) => {
       rd.valKind = VAL.NUMBER
       return rd
     }
-    const integral = exprType(i, ctx.func.locals) === 'i32' || (typeof i === 'string' && repOf(i)?.intCertain) || intExprRange(i) != null
+    const integral = exprType(i, ctx.func.locals) === 'i32' || (typeof i === 'string' && intCertainOf(i)) || intExprRange(i) != null
     const proven = typedIdxProven(arr, i, node) || (integral && key != null && ctx.types.rmwBounds?.has(key))
     const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {

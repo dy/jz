@@ -2071,3 +2071,62 @@ test('audit: an assignment read as a number is the number, whatever its target k
   const wat = compile(`export let f = (v) => { let h = 2166136261; h = Math.imul(h ^ (v | 0), 16777619); const t = (h = h ^ (h >>> 13)) | 0; return (h ^ t) >>> 0 }`, { optimize: 'speed', wat: true })
   ok(!/\(local \$h\w* f64\)/.test(wat), 'a hash local stays a word')
 })
+
+// A quotient under a test of its remainder is an integer only of what the test
+// divided: an operand the arm writes, or a closure or a callee it calls may
+// write, divides something else (each of these answered the wrong element or
+// a floor of a fraction on main).
+test('audit: an exact quotient is exact only of the operands the test divided', () => {
+  const cases = [
+    `export let f = (k) => { const T = [10, 20, 30, 40]; let a = Math.floor(k); if (a % 2 === 0) { a = a + 1; const q = a / 2; return T[q] === undefined ? 100 : T[q] } return -7 }`,
+    `export let f = (k) => { let b = 2; const bump = () => { b = 3 }; const a = Math.floor(k); if (a % b === 0) { bump(); const q = a / b; return Math.floor(q) + q } return -7 }`,
+    `let B = 2; const bump = () => { B = 3 }; export let f = (k) => { const a = Math.floor(k); if (a % B === 0) { bump(); const q = a / B; return Math.floor(q) + q } return -7 }`,
+    `export let f = (k) => { let a = Math.floor(k); if (a % 2 === 0 && (a += 1) > 0) { const q = a / 2; return Math.floor(q) + q } return -7 }`,
+    `export let f = (k) => { const T = [10, 20, 30, 40]; const a = Math.floor(k); if (a % 2 === 0) { const q = a / 2; return T[q] === undefined ? 100 : T[q] } return -7 }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed'))
+    for (const k of [0, 2, 4, 6, 7, -2, NaN]) is(jz(src, { optimize }).exports.f(k), oracle(src).f(k), `${src} f(${k}) at ${optimize}`)
+})
+
+// A module binding every write of which, in every flow, is an integer wherever
+// finite reads as one: floored by no instruction, keyed as an integer. One
+// write elsewhere of anything else keeps the floor.
+test('audit: a module global every write of which is an integer is read as one', () => {
+  const whole = `let G = 0; const w = (d) => { G = Math.floor(G / 2) + 1; if (d > 0) w(d - 1) }
+    export let f = (k) => { G = Math.floor(k); w(3); return Math.floor(G) + G }`
+  const frac = `let G = 0; const w = (d) => { G = Math.floor(G / 2) + 0.5; if (d > 0) w(d - 1) }
+    export let f = (k) => { G = Math.floor(k); w(3); return Math.floor(G) + G }`
+  for (const src of [whole, frac]) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed'))
+    for (const k of [7.5, NaN, Infinity, -0, 2147483648]) is(jz(src, { optimize }).exports.f(k), oracle(src).f(k), `f(${k}) at ${optimize}`)
+  if (onKernel()) return
+  const floors = (src) => (compile(src, { optimize: 0, wat: true }).match(/f64\.floor/g) || []).length
+  is(floors(whole), 2, 'Math.floor(G) of an integral module binding emits no floor')
+  is(floors(frac), 3, 'one fractional write keeps it')
+})
+
+// -0 is no integer a hull holds: a remainder of a dividend that may be -0 keeps
+// its sign (a binding of `-(y & 0)` answered +0 on main, a `-0` literal once the
+// proof read it as integral wherever finite).
+test('audit: a dividend that may be -0 keeps the remainder\'s sign', () => {
+  const cases = [
+    `export let f = (y) => { let v = -0; return 1 / (v % ((y & 7) + 1)) }`,
+    `export let f = (y) => { const v = -0; return 1 / (v % ((y & 7) + 1)) }`,
+    `export let f = (y) => { let v = -(y & 0); return 1 / (v % ((y & 7) + 1)) }`,
+    `export let f = (y) => 1 / ((-(y & 0)) % ((y & 7) + 1))`,
+    `export let f = (y) => { const v = Math.ceil(-0.5 * (y & 1)); return 1 / (v % ((y & 7) + 1)) }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed'))
+    for (const y of [0, 1, 2, 5]) is(jz(src, { optimize }).exports.f(y), oracle(src).f(y), `${src} f(${y}) at ${optimize}`)
+})
+
+// Math.round past 2^52: every double there is an integer and rounds to itself.
+// The half-integer test `nearest(x) === x - 0.5` held of an even one, where
+// x - 0.5 rounds back to x, and bumped it by one on main.
+test('audit: Math.round of an integer past 2^52 is the integer', () => {
+  const src = `export let f = (k) => Math.round(k)`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const f = jz(src, { optimize }).exports.f
+    for (const x of [5e15, -5e15, 2 ** 52, 2 ** 52 + 2, 2 ** 53 - 2, 4503599627370495.5, -4503599627370495.5, 2.5, -2.5, 3.5, -3.5, -0.5, 0.49999999999999994, NaN, Infinity])
+      is(f(x), Math.round(x), `Math.round(${x}) at ${optimize}`)
+  }
+})

@@ -2722,8 +2722,8 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
   }
 })
 
-// The same blind spot in a binding's own integer certainty (analyze/val-types.js
-// analyzeIntCertain): an integer-initialized binding a closure reassigns read
+// The same blind spot in a binding's own integer certainty (once analyze/val-types.js
+// analyzeIntCertain's, the interval proof's lifetime value now): an integer-initialized binding a closure reassigns read
 // back raw, so `v * 2` skipped ToNumber on the string or Boolean the closure
 // stored ('x' came back as itself, true as the atom).
 test('closure: a value a closure writes into an integer binding converts at a numeric read', () => {

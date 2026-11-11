@@ -3,11 +3,13 @@
  * the table every level that bounds a number reads (the summary's array
  * elements, the source's integer hulls, the optimizer's intervals of locals).
  *
- * A value is `{ lo, hi, int, nz, nan, gap }`: every value that is not NaN lies
- * in `[lo, hi]` (an infinite end leaves that side open), is a finite integer
- * where `int` (so `int` with an infinite end is an integer of any magnitude,
- * never an infinity), is never -0 where `nz`, may be NaN where `nan`, and is
- * at least `gap` from zero. Null is any value at all (a string, an object, a
+ * A value is `{ lo, hi, int, whole, nz, nan, gap }`: every value that is not
+ * NaN lies in `[lo, hi]` (an infinite end leaves that side open), is a finite
+ * integer where `int` (so `int` with an infinite end is an integer of any
+ * magnitude, never an infinity), an integer wherever it is finite where
+ * `whole` (an infinity at an open end besides: what `Math.floor` makes of any
+ * number, and what a sum or a product of such keeps), is never -0 where `nz`,
+ * may be NaN where `nan`, and is at least `gap` from zero. Null is any value at all (a string, an object, a
  * number the caller cannot bound). `NR_NONE` is the empty set, what a cell
  * holds before any number is stored in it; `NUMBER` is any number.
  *
@@ -18,22 +20,26 @@
  * @module summary/num-range
  */
 
-export const NR_NONE = Object.freeze({ lo: Infinity, hi: -Infinity, int: true, nz: true, nan: false, gap: Infinity })
-export const NUMBER = Object.freeze({ lo: -Infinity, hi: Infinity, int: false, nz: false, nan: true, gap: 0 })
-const NAN = Object.freeze({ lo: Infinity, hi: -Infinity, int: true, nz: true, nan: true, gap: Infinity })
+export const NR_NONE = Object.freeze({ lo: Infinity, hi: -Infinity, int: true, whole: true, nz: true, nan: false, gap: Infinity })
+export const NUMBER = Object.freeze({ lo: -Infinity, hi: Infinity, int: false, whole: false, nz: false, nan: true, gap: 0 })
+/** Any number integral wherever finite: -0, NaN and the infinities among them (what `Math.floor` makes of any value). */
+export const NR_WHOLE = Object.freeze({ lo: -Infinity, hi: Infinity, int: false, whole: true, nz: false, nan: true, gap: 0 })
+const WHOLE = NR_WHOLE
+const NAN = Object.freeze({ lo: Infinity, hi: -Infinity, int: true, whole: true, nz: true, nan: true, gap: Infinity })
 
 const I32_MIN = -0x80000000, I32_MAX = 0x7fffffff
 
 /** A value with its facts read off its ends: one sign alone keeps clear of zero,
- *  -0 among it. An end no arithmetic could name (an
- *  infinity less itself) leaves its side open. */
-const make = (lo, hi, int, nz, nan, gap = 0) => {
+ *  -0 among it, and a value integral wherever finite between finite ends is
+ *  integral. An end no arithmetic could name (an infinity less itself) leaves
+ *  its side open. */
+const make = (lo, hi, int, nz, nan, gap = 0, whole = int) => {
   if (Number.isNaN(lo)) lo = -Infinity
   if (Number.isNaN(hi)) hi = Infinity
   if (Number.isNaN(gap)) gap = 0
   if (lo > hi) return nan ? NAN : NR_NONE
   const g = Math.max(gap, lo > 0 ? lo : hi < 0 ? -hi : 0)
-  return { lo, hi, int, nz: nz || g > 0, nan, gap: g }
+  return { lo, hi, int: int || whole && Number.isFinite(lo) && Number.isFinite(hi), whole: whole || int, nz: nz || g > 0, nan, gap: g }
 }
 const empty = v => v.lo > v.hi
 // (an infinity among the values: an open end of a value that is no integer)
@@ -43,7 +49,7 @@ const zero = v => v.lo <= 0 && v.hi >= 0 && v.gap === 0
 const small = v => v.lo > -(2 ** 969) && v.hi < 2 ** 969
 
 /** A value of these facts, the edge a caller converts its own at. */
-export const nrValue = (lo, hi, int, nz, nan) => make(lo, hi, int, nz, nan)
+export const nrValue = (lo, hi, int, nz, nan, whole = int) => make(lo, hi, int, nz, nan, 0, whole)
 
 /** The integers from lo to hi: a counter's, an index's (-0 only where an end is). */
 export const nrInts = (lo, hi) => make(lo, hi, true, !Object.is(lo, -0) && !Object.is(hi, -0), false)
@@ -52,7 +58,7 @@ export const nrInts = (lo, hi) => make(lo, hi, true, !Object.is(lo, -0) && !Obje
 export const nrReals = (lo, hi) => make(lo, hi, false, false, false)
 
 export const nrPoint = (v) => typeof v !== 'number' ? null : Number.isNaN(v) ? NAN
-  : make(v, v, Number.isInteger(v), !Object.is(v, -0), false, Math.abs(v))
+  : make(v, v, Number.isInteger(v), !Object.is(v, -0), false, Math.abs(v), !Number.isFinite(v))
 
 /** Every value of either. */
 export function nrJoin(a, b) {
@@ -60,11 +66,11 @@ export function nrJoin(a, b) {
   if (b === NR_NONE) return a
   if (!a || !b) return null
   // (a holds b where every fact a states of its values holds of b's)
-  if (a.lo <= b.lo && a.hi >= b.hi && (!a.int || b.int) && (!a.nz || b.nz) && (a.nan || !b.nan) && a.gap <= b.gap) return a
-  return make(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi), a.int && b.int, a.nz && b.nz, a.nan || b.nan, Math.min(a.gap, b.gap))
+  if (a.lo <= b.lo && a.hi >= b.hi && (!a.int || b.int) && (!a.whole || b.whole) && (!a.nz || b.nz) && (a.nan || !b.nan) && a.gap <= b.gap) return a
+  return make(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi), a.int && b.int, a.nz && b.nz, a.nan || b.nan, Math.min(a.gap, b.gap), a.whole && b.whole)
 }
 
-export const nrEqual = (a, b) => a === b || !!a && !!b && a.lo === b.lo && a.hi === b.hi && a.int === b.int && a.nz === b.nz && a.nan === b.nan && a.gap === b.gap
+export const nrEqual = (a, b) => a === b || !!a && !!b && a.lo === b.lo && a.hi === b.hi && a.int === b.int && a.whole === b.whole && a.nz === b.nz && a.nan === b.nan && a.gap === b.gap
 
 /** A word: every value an integer of one signed 32-bit word, never -0 nor NaN. */
 export const nrWord = (r) => !!r && !empty(r) && r.int && r.nz && !r.nan && r.lo >= I32_MIN && r.hi <= I32_MAX
@@ -142,18 +148,21 @@ export function nrBinary(op, a, b, powOf) {
   // (NaN is what arithmetic makes of a NaN)
   if (empty(a) || empty(b)) return NAN
   const nan = a.nan || b.nan
+  // (a sum, a difference, a product or a remainder of numbers integral wherever
+  // finite is one: an integer past every double rounds to an infinity)
+  const whole = a.whole && b.whole
   if (op === '+') return make(a.lo + b.lo, a.hi + b.hi, a.int && b.int && (small(a) || small(b)),
-    a.nz || b.nz, nan || posInf(a) && negInf(b) || negInf(a) && posInf(b))
+    a.nz || b.nz, nan || posInf(a) && negInf(b) || negInf(a) && posInf(b), 0, whole)
   // (x - y is -0 only of x -0 and y +0)
   if (op === '-') return make(a.lo - b.hi, a.hi - b.lo, a.int && b.int && (small(a) || small(b)),
-    a.nz || b.gap > 0, nan || posInf(a) && posInf(b) || negInf(a) && negInf(b))
+    a.nz || b.gap > 0, nan || posInf(a) && posInf(b) || negInf(a) && negInf(b), 0, whole)
   if (op === '*') {
     const p = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi]
     // (a product is -0 only where it is a zero, an operand's or an underflow's, and the signs differ;
     // an integer's past every double is an infinity; a zero times an infinity is NaN)
     const lo = Math.min(...p), hi = Math.max(...p)
     return make(lo, hi, a.int && b.int && Number.isFinite(lo) && Number.isFinite(hi), a.gap * b.gap > 0 || nonNegative(a) && nonNegative(b),
-      nan || zero(a) && (posInf(b) || negInf(b)) || zero(b) && (posInf(a) || negInf(a)), a.gap * b.gap)
+      nan || zero(a) && (posInf(b) || negInf(b)) || zero(b) && (posInf(a) || negInf(a)), a.gap * b.gap, whole)
   }
   if (op === '/') {
     if (!(b.gap > 0)) return NUMBER
@@ -164,11 +173,12 @@ export function nrBinary(op, a, b, powOf) {
   }
   // A remainder keeps the dividend's sign (a zero dividend, -0 among them, its own)
   // under the divisor's magnitude, one less between integers, whatever the
-  // dividend's magnitude: NaN of a zero divisor and of an infinite dividend.
+  // dividend's magnitude: NaN of a zero divisor and of an infinite dividend, a
+  // finite dividend itself of an infinite divisor (never an infinity).
   if (op === '%') {
     if (b.lo === 0 && b.hi === 0) return NAN
-    const m = Math.max(-b.lo, b.hi), top = a.int && b.int ? m - 1 : m
-    return make(a.lo >= 0 ? 0 : Math.max(a.lo, -top), a.hi <= 0 ? 0 : Math.min(a.hi, top), a.int && b.int,
+    const m = Math.max(-b.lo, b.hi), top = whole ? m - 1 : m
+    return make(a.lo >= 0 ? 0 : Math.max(a.lo, -top), a.hi <= 0 ? 0 : Math.min(a.hi, top), whole,
       nonNegative(a), nan || !(b.gap > 0) || posInf(a) || negInf(a))
   }
   return null
@@ -180,7 +190,7 @@ export function nrUnary(op, a) {
   if (!a) return null
   if (op === 'u+') return a
   // (-x is -0 of a +0)
-  if (op === 'u-') return make(-a.hi, -a.lo, a.int, !zero(a), a.nan, a.gap)
+  if (op === 'u-') return make(-a.hi, -a.lo, a.int, !zero(a), a.nan, a.gap, a.whole)
   return null
 }
 
@@ -205,29 +215,30 @@ export function nrMath(name, args, powOf) {
   }
   if (name === 'clz32') return make(0, 32, true, true, false)
   const a = args[0]
-  if (!a) return null
+  // (a rounding of any value is a number integral wherever finite: ToNumber first)
+  if (!a) return args.length === 1 && (name === 'round' || name === 'floor' || name === 'ceil' || name === 'trunc') ? WHOLE : null
   if (name === 'pow') return pow(a, args, powOf)
   if (empty(a)) return NAN
-  // (a rounding of an integer is the integer, -0 and NaN their own; of a finite number an integer; of an infinity, the infinity)
-  if (a.int && args.length === 1 && (name === 'round' || name === 'floor' || name === 'ceil' || name === 'trunc')) return a
-  const whole = !posInf(a) && !negInf(a)
+  // (a rounding of an integer is the integer, -0, NaN and an infinity their own; of a finite number an integer)
+  if (a.whole && args.length === 1 && (name === 'round' || name === 'floor' || name === 'ceil' || name === 'trunc')) return a
+  const finite = !posInf(a) && !negInf(a)
   switch (name) {
-    case 'abs': return args.length === 1 ? make(a.lo >= 0 ? a.lo : a.hi <= 0 ? -a.hi : 0, Math.max(-a.lo, a.hi), a.int, true, a.nan, a.gap) : null
+    case 'abs': return args.length === 1 ? make(a.lo >= 0 ? a.lo : a.hi <= 0 ? -a.hi : 0, Math.max(-a.lo, a.hi), a.int, true, a.nan, a.gap, a.whole) : null
     // (Math.sign(-0) is -0; a value clear of zero is one of -1 and 1)
     case 'sign': return args.length === 1 ? make(a.lo > 0 ? 1 : a.lo < 0 ? -1 : 0, a.hi < 0 ? -1 : a.hi > 0 ? 1 : 0, true, a.nz, a.nan, a.gap > 0 ? 1 : 0) : null
     // (rounding to -0: round of [-0.5, -0], ceil and trunc of (-1, -0], floor of -0 alone)
-    case 'round': return args.length === 1 ? make(Math.round(a.lo), Math.round(a.hi), whole,
-      nonNegative(a) || a.hi < -0.5 || a.gap > 0.5, a.nan, a.gap > 0.5 ? Math.ceil(a.gap - 0.5) : 0) : null
-    case 'floor': return args.length === 1 ? make(Math.floor(a.lo), Math.floor(a.hi), whole, a.nz, a.nan, Math.floor(a.gap)) : null
-    case 'ceil': case 'trunc': return args.length === 1 ? make(name === 'ceil' ? Math.ceil(a.lo) : Math.trunc(a.lo), name === 'ceil' ? Math.ceil(a.hi) : Math.trunc(a.hi), whole,
-      nonNegative(a) || a.hi <= -1 || a.gap >= 1, a.nan, Math.floor(a.gap)) : null
+    case 'round': return args.length === 1 ? make(Math.round(a.lo), Math.round(a.hi), finite,
+      nonNegative(a) || a.hi < -0.5 || a.gap > 0.5, a.nan, a.gap > 0.5 ? Math.ceil(a.gap - 0.5) : 0, true) : null
+    case 'floor': return args.length === 1 ? make(Math.floor(a.lo), Math.floor(a.hi), finite, a.nz, a.nan, Math.floor(a.gap), true) : null
+    case 'ceil': case 'trunc': return args.length === 1 ? make(name === 'ceil' ? Math.ceil(a.lo) : Math.trunc(a.lo), name === 'ceil' ? Math.ceil(a.hi) : Math.trunc(a.hi), finite,
+      nonNegative(a) || a.hi <= -1 || a.gap >= 1, a.nan, Math.floor(a.gap), true) : null
     // (the root of a negative is NaN, of -0 itself)
     case 'sqrt': return args.length === 1 ? a.hi < 0 ? NAN : make(Math.sqrt(Math.max(0, a.lo)), Math.sqrt(a.hi), false, a.nz, a.nan || a.lo < 0, a.lo >= 0 ? Math.sqrt(a.gap) : 0) : null
     case 'min': case 'max': {
       if (args.length !== 2 || !args[1]) return null
       const b = args[1], min = name === 'min'
       if (empty(b)) return NAN
-      return make(min ? Math.min(a.lo, b.lo) : Math.max(a.lo, b.lo), min ? Math.min(a.hi, b.hi) : Math.max(a.hi, b.hi), a.int && b.int, a.nz && b.nz, a.nan || b.nan, Math.min(a.gap, b.gap))
+      return make(min ? Math.min(a.lo, b.lo) : Math.max(a.lo, b.lo), min ? Math.min(a.hi, b.hi) : Math.max(a.hi, b.hi), a.int && b.int, a.nz && b.nz, a.nan || b.nan, Math.min(a.gap, b.gap), a.whole && b.whole)
     }
     default: return null
   }

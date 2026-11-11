@@ -12,10 +12,12 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { NUMBER, NULLISH, ABSENT, STRING, BOOL, ANY, K, kind, join } from '../src/summary/kind.js'
-import { nrSpan } from '../src/summary/num-range.js'
+import { nrSpan, nrWord } from '../src/summary/num-range.js'
 
 // A lifetime's integer hull, as a range publishes it (body-facts.js): never -0; undefined where no walk reached it.
 const hullOf = (v) => v === undefined ? v : v?.nz ? nrSpan(v) : null
+// (each call argument's word hull, as the narrowing reads the walk's values: narrow/summaries.js)
+const wordArgs = (m, call) => m.get(call)?.map(v => nrWord(v) ? [v.lo, v.hi] : null)
 
 test('interval proof: signed recurrence budgets use whole-loop operands and every prefix', () => {
   const prior = ctx.func
@@ -158,7 +160,7 @@ test('interval proof: the index a scan keeps reaches the call after the loop', (
       ['for', ['let', ['=', 'j', 0]], ['<', 'j', 100], ['++', 'j'], ['if', ['>', 'v', 0], keep]], call]
     ctx.func = createActiveFunction({ body })
     scanIntervalIdx(body, () => null, { calls })
-    is(calls.get(call)?.[0] ?? null, expected, label)
+    is(wordArgs(calls, call)?.[0] ?? null, expected, label)
     // (a counter the loop steps itself: the discovery pass leaves the name where it entered)
     if (expected?.[0] > -3 && expected[1] <= 105) {
       const call2 = ['()', 'take', ['+', 'best', 1]], calls2 = new Map([[call2, undefined]])
@@ -166,7 +168,7 @@ test('interval proof: the index a scan keeps reaches the call after the loop', (
         ['while', ['<', 'j', 100], [';', ['if', ['>', 'v', 0], keep], ['++', 'j']]], call2]
       ctx.func = createActiveFunction({ body: body2 })
       scanIntervalIdx(body2, () => null, { calls: calls2 })
-      is(calls2.get(call2)?.[0] ?? null, expected, `${label}, stepped by the body`)
+      is(wordArgs(calls2, call2)?.[0] ?? null, expected, `${label}, stepped by the body`)
     }
   } } finally { ctx.func = prior }
 })
@@ -204,7 +206,7 @@ test('interval proof: returning branches retain only the live continuation range
     ctx.func = createActiveFunction({ body })
     try { scanIntervalIdx(body, () => null, { calls, entry: new Map([['n', [-2147483648, 2147483647]]]) }) }
     finally { ctx.func = prior }
-    is(calls.get(call), [[0, 2147483646]], `${exit} in arm ${branch}: the continuation requires n > 0`)
+    is(wordArgs(calls, call), [[0, 2147483646]], `${exit} in arm ${branch}: the continuation requires n > 0`)
   }
 })
 
@@ -224,7 +226,7 @@ test('interval proof: rounding identities and bounded shift counts preserve exac
     const call = ['()', 'take', arg], body = [';', call], calls = new Map([[call, undefined]])
     ctx.func = createActiveFunction({ body })
     scanIntervalIdx(body, () => null, { calls, entry })
-    is(calls.get(call), [expected], JSON.stringify(arg))
+    is(wordArgs(calls, call), [expected], JSON.stringify(arg))
   } } finally { ctx.func = prior }
 })
 
@@ -241,8 +243,8 @@ test('interval proof: zero-count signed shifts establish complete counter bounds
       scanIntervalIdx(body, () => null, { calls, entry: new Map([['n', n]]), bindings })
       is(hullOf(bindings.get('bound')), [-2147483648, 2147483647], `${op}: an unknown call result becomes a word`)
       is(hullOf(bindings.get('i')), [0, 2147483647], `${op}: the stored counter includes its final landing`)
-      is(calls.get(inside), [[0, 2147483646]], `${op}: the body excludes the bound`)
-      is(calls.get(after), [[0, 2147483647]], `${op}: zero work and completed work share the exit hull`)
+      is(wordArgs(calls, inside), [[0, 2147483646]], `${op}: the body excludes the bound`)
+      is(wordArgs(calls, after), [[0, 2147483647]], `${op}: zero work and completed work share the exit hull`)
     }
   } } finally { ctx.func = prior }
 
@@ -283,7 +285,7 @@ test('interval proof: revisited loop syntax reads live entries and each scan own
     const scan=(seed, lens=()=>16, tree=body)=>{
       const out=new Set(),calls=new Map([[call,undefined]]),bindings=new Map([['j',undefined]])
       scanIntervalIdx(tree, lens, { out, calls, entry: new Map([['seed',seed]]), bindings })
-      return [calls.get(call),hullOf(bindings.get('j')),out.has(read)]
+      return [wordArgs(calls, call),hullOf(bindings.get('j')),out.has(read)]
     }
     const first=scan([0,0])
     is(first,[[[0,5]],[0,6],true],'both occurrences contribute their current initializer value')
@@ -321,11 +323,11 @@ test('interval proof: pure shifted bounds keep word storage separate from their 
     try {
       const calls = new Map([[inside, undefined], [after, undefined], [scalar, undefined]]), bindings = new Map([['i', undefined]])
       scanIntervalIdx(body, () => null, { calls, entry: new Map([['n', [-2147483648, 2147483647]]]), bindings })
-      is(calls.get(inside), [insideWant], `${op}: the body excludes the bound`)
-      is(calls.get(after), [exitWant], `${op}: the final increment remains visible`)
+      is(wordArgs(calls, inside), [insideWant], `${op}: the body excludes the bound`)
+      is(wordArgs(calls, after), [exitWant], `${op}: the final increment remains visible`)
       is(hullOf(bindings.get('i')), bindingWant, `${op}: a wide landing cannot narrow the binding`)
       // ((n + 1) - 1 of a word n is n: past the word in between, a word again)
-      is(calls.get(scalar), [[0, 0], [-2147483648, 2147483647]], 'an intermediate past the word leaves the word it returns to')
+      is(wordArgs(calls, scalar), [[0, 0], [-2147483648, 2147483647]], 'an intermediate past the word leaves the word it returns to')
     } finally { ctx.func = prior; ctx.scope.globalTypes = globals }
   }
 })
@@ -357,7 +359,7 @@ test('interval proof: unknown bindings survive sparse control-flow snapshots', (
       const entry = new Map([['flag', null]])
       if (input !== undefined) entry.set('x', input)
       scanIntervalIdx(body, n => n === 'src' ? 4 : null, { out, calls, entry, bindings })
-      is(calls.get(call), [expected], `${name}: scalar call hull`)
+      is(wordArgs(calls, call), [expected], `${name}: scalar call hull`)
       is(out.has(read), !!expected, `${name}: unknown does not become a proven index`)
     }
   } finally { ctx.func = previous; ctx.scope.constInts = constants; ctx.scope.globalTypes = globals }
@@ -408,10 +410,10 @@ test('interval proof: monotone counter sign bounds remainder without an i32 coun
     ctx.func = createActiveFunction({ body })
     try { scanIntervalIdx(body, () => null, { calls }) }
     finally { ctx.func = prior }
-    is(calls.get(read), [want], `${name}: remainder hull`)
+    is(wordArgs(calls, read), [want], `${name}: remainder hull`)
     if (want) {
-      is(calls.get(counter), [null], 'a sign proof does not claim an i32 counter bound')
-      is(calls.get(after), [null], 'the counter sign does not escape its lexical loop')
+      is(wordArgs(calls, counter), [null], 'a sign proof does not claim an i32 counter bound')
+      is(wordArgs(calls, after), [null], 'the counter sign does not escape its lexical loop')
     }
   }
 })
@@ -512,7 +514,7 @@ test('interval proof: scalar and missing-access results do not require an access
     const body = ['for', ['let', ['=', 'i', 0]], ['<', 'i', limit], ['++', 'i'], [';', call, store]]
     const calls = new Map([[call, undefined]]), stores = new Map([[store, undefined]]), misses = new Map()
     scanIntervalIdx(body, name => name === 'dst' ? 4 : null, { out, calls, stores, misses })
-    is(calls.get(call), [limit ? [0, limit - 1] : null], `argument hull, limit ${limit}`)
+    is(wordArgs(calls, call), [limit ? [0, limit - 1] : null], `argument hull, limit ${limit}`)
     is(stores.get(store), limit ? [1, limit] : null, `stored value hull, limit ${limit}`)
     if (limit > 4) is(misses.get(access), [0, limit - 1, 4], 'the boundary miss retains its complete index hull')
     else if (limit) ok(!misses.has(access), 'every executed access fits')

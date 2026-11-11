@@ -370,7 +370,7 @@ function createFactStore() {
     // a mutation seam (compile/analyze/body-facts.js, program-facts/cache.js), so a fact
     // derived from the whole program is fresh while the revision it was built at is current.
     revision: 0,
-    programFacts: { gen: 0, walkCache: new WeakMap(), moduleInitSlot: new WeakMap(), bodyIntCertain: new WeakMap(), hazard: null },
+    programFacts: { gen: 0, walkCache: new WeakMap(), moduleInitSlot: new WeakMap(), slotWalks: new WeakMap(), hazard: null },
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
     mutationNames: new WeakMap(),

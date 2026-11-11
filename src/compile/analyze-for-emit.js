@@ -2,12 +2,12 @@ import { ctx } from '../ctx.js'
 import { T, isBlockBody, isReassigned, collectAssignedNames, walkAst, MUTATE_OPS, callArgs } from '../ast.js'
 import { plainMember } from '../member-uses.js'
 import { constIntExpr } from '../static.js'
-import { intLevelMap, typedElemCtor } from '../type.js'
+import { typedElemCtor } from '../type.js'
 import { typedCtorName } from '../typed-provenance.js'
 import { boundedSteps } from '../type/bounded-counters.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, boolTagged } from '../kind.js'
 import { paramValTrustworthy } from '../param-reps.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
@@ -32,13 +32,13 @@ import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
 import { withBodyTypedFacts } from './flow-state.js'
 import { typedIdxProven, receiverMayBeAbsent } from '../type/loop-versioning.js'
-import { invalidateIntervalProof } from '../type/interval-proof.js'
+import { invalidateIntervalProof, bindingFlows, flowNumbers, WORD_VALUE, WHOLE_VALUE } from '../type/interval-proof.js'
 import { arraySliceViews } from './array-view.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 import { runsConversion } from './analyze/frame-effects.js'
 import { frameNode } from '../function.js'
 import { viewsOn } from '../../module/schema.js'
-import { K, bitOf, tagsOf, tagOf, core, hasTag } from '../summary/kind.js'
+import { K, NUMBER, bitOf, tagsOf, tagOf, core, hasTag } from '../summary/kind.js'
 
 // A write of a parameter split into a binding of its own (prepare/split-bindings.js
 // `paramWrites`) is the parameter's as the source wrote it, one variable: where one
@@ -537,33 +537,19 @@ export function analyzeFuncForEmit(func, programFacts) {
   // cse planning. Emit asserts agreement under JZ_DEBUG_INVARIANTS.
   if (block) inheritPtrAliases(body, ctx.func.locals, ctx.func.boxed)
 
-  // Closure-capture narrowing: a boxed var whose every defining RHS — owner
-  // body AND nested arrows — is exactly representable as signed i32 keeps its
-  // CELL in i32, so readVar/writeVar skip the f64↔i32 round-trip. Params are
-  // excluded: their cell is seeded from the raw f64 param value, which would
-  // desync an i32-read cell. Integer-valued arithmetic alone proves neither
-  // its magnitude nor the absence of negative zero.
-  //
-  // `ctx.func.localReps.get(name).intCertain` (forward-propagated in analyze.js
-  // via the plain, single-arg `intCertainMap(body)`) only sees defs in THIS
-  // scope's own top level — correct for an ordinary local (it can't be
-  // assigned from inside a nested arrow without becoming a capture) but blind
-  // to the writes that make a name "boxed" in the first place: `let env = 0;
-  // let set = () => { env = 1.5 }` has no top-level def contradicting `env`'s
-  // integer init, so it read back intCertain=true and the cell stayed i32,
-  // silently truncating every closure-body float write. Recompute instead with
-  // `capturedNames` — collectIntDefs' arrow-descending mode — scoped to just
-  // the boxed names, so their nested-arrow write sites join the SAME fixpoint.
+  // Closure-capture narrowing: a boxed var whose every write (owner body AND
+  // nested arrows) is a word keeps its CELL in i32, so readVar/writeVar skip
+  // the f64↔i32 round-trip (cellNumbers). Params are excluded: their cell is
+  // seeded from the raw f64 param value, which would desync an i32-read cell.
   let cellTypes = null
   if (ctx.func.boxed.size) {
     const boxedNames = new Set(ctx.func.boxed.keys())
-    // a scanner's position its closures advance under a test of a length: each step a word (type/bounded-counters.js)
-    const capturedIntLevels = intLevelMap(body, boxedNames, undefined, undefined, undefined, boundedSteps(body, boxedNames))
+    const held = cellNumbers(body, boxedNames, sig.params)
     // and one every definition of which is an unsigned word holds the word, read unsigned
     const words = uint32Cells(body, boxedNames)
     for (const name of boxedNames) {
       if (sig.params.some(p => p.name === name)) continue
-      if (capturedIntLevels.get(name) === 2) (cellTypes ??= new Set()).add(name)
+      if (held.get(name) === WORD_VALUE) (cellTypes ??= new Set()).add(name)
       else if (words.has(name)) { (cellTypes ??= new Set()).add(name); updateRep(name, { unsigned: true }) }
     }
   }
@@ -622,6 +608,29 @@ export function analyzeFuncForEmit(func, programFacts) {
   }
 }
 
+/** The numbers of a frame's cells (`names`: the bindings its closures write)
+ *  as rungs: the meet of their writes in the frame and in every closure
+ *  (type/interval-proof.js flowNumbers), walked in the active frame. A
+ *  parameter starts from what it carries; a binding declared bare only where
+ *  the summary holds it to numbers before any read; a scanner's position its
+ *  closures advance under a test of a length steps no wider than it holds
+ *  (type/bounded-counters.js). One integral wherever finite is intCertain in
+ *  the frame, and in each closure that captures it (module/function.js). */
+export function cellNumbers(body, names, params) {
+  const { flows, unvalued, bare } = bindingFlows([{ body, current: true }], names)
+  const view = ctx.summary?.at(body), start = new Map()
+  for (const name of names) {
+    if (unvalued.has(name) || bare.has(name) && view?.bindingKindOf(name) !== NUMBER) continue
+    const p = params.find(q => q.name === name)
+    const top = !p ? WORD_VALUE : p.ptrKind != null || core(view?.bindingKindOf(name) ?? K.NONE) !== NUMBER ? null
+      : p.type === 'i32' ? WORD_VALUE : p.intLevel ? WHOLE_VALUE : null
+    if (top) start.set(name, top)
+  }
+  const held = flowNumbers(flows, start, boundedSteps(body, names))
+  for (const name of held.keys()) if (!boolTagged(name)) updateRep(name, { intCertain: true })
+  return held
+}
+
 function seedLocalIntConsts(body) {
   // Seed immutable local integer facts with the shared numeric evaluator.
   // Binding eligibility and the i32 storage limit belong to this analysis.
@@ -652,7 +661,8 @@ function seedLocalIntConsts(body) {
       let value = null
       for (const decl of group) {
         const v = constIntExpr(decl[2])
-        if (v == null || !Number.isInteger(v) || v < I32_MIN || v > I32_MAX || (value != null && v !== value)) { value = null; break }
+        // (-0 is no word's: a remainder's sign, a reciprocal's, keeps it)
+        if (v == null || !Number.isInteger(v) || Object.is(v, -0) || v < I32_MIN || v > I32_MAX || (value != null && v !== value)) { value = null; break }
         value = v
       }
       if (value != null) { updateRep(name, { intConst: value }); seeded.add(name); changed = true }

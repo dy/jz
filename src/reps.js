@@ -57,7 +57,8 @@ export const VAL = {
  * @property {number}  [ptrAux]           aux bits in the NaN-box (schema id / elem type).
  * @property {number}  [schemaId]         object-shape id (OBJECT kind).
  * @property {number}  [intConst]         proven constant integer value.
- * @property {boolean} [intCertain]       integer-valued on every path.
+ * @property {boolean} [intCertain]       a number integral wherever finite on every path (-0, NaN and
+ *   an infinity among them): the interval proof's lifetime value (summary/num-range.js `whole`).
  * @property {boolean} [intOrMiss]        integer-valued where its integer typed reads hit; a miss
  *   leaves undefined (NaN through arithmetic). Never a fraction, never a string.
  * @property {boolean} [notString]        proven not a string (skips string-path guards).
@@ -163,6 +164,18 @@ export const updateRep = (name, fields) => {
 }
 
 export const repOfGlobal = name => ctx.scope.globalReps?.get(name)
+
+/** Integral wherever finite (an integer, -0, NaN or an infinity, never a box):
+ *  what the interval proof found the binding holds over its lifetime (a
+ *  local's, a capture's, a parameter's), or the module binding the name reads
+ *  where nothing of the frame shadows it, every write of which anywhere is one
+ *  (plan/scope.js inferModuleIntGlobals). */
+export const intCertainOf = name => {
+  if (repOf(name)?.intCertain === true) return true
+  if (repOfGlobal(name)?.intCertain !== true || ctx.func.boxed?.has(name) || ctx.func.locals?.has(name)) return false
+  const params = ctx.func.current?.params
+  return !params?.some(p => p.name === name)
+}
 
 export const updateGlobalRep = (name, fields) => {
   if (DBG_INVARIANTS) assertRepFields(name, fields)

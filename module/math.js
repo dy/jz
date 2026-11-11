@@ -15,7 +15,7 @@
 import { typed, asF64, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit, emitter, reg, deps, tag, wat as watRaw } from '../src/bridge.js'
 import { inc, err } from '../src/ctx.js'
-import { repOf, VAL } from '../src/reps.js'
+import { repOf, VAL, intCertainOf } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { roundedQuotient } from '../src/static.js'
 import { exprType, isUnsignedI32Expr } from '../src/type/expr-type.js'
@@ -75,7 +75,7 @@ export default (ctx) => {
   // fires for schema-field reads `o.x` when every observed write to that slot
   // is integer-shaped (ctx.schema.slotIntCertainAt).
   const isIntCertain = a => {
-    if (typeof a === 'string') return repOf(a)?.intCertain === true
+    if (typeof a === 'string') return intCertainOf(a)
     if (Array.isArray(a) && a[0] === '.' && typeof a[1] === 'string' && typeof a[2] === 'string') {
       return ctx.schema.slotIntCertainAt?.(a[1], a[2]) === true
     }
@@ -184,12 +184,15 @@ export default (ctx) => {
     ctx.core.emit[name] = a => wordRounding(name, a) ?? fInt(WORD_ROUNDING_OPS[name], a)
   // Math.min/max fold their operands with a wasm op. f64.min/max PROPAGATE a
   // NaN but never MINT one, so `canon` is needed only when an operand could
-  // itself be NaN. An operand provably never is when it's an intCertain local/
-  // slot, a non-NaN numeric literal, or an i32-typed carrier (`x|0`, compares,
-  // lengths). When every operand qualifies, drop `canon` — erasing its cost
-  // from the common integer-clamp idiom Math.min(idx, len) / Math.max(x|0, lo).
+  // itself be NaN. An operand provably never is when it's a local of an integer
+  // hull (its range: an integral one may still be NaN, `Math.floor(NaN)`), a
+  // word slot, a non-NaN numeric literal, or an i32-typed carrier (`x|0`,
+  // compares, lengths). When every operand qualifies, drop `canon`, erasing its
+  // cost from the common integer-clamp idiom Math.min(idx, len) / Math.max(x|0, lo).
   const neverNaN = (src, v) =>
-    isIntCertain(src) || (typeof src === 'number' && src === src) ||
+    (typeof src === 'string' && repOf(src)?.range != null) ||
+    (Array.isArray(src) && src[0] === '.' && typeof src[1] === 'string' && typeof src[2] === 'string' && !!ctx.schema.slotI32CertainAt?.(src[1], src[2])) ||
+    (typeof src === 'number' && src === src) ||
     (v.type === 'i32' && v.ptrKind == null) || (isLit(v) && litVal(v) === litVal(v))
   const minmax = (op, ident) => (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', ident], 'f64')
@@ -206,8 +209,10 @@ export default (ctx) => {
   ctx.core.emit['math.max'] = minmax('f64.max', -Infinity)
   // f64.nearest is roundTiesToEven; JS Math.round is roundTiesToward+∞. They agree
   // everywhere except exact half-integers n+0.5 with n even (nearest→n, JS→n+1).
-  // Detect that one case — `nearest(x) === x - 0.5` — and bump by one. (The −0.5→−0
-  // and 0.49999…94→0 edges already match `f64.nearest`.)
+  // Detect that one case (`x - nearest(x) === 0.5`, exact below 2^52 where a
+  // half exists) and bump by one. (`nearest(x) === x - 0.5` held of an even
+  // integer past 2^52, where x - 0.5 rounds back to x. The −0.5→−0 and
+  // 0.49999…94→0 edges already match `f64.nearest`.)
   ctx.core.emit['math.round'] = a => {
     if (isIntCertain(a)) return asF64(emit(a))
     const t = temp('rnd'), n = temp('rnd')
@@ -217,7 +222,7 @@ export default (ctx) => {
       ['select',
         ['f64.add', ['local.get', `$${n}`], ['f64.const', 1]],
         ['local.get', `$${n}`],
-        ['f64.eq', ['local.get', `$${n}`], ['f64.sub', ['local.get', `$${t}`], ['f64.const', 0.5]]]],
+        ['f64.eq', ['f64.sub', ['local.get', `$${t}`], ['local.get', `$${n}`]], ['f64.const', 0.5]]],
     ], 'f64')
   }
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')

@@ -14,7 +14,7 @@ import {
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { K, NUMBER, core, hasTag, isNullable, tagOf } from '../../summary/kind.js'
-import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
+import { VAL, lookupValType, repOf, repOfGlobal, intCertainOf } from '../../reps.js'
 import { foldIntCompare } from '../../ir/numeric.js'
 import { nonNegIntLiteral, intExprRange } from '../../static.js'
 import { typedIdxProven, exprType } from '../../type.js'
@@ -181,7 +181,7 @@ function intIndexIR(key) {
   // an integral name of no such bound (a counter under a length of no known
   // receiver): its word below 2^31, else -1, which names no element (NaN, an
   // infinity and an integer past it read none)
-  if (typeof key === 'string' && repOf(key)?.intCertain === true) {
+  if (typeof key === 'string' && intCertainOf(key)) {
     const t = temp('ik'), k = ['local.get', `$${t}`]
     return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(key))],
       ['select', asI32(typed(k, 'f64')), ['i32.const', -1],

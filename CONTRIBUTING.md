@@ -1131,7 +1131,7 @@ evaluated at the call over its arguments' numbers, so `round(d * sf)` over
 makes as many elements as its receiver has (`lens`), and `Array(n).fill()`
 fills its count with undefined. A read the summary holds inside the length of a
 dense array whose numbers are words (`wordReadRange`) is a word: the emitter
-truncates the load (module/array.js), local typing, the integer levels and
+truncates the load (module/array.js), local typing, the interval proof and
 intExprRange read it as one, so a table of tables built by `.map` over
 `Math.round` (decode-qoa's `qoa_dequant_tab[sf][q]`) adds and clamps in i32.
 test/element-numbers.js pins the facts, what opens them, the codegen and the
@@ -1482,7 +1482,7 @@ the copy declares `x = x | 0` noted with the bound the guard proved (`decl.lo`,
 `decl.hi`, `decl.bound`), and the summary keeps that hull while every later
 assignment stays inside it (`ptr = (ptr + 1) % m` under `m > 0` stays below
 `m`, and below the array `m` is the length of): compile/analyze/body-facts.js
-stamps the hull as the binding's range, int-certain.js takes a remainder by a
+stamps the hull as the binding's range, the table takes a remainder by a
 divisor of positive hull as integral, and the element paths read and store a
 proven index without a length test or growth. The copies cover the statements
 through the last loop reading a cursor or an array; a cursor assigned there is
@@ -1497,8 +1497,9 @@ and literals the dividend is made of, a `for` counter under its bound or a
 `while` counter declared before its loop and stepped by literals) by a divisor
 word is the i64 remainder, behind a zero test where the word may be zero, and
 an i32 where the divisor's hull is positive and the dividend non-negative; a
-quotient under a test of its remainder (`if (a % b === 0) x = a / b`) is an
-integer (type/int-certain.js, read by plan/integral-loops.js too), so a
+quotient under a test of its remainder (`if (a % b === 0) x = a / b`), where
+neither the test nor the arm writes an operand, is an integer
+(type/interval-proof.js, read by plan/integral-loops.js too), so a
 polyphase resampler's stride test and source index run in words. A loop
 whose body stores into an array only at indices proven inside its length,
 reaching it no other way, saves the array for the reset once ahead of the
@@ -3289,12 +3290,22 @@ field or element read and a dynamic callee's result prove nothing by
 themselves. Carriers enter the walk as values where the
 summary holds them to numbers: a word parameter's and a word module binding's
 word, a call's word result, a code unit read in bounds, a sized property, a
-word field. The integer levels (`type/int-certain.js`: `rep.intCertain`, the
-slot census, a callee's parameter, until the proof serves those readers) answer
-for the writes one body holds: a name it writes and does not declare (a module
-binding, a capture, a closure's parameter) starts from what is known of every
-write of it, its storage's word or its declarer's level, never from its own
-integer writes. Over a counted loop the proof bounds a name every
+word field. Whether a binding holds integers wherever finite (an integer, -0,
+NaN or an infinity: the table's `whole`) is the proof's answer too:
+`rep.intCertain` of a local or a parameter is its lifetime value's
+(analyze/body-facts.js; `rep.intOrMiss` the same over a second walk that takes
+every integer typed read as hitting, where one is unproven: a miss leaves
+undefined, which a key's test finds), and a binding written in more than one flow has one
+value, the meet of its writes in every flow that can run, found by walking
+each flow under the hypothesis that the binding holds its rung (a word, an
+integer wherever finite) wherever the walk knows no more of it
+(`interval-proof.js` flowNumbers): a module global (plan/scope.js, read by
+`intCertainOf` where no local shadows it), a cell its closures write
+(analyze-for-emit.js cellNumbers), a word parameter a closure writes
+(narrow/param-abi.js), a parameter every call passes an integral Number and
+every write keeps one (narrow/int-params.js, its callers walked under the
+hypothesis of their own), and a schema slot (program-facts/slot-int-census.js,
+its reads answered by the census's own levels). Over a counted loop the proof bounds a name every
 write of which steps it by the trips times each way's most step (integers
 exactly, a Number stepped by constants on a binary grid). A test of a name's truth
 (`while (x--)`, `if (left)`) refines it, and a test that writes leaves its writes
@@ -4684,8 +4695,8 @@ carrier and holds numbers: a store of a value that may carry an atom (a
 field, an element, a result) lands as its ToNumber. No such binding rejects;
 `test/bool-number.js` pins each operation in each place. An integer-certain
 binding counts the writes a nested closure makes to it, and a reassigned
-parameter its caller's value (`intLevelMap` seeds the analyzed body's own
-parameters, the slot census's included). A Boolean answers its own
+parameter its caller's value (the proof's entry is the parameter's carried
+number, the slot census's walks included). A Boolean answers its own
 `toString` ("true", not "1": `.boolean:toString` for a Boolean receiver, an
 atom arm in the runtime method dispatch).
 

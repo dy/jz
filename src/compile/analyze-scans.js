@@ -1227,8 +1227,8 @@ const escapeInRangeI32 = (node) => {
 
 // Math.imul/Math.clz32: JS ToInt32-coerces every argument before computing
 // (spec-defined, unconditionally — same "wrap IS the semantics" contract as
-// the bitwise operators; mirrors type.js intLevelMap's INT_MATH_FNS_I32,
-// the level-2/STRICT math-fn subset). Math.floor/ceil/round/trunc are
+// the bitwise operators; the table's word rule for them, summary/num-range.js
+// nrMath). Math.floor/ceil/round/trunc are
 // deliberately EXCLUDED — those need the argument's ACTUAL magnitude
 // (floor(NaN) is NaN, not 0), so a wrapped-i32 read there is NOT safe.
 const INT_MATH_FNS_I32 = new Set(['imul', 'clz32'])

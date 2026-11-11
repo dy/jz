@@ -13,7 +13,7 @@ import { TO_PRIMITIVE } from '../evaluation-effects.js'
 import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
-import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
+import { VAL, repOf, numericStorage, mayBeUndefined, intCertainOf } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, boolTagged, mixedBoolKind, payloadFree } from '../kind.js'
 import { intExprRange } from '../static.js'
 import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
@@ -415,7 +415,7 @@ export function toNumF64(node, v, word = false) {
   }
   // Integer-valued definitions may include booleans. Identity-observed locals
   // retain their atoms and still need ToNumber at a numeric use.
-  if (typeof node === 'string' && repOf(node)?.intCertain === true && !numericDenied(node)) return asF64(v)
+  if (typeof node === 'string' && intCertainOf(node) && !numericDenied(node)) return asF64(v)
   // intCertain schema slot reads `o.x`: every observed write is integer-shaped,
   // so the loaded f64 is a plain number — same justification as the local case.
   if (Array.isArray(node) && node[0] === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {

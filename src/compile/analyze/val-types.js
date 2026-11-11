@@ -1,13 +1,13 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
 import { OPTF, ctx } from '../../ctx.js'
 import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR } from '../../ast.js'
-import { VAL, meetRange, repOf, updateRep } from '../../reps.js'
-import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
+import { VAL, meetRange, updateRep } from '../../reps.js'
+import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
-import { isCondExpr, intCertainMaps } from '../../type.js'
+import { isCondExpr } from '../../type.js'
 import { makeTypedTracker, joinReassignedTypedLens, dropDisagreeingTypedDefs } from './trackers.js'
 import { analyzeValueFacts } from './body-facts.js'
-import { findMutations, hasSingleInitializer } from '../analyze-scans.js'
+import { hasSingleInitializer } from '../analyze-scans.js'
 import { K, hasTag, valOf, valBesidePresence, core, ANY } from '../../summary/kind.js'
 
 /** True iff `name` appears in `body` ONLY as the receiver of an indexed read
@@ -439,32 +439,4 @@ export function analyzeValTypes(body) {
   joinReassignedTypedLens(body, n => ctx.func.typedElem?.has(n) ?? false,
     n => ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l))
-}
-
-/** Forward-propagate `intCertain` on local bindings. Fixpoint lives in type.js.
- *  Threads the settled slot census as the `.prop`-read resolver — without it a
- *  binding built from an int-certain slot (`const x = hitX ? p.x : nx`) stayed
- *  uncertain and every consumer re-paid the ToNumber guard. A binding a
- *  nested closure assigns has that write among its definitions: a read after
- *  the closure ran sees what it stored (a Boolean, a string), not the integer
- *  the body's own definitions give it. */
-export function analyzeIntCertain(body) {
-  // A captured binding's initializer is only one of its definitions. Include
-  // writes in nested closures before publishing integer facts to consumers
-  // such as Math.floor and to the closure's own representation snapshot.
-  const captured = new Set()
-  findMutations(body, ctx.func.locals, captured)
-  const slotIntOf = ctx.schema?.slotIntCertainAt
-    ? (obj, prop) => {
-      const id = ctx.schema.readSidOf?.(obj) ?? ctx.schema.idOf?.(obj)
-      if (id == null) return null
-      const idx = ctx.schema.list[id]?.indexOf(prop)
-      if (idx == null || idx < 0) return null
-      return ctx.schema.slotIntCertainAt(obj, prop)
-    }
-    : undefined
-  // (a capture's level is its declarer's, which holds every closure's writes: closure-emit.js seeds it)
-  const { certain, missable } = intCertainMaps(body, captured, slotIntOf, name => repOf(name)?.intCertain === true ? 1 : 0)
-  for (const [name, l] of certain) if (l && !boolTagged(name)) updateRep(name, { intCertain: true })
-  for (const [name, l] of missable) if (l && !certain.get(name) && !boolTagged(name)) updateRep(name, { intOrMiss: true })
 }

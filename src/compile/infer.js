@@ -50,7 +50,7 @@
 
 import { ctx } from '../ctx.js'
 import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
-import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
+import { analyzeValTypes } from './analyze.js'
 import { isNullishLit } from '../ir.js'
 import { typedStaticLen } from '../type.js'
 import { typedStorageCtorFromContext } from '../typed-context.js'
@@ -216,10 +216,10 @@ export const inferParams = (body, candidates) =>
 // function body. Two layers fold together here:
 //
 //   • `inferParams` (above) seeds undecided params with its evidence.
-//   • Body-wide ctx-mutating passes (`analyzeValTypes`, `analyzeIntCertain`)
-//     walk the AST and write directly to `ctx.func.localReps` — they also
-//     populate `ctx.func.typedElem`, `ctx.schema.vars`, regex tracking, etc.
-//     and stay in analyze.js where their helpers live.
+//   • The body-wide ctx-mutating pass (`analyzeValTypes`)
+//     walks the AST and writes directly to `ctx.func.localReps`; it also
+//     populates `ctx.func.typedElem`, `ctx.schema.vars`, regex tracking, etc.
+//     and stays in analyze.js where its helpers live.
 //
 // Callers in compile.js used to repeat the merge boilerplate at every emit
 // entry; centralizing it here keeps the ordering invariant in one place
@@ -236,7 +236,6 @@ export const inferLocals = (body, candidates) => {
     for (const [n, fact] of inferred) updateRep(n, fact)
   }
   analyzeValTypes(body)
-  analyzeIntCertain(body)
 }
 
 // === Module-global value-fact recording ===================================

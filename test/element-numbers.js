@@ -95,17 +95,21 @@ test('element numbers: values that are not words read as they are', () => {
 // points (NaN, -0, the infinities and magnitudes past 2^53 among them) and
 // integers of an open end, the intervals a loop's widening leaves.
 test('element numbers: the transfer rules hold of the values they bound', async () => {
-  const { nrPoint, nrInts, nrJoin, nrBinary, nrUnary, nrMath } = await import('../src/summary/num-range.js')
+  const { nrPoint, nrInts, nrJoin, nrBinary, nrUnary, nrMath, NUMBER } = await import('../src/summary/num-range.js')
   const { powRuntime } = await import('../src/prepare/math-kernel.js')
   const POOL = [-0, 0, 0.25, -0.5, 0.5, 0.75, -0.75, 1, -1, 1.5, -2.5, 3, 7, -7, 16, -16, 31, 33, 255, 2048, -14336, 2 ** 31 - 1, 2 ** 31, -(2 ** 31), 2 ** 32,
     1e-200, -1e-200, 2 ** 53 + 2, -(2 ** 60), 1e300, -1e300, 1.7e308, NaN, Infinity, -Infinity]
+  // (and numbers integral wherever finite: what Math.floor makes of any number, an infinity among them)
   const OPEN = [[nrInts(0, Infinity), [0, 1, 15, 16, 2 ** 40, 1e300]], [nrInts(-Infinity, 3), [3, 0, -1, -16, -(2 ** 60), -1.7e308]],
-    [nrInts(-Infinity, Infinity), [0, -5, 5, 1e308, -1e308]]]
+    [nrInts(-Infinity, Infinity), [0, -5, 5, 1e308, -1e308]],
+    [nrMath('floor', [NUMBER]), [0, -0, 5, -5, 2 ** 60, -1e300, NaN, Infinity, -Infinity]],
+    [nrMath('floor', [nrBinary('/', nrInts(0, Infinity), nrPoint(3))]), [0, 1, 7, 2 ** 60, 1.7e308, Infinity]]]
   let seed = 7
   const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 2 ** 32 }
   const pick = () => { const n = 1 + Math.floor(rnd() * 3), s = []; for (let i = 0; i < n; i++) s.push(POOL[Math.floor(rnd() * POOL.length)]); return s }
   const operand = () => { if (rnd() < 0.2) return OPEN[Math.floor(rnd() * OPEN.length)]; const s = pick(); return [s.map(nrPoint).reduce(nrJoin), s] }
-  const holds = (r, v) => Number.isNaN(v) ? r.nan : v >= r.lo && v <= r.hi && (!r.int || Number.isInteger(v)) && (!r.nz || !Object.is(v, -0)) && Math.abs(v) >= r.gap
+  const holds = (r, v) => Number.isNaN(v) ? r.nan : v >= r.lo && v <= r.hi && (!r.int || Number.isInteger(v)) &&
+    (!r.whole || !Number.isFinite(v) || Number.isInteger(v)) && (!r.nz || !Object.is(v, -0)) && Math.abs(v) >= r.gap
   // values of a range: its set's, its ends where they keep its facts, draws inside it
   const values = (r, set) => {
     const out = [...set]

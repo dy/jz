@@ -1,6 +1,6 @@
 /**
  * program-facts split — fact-store cache lifecycle (the `gen`/`walkCache`/
- * `moduleInitSlot`/`bodyIntCertain` WeakMaps every other program-facts
+ * `moduleInitSlot`/`slotWalks` WeakMaps every other program-facts
  * module reads through `getFactStore().programFacts`). See
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/cache
@@ -15,6 +15,6 @@ export function invalidateProgramFactsCache(...roots) {
     if (r == null || typeof r !== 'object') continue
     pf.walkCache.delete(r)
     pf.moduleInitSlot.delete(r)
-    pf.bodyIntCertain.delete(r)
+    pf.slotWalks.delete(r)
   }
 }

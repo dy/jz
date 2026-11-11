@@ -30,9 +30,7 @@ import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
 import { liftedPropOf } from '../analyze/func-namespaces.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
-import { writtenNumbers } from '../../type/interval-proof.js'
-import { nrInts, nrWord } from '../../summary/num-range.js'
-import { enterActiveFunction, restoreActiveFunction } from '../active-function.js'
+import { bindingFlows, flowNumbers, WORD_VALUE } from '../../type/interval-proof.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { includeForNamedCall, includeForGenericMethod, isNamedCallee } from '../../autoload.js'
 import { liveFunctions } from './scratch.js'
@@ -249,16 +247,16 @@ export const unboxConstTypedGlobals = () => {
 // (i32) only where every value the program writes to it, anywhere, is one, or
 // where every read of it re-applies ToInt32 (`collectGlobalBareEscapes`: a
 // bitwise or Math.imul/clz32 operand, the value stored to an integer element,
-// a copy into such a binding); a Number otherwise. The values are the interval
-// proof's at each write, in the flow the write runs in: the module's own
-// statements, each function and each closure, every candidate still standing
-// a word wherever a walk knows no more of it (a greatest fixpoint over the
-// candidates: a write that read one dropped walks again). A parameter, a host
-// import's result, a field or an element read and a dynamic callee's result
-// hold the numbers the summary and the walk give them, none where they give
-// none. An i32 `width` makes `mem[y*width+x]` a fully-i32 index and an i32 `N`
-// the guard `i < N` pure-i32: where the program proves them.
-const GLOBAL_WORD = nrInts(I32_MIN, I32_MAX)
+// a copy into such a binding); a Number otherwise, an integer wherever finite
+// (`intCertain`: floor elided, a key read whole) where every write is one. The
+// values are the interval proof's at each write, in the flow the write runs
+// in: the module's own statements, each function and each closure, every
+// candidate still standing on its rung wherever a walk knows no more of it
+// (type/interval-proof.js flowNumbers). A parameter, a host import's result, a
+// field or an element read and a dynamic callee's result hold the numbers the
+// summary and the walk give them, none where they give none. An i32 `width`
+// makes `mem[y*width+x]` a fully-i32 index and an i32 `N` the guard `i < N`
+// pure-i32: where the program proves them.
 // (a read the global census excuses by no range: a module binding's word is the writes' proof)
 const ALL_WIDE = { has: () => true }
 export const inferModuleIntGlobals = (ast) => {
@@ -282,39 +280,20 @@ export const inferModuleIntGlobals = (ast) => {
   // Every flow a write may run in: the module's statements, each function, and
   // each closure among them (a flow of its own: it runs whenever it is called),
   // with the candidates each writes. A write no walk values (a pattern's, a
-  // loop head's) proves no word.
-  const words = new Set([...candidates].filter(name => !missing.has(name))), flows = []
-  const unvalued = (n) => { if (typeof n === 'string') words.delete(n); else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) unvalued(n[i]) }
-  const gather = (root, sig) => {
-    const writes = new Set()
-    walkAst(root, { enter: n => {
-      if (n[0] === '=>') { gather(n[2], sig); return false }
-      if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') { if (candidates.has(n[1])) writes.add(n[1]) }
-      else if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') unvalued(n[1])
-      else if (n[0] === 'for' && Array.isArray(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) unvalued(n[1][1])
-      else if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=' && candidates.has(n[i][1])) writes.add(n[i][1])
-    } })
-    if (writes.size) flows.push({ body: root, sig, writes })
-  }
-  gather(ast, null)
-  for (const init of ctx.module.moduleInits || []) gather(init, null)
+  // loop head's) proves nothing, nor does a read that may find none.
   const funcs = ctx.funcs.list.filter(f => f.body && !f.raw)
-  for (const f of funcs) gather(f.body, f.sig)
-  for (let dropped = true; dropped && words.size;) {
-    dropped = false
-    const assume = name => words.has(name) ? GLOBAL_WORD : null
-    for (const { body, sig, writes } of flows) {
-      if (![...writes].some(name => words.has(name))) continue
-      const prev = enterActiveFunction(ctx, { sig, body })
-      let written
-      try { written = writtenNumbers(body, assume) } finally { restoreActiveFunction(ctx, prev) }
-      for (const [node, v] of written) if (words.has(node[1]) && !nrWord(v)) { words.delete(node[1]); dropped = true }
-    }
-  }
+  const roots = [{ body: ast, sig: null }, ...(ctx.module.moduleInits || []).map(body => ({ body, sig: null })), ...funcs.map(f => ({ body: f.body, sig: f.sig }))]
+  const { flows, unvalued } = bindingFlows(roots, candidates)
+  const start = new Map()
+  for (const name of candidates) if (!missing.has(name) && !unvalued.has(name)) start.set(name, WORD_VALUE)
+  const held = flowNumbers(flows, start)
   const bodies = [ast, ...(ctx.module.moduleInits || []), ...funcs.map(f => isBlockBody(f.body) ? f.body : ['return', f.body])]
   const escaped = collectGlobalBareEscapes(bodies, name => ctx.scope.globals.has(name), ALL_WIDE)
   let retyped = false
-  for (const name of candidates) if (words.has(name) || !escaped.has(name)) { declGlobal(name, 'i32'); retyped = true }
+  for (const name of candidates) {
+    if (held.has(name)) updateGlobalRep(name, { intCertain: true })
+    if (held.get(name) === WORD_VALUE || !escaped.has(name)) { declGlobal(name, 'i32'); retyped = true }
+  }
   return retyped
 }
 

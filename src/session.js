@@ -133,13 +133,11 @@ export function targetProfileFor(host) {
  *   programFacts.moduleInitSlot per-module-init-node slot-observation memo
  *                                (collectSlotConstants). Same DEPS as walkCache —
  *                                shares its `gen` counter and reset call.
- *   programFacts.bodyIntCertain per-body int-certainty memo
- *                                (analyzeSchemaSlotIntCertain). Same DEPS as
- *                                walkCache, PLUS: dropped mid-pass whenever a
- *                                slot-int census round flips (a newly-poisoned
- *                                slot can invalidate a checker baked from the
- *                                previous round's optimism — see the `rounds`
- *                                loop in analyzeSchemaSlotIntCertain).
+ *   programFacts.slotWalks       per-flow-root interval-proof values of the slot
+ *                                census's early mode, with the slot levels each
+ *                                walk read (analyzeSchemaSlotIntCertain). Same
+ *                                DEPS as walkCache, PLUS: an entry answers only
+ *                                while every level it read stands.
  *   programFacts.hazard          slotWriteHazards memo, keyed by (gen, late)
  *                                (collectSlotWriteHazards). Same DEPS as
  *                                walkCache; the `late` flag is compared on

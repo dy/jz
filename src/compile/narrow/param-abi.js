@@ -10,7 +10,7 @@
 import { ctx } from '../../ctx.js'
 import { withCurrentFunction } from '../flow-state.js'
 import { findMutations, reanalyzeBody, clearBodyFacts, invalidateBodies } from '../analyze.js'
-import { intLevelMap } from '../../type.js'
+import { bindingFlows, flowNumbers, WORD_VALUE } from '../../type/interval-proof.js'
 import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
 import { PTR_ABI_KINDS } from './caller-ctx.js'
@@ -24,16 +24,19 @@ import { frameNode } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { mixesNumericKinds } from '../numeric-mix.js'
 
-// A mutable i32 parameter needs the shared lattice's STRICT signed-word
-// level, not merely its integer-valued level: `p++`, arithmetic, unsigned
-// shifts and negation can exceed signed width or produce -0. Include writes
-// through nested closures so the representation covers the binding's lifetime.
+// A mutable i32 parameter holds a signed word over its lifetime only where
+// every write of it is one: `p++`, arithmetic, unsigned shifts and negation
+// can exceed signed width or produce -0. The writes are the interval proof's,
+// in the function and in each closure that writes it (type/interval-proof.js
+// flowNumbers), under the hypothesis that the parameter is the word.
 function isIntSafeMutatedParam(func, p) {
   const saved = p.type
   p.type = 'i32'
-  const level = withCurrentFunction(func.sig,
-    () => intLevelMap(frameNode(func), new Set([p.name]), null).get(p.name) ?? 0)
-  if (level < 2) { p.type = saved; return false }
+  const word = withCurrentFunction(func.sig, () => {
+    const { flows, unvalued } = bindingFlows([{ body: frameNode(func), sig: func.sig }], new Set([p.name]))
+    return !unvalued.has(p.name) && flowNumbers(flows, new Map([[p.name, WORD_VALUE]])).get(p.name) === WORD_VALUE
+  })
+  if (!word) { p.type = saved; return false }
   return true
 }
 

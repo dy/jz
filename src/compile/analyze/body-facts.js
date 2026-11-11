@@ -104,26 +104,42 @@ export function analyzeBody(body, storage = true) {
  * proofs. A later full query upgrades the same epoch's cached observations. */
 export const analyzeValueFacts = body => analyzeBody(body, false)
 
-// The numbers of every local over its lifetime come from the interval proof:
-// they decide its storage (widenLocalTypes) and bound its reads (its range).
+// The numbers of every local and parameter over its lifetime come from the
+// interval proof: they decide a local's storage (widenLocalTypes), bound its
+// reads (its range) and say which hold integers wherever finite (intCertain).
 const bindingRequests = (locals) => {
   let requests
   for (const name of locals.keys()) (requests ||= new Map()).set(name, undefined)
+  for (const p of ctx.func.current?.params || []) if (!locals.has(p.name)) (requests ||= new Map()).set(p.name, undefined)
   return requests
 }
 // A body's element counts: its own locals' as the walk tracked them, the function's for the rest.
 const bodyLens = (locals, typedLens) => n => locals.has(n) ? typedLens?.get(n) ?? null : functionLens(n)
 // The element reads other provers hold in bounds (the canonical scans, the guards).
 const presentBy = (nodes, missBlind) => n => nodes.has(n) || missBlind.has(n) || getFactStore().guardProven.has(n)
-const publishBindingHulls = hulls => {
+const publishBindingHulls = (hulls, locals) => {
   if (hulls) for (const name of hulls.keys()) {
-    // (a range is an integer hull, never -0: a word's storage may read it)
-    const v = hulls.get(name), range = v?.nz ? nrSpan(v) : null
+    const v = hulls.get(name)
+    // (no Boolean: the proof values none, and one carried as its atom is no number at all)
+    if (v?.whole && v.lo <= v.hi && !boolTagged(name)) updateRep(name, { intCertain: true })
+    // (a range is an integer hull, never -0: a word's storage may read it; a parameter's are its callers')
+    const range = v?.nz && locals.has(name) ? nrSpan(v) : null
     if (!range) continue
     // Independent whole-binding proofs meet. A fractional recurrence may
     // bound its word projection more tightly than the integer interpreter.
     meetRange(name, range)
   }
+}
+
+// A binding integral wherever its integer typed reads hit (`intOrMiss`): a miss
+// leaves undefined, which arithmetic carries as NaN and a key's test finds, never
+// a fraction. Where one such read is unproven, the walk again with every read
+// taken as hitting: what is integral there and not over the first walk is.
+function publishMissable(body, locals, hulls, lens) {
+  const hits = bindingRequests(locals)
+  if (!hits) return
+  scanIntervalIdx(body, lens, { entry: paramEntry(), bindings: hits, present: () => true })
+  for (const [name, v] of hits) if (v?.whole && v.lo <= v.hi && !hulls.get(name)?.whole && !boolTagged(name)) updateRep(name, { intOrMiss: true })
 }
 
 function refineStorageFacts(body, facts, cache) {
@@ -138,7 +154,7 @@ function refineStorageFacts(body, facts, cache) {
     const locals = new Map(pending.locals)
     stampLoopCounterRanges(body)
     stampCountdowns(body)
-    publishBindingHulls(hulls)
+    publishBindingHulls(hulls, locals)
     const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent, hulls, pending.missBlind)
     result = { ...facts, locals, unsignedLocals, wordLocals, __storagePending: null }
   }))
@@ -349,7 +365,8 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     // meets the initializer's own hull where there is one.
     let declRange = intExprRange(rhs)
     const hull = summary?.hullOf?.(name)
-    if (hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]))
+    // (an end at -0 is a value that may be -0, which no integer hull holds)
+    if (hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]) && !Object.is(hull[0], -0) && !Object.is(hull[1], -0))
       declRange = declRange ? [Math.max(declRange[0], hull[0]), Math.min(declRange[1], hull[1])] : hull
     if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && declRange[0] <= declRange[1] && (hull || singleInitializer(name) || sameInitializers(name)))
       updateRep(name, { range: declRange })
@@ -576,7 +593,8 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     // an observed local needs its complete hull, not just its init)
     stampLoopCounterRanges(body)
     stampCountdowns(body)
-    publishBindingHulls(bindingHulls)
+    publishBindingHulls(bindingHulls, locals)
+    if (bindingHulls && typedReads.some(r => !presentNodes.has(r) && !missBlind.has(r))) publishMissable(body, locals, bindingHulls, bodyLens(locals, typedLens))
     if (deferredHulls) {
       const ranges = new Map()
       for (const name of locals.keys()) {

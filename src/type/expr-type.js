@@ -12,7 +12,7 @@
 import { isI32 } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { K, NUMBER, BOOL, core, hasTag } from '../summary/kind.js'
-import { VAL, lookupValType, repOf } from '../reps.js'
+import { VAL, lookupValType, repOf, intCertainOf } from '../reps.js'
 import {
   hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
@@ -305,7 +305,7 @@ const WHOLE_OPS = new Set(['+', '-', '*'])
 // A bitwise operator over Numbers is a 32-bit integer whatever its operands (`(h ^ k) & 255`).
 const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 export const wholeKey = (e) => {
-  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
+  if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || intCertainOf(e)
   if (!Array.isArray(e)) return false
   if (e[0] == null) return Number.isInteger(e[1])
   // a field every store of which is integral (the slot census: `ch.k0` stepped by one from a literal)

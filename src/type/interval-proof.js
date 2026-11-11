@@ -11,17 +11,18 @@
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS, REFS_IN_EXPR, refsName, callArgs, alwaysLeaves, collectAssignedNames,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, REFS_IN_EXPR, refsName, callArgs, alwaysLeaves, collectAssignedNames, effectiveWriteValue,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { intLiteralValue, typedCtorRawOf, intExprRange } from '../static.js'
+import { intLiteralValue, typedCtorRawOf, intExprRange, staticObjectProps } from '../static.js'
 import { typedElemAux, TYPED_ELEM_F16_FLAG, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
-import { nrBinary, nrUnary, nrMath, nrInts, nrPoint, nrValue, nrJoin, nrEqual, nrSpan, nrWord } from '../summary/num-range.js'
+import { nrBinary, nrUnary, nrMath, nrInts, nrPoint, nrValue, nrJoin, nrEqual, nrSpan, nrWord, NR_WHOLE } from '../summary/num-range.js'
 import { exprType } from './expr-type.js'
 import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget, scanBoundedLoops } from './canonical-bounds.js'
 import { K, NUMBER, bitOf, TAGS, NULL_BITS, core } from '../summary/kind.js'
-import { VAL, lookupValType } from '../reps.js'
+import { VAL, lookupValType, repOfGlobal } from '../reps.js'
 import { propValType } from '../kind-traits.js'
+import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
@@ -43,10 +44,10 @@ const empty = (v) => v.lo > v.hi
 const indexSpan = (v) => v && !empty(v) && v.int && !v.nan && v.lo >= 0 && v.hi <= I32_MAX ? [v.lo, v.hi] : null
 const wordSpan = (v) => nrWord(v) ? [v.lo, v.hi] : null
 // Every fact both values state of one value: what a test leaves of a name, a theorem's cap.
-const meet = (a, b) => nrValue(Math.max(a.lo, b.lo), Math.min(a.hi, b.hi), a.int || b.int, a.nz || b.nz, a.nan && b.nan)
+const meet = (a, b) => nrValue(Math.max(a.lo, b.lo), Math.min(a.hi, b.hi), a.int || b.int, a.nz || b.nz, a.nan && b.nan, a.whole || b.whole)
 // The facts `a` states hold of every value `b` may be.
 const within = (b, a) => !!b && (empty(b) && !b.nan || (empty(b) || b.lo >= a.lo && b.hi <= a.hi) &&
-  (!a.int || b.int) && (!a.nz || b.nz) && (a.nan || !b.nan))
+  (!a.int || b.int) && (!a.whole || b.whole) && (!a.nz || b.nz) && (a.nan || !b.nan))
 // The widening join: an end the back edge moves past the entry's goes to the
 // word's end while the back edge is inside the word, else it opens (the verify
 // pass proves the word's end or widens on).
@@ -56,11 +57,12 @@ const within = (b, a) => !!b && (empty(b) && !b.nan || (empty(b) || b.lo >= a.lo
 const widen = (a, b, K = null) => nrValue(
   b.lo < a.lo ? (K != null && b.lo >= K - 1 ? Math.min(b.lo, K + 1, Math.max(K - 1, Math.floor(b.lo))) : b.lo >= I32_MIN ? I32_MIN : -Infinity) : Math.min(a.lo, b.lo),
   b.hi > a.hi ? (K != null && b.hi <= K + 1 ? Math.max(b.hi, K - 1, Math.min(K + 1, Math.ceil(b.hi))) : b.hi <= I32_MAX ? I32_MAX : Infinity) : Math.max(a.hi, b.hi),
-  a.int && b.int, a.nz && b.nz, a.nan || b.nan)
+  a.int && b.int, a.nz && b.nz, a.nan || b.nan, a.whole && b.whole)
 const opened = (v) => v.lo === -Infinity || v.lo === I32_MIN || v.hi === Infinity || v.hi === I32_MAX
 // A theorem that caps a name from above alone: no fact of its values but the cap.
 const capOnly = (hi) => nrValue(-Infinity, hi, false, false, true)
 const WORD_VALUE = nrInts(I32_MIN, I32_MAX), UWORD_VALUE = nrInts(0, 2 ** 32 - 1)
+export const WHOLE_VALUE = NR_WHOLE
 // A carrier's word holds a number only where the summary holds the value to
 // numbers: a test's word is a Boolean, which no arithmetic reads as its 0 or 1
 // before converting it (`t[a < b]` reads the key "true").
@@ -80,10 +82,13 @@ const callNumbers = (e, inBounds) => {
 // What a member read's carrier holds: a sized property of a receiver its
 // representation knows (`.length` of a string, `.size`, `.byteLength`: a
 // count, read as the word `__len` gives), a field every store of which is a
-// word where the summary holds it to numbers (a Boolean field's word is none).
-const memberNumbers = (e) =>
-  propValType(e[2], lookupValType(e[1]), e[2] === 'length' ? typedStorageNameCtor(ctx, e[1]) : null) === VAL.NUMBER ||
-  ctx.schema?.slotI32CertainAt?.(e[1], e[2]) && numeric(e) ? WORD_VALUE : null
+// word, or integral wherever finite, where the summary holds it to numbers (a
+// Boolean field's word is none): the slot census's (`slot`, while it decides).
+const memberNumbers = (e, slot) => {
+  if (propValType(e[2], lookupValType(e[1]), e[2] === 'length' ? typedStorageNameCtor(ctx, e[1]) : null) === VAL.NUMBER) return WORD_VALUE
+  const v = slot ? slot(e) : ctx.schema?.slotI32CertainAt?.(e[1], e[2]) ? WORD_VALUE : ctx.schema?.slotIntCertainAt?.(e[1], e[2]) === true ? WHOLE_VALUE : null
+  return v && numeric(e) ? v : null
+}
 // The one integer a value is, or null; whether a pair is inside one word.
 const point = (v) => v && v.int && !v.nan && v.lo === v.hi ? v.lo : null
 const inWord = (h) => h != null && h[0] >= I32_MIN && h[1] <= I32_MAX
@@ -103,12 +108,49 @@ const countOf = (x) => {
 // Initializer roots whose true result can carry range facts through a named const.
 const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 
+// A quotient under a test of its remainder (`if (srcIdx % up === 0) { const xi =
+// srcIdx / up }`) is exact: an integer of operands integral wherever finite.
+// Each operand reads no call, no member and no element, and neither the test
+// nor the arm writes or redeclares a name it reads, so the quotient divides
+// what the test divided; the walk reads one only of names no call can write.
+const exactDivs = new WeakSet()
+export const isExactDivision = (n) => exactDivs.has(n)
+/** Mark every quotient of a body under a test of its remainder (plan/integral-loops.js reads them ahead of the walk). */
+export const markExactDivisions = (body) => walkAst(body, { enter: n => { if (n[0] === 'if' && n.length >= 3) noteExactDivs(n[1], n[2]) } })
+const sameNode = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b)
+const plainOperand = (e) => !some(e, n => n[0] === '()' || n[0] === 'new' || n[0] === '.' || n[0] === '?.' || n[0] === '[]' || MUTATE_OPS.has(n[0]), REFS_THROUGH_ARROWS)
+const writesAny = (node, names) => some(node, n => {
+  const decl = n[0] === 'let' || n[0] === 'const'
+  if (!decl && !MUTATE_OPS.has(n[0])) return false
+  const targets = decl ? n.slice(1).map(d => Array.isArray(d) && d[0] === '=' ? d[1] : d) : [n[1]]
+  return targets.some(t => someDeep(t, x => typeof x === 'string' && names.has(x)))
+}, REFS_THROUGH_ARROWS)
+function noteExactDivs(test, arm) {
+  const conjuncts = []
+  const split = (t) => { if (Array.isArray(t) && t[0] === '&&' && t.length === 3) { split(t[1]); split(t[2]) } else conjuncts.push(t) }
+  split(test)
+  for (const t of conjuncts) {
+    if (!Array.isArray(t) || (t[0] !== '===' && t[0] !== '==') || t.length !== 3) continue
+    const rem = Array.isArray(t[1]) && t[1][0] === '%' ? t[1] : Array.isArray(t[2]) && t[2][0] === '%' ? t[2] : null
+    const zero = rem === t[1] ? t[2] : t[1]
+    if (!rem || rem.length !== 3 || !(Array.isArray(zero) && zero[0] == null && zero[1] === 0)) continue
+    if (!plainOperand(rem[1]) || !plainOperand(rem[2])) continue
+    const names = new Set()
+    someDeep(rem, x => { if (typeof x === 'string') names.add(x); return false })
+    if (writesAny(test, names) || writesAny(arm, names)) continue
+    walkAst(arm, { enter: n => { if (n[0] === '=>') return false; if (n[0] === '/' && n.length === 3 && sameNode(n[1], rem[1]) && sameNode(n[2], rem[2])) exactDivs.add(n) } })
+  }
+}
+
 /** Walk one function body; lens(name) returns a static element count or null.
  *  What the walk collects, each a map the caller passes:
- *  - `calls`/`stores`: scalar hulls of call arguments and stored values, under
- *    the `entry` ranges of the parameters (integer pairs, as the hulls are: a
- *    word's, `wordSpan`). Those maps preseed requested AST nodes with undefined;
- *    null means unknown. Repeated structural keys join conservatively.
+ *  - `calls`: the values of each call's arguments, and `stores`: the scalar
+ *    hulls of stored values (integer pairs, a word's, `wordSpan`), under the
+ *    `entry` ranges of the parameters. Those maps preseed requested AST nodes
+ *    with undefined; null means unknown. Repeated structural keys join
+ *    conservatively.
+ *  - `values`: the value of each requested node, as values: an expression's,
+ *    or the number a member write stores (`o.k += 1` stores `o.k + 1`).
  *  - `out`: a key string proven at every occurrence and each access NODE proven
  *    at its own position; `ranges`, the hull of each key no length discharged.
  *  - `bindings`: the numbers of each named local over its lifetime, as values;
@@ -121,14 +163,17 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
  *  `present(node)` answers for element reads another prover holds in bounds;
  *  `assume(name)` gives the value of a name wherever the walk knows no more of
  *  it, a closure's writes or a call's notwithstanding: a hypothesis over every
- *  write of a module binding, which the caller verifies. The emitter's branch
- *  refinements are no fact of the whole body: the walk reads none. */
+ *  write of a binding other flows write too, which the caller verifies. `own`
+ *  names the flow's own bindings besides its declarations (a closure's
+ *  parameters); `slot(member)` answers a field read while the slot census
+ *  decides. The emitter's branch refinements are no fact of the whole body:
+ *  the walk reads none. */
 export function scanIntervalIdx(body, lens, facts = {}) {
   const refinements = ctx.func.refinements
   ctx.func.refinements = null
   try { scanBody(body, lens, facts) } finally { ctx.func.refinements = refinements }
 }
-function scanBody(body, lens, { out = null, ranges = null, calls = null, entry = null, stores = null, misses = null, bindings = null, written = null, assume = null, present = null }) {
+function scanBody(body, lens, { out = null, ranges = null, calls = null, entry = null, stores = null, misses = null, bindings = null, written = null, assume = null, present = null, own = null, values = null, slot = null }) {
   // Branches retain their completed map and resume the saved entry map.
   // Values are immutable, so unchanged ones can be shared at joins.
   // Missing map entries are unknown. Keep lexical/write ownership separately:
@@ -144,11 +189,13 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
   // loses no soundness, and a final pass keeps them: a nest then costs about
   // 3^depth.
   let steps = 0, budget = 50000
-  walkAst(body, { enter: () => { budget += 512 } })
+  walkAst(body, { enter: n => { budget += 512; if (n[0] === 'if' && n.length >= 3) noteExactDivs(n[1], n[2]) } })
   const declared = new Set()
+  // (a closure's own parameter is none of the function's it shadows)
+  const ownNames = own ? new Set(own) : null
   if (entry) for (const [name, value] of entry) {
     declared.add(name)
-    if (value) env.set(name, nrInts(value[0], value[1]))
+    if (value && !ownNames?.has(name)) env.set(name, nrInts(value[0], value[1]))
   }
   // Structural keys survive lowering clones, but each occurrence must prove
   // its own bounds. One unchecked twin permanently rejects the shared proof.
@@ -173,6 +220,12 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     const prev = written.get(n)
     written.set(n, prev === undefined ? value ?? null : prev && value ? nrJoin(prev, value) : null)
   }
+  const joinValue = (prev, v) => prev === undefined ? v ?? null : prev && v ? nrJoin(prev, v) : null
+  const recordValue = (n, v) => {
+    if (!recording) return
+    const prev = values.get(n)
+    values.set(n, Array.isArray(v) ? v.map((x, k) => joinValue(prev === undefined ? undefined : prev?.[k] ?? null, x)) : joinValue(prev, v))
+  }
   const recordBinding = (name, value) => {
     if (!recording || !bindings?.has(name)) return
     const prev = bindings.get(name)
@@ -188,8 +241,9 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
   // the names the body declares: none of them is the module binding it may shadow
-  const owned = new Set()
-  const needed = !out && !written && (calls || stores || bindings) ? new Set() : null
+  const owned = new Set(own)
+  if (own) for (const name of own) declared.add(name)
+  const needed = !out && !written && (calls || stores || bindings || values) ? new Set() : null
   const collectClosureWrites = (n, inClosure) => {
     if (typeof n === 'string') return bindings?.has(n) ?? false
     if (!Array.isArray(n)) return false
@@ -209,7 +263,7 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
       else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.')
         collectNames(n[1], closureWrites)
     }
-    let used = calls?.has(n) || stores?.has(n)
+    let used = calls?.has(n) || stores?.has(n) || values?.has(n)
     for (let k = 1; k < n.length; k++) if (collectClosureWrites(n[k], into)) used = true
     if (used && needed) needed.add(n)
     return used
@@ -238,15 +292,21 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
   const activeFacts = new Map()   // name → a theorem's value: a loop's cursor budget, a rewrite pass's stamp (peel)
   // What a name holds where the walk knows no more: the caller's hypothesis, or
   // what its carrier holds, as exprType reads it: a word parameter's or a word
-  // module binding's word (a call can write the binding, never past its word).
+  // module binding's word (a call can write the binding, never past its word),
+  // and what the binding holds over every flow that writes it: a parameter
+  // every call and every write gives an integral Number (compile/narrow/
+  // int-params.js), a module binding every write of which is one (plan/scope.js).
   const params = ctx.func.current?.params
   const carried = (name) => {
     if (closureWrites.has(name) || owned.has(name)) return null
     const p = params?.find(q => q.name === name)
-    if (p) return p.type === 'i32' && p.ptrKind == null && numeric(name) ? WORD_VALUE : null
-    return ctx.scope?.globalTypes?.get?.(name) === 'i32' && ctx.scope.globalValTypes?.get(name) === VAL.NUMBER ? WORD_VALUE : null
+    if (p) return p.ptrKind != null || !numeric(name) ? null : p.type === 'i32' ? WORD_VALUE : p.intLevel ? WHOLE_VALUE : null
+    if (ctx.scope?.globalValTypes?.get(name) !== VAL.NUMBER) return null
+    return ctx.scope.globalTypes?.get?.(name) === 'i32' ? WORD_VALUE : repOfGlobal(name)?.intCertain === true ? WHOLE_VALUE : null
   }
   const valueOf = (name) => env.get(name) ?? assume?.(name) ?? carried(name)
+  // A parameter's entry: the range its callers prove, else what it carries.
+  if (entry) for (const [name, range] of entry) if (!range) { const c = carried(name); if (c) env.set(name, c) }
   // The code unit reads this body's loops hold in bounds, as the walk finds
   // them: inBoundsCharCodeAt's per-body memo is emission's, and an analysis
   // ahead of a caller-proven length bound must not fill it.
@@ -328,8 +388,9 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     if (op === '[]' && e.length === 3 && typeof x === 'string') {
       // (a read another prover holds in bounds: its element hull, a word's)
       if (!visit(e) && !present?.(e)) { const w = intExprRange(e); return w ? nrInts(w[0], w[1]) : null }
+      // (a receiver no frame fact types: the summary's constructor, a plan's walk ahead of emission)
       const r = ctx.func.localReps?.get(x)?.arrayElemRange
-      return r ? nrInts(r[0], r[1]) : elementNumbers(typedCtorRawOf(x))
+      return r ? nrInts(r[0], r[1]) : elementNumbers(typedCtorRawOf(x) ?? ctx.summary?.at(ctx.func.current)?.typedCtorOf?.(x))
     }
     // `X.length` of a typed receiver with a known static length — the length-
     // identity atom: `const n = a.length` binds a singleton, `(a.length-1)>>1`
@@ -349,6 +410,8 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
     if (e.length === 2 && op === '()') return ev(x)
     if (e.length === 2 && (op === 'u+' || op === 'u-' || op === '-' || op === '~')) return nrUnary(op === '-' ? 'u-' : op, ev(x))
+    // prepare's member step (`++o.k` stores `+1 o.k`): the number one past, or before, it
+    if (e.length === 2 && (op === '+1' || op === '-1')) return nrBinary(op[0], ev(x), nrPoint(1))
     // Save the old value before transferring a postfix update, exactly once.
     if (op === 'postfix' && Array.isArray(x) &&
         (x[0] === '++' || x[0] === '--') && typeof x[1] === 'string') {
@@ -399,7 +462,7 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     if (op === ',') { for (let k = 1; k < e.length - 1; k++) visit(e[k]); return ev(e[e.length - 1]) }
     // A call's and a member read's carrier (callNumbers, memberNumbers).
     if (op === '()' && e.length === 3) { visit(e); return callNumbers(e, inBoundsCode) }
-    if (op === '.' && e.length === 3 && typeof x === 'string' && typeof e[2] === 'string') { visit(e); return memberNumbers(e) }
+    if (op === '.' && e.length === 3 && typeof x === 'string' && typeof e[2] === 'string') { visit(e); return memberNumbers(e, slot) }
     // any non-arithmetic node (assignment, indexing…) routes through visit so
     // its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
@@ -407,8 +470,17 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     const A = ev(x), B = ev(y)
     const side = stepSide.get(e)
     if (side) logStep(side[0], side[1] === 2 ? B : A)
+    // (an exact quotient of this flow's own names: a finite integer, the test having held)
+    if (op === '/' && exactDivs.has(e) && A?.whole && B?.whole && ownOperand(x) && ownOperand(y)) {
+      const q = nrBinary('/', A, B)
+      return nrValue(q.lo, q.hi, true, q.nz, false)
+    }
     return nrBinary(op, A, B)
   }
+  // A quotient's operand only this flow writes: its own locals and parameters
+  // (a closure walked alone holds its function's parameters as captures), no closure's.
+  const ownOperand = (e) => !someDeep(e, x => typeof x === 'string' &&
+    (closureWrites.has(x) || !!ctx.scope?.globals?.has?.(x) || !owned.has(x) && (own || !params?.some(p => p.name === x))))
   // condition refinement for if-arms: `name < K` / `name >= K` … over a known name.
   // The lhs also admits the AFFINE form `name ± c` (`inl_i + 3 <= N` — the strided
   // codec cursors): the comparison re-biases to `name OP K∓c`. The rhs admits any
@@ -438,7 +510,7 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
       const [name, K] = t, v = valueOf(name)
       if (!v || K && !v.int) return null
       if (negate) return [name, meet(v, nrValue(K, K, true, K !== 0, true))]
-      return [name, v.int ? nrValue(v.lo === K ? K + 1 : v.lo, v.hi === K ? K - 1 : v.hi, true, v.nz, false) : nrValue(v.lo, v.hi, false, v.nz, false)]
+      return [name, v.int ? nrValue(v.lo === K ? K + 1 : v.lo, v.hi === K ? K - 1 : v.hi, true, v.nz, false) : nrValue(v.lo, v.hi, false, v.nz, false, v.whole)]
     }
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
@@ -490,15 +562,16 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     }
     // A test of `<` and the like failing leaves a NaN; `!==` holding does.
     const nan = v.nan && (negate && relational || op === '!==')
-    const lo = op === '>' ? (v.int ? Math.floor(R.lo) + 1 : R.lo) : op === '>=' || op === '===' ? (v.int ? Math.ceil(R.lo) : R.lo) : -Infinity
-    const hi = op === '<' ? (v.int ? Math.ceil(R.hi) - 1 : R.hi) : op === '<=' || op === '===' ? (v.int ? Math.floor(R.hi) : R.hi) : Infinity
+    // (an integer wherever finite past a finite bound is an integer on that side: an infinity is beyond it)
+    const lo = op === '>' ? (v.whole ? Math.floor(R.lo) + 1 : R.lo) : op === '>=' || op === '===' ? (v.whole ? Math.ceil(R.lo) : R.lo) : -Infinity
+    const hi = op === '<' ? (v.whole ? Math.ceil(R.hi) - 1 : R.hi) : op === '<=' || op === '===' ? (v.whole ? Math.floor(R.hi) : R.hi) : Infinity
     if (op === '<' || op === '<=' || op === '>' || op === '>=' || op === '===')
-      return [l, nrValue(Math.max(v.lo, lo), Math.min(v.hi, hi), v.int, v.nz, nan)]
+      return [l, nrValue(Math.max(v.lo, lo), Math.min(v.hi, hi), v.int, v.nz, nan, v.whole)]
     // ≠K tightens only at an ENDPOINT (interior point removal keeps the hull) —
     // exactly the toroidal-wrap ternary (`y === 0 ? h-1 : y-1`); a constant integer alone
-    if (op === '!==' && v.int && R.int && R.lo === R.hi) {
+    if (op === '!==' && v.whole && R.int && R.lo === R.hi) {
       const K = R.lo
-      return [l, nrValue(v.lo === K ? K + 1 : v.lo, v.hi === K ? K - 1 : v.hi, true, v.nz, nan)]
+      return [l, nrValue(v.lo === K ? K + 1 : v.lo, v.hi === K ? K - 1 : v.hi, v.int, v.nz, nan, true)]
     }
     return null
   }
@@ -1386,6 +1459,12 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     if (n[0] === '.' || n[0] === '?.') { visit(n[1]); return }
     if (n._rangeFacts) return visitWithFacts(n)
     const op = n[0]
+    if (values?.has(n)) {
+      // (an object literal's field values, in order; a member write's stored number)
+      const parsed = op === '{}' ? staticObjectProps(n.slice(1)) : null
+      if (parsed) { recordValue(n, parsed.values.map(v => ev(v))); return }
+      if (MUTATE_OPS.has(op) && Array.isArray(n[1])) { visit(n[1]); recordValue(n, ev(effectiveWriteValue(op, n[1], n[2]))); return }
+    }
     if (op === ';' || op === '{}') {
       let prior = null
       for (let i = 1; i < n.length; i++) {
@@ -1582,12 +1661,11 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       if (calls?.has(n) && op === '()') {
         visit(n[1])
-        const values = []
-        for (const arg of callArgs(n)) values.push(wordSpan(ev(arg)))
+        const args = []
+        for (const arg of callArgs(n)) args.push(ev(arg))
         if (recording) {
           const prev = calls.get(n)
-          calls.set(n, prev ? values.map((v, k) => v && prev[k]
-            ? [Math.min(v[0], prev[k][0]), Math.max(v[1], prev[k][1])] : null) : values)
+          calls.set(n, prev ? args.map((v, k) => v && prev[k] ? nrJoin(v, prev[k]) : null) : args)
         }
       } else for (let k = 1; k < n.length; k++) visit(n[k])
       for (const [name, bd] of boolDefs) {
@@ -1790,13 +1868,101 @@ export function intervalMisses(ctx, body = ctx.func?.body) {
 }
 
 /** What each write in `body` stores, by node, where every name `assume(name)`
- *  answers holds that value wherever the walk knows no more of it. A write the
- *  walk does not reach is absent. */
-export function writtenNumbers(body, assume) {
+ *  answers holds that value wherever the walk knows no more of it (`own`: the
+ *  flow's own parameters, a closure's). A write the walk does not reach is absent. */
+export function writtenNumbers(body, assume, own = null) {
   const written = new Map()
-  scanIntervalIdx(body, () => null, { entry: paramEntry(), written, assume })
+  scanIntervalIdx(body, () => null, { entry: paramEntry(), written, assume, own })
   return written
 }
+
+/** The numbers each local and parameter of `func` holds over its lifetime,
+ *  walked in a frame of its own: a plan's question, ahead of emission. */
+export function bindingNumbers(func) {
+  const bindings = new Map()
+  walkAst(func.body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i], name = typeof d === 'string' ? d : Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null
+      if (name) bindings.set(name, undefined)
+    }
+  } })
+  for (const p of func.sig.params) bindings.set(p.name, undefined)
+  const prev = enterActiveFunction(ctx, { sig: func.sig, body: func.body })
+  try { scanIntervalIdx(func.body, () => null, { entry: paramEntry(), bindings }) } finally { restoreActiveFunction(ctx, prev) }
+  return bindings
+}
+
+/** The flows the bindings `names` are written in, from `roots` ([{ body, sig,
+ *  current }]: `current` walks in the active function's frame, with its local
+ *  facts): each root, and each closure inside one (a flow of its own, which
+ *  runs whenever it is called, its parameters its own), with the names it
+ *  writes. `unvalued`: a name a pattern or a loop head writes, which no walk
+ *  values; `bare`: a name declared with no initializer (undefined until a
+ *  write). A declaration of a name counts as a write of it (a shadow holds no less). */
+export function bindingFlows(roots, names) {
+  const flows = [], unvalued = new Set(), bare = new Set()
+  const drop = (n) => someDeep(n, x => { if (typeof x === 'string' && names.has(x)) unvalued.add(x); return false })
+  const gather = (root, sig, own, current) => {
+    const writes = new Set()
+    walkAst(root, { enter: n => {
+      if (n[0] === '=>') {
+        const params = []
+        someDeep(n[1], x => { if (typeof x === 'string') params.push(x); return false })
+        gather(n[2], sig, params, current)
+        return false
+      }
+      if (MUTATE_OPS.has(n[0])) {
+        if (typeof n[1] === 'string') { if (names.has(n[1])) writes.add(n[1]) }
+        else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') drop(n[1])
+      }
+      else if (n[0] === 'for' && Array.isArray(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) drop(n[1][1])
+      else if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') { if (names.has(d[1])) writes.add(d[1]) } else drop(d[1]) }
+        else if (typeof d === 'string' && names.has(d)) bare.add(d)
+      }
+    } })
+    if (writes.size) flows.push({ body: root, sig, own, current, writes })
+  }
+  for (const { body, sig, current = false } of roots) gather(body, sig, null, current)
+  return { flows, unvalued, bare }
+}
+
+/** The numbers each binding of `start` holds over every flow that writes it
+ *  (`flows`, bindingFlows'), as a rung: a word (WORD_VALUE), an integer
+ *  wherever finite (WHOLE_VALUE), or none (absent from the result). `start`
+ *  maps each name to the highest rung it may take. A greatest fixpoint down
+ *  that chain: every flow is walked under the hypothesis that each name still
+ *  standing holds its rung wherever the walk knows no more of it (a call's or
+ *  a closure's writes notwithstanding), and a write the walk values below a
+ *  rung lowers it; a write no walk values is the caller's to remove first, and
+ *  one of `exempt` stores no wider than its binding holds (a step a loop test
+ *  bounds: type/bounded-counters.js). */
+export function flowNumbers(flows, start, exempt = null) {
+  const held = new Map(start)
+  const assume = name => held.get(name)
+  for (let lowered = true; lowered && held.size;) {
+    lowered = false
+    for (const { body, sig, own, current, writes } of flows) {
+      let live = false
+      for (const name of writes) if (held.has(name)) { live = true; break }
+      if (!live) continue
+      const prev = current ? null : enterActiveFunction(ctx, { sig, body })
+      let written
+      try { written = writtenNumbers(body, assume, own) } finally { if (!current) restoreActiveFunction(ctx, prev) }
+      for (const [node, v] of written) {
+        const name = node[1], h = held.get(name)
+        if (!h || exempt?.has(node) || (h === WORD_VALUE ? nrWord(v) : !!v?.whole)) continue
+        if (h === WORD_VALUE && v?.whole) held.set(name, WHOLE_VALUE)
+        else held.delete(name)
+        lowered = true
+      }
+    }
+  }
+  return held
+}
+export { WORD_VALUE }
 
 /** Drop the memoized proofs of a body rewritten in place. */
 export function invalidateIntervalProof(body) {

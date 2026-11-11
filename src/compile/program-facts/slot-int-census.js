@@ -1,35 +1,37 @@
 /** Whole-program integer range proofs for schema slots. */
 import { DBG_INVARIANTS } from '../../debug.js'
-import { MUTATE_OPS, walkAst, isTdzValue } from '../../ast.js'
+import { MUTATE_OPS, walkAst, isTdzValue, someDeep } from '../../ast.js'
 
 const isStringKeyIndex = (t) => t[0] === '[]' && Array.isArray(t[2]) && (t[2][0] == null || t[2][0] === 'str') && typeof t[2][1] === 'string'
 import { ctx, err, getFactStore } from '../../ctx.js'
-import { ANY, K, hasTag, tagOf, isNullable, typedAux, UNKNOWN } from '../../summary/kind.js'
+import { ANY, K, hasTag, tagOf } from '../../summary/kind.js'
 import { repOf } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
-import { intLevelChecker } from '../../type.js'
+import { scanIntervalIdx, paramEntry, WORD_VALUE, WHOLE_VALUE } from '../../type/interval-proof.js'
+import { nrWord } from '../../summary/num-range.js'
+import { enterActiveFunction, restoreActiveFunction } from '../active-function.js'
 import { collectSlotWriteHazards, applySlotWriteHazards } from './slot-write-hazards.js'
 import { collectBodyElemSids } from './shared.js'
-import { effectiveWriteValue } from '../../ast.js'
 import { frameNode } from '../../function.js'
 import { mixedBoolKind } from '../../kind.js'
 
 /** Whole-program slot intCertain observation.
  *
- *  A schema slot `(sid, idx)` is `intCertain` iff every write to it across the
- *  program is integer-shaped (literal int, bitwise op, intCertain local read,
- *  …). Mirrors `analyzeIntCertain`'s `isIntExpr` rules but works at module
- *  scope: each body gets a local `intCertain` fixpoint over its own bindings,
- *  then schema writes within that body are reduced against the fixpoint.
+ *  A schema slot `(sid, idx)` holds a word (2) where every write to it across
+ *  the program is one, an integer wherever finite (1) where each is one of
+ *  those, nothing (0) else. Each write's number is the interval proof's in the
+ *  flow it runs in (a function, a closure, the module's statements), a field
+ *  read answered by the census's current levels: a greatest fixpoint, the
+ *  self-referential update (`ps[i] = { x: hit ? p.x : nx }`) reading its own
+ *  slot as integral until a write proves otherwise.
  *
  *  Global poison semantics: any non-int write to a slot — in any body —
  *  permanently flips it false. Slots never observed stay `undefined`.
  *  Writes the census can't SEE (unresolvable receivers, computed keys, extern
  *  constructors) are poisoned via collectSlotWriteHazards at every (re)build.
  *
- *  Cross-function flow (slot written from a call's return value) is **not**
- *  tracked — those writes count as non-int and poison the slot. Conservative:
- *  produces only false negatives, never false positives. */
+ *  A slot written from a call's return value holds what the call's carrier
+ *  holds (a word result), nothing else: conservative, only false negatives. */
 /** @param opts.paramReps  LATE-mode (plan's post-narrowSignatures block): re-derive
  *  the census FRESH with BODY-LOCAL receiver resolution — `const p = ps[i]`
  *  binds p's sid from the array's element schema (analyzeBody.arrElemSchemas
@@ -38,10 +40,9 @@ import { mixedBoolKind } from '../../kind.js'
  *  (toNumF64 / floor elision / intIndexIR) reads at EMIT time, after this. */
 export function analyzeSchemaSlotIntCertain(ast, opts) {
   if (!ctx.schema?.register) return
-  const pf = getFactStore().programFacts
-  // Working state is the LEVEL map (0 | 1 integral | 2 strict-int32 — see
-  // type.js's lattice); the boolean projections slotIntCertain (≥1) and
-  // slotI32Certain (≥2) are published for consumers after the rounds settle.
+  // Working state is the LEVEL map (0 | 1 integral wherever finite | 2 a
+  // word); the boolean projections slotIntCertain (≥1) and slotI32Certain
+  // (≥2) are published for consumers after the rounds settle.
   const slotIntLevels = ctx.schema.slotIntLevels
   if (opts?.paramReps) slotIntLevels.clear()
   const hazards = collectSlotWriteHazards(ast, opts)
@@ -68,103 +69,108 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     }
   }
 
-  // OPTIMISTIC slot-read resolver — the self-referential immutable-update
-  // idiom (`ps[i] = { x: hitX ? p.x : nx, … }`) rebuilds a slot FROM a read
-  // of the same slot, so a single pessimistic pass poisons every such field.
-  // Greatest fixpoint instead: a censused slot read counts int until some
-  // write proves otherwise; each round re-derives every observation and any
-  // true→false flip triggers another round (monotone-down, so it terminates
-  // in ≤ slots+1 rounds and re-runs can only widen poisoning, never unpoison
-  // — the documented re-entrancy contract holds). Same precise-path receiver
-  // resolution as the write side; a censused FALSE answers definitively.
-  // Receiver → sid. `curSids` is the CURRENT body's local element-alias map
-  // (late mode only): `const p = ps[i]` resolves p through ps's element
-  // schema. Precise-path rep/vars resolution is the fallback either way.
+  // Receiver → sid, as the census's own frame resolves it (the walks below run
+  // in frames of their own). `curSids` is the CURRENT body's local
+  // element-alias map (late mode only): `const p = ps[i]` resolves p through
+  // ps's element schema. Precise-path rep/vars resolution is the fallback.
   let curSids = null
+  const reps = ctx.func.localReps
   const sidOfName = (obj) => {
     if (ctx.schema.poisoned?.has(obj)) return undefined
-    return curSids?.get(obj) ?? repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+    return curSids?.get(obj) ?? reps?.get(obj)?.schemaId ?? ctx.schema.vars.get(obj)
   }
-  const slotLevelOf = (obj, prop) => {
-    const sid = sidOfName(obj)
-    if (sid == null) return null
-    const idx = ctx.schema.list[sid]?.indexOf(prop)
-    if (idx == null || idx < 0) return null
-    return slotIntLevels.get(sid)?.[idx] ?? 2   // unobserved = optimistic top
+  // OPTIMISTIC slot-read resolver: the self-referential immutable-update
+  // idiom (`ps[i] = { x: hitX ? p.x : nx, … }`) rebuilds a slot FROM a read
+  // of the same slot, so a single pessimistic pass poisons every such field.
+  // Greatest fixpoint instead: a censused slot read holds its level until some
+  // write proves otherwise; each round re-derives every observation and any
+  // drop triggers another round (monotone-down, so it terminates in ≤ 2·slots+1
+  // rounds). A censused 0 answers definitively.
+  // (each walk notes the levels it read: a walk whose reads all stand answers as it did)
+  const levelOf = (sid, idx) => slotIntLevels.get(sid)?.[idx] ?? 2   // unobserved = optimistic top
+  let reads = null
+  const slotNumbers = (e) => {
+    const sid = typeof e[1] === 'string' ? sidOfName(e[1]) : null
+    const idx = sid == null ? -1 : ctx.schema.list[sid]?.indexOf(e[2]) ?? -1
+    if (idx < 0) return null
+    const level = levelOf(sid, idx)
+    reads.push(sid, idx, level)
+    return level === 2 ? WORD_VALUE : level === 1 ? WHOLE_VALUE : null
   }
+  const standing = (r) => { for (let i = 0; i < r.length; i += 3) if (levelOf(r[i], r[i + 1]) !== r[i + 2]) return false; return true }
+  const level = (v) => !v ? 0 : nrWord(v) ? 2 : v.whole ? 1 : 0
 
   // LATE mode: body-local element-alias sids (collectBodyElemSids — shared
   // with the hazard scan so receiver resolution stays in lockstep).
   const paramReps = opts?.paramReps
-  const bodySidsOf = (func) => collectBodyElemSids(func, paramReps)
 
-  // Round 1 may reuse gen-cached checkers (they close over the LIVE census, so
-  // later poisoning flows through); after any flip the LOCAL binding fixpoints
-  // baked into those checkers may be stale-optimistic, so rebuild fresh.
-  // A body's levels take its own function's parameters as entry values: a
-  // parameter the body reassigns (to a Boolean, say) still holds the caller's
-  // value on the other path.
-  // The typed reads of a body the summary proves hit (an index a fixed length
-  // holds: `sum0: SHIFT16[10]`, a view of 37 elements), their element code its kind's.
-  const readsOf = (body) => {
-    const view = ctx.summary?.at(body)
-    if (!view) return undefined
-    return {
-      has: (n) => { const k = view.kindOfExpr(n); return tagOf(k) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
-      auxOf: (name) => { const k = view.kindOfExpr(name); return tagOf(k) === K.TYPED && !isNullable(k) && typedAux(k) !== UNKNOWN ? typedAux(k) : null },
-    }
+  // The flows the slot writes run in: the module's statements, each
+  // function's frame (a parameter default runs in the frame) and each closure
+  // (a store in a callback a factory returns writes the slot the factory's
+  // literal made; its parameters are its own), each with its `{}` literals
+  // and its `o.k = v` / `o['k'] = v` writes (a literal or folded constant key
+  // writes the slot `o.k` does; a compound assign or a step stores its
+  // effective value, `o.n++` → `o.n + 1`).
+  const flows = []
+  const gather = (root, sig, own, sids) => {
+    const nodes = []
+    walkAst(root, { enter: n => {
+      if (n[0] === '=>') {
+        const params = []
+        someDeep(n[1], x => { if (typeof x === 'string') params.push(x); return false })
+        if (n[2] != null) gather(n[2], sig, params, sids)
+        return false
+      }
+      if (n[0] === '{}' ? !!staticObjectProps(n.slice(1)) : MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && (n[1][0] === '.' || isStringKeyIndex(n[1])) && typeof n[1][1] === 'string') nodes.push(n)
+    } })
+    if (nodes.length) flows.push({ root, sig, own, sids, nodes })
   }
-  const bodyIntCertainOf = (body, fresh, params) => {
-    if (fresh) return intLevelChecker(body, slotLevelOf, params, readsOf(body))
-    if (body != null && typeof body === 'object') {
-      const hit = pf.bodyIntCertain.get(body)
-      if (hit?.gen === pf.gen) return hit.isInt
+  if (ast) gather(ast, null, null, null)
+  for (const func of ctx.funcs.list) if (func.body && !func.raw) gather(frameNode(func), func.sig, null, collectBodyElemSids(func, paramReps))
+  if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) gather(mi, null, null, null)
+  // The typed reads a body's summary proves hit (an index a fixed length holds:
+  // `sum0: SHIFT16[10]`, a view of 37 elements).
+  const present = (n) => { const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(n); return k != null && tagOf(k) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) }
+  // A walk's values, by its root, while every level it read stands: a later
+  // census of the program reads them again (early mode: the late one walks
+  // with the element aliases narrowing found).
+  const memo = paramReps ? null : getFactStore().programFacts.slotWalks
+  const walkFlow = (flow) => {
+    let values = null
+    const hit = memo?.get(flow.root)
+    if (hit && standing(hit.reads)) ({ values, reads: flow.reads } = hit)
+    else {
+      values = new Map()
+      for (const n of flow.nodes) values.set(n, undefined)
+      curSids = flow.sids
+      reads = []
+      const prev = enterActiveFunction(ctx, { sig: flow.sig, body: flow.root })
+      try { scanIntervalIdx(flow.root, () => null, { values, own: flow.own, entry: flow.own ? new Map() : paramEntry(), slot: slotNumbers, present }) }
+      finally { restoreActiveFunction(ctx, prev) }
+      flow.reads = reads
+      memo?.set(flow.root, { values, reads })
     }
-    const isInt = intLevelChecker(body, slotLevelOf, params, readsOf(body))
-    if (body != null && typeof body === 'object')
-      pf.bodyIntCertain.set(body, { gen: pf.gen, isInt })
-    return isInt
-  }
-
-  // Body walker: for each `{}` literal observe per-slot intCertain; for each
-  // `obj.prop = expr` write, poison-or-confirm the slot resolved via the
-  // schema attached to `obj` (ValueRep `schemaId` or `ctx.schema.vars`).
-  // A closure's stores count like its maker's: `p.o = 0.25` in a callback a
-  // factory returns writes the slot the factory's literal made. Its body's own
-  // bindings answer its values; a name it captures is no integer to it.
-  let freshRound = false
-  const visit = (node, isInt) => walkAst(node, { enter: node => {
-    const op = node[0]
-    if (op === '=>') { if (node[2] != null) visit(node[2], bodyIntCertainOf(node[2], freshRound)); return false }
-    if (op === '{}') {
-      const parsed = staticObjectProps(node.slice(1))
-      if (parsed) {
+    for (const n of flow.nodes) {
+      const v = values.get(n)
+      if (n[0] === '{}') {
+        const parsed = staticObjectProps(n.slice(1))
         // a class instance's literal is its class's schema (the brand salts the id): its
         // `undefined` inits are writes of the slots the constructor's stores reach
         const sid = ctx.schema.register(parsed.names, parsed.brand)
         // (a frame field's TDZ value is no write: its binding's steps are)
-        for (let i = 0; i < parsed.values.length; i++) if (!isTdzValue(parsed.values[i])) observeSlot(sid, i, isInt(parsed.values[i]))
+        for (let i = 0; i < parsed.values.length; i++) if (!isTdzValue(parsed.values[i])) observeSlot(sid, i, level(v?.[i]))
+        continue
       }
-    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '.' || isStringKeyIndex(node[1]))) {
-      // `o.k = v` and `o['k'] = v` (a literal or folded constant key) write the same slot.
-      const obj = node[1][1], prop = node[1][0] === '.' ? node[1][2] : node[1][2][1]
-      if (typeof obj === 'string') {
-        // Same precise-path resolution as ctx.schema.slotVT — no structural
-        // fallback (slot index could differ across schemas with the same prop).
-        // Poisoned names carry no schema (shape-disagreeing assignments).
-        // Late mode adds the current body's element-alias sids (sidOfName).
-        // Compound assigns / inc-dec observe their EFFECTIVE value (`o.n++` →
-        // `o.n + 1` — self-referential, the optimistic fixpoint resolves it).
-        const sid = sidOfName(obj)
-        if (sid != null) {
-          const idx = ctx.schema.list[sid]?.indexOf(prop)
-          if (idx >= 0) observeSlot(sid, idx, isInt(effectiveWriteValue(op, node[1], node[2])))
-          else if (idx < 0) {/* off-schema write — irrelevant to existing slots */}
-        }
-        // Unresolvable receivers are hazard-poisoned (collectSlotWriteHazards).
-      }
+      // Same precise-path resolution as ctx.schema.slotVT, no structural
+      // fallback (slot index could differ across schemas with the same prop).
+      // Poisoned names carry no schema (shape-disagreeing assignments);
+      // unresolvable receivers are hazard-poisoned (collectSlotWriteHazards).
+      const sid = sidOfName(n[1][1]), prop = n[1][0] === '.' ? n[1][2] : n[1][2][1]
+      const idx = sid == null ? -1 : ctx.schema.list[sid]?.indexOf(prop) ?? -1
+      if (idx >= 0) observeSlot(sid, idx, level(v))
     }
-  } })
+    curSids = null
+  }
 
   // A slot holding a Boolean beside a number holds the Boolean's atom (a store
   // boxes it, ir/sentinels.js carrierF64): its bits are no integer, whatever
@@ -174,36 +180,18 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     const props = ctx.schema.list[sid]
     for (let i = 0; i < props.length; i++) if (mixedBoolKind(ctx.summary.fieldKind(sid, props[i]))) boolSlots.push(sid, i)
   }
-  const sweep = (fresh) => {
-    freshRound = fresh
-    // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a
+  const sweep = (first) => {
+    // Hazard poison FIRST: the optimistic resolver must never count a
     // hazarded slot int mid-fixpoint (it would infect other slots' certainty).
     applySlotWriteHazards(hazards, poisonSlot)
     for (let j = 0; j < boolSlots.length; j += 2) poisonSlot(boolSlots[j], boolSlots[j + 1])
     flipped = false
-    curSids = null
-    if (ast) visit(ast, bodyIntCertainOf(ast, fresh))
-    for (const func of ctx.funcs.list) {
-      if (!func.body || func.raw) continue
-      curSids = bodySidsOf(func)
-      const frame = frameNode(func)   // a parameter default runs in the frame
-      visit(frame, bodyIntCertainOf(frame, fresh, func.sig.params))
-      curSids = null
-    }
-    if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
-      for (const mi of ctx.module.moduleInits) visit(mi, bodyIntCertainOf(mi, fresh))
-    }
+    // (a flow whose reads all stand stores what it stored: its observations hold)
+    for (const flow of flows) if (first || !standing(flow.reads)) walkFlow(flow)
   }
-  sweep(!!paramReps)
-  // Any flip invalidates the LOCAL binding fixpoints baked into round-1
-  // checkers (both the rounds below and any same-gen cache reuse later), so
-  // drop the cache and re-derive until the census is stable.
+  sweep(true)
   let rounds = 0
-  while (flipped && ++rounds <= 64) {
-    pf.bodyIntCertain = new WeakMap()
-    flipped = false
-    sweep(true)
-  }
+  while (flipped && ++rounds <= 64) sweep(false)
   // Cap exhaustion (never expected — each slot descends ≤2 levels, so `rounds`
   // is bounded by slot count, not this constant) is ALWAYS a compiler bug —
   // never silently fail closed (that's still a silent precision loss for

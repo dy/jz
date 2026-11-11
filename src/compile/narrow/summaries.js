@@ -20,6 +20,7 @@ import {
 } from '../../static.js'
 import { typedElemCtor, typedStaticLen } from '../../type.js'
 import { scanIntervalIdx } from '../../type/interval-proof.js'
+import { nrWord } from '../../summary/num-range.js'
 import { ensureParamRep } from '../../param-reps.js'
 import { enterActiveFunction, restoreActiveFunction } from '../active-function.js'
 import { isExported } from '../func-exports.js'
@@ -50,6 +51,8 @@ const carries = (n, name) => {
 // when EVERY incoming site proves a hull. Each intermediate result is sound;
 // a bounded worklist budget can forgo precision without trusting an unfinished
 // optimistic fixpoint. Indirect/synthetic calls stay unknown.
+// (each argument's word hull, of the values the walk gives it)
+const wordsOf = (args) => args?.map(v => nrWord(v) ? [v.lo, v.hi] : null)
 export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, arrays, typedLens = null, elements = null) {
   const outgoing = new Map(), incoming = new Map(), observed = new Map(), stores = new Map()
   const hasKind = (f, kind) => {
@@ -153,7 +156,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       if (!caller?.closure) stores.set(caller, writes)
       const targets = new Set()
       for (const cs of outgoing.get(caller) ?? []) {
-        observed.set(cs, cs.synthetic ? null : calls.get(cs.node))
+        observed.set(cs, cs.synthetic ? null : wordsOf(calls.get(cs.node)))
         targets.add(ctx.funcs.map.get(cs.callee))
       }
       for (const f of targets) {
@@ -225,7 +228,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       let removed = false
       for (const [f, candidates] of hypotheses) for (const k of candidates.keys()) {
         if (incoming.get(f).some(cs => !word(cs.synthetic ? null : internal(cs)
-          ? evidence.get(cs.callerFunc)?.get(cs.node)?.[k] : observed.get(cs)?.[k]))) {
+          ? wordsOf(evidence.get(cs.callerFunc)?.get(cs.node))?.[k] : observed.get(cs)?.[k]))) {
           candidates.delete(k)
           remaining--
           removed = true

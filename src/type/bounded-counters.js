@@ -7,11 +7,11 @@
  * since the test. A string's UTF-16 units fill less than the 4 GiB above the
  * 1 KiB the heap starts past, so its length is under 2^31 - 2^9, and the steps
  * add at most STEP_BUDGET: the value stays an exact int32 however long the loop
- * runs. The integer levels (type/int-certain.js) then read the step as no wider
- * than the binding, and a cell whose every write is an int32 keeps its word
- * (compile/analyze-for-emit.js, the closure-capture narrowing). An array's
- * length bounds nothing here: its header may hold a length no element fills
- * (`new Array(n)`), up to int32's end.
+ * runs. The cell's numbers (type/interval-proof.js flowNumbers) then read the
+ * step as no wider than the binding, and a cell whose every write is an int32
+ * keeps its word (compile/analyze-for-emit.js cellNumbers). An array's
+ * length bounds nothing here: the proof's own walk bounds a step under one
+ * (a count below 2^29, its 8-byte cells in a 32-bit memory).
  *
  * An increment counts only where nothing between the test and it can move the
  * binding past the bound: no other write of it (an assignment resets what the

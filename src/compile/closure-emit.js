@@ -14,6 +14,7 @@ import { makeMapOverlay } from './map-overlay.js'
 import { unboxablePtrs, inheritPtrAliases, boxedCaptures, reanalyzeBody } from './analyze.js'
 import { restViewAliases } from './analyze-scans.js'
 import { inferLocals } from './infer.js'
+import { cellNumbers } from './analyze-for-emit.js'
 import {
   mintRepresentationPlan, representationProgramHasBigint, representationReturnAction,
 } from './representation-plan.js'
@@ -162,6 +163,9 @@ export function analyzeClosureBodyForEmit(cb) {
       for (const name of ctx.func.boxed.keys())
         if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64')
           ctx.func.locals.set(name, 'i32')
+      // the closure's own cells hold what their writes in it and its closures store
+      const ownCells = new Set([...ctx.func.boxed.keys()].filter(name => !cb.captures.includes(name) && name !== cb.self))
+      if (ownCells.size) cellNumbers(cb.body, ownCells, ctx.func.current?.params || [])
       const unbox = unboxablePtrs(cb.body, ctx.func.locals, ctx.func.boxed)
       for (const [name, kind] of unbox) {
         if (cb.params.includes(name) || cb.captures.includes(name) || name === cb.self) continue

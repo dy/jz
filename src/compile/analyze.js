@@ -22,8 +22,7 @@
  *   - `analyze/trackers.js`       — per-name monotone fact trackers shared
  *                                   by body-facts.js and val-types.js
  *   - `analyze/body-facts.js`     — analyzeBody + its cache seam + widening
- *   - `analyze/val-types.js`      — analyzeValTypes, analyzeIntCertain,
- *                                   dict/map-shaped helpers
+ *   - `analyze/val-types.js`      — analyzeValTypes, dict/map-shaped helpers
  *   - `analyze/ptr-eligibility.js`— unboxablePtrs, inheritPtrAliases,
  *                                   cseSafeLoadBases
  *   - `analyze/struct-inline.js`  — structInlinePass
@@ -42,7 +41,7 @@ export {
   setFuncBody, invalidateBodies, clearBodyFacts,
 } from './analyze/body-facts.js'
 
-export { analyzeValTypes, analyzeIntCertain } from './analyze/val-types.js'
+export { analyzeValTypes } from './analyze/val-types.js'
 
 export { unboxablePtrs, inheritPtrAliases, cseSafeLoadBases } from './analyze/ptr-eligibility.js'
 

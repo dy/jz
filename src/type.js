@@ -6,7 +6,6 @@
  *   in typed-provenance.js; the pure PTR.TYPED aux codec lives in layout.js)
  * - scanBoundedLoops / inBoundsCharCodeAt: charCodeAt i32 contract proof
  * - loop unroll helpers: smallConstForTripCount, cloneWithSubst, …
- * - intCertainMaps: integer-shaped binding analysis
  *
  * ── NUMERIC WIDENING INVARIANT (shared contract with emit.js) ──
  * "When does i32 arithmetic stay i32 vs widen to f64" is decided in TWO places
@@ -44,7 +43,7 @@
  * (AST shape predicates + trip-count arithmetic), `clone.js` (AST clone +
  * proof carry-over), `loop-versioning.js` / `loop-versioning-nest.js`
  * (single-loop and nest-level typed-array versioning), `expr-type.js`
- * (`exprType`), `int-certain.js` (the integer-certainty fixpoint lattice).
+ * (`exprType`).
  *
  * @module type
  */
@@ -58,7 +57,6 @@ export {
   nestedSmallLoopBudget, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, smallConstForTripCount,
   isTerminator,
 } from './type/loop-unroll.js'
-export { intLevelMap, intCertainMaps, intLevelChecker } from './type/int-certain.js'
 export { exprType, wholeKey, wholeOrMissKey } from './type/expr-type.js'
 export { cloneWithSubst } from './type/clone.js'
 export {

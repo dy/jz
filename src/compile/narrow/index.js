@@ -683,7 +683,7 @@ export default function narrowSignatures(programFacts, ast) {
   if (substituteIntConstParams(paramReps, addressTaken)) getFactStore().revision++
   proveElementBounds(programFacts)
   // A parameter every direct call passes an integral Number keys typed arrays as one.
-  if (intervalRanges) inferIntegralParams(callSites, callerCtx, addressTaken)
+  if (intervalRanges) inferIntegralParams(callSites, callerCtx, addressTaken, ast)
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }

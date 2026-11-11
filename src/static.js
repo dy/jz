@@ -185,7 +185,8 @@ export function cancelledIntExpr(n, isInt) {
 const ROUNDINGS = { 'math.floor': Math.floor, 'math.ceil': Math.ceil, 'math.trunc': Math.trunc, 'math.round': Math.round }
 export function intExprRange(n, nameRange = null) {
   const c = constIntExpr(n)
-  if (c != null && Number.isInteger(c)) return [c, c]
+  // (an integer hull holds no -0: a remainder's sign and a reciprocal's keep it)
+  if (c != null && Number.isInteger(c) && !Object.is(c, -0)) return [c, c]
   if (typeof n === 'string') {
     // Branch-local range refinements (flow-types: `x >= 0 && x < W` inside the
     // guarded arm) intersect with the binding's durable range rep. Analyze-time
@@ -292,9 +293,10 @@ export function intExprRange(n, nameRange = null) {
         ? [a[0] >> s, a[1] >> s] : [I32_MIN >> s, I32_MAX >> s]
     }
   }
+  // (the negation of a hull that holds 0 may be -0, which no integer hull holds)
   if ((op === 'u-' || op === '-') && n.length === 2) {
     const a = intExprRange(n[1], nameRange)
-    return a ? [-a[1], -a[0]] : null
+    return a && (a[0] > 0 || a[1] < 0) ? [-a[1], -a[0]] : null
   }
   // `x % y` of integer hulls (summary/num-range.js): the dividend's sign, below
   // the divisor's magnitude (a `>>>`/`&` form is non-negative by the rules

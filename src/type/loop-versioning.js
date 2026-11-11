@@ -13,7 +13,7 @@
 import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { isNullable, core, NUMBER } from '../summary/kind.js'
-import { repOf, repOfGlobal } from '../reps.js'
+import { repOf, repOfGlobal, intCertainOf } from '../reps.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedElemCtor } from '../typed-provenance.js'
 import { intLiteralValue, intExprRange, constIntExpr, counterInit } from '../static.js'
@@ -128,7 +128,7 @@ export function typedIdxProven(recv, idx, node = null) {
   //    `typedReadPresent`: a view of a sized buffer, an index a module constant
   //    fixes, a counter its loop bounds by the array's own length).
   const integral = exprType(idx, ctx.func.locals) === 'i32' ||
-    (typeof idx === 'string' && repOf(idx)?.intCertain) || intExprRange(idx) != null
+    (typeof idx === 'string' && intCertainOf(idx)) || intExprRange(idx) != null
   if (integral && ownNode && ctx.summary?.at(ctx.func.current)?.presentTypedRead?.(node)) return true
   // Range-only loop facts need an integer value. The interval interpreter below
   // proves both at the access, including a parameter overwritten by a bit mask.

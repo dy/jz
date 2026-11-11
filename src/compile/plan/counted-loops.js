@@ -47,7 +47,7 @@ import { includeModule } from '../../autoload.js'
 import { cloneWithSubst } from '../../type.js'
 import { optimizing, nodeSize, collectBindings } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
-import { intLevelMap } from '../../type.js'
+import { bindingNumbers } from '../../type/interval-proof.js'
 import { K, NUMBER, core, tagOf } from '../../summary/kind.js'
 
 const lit = (v) => [null, v]
@@ -655,7 +655,7 @@ export const canonicalizeCountedLoops = () => {
     } })
     let levels = null
     const view = loops.length ? ctx.summary.at(func.sig) : null
-    for (const [node] of loops) if (offsetTest(node, func, () => levels ??= intLevelMap(func.body))) changed = true
+    for (const [node] of loops) if (offsetTest(node, func, () => levels ??= bindingNumbers(func))) changed = true
     // innermost first: an outer loop is matched over its rewritten body
     for (let n = loops.length - 1; n >= 0; n--) {
       const [node, parent, idx] = loops[n]
@@ -694,7 +694,7 @@ function offsetTest(node, func, levels) {
   // loop constants: a local no write in the loop, no closure and no call reaches
   const steady = (name) => typeof name === 'string' && name !== i && !ctx.scope.globals.has(name) && !writes(body, name) &&
     !some(func.body, m => m[0] === '=>' && writes(m, name), { skipArrow: false })
-  if (!(isInt(c) || (steady(c) && levels().get(c) >= 1))) return false
+  if (!(isInt(c) || (steady(c) && levels().get(c)?.whole))) return false
   // a length: a name every write of which is one, or a typed array's (a list's grows)
   const isLength = (e) => Array.isArray(e) && e[0] === '.' && e[2] === 'length' && typeof e[1] === 'string'
   if (isLength(n)) {

@@ -58,7 +58,10 @@ test('captured counters: the position cell keeps its word in the scanner', () =>
 })
 
 // Scanners shaped like the one above, small: each step of `i` runs under a test
-// of a string's length, with no call between that may move `i`.
+// of a string's length, with no call between that may move `i`; or under an
+// array's, a count below 2^29 (its 8-byte cells fill a 32-bit memory, as the
+// interval proof reads it: type/interval-proof.js countOf); or stepped down
+// under a test of a constant floor, from a start above it.
 const WORD = {
   walk: `export const f = (k) => { let i = 0; const s = 'abc'.repeat(k + 1)
     const walk = () => { while (i < s.length) i++ }
@@ -69,6 +72,12 @@ const WORD = {
   pairs: `export const f = (k) => { let i = 0, n = 0; const s = 'abcdefg'.repeat(k + 1)
     const sum = () => { while (s.length > i && n < 1e9) { n += s.charCodeAt(i); i = i + 2 } }
     sum(); return i * 1000 + n }`,
+  array: `export const f = (k) => { let i = 0, n = 0; const a = Array.from({ length: 10 + k }, (_, j) => j)
+    const sum = () => { while (i < a.length) { n += a[i]; i++ } }
+    sum(); return i * 1000 + n }`,
+  down: `export const f = (k) => { let i = 0; const s = 'abc'.repeat(k + 1)
+    const walk = () => { while (i < s.length && i > -5) i-- }
+    walk(); return i }`,
 }
 
 test('captured counters: a step under a length test keeps the cell a word', () => {
@@ -82,8 +91,8 @@ test('captured counters: a step under a length test keeps the cell a word', () =
 // Where no test bounds a step, a call or a write between the test and the step
 // may move the binding (a closure that writes it, known or escaped; a later
 // conjunct of the test itself), the steps since the test add past the budget or
-// no constant, or the bound is an array's length (`new Array(n)` may hold one no
-// element fills), the cell keeps a Number.
+// no constant, or the bound is a typed array's length (a count up to 2^32 - 1),
+// the cell keeps a Number.
 const KEEP = {
   unbounded: `export const f = (k) => { let i = 2147483000; const bump = () => { i += 1000 }; for (let j = 0; j < 3 + k; j++) bump(); return i }`,
   big: `export const f = (k) => { let i = 2147483640; const s = 'xy'
@@ -107,9 +116,6 @@ const KEEP = {
   typed: `export const f = (k) => { let i = 0; const b = new Uint8Array(10 + k)
     const walk = () => { while (i < b.length) i++ }
     walk(); return i }`,
-  array: `export const f = (k) => { let i = 0, n = 0; const a = Array.from({ length: 10 + k }, (_, j) => j)
-    const sum = () => { while (i < a.length) { n += a[i]; i++ } }
-    sum(); return i * 1000 + n }`,
   stride: `export const f = (k) => { let i = 0; const s = 'abcdefgh'.repeat(k + 1)
     const walk = () => { while (i < s.length) i += k + 1 }
     walk(); return i }`,
@@ -118,9 +124,6 @@ const KEEP = {
     walk(); return i }`,
   budget: `export const f = (k) => { let i = 0; const s = 'ab'.repeat(k + 1)
     const walk = () => { while (i < s.length) { i += 200; i += 100 } }
-    walk(); return i }`,
-  down: `export const f = (k) => { let i = 0; const s = 'abc'.repeat(k + 1)
-    const walk = () => { while (i < s.length && i > -5) i-- }
     walk(); return i }`,
 }
 
