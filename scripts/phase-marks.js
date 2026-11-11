@@ -27,7 +27,7 @@
 // profile against it.
 export const PHASE_NAMES = [
   'other',
-  'summary', 'foldAggregates', 'plan', 'analyzeFuncs', 'structInline', 'unionInline', 'unionClones',
+  'summary', 'normalize', 'foldAggregates', 'plan', 'analyzeFuncs', 'structInline', 'unionInline', 'unionClones',
   'finalizeVariantIdentities', 'finalizeConcreteFunctionIds', 'publishParameterAbi', 'emitFuncs', 'emitClosures',
   'buildStart', 'resolveDynFnTables', 'pullStdlib', 'optimizeModule', 'link',
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:strictBoundaryTypeCheck', 'plan:foldKindTests', 'plan:collectFacts',
