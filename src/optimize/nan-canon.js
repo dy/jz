@@ -84,7 +84,7 @@ const missOf = (n) => {
     // (ToNumber of a value of no kind but these: null is 0, undefined the miss in its else arm, or what that arm left)
     if (isArr(n[3][1]) && n[3][1][0] === 'f64.const' && n[3][1][1] === 0 && isArr(e)) {
       const v = e[0] === 'local.get' ? e : missOf(e)?.value
-      if (isArr(v) && v[0] === 'local.get' && isBitsTest(n[2], v[1], NULL_BITS)) return { test: n[2], set: null, value: v }
+      if (isArr(v) && v[0] === 'local.get' && isBitsTest(n[2], v[1], NULL_BITS)) return { test: n[2], set: null, value: v, zero: true }
     }
   }
   return null
@@ -388,7 +388,9 @@ export function stripDeadCanons(fn) {
   const replace = (n) => {
     if (!isArr(n)) return n
     for (let i = 1; i < n.length; i++) n[i] = replace(n[i])
-    if (misses.get(n)?.every(unseen) || misses.has(n) && heldThere(n)) { changed = true; return missValue(n) }
+    // (null converts to 0, a Number of its own: a comparison reads it apart from a NaN, so its
+    // test is dead only where the value is held a Number)
+    if (misses.has(n) && (!missOf(n).zero && misses.get(n).every(unseen) || heldThere(n))) { changed = true; return missValue(n) }
     const sinks = canons.get(n)
     if (sinks == null || !(sunk.has(n) || sinks.every(dead))) return n
     changed = true

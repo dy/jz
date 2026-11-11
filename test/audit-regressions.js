@@ -1863,3 +1863,22 @@ test('audit: a for body that declares a name of its head has its own', () => {
   is(plain(`const x = a[i].length; c += x`).length, plain(`const y = a[i].length; c += y`).length, 'a literal the body names apart')
   is(plain(`const length = a[i].length; c += length`).length, plain(`const y = a[i].length; c += y`).length, 'a property the body names apart')
 })
+
+// null converts to 0, a Number of its own: a comparison tells it from a NaN, so
+// its conversion is dead only where the value is held a Number. The pass that
+// drops a dead undefined test (NaN either way) dropped the null test with it,
+// and `let i = null; while (i < n)` ran no iteration at levels 2 and over.
+test('audit: a null read as a number is 0 in a comparison', () => {
+  const cases = [
+    `export let f = (n) => { let i = null, c = 0; for (; i < n; i += 1) c++; return c }`,
+    `export let f = (n) => { let i = null, s = 0; while (i < n) { s += 1; i++ } return s }`,
+    `export let f = (n) => { let i = null, s = 0; while (i < n) { s += i; i += 1 } return s }`,
+    `export let f = (n) => { let i = null; if (n > 5) i = 2; return (i < n ? 1 : 0) + (i <= 0 ? 10 : 0) + (i >= 0 ? 100 : 0) }`,
+    `export let f = (n) => { let x = null; if (n > 5) x = n; return (x + 1 > 0 ? 1 : 0) + (x * 2 <= 0 ? 10 : 0) + (-x < 1 ? 100 : 0) }`,
+    `export let f = (n) => { let x; if (n > 5) x = n; return (x < 1 ? 1 : 0) + (x >= 0 ? 10 : 0) + ((x | 0) === 0 ? 100 : 0) }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 2, 3, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const n of [0, 3, 7]) is(got.f(n), host.f(n), `${src} for ${n} at ${optimize}`)
+  }
+})
