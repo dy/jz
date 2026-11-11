@@ -1,5 +1,11 @@
 # Phase 3c: a callback's statements run in place; a for…of reads its array
 
+> Landed, with decision 1 below corrected: "a local of the enclosing function it
+> writes stays a local" was wrong. A local an arrow writes stays in its cell for every
+> analysis, and the optimizer holds a cell no closure took in a local
+> (`.work/architecture.md`, "Found on the way (2026-11-10)"). Do not brief from this
+> file as it stands.
+
 Part of `.work/architecture.md` (phase 3). Read that first, then `.work/phase-3b-loops.md`
 (landed: one `walk`, src/ir/arrays.js, at 38 emitter sites; typed-array callbacks bound
 by the summary and inlined through `makeCallback`, module/array/callback.js).

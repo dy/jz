@@ -68,7 +68,7 @@ Rules for every change here:
 | 0 | Base: land `v1`, split the suite over cores, spelling gate, two-sided ratchet per host | main green on the four legs, pushed | done (e7b8b62f4) |
 | 1 | Normalize loops on the AST (flipped tests, step spellings, `while (true)` with a leading break, guarded `do…while`; `do…while` first-class instead of flagged) | corpus styles in the gate have no gap beyond the default's; form lists in `loop-model.js`/`static.js` shrink to the one form | landed: `src/normalize.js`, gate 243 -> 84 gaps, no corpus style with a gap the default lacks. Left: a caller after kinds (a counter declared from a parameter is no Number by syntax, so the readers keep `i += 1`, `i = i + 1`), and `do…while` first-class |
 | 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a landed: the table is `src/summary/num-range.js` (`{lo, hi, int, nz, nan, gap}`, no rule reads a name), every `%` rule but two reads it (left: integral-loops' symbolic hull, the summary's `keepHull`), ring `% M` equals the mask spelling (2/27), `mixed` back to 2264/1060. `src/` +49 lines net. 2b briefed and running (`.work/phase-2b-engine.md`). Left: 2b `interval-proof` carrying table values (its `\|`/`^` field rule and its shift and mask rules are tighter than the table's and move in first; measured 4.7% of compile at level 2, up to 30% on a small kernel), 2c the local's type decided once (ring "step first" 35/37; see the overflow class below), 2d `int-certain` deleted |
-| 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c briefed and running (`.work/phase-3c-callbacks.md`): the `forEach` cells need a statement-body callback inlined and its capture known to run in place; the `for-of + idx` cells need `__iter_arr(a)` read as `a` where `a` is a present array or typed array (a draft closes both: scratchpad `p3b/forof-alias.diff`, with kinds written as numbers, not landable as it is) |
+| 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | |
 | 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | |
@@ -88,8 +88,8 @@ Each was on `main` before the phase that met it; each has a test now unless mark
   makes one after it (emit/assignment.js).
 - The do-while recognizer of phase 1 took a flag loop the source wrote, and an entry
   literal a later declarator overwrote (both fixed before landing).
-- Open: `Array.from(set)` through a helper answers `[]` at level 0 where the direct form
-  is a compile error with a message (module/array/from.js).
+- `Array.from(set)` through a helper answered `[]` at level 0 where the direct form was
+  a compile error with a message (fixed by 3c: a Set or a Map gives its entries).
 - Open: the ratchet's `mixed` entered count rose 1060 -> 1085 with phase 1, because one
   spelling used to dodge a versioning defect every other spelling paid (phase 2a, item 2).
 - Open: `fgather` compiles 15 ops better as a `while` than as a `for`; `watr` grew 163
@@ -142,16 +142,43 @@ before this session, most at every level. Each has a test now unless marked open
   the word (`rep--` under `rep > 0`): a rule in body-facts.js `widenLocalTypes`, beside
   the binding-use scan's own guarded step (analyze-scans.js `guardedStep`, which asks a
   different question of the same shape). Both belong to the one engine of 2b/2c.
-- Open (with phase 3c's agent): `Array.from(a, f)` where `f` grows `a` stops at the
-  first length (`[2, 4, 6]` for Node's `[2, 4, 6, 8]`).
+- `Array.from(a, f)` where `f` grows `a` stopped at the first length (`[2, 4, 6]` for
+  Node's `[2, 4, 6, 8]`), and one that shrinks it answered `[1, 2, NaN, NaN]` for
+  `[1, 2]`; `Array.from(set)` through a helper answered `[]` below level 2 (3c,
+  module/array/from.js).
+- A closure made by an expression-bodied function lost its writes to that function's
+  parameter: `export let f = (s) => ((() => { s = 7 })(), s)` answered the argument, at
+  every level, and so did the same shape made as a closure. `boxedCaptures` ran for block
+  bodies only (analyze-for-emit.js, closure-emit.js). 3c's agent met it through a check
+  the emitter now keeps: a closure that writes a local its maker holds in no cell is a
+  compile error (emit/call.js).
+- 3c as handed back left a local an in-place callback writes out of its cell, as my
+  brief told it to. That was wrong: `let o = { a: 1 }; a.forEach(x => { o = { b: x } });
+  o.b` answered `undefined` at every level, because the pointer-local analysis keeps a
+  declaration's layout unless it sees a reassignment, takes a mention inside an arrow
+  for a capture, and says in its comment that a capture-mutated local is already in
+  `boxed` (analyze/ptr-eligibility.js). 72 sites read `boxed` and 215 scans stop at an
+  arrow; the rule they share is that a local an arrow writes is in a cell. The landed
+  form keeps the rule: running the arrow in place is the emitter's choice, no analysis
+  is told, and the cell is removed after the fact where nothing took its address.
+- Open, for the owner: a module global fed a fraction through a closure's or a
+  callback's parameter is a word. `let S = 0; export let f = () => { const add = (x) =>
+  { S += x }; S = 0; add(1.5); add(2); return S }` answers 3 for 3.5, and so does
+  `[1.5, 2].forEach(x => { S += x })`, at every level; a named function's parameter is
+  followed to its arguments and answers 3.5. plan/scope.js `inferModuleIntGlobals` says
+  the integer default is deliberate and offers a warning; README lists no such
+  divergence. The sound rule asks the summary for the parameter's numbers.
 - Level 1 only: `let i = 3, r = 0; if (i >= 4 || i++ === 9) { r = -1 } else { r += i }`
   left `r` 7 for 4. watr's `coalesceLocals` took a local both arms write for written on
   every path, though one arm adds to its initial zero, and let it share the slot of the
   step's temp. Fixed in watr 5.13.5 (its `armSets`), which jz takes; test in
   test/audit-regressions.js.
-- Open, levels 2 and over (with phase 3c's agent): `while (i < 4 && (t[i++] = 1) > 0) { c++ }` over a
-  Float64Array compiles to a module that does not validate (a typed store's value in a
-  loop test).
+- Levels 2 and over: `while (i < 4 && (t[i++] = 1) > 0) { c++ }` over a Float64Array
+  compiled to a module that does not validate. Staging the store's reference emitted the
+  step `i++` as a statement and the store read that expectation, keeping no value to
+  compare (3c, emit/assignment.js). Statement-position element stores take the guarded
+  typed path since, which is where `watr` (+277 at size, +455 at speed) and `webaudio`
+  (+200 at size) grew.
 - Open: a map of a filter's result is no longer promoted with its literal (the summary
   holds a walk over an array of no known count to miss; one over a receiver nothing else
   reaches cannot).
@@ -163,7 +190,10 @@ The causes this time: two classifiers of one fact, a fact of a value applied to 
 derives from it (twice), a box read as a number (three times), an expression emitted at
 two reads, a fact of a test applied after the test wrote its name. Three of the fixes
 first failed five pins in the full suite: I had run the gates and the files beside the
-change, not the suite, before committing them.
+change, not the suite, before committing them. And a brief of mine decided a mechanism
+(the written local "stays a local") without first asking what else relies on its
+opposite: a brief names the outcome and the rule that must keep holding, and the
+reviewer's battery is written against the rule, not against the feature.
 
 ## Decisions taken
 
