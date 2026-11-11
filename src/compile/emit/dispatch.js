@@ -218,7 +218,11 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   // once: saturating to i32 first needs two clamps around every wide scale.
   // The existing integer pass lowers exact arithmetic inside this conversion;
   // rounded arithmetic keeps its f64 evaluation. NaN still names no element.
-  if (wide && whole && range && Number.isSafeInteger(range[0]) && Number.isSafeInteger(range[1])) {
+  // A name's hull is its binding's: one past a word is that scale, held in a
+  // local (`const si = (i % seg) * ch + ~~(i / seg)`, a planar sample's offset).
+  const held = typeof index === 'string' && whole ? repOf(index)?.range : null
+  const hull = range ?? (held && (held[0] < -2147483648 || held[1] > 2147483647) ? held : null)
+  if (wide && whole && hull && Number.isSafeInteger(hull[0]) && Number.isSafeInteger(hull[1])) {
     const t = temp('ix'), w = tempI64('ixw'), get = ['local.get', `$${t}`]
     const out = typed(['block', ['result', 'i32'],
       ['local.set', `$${t}`, asF64(value)],

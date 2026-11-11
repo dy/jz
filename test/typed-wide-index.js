@@ -156,9 +156,10 @@ test('typed wide index: a key of unknown integrality meets the length as its tru
 
 test('typed wide index: a planar offset the integer pass proves wide is one unsigned compare', () => {
   // `(i % seg) * ch + ~~(i / seg)` over the counter's divmod: an integer past
-  // 2^31 by its interval, a key of unknown integrality where emission met it.
-  // Narrowed to a word first it paid a fit test, a select of -1 and their
-  // conjunction around every bounds test.
+  // 2^31 by its interval, held in a name. Narrowed to a word first it paid a
+  // fit test, a select of -1 and their conjunction around every bounds test
+  // where emission knew no integrality of the name, and two clamps of the
+  // integer to a word where it knew the name whole.
   const source = `const CH = 2
   let dei = (s, ch, out) => { const len = s.length, seg = Math.floor(len / ch)
     for (let i = 0; i < len; i++) { const si = (i % seg) * ch + ~~(i / seg); out[i] = s[si] } }
@@ -176,7 +177,29 @@ test('typed wide index: a planar offset the integer pass proves wide is one unsi
   const text = wat(source, { optimize: 'speed' })
   ok(!/i64\.eq\s*\(\s*i64\.extend_i32_s\s*\(\s*(?:local\.tee \S+\s*)?\(?\s*i32\.wrap_i64/.test(text), 'no fit test of the key\'s word')
   ok(!/select\s*\(\s*local\.get \S+\)\s*\(\s*i32\.const -1\)/.test(text), 'no select of -1 for a key that does not fit')
+  ok(!/i64\.[gl]t_s\s*\(\s*local\.get \S+\)\s*\(\s*i64\.const -?214748364[78]\)/.test(text), 'no clamp of the key\'s integer to a word')
   ok(/i64\.lt_u/.test(text), 'the key meets the length unsigned, in i64')
+})
+
+test('typed wide index: a name holding an integer past a word names no element by its low word', () => {
+  // 2^32 + 1 is no element of an array of two, though its low word is one; nor is a negative past a word
+  const KEYS = ['(i & 1) * 4294967296 + (i >> 1)', '(i & 1) * -4294967296 + (i >> 1)', '(i & 3) * 2147483648 + (i >> 2)',
+    '(i % seg) * 2 - ~~(i / seg) * 3', 'i * 65536 + (i & 7)']
+  const USES = ['const v = s[si]; if (v === undefined) miss++; else h += v', 's[si] = i + 1', 's[si] += 2', 'o[si] = s[i]']
+  for (const key of KEYS) for (const use of USES) {
+    const source = `export let f = (n, m) => {
+      const s = new Int16Array(n), o = new Float64Array(m), seg = Math.floor(n / 2)
+      for (let i = 0; i < n; i++) s[i] = i * 7 - 3
+      let h = 0, miss = 0
+      for (let i = 0; i < m; i++) { const si = ${key}; ${use} }
+      return [h, miss, s, o]
+    }`
+    const expected = oracle(source)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(source, { optimize })
+      for (const [n, m] of [[0, 4], [1, 4], [2, 8], [7, 16], [8, 40]]) is(actual.f(n, m), expected.f(n, m), `${key}; ${use}; n=${n}, m=${m}, ${optimize}`)
+    }
+  }
 })
 
 test('typed wide index: views, missing receivers and throwing values keep their boundaries', () => {
