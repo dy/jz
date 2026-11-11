@@ -1949,3 +1949,30 @@ test('audit: a reassigned module string is read, not folded', () => {
   // (a module string no statement assigns still folds)
   ok(!compile('let X = \'ab\'\nexport let f = (k) => `${X}${X}`.length + k', { optimize: 0, wat: true }).includes('__str_concat'), 'an unassigned module string folds in a template')
 })
+
+// A function's own assignment of a module binding says what a read after it
+// holds only until a call: any call may run a function that assigns the binding.
+// `X = 1; w(); return X + 1` returned NaN where `w` had stored a string (the
+// export's result was a Number by the fact, and a string crossed as one).
+test('audit: a module binding a function assigns is not what the caller last wrote', () => {
+  const cases = [
+    `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab' }\nexport let f = (k) => { X = 1; w(k); return X + 1 }`,
+    `let X = null\nconst w = (k) => { if (k > 3) X = 'ab' }\nexport let f = (k) => { X = null; w(k); return X + 1 }`,
+    `let X = null\nconst w = (k) => { if (k > 3) X = true }\nexport let f = (k) => { X = null; w(k); return (X || 7) }`,
+    `let X = NaN\nconst w = (k) => { if (k > 3) X = null }\nexport let f = (k) => { w(k); return Number.isNaN(X) ? 1 : 0 }`,
+    `let X = 1\nconst w = (k) => { if (k > 3) X = null }\nexport let f = (k) => { X = 1; w(k); return [X].length + ([X][0] === null ? 10 : 0) }`,
+    `let X = 1\nconst o = { w: (k) => { if (k > 3) X = 'ab' } }\nexport let f = (k) => { X = 1; o.w(k); return X + 1 }`,
+    `let X = 1\nconst w2 = (k) => { if (k > 3) X = 'ab' }\nconst w = (k) => w2(k)\nexport let f = (k) => { X = 1; w(k); return X + 1 }`,
+    // (and what a guard proved of it, or of a cell a closure assigns, holds until the guarded code runs one)
+    `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab' }\nexport let f = (k) => { if (typeof X === 'number') { w(k); return X + 1 } return -1 }`,
+    `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab'; return 1 }\nexport let f = (k) => { X = 1; return (typeof X === 'number' && w(k) && X + 1) }`,
+    `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab'; return 0 }\nexport let f = (k) => { X = 1; return typeof X === 'number' ? w(k) + X + 1 : -1 }`,
+    `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab' }\nexport let f = (k) => { X = 1; if (typeof X !== 'number') return -1; w(k); return X + 1 }`,
+    `let X = [1, 2]\nconst w = (k) => { if (k > 3) X = 'abcdef' }\nexport let f = (k) => { X = [1, 2]; if (Array.isArray(X)) { w(k); return X.length } return -1 }`,
+    `export let f = (k) => { let X = 1; const w = () => { if (k > 3) X = 'ab' }; if (typeof X === 'number') { w(); return X + 1 } return -1 }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 5]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
+  }
+})

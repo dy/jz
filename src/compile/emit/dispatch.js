@@ -24,7 +24,7 @@ import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
 import { arrayView, emitArrayViewDef, materializeArrayView } from '../array-view.js'
-import { extractRefinements, withRefinements } from '../flow-types.js'
+import { extractRefinements, withRefinements, heldOver } from '../flow-types.js'
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
@@ -1309,6 +1309,7 @@ function setFlowVal(name, vt, expr, value) {
   else ctx.func.localValTypesOverlay.delete(name)
 }
 
+const PRESENT_INIT = { notNullish: true }
 const FLOW_LOOP_OPS = new Set(['while', 'for'])
 
 // Names assigned at a NESTED position within `node` (anything except a
@@ -1550,6 +1551,7 @@ export function emitBlockBody(node) {
           let reassigned = false
           for (let j = i + 1; j < stmts.length; j++) if (isReassigned(stmts[j], name)) { reassigned = true; break }
           if (reassigned) continue
+          if (heldOver(name, PRESENT_INIT, [';', ...stmts.slice(i + 1)]) === null) continue
           const refinements = ctx.func.refinements ??= new Map()
           const cur = refinements.get(name)
           accumulated.push([name, cur])
@@ -1587,12 +1589,16 @@ export function emitBlockBody(node) {
           extractRefinements(tail[1], refs, false)
           tail = tail[3]
         }
-        for (const [name, fact] of refs) {
+        let rest = null
+        for (let [name, fact] of refs) {
           if (tail != null && isReassigned(tail, name)) continue
           let reassigned = false
           for (let j = i + 1; j < stmts.length; j++)
             if (isReassigned(stmts[j], name)) { reassigned = true; break }
           if (reassigned) continue
+          // (what the statements below run may assign a captured cell or a module binding)
+          fact = heldOver(name, fact, rest ??= [';', tail, ...stmts.slice(i + 1)])
+          if (fact === null) continue
           const refinements = ctx.func.refinements ??= new Map()
           const cur = refinements.get(name)
           accumulated.push([name, cur])

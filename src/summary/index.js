@@ -4538,6 +4538,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const key = keyOf(writes[i + 1], writes[i])
     if (key !== null) storeBits[key] = (storeBits[key] ?? 0) | writes[i + 4]
   }
+  // The module bindings a function assigns. Any call may run that function, so
+  // within a function's walk such a binding holds no straight-line fact and no
+  // proof a guard gave, as one a closure assigns holds none (`closureAssigned`):
+  // `X = 1; w(); return X + 1` read a Number where `w` had stored a string.
+  const fnAssigned = new Set()
+  for (let i = 0; i < writes.length; i += 5) {
+    if (writes[i] === MODULE) continue
+    const key = keyOf(writes[i + 1], writes[i])
+    if (key !== null && bindingScope[key] === MODULE) fnAssigned.add(key)
+  }
   // A binding's one definition: its declaration's value, or the one value a
   // statement of the module assigns it where no read sees it unassigned
   // (`let HIGH` then `HIGH = 1`: the bare declaration writes nothing a read finds).
@@ -5011,7 +5021,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // called = true } foo()` reads `called` as the join, not as absent).
   const closureAssigned = new Set()
   // Whether the straight-line state follows a binding here.
-  const followed = (key) => flowPath === 0 && current !== null && !closureAssigned.has(key)
+  const followed = (key) => flowPath === 0 && current !== null && !closureAssigned.has(key) && !fnAssigned.has(key)
   let branch = 0            // the depth of paths (branches, loop bodies, arms) the walk is in
   // The depth of paths whose assignments the straight-line state cannot
   // follow: loops (an iteration's read may see the last one's store), handlers,
@@ -5046,7 +5056,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   let rtop = 0, pathDepth = 0
   const refineName = (name, mask) => refineKey(keyOf(name), mask)
   const refineKey = (key, mask) => {
-    if (key === null || closureAssigned.has(key)) return
+    if (key === null || closureAssigned.has(key) || fnAssigned.has(key)) return
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++
@@ -5476,7 +5486,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
     mapKeys, heldKeys, absentStored,
     held,
-    boolKeys, storeBits, paramKeys,
+    boolKeys, storeBits, paramKeys, fnAssigned,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)

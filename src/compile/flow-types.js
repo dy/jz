@@ -23,6 +23,7 @@ import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst, MUTATE_O
 import { constIntExpr } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 import { mayHoldHostValue } from './func-exports.js'
+import { runsAccessor, runsConversion } from '../evaluation-effects.js'
 
 // `bigint`: BigInt is the one VAL kind with no runtime NaN-box tag (see
 // kind.js VT['?:']'s own comment on this), but `typeof x === 'bigint'` still
@@ -41,11 +42,34 @@ const typeofVal = (code, k) => code === TYPEOF.function && mayHoldHostValue(k) ?
 /** Walk a boolean condition gathering refinements implied for the `sense` branch
  *  (sense=true = then-branch, sense=false = else-branch). `out` is a Map mutated
  *  in place; returns the same Map for chaining. */
+// Whether evaluating `n` may run code of the program's own: a call, a construction,
+// an accessor, or a conversion that calls a method.
+const runsCode = (n, view) => some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || runsAccessor(view, x) || runsConversion(view, x))
+const HEAP_VALS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.TYPED, VAL.MAP, VAL.SET, VAL.BUFFER, VAL.CLOSURE, VAL.HASH, VAL.DATE, VAL.REGEX])
+const PRESENT = { notNullish: true }
+const isParam = (name) => { const ps = ctx.func.current?.params; if (ps) for (const p of ps) if (p.name === name) return true; return false }
+/** What a guard's `fact` about `name` is worth over `code`. A captured cell, and a
+ *  module binding a function assigns, can change at any call `code` makes: the
+ *  fact holds over code that runs none (`if (typeof X === 'number') { w(); X + 1 }`
+ *  added a string as a number). That a heap value is present stays: a read through
+ *  null is the program's error. Null where nothing of it holds. */
+export const heldOver = (name, fact, code, view = ctx.summary?.at(ctx.func.current)) => {
+  const open = ctx.func.boxed?.has(name) ||
+    !ctx.func.locals?.has(name) && !isParam(name) && ctx.scope.globals?.has(name) && view?.fnAssigns?.(name) === true
+  if (!open || !runsCode(code, view)) return fact
+  const k = fact.notNullish ? view?.bindingKindOf?.(name) : null
+  return k != null && HEAP_VALS.has(ctx.summary.coreValOfKind(k)) ? PRESENT : null
+}
 // a call, a construction, a closure or a write inside a condition
 const effectful = (n) => Array.isArray(n) && (n[0] === '()' || n[0] === '?.()' || n[0] === 'new' || n[0] === '=>' || MUTATE_OPS.has(n[0]) || n.slice(1).some(effectful))
 // What the later side of a condition writes is no longer what the earlier side tested:
 // `i < n && s[i++] !== 0` leaves `i` at n in the body it guards.
-const moved = (n, out) => { if (out.size && some(n, x => MUTATE_OPS.has(x[0]))) for (const name of collectAssignedNames(n, new Set())) out.delete(name) }
+const moved = (n, out) => {
+  if (!out.size) return
+  if (some(n, x => MUTATE_OPS.has(x[0]))) for (const name of collectAssignedNames(n, new Set())) out.delete(name)
+  // (and what it runs may assign: `typeof X === 'number' && w() && X + 1`)
+  for (const [name, fact] of out) { const held = heldOver(name, fact, n); if (held === null) out.delete(name); else if (held !== fact) out.set(name, held) }
+}
 export function extractRefinements(cond, out, sense = true) {
   if (!Array.isArray(cond)) return out
   const op = cond[0]
@@ -431,8 +455,10 @@ export function withRefinements(refs, body, fn) {
   // Drop names that are reassigned in the body — refinement would be unsound.
   const saved = [], aliased = []
   const view = ctx.summary?.at(ctx.func.current)
-  for (const [name, val] of refs) {
+  for (let [name, val] of refs) {
     if (isReassigned(body, name)) continue
+    val = heldOver(name, val, body, view)
+    if (val == null) continue
     // The negative fact must still describe this binding when a nested loop
     // reads it. Captured cells and module names can change through calls.
     if (val.excludedNumberRange) {

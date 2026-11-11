@@ -21,7 +21,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, fnAssigned, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.TYPED)
@@ -817,6 +817,8 @@ export function summaryQueries(facts, internal = false) {
       // A Boolean reaches the binding (a store, a definition or an argument of
       // a kind naming BOOL, or one Boolean by its syntax): bit 1; one of its
       // stores may be another value by its syntax: bit 2.
+      // A module binding a function assigns: any call may run that function.
+      fnAssigns: name => { const key = keyOfAnywhere(name); return key !== null && fnAssigned != null && (typeof key === 'number' ? fnAssigned.has(key) : key.some(k => fnAssigned.has(k))) },
       boolStores: name => {
         const key = keyOfAnywhere(name), bits = k => (boolKeys?.has(k) ? 1 : 0) | (storeBits?.[k] ?? 0)
         if (key === null) return 0
