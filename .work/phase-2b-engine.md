@@ -1,5 +1,8 @@
 # Phase 2b: the interval proof as the one engine of a local's numbers
 
+> Landed (see `.work/architecture.md`, phase 2 and "Found on the way (2026-11-10)" for what
+> moved, what stays a scan and what this brief got wrong). 2c and 2d are not briefed yet.
+
 Part of `.work/architecture.md` (phase 2). Read that first (the phase table and both
 "Found on the way" sections), then `.work/maps/ranges.md` and `.work/phase-2a-domain.md`
 (landed: the transfer table is `src/summary/num-range.js`). The map is a scout's: leads

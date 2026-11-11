@@ -176,6 +176,9 @@ Landed on `main` by cherry-pick or fast-forward (checked: every commit's patch i
 b8e1c2ede worktree-agent-a58529a9940a7b114   phase 2a, landed as 4329ac723..21e90c516
 d19cee4b9 worktree-agent-ac6268c36a2b2510f   phase 3b, landed as d2843e18b..7b662fb90
 7b662fb90 land-3b                            the landing branch of 3b, an ancestor of main
+6503312a2 worktree-agent-a2d7d1a8604d1235a   phase 3c, landed as 8fe3b4c4b, 094e81fed, corrected by c956bce20
+b70b0a25e land-3c                            the landing branch of 3c, an ancestor of main
+108607457 worktree-agent-aab0781eee3f918ab   phase 2b, landed as 9ff0ffb2d, 7b43e61f3, 4cb52818a, 0e726f28e
 ```
 
 `wasi-proc-exit` (process.exit under host:'wasi') landed as 751665c63, 803529fff,
