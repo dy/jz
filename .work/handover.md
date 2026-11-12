@@ -210,3 +210,14 @@ Kept, not deleted:
   directory with subscript 10.8.3, which worktrees link while the main checkout's holds
   10.8.2 on disk. Remove it once the main checkout is repaired (`rm -rf
   node_modules/subscript node_modules/.package-lock.json && npm install` there).
+  Repaired by the owner on 2026-11-12 (10.8.3 on disk): worktrees link the main
+  checkout's modules again, and `bump-subscript` goes with the branches below.
+
+## Branches of 2026-11-12, tips before deletion
+
+```
+32a68a16a fix-boolkey      the Boolean fix and the optional-chain and WABT fix on e245ca67e: the tree the seven legs ran on; landed as 49554075d, 7edd3de24 (cherry-picked over the example commit 0ebaad572)
+e27e22a82 fix-optns        the optional-chain and WABT fix alone, the same patch as 7edd3de24
+e245ca67e fix-wide         main before these fixes: the batteries' unfixed tree
+726db51f8 land-b           the landing branch: the two fixes and the unused import, an ancestor of main
+```
