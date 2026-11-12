@@ -46,7 +46,7 @@ test('present receiver: the bounds test is the only test, a null-holding array k
 })
 
 // A program's one missing-receiver check still calls the throw helper
-// (optimize/watr-tail.js programPins): spliced into its one caller, the
+// (compile/index.js programPins): spliced into its one caller, the
 // error's allocation and stores would sit in the loop's cold arm.
 const once = `const ps = [{ v: 1 }, undefined, { v: 3 }]
   export const g = (n) => { let s = 0; for (let i = 0; i < n; i++) s += ps[i % 3].v; return s }`

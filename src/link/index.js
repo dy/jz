@@ -69,7 +69,7 @@ const LINK = {
   reduceThrowHelpers: (root, cfg, facts, st) => st.phase(() => reduceThrowHelpers(root, facts)),
   // The rewind's proof runs at every level (the host's release of a call's
   // argument copies reads it); the rewrite only where the rewind is on.
-  arenaRewind: (root, cfg, facts, st) => { st.arena = st.phase(() => arenaRewind(root, { ...facts, rewrite: !cfg || cfg.arenaRewind !== false })) },
+  arenaRewind: (root, cfg, facts, st) => { st.arena = st.phase(() => arenaRewind(root, facts)) },
   // Compaction (module/core/compact.js) serves a module some call of which may
   // keep memory: one whose every export keeps nothing it made or was handed
   // (a result the host copies is released once copied) drops it.

@@ -2,9 +2,12 @@
 // function's passes, link's and the tail's are walks of it, and a step run out of the order
 // its entry states fails here. The sequences bind their runners where they load
 // (pass-table.js `stage`): a stage whose runners and entries differ fails to load.
+// What a step takes and makes of the compile's facts is held as it runs (_facts-guard.js).
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
-import { PASSES, checkOrder, on } from '../src/optimize/pass-table.js'
+import { is, ok, throws } from 'tst/assert.js'
+import { PASSES, WALKS, checkOrder, on } from '../src/optimize/pass-table.js'
+import { compile } from './util.js'
+import { hold } from './_facts-guard.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
 import '../src/wat/assemble/optimize-module.js'
 import '../src/link/index.js'
@@ -42,6 +45,53 @@ test('pass table: a step out of its order fails the check', () => {
   ok(faults(strict, `'nanCanon' drops the mark 'dvProp' before 'devirtSchemaReads' reads it`).length, 'a dropped mark its reader does not list')
   // twice
   ok(faults([...PASSES, PASSES[0]], 'twice').length, 'one entry a step')
+})
+
+test('pass table: a walked stage stands behind the step that walks it', () => {
+  // A function's steps run where `optimizeFuncs` does: listed elsewhere, an order between
+  // one of them and a module step would be read off the table and not be the run's.
+  for (const id in WALKS) {
+    const first = PASSES.find(e => e.at === WALKS[id]).id
+    ok(faults(moved(first, 0), `the '${WALKS[id]}' steps stand right behind '${id}'`).length, `${WALKS[id]}: its first step listed ahead of the module`)
+    ok(faults(moved(id, PASSES.length - 1), `the '${WALKS[id]}' steps stand right behind '${id}'`).length, `${WALKS[id]}: the step that walks it listed after`)
+  }
+  ok(faults(PASSES.filter(e => e.id !== 'optimizeFuncs'), `'optimizeFuncs' walks the stage 'func'`).length, 'a stage nothing walks')
+})
+
+// Programs that between them reach the steps that read the compile's facts: module typed
+// arrays under a loop the vectorizer lifts; a table of arrows and objects read by field;
+// strings and arrays made in a loop, a throw; a static table read by index.
+const PROGRAMS = [
+  `const a = new Float64Array(64), b = new Float64Array(64)
+   export let f = (k) => { for (let i = 0; i < 64; i++) a[i] = b[i] * k + 1; return a[3] }`,
+  `const ops = [(x) => x + 1, (x) => x * 2, (x) => x - 3]; const mk = (i) => ({ v: i, w: i * 2 })
+   export let f = (k) => { let s = 0; for (let i = 0; i < 8; i++) { const o = mk(i); s += ops[i % 3](o.v + o.w) } return s + k }`,
+  `export let f = (k) => { let s = ''; const xs = []; for (let i = 0; i < k; i++) { xs.push('' + i); s += xs[i] }
+     if (k < 0) throw new Error('neg'); return s.length }`,
+  `const T = [3, 1, 4, 1, 5, 9, 2, 6]
+   export let f = (k) => { let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + T[i & 7] + k) | 0; return h }`,
+]
+const LEVELS = [{ optimize: 2 }, { optimize: 'speed' }, { optimize: 'size' }, { optimize: 'speed', host: 'wasi' }, { optimize: { level: 2, watr: false } }]
+
+test('pass table: a step reads of the facts what its entry takes, and writes what it makes', () => {
+  const free = hold()
+  try {
+    for (const src of PROGRAMS) for (const opts of LEVELS) ok(compile(src, opts).length > 8, `${JSON.stringify(opts)}: ${src.slice(0, 40)}`)
+    // The hold has teeth: an entry that states less than its step reads or writes fails the compile.
+    const without = (id, field, word, run) => {
+      const e = PASSES.find(e => e.id === id), was = e[field]
+      e[field] = was.filter(w => w !== word)
+      try { run() } finally { e[field] = was }
+    }
+    without('fusedRewrite', 'takes', 'hasBigint', () =>
+      throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'fusedRewrite' reads the fact 'hasBigint', which its entry does not take/))
+    without('optimizeFuncs', 'makes', 'headerSafeFuncs', () =>
+      throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'optimizeFuncs' writes the fact 'headerSafeFuncs', which its entry does not make/))
+    without('treeshake', 'takes', 'userFuncs', () =>
+      throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'treeshake' reads the fact 'userFuncs'/))
+    without('legalize', 'takes', 'targetProfile', () =>
+      throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'legalize' reads the fact 'targetProfile'/))
+  } finally { free() }
 })
 
 test('pass table: every flag a step runs under is a registered optimize key', () => {

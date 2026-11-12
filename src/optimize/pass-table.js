@@ -27,9 +27,13 @@
  *   lost   the marks it reads that a step before it drops: it acts on those left
  *
  * `checkOrder` holds the table to it (test/pass-table.js): a step after the
- * steps it follows, after the step that makes what it takes, and no step that
- * drops a mark between the emitter and a reader of it unless the reader lists
- * the mark as `lost`.
+ * steps it follows, after the step that makes what it takes, each walked stage's
+ * entries together behind the step that walks them, and no step that drops a
+ * mark between the emitter and a reader of it unless the reader lists the mark
+ * as `lost`. What a step takes and makes is held as it runs (`holdFacts`): under
+ * JZ_DEBUG_INVARIANTS the suite fails a step that reads a fact of the compile
+ * its entry does not take, or writes one it does not make (test/_facts-guard.js).
+ * The marks a step drops are a measurement, held by nothing.
  *
  * @module optimize/pass-table
  */
@@ -137,16 +141,16 @@ export const PASSES = [
   P('bodies', 'link', ''),
   P('fold', 'bodies', 'fusedRewrite'),
   P('rotateLoops', 'bodies', '+rotateLoops', { after: { fold: 'fold before rotation' } }),
-  P('reduceThrowHelpers', 'link', '', { takes: 'throws userThrows noEhAbort throwHelpers' }),
+  P('reduceThrowHelpers', 'link', '', { takes: 'throws userThrows noEhAbort rawAbi throwHelpers' }),
   P('arenaRewind', 'link', '', {
     after: { reduceThrowHelpers: 'a throw nothing observes allocates nothing' },
-    takes: 'rewindable heapAddr exported censused closureTargets entry keeps keepsNothing', makes: 'arena', why: 'its proof at every level, the rewrite where the rewind is on' }),
+    takes: 'rewindable numberResult asked heapAddr unsafe keeps entry exported exportInner report scalarGlobals closureTargets closureNames conditional censused userGlobals keepsNothing optimize phase', makes: 'arena', why: 'its proof at every level, the rewrite where the rewind is on' }),
   P('dropCompaction', 'link', '', { after: { arenaRewind: 'what each export keeps' }, takes: 'compact exportInner compactLoops arena' }),
   P('adviseKept', 'link', 'arenaRewind', { takes: 'adviseKept arena' }),
   P('treeshake', 'link', '', { after: { reduceThrowHelpers: 'reads their calls' }, takes: 'userFuncs userGlobals', makes: 'callCount' }),
   P('schemaSections', 'link', '', { after: { treeshake: 'the custom sections describe what survived' }, takes: 'schemas fieldContracts namedUses errorSids brandSids regexSids viewSids hostObjects' }),
   P('releaseSection', 'link', '', { after: { treeshake: 'the same' }, takes: 'exportInner arena copiedArgs asked numberResult' }),
-  P('pruneThrowRuntime', 'link', '', { takes: 'throws userThrows rawAbi' }),
+  P('pruneThrowRuntime', 'link', '', { takes: 'throws userThrows noEhAbort rawAbi' }),
   P('sortLocalsByUse', 'link', 'sortLocalsByUse !watr', { why: 'watr\'s sortLocals orders them where watr runs' }),
   P('orderFuncs', 'link', '', { takes: 'callCount' }),
   P('renameLocals', 'link', ''),
@@ -201,6 +205,9 @@ export const PASSES = [
   P('hoistVectorConsts', 'tail', '+hoistVectorConsts', { last: true, why: 'on the vector loops every pass above left, each where it will run' }),
 ]
 
+// The stages a step walks, each function in turn: their entries stand behind it.
+export const WALKS = { hoistGlobalPtr: 'globalPtr', optimizeFuncs: 'func', hoistGlobalConstLoads: 'globalLoads', bodies: 'bodies' }
+
 const words = (s) => s ? s.split(' ') : []
 // An entry's flag tests, read once: each test a list of alternatives, each { name, how }.
 for (const e of PASSES) {
@@ -234,8 +241,13 @@ export function stage(at, run) {
  *  as `run[id](x, cfg, facts, st)`: `x` the stage's IR (a function, the module's sections,
  *  the tape's root), `st` what a step hands the steps after it. */
 export function walk(steps, run, cfg, x, facts, st) {
-  for (const e of steps) if (on(e, cfg)) run[e.id](x, cfg, facts, st)
+  for (const e of steps) if (on(e, cfg)) run[e.id](x, cfg, hold ? hold(facts, e) : facts, st)
 }
+
+/** A host's hold on what a step reads and writes of the facts: `by(facts, entry)` answers
+ *  the facts the step is handed (test/_facts-guard.js); null, the facts themselves. */
+let hold = null
+export const holdFacts = (by) => { hold = by }
 
 /** What is wrong with the order of `table` (PASSES unless given), one line a fault; none, []. */
 export function checkOrder(table = PASSES) {
@@ -250,9 +262,16 @@ export function checkOrder(table = PASSES) {
     }
     for (const f of e.takes) if (maker.has(f) && maker.get(f) > i) out.push(`'${e.id}' takes '${f}' before '${table[maker.get(f)].id}' makes it`)
     for (let j = 0; j < table.length; j++) if (table[j].at === e.at && j !== i && !(table[j].id in e.after) &&
-      (e.first && j < i || e.last && j > i)) out.push(`'${e.id}' runs ${e.first ? 'first' : 'last'} of its stage, but not before '${table[j].id}'`)
+      (e.first && j < i || e.last && j > i)) out.push(`'${e.id}' runs ${e.first && j < i ? `first of its stage, but after '${table[j].id}'` : `last of its stage, but before '${table[j].id}'`}`)
     for (const m of e.reads) for (let j = 0; j < i; j++)
       if (table[j].drops.includes(m) && !e.lost.includes(m)) out.push(`'${table[j].id}' drops the mark '${m}' before '${e.id}' reads it`)
   })
+  // A walked stage runs where its step does: its entries stand together, right behind it,
+  // so an order between a step of one stage and a step of another is the table's.
+  for (const id in WALKS) {
+    const i = at.get(id), mine = table.map((e, j) => e.at === WALKS[id] ? j : -1).filter(j => j >= 0)
+    if (i === undefined || !mine.length) { out.push(`'${id}' walks the stage '${WALKS[id]}': the step or its stage is missing`); continue }
+    if (mine[0] !== i + 1 || mine[mine.length - 1] !== i + mine.length) out.push(`the '${WALKS[id]}' steps stand right behind '${id}', which walks them`)
+  }
   return out
 }

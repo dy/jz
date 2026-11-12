@@ -73,8 +73,8 @@
  * argument copies after it (interop.js, the `jz:release` section): a frame
  * that keeps nothing it made keeps none of what it was handed either, since
  * the census counts a parameter as outer storage and every store of one as
- * an escape. The pass returns those functions; `rewrite: false` (optimize
- * levels without the rewind) proves them without rewriting any.
+ * an escape. The pass returns those functions; `optimize.arenaRewind: false`
+ * (the levels without the rewind) proves them without rewriting any.
  *
  * Each sweep over the module's functions is a phase where the compiler
  * hosting the compile asks for one (`phase`, scripts/self.js
@@ -212,7 +212,6 @@ const EXT_READS = new Set(['$__ext_get', '$__ext_method', '$__ext_has', '$__ext_
  *                    (link/sections.js `jz:release`), reading the flag of a conditional one
  *  @param heapAddr    the heap pointer's memory address under shared memory, null when it is the `$__heap` global
  *  @param report      optional (name, reason) => void: why a candidate in `rewindable` was not rewound
- *  @param rewrite     false: prove the functions without rewriting them (the returned set only)
  *  @param scalarGlobals Set of `$name`: module bindings that never hold a heap value
  *  @param closureTargets Map `$name` → Set of `$closure`: the closures a function's resolved calls may run
  *  @param closureNames Set of `$name`: every closure body the module emitted
@@ -221,11 +220,13 @@ const EXT_READS = new Set(['$__ext_get', '$__ext_method', '$__ext_has', '$__ext_
  *                    write there to a module binding (`userGlobals`) is the census's to judge:
  *                    a heap value it flagged as a site, anything else keeps nothing fresh
  *  @param keepsNothing Set of `$name`: runtime imports that keep nothing they are handed
- *  @param optimize   the resolved optimize config: `rewindGuard: false` (the size tier) leaves out the comparison before a release
+ *  @param optimize   the resolved optimize config: `arenaRewind: false` proves the functions without rewriting
+ *                    them (the returned set only); `rewindGuard: false` (the size tier) leaves out the comparison before a release
  *  @returns `releasable` (the rewindable functions whose frames keep nothing, allocating or
  *    not), `rewound` (those rewritten), and per function whether it allocates and why not */
-export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES, optimize = null, phase = run => run() }) {
+export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES, optimize = null, phase = run => run() }) {
   const releasable = new Set(), rewound = new Set(), flagged = new Set()
+  const rewrite = optimize?.arenaRewind !== false
   // The conditional functions whose flag something reads: the frames rewound
   // here, and those the host releases by it.
   const readers = new Set(), hosted = new Set(exportInner?.values())

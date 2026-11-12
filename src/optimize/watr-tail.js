@@ -640,12 +640,12 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
 
 // Each step of the tail, `(t, cfg, x)`: `t.m` the module as it stands (watr's fixpoint
 // hands back a module of its own), `t.watrOpts` watr's options, `t.user` whether a name is
-// the program's; `x` the tail's facts (compile/index.js tailFacts) and the host's timer.
+// the program's, `t.time` the host's timer; `x` the tail's facts (compile/index.js tailFacts).
 const TAIL = {
   legalize: (t, cfg, x) => { t.m = legalizeForTarget(t.m, x.targetProfile) },
   // A split binding of its predecessor's type takes that slot: the generic optimizer
   // then reads the function the source wrote.
-  shareSplitSlots: (t, cfg, x) => { x.time('shareSplitSlots', () => { for (const n of t.m) shareSplitSlots(n) }) },
+  shareSplitSlots: (t) => { t.time('shareSplitSlots', () => { for (const n of t.m) shareSplitSlots(n) }) },
   // The math runtime depends only on its operands and cannot trap (its loads read constant
   // tables, its truncations are guarded): value numbering and scheduling treat its calls
   // like arithmetic.
@@ -658,16 +658,16 @@ const TAIL = {
   // (a boxed pointer in a local the function only unboxes: the local holds the pointer)
   narrowBoxedLocals: (t) => { for (const n of t.m) narrowBoxedLocals(n) },
   // (a loop that writes no memory and calls nothing: its reads every round runs, ahead of it)
-  stillLoads: (t, cfg, x) => { x.time('stillLoads', () => hoistStillLoads(t.m)) },
+  stillLoads: (t) => { t.time('stillLoads', () => hoistStillLoads(t.m)) },
   // Generic local rewrites run only here, after link consumed JZ annotations.
   // Fast mode uses the same passes without the full module fixpoint.
-  watOptimize: (t, cfg, x) => { t.m = x.time('watOptimize', () => watOptimize(t.m, t.watrOpts)) },
-  conditions: (t, cfg, x) => { x.time('watCleanup', () => conditions(t.m)) },
-  propagate: (t, cfg, x) => { t.m = x.time('watCleanup', () => mergeLocals(propagate(t.m))) },
-  bool: (t, cfg, x) => { t.m = x.time('watCleanup', () => mergeBlocks(vacuum(bool(t.m)))) },
-  coalesceLocals: (t, cfg, x) => { t.m = x.time('watCleanup', () => coalesceLocals(t.m)) },
-  localReuse: (t, cfg, x) => { x.time('watCleanup', () => localReuse(t.m)) },
-  poolConstants: (t, cfg, x) => { t.m = x.time('watCleanup', () => poolConstants(t.m)) },
+  watOptimize: (t) => { t.m = t.time('watOptimize', () => watOptimize(t.m, t.watrOpts)) },
+  conditions: (t) => { t.time('watCleanup', () => conditions(t.m)) },
+  propagate: (t) => { t.m = t.time('watCleanup', () => mergeLocals(propagate(t.m))) },
+  bool: (t) => { t.m = t.time('watCleanup', () => mergeBlocks(vacuum(bool(t.m)))) },
+  coalesceLocals: (t) => { t.m = t.time('watCleanup', () => coalesceLocals(t.m)) },
+  localReuse: (t) => { t.time('watCleanup', () => localReuse(t.m)) },
+  poolConstants: (t) => { t.m = t.time('watCleanup', () => poolConstants(t.m)) },
   postGlobalPtr: (t, cfg, x) => {
     const funcs = t.m.filter(node => Array.isArray(node) && node[0] === 'func')
     if (x.stableGlobals?.size) {
@@ -675,51 +675,51 @@ const TAIL = {
       for (const node of funcs) hoistGlobalPtrOffset(node, x.stableGlobals, reach)
     }
   },
-  guardToInt32: (t, cfg, x) => { x.time('guardToInt32', () => guardToInt32(t.m, cfg.wordTruncation === 'add')) },
+  guardToInt32: (t, cfg) => { t.time('guardToInt32', () => guardToInt32(t.m, cfg.wordTruncation === 'add')) },
   // (again, over what the optimizer's propagation and the truncation's lowering brought together:
   // a word converted to a Number and rounded back is the word; a flag of literals, read as the
   // optimizer leaves it, against literals, is a word)
   'foldWrappedWords.late': (t) => { foldWrappedWords(t.m) },
   narrowFlagLocals: (t) => { for (const n of t.m) narrowFlagLocals(n) },
-  forwardChecked: (t, cfg, x) => { x.time('forwardChecked', () => forwardCheckedElements(t.m)) },
+  forwardChecked: (t) => { t.time('forwardChecked', () => forwardCheckedElements(t.m)) },
   stripDeadLateData: (t, cfg, x) => { stripDeadLateData(t.m, x.lazyDataSpans, x.staticDataSpan, x.dataRecords) },
-  unrollTrips: (t, cfg, x) => { x.time('unrollTrips', () => unrollTrips(t.m)) },
-  ringLaps: (t, cfg, x) => { x.time('ringLaps', () => ringLaps(t.m)) },
-  pointerExits: (t, cfg, x) => { x.time('pointerExits', () => pointerExits(t.m)) },
-  jumpPointers: (t, cfg, x) => { x.time('jumpPointers', () => jumpPointers(t.m)) },
-  leadChains: (t, cfg, x) => { x.time('leadChains', () => leadChains(t.m)) },
+  unrollTrips: (t) => { t.time('unrollTrips', () => unrollTrips(t.m)) },
+  ringLaps: (t) => { t.time('ringLaps', () => ringLaps(t.m)) },
+  pointerExits: (t) => { t.time('pointerExits', () => pointerExits(t.m)) },
+  jumpPointers: (t) => { t.time('jumpPointers', () => jumpPointers(t.m)) },
+  leadChains: (t) => { t.time('leadChains', () => leadChains(t.m)) },
   // (a run they leave as written, an integrator's stages, the order the core issues soonest)
-  issueOrder: (t, cfg, x) => { x.time('issueOrder', () => issueOrder(t.m)) },
-  maskOperands: (t, cfg, x) => { x.time('maskOperands', () => maskOperands(t.m)) },
-  truncChoice: (t, cfg, x) => { x.time('truncChoice', () => truncChoice(t.m)) },
+  issueOrder: (t) => { t.time('issueOrder', () => issueOrder(t.m)) },
+  maskOperands: (t) => { t.time('maskOperands', () => maskOperands(t.m)) },
+  truncChoice: (t) => { t.time('truncChoice', () => truncChoice(t.m)) },
   // (a select of their leaves)
-  selectArms: (t, cfg, x) => { x.time('selectArms', () => selectArms(t.m)) },
+  selectArms: (t) => { t.time('selectArms', () => selectArms(t.m)) },
   // (on the lanes the vectorizer converted and the selects the arms became: each arm's quotient one of a choice)
-  shareQuotients: (t, cfg, x) => { x.time('shareQuotients', () => shareQuotients(t.m)) },
+  shareQuotients: (t) => { t.time('shareQuotients', () => shareQuotients(t.m)) },
   // (a test of a float select of literals is a test of its condition)
-  testedChoices: (t, cfg, x) => { x.time('testedChoices', () => foldTestedChoices(t.m)) },
-  selectBits: (t, cfg, x) => { x.time('selectBits', () => selectBits(t.m, { simd: !x.noSimd })) },
-  searchLoops: (t, cfg, x) => { x.time('searchLoops', () => searchLoops(t.m)) },
+  testedChoices: (t) => { t.time('testedChoices', () => foldTestedChoices(t.m)) },
+  selectBits: (t, cfg, x) => { t.time('selectBits', () => selectBits(t.m, { simd: !x.noSimd })) },
+  searchLoops: (t) => { t.time('searchLoops', () => searchLoops(t.m)) },
   // (where the round uses it)
-  leadGathers: (t, cfg, x) => { x.time('leadGathers', () => leadGathers(t.m)) },
+  leadGathers: (t) => { t.time('leadGathers', () => leadGathers(t.m)) },
   // (a round's last store, read back first by the next round, through a local)
-  carryStores: (t, cfg, x) => { x.time('carryStores', () => carryStores(t.m)) },
+  carryStores: (t) => { t.time('carryStores', () => carryStores(t.m)) },
   // (a round that skips one takes the latch without a jump past it)
-  skipLatches: (t, cfg, x) => { x.time('skipLatches', () => skipLatches(t.m)) },
-  guardExtremes: (t, cfg, x) => { x.time('guardExtremes', () => guardExtremes(t.m)) },
-  pairTests: (t, cfg, x) => { x.time('pairTests', () => pairTests(t.m, { simd: !x.noSimd })) },
+  skipLatches: (t) => { t.time('skipLatches', () => skipLatches(t.m)) },
+  guardExtremes: (t) => { t.time('guardExtremes', () => guardExtremes(t.m)) },
+  pairTests: (t, cfg, x) => { t.time('pairTests', () => pairTests(t.m, { simd: !x.noSimd })) },
   // (a helper of a few instructions joins its callers, a larger one the program's loops)
-  inlineTiny: (t, cfg, x) => {
-    if (t.watrOpts) x.time('inlineTiny', () => inlineTiny(t.m, { pin: t.watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, kernel: cfg.kernelNodes ?? 300, user: t.user }))
+  inlineTiny: (t, cfg) => {
+    if (t.watrOpts) t.time('inlineTiny', () => inlineTiny(t.m, { pin: t.watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, kernel: cfg.kernelNodes ?? 300, user: t.user }))
   },
-  unsignedDivision: (t, cfg, x) => { x.time('unsignedDivision', () => unsignedDivision(t.m)) },
-  constBases: (t, cfg, x) => { x.time('constBases', () => constBases(t.m)) },
-  poolFloats: (t, cfg, x) => { x.time('poolFloatConstants', () => poolFloatConstants(t.m)) },
-  loopPasses: (t, cfg, x) => { x.time('loopPasses', () => loopPasses(t.m, { user: t.user })) },
-  splitFuncs: (t, cfg, x) => { x.time('splitFuncs', () => splitFuncs(t.m, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm })) },
+  unsignedDivision: (t) => { t.time('unsignedDivision', () => unsignedDivision(t.m)) },
+  constBases: (t) => { t.time('constBases', () => constBases(t.m)) },
+  poolFloats: (t) => { t.time('poolFloatConstants', () => poolFloatConstants(t.m)) },
+  loopPasses: (t) => { t.time('loopPasses', () => loopPasses(t.m, { user: t.user })) },
+  splitFuncs: (t, cfg) => { t.time('splitFuncs', () => splitFuncs(t.m, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm })) },
   // (a round's lane extremes relaxed, tested once, the engine asked once a call)
-  relaxExtremes: (t, cfg, x) => { if (!x.noSimd) x.time('relaxExtremes', () => relaxExtremes(t.m)) },
-  hoistVectorConsts: (t, cfg, x) => { x.time('hoistVectorConsts', () => hoistVectorConsts(t.m)) },
+  relaxExtremes: (t, cfg, x) => { if (!x.noSimd) t.time('relaxExtremes', () => relaxExtremes(t.m)) },
+  hoistVectorConsts: (t) => { t.time('hoistVectorConsts', () => hoistVectorConsts(t.m)) },
 }
 const TAIL_STEPS = stage('tail', TAIL)
 
@@ -738,11 +738,11 @@ export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
   lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, noSimd = false, userFuncs = null,
 } = {}) {
-  const x = { funcCount, boundaryPins, time, targetProfile, lazyDataSpans, staticDataSpan, dataRecords, stableGlobals, noSimd }
+  const x = { funcCount, boundaryPins, targetProfile, lazyDataSpans, staticDataSpan, dataRecords, stableGlobals, noSimd }
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => !!userFuncs?.has(name.slice(1)) || name.endsWith('$exp') && !!userFuncs?.has(name.slice(1, -4))
-  const t = { m: module, watrOpts: null, user }
+  const t = { m: module, watrOpts: null, user, time }
   walk(TAIL_STEPS, TAIL, cfg, t, x, null)
   return t.m
 }
