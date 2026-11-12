@@ -1370,3 +1370,17 @@ test('quoted and keyword module names survive imports and re-exports', () => {
   }
   throws(() => compile('const n=1; export {n as 1}'), /Invalid module export name/)
 })
+
+// A module's names are prefixed by its specifier with every character but a letter or a
+// digit written `_`: two specifiers that spell one prefix shared it, so one module's `v`
+// was the other's (the first answered for both), and a module-level `n` in each was "a
+// compiler internal" (prepare/handlers.js prepareModule).
+test('imports: two specifiers that spell one prefix are two modules', () => {
+  const main = (a, b) => `import { v as p } from '${a}'; import { v as q } from '${b}'; export let f = () => p() * 10 + q()`
+  for (const [a, b] of [['./a-b', './a_b'], ['./a/b.js', './a_b.js'], ['./a.b', './a-b'], ['./m0_x', './m0-x']]) {
+    for (const optimize of levels(0, 2)) {
+      is(jz(main(a, b), { optimize, modules: { [a]: 'export const v = () => 1', [b]: 'export const v = () => 2' } }).exports.f(), 12, `${a} and ${b}, O${optimize}`)
+      is(jz(main(a, b), { optimize, modules: { [a]: 'let n = 1; export const v = () => n', [b]: 'let n = 2; export const v = () => n' } }).exports.f(), 12, `${a} and ${b} with a binding each, O${optimize}`)
+    }
+  }
+})

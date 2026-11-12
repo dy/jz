@@ -3228,7 +3228,11 @@ function prepareModule(specifier, source) {
     const base = sanitized.replace(/_(js|mjs|jz)$/, '').match(/[a-zA-Z0-9]+$/)?.[0] ?? ''
     prefix = `m${id}_${base.slice(-16)}`
   }
-  ;(ctx.module.prefixes ??= new Set()).add(prefix)   // a message shows `m0_x$name` as written (ctx.js shown)
+  // Two specifiers may spell one prefix (`./a-b` and `./a_b`, `./a/b.js` and `./a_b.js`): a
+  // specifier comes here once, so a prefix already taken is another module's, and its names.
+  const taken = ctx.module.prefixes ??= new Set()   // a message shows `m0_x$name` as written (ctx.js shown)
+  for (let n = 2, spelled = prefix; taken.has(prefix); n++) prefix = `${spelled}_${n}`
+  taken.add(prefix)
 
   // Save caller state
   const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports, savedNamespaces = ctx.module.namespaces
