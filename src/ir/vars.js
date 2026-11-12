@@ -284,10 +284,13 @@ export function writeVar(name, valIR, void_, source) {
       ['local.get', `$${t}`]], i32Cell ? 'i32' : 'f64')
   }
   if (isGlobal(name)) {
-    // Scalar globals are f64 by default, but integer-global inference (plan.js)
+    // Scalar globals are f64 by default, but integer-global inference (plan/scope.js)
     // narrows purpose-focused counters/sizes to i32 — coerce the write to match.
+    // toI32, as a local's gate below: a binding held as a word because every read of
+    // it converts holds what the read would have made of the value, 0 for +Infinity;
+    // asI32 takes an infinity for -1.
     const gt = ctx.scope.globalTypes.get(name) || 'f64'
-    const v = gt === 'i32' ? asI32(valIR) : asF64(valIR)
+    const v = gt === 'i32' ? toI32(valIR) : asF64(valIR)
     if (void_) return typed(['block', ['global.set', dollar(name), v]], 'void')
     const t = gt === 'i32' ? tempI32() : temp()
     return typed(['block', ['result', gt],

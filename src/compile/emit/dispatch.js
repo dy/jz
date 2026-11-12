@@ -1159,7 +1159,8 @@ export function emitDecl(...inits) {
       if (ctx.scope.globalTypes.has(name)) {
         if (ctx.scope.consts?.has(name) && !ctx.scope.globals.get(name)?.mut) continue
         const gt = ctx.scope.globalTypes.get(name)
-        result.push(['global.set', `$${name}`, gt === 'i32' ? asI32(val) : asF64(val)])
+        // (the word a read would make of it, vars.js writeVar: `let top = Infinity` read by `top | 0` holds 0)
+        result.push(['global.set', `$${name}`, gt === 'i32' ? toI32(val) : asF64(val)])
         continue
       }
       result.push(['global.set', `$${name}`, asF64(val)])

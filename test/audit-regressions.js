@@ -2240,3 +2240,25 @@ test('audit: a fold of a literal zero keeps the zero its sign', () => {
     ok(/f64\.gt/.test(body) && !/select|\(if/.test(body), `${src} is the condition's bit`)
   }
 })
+
+// A module binding every read of which converts (`| 0`, a mask, a shift, Math.imul) is
+// held as its word: the word a read would have made of the value. ToInt32(+Infinity)
+// is 0, and the store converted without the infinity's test, so the binding held -1:
+// `const C = Infinity; (C | 0)` was -1 and `n >>> C` shifted by 31, at every level.
+test('audit: a module binding held as a word holds 0 for +Infinity', () => {
+  const reads = ['(C | 0)', '(C & 255)', '(1 << C)', '(-1 >>> C)', 'Math.imul(C, 3)']
+  const holders = [
+    (r) => `const C = Infinity; export let f = (k) => ${r} + k`,
+    (r) => `let C = 1 / 0; export let f = (k) => ${r} + k`,
+    (r) => `let C = 0; export let f = (k) => { C = k / 0; return ${r} + k }`,
+    (r) => `let C = 0; const put = (v) => { C = v }; export let f = (k) => { put(Infinity); return ${r} + k }`,
+    (r) => `let C = 0; export let f = (k) => { if (k > 0) C = Math.exp(1000); else C = 7; return ${r} + k }`,
+  ]
+  for (const hold of holders) for (const read of reads) {
+    const src = hold(read), host = oracle(src)
+    for (const optimize of levels(0, 2, 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [1, 5]) is(got.f(k), host.f(k), `${src} f(${k}) at ${optimize}`)
+    }
+  }
+})
