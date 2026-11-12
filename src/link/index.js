@@ -27,7 +27,7 @@ import { rotateLoops } from '../optimize/rotate-loops.js'
 import { fold } from '../optimize/fold.js'
 import { arenaRewind } from '../optimize/arena-rewind.js'
 import { sortLocalsByUse } from '../optimize/sort-locals.js'
-import { stage, walk } from '../optimize/pass-table.js'
+import { stage, on } from '../optimize/pass-table.js'
 
 
 const check = (root, when) => {
@@ -53,36 +53,36 @@ export function link(module, facts) {
 export const linkTape = (root, facts) => { linkPasses(root, facts); return toWat(root) }
 
 // Each function's body passes on the tape (the 'bodies' steps of optimize/pass-table.js).
-const BODIES = { fold: (f) => fold(f), rotateLoops: (f) => rotateLoops(f) }
+export const BODIES = [['fold', (f) => fold(f)], ['rotateLoops', (f) => rotateLoops(f)]]
 const BODY_STEPS = stage('bodies', BODIES)
 
 // Each step of link, `(root, cfg, facts, st)`: `st` holds the phase runner, the arena's
 // verdict and the call counts the treeshake leaves.
-const LINK = {
+export const LINK = [
   // Fold before rotation; watr subsequently simplifies the resulting conditions.
-  bodies: (root, cfg, facts, st) => {
-    st.phase(() => { for (const f of funcs(root)) walk(BODY_STEPS, BODIES, cfg, f, facts, null) })
+  ['bodies', (root, cfg, facts, st) => {
+    st.phase(() => { for (const f of funcs(root)) for (let i = 0; i < BODY_STEPS.length; i++) if (on(BODY_STEPS[i], cfg)) BODIES[i][1](f, cfg, facts, null) })
     if (DBG_INVARIANTS) check(root, 'after the body passes')
-  },
+  }],
   // A throw nothing can observe allocates nothing: its helpers reduce before the
   // rewind's proof and the treeshake read their calls.
-  reduceThrowHelpers: (root, cfg, facts, st) => st.phase(() => reduceThrowHelpers(root, facts)),
+  ['reduceThrowHelpers', (root, cfg, facts, st) => st.phase(() => reduceThrowHelpers(root, facts))],
   // The rewind's proof runs at every level (the host's release of a call's
   // argument copies reads it); the rewrite only where the rewind is on.
-  arenaRewind: (root, cfg, facts, st) => { st.arena = st.phase(() => arenaRewind(root, facts)) },
+  ['arenaRewind', (root, cfg, facts, st) => { st.arena = st.phase(() => arenaRewind(root, facts)) }],
   // Compaction (module/core/compact.js) serves a module some call of which may
   // keep memory: one whose every export keeps nothing it made or was handed
   // (a result the host copies is released once copied) drops it.
-  dropCompaction: (root, cfg, facts, st) => {
+  ['dropCompaction', (root, cfg, facts, st) => {
     const arena = st.arena
     if (facts.compact && facts.exportInner && ![...facts.exportInner.values()].some(inner => !arena.releasable.has(inner) || arena.flagged.has(inner)))
       dropExports(root, new Set(facts.compactLoops ? ['"__jz_compact"', '"__jz_g_cost"'] : ['"__jz_compact"', '"__jz_g_cost"', '"__jz_pin"', '"__jz_viewed"']))
-  },
+  }],
   // Which exports keep memory per call: the advisory reads the verdict itself.
-  adviseKept: (root, cfg, facts, st) => facts.adviseKept?.(st.arena),
-  treeshake: (root, cfg, facts, st) => { st.callCount = st.phase(() => treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })) },
-  schemaSections: (root, cfg, facts, st) => st.phase(() => schemaSections(root, facts)),
-  releaseSection: (root, cfg, facts, st) => {
+  ['adviseKept', (root, cfg, facts, st) => facts.adviseKept?.(st.arena)],
+  ['treeshake', (root, cfg, facts, st) => { st.callCount = st.phase(() => treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })) }],
+  ['schemaSections', (root, cfg, facts, st) => st.phase(() => schemaSections(root, facts))],
+  ['releaseSection', (root, cfg, facts, st) => {
     const arena = st.arena
     if (facts.exportInner) st.phase(() => {
       const releases = new Map()
@@ -90,13 +90,13 @@ const LINK = {
         if (arena.allocates(inner) || facts.copiedArgs?.has(name)) releases.set(name, inner)
       releaseSection(root, arena, releases, facts.asked, facts.numberResult)
     })
-  },
-  pruneThrowRuntime: (root, cfg, facts, st) => st.phase(() => pruneUnusedThrowRuntime(root, facts)),
+  }],
+  ['pruneThrowRuntime', (root, cfg, facts, st) => st.phase(() => pruneUnusedThrowRuntime(root, facts))],
   // watr's `sortLocals` orders the final body's declarations; the tape orders them only when watr does not run
-  sortLocalsByUse: (root, cfg, facts, st) => st.phase(() => sortLocalsByUse(root)),
-  orderFuncs: (root, cfg, facts, st) => st.phase(() => orderFuncs(root, st.callCount)),
-  renameLocals: (root, cfg, facts, st) => st.phase(() => stripLocalRenameSuffixes(root)),
-}
+  ['sortLocalsByUse', (root, cfg, facts, st) => st.phase(() => sortLocalsByUse(root))],
+  ['orderFuncs', (root, cfg, facts, st) => st.phase(() => orderFuncs(root, st.callCount))],
+  ['renameLocals', (root, cfg, facts, st) => st.phase(() => stripLocalRenameSuffixes(root))],
+]
 const LINK_STEPS = stage('link', LINK)
 
 /** Link's passes over the module decoded onto the tape at `root`, the tape
@@ -107,6 +107,7 @@ const LINK_STEPS = stage('link', LINK)
  *  next one runs. */
 export function linkPasses(root, facts) {
   if (DBG_INVARIANTS) check(root, 'after decode')
-  walk(LINK_STEPS, LINK, facts.optimize, root, facts, { phase: facts.phase ?? (run => run()), arena: null, callCount: null })
+  const cfg = facts.optimize, st = { phase: facts.phase ?? (run => run()), arena: null, callCount: null }
+  for (let i = 0; i < LINK_STEPS.length; i++) if (on(LINK_STEPS[i], cfg)) LINK[i][1](root, cfg, facts, st)
   if (DBG_INVARIANTS) check(root, 'after link')
 }

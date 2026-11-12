@@ -6,6 +6,24 @@
  * the tail around watr (watr-tail.js). Each binds a runner to every entry of its
  * stage (`stage`) and walks them as listed; none holds an order of its own.
  *
+ * A stage's runners are a list of `[id, runner]` in the table's order, written
+ * where the stage is, and its walk is a loop of its own over that list:
+ *   for (let i = 0; i < STEPS.length; i++) if (on(STEPS[i], cfg)) RUN[i][1](x, cfg, facts, st)
+ * The form is the one jz compiles well, the compiler being compiled by jz too.
+ * Measured on the hosted compiler, against the sequences written out by hand:
+ * - The runners a record keyed by step name, called by a walk the stages
+ *   share: 9.5% more bytes, 9% slower. A step is named after its flag, and a
+ *   field of that name in any record gave every read of the flag off the config,
+ *   the compiler over, an inline cache (4,123 sites more).
+ * - Lists of pairs, collected into a Map and called off a list `stage` made:
+ *   3.8% and 3%. The runners were closures of unknown use, and 1,542 closures
+ *   more were with them (the comparators and predicates the passes hand
+ *   `sort`, `some`, `filter`).
+ * - This form, each runner read off its own list where it is called: 2.1% and
+ *   1.3%, the cost of 123 calls through a list.
+ * So: no record keyed by a step's name (an entry's `after` is a list of pairs
+ * as well), no list of runners made from another, no walk shared by stages.
+ *
  * An entry:
  *   id     the step, the runner's key (`pass.role` where one pass runs twice)
  *   at     its stage: 'module', 'func' (each function, the module's `optimizeFuncs`
@@ -14,7 +32,8 @@
  *          'tail'; a stage's entries follow the step that walks them
  *   on     the flags it runs under, all of them: `x` unless cfg.x is false, `+x`
  *          where it is true, `?x` where truthy, `!x` where falsy; `a|b` either
- *   after  the steps it follows where both run, each with why; `first` and `last`,
+ *   after  the steps it follows where both run, each with why (`[step, why]`, a Map
+ *          once loaded); `first` and `last`,
  *          before or after every other step of its stage but those it follows
  *   takes  what it reads beyond its IR: the compile's facts (optimize-module.js
  *          passFacts, link's and the tail's facts) and what an earlier step made
@@ -30,126 +49,127 @@
  * steps it follows, after the step that makes what it takes, each walked stage's
  * entries together behind the step that walks them, and no step that drops a
  * mark between the emitter and a reader of it unless the reader lists the mark
- * as `lost`. What a step takes and makes is held as it runs (`holdFacts`): under
+ * as `lost`. What a step takes and makes is held as it runs: under
  * JZ_DEBUG_INVARIANTS the suite fails a step that reads a fact of the compile
- * its entry does not take, or writes one it does not make (test/_facts-guard.js).
+ * its entry does not take, or writes one it does not make (test/_facts-guard.js,
+ * which wraps the runners in the stages' lists).
  * The marks a step drops are a measurement, held by nothing.
  *
  * @module optimize/pass-table
  */
 
-const P = (id, at, on, more) => ({ id, at, on: on || '', after: {}, first: false, last: false, takes: '', makes: '', reads: '', drops: '', lost: '', why: '', ...more })
+const P = (id, at, on, more) => ({ id, at, on: on || '', after: [], first: false, last: false, takes: '', makes: '', reads: '', drops: '', lost: '', why: '', ...more })
 
 export const PASSES = [
   // -- module, before the function walk ---------------------------------------------------------------
   P('dropStaticRoots', 'module', '', { takes: 'staticData exports globals' }),
   P('staticScratch', 'module', 'staticScratch', {
-    after: { dropStaticRoots: 'a binding whose root line went is written once, at its declaration' },
+    after: [['dropStaticRoots', 'a binding whose root line went is written once, at its declaration']],
     takes: 'staticData shared exports globals globalTypes consts userGlobals', why: 'reads the accesses as emitted, before a pass stages their bases in locals' }),
   P('specializeMkptr', 'module', 'specializeMkptr', { reads: 'schemaSid' }),
   P('hoistGlobalPtr', 'module', 'hoistGlobalPtrOffset|hoistLoopGlobalPtrOffset', { takes: 'globalValTypes', makes: 'stableGlobals reachableWrites' }),
   P('hoistGlobalPtrOffset', 'globalPtr', 'hoistGlobalPtrOffset', { takes: 'stableGlobals reachableWrites', makes: 'snapshots', why: 'before promoteGlobals hides global.get' }),
   P('hoistLoopGlobalPtrOffset', 'globalPtr', 'hoistLoopGlobalPtrOffset', {
-    after: { hoistGlobalPtrOffset: 'shares its function-entry snapshots' }, takes: 'stableGlobals reachableWrites snapshots' }),
+    after: [['hoistGlobalPtrOffset', 'shares its function-entry snapshots']], takes: 'stableGlobals reachableWrites snapshots' }),
   P('pureFuncMap', 'module', '+vectorizeLaneLocal', { makes: 'pureFuncMap', why: 'the pure functions the lane lift may inline, as clean scalar bodies' }),
   P('inlinePureFns', 'module', '+vectorizeLaneLocal +inlinePureFns', { takes: 'pureFuncMap', why: 'the vectorizer sees the callee arithmetic' }),
   P('dvArmFns', 'module', '', { takes: 'constFnArrays', makes: 'dvArmFns', why: 'a function pass cannot see its siblings' }),
   P('optimizeFuncs', 'module', '', { makes: 'reachableWrites headerSafeFuncs', why: 'each function by the func entries below, the calls a loop may make without a header changing known' }),
   // -- each function --------------------------------------------------------------------------------------
   P('foldStaticArrReads', 'func', 'foldStaticArrReads', { first: true, takes: 'staticArrs arrResized nameEscapes', reads: 'saArr saBits', why: 'by the marks, which a pass that rebuilds a subtree drops' }),
-  P('holdWordNumbers', 'func', 'fusedRewrite', { after: { foldStaticArrReads: 'beside it, by the mark as well' }, reads: 'wordOf', why: 'a word local only float code reads holds its number', drops: 'irange' }),
+  P('holdWordNumbers', 'func', 'fusedRewrite', { after: [['foldStaticArrReads', 'beside it, by the mark as well']], reads: 'wordOf', why: 'a word local only float code reads holds its number', drops: 'irange' }),
   P('promoteCells', 'func', 'promoteCells', {
-    first: true, after: { foldStaticArrReads: 'by the marks, first', holdWordNumbers: 'the same' }, why: 'before every pass that reads locals: a cell no closure took is one of them' }),
+    first: true, after: [['foldStaticArrReads', 'by the marks, first'], ['holdWordNumbers', 'the same']], why: 'before every pass that reads locals: a cell no closure took is one of them' }),
   P('nanCanon', 'func', 'nanCanon', { why: 'before the lifts read the sums: a canon only arithmetic reads is its value' }),
   P('hoistPtrType', 'func', 'hoistPtrType', { why: 'its locals the fused walk sees in their final form' }),
   P('hoistInvariantPtrOffset', 'func', 'hoistInvariantPtrOffset'),
-  P('hoistPtrOffset', 'func', 'hoistInvariantPtrOffset', { after: { hoistInvariantPtrOffset: 'the loop-invariant offsets first' } }),
+  P('hoistPtrOffset', 'func', 'hoistInvariantPtrOffset', { after: [['hoistInvariantPtrOffset', 'the loop-invariant offsets first']] }),
   P('narrowLoopBound', 'func', 'narrowLoopBound', { why: 'the snapped i32 bound is a hoistable subtree for the LICM after it', drops: 'irange' }),
   P('hoistInvariantLoop', 'func', 'hoistInvariantLoop', {
-    after: { narrowLoopBound: 'the snapped bound is a hard-op subtree an outer loop lifts' },
+    after: [['narrowLoopBound', 'the snapped bound is a hard-op subtree an outer loop lifts']],
     takes: 'freshTypedGlobals headerSafeFuncs', reads: 'boundsOwner', why: 'the raw ToInt32, offset and arithmetic shapes, before the fused walk', drops: 'schemaSid irange provenWord' }),
   P('fusedRewrite', 'func', 'fusedRewrite', {
-    after: { hoistPtrType: 'its locals in their final form', hoistInvariantLoop: 'the raw shapes it folds are hoisted first' },
+    after: [['hoistPtrType', 'its locals in their final form'], ['hoistInvariantLoop', 'the raw shapes it folds are hoisted first']],
     takes: 'hasBigint loweringLinks', reads: 'loweringLinks', drops: 'schemaSid irange unsigned mem' }),
   P('unswitchStringRepLoop', 'func', '+unswitchStringRepLoop', { takes: 'funcCount', drops: 'irange' }),
-  P('shiftRemainder', 'func', 'shiftRemainder', { after: { fusedRewrite: 'the quotient and its scaling are in their i32 form' }, drops: 'irange' }),
+  P('shiftRemainder', 'func', 'shiftRemainder', { after: [['fusedRewrite', 'the quotient and its scaling are in their i32 form']], drops: 'irange' }),
   P('boolConvertToSelect', 'func', '+boolConvertToSelect'),
   P('hoistAddrBase', 'func', 'hoistAddrBase', { drops: 'irange' }),
   P('hoistInvariantLoop.late', 'func', 'hoistInvariantLoop', {
-    after: { hoistAddrBase: 'the cell loads it stages', fusedRewrite: 'idempotent, at the second maturity point' },
+    after: [['hoistAddrBase', 'the cell loads it stages'], ['fusedRewrite', 'idempotent, at the second maturity point']],
     takes: 'freshTypedGlobals headerSafeFuncs', reads: 'boundsOwner' }),
   P('cseScalarLoad', 'func', 'cseScalarLoad', { drops: 'mem' }),
   P('forwardStores', 'func', 'forwardStores', {
-    after: { hoistAddrBase: 'after the address hoists: a chained kernel\'s out-parameter results stay in the locals that staged them', hoistPtrOffset: 'the same' },
+    after: [['hoistAddrBase', 'after the address hoists: a chained kernel\'s out-parameter results stay in the locals that staged them'], ['hoistPtrOffset', 'the same']],
     reads: 'mem', drops: 'irange presentNumRead mem', lost: 'mem' }),
-  P('sinkStores', 'func', '+sinkStores', { after: { forwardStores: 'on what forwarding left' }, reads: 'mem', lost: 'mem' }),
-  P('earlyStores', 'func', '+earlyStores', { after: { forwardStores: 'on the stores forwarding kept' } }),
+  P('sinkStores', 'func', '+sinkStores', { after: [['forwardStores', 'on what forwarding left']], reads: 'mem', lost: 'mem' }),
+  P('earlyStores', 'func', '+earlyStores', { after: [['forwardStores', 'on the stores forwarding kept']] }),
   P('promoteGlobals', 'func', 'promoteGlobals', {
-    after: { hoistGlobalPtrOffset: 'the global pointer hoists read global.get, which this hides', hoistLoopGlobalPtrOffset: 'the same' },
+    after: [['hoistGlobalPtrOffset', 'the global pointer hoists read global.get, which this hides'], ['hoistLoopGlobalPtrOffset', 'the same']],
     takes: 'globalRefTypes reachableWrites' }),
   P('unswitchTypedParamLoop', 'func', '+vectorizeLaneLocal unswitchTypedParamLoop', { takes: 'f16' }),
   P('vectorizeLaneLocal', 'func', '+vectorizeLaneLocal', {
-    after: { nanCanon: 'the lifts read the sums, a canon only arithmetic reads gone', pureFuncMap: 'its inline candidates' },
+    after: [['nanCanon', 'the lifts read the sums, a canon only arithmetic reads gone'], ['pureFuncMap', 'its inline candidates']],
     takes: 'pureFuncMap loweringLinks typedView warn', reads: 'loweringLinks cold', makes: 'vectorized', drops: 'loweringLinks irange' }),
-  P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: { vectorizeLaneLocal: 'the v128 memargs it made', fusedRewrite: 'whose memarg fold ran before the lift' } }),
-  P('guardedUpdate', 'func', '+guardedUpdate', { after: { vectorizeLaneLocal: 'the vectorizer reads a conditional update in its branch form' }, drops: 'irange' }),
-  P('typedDecode', 'func', '+typedDecode', { after: { unswitchTypedParamLoop: 'the accesses it left to the helpers', vectorizeLaneLocal: 'the same' }, takes: 'resizable', drops: 'irange' }),
+  P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
+  P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
+  P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),
   P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', { takes: 'freshTypedGlobals headerSafeFuncs', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey mem dvProp wordOf saArr checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
   P('hoistInvariantLoop.scratch', 'func', '+splitScratch hoistInvariantLoop', {
-    after: { splitLoopPrivateScratch: 'its moved invariants ride the LICM once more' }, takes: 'freshTypedGlobals headerSafeFuncs', reads: 'boundsOwner', lost: 'boundsOwner' }),
+    after: [['splitLoopPrivateScratch', 'its moved invariants ride the LICM once more']], takes: 'freshTypedGlobals headerSafeFuncs', reads: 'boundsOwner', lost: 'boundsOwner' }),
   P('devirtFnArrays', 'func', 'devirtFnArrays', {
     takes: 'constFnArrays dvArmFns staticArrs arrResized nameEscapes', reads: 'dvArr dvOpen dvKey dvKeyed',
     why: 'the table\'s candidates fill only when module init emits, after the bodies', drops: 'dvArr' }),
   P('devirtSchemaReads', 'func', 'devirtSchemaReads', { takes: 'schemas schemasByProp fieldKind includes icSite', reads: 'dvProp dvObject', lost: 'dvProp dvObject', drops: 'dvProp dvObject' }),
   P('lowerToInt32Tails', 'func', 'fusedRewrite inlineToNum', {
-    after: { vectorizeLaneLocal: 'the lift reads the exact conversion as the kernel call', devirtFnArrays: 'the devirtualizations read emit\'s marks', devirtSchemaReads: 'the same' } }),
+    after: [['vectorizeLaneLocal', 'the lift reads the exact conversion as the kernel call'], ['devirtFnArrays', 'the devirtualizations read emit\'s marks'], ['devirtSchemaReads', 'the same']] }),
   P('specializeLoops', 'func', 'intNarrow +specializeLoops', {
-    after: { lowerToInt32Tails: 'the loops specialized on reads that hit, after the conversion\'s tail' },
+    after: [['lowerToInt32Tails', 'the loops specialized on reads that hit, after the conversion\'s tail']],
     reads: 'checkedNumRead holeNumRead checkedTwin boundsSnapshot irange presentNumRead', makes: 'copies plan', lost: 'checkedNumRead checkedTwin boundsSnapshot irange presentNumRead' }),
-  P('narrowInts', 'func', 'intNarrow', { after: { specializeLoops: 'integer registers over its copies' }, takes: 'copies plan', reads: 'provenWord irange presentNumRead cold', drops: 'loweringLinks irange unsigned presentNumRead cold checkedTwin checkedNumRead provenWord', lost: 'provenWord irange presentNumRead cold' }),
-  P('narrowWrappedWords', 'func', 'intNarrow wrappedWords', { after: { narrowInts: 'a wide integer read only for its low word' }, makes: 'wrapped', drops: 'loweringLinks cold' }),
-  P('refoldMemargs', 'func', 'intNarrow wrappedWords', { after: { narrowWrappedWords: 'the addresses it narrowed' }, takes: 'wrapped' }),
-  P('combineGuards', 'func', 'intNarrow combineGuards', { after: { narrowInts: 'over the integers: the guards of the copies' }, takes: 'copies', reads: 'irange presentNumRead', lost: 'irange presentNumRead' }),
-  P('wideAccumulator', 'func', '+wideAccumulator', { after: { narrowInts: 'stronger signed-word proofs run first' }, drops: 'irange iterRelease' }),
-  P('narrowFloat32', 'func', 'narrowFloat32', { after: { vectorizeLaneLocal: 'after the lane lift', devirtFnArrays: 'and the devirtualizations, whose marks its copied nodes keep', devirtSchemaReads: 'the same', narrowInts: 'single-precision locals after the integer registers' }, reads: 'irange presentNumRead', drops: 'loweringLinks presentNumRead', lost: 'irange presentNumRead' }),
-  P('recursionUnroll', 'func', '+recursionUnroll', { after: { narrowInts: 'its size gate reads the body as it will be emitted' } }),
-  P('foldLoadCasts', 'func', 'fusedRewrite', { after: { specializeLoops: 'the copies read hit elements bare' }, drops: 'schemaSid mem' }),
-  P('reuseLoads', 'func', '+reuseLoads', { after: { forwardStores: 'after every pass that places loads', cseScalarLoad: 'the same', specializeLoops: 'the same' }, reads: 'mem', drops: 'unsigned presentNumRead wrapSafe mem cellI32', lost: 'mem' }),
-  P('narrowByteLoads', 'func', '+reuseLoads', { after: { reuseLoads: 'a part of a word read alone, the narrow load of it' } }),
-  P('settledTests', 'func', 'settledTests', { after: { combineGuards: 'over the guards every pass above left', specializeLoops: 'the same' } }),
+  P('narrowInts', 'func', 'intNarrow', { after: [['specializeLoops', 'integer registers over its copies']], takes: 'copies plan', reads: 'provenWord irange presentNumRead cold', drops: 'loweringLinks irange unsigned presentNumRead cold checkedTwin checkedNumRead provenWord', lost: 'provenWord irange presentNumRead cold' }),
+  P('narrowWrappedWords', 'func', 'intNarrow wrappedWords', { after: [['narrowInts', 'a wide integer read only for its low word']], makes: 'wrapped', drops: 'loweringLinks cold' }),
+  P('refoldMemargs', 'func', 'intNarrow wrappedWords', { after: [['narrowWrappedWords', 'the addresses it narrowed']], takes: 'wrapped' }),
+  P('combineGuards', 'func', 'intNarrow combineGuards', { after: [['narrowInts', 'over the integers: the guards of the copies']], takes: 'copies', reads: 'irange presentNumRead', lost: 'irange presentNumRead' }),
+  P('wideAccumulator', 'func', '+wideAccumulator', { after: [['narrowInts', 'stronger signed-word proofs run first']], drops: 'irange iterRelease' }),
+  P('narrowFloat32', 'func', 'narrowFloat32', { after: [['vectorizeLaneLocal', 'after the lane lift'], ['devirtFnArrays', 'and the devirtualizations, whose marks its copied nodes keep'], ['devirtSchemaReads', 'the same'], ['narrowInts', 'single-precision locals after the integer registers']], reads: 'irange presentNumRead', drops: 'loweringLinks presentNumRead', lost: 'irange presentNumRead' }),
+  P('recursionUnroll', 'func', '+recursionUnroll', { after: [['narrowInts', 'its size gate reads the body as it will be emitted']] }),
+  P('foldLoadCasts', 'func', 'fusedRewrite', { after: [['specializeLoops', 'the copies read hit elements bare']], drops: 'schemaSid mem' }),
+  P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], reads: 'mem', drops: 'unsigned presentNumRead wrapSafe mem cellI32', lost: 'mem' }),
+  P('narrowByteLoads', 'func', '+reuseLoads', { after: [['reuseLoads', 'a part of a word read alone, the narrow load of it']] }),
+  P('settledTests', 'func', 'settledTests', { after: [['combineGuards', 'over the guards every pass above left'], ['specializeLoops', 'the same']] }),
   P('inlinePtrOffsetFast', 'func', '+inlinePtrOffsetFast', {
     last: true, why: 'the helper call is the form every pass above reasons about (LICM hoists it, unswitch and devirt recognize it); its inline fast path is lowering' }),
   // -- module, after the function walk ----------------------------------------------------------------
   P('vectorizedFns', 'module', '', { takes: 'vectorized', why: 'the functions the lane lift took, for the pins of watr\'s inliner' }),
-  P('clearIcSites', 'module', '', { after: { devirtSchemaReads: 'the sites it made' }, takes: 'icSite' }),
+  P('clearIcSites', 'module', '', { after: [['devirtSchemaReads', 'the sites it made']], takes: 'icSite' }),
   P('quietCopies', 'module', '', {
-    after: { specializeLoops: 'a copy that allocates nothing as optimized' },
+    after: [['specializeLoops', 'a copy that allocates nothing as optimized']],
     takes: 'compactLoopLabels rewindLoopLabels includes imports stdlib', reads: 'iterRelease', makes: 'quietLoops', drops: 'iterRelease', lost: 'iterRelease' }),
   P('loopRewinds', 'module', '', {
-    after: { vectorizeLaneLocal: 'a loop it lifted is a node the rewinds never see', quietCopies: 'no rewind around a quiet copy' },
+    after: [['vectorizeLaneLocal', 'a loop it lifted is a node the rewinds never see'], ['quietCopies', 'no rewind around a quiet copy']],
     takes: 'rewindLoopLabels shared globals quietLoops' }),
   P('loopCompacts', 'module', '', {
-    after: { quietCopies: 'no compaction around a quiet copy' },
+    after: [['quietCopies', 'no compaction around a quiet copy']],
     takes: 'compactLoopLabels shared memoryMax globals quietLoops compactSlack', why: 'the write closure counts its kernels as written before it goes in' }),
-  P('forwardHops', 'module', 'hoistForwardHops', { after: { loopCompacts: 'a compacted loop is re-entered past the set before it' }, takes: 'imports reachableWrites globalTypes' }),
+  P('forwardHops', 'module', 'hoistForwardHops', { after: [['loopCompacts', 'a compacted loop is re-entered past the set before it']], takes: 'imports reachableWrites globalTypes' }),
   P('hoistGlobalConstLoads', 'module', 'hoistGlobalConstLoads|maskedSuffixGuard', { takes: 'globalTypedLen', makes: 'reachableWrites masked memoryWrites' }),
   P('hoistStableGlobalConstLoads', 'globalLoads', 'hoistGlobalConstLoads', { takes: 'memoryWrites reachableWrites globalTypedLen globalTypedElem freshTypedGlobals' }),
   P('guardMaskedVectorSuffix', 'globalLoads', 'maskedSuffixGuard', { takes: 'masked memoryWrites' }),
   P('outlineToInt32', 'module', '?leanRuntime'),
-  P('appendLateStdlib', 'module', '+vectorizeLaneLocal', { after: { vectorizeLaneLocal: 'the f64x2 mirrors the lift named' } }),
+  P('appendLateStdlib', 'module', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the f64x2 mirrors the lift named']] }),
   // -- link, on the tape -----------------------------------------------------------------------------------
   P('bodies', 'link', ''),
   P('fold', 'bodies', 'fusedRewrite'),
-  P('rotateLoops', 'bodies', '+rotateLoops', { after: { fold: 'fold before rotation' } }),
+  P('rotateLoops', 'bodies', '+rotateLoops', { after: [['fold', 'fold before rotation']] }),
   P('reduceThrowHelpers', 'link', '', { takes: 'throws userThrows noEhAbort rawAbi throwHelpers' }),
   P('arenaRewind', 'link', '', {
-    after: { reduceThrowHelpers: 'a throw nothing observes allocates nothing' },
+    after: [['reduceThrowHelpers', 'a throw nothing observes allocates nothing']],
     takes: 'rewindable numberResult asked heapAddr unsafe keeps entry exported exportInner report scalarGlobals closureTargets closureNames conditional censused userGlobals keepsNothing optimize phase', makes: 'arena', why: 'its proof at every level, the rewrite where the rewind is on' }),
-  P('dropCompaction', 'link', '', { after: { arenaRewind: 'what each export keeps' }, takes: 'compact exportInner compactLoops arena' }),
+  P('dropCompaction', 'link', '', { after: [['arenaRewind', 'what each export keeps']], takes: 'compact exportInner compactLoops arena' }),
   P('adviseKept', 'link', 'arenaRewind', { takes: 'adviseKept arena' }),
-  P('treeshake', 'link', '', { after: { reduceThrowHelpers: 'reads their calls' }, takes: 'userFuncs userGlobals', makes: 'callCount' }),
-  P('schemaSections', 'link', '', { after: { treeshake: 'the custom sections describe what survived' }, takes: 'schemas fieldContracts namedUses errorSids brandSids regexSids viewSids hostObjects' }),
-  P('releaseSection', 'link', '', { after: { treeshake: 'the same' }, takes: 'exportInner arena copiedArgs asked numberResult' }),
+  P('treeshake', 'link', '', { after: [['reduceThrowHelpers', 'reads their calls']], takes: 'userFuncs userGlobals', makes: 'callCount' }),
+  P('schemaSections', 'link', '', { after: [['treeshake', 'the custom sections describe what survived']], takes: 'schemas fieldContracts namedUses errorSids brandSids regexSids viewSids hostObjects' }),
+  P('releaseSection', 'link', '', { after: [['treeshake', 'the same']], takes: 'exportInner arena copiedArgs asked numberResult' }),
   P('pruneThrowRuntime', 'link', '', { takes: 'throws userThrows noEhAbort rawAbi' }),
   P('sortLocalsByUse', 'link', 'sortLocalsByUse !watr', { why: 'watr\'s sortLocals orders them where watr runs' }),
   P('orderFuncs', 'link', '', { takes: 'callCount' }),
@@ -161,7 +181,7 @@ export const PASSES = [
   P('foldWrappedWords', 'tail', '', { why: 'before watr: a wrapped word operation over extended words is the word operation' }),
   P('narrowBoxedLocals', 'tail', ''),
   P('stillLoads', 'tail', '+stillLoads'),
-  P('watOptimize', 'tail', '?watr', { after: { shareSplitSlots: 'the function the source wrote', foldWrappedWords: 'the words', narrowBoxedLocals: 'the pointers', stillLoads: 'the loads ahead of the loop' }, takes: 'watrOpts' }),
+  P('watOptimize', 'tail', '?watr', { after: [['shareSplitSlots', 'the function the source wrote'], ['foldWrappedWords', 'the words'], ['narrowBoxedLocals', 'the pointers'], ['stillLoads', 'the loads ahead of the loop']], takes: 'watrOpts' }),
   // (without watr's fixpoint: its cleanup passes, once)
   P('conditions', 'tail', '!watr chainConditions'),
   P('propagate', 'tail', '!watr propagateLocals'),
@@ -169,39 +189,39 @@ export const PASSES = [
   P('coalesceLocals', 'tail', '!watr coalesceLocals', { why: 'large recursive functions need compact frames even without the fixpoint' }),
   P('localReuse', 'tail', '!watr coalesceLocals|propagateLocals'),
   P('poolConstants', 'tail', '!watr hoistConstantPool'),
-  P('postGlobalPtr', 'tail', 'hoistGlobalPtrOffset', { after: { watOptimize: 'watr\'s inliner can merge stable-pointee decodes into one caller' }, takes: 'stableGlobals' }),
-  P('guardToInt32', 'tail', '+guardedToInt32', { after: { watOptimize: 'on what the optimizer left' } }),
-  P('foldWrappedWords.late', 'tail', '', { after: { guardToInt32: 'over what the propagation and the truncation\'s lowering brought together' } }),
-  P('narrowFlagLocals', 'tail', '', { after: { watOptimize: 'a flag of literals, read as the optimizer leaves it' } }),
-  P('forwardChecked', 'tail', 'forwardChecked', { after: { watOptimize: 'the checked reads and stores watr left' } }),
-  P('stripDeadLateData', 'tail', '', { after: { watOptimize: 'its inlining and folding expose the last dead call' }, takes: 'lazyDataSpans staticDataSpan dataRecords' }),
-  P('unrollTrips', 'tail', '+unrollTrips', { after: { watOptimize: 'on the loops the optimizer leaves' } }),
-  P('ringLaps', 'tail', '+ringLaps', { after: { unrollTrips: 'before the passes after it read a counted loop\'s counter' } }),
-  P('pointerExits', 'tail', '+pointerExits', { after: { ringLaps: 'before the counters become pointer tests', watOptimize: 'the pointers its strength reduction left' } }),
-  P('jumpPointers', 'tail', '+jumpPointers', { after: { watOptimize: 'the variables its strength reduction leaves for their jumps' } }),
-  P('leadChains', 'tail', '+leadChains', { after: { watOptimize: 'its own passes would merge the split values back' } }),
-  P('issueOrder', 'tail', '+issueOrder', { after: { leadChains: 'a run they leave as written' } }),
+  P('postGlobalPtr', 'tail', 'hoistGlobalPtrOffset', { after: [['watOptimize', 'watr\'s inliner can merge stable-pointee decodes into one caller']], takes: 'stableGlobals' }),
+  P('guardToInt32', 'tail', '+guardedToInt32', { after: [['watOptimize', 'on what the optimizer left']] }),
+  P('foldWrappedWords.late', 'tail', '', { after: [['guardToInt32', 'over what the propagation and the truncation\'s lowering brought together']] }),
+  P('narrowFlagLocals', 'tail', '', { after: [['watOptimize', 'a flag of literals, read as the optimizer leaves it']] }),
+  P('forwardChecked', 'tail', 'forwardChecked', { after: [['watOptimize', 'the checked reads and stores watr left']] }),
+  P('stripDeadLateData', 'tail', '', { after: [['watOptimize', 'its inlining and folding expose the last dead call']], takes: 'lazyDataSpans staticDataSpan dataRecords' }),
+  P('unrollTrips', 'tail', '+unrollTrips', { after: [['watOptimize', 'on the loops the optimizer leaves']] }),
+  P('ringLaps', 'tail', '+ringLaps', { after: [['unrollTrips', 'before the passes after it read a counted loop\'s counter']] }),
+  P('pointerExits', 'tail', '+pointerExits', { after: [['ringLaps', 'before the counters become pointer tests'], ['watOptimize', 'the pointers its strength reduction left']] }),
+  P('jumpPointers', 'tail', '+jumpPointers', { after: [['watOptimize', 'the variables its strength reduction leaves for their jumps']] }),
+  P('leadChains', 'tail', '+leadChains', { after: [['watOptimize', 'its own passes would merge the split values back']] }),
+  P('issueOrder', 'tail', '+issueOrder', { after: [['leadChains', 'a run they leave as written']] }),
   P('maskOperands', 'tail', '+maskOperands'),
   P('truncChoice', 'tail', 'truncChoice'),
-  P('selectArms', 'tail', 'selectArms', { after: { truncChoice: 'the arms the truncations brought together' } }),
-  P('shareQuotients', 'tail', 'shareQuotients', { after: { selectArms: 'the selects the arms became' } }),
+  P('selectArms', 'tail', 'selectArms', { after: [['truncChoice', 'the arms the truncations brought together']] }),
+  P('shareQuotients', 'tail', 'shareQuotients', { after: [['selectArms', 'the selects the arms became']] }),
   P('testedChoices', 'tail', '+testedChoices'),
   P('selectBits', 'tail', '+selectBits', {
-    after: { truncChoice: 'the passes that read a float select as one', selectArms: 'the same', testedChoices: 'the same' }, takes: 'noSimd' }),
-  P('searchLoops', 'tail', '+searchLoops', { after: { watOptimize: 'its own passes would fold the scan\'s blocks back' } }),
-  P('leadGathers', 'tail', '+leadGathers', { after: { watOptimize: 'its value numbering would read the gather back' } }),
+    after: [['truncChoice', 'the passes that read a float select as one'], ['selectArms', 'the same'], ['testedChoices', 'the same']], takes: 'noSimd' }),
+  P('searchLoops', 'tail', '+searchLoops', { after: [['watOptimize', 'its own passes would fold the scan\'s blocks back']] }),
+  P('leadGathers', 'tail', '+leadGathers', { after: [['watOptimize', 'its value numbering would read the gather back']] }),
   P('carryStores', 'tail', '+carryStores', { why: 'while each loop has one latch' }),
-  P('skipLatches', 'tail', '+skipLatches', { after: { carryStores: 'the latch it reads is the loop\'s one', searchLoops: 'on the scans the passes above leave' } }),
+  P('skipLatches', 'tail', '+skipLatches', { after: [['carryStores', 'the latch it reads is the loop\'s one'], ['searchLoops', 'on the scans the passes above leave']] }),
   P('guardExtremes', 'tail', '+guardExtremes'),
   P('pairTests', 'tail', '+pairTests', { takes: 'noSimd' }),
-  P('inlineTiny', 'tail', '+inlineTiny', { after: { searchLoops: 'after the passes that read the runtime\'s calls by name' }, takes: 'watrOpts userFuncs' }),
-  P('unsignedDivision', 'tail', 'unsignedDivision', { after: { inlineTiny: 'every division, the inlined helpers\' among them' } }),
-  P('constBases', 'tail', 'constBases', { after: { inlineTiny: 'the inliner\'s constant arguments', unsignedDivision: 'the passes that read an address as written' } }),
+  P('inlineTiny', 'tail', '+inlineTiny', { after: [['searchLoops', 'after the passes that read the runtime\'s calls by name']], takes: 'watrOpts userFuncs' }),
+  P('unsignedDivision', 'tail', 'unsignedDivision', { after: [['inlineTiny', 'every division, the inlined helpers\' among them']] }),
+  P('constBases', 'tail', 'constBases', { after: [['inlineTiny', 'the inliner\'s constant arguments'], ['unsignedDivision', 'the passes that read an address as written']] }),
   P('poolFloats', 'tail', '+poolFloats', {
-    after: { forwardChecked: 'the float literals the passes before it read as constants', guardExtremes: 'a running extreme\'s canonicalization reads its NaN as a literal', pairTests: 'the same', constBases: 'the same' } }),
-  P('loopPasses', 'tail', '+loopPasses', { after: { inlineTiny: 'an inliner would splice a pass back into the function that runs once' }, takes: 'userFuncs' }),
-  P('splitFuncs', 'tail', '+splitFuncs', { after: { inlineTiny: 'which would splice a single-caller arm back' } }),
-  P('relaxExtremes', 'tail', '+relaxExtremes +relaxedSimd', { after: { splitFuncs: 'each vector loop where it will run', loopPasses: 'the same' }, takes: 'noSimd' }),
+    after: [['forwardChecked', 'the float literals the passes before it read as constants'], ['guardExtremes', 'a running extreme\'s canonicalization reads its NaN as a literal'], ['pairTests', 'the same'], ['constBases', 'the same']] }),
+  P('loopPasses', 'tail', '+loopPasses', { after: [['inlineTiny', 'an inliner would splice a pass back into the function that runs once']], takes: 'userFuncs' }),
+  P('splitFuncs', 'tail', '+splitFuncs', { after: [['inlineTiny', 'which would splice a single-caller arm back']] }),
+  P('relaxExtremes', 'tail', '+relaxExtremes +relaxedSimd', { after: [['splitFuncs', 'each vector loop where it will run'], ['loopPasses', 'the same']], takes: 'noSimd' }),
   P('hoistVectorConsts', 'tail', '+hoistVectorConsts', { last: true, why: 'on the vector loops every pass above left, each where it will run' }),
 ]
 
@@ -213,6 +233,7 @@ const words = (s) => s ? s.split(' ') : []
 for (const e of PASSES) {
   e.tests = words(e.on).map(t => t.split('|').map(a => a[0] === '+' || a[0] === '?' || a[0] === '!' ? { name: a.slice(1), how: a[0] } : { name: a, how: '' }))
   e.takes = words(e.takes); e.makes = words(e.makes); e.reads = words(e.reads); e.drops = words(e.drops); e.lost = words(e.lost)
+  e.after = new Map(e.after)
 }
 
 /** Whether `e` runs under `cfg` (an absent cfg runs every step but the opt-in ones). */
@@ -228,26 +249,18 @@ export function on(e, cfg) {
   return true
 }
 
-/** The entries of stage `at`, in order, each bound to its runner in `run` (id → function):
- *  a stage whose runners and entries differ fails where it loads. */
+/** The entries of stage `at`, in order, for the stage's runners `run` (`[id, runner]` each,
+ *  called `runner(x, cfg, facts, st)`: `x` the stage's IR (a function, the module's
+ *  sections, the tape's root), `st` what a step hands the steps after it): the runners
+ *  are the stage's steps, one each, in the table's order, or the stage fails where it loads. */
 export function stage(at, run) {
   const steps = PASSES.filter(e => e.at === at)
-  for (const e of steps) if (typeof run[e.id] !== 'function') throw new Error(`optimize/pass-table.js: ${at} step '${e.id}' has no runner`)
-  for (const id of Object.keys(run)) if (!steps.some(e => e.id === id)) throw new Error(`optimize/pass-table.js: ${at} runner '${id}' has no entry`)
+  for (let i = 0; i < steps.length || i < run.length; i++) {
+    const id = steps[i]?.id, got = run[i]?.[0]
+    if (id !== got) throw new Error(`optimize/pass-table.js: ${at} step ${i} is '${id ?? 'none'}' in the table and '${got ?? 'none'}' among the runners`)
+  }
   return steps
 }
-
-/** Run `steps` (a stage's, `stage`) under `cfg`, each that is on by its runner in `run`,
- *  as `run[id](x, cfg, facts, st)`: `x` the stage's IR (a function, the module's sections,
- *  the tape's root), `st` what a step hands the steps after it. */
-export function walk(steps, run, cfg, x, facts, st) {
-  for (const e of steps) if (on(e, cfg)) run[e.id](x, cfg, hold ? hold(facts, e) : facts, st)
-}
-
-/** A host's hold on what a step reads and writes of the facts: `by(facts, entry)` answers
- *  the facts the step is handed (test/_facts-guard.js); null, the facts themselves. */
-let hold = null
-export const holdFacts = (by) => { hold = by }
 
 /** What is wrong with the order of `table` (PASSES unless given), one line a fault; none, []. */
 export function checkOrder(table = PASSES) {
@@ -256,12 +269,12 @@ export function checkOrder(table = PASSES) {
   const maker = new Map()
   table.forEach((e, i) => { for (const f of e.makes) if (!maker.has(f)) maker.set(f, i) })
   table.forEach((e, i) => {
-    for (const id in e.after) {
+    for (const [id, why] of e.after) {
       if (!at.has(id)) out.push(`'${e.id}' runs after '${id}', which is no step`)
-      else if (at.get(id) > i) out.push(`'${e.id}' runs before '${id}', which it follows: ${e.after[id]}`)
+      else if (at.get(id) > i) out.push(`'${e.id}' runs before '${id}', which it follows: ${why}`)
     }
     for (const f of e.takes) if (maker.has(f) && maker.get(f) > i) out.push(`'${e.id}' takes '${f}' before '${table[maker.get(f)].id}' makes it`)
-    for (let j = 0; j < table.length; j++) if (table[j].at === e.at && j !== i && !(table[j].id in e.after) &&
+    for (let j = 0; j < table.length; j++) if (table[j].at === e.at && j !== i && !e.after.has(table[j].id) &&
       (e.first && j < i || e.last && j > i)) out.push(`'${e.id}' runs ${e.first && j < i ? `first of its stage, but after '${table[j].id}'` : `last of its stage, but before '${table[j].id}'`}`)
     for (const m of e.reads) for (let j = 0; j < i; j++)
       if (table[j].drops.includes(m) && !e.lost.includes(m)) out.push(`'${table[j].id}' drops the mark '${m}' before '${e.id}' reads it`)

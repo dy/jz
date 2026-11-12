@@ -5,7 +5,7 @@
 // What a step takes and makes of the compile's facts is held as it runs (_facts-guard.js).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { PASSES, WALKS, checkOrder, on } from '../src/optimize/pass-table.js'
+import { PASSES, WALKS, checkOrder, on, stage } from '../src/optimize/pass-table.js'
 import { compile } from './util.js'
 import { hold } from './_facts-guard.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
@@ -45,6 +45,14 @@ test('pass table: a step out of its order fails the check', () => {
   ok(faults(strict, `'nanCanon' drops the mark 'dvProp' before 'devirtSchemaReads' reads it`).length, 'a dropped mark its reader does not list')
   // twice
   ok(faults([...PASSES, PASSES[0]], 'twice').length, 'one entry a step')
+})
+
+test('pass table: a stage runs its steps, one runner each, in the table\'s order', () => {
+  const run = () => {}, ids = PASSES.filter(e => e.at === 'link').map(e => e.id), list = ids.map(id => [id, run])
+  is(stage('link', list).map(e => e.id), ids, 'the stage\'s entries, in order')
+  throws(() => stage('link', list.slice(0, -1)), /step 11 is 'renameLocals' in the table and 'none' among the runners/, 'a step with no runner')
+  throws(() => stage('link', [...list, ['later', run]]), /step 12 is 'none' in the table and 'later' among the runners/, 'a runner with no step')
+  throws(() => stage('link', [list[1], list[0], ...list.slice(2)]), /step 0 is 'bodies' in the table and 'reduceThrowHelpers' among the runners/, 'two runners out of the table\'s order')
 })
 
 test('pass table: a walked stage stands behind the step that walks it', () => {
@@ -97,7 +105,7 @@ test('pass table: a step reads of the facts what its entry takes, and writes wha
 test('pass table: every flag a step runs under is a registered optimize key', () => {
   const known = new Set([...PASS_NAMES, ...TUNING_KEYS])
   for (const e of PASSES) for (const alts of e.tests) for (const { name } of alts) ok(known.has(name), `${e.id} runs under '${name}'`)
-  for (const e of PASSES) for (const id in e.after) ok(at(id) >= 0, `${e.id} follows '${id}'`)
+  for (const e of PASSES) for (const id of e.after.keys()) ok(at(id) >= 0, `${e.id} follows '${id}'`)
 })
 
 test('pass table: a step runs under its flags as the config reads them', () => {

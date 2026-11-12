@@ -90,6 +90,10 @@ What this implies for HOW we optimize:
   an operand read off the source goes through `int32`, summary/num-range.js, first;
   the hosted suite of `test:bootstrap -- --full` and the `self-compile` workflow
   are where it shows, never the native legs),
+  a record keyed by names the config also has, and closures collected from one list
+  into another, each cost the hosted compiler bytes and time the native legs do not
+  show either (src/optimize/pass-table.js, its header: measure a hosted build's
+  bytes before and after a change of that kind),
   and nothing is freed within a compile but a summary solve's arena, which its phase
   checkpoint releases (a walker shares what it can, a chain of links
   rather than a copy per node).

@@ -23,7 +23,7 @@ import {
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
   specializeMkptr, scalarizeStaticScratch, dropStaticRoots, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
-import { stage, walk } from '../../optimize/pass-table.js'
+import { stage, on } from '../../optimize/pass-table.js'
 import { dataLen, dataBytes } from '../../static-data.js'
 import { HEAP } from '../../../layout.js'
 import { appendLateStdlib } from './stdlib-pull.js'
@@ -90,39 +90,39 @@ export const passFacts = (cfg) => ({
 })
 
 // The per-function steps two module steps walk (`hoistGlobalPtr`, `hoistGlobalConstLoads`).
-const GLOBAL_PTR = {
-  hoistGlobalPtrOffset: (fn, cfg, facts, st) => { st.snapshots = hoistGlobalPtrOffset(fn, facts.stableGlobals, facts.reachableWrites) },
-  hoistLoopGlobalPtrOffset: (fn, cfg, facts, st) => hoistLoopGlobalPtrOffset(fn, facts.stableGlobals, facts.reachableWrites, st.snapshots ?? null),
-}
-const GLOBAL_LOADS = {
-  hoistStableGlobalConstLoads: (fn, cfg, facts) => { if (facts.globalTypedLen?.size) hoistStableGlobalConstLoads(fn, facts.memoryWrites, facts.reachableWrites, facts) },
-  guardMaskedVectorSuffix: (fn, cfg, facts) => { if (facts.masked.has(fn)) guardMaskedVectorSuffix(fn, facts.memoryWrites) },
-}
+export const GLOBAL_PTR = [
+  ['hoistGlobalPtrOffset', (fn, cfg, facts, st) => { st.snapshots = hoistGlobalPtrOffset(fn, facts.stableGlobals, facts.reachableWrites) }],
+  ['hoistLoopGlobalPtrOffset', (fn, cfg, facts, st) => hoistLoopGlobalPtrOffset(fn, facts.stableGlobals, facts.reachableWrites, st.snapshots ?? null)],
+]
+export const GLOBAL_LOADS = [
+  ['hoistStableGlobalConstLoads', (fn, cfg, facts) => { if (facts.globalTypedLen?.size) hoistStableGlobalConstLoads(fn, facts.memoryWrites, facts.reachableWrites, facts) }],
+  ['guardMaskedVectorSuffix', (fn, cfg, facts) => { if (facts.masked.has(fn)) guardMaskedVectorSuffix(fn, facts.memoryWrites) }],
+]
 const GLOBAL_PTR_STEPS = stage('globalPtr', GLOBAL_PTR), GLOBAL_LOADS_STEPS = stage('globalLoads', GLOBAL_LOADS)
 
 // Each module step, `(sec, cfg, facts, ms)`: `ms` holds the stage's timer `t`, the module's
 // functions once the helpers specializeMkptr adds are in (`funcs()`), and the write closure (`writes()`).
-const MODULE = {
+export const MODULE = [
   // (a binding of static typed storage the compaction never moves is no root of it)
-  dropStaticRoots: (sec, cfg, facts, ms) => ms.t('dropStaticRoots', () => dropStaticRoots([...sec.funcs, ...sec.stdlib, ...sec.start], facts)),
-  staticScratch: (sec, cfg, facts, ms) => ms.t('staticScratch', () => scalarizeStaticScratch([...sec.funcs, ...sec.stdlib, ...sec.start], facts)),
+  ['dropStaticRoots', (sec, cfg, facts, ms) => ms.t('dropStaticRoots', () => dropStaticRoots([...sec.funcs, ...sec.stdlib, ...sec.start], facts))],
+  ['staticScratch', (sec, cfg, facts, ms) => ms.t('staticScratch', () => scalarizeStaticScratch([...sec.funcs, ...sec.stdlib, ...sec.start], facts))],
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
   // both disabled across the bench + examples corpora AND the self-compile kernel at
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
-  specializeMkptr: (sec, cfg, facts, ms) => ms.t('specializeMkptr', () =>
-    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false })))),
+  ['specializeMkptr', (sec, cfg, facts, ms) => ms.t('specializeMkptr', () =>
+    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false }))))],
   // Share function-entry snapshots with the loop-scoped complement. Both use the same write proof.
-  hoistGlobalPtr: (sec, cfg, facts, ms) => ms.t('hoistGlobalPtr', () => {
+  ['hoistGlobalPtr', (sec, cfg, facts, ms) => ms.t('hoistGlobalPtr', () => {
     const stable = stablePtrGlobalNames(facts.globalValTypes)
     if (!stable.size) return
     facts.stableGlobals = stable
     facts.reachableWrites = ms.writes()
-    for (const s of ms.funcs()) walk(GLOBAL_PTR_STEPS, GLOBAL_PTR, cfg, s, facts, {})
-  }),
+    for (const s of ms.funcs()) { const st = {}; for (let i = 0; i < GLOBAL_PTR_STEPS.length; i++) if (on(GLOBAL_PTR_STEPS[i], cfg)) GLOBAL_PTR[i][1](s, cfg, facts, st) }
+  })],
   // The pure-function map for tryPerPixelColor's Phase-2 lane inline, before the
   // per-function vectorizer runs — the vectorizer is jz lowering (pre-watr), so it needs
   // its inline candidates now, not after watr. Bodies are still clean scalar here.
-  pureFuncMap: (sec, cfg, facts, ms) => { const map = buildPureFuncMap(ms.funcs()); if (map.size) facts.pureFuncMap = map },
+  ['pureFuncMap', (sec, cfg, facts, ms) => { const map = buildPureFuncMap(ms.funcs()); if (map.size) facts.pureFuncMap = map }],
   // jz semantic inlining (LOWERING) — inline pure user functions into their call sites BEFORE the
   // vectorizer, so it sees the callee arithmetic (the pow/decode a colour helper hides). jz owns
   // this because the decision is purity+type-driven; watr keeps only mechanical residual inlining.
@@ -137,7 +137,7 @@ const MODULE = {
   // pinned output-shape assertions for no measured bench win (the current regressions are outer-strip/
   // widening recognition + watr wasm-opt-class, not inlining). Kept as the architectural home for
   // semantic inlining, enabled per-compile via `optimize.inlinePureFns: true`, until a real case pays.
-  inlinePureFns: (sec, cfg, facts, ms) => {
+  ['inlinePureFns', (sec, cfg, facts, ms) => {
     const pureFuncMap = facts.pureFuncMap
     if (pureFuncMap) ms.t('inlinePureFns', () => {
       const callCount = new Map()
@@ -150,54 +150,54 @@ const MODULE = {
         callCount.get(name) === 1 && nodeCount(pureFuncMap.get(name)) <= INLINE_MAX))
       if (canInline.size) { const idRef = { next: 0 }; for (const s of ms.funcs()) inlinePureFnsInFn(s, pureFuncMap, idRef, canInline) }
     })
-  },
+  }],
   // Candidate bodies for devirt arm inlining and block-narrowing
   // (devirtConstFnArrayCalls): the UNFILTERED name→fn map of const-fn-array
   // element bodies. No purity filter: the inliner enforces
   // straight-line shape itself, and an arm executes exactly when the original
   // call did, so side-effecting bodies substitute safely.
-  dvArmFns: (sec, cfg, facts, ms) => {
+  ['dvArmFns', (sec, cfg, facts, ms) => {
     if (!facts.constFnArrays?.size) return
     const candNames = new Set()
     for (const list of facts.constFnArrays.values()) for (const c of list) candNames.add(`$${c.name}`)
     facts.dvArmFns = new Map(ms.funcs().filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
-  },
-  optimizeFuncs: (sec, cfg, facts, ms) => ms.t('optimizeFuncs', () => {
+  }],
+  ['optimizeFuncs', (sec, cfg, facts, ms) => ms.t('optimizeFuncs', () => {
     if (cfg?.promoteGlobals !== false) facts.reachableWrites = ms.writes()
     // The user functions a loop may call without a header changing (optimize/licm.js).
     facts.headerSafeFuncs = collectHeaderSafeFuncs(ms.funcs())
     // (each function's passes keep nothing of their own past it: a hosted compile's phases)
     eachChecked(ms.funcs(), func => optimizeFunc(func, cfg, facts))
-  }),
+  })],
   // The functions the lane vectorizer lifted, for the pins of watr's inliner (compile/index.js programPins).
-  vectorizedFns: (sec, cfg, facts) => { ctx.plans.vectorizedFns = facts.vectorized },
+  ['vectorizedFns', (sec, cfg, facts) => { ctx.plans.vectorizedFns = facts.vectorized }],
   // A site's inline cache (optimize/devirt.js) may hold a layout JSON.parse
   // registered, whose id `__clear` reissues: the reset empties every site.
-  clearIcSites: (sec) => {
+  ['clearIcSites', (sec) => {
     if (!ctx.runtime.icSites) return
     const clear = sec.stdlib.find(f => Array.isArray(f) && f[0] === 'func' && f[1] === '$__clear')
     if (clear) for (let s = 1; s <= ctx.runtime.icSites; s++) clear.push(['global.set', `$__ic_hi${s}`, ['i64.const', -1]])
-  },
+  }],
   // A specialized copy that allocates nothing as optimized: no release test, rewind or compaction (optimize/quiet-loops.js).
-  quietCopies: (sec, cfg, facts, ms) => ms.t('quietCopies', () => { facts.quietLoops = quietOptimizedLoops(sec, facts) }),
+  ['quietCopies', (sec, cfg, facts, ms) => ms.t('quietCopies', () => { facts.quietLoops = quietOptimizedLoops(sec, facts) })],
   // Per-iteration arena rewinds (optimize/loop-rewind.js).
-  loopRewinds: (sec, cfg, facts, ms) => {
+  ['loopRewinds', (sec, cfg, facts, ms) => {
     if (ctx.plans.rewindLoopLabels) ms.t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels, facts); ctx.plans.rewindLoopLabels = null })
-  },
-  loopCompacts: (sec, cfg, facts, ms) => {
+  }],
+  ['loopCompacts', (sec, cfg, facts, ms) => {
     if (ctx.plans.compactLoopLabels) ms.t('loopCompacts', () => {
       if (insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels, facts)) ctx.plans.hasCompactLoops = true
       ctx.plans.compactLoopLabels = null
     })
-  },
+  }],
   // A receiver a loop never rebinds: its forward hop once before the loop and
   // after each call that may move a block (optimize/forward-hops.js).
-  forwardHops: (sec, cfg, facts, ms) => ms.t('forwardHops', () => {
+  ['forwardHops', (sec, cfg, facts, ms) => ms.t('forwardHops', () => {
     const funcs = [...sec.funcs, ...sec.stdlib, ...sec.start]
     const still = collectStillFuncs(funcs), results = collectResults(funcs, facts.imports), writes = ms.writes()
     for (const fn of funcs) hoistForwardHops(fn, still, results, writes, facts.globalTypes)
-  }),
-  hoistGlobalConstLoads: (sec, cfg, facts, ms) => ms.t('hoistGlobalConstLoads', () => {
+  })],
+  ['hoistGlobalConstLoads', (sec, cfg, facts, ms) => ms.t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!facts.globalTypedLen?.size
     // The guarded form necessarily writes a declared v128 local. Keep scalar
     // programs on the old allocation-free path; only SIMD functions pay for
@@ -209,14 +209,14 @@ const MODULE = {
     facts.reachableWrites = ms.writes()
     facts.memoryWrites = collectReachableMemoryWrites(ms.funcs())
     facts.masked = masked
-    for (const s of ms.funcs()) walk(GLOBAL_LOADS_STEPS, GLOBAL_LOADS, cfg, s, facts, null)
-  }),
-  outlineToInt32: (sec, cfg, facts, ms) => ms.t('outlineToInt32', () => outlineToInt32([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false })))),
+    for (const s of ms.funcs()) for (let i = 0; i < GLOBAL_LOADS_STEPS.length; i++) if (on(GLOBAL_LOADS_STEPS[i], cfg)) GLOBAL_LOADS[i][1](s, cfg, facts, null)
+  })],
+  ['outlineToInt32', (sec, cfg, facts, ms) => ms.t('outlineToInt32', () => outlineToInt32([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false }))))],
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.
-  appendLateStdlib: (sec, cfg, facts, ms) => ms.t('appendLateStdlib', () => appendLateStdlib(ms.funcs(), sec.stdlib)),
-}
+  ['appendLateStdlib', (sec, cfg, facts, ms) => ms.t('appendLateStdlib', () => appendLateStdlib(ms.funcs(), sec.stdlib))],
+]
 const MODULE_STEPS = stage('module', MODULE)
 
 /**
@@ -235,7 +235,7 @@ export function optimizeModule(sec, profiler) {
     funcs: () => allFuncs ??= [...sec.funcs, ...sec.stdlib, ...sec.start],
     writes: () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(ms.funcs(), compacting)),
   }
-  walk(MODULE_STEPS, MODULE, cfg, sec, facts, ms)
+  for (let i = 0; i < MODULE_STEPS.length; i++) if (on(MODULE_STEPS[i], cfg)) MODULE[i][1](sec, cfg, facts, ms)
   const dataEnd = dataLen()
   // Past HEAP.PTR_ADDR the static data covers the cell the host's allocator keeps its
   // pointer in when the module exports no heap of its own (interop.js), and a host

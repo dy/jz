@@ -48,7 +48,7 @@ import { issueOrder } from './issue-order.js'
 import { splitFuncs, loopPasses } from './split-funcs.js'
 import { inlineTiny } from './inline-tiny.js'
 import { forwardCheckedElements } from './forward-checked.js'
-import { stage, walk } from './pass-table.js'
+import { stage, on } from './pass-table.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
 // (module/core.js `__rem`, its long division `__rem_div`; the element heads,
@@ -641,86 +641,86 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
 // Each step of the tail, `(t, cfg, x)`: `t.m` the module as it stands (watr's fixpoint
 // hands back a module of its own), `t.watrOpts` watr's options, `t.user` whether a name is
 // the program's, `t.time` the host's timer; `x` the tail's facts (compile/index.js tailFacts).
-const TAIL = {
-  legalize: (t, cfg, x) => { t.m = legalizeForTarget(t.m, x.targetProfile) },
+export const TAIL = [
+  ['legalize', (t, cfg, x) => { t.m = legalizeForTarget(t.m, x.targetProfile) }],
   // A split binding of its predecessor's type takes that slot: the generic optimizer
   // then reads the function the source wrote.
-  shareSplitSlots: (t) => { t.time('shareSplitSlots', () => { for (const n of t.m) shareSplitSlots(n) }) },
+  ['shareSplitSlots', (t) => { t.time('shareSplitSlots', () => { for (const n of t.m) shareSplitSlots(n) }) }],
   // The math runtime depends only on its operands and cannot trap (its loads read constant
   // tables, its truncations are guarded): value numbering and scheduling treat its calls
   // like arithmetic.
-  watrOptions: (t, cfg, x) => {
+  ['watrOptions', (t, cfg, x) => {
     t.watrOpts = resolveWatrOpts(cfg, x)
     if (t.watrOpts) t.watrOpts.pure = t.m.filter(n => Array.isArray(n) && n[0] === 'func' && pureKernel(n[1])).map(n => n[1])
-  },
+  }],
   // (a wrapped word operation over extended words is the word operation: `avail & -avail` negates in the word)
-  foldWrappedWords: (t) => { foldWrappedWords(t.m) },
+  ['foldWrappedWords', (t) => { foldWrappedWords(t.m) }],
   // (a boxed pointer in a local the function only unboxes: the local holds the pointer)
-  narrowBoxedLocals: (t) => { for (const n of t.m) narrowBoxedLocals(n) },
+  ['narrowBoxedLocals', (t) => { for (const n of t.m) narrowBoxedLocals(n) }],
   // (a loop that writes no memory and calls nothing: its reads every round runs, ahead of it)
-  stillLoads: (t) => { t.time('stillLoads', () => hoistStillLoads(t.m)) },
+  ['stillLoads', (t) => { t.time('stillLoads', () => hoistStillLoads(t.m)) }],
   // Generic local rewrites run only here, after link consumed JZ annotations.
   // Fast mode uses the same passes without the full module fixpoint.
-  watOptimize: (t) => { t.m = t.time('watOptimize', () => watOptimize(t.m, t.watrOpts)) },
-  conditions: (t) => { t.time('watCleanup', () => conditions(t.m)) },
-  propagate: (t) => { t.m = t.time('watCleanup', () => mergeLocals(propagate(t.m))) },
-  bool: (t) => { t.m = t.time('watCleanup', () => mergeBlocks(vacuum(bool(t.m)))) },
-  coalesceLocals: (t) => { t.m = t.time('watCleanup', () => coalesceLocals(t.m)) },
-  localReuse: (t) => { t.time('watCleanup', () => localReuse(t.m)) },
-  poolConstants: (t) => { t.m = t.time('watCleanup', () => poolConstants(t.m)) },
-  postGlobalPtr: (t, cfg, x) => {
+  ['watOptimize', (t) => { t.m = t.time('watOptimize', () => watOptimize(t.m, t.watrOpts)) }],
+  ['conditions', (t) => { t.time('watCleanup', () => conditions(t.m)) }],
+  ['propagate', (t) => { t.m = t.time('watCleanup', () => mergeLocals(propagate(t.m))) }],
+  ['bool', (t) => { t.m = t.time('watCleanup', () => mergeBlocks(vacuum(bool(t.m)))) }],
+  ['coalesceLocals', (t) => { t.m = t.time('watCleanup', () => coalesceLocals(t.m)) }],
+  ['localReuse', (t) => { t.time('watCleanup', () => localReuse(t.m)) }],
+  ['poolConstants', (t) => { t.m = t.time('watCleanup', () => poolConstants(t.m)) }],
+  ['postGlobalPtr', (t, cfg, x) => {
     const funcs = t.m.filter(node => Array.isArray(node) && node[0] === 'func')
     if (x.stableGlobals?.size) {
       const reach = collectReachableGlobalWrites(funcs)
       for (const node of funcs) hoistGlobalPtrOffset(node, x.stableGlobals, reach)
     }
-  },
-  guardToInt32: (t, cfg) => { t.time('guardToInt32', () => guardToInt32(t.m, cfg.wordTruncation === 'add')) },
+  }],
+  ['guardToInt32', (t, cfg) => { t.time('guardToInt32', () => guardToInt32(t.m, cfg.wordTruncation === 'add')) }],
   // (again, over what the optimizer's propagation and the truncation's lowering brought together:
   // a word converted to a Number and rounded back is the word; a flag of literals, read as the
   // optimizer leaves it, against literals, is a word)
-  'foldWrappedWords.late': (t) => { foldWrappedWords(t.m) },
-  narrowFlagLocals: (t) => { for (const n of t.m) narrowFlagLocals(n) },
-  forwardChecked: (t) => { t.time('forwardChecked', () => forwardCheckedElements(t.m)) },
-  stripDeadLateData: (t, cfg, x) => { stripDeadLateData(t.m, x.lazyDataSpans, x.staticDataSpan, x.dataRecords) },
-  unrollTrips: (t) => { t.time('unrollTrips', () => unrollTrips(t.m)) },
-  ringLaps: (t) => { t.time('ringLaps', () => ringLaps(t.m)) },
-  pointerExits: (t) => { t.time('pointerExits', () => pointerExits(t.m)) },
-  jumpPointers: (t) => { t.time('jumpPointers', () => jumpPointers(t.m)) },
-  leadChains: (t) => { t.time('leadChains', () => leadChains(t.m)) },
+  ['foldWrappedWords.late', (t) => { foldWrappedWords(t.m) }],
+  ['narrowFlagLocals', (t) => { for (const n of t.m) narrowFlagLocals(n) }],
+  ['forwardChecked', (t) => { t.time('forwardChecked', () => forwardCheckedElements(t.m)) }],
+  ['stripDeadLateData', (t, cfg, x) => { stripDeadLateData(t.m, x.lazyDataSpans, x.staticDataSpan, x.dataRecords) }],
+  ['unrollTrips', (t) => { t.time('unrollTrips', () => unrollTrips(t.m)) }],
+  ['ringLaps', (t) => { t.time('ringLaps', () => ringLaps(t.m)) }],
+  ['pointerExits', (t) => { t.time('pointerExits', () => pointerExits(t.m)) }],
+  ['jumpPointers', (t) => { t.time('jumpPointers', () => jumpPointers(t.m)) }],
+  ['leadChains', (t) => { t.time('leadChains', () => leadChains(t.m)) }],
   // (a run they leave as written, an integrator's stages, the order the core issues soonest)
-  issueOrder: (t) => { t.time('issueOrder', () => issueOrder(t.m)) },
-  maskOperands: (t) => { t.time('maskOperands', () => maskOperands(t.m)) },
-  truncChoice: (t) => { t.time('truncChoice', () => truncChoice(t.m)) },
+  ['issueOrder', (t) => { t.time('issueOrder', () => issueOrder(t.m)) }],
+  ['maskOperands', (t) => { t.time('maskOperands', () => maskOperands(t.m)) }],
+  ['truncChoice', (t) => { t.time('truncChoice', () => truncChoice(t.m)) }],
   // (a select of their leaves)
-  selectArms: (t) => { t.time('selectArms', () => selectArms(t.m)) },
+  ['selectArms', (t) => { t.time('selectArms', () => selectArms(t.m)) }],
   // (on the lanes the vectorizer converted and the selects the arms became: each arm's quotient one of a choice)
-  shareQuotients: (t) => { t.time('shareQuotients', () => shareQuotients(t.m)) },
+  ['shareQuotients', (t) => { t.time('shareQuotients', () => shareQuotients(t.m)) }],
   // (a test of a float select of literals is a test of its condition)
-  testedChoices: (t) => { t.time('testedChoices', () => foldTestedChoices(t.m)) },
-  selectBits: (t, cfg, x) => { t.time('selectBits', () => selectBits(t.m, { simd: !x.noSimd })) },
-  searchLoops: (t) => { t.time('searchLoops', () => searchLoops(t.m)) },
+  ['testedChoices', (t) => { t.time('testedChoices', () => foldTestedChoices(t.m)) }],
+  ['selectBits', (t, cfg, x) => { t.time('selectBits', () => selectBits(t.m, { simd: !x.noSimd })) }],
+  ['searchLoops', (t) => { t.time('searchLoops', () => searchLoops(t.m)) }],
   // (where the round uses it)
-  leadGathers: (t) => { t.time('leadGathers', () => leadGathers(t.m)) },
+  ['leadGathers', (t) => { t.time('leadGathers', () => leadGathers(t.m)) }],
   // (a round's last store, read back first by the next round, through a local)
-  carryStores: (t) => { t.time('carryStores', () => carryStores(t.m)) },
+  ['carryStores', (t) => { t.time('carryStores', () => carryStores(t.m)) }],
   // (a round that skips one takes the latch without a jump past it)
-  skipLatches: (t) => { t.time('skipLatches', () => skipLatches(t.m)) },
-  guardExtremes: (t) => { t.time('guardExtremes', () => guardExtremes(t.m)) },
-  pairTests: (t, cfg, x) => { t.time('pairTests', () => pairTests(t.m, { simd: !x.noSimd })) },
+  ['skipLatches', (t) => { t.time('skipLatches', () => skipLatches(t.m)) }],
+  ['guardExtremes', (t) => { t.time('guardExtremes', () => guardExtremes(t.m)) }],
+  ['pairTests', (t, cfg, x) => { t.time('pairTests', () => pairTests(t.m, { simd: !x.noSimd })) }],
   // (a helper of a few instructions joins its callers, a larger one the program's loops)
-  inlineTiny: (t, cfg) => {
+  ['inlineTiny', (t, cfg) => {
     if (t.watrOpts) t.time('inlineTiny', () => inlineTiny(t.m, { pin: t.watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, kernel: cfg.kernelNodes ?? 300, user: t.user }))
-  },
-  unsignedDivision: (t) => { t.time('unsignedDivision', () => unsignedDivision(t.m)) },
-  constBases: (t) => { t.time('constBases', () => constBases(t.m)) },
-  poolFloats: (t) => { t.time('poolFloatConstants', () => poolFloatConstants(t.m)) },
-  loopPasses: (t) => { t.time('loopPasses', () => loopPasses(t.m, { user: t.user })) },
-  splitFuncs: (t, cfg) => { t.time('splitFuncs', () => splitFuncs(t.m, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm })) },
+  }],
+  ['unsignedDivision', (t) => { t.time('unsignedDivision', () => unsignedDivision(t.m)) }],
+  ['constBases', (t) => { t.time('constBases', () => constBases(t.m)) }],
+  ['poolFloats', (t) => { t.time('poolFloatConstants', () => poolFloatConstants(t.m)) }],
+  ['loopPasses', (t) => { t.time('loopPasses', () => loopPasses(t.m, { user: t.user })) }],
+  ['splitFuncs', (t, cfg) => { t.time('splitFuncs', () => splitFuncs(t.m, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm })) }],
   // (a round's lane extremes relaxed, tested once, the engine asked once a call)
-  relaxExtremes: (t, cfg, x) => { if (!x.noSimd) t.time('relaxExtremes', () => relaxExtremes(t.m)) },
-  hoistVectorConsts: (t) => { t.time('hoistVectorConsts', () => hoistVectorConsts(t.m)) },
-}
+  ['relaxExtremes', (t, cfg, x) => { if (!x.noSimd) t.time('relaxExtremes', () => relaxExtremes(t.m)) }],
+  ['hoistVectorConsts', (t) => { t.time('hoistVectorConsts', () => hoistVectorConsts(t.m)) }],
+]
 const TAIL_STEPS = stage('tail', TAIL)
 
 /**
@@ -743,6 +743,6 @@ export function watrTail(module, cfg, {
   // the body it calls once is inlined there)
   const user = name => !!userFuncs?.has(name.slice(1)) || name.endsWith('$exp') && !!userFuncs?.has(name.slice(1, -4))
   const t = { m: module, watrOpts: null, user, time }
-  walk(TAIL_STEPS, TAIL, cfg, t, x, null)
+  for (let i = 0; i < TAIL_STEPS.length; i++) if (on(TAIL_STEPS[i], cfg)) TAIL[i][1](t, cfg, x, null)
   return t.m
 }
