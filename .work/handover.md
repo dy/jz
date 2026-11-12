@@ -188,3 +188,25 @@ b0f52ced0 land-2c                            the landing branch of 2c, an ancest
 
 `wasi-proc-exit` (process.exit under host:'wasi') landed as 751665c63, 803529fff,
 a0638326f.
+
+## Branches of the 2d landing (2026-11-11), tips before deletion
+
+Checked with `git cherry` against the landing branch: every patch but the one named is
+in `main`.
+
+```
+28d57ad53 worktree-agent-a71932a5e8dfc1e8a   phase 2d, landed as 9bafbb6a6 (rebased over the eight fixes, so another patch), eaf0ffabb, 1ee4305aa
+080ab484c fix-oob                            the three fixes on 267ad34bb, landed as 8745d4cea, b16d106a1, 6c8338ef8; the timing base "without 2d"
+dcd0f60ad land-2d                            the three fixes and 2d on 267ad34bb: the tree 2d's review ran on, not an ancestor
+360770d24 land-2d-b                          the same with the subscript bump on ba71f66a6: the first full battery, an ancestor of main
+642ef8a46 fix-wide                           the landing tree (the two fixes of 2d's cost in time), an ancestor of main
+06a4d9cca bump-subscript                     the subscript bump, landed as 360770d24
+```
+
+Kept, not deleted:
+- `worktree-agent-ad38f46bbe9197c87` (a48e8b6fe on ba71f66a6): phase 4's memo, handed
+  back and held unlanded (the row of phase 4 in `architecture.md`).
+- The worktree `.claude/worktrees/bump-subscript`: its `node_modules` is a real
+  directory with subscript 10.8.3, which worktrees link while the main checkout's holds
+  10.8.2 on disk. Remove it once the main checkout is repaired (`rm -rf
+  node_modules/subscript node_modules/.package-lock.json && npm install` there).
