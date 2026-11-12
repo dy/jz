@@ -122,6 +122,17 @@ const agree = (src, args, optimizes) => {
   }
 }
 
+// Closure bodies were deduplicated by a hash and a comparison kept to the JSON key's
+// classes: undefined, null, NaN and the infinities one leaf, -0 the leaf 0
+// (wat/assemble/closure-table.js).
+test('node keys: closures differing in a constant stay two closures', () => {
+  for (const src of [
+    `export let f = (k) => { const fs = [() => Infinity, () => -Infinity]; return fs[k & 1]() }`,
+    `export let f = (k) => { const fs = [() => 0, () => -0]; return 1 / fs[k & 1]() }`,
+    `export let f = (k) => { const fs = [(x) => x * Infinity, (x) => x * -Infinity, (x) => x * NaN, (x) => x * (0 / 0)]; return fs[k & 3](k + 1) }`,
+  ]) agree(src, [[0], [1], [2], [3]], levels(0, 2, 'speed'))
+})
+
 // A counted loop's body written out by hand (`t[i] = …; t[i + 1] = …` stepping by 2)
 // rolls back into one statement where its copies are one statement but their index:
 // they were compared by their JSON text (plan/counted-loops.js `same`).

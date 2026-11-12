@@ -26,16 +26,15 @@ import { MAX_CLOSURE_ARITY } from '../../ir.js'
 // closure-capture defect (reference emitted without declaration,
 // 'SENTINELf..._N is not in scope'; banked in .work/archive/todo.md 2026-08-19).
 // Module-scope bindings never enter the capture machinery.
-const dedupIsSentinel = (v) => v === undefined || v === null ||
-  (typeof v === 'number' && !Number.isFinite(v))
 const mix = (h, x) => Math.imul(h ^ x, 0x01000193) | 0
 const mixStr = (h, str) => {
   for (let i = 0; i < str.length; i++) h = mix(h, str.charCodeAt(i))
   return h
 }
 const numberBits = new DataView(new ArrayBuffer(8))
+// (a number by its bits, -0 apart from 0; every NaN is one value)
 const mixNumber = (h, n) => {
-  numberBits.setFloat64(0, n || 0, true) // -0 and +0 share the exact comparator's class
+  numberBits.setFloat64(0, n === n ? n : NaN, true)
   return mix(mix(mix(h, 11), numberBits.getUint32(0, true)), numberBits.getUint32(4, true))
 }
 
@@ -77,11 +76,9 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // region-live self-compile, 99.2% of the buildStartFn window
   // (.work/evidence.md 2026-08-19 attribution verdict). The hash walk copies
   // no IR and hashes f64 words without formatting them; the exact comparator
-  // runs only within a hash bucket, preserving the dedup groups.
-  // INVARIANT (grouping parity with the old stringify key): undefined, null,
-  // NaN and +/-Infinity all serialized to the same JSON token 'null', so they
-  // form ONE equivalence class in both the hash and the comparator below --
-  // collapsing them differently would split/merge groups and change output.
+  // runs only within a hash bucket. Bodies are one where every leaf is the
+  // same value: the old key wrote undefined, null, NaN and the infinities all
+  // as `null`, and -0 as 0, and took closures differing there for one.
   const localNamesOf = (fn) => {
     const names = new Map()
     walkAst(fn, { enter: node => {
@@ -97,7 +94,8 @@ export function dedupClosureBodies(closureFuncs, sec) {
         if (ordinal !== undefined) return mix(mix(h, 5), ordinal)
         return mixStr(mix(h, 7), node)
       }
-      if (dedupIsSentinel(node)) return mix(h, -2)
+      if (node === undefined) return mix(h, -2)
+      if (node === null) return mix(h, -3)
       if (typeof node === 'number') return mixNumber(h, node)
       if (typeof node === 'boolean') return mix(mix(h, 29), node ? 1 : 0)
       if (!Array.isArray(node)) return mixStr(mix(h, 17), String(node))
@@ -127,8 +125,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
         for (let i = 0; i < a.length; i++) if (!eq(a[i], b[i])) return false
         return true
       }
-      if (dedupIsSentinel(a) || dedupIsSentinel(b)) return dedupIsSentinel(a) && dedupIsSentinel(b)
-      return a === b
+      return Object.is(a, b)
     }
     for (let i = 2; i < fa.length; i++) if (!eq(fa[i], fb[i])) return false
     return true
