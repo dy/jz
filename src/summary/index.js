@@ -5453,7 +5453,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // itself, which is no evidence). An index is neither, unless the receiver
   // is a typed array, whose only keys are element indices: `a[k]`
   // converts `k` to a property key, and `a['1.0']` is no element; nor is a
-  // typed-array constructor's argument, which copies an array. A demanded or
+  // typed-array constructor's argument, which copies an array (its length is
+  // the number of any other argument). Such a read is no evidence of a
+  // Number alone (`namesBeside`): a typed array's key or an `Array(x)` that
+  // may be a Boolean reads it as it is, and so does a field whose object is
+  // read whole (`readWhole`: no walk names those readers). A demanded or
   // compatible parameter of an exported function arrives as f64 (spec/
   // boundary.md): for a demanded one the host's ToNumber is the coercion the
   // program would have applied at each use; for a compatible one it is the
@@ -5468,6 +5472,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // flows back through what made the value: a copy, a call's argument, the operands of a `+`
   // (`x = s + s; x.slice( 1 )` concatenates, so `s` is used as a string).
   const STR = 5
+  // A read that is no evidence is none of a Number: of a value the summary
+  // names something else in (a Boolean, a null, a string beside the tags
+  // `allowed`) it is a read of that value as it is. The unknown kind names
+  // every tag and none: an exported parameter's, whose contract is the boundary's.
+  const NUMBER_BIT = bitOf(K.NUMBER)
+  const namesBeside = (k, allowed) => (k & TAGS) !== TAGS && (k & TAGS & ~allowed) !== 0
   // RECEIVER observes identity/length without reading stored array values.
   const NUMBER_MEMBERS = new Set(['toFixed', 'toPrecision', 'toExponential', 'toString', 'toLocaleString', 'valueOf', 'constructor'])
   // Capture structural metadata once. A retained reader must not consult
@@ -5548,6 +5558,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (cx === FLOW && typeof into === 'number' && elementKey(kinds[into]) === key) return
     deny(key)
   }
+  const readWhole = (sid) => { const props = schemas[sid]; if (!props) return; const held = slots(sid); for (let i = 0; i < props.length; i++) if (!isPrivate(props[i]) && namesBeside(held[i], NUMBER_BIT)) deny(slotKey(sid, props[i])) }
   const indexedKey = (recv, idx) => typedElementKey(idx, kindOfExpr(idx) === NUMBER) ? elementKey(recv) : null
   let demandChanged = false
   const deny = (key) => { if (numeric.get(key) !== false) { numeric.set(key, false); demandChanged = true } }
@@ -5601,7 +5612,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // string names a property, so the read is compatible with a number without
   // proving one (a parameter read only there keeps its key as it is; one also
   // stepped or added is a number by the boundary contract, param-numeric.js).
-  const index = (key, recv) => { if (tagOf(recv) === K.TYPED) useOf(key, NEUTRAL); else demand(key) }
+  // A key the summary names more in than a Number and its absence is read as
+  // what it holds: `W[true]` and `W[null]` name no element, and the number a
+  // converting store keeps of them (emit/dispatch.js boolCarrier) names one.
+  const index = (key, recv) => { if (tagOf(recv) === K.TYPED && !namesBeside(kindOfExpr(key), NUMBER_BIT | bitOf(K.ABSENT))) useOf(key, NEUTRAL); else demand(key) }
   // The names a guard proves numbers on the current path (numericProofs): a
   // `return x`, or an assignment `t = x` (the lowering of an early return),
   // reads a number there, not the parameter's identity. A name the guarded
@@ -5720,7 +5734,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === '[]') {
       const r = kindOfExpr(n[1]), key = indexedKey(r, n[2])
       useOf(n[1], key === null ? OTHER : RECEIVER); index(n[2], r)
-      if (key !== null) { const level = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx; if (level !== NEUTRAL) useKey(key, level) }
+      const level = cx === FLOW ? (strungInto(into) ? STR : demandOf(into)) : cx, name = literalKeyOf(n[2])
+      if (key !== null) { if (level !== NEUTRAL) useKey(key, level) }
+      // A field: the one a literal key names, as the dot form reads it; any of the receiver's shapes under a computed key.
+      else if (name !== null) { if (level !== NEUTRAL) for (const k of slotKeysOf(n[1], name)) useKey(k, level) }
+      else if (tagOf(core(r)) === K.OBJECT && paramOf(r) !== UNKNOWN) for (const sid of shapesOf(paramOf(r))) readWhole(sid)
       return
     }
     // A value-carrying operator reads its arms in the context of its own read;
@@ -5810,8 +5828,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // stays ANY, the host's array copies); a view's offset and length are
       // numbers.
       if (typeof callee === 'string' && callee.startsWith('new.') && (TYPED_CTOR.test(callee) || callee === 'new.ArrayBuffer')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), i === 0 ? NEUTRAL : NUM); return }
-      // `Array(x)` sizes by a number and holds anything else: no evidence either way.
-      if ((callee === 'new.Array' || callee === 'Array') && count === 1) { useOf(argAt(as, 0), NEUTRAL); return }
+      // `Array(x)` sizes by a number and holds anything else: no evidence either
+      // way of a Number, and the one element where it is anything else (`Array(true)`).
+      if ((callee === 'new.Array' || callee === 'Array') && count === 1) { const a = argAt(as, 0); useOf(a, namesBeside(kindOfExpr(a), NUMBER_BIT) ? OTHER : NEUTRAL); return }
       for (let i = 0; i < count; i++) demand(argAt(as, i))
       return
     }
@@ -6120,6 +6139,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (defaults) for (const name of defaultNamesOf(defaults)) demand(defaults[name])
     if (isBlock(body)) demand(body); else useOf(body, FLOW, resultKey(scope))
   }
+  // A shape some operation reads whole has readers no walk names: its keys
+  // listed and its values with them, its fields copied or serialized, the host
+  // handed it, its identity lost at a join. A field of it that holds something
+  // beside a Number is read as it is (`JSON.stringify({ ok })` writes `true`).
+  for (const whole of [keysSeen, copiedSchemas, deepRead, hostSchemas, opaqueSchemas]) for (const sid of whole) readWhole(sid)
   rounds(() => {
     demandChanged = false
     // a parameter default runs in the frame: its uses of the parameters count

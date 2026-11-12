@@ -14,7 +14,7 @@ import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, 
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
 import { arrCellWat, arrCellHelper, HEAP_EXHAUSTED_THROW } from './core.js'
 import { arrayKeysOn } from './collection/identity.js'
-import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
+import { isPresentNumber, typedNumberOrMissingKey, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
@@ -1067,7 +1067,7 @@ export default (ctx) => {
     // TypedArray: type-aware load
     if (typeof arr === 'string' && ctx.core.emit['.typed:[]'] &&
         vt === VAL.TYPED) {
-      if (!numericKey && !((keyType === VAL.NUMBER || censusMaybeUndefinedKind(idx) === VAL.NUMBER) && ctx.summary.typedPropertiesAbsent())) {
+      if (!numericKey && !typedNumberOrMissingKey(idx)) {
         ctx.module.include('collection')
         ctx.module.include('string')
         setLinkDemand('typedProperties')

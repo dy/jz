@@ -84,7 +84,10 @@ function stagedReference(name, update = true, rhs) {
     // array moves its storage, and the binding, where it still names the old
     // block, follows it with the temp (emit-assign.js persistBindingPtr).
     if (tag === 'ref' && typeof node === 'string' && !ctx.func.flatObjects?.has(node)) (ctx.func.stagedBindings ??= new Map()).set(h, node)
-    const vt = valTypeOf(node)
+    // A Boolean beside a Number is held as itself, of no one kind: as a key
+    // it names a property (`W[c ? true : i] = v`), where its number names an element.
+    const merge = hasAmbiguousBoolMerge(node)
+    const vt = merge ? null : valTypeOf(node)
     if (vt) {
       const k = ctx.summary?.at(ctx.func.current).kindOfExpr(node)
       ctx.func.localValTypesOverlay.set(h, k != null && ctx.summary.valOfKind(k) === vt ? k : vt)
@@ -98,7 +101,7 @@ function stagedReference(name, update = true, rhs) {
     const len = tag === 'key' && valTypeOf(recv) === VAL.TYPED
       ? ctx.func.typedLen?.get(name[1]) ?? ctx.scope.globalTypedLen?.get(name[1]) ?? repOf(name[1])?.arrayLen : null
     const extent = len > 0 && typedIdxProven(name[1], node, name) ? len : null
-    const value = emit(node)
+    const value = merge ? emitIdentitySafe(node) : emit(node)
     // A captured Number keeps its actual carrier and current hull. Staging
     // fixes the value before later operand effects; it must not erase the
     // integer/extent proof that already justified the original expression.

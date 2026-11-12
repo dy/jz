@@ -2130,3 +2130,82 @@ test('audit: Math.round of an integer past 2^52 is the integer', () => {
       is(f(x), Math.round(x), `Math.round(${x}) at ${optimize}`)
   }
 })
+
+// A typed array's key that may be a Boolean names no element: `W[true]` reads
+// undefined and stores a property. On main the key was the Boolean's number
+// wherever a Number could sit beside it: a conditional with a Boolean arm at
+// every level (the read took the merge for a Number key, and a staged key was
+// emitted as one), and a binding, an array's element or a call's result
+// wherever their other reads convert (the demand pass took a typed key for no
+// evidence, so the Boolean was stored as 0 or 1).
+test('audit: a typed array\'s key that may be a Boolean names no element', () => {
+  const holders = {
+    module: (V, body) => `let G = 0; const w = (k) => { G = k > 1 ? ${V} : 1 }; export let f = (k) => { const W = new Float64Array([4, 5, 6]); G = Math.floor(k); w(k); ${body('G')} }`,
+    local: (V, body) => `export let f = (k) => { const W = new Float64Array([4, 5, 6]); let g = Math.floor(k); if (k > 1) g = ${V}; ${body('g')} }`,
+    captured: (V, body) => `export let f = (k) => { const W = new Int32Array([4, 5, 6]); let g = Math.floor(k); const w = () => { g = k > 1 ? ${V} : 1 }; w(); ${body('g')} }`,
+    element: (V, body) => `export let f = (k) => { const W = new Float64Array([4, 5, 6]); const a = [Math.floor(k), 0]; if (k > 1) a[0] = ${V}; ${body('a[0]')} }`,
+    result: (V, body) => `const h = (k) => k > 1 ? ${V} : Math.floor(k); export let f = (k) => { const W = new Int32Array([4, 5, 6]); const g = h(k); ${body('g')} }`,
+    conditional: (V, body) => `export let f = (k) => { const W = new Float64Array([4, 5, 6]); ${body(`(k > 1 ? ${V} : Math.floor(k))`)} }`,
+  }
+  // (what else reads the key: nothing, a product, a word)
+  const others = [() => ``, R => `if (${R} * 2 === 14) return -6; `, R => `if ((${R} | 0) === 7) return -7; `]
+  const uses = [
+    R => `const v = W[${R}]; return v === undefined ? -1 : v`,
+    R => `W[${R}] = 9; return W[0] * 100 + W[1] * 10 + W[2]`,
+    R => `W[${R}] += 2; return W[0] * 100 + W[1] * 10 + W[2]`,
+  ]
+  const check = (src) => {
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [0, 1, 2, 5]) is(got.f(k), host.f(k), `${src} f(${k}) at ${optimize}`)
+    }
+  }
+  for (const H of Object.values(holders)) for (const V of ['true', 'k > 1']) for (const O of others) for (const U of uses) check(H(V, R => O(R) + U(R)))
+  // A null and a string beside the number name none either ('1' names the second);
+  // an undefined key reads none. They answered right on main: the key's storage
+  // kept them, which a demand that counts the key as a read still does.
+  for (const H of [holders.module, holders.local, holders.element]) for (const V of ['null', `'1'`, `'1.0'`, 'undefined']) for (const U of uses.slice(0, 2)) check(H(V, R => others[1](R) + U(R)))
+})
+
+// A binding is stored as numbers where every read of it converts (the
+// summary's numeric demand), so a Boolean it holds lands as 0 or 1. A read
+// that does not convert must count against that: on main a typed array's key
+// and `Array(x)` were no evidence, and a field nothing reads by name was none
+// though its object was serialized, enumerated, copied, handed to the host or
+// read by a key (`JSON.stringify({ ok })` wrote 1 for true at every level).
+test('audit: a Boolean beside a binding\'s numbers reaches a reader that does not convert it', () => {
+  const mul = R => `if (${R} * 2 === 14) return -6; `
+  const holders = {
+    module: (V, body) => `let G = 0; const w = (k) => { G = k > 1 ? ${V} : 1 }; export let f = (k) => { G = Math.floor(k); w(k); ${mul('G')}${body('G')} }`,
+    local: (V, body) => `export let f = (k) => { let g = Math.floor(k); if (k > 1) g = ${V}; ${mul('g')}${body('g')} }`,
+    element: (V, body) => `export let f = (k) => { const q = [Math.floor(k), 0]; if (k > 1) q[0] = ${V}; ${mul('q[0]')}${body('q[0]')} }`,
+    result: (V, body) => `const made = (k) => k > 1 ? ${V} : Math.floor(k); export let f = (k) => { const g = made(k); ${mul('g')}${body('g')} }`,
+  }
+  const kindOf = R => `(${R} === true ? 'T' : ${R} === false ? 'F' : ${R} === null ? 'N' : ${R} === undefined ? 'U' : typeof ${R})`
+  const readers = [
+    R => `const a = Array(${R}); return a.length * 10 + (a[0] === true ? 1 : a[0] === false ? 2 : 0)`,
+    R => `return JSON.stringify({ a: ${R}, b: 2 })`,
+    R => `const o = { a: ${R}, b: 2 }; return JSON.stringify(o)`,
+    R => `const o = { a: ${R}, b: 2 }; const v = Object.values(o)[0]; return ${kindOf('v')}`,
+    R => `const o = { a: ${R}, b: 2 }; let t = ''; for (const key in o) { const v = o[key]; t += ${kindOf('v')} } return t`,
+    R => `const o = { a: ${R}, b: 2 }; const o2 = { ...o, c: 3 }; const v = o2.a; return ${kindOf('v')}`,
+    R => `const o = { a: ${R}, b: 2 }; const key = k > -1 ? 'a' : 'b'; const v = o[key]; return ${kindOf('v')}`,
+    R => `const o = { a: ${R}, b: 2 }; const v = o['a']; return ${kindOf('v')}`,
+    R => `return { a: ${R}, b: 2 }`,
+    // (a typed array's length is its argument's number: `new Float64Array(true)` has one element)
+    R => `return new Float64Array(${R}).length`,
+  ]
+  const same = (a, b, msg) => is(JSON.stringify(a), JSON.stringify(b), msg)
+  const check = (src) => {
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [0, 1, 2, 5]) same(got.f(k), host.f(k), `${src} f(${k}) at ${optimize}`)
+    }
+  }
+  for (const H of Object.values(holders)) for (const R of readers) check(H('true', R))
+  // An undefined and a null beside the numbers are themselves there too: a
+  // serialized field that is undefined is left out, a null one written.
+  for (const V of ['undefined', 'null']) for (const R of readers.slice(1, 4)) check(holders.local(V, R))
+})

@@ -311,8 +311,7 @@ VT['[]'] = (args) => {
   // typedReadMaybeOob below and keep the runtime compare.
   const recvVt = valTypeOf(args[0])
   if (recvVt === VAL.TYPED) {
-    if (!typedElementKey(args[1], isPresentNumber(ctx, args[1])) &&
-        !((valTypeOf(args[1]) === VAL.NUMBER || censusMaybeUndefinedKind(args[1]) === VAL.NUMBER) && ctx.summary?.typedPropertiesAbsent())) return null
+    if (!typedElementKey(args[1], isPresentNumber(ctx, args[1])) && !typedNumberOrMissingKey(args[1])) return null
     const ctor = typedReceiverCtor(args[0])
     const elem = typedCtorElemValType(ctor)
     // With no BigInt syntax in the whole program, every accepted host typed
@@ -732,6 +731,13 @@ VT['()'] = (args) => {
   }
   return null
 }
+
+/** A typed array's key that is a Number or missing, where the program stores
+ *  no property on a typed array: it reads an element or undefined. A Boolean
+ *  beside a Number is no such key, though the merge's value type is NUMBER
+ *  (hasAmbiguousBoolMerge): `W[true]` names no element. */
+export const typedNumberOrMissingKey = (key) =>
+  (valTypeOf(key) === VAL.NUMBER && !hasAmbiguousBoolMerge(key) || censusMaybeUndefinedKind(key) === VAL.NUMBER) && ctx.summary?.typedPropertiesAbsent()
 
 /** An index's payload kind alone does not exclude a missing value's named key. */
 export function isPresentNumber(ctx, key, scope = ctx.func.current) {

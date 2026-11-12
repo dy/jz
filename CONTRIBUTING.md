@@ -1972,7 +1972,13 @@ must not classify a typed receiver's unknown key or stored value as numeric:
 the key may name a property, which stores the value unchanged. In the demand
 pass a typed array's index is a read that is no evidence (`index()`): a
 parameter read only there keeps its key as it is, one also stepped or added is
-a number by the boundary contract.
+a number by the boundary contract. That holds of a key the summary names
+nothing in but a Number and its absence: one that may be a Boolean, a null or
+a string is read as what it holds (`W[true]` names no element, and the 1 a
+converting store would keep of it names one). `Array(x)` is the same read
+(`Array(true)` is `[true]`), and so is a store into a field whose object is
+read whole: serialized, enumerated, copied, handed to the host or read by a
+computed key, by readers no walk names (`readWhole`).
 A parameter returned as itself reaches the host with its identity (`fib('1')`
 is `'1'`), so its export boxes it. A return, or the assignment an early return
 lowers to, under a guard only a number passes (`x !== x`, `x === 0.0`, a
@@ -4671,7 +4677,7 @@ readers cannot type (an optional chain's temp) carries the atom too.
 
 A binding that holds a Boolean beside another kind (`let v; if (k) v = true;
 else v = 1`, `let x = c && 1`) and some read of which may observe its
-identity (a return, a `typeof`, a strict compare, a string, a store: the
+identity (a return, a `typeof`, a strict compare, a string, a store, a key: the
 summary's numeric demand pass did not prove every read a conversion) is a
 tagged carrier (`boolTagged`, `src/kind/val-type-of.js`): every Boolean store
 lands as its atom (`boolCarrier`, `src/compile/emit/dispatch.js`: a
