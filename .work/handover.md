@@ -221,3 +221,11 @@ e27e22a82 fix-optns        the optional-chain and WABT fix alone, the same patch
 e245ca67e fix-wide         main before these fixes: the batteries' unfixed tree
 726db51f8 land-b           the landing branch: the two fixes and the unused import, an ancestor of main
 ```
+
+## Branches of the node-keys landing (2026-11-12), tips before deletion
+
+```
+e232efb25 land-nk                            the landing branch: the agent's four commits on 5b0a63dda and the review's three fixes, the tree the battery ran on; an ancestor of main
+997ea6733 worktree-agent-aceadade46685f9fd   the node-keys agent's four commits as handed back, on 0ebaad572; landed as f9021e648, f6b4caf27, d4289e960, cf79b518f
+06a4d9cca bump-subscript                     the subscript bump (landed as 360770d24); its worktree held the modules the agent's worktree linked
+```

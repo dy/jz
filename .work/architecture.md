@@ -70,7 +70,7 @@ Rules for every change here:
 | 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a landed: the table is `src/summary/num-range.js` (`{lo, hi, int, nz, nan, gap}`, no rule reads a name), every `%` rule but two reads it (left: integral-loops' symbolic hull, the summary's `keepHull`), ring `% M` equals the mask spelling (2/27), `mixed` back to 2264/1060. `src/` +49 lines net. 2b landed: the proof's environment holds table values and is the reader behind every local's lifetime range, a sum's trip bound and the widening's word test; `stampBodyRanges`, `fractionalLoopRange`, `outerDeclInits` and the widening's own `held`/`boundOf` are deleted (`src/` 59 lines fewer over the phase); the proof's bitwise, shift and mask rules are the table's. Ring "step first" 35 -> 4 at level 2 and 37 -> 29 at speed (canonical 2 and 27), dot and map `for i<=N-1` and `i!==N` vectorize, 76 gaps of 470, `mixed` 2250/1046; proof time -23% over the 94 single-file bench cases (3.8% of compile), total within noise on a loaded machine. Still scans: a countdown in an arm of `\|\|`/`&&` (`stampCountdowns`: the proof refines neither arm), and the emitter's own `intExprRange`/`forCounterRange` and `extractRefinements` (it asks about nodes the proof never walked: plan rewrites, inlined copies, version twins). 2c landed: a local's storage is one decision over the proof's lifetime value (`analyze/body-facts.js` `widenLocalTypes`: a word where every number it holds is one, or where it holds integers and every read re-applies ToInt32), a module global's the same over the whole program (`plan/scope.js` `inferModuleIntGlobals`: the proof per flow under the hypothesis that the candidates still standing are words; the fraction classifier, the integer default and the `int-global-truncation` warning are deleted), carriers enter the proof as values (a word parameter's, a call's, a sized property's, a code unit's), and the widening's hypothesis loop and integer levels are gone; `src/` 209 lines fewer, `mixed` 2234/1045, bench bytes -802 at size and -9,313 at speed (the landing tree: core 7,285, level 0 7,068, level 3 7,082, wasi 7,157, generated 68, self-compile 89; the earlier phases' batteries equal but 3c's review battery, 2 diffs -> 0). 2d landed (9bafbb6a6, eaf0ffabb, 1ee4305aa; `.work/phase-2d-int-certain.md`): `type/int-certain.js` is deleted and every reader of integrality (a local's, a parameter's, a cell's, a module global's, a schema slot's) reads the proof. The table holds an integer wherever finite as one fact (`whole`); a binding other flows write holds the meet of its writes in every flow, each walked under the hypothesis that it holds its rung (type/interval-proof.js `bindingFlows`, `flowNumbers`); a module global every write of which is an integer reads as one. `src/` and `module/` 102 lines fewer; two regressions in time (pcmconvert 1.2×, aos 2.16×) found by timing the cases whose bytes moved and fixed in the landing ("2d landed" below). Open cells: ring "step first" keeps the copy `q = p` (2 ops; needs the update sunk below `q`'s reads, a scheduling change), `reverse i--` is refused by the vectorizer's exit-shape check (optimize/vectorize/addr-model.js, phase 6), `offset idx i-1` keeps 4 and 2 ops, not analyzed |
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
-| 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | |
+| 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a (the table, no `ctx` under `src/optimize`) briefed (`.work/phase-5a-pass-table.md`), in work on the node-keys tree |
 | 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
@@ -289,7 +289,8 @@ declaration.
   wider than this site: about 35 comparisons or map keys of a node by its JSON text
   under `src`, which writes NaN, the infinities, null and undefined as `null` and -0 as
   `0`. A 152-program probe finds no other live one; briefed apart
-  (`.work/node-keys.md`, before phase 5 moves `src/optimize`).
+  (`.work/node-keys.md`, before phase 5 moves `src/optimize`). Landed 2026-11-12
+  ("Node keys landed" below): the agent's probes and a second battery found live ones.
 - `g(-0)` beside `g(0)` compiled the parameter as -0 for both (cba74ea40, levels 0, 1
   and size): -0 was an integer constant of a parameter (compile/narrow/index.js).
 - A module binding of a Number, a string or a Boolean that may be null or undefined was
@@ -427,7 +428,8 @@ Still open after these:
 - A method named `do` (class or object shorthand) does not parse, and methods named
   `if` and `for` are refused by an early error. Both before 10.8.3.
 - The node-keys class (about 35 comparisons of a node by its JSON text, and 2d's
-  `sameNode` in type/interval-proof.js): briefed (`.work/node-keys.md`), next.
+  `sameNode` in type/interval-proof.js): briefed (`.work/node-keys.md`). Landed
+  2026-11-12 ("Node keys landed" below).
 - The shared modules of the main checkout hold subscript 10.8.2 on disk under a hidden
   lockfile that says 10.8.3, so `npm install` there changes nothing and the do-while
   tests fail against them. The owner's to repair (`rm -rf node_modules/subscript
@@ -526,6 +528,92 @@ Battery: the tree of the two fixes on e245ca67e, core 7,309, level 0 7,092, leve
 passing. The landing tree is that tree and the example commit of 0ebaad572 (nine files
 under `examples/` and `test/examples.js`: the example's bytes are identical at every
 level on either host with and without the fixes) and the import: core 7,309, passing; `lint:imports` and `audit:files` clean.
+
+## Node keys landed (2026-11-12)
+
+The agent's four commits (f9021e648, f6b4caf27, d4289e960, cf79b518f; brief
+`.work/node-keys.md`) and three fixes of the review (25e4f79da, 1c8a1ce08, e232efb25),
+on 5b0a63dda.
+
+The rule: a node is one node only where every leaf is the same value. JSON text writes
+NaN, the infinities, null and undefined all as `null` and -0 as `0`; a join writes 1
+and '1' alike. `src/ast.js` `nodeEqual` (Object.is on leaves; a literal's hole head and
+null head one), `nodeKey` (the JSON text where no leaf is one JSON writes as another's,
+else the same form with the leaf written as itself) and `constText` (an IR constant by
+its value, every lane, -0 as -0) are behind every comparison and key of a node, in 47
+files, the hand-written equalities that compared leaves by `===` among them.
+`test/node-keys.js` holds every `JSON.stringify` under `src`, `module` and `jzify` to a
+stated reason (31 entries; it cannot see a `join`, a `String()` or a template: those
+were read, not checked).
+
+Three defects on `main`, each pinned there:
+- Every level: closure bodies were deduplicated by a hash and a comparison kept to the
+  JSON key's classes on purpose (test/invariants.js pinned them): `const fs = [() =>
+  Infinity, () => -Infinity]; fs[k & 1]()` answered Infinity for both, `() => 0` and
+  `() => -0` were one closure (wat/assemble/closure-table.js).
+- Every level: hoisted literal arrays were keyed by their values' join, so `[0, 1][i]`
+  and `[-0, 1][i]` shared one segment (prepare/literals.js).
+- Levels 2 and over: `for (let i = 0; i < 4; i += 2) { t[i] = k + null; t[i + 1] = k +
+  Infinity }` rolled back into one statement and `t[1]` was `k`; `k * 0` and `k * -0`
+  alike (plan/counted-loops.js `same`).
+Beside them: cse-load keyed an expression index by its first two operands and a
+literal by its text (`i + '1'` was `i + 1`); the vector lifts' Infinity guard matched
+`-inf`.
+
+The review. The integrator's battery of the rule, written before the change was read
+(14 pairs of leaves a text equates × 30 places a compiler shares or deduplicates code,
+378 programs at six levels): 25 differing on `main`, 6 with the agent's four commits,
+0 on the landing tree; the 6 were one defect of another class (the conditional
+below). The 152-program probe of the first find: 0. Bench bytes by hash: identical on
+all 105 cases at size and speed, so nothing to time.
+
+Found in the review, on `main`, fixed with tests:
+- Every level: `c ? -0 : 1` was the negated bit of the condition and `c ? 1 : -0` the
+  bit, which has no -0: `1 / (k > -1 ? -0 : 1)` answered Infinity (emit/logical.js: the
+  fold compared the literal with `=== 0`). `x - -0` was x, -0 for x = -0 where JS
+  answers +0 (emit/arithmetic.js; found by the agent). A battery of the rule (a literal
+  0 or -0 in 38 operations × 28 forms of the zero, the operand and the reader, 1,064
+  programs at six levels): 48 differing on `main`, 24 the conditional and 24 the subtraction, 0 after.
+- Two specifiers that spell one prefix (`./a-b` and `./a_b`, `./a/b.js` and
+  `./a_b.js`) were one module's names: the first module's export answered for both, and
+  a module-level binding of one name in each was refused as a compiler internal
+  (prepare/handlers.js `prepareModule`; found by the agent).
+- `nodeKey` wrote a leaf that is an object, a function or a symbol by `String`, every
+  object one leaf where `nodeEqual` tells them apart by identity (as watr's
+  `structuralKey` did before). It now refuses such a leaf: a node that holds one fails
+  its compile instead of sharing a key. It threw nowhere in the battery below, which is
+  the census: no node that reaches a key in the suite, test262, the bench corpus or the
+  compiler's own source holds one.
+
+Open, from the agent, reproduced and not fixed:
+- `JSON.stringify(o, [null, 1, 'a'])` keeps a key `"null"` (module/json.js: the
+  replacer's list is read by `String`).
+- The setters of getter-only `$a` and `_a` both report `$a` (module/core/error-object.js:
+  a thrower's name collapses punctuation; a message's text only).
+
+Not reached by any probe or corpus (the agent's instrumented copy; reasons from the
+code, unverified): the store passes' address keys (sink-stores, forward-store,
+early-stores, carry-stores, forward-hops), the vectorizer's index keys (alias, ramp,
+stencil, counter-run, lift, tone-map), loop-versioning's forms, twin-locals,
+integral-loops' hull tests, guards, and pair-tests, hoist-splats, dot-slp and
+share-quotients, whose passes the probes did not make fire.
+
+Compile time (the agent's, not rerun: CPU over 95 bench cases at level 2 and speed,
+base and new run at the same time each round on a loaded machine), base against new:
+568.9 s and 560.2 s, 537.8 s and 537.4 s, 457.2 s and 458.8 s. Every key and
+comparison together costs 109 ms where the JSON text cost 375 ms, of 565 s of compile
+CPU: the equality at integral-loops.js:1322 no longer writes two texts (0.5 ms against
+281.8 ms), and `idxKey` is the costliest key (123,749 calls: 59.6 ms against 16.5 ms).
+
+Battery on the landing tree (e232efb25): `lint:imports` and `audit:files` clean; bench
+bytes identical by hash on 105 cases at size and speed against 5b0a63dda; core 7,317,
+level 0 7,100, level 3 7,114, wasi 7,189, generated 68, test262 4,120 and 0 failing,
+self-compile 89, all passing; the integration suite 224 (1 skipped), 76, 76 and 79 at
+the default, level 0, level 3 and wasi.
+
+The integration suite is a step of a landing from here: CI runs it on each of the four
+legs and the integrator's battery did not (it ran green on CI's legs for the landings
+before; no failure was missed, the step was).
 
 ## Decisions taken
 
