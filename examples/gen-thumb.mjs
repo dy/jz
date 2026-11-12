@@ -42,6 +42,9 @@ if (name === 'sandpile' && exports.seed) exports.seed()
 if (name === 'bz' && exports.seed) { exports.clear?.(); exports.seed(0, 0.5, 0.5) }
 if (name === 'blackhole' && exports.setSeed) exports.setSeed(2.1, 7.7, 4.4)
 if (name === 'ocean' && exports.setWind) exports.setWind(85, -45)
+if (name === 'field-lines' && exports.charges)        // twelve charges of 16 lines, signs alternating: every line runs from a + to a −
+  exports.charges().set([[.1,.2],[.3,.15],[.55,.22],[.8,.18],[.92,.4],[.7,.5],[.45,.55],[.2,.5],[.12,.8],[.35,.85],[.6,.8],[.85,.78]]
+    .flatMap(([x, y], i) => [x, y, i % 2 ? 16 : -16]))
 if (name === 'rule30' && exports.seed) exports.seed()    // single-1 center row → the light-cone triangle
 if (name === 'dla' && exports.seed) exports.seed()
 if (name === 'wireworld' && exports.seed) exports.seed()

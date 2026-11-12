@@ -664,6 +664,8 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
 //   bg       page background behind the canvas (default '#000'; light demos pass e.g. '#eee')
 //   cursor   canvas cursor (default 'crosshair')
 //   palette  show the colormap button (default true)
+//   visit    (engine, t, demo) => {}   not run here: what bench-pages.mjs has a visitor do before
+//            each frame, on a page that draws only what a visitor changes
 export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm, bg = '#000', cursor = 'crosshair', palette = true, randomize }) => {
   document.title = `${titleOf(name)} - jz`
 

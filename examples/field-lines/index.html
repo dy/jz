@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Field Lines - jz</title>
+<meta name="description" content="The electric field lines of twelve charges, each pixel placed on the stream function. Drag a charge, click it to flip its sign. Plain JavaScript compiled to WebAssembly with jz." />
+<link rel="canonical" href="https://jz.js.org/examples/field-lines/" />
+<meta property="og:title" content="Field Lines - jz" />
+<meta property="og:description" content="The electric field lines of twelve charges, each pixel placed on the stream function. Drag a charge, click it to flip its sign. Plain JavaScript compiled to WebAssembly with jz." />
+<meta property="og:url" content="https://jz.js.org/examples/field-lines/" />
+<meta property="og:image" content="https://jz.js.org/examples/thumbs/field-lines.webp" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="icon" href="../../jz.svg" type="image/svg+xml" />
+</head>
+<body>
+<script type="module">
+import { runDemo } from "../lib/jzdemo.js"
+
+// The charges live in the engine: x, y (fractions of the frame) and a signed line count each,
+// rolled when it first sizes. A swap of engine (JS ⇄ jz) carries the shown cast over.
+// The engine draws only a cast that changed, a draft at once and the screen's own pixels once it
+// rests, so the frame is the display's: frame() costs nothing while the picture stands.
+let shown = null
+const demo = runDemo({
+  name: "field-lines",
+  hint: "the electric field lines of twelve charges · drag a charge · click it to flip its sign",
+  size: { dpr: 2, budget: 8000000 },
+  cursor: "default",
+  load: (e) => { if (shown && shown !== e) e.charges().set(shown.charges()); shown = e },
+  frame: (e) => { e.frame() },
+  // bench-pages.mjs: this page works only under a visitor's hand, here one charge dragged round a circle
+  visit: (e, t) => { const c = e.charges(); c[0] = 0.5 + 0.3 * Math.cos(t); c[1] = 0.5 + 0.3 * Math.sin(t) },
+})
+
+const cv = demo.cv
+const GRAB = 18, SLOP = 4   // px: a charge's reach; how far a press may wander and stay a click
+const at = (e) => [e.offsetX / cv.clientWidth, e.offsetY / cv.clientHeight]
+const clamp = (v) => v < 0 ? 0 : v > 1 ? 1 : v
+
+// The charge within reach of (x, y), as its offset into charges(), or -1.
+const pick = (x, y) => {
+  const c = demo.engine.charges(), w = cv.clientWidth, h = cv.clientHeight
+  let best = -1, min = GRAB * GRAB
+  for (let i = 0; i < c.length; i += 3) {
+    const d = ((c[i] - x) * w) ** 2 + ((c[i + 1] - y) * h) ** 2
+    if (c[i + 2] && d < min) { min = d; best = i }
+  }
+  return best
+}
+
+// held: the pressed charge, where the press began, and the charge's offset from the pointer.
+let held = -1, x0 = 0, y0 = 0, dx = 0, dy = 0, dragged = false
+cv.addEventListener("pointerdown", (e) => {
+  if (!demo.engine) return
+  const [x, y] = at(e)
+  held = pick(x, y)
+  if (held < 0) return
+  const c = demo.engine.charges()
+  x0 = e.offsetX; y0 = e.offsetY; dx = c[held] - x; dy = c[held + 1] - y; dragged = false
+  try { cv.setPointerCapture(e.pointerId) } catch {}
+})
+cv.addEventListener("pointermove", (e) => {
+  if (!demo.engine) return
+  const [x, y] = at(e)
+  if (held < 0) { cv.style.cursor = pick(x, y) < 0 ? "" : "grab"; return }
+  if (!dragged && Math.hypot(e.offsetX - x0, e.offsetY - y0) < SLOP) return
+  dragged = true; cv.style.cursor = "grabbing"
+  const c = demo.engine.charges()
+  c[held] = clamp(x + dx); c[held + 1] = clamp(y + dy)
+})
+const release = (flip) => {
+  if (held >= 0 && flip && !dragged && demo.engine) { const c = demo.engine.charges(); c[held + 2] = -c[held + 2] }
+  if (held >= 0) cv.style.cursor = "grab"
+  held = -1
+}
+cv.addEventListener("pointerup", (e) => { release(true); try { cv.releasePointerCapture(e.pointerId) } catch {} })
+cv.addEventListener("pointercancel", () => release(false))
+</script>
+</body>
+</html>

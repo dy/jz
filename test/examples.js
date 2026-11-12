@@ -724,6 +724,71 @@ test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', (
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'domain-color mirror lift bit-exact vs scalar (1536 px)');
 });
 
+// Field lines of line charges are the level curves of the stream function ψ = Σ nₖ·arg(z − zₖ), the
+// imaginary part of the complex potential Σ nₖ·ln(z − zₖ): Feynman Lectures II §7–2, "Two-dimensional
+// fields; functions of the complex variable", Eq. 7.14, F(z) = ln z "yields the field for a line
+// charge" (https://www.feynmanlectures.caltech.edu/II_07.html). The kernel takes no arctangent: it
+// builds e^{iψ} as a product of unit vectors, the powers shared across the binary digits of the line
+// counts. Held here to the textbook sum, arctangent by arctangent, on counts of one and several set
+// bits and both signs. A line's half-width h is 1/1500 of the frame's mean side, 0.65 px at least,
+// anti-aliased over one more pixel: a pixel within ¼ px of ψ ≡ 0 (mod 2π) is inked, one beyond
+// h + 0.95 px is black. The kernel draws a cast once. A frame of at most 360000 px is whole after one
+// call; a larger one is first a draft of square blocks, then, the cast held still, redrawn row by
+// row over later calls: the second frame here is one, with a line wider than the least. The draft is
+// the picture through larger pixels, so it holds the same ink.
+test('example: field-lines draws the level curves of ψ = Σ n·arg(z − zₖ)', async () => {
+    const url = new URL('../examples/field-lines/field-lines.js', import.meta.url);
+    const src = fs.readFileSync(url, 'utf8');
+    const TAU = 2 * Math.PI;
+    const cast = [[.2, .3, 5], [.7, .25, -12], [.45, .7, 24], [.85, .8, -3], [.15, .85, 7], [.55, .1, 16]];
+    const engines = [jz(src, { ...OPT }).exports, await import(url.href)];
+    for (const [W, H, block] of [[200, 150, 1], [1200, 900, 2]]) {
+        const side = Math.sqrt(W * H), h = Math.max(0.65, side / 1500), mark = Math.max(5, side / 85) + 4;
+        // each engine's first frame, and its picture once further frames change nothing
+        const [[first, px], [firstJs, pxJs]] = engines.map((e) => {
+            const out = e.resize(W, H), c = e.charges();
+            c.fill(0); c.set(cast.flat());
+            e.frame();
+            const first = Uint32Array.from(out);
+            for (let i = 0; i < 16; i++) e.frame();
+            const done = Uint32Array.from(out);
+            e.frame();
+            ok(done.every((v, i) => v === out[i]), `${W}×${H}: the picture stands once drawn`);
+            return [first, done];
+        });
+        let on = 0, off = 0, wrong = 0, blocks = 0, split = 0, redrawn = 0, drafted = 0, inked = 0;
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+            let psi = 0, ex = 0, ey = 0, near = Infinity;
+            for (const [fx, fy, n] of cast) {
+                const dx = x - (fx * W - 0.5), dy = y - (fy * H - 0.5), r2 = dx * dx + dy * dy;
+                psi += n * Math.atan2(dy, dx); ex += n * dx / r2; ey += n * dy / r2;
+                near = Math.min(near, r2);
+            }
+            const E = Math.hypot(ex, ey), at = y * W + x;
+            if (near < mark * mark) continue;             // a charge's mark
+            if (block > 1 && x % block === 0 && y % block === 0) {
+                blocks++;
+                if (first[at] !== first[at + 1] || first[at] !== first[at + W] || first[at] !== first[at + W + 1]) split++;
+            }
+            if (first[at] !== px[at]) redrawn++;
+            drafted += first[at] & 255; inked += px[at] & 255;
+            if (TAU / E < 6 * h / 0.65) continue;         // lines closer than six of their widths, which start to merge
+            const dist = Math.abs(psi - TAU * Math.round(psi / TAU)) / E, ink = px[at] & 255;
+            if (dist < 0.25) { on++; if (ink < 200) wrong++; }
+            else if (dist > h + 0.95) { off++; if (ink !== 0) wrong++; }
+        }
+        ok(on > 300 && off > 10000, `${W}×${H}: the frame holds lines and gaps to judge (${on} px on a line, ${off} px off)`);
+        is(wrong, 0, `${W}×${H}: every pixel on a level curve is inked, every pixel off them is black`);
+        if (block > 1) {
+            ok(blocks > 100000 && split === 0, `${W}×${H}: the first frame is a draft, one value per ${block}×${block} block (${split} of ${blocks} split)`);
+            ok(Math.abs(drafted / inked - 1) < 0.02, `${W}×${H}: a line inks its share of a block, the draft holds the picture's ink (${(drafted / inked).toFixed(3)} of it)`);
+            ok(redrawn > 10000, `${W}×${H}: later frames redraw it pixel by pixel (${redrawn} px changed)`);
+        } else is(redrawn, 0, `${W}×${H}: the first frame is the picture`);
+        is(first.filter((v, i) => v !== firstJs[i]).length + px.filter((v, i) => v !== pxJs[i]).length, 0,
+            `${W}×${H}: jz draws what the same source draws as JS, draft and picture`);
+    }
+});
+
 test('example: rfft cepstrum map vectorizes via convert-splat', () => {
     const src = fs.readFileSync(new URL('../examples/rfft/rfft.js', import.meta.url), 'utf8');
     ok((compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'rfft gains f64x2 (cep[i]=x[i]/N maps once convert(N) splats)');

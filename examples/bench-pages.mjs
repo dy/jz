@@ -4,7 +4,9 @@
 // The canvas box is a fixed 1280×720 CSS viewport at devicePixelRatio 1, sized
 // by runDemo's own rule, so each kernel works at the resolution a desktop
 // visitor gets. Pointer input stays idle; the idle drivers a page runs on its
-// own (tours, auto-perturbs) run as they do on the site.
+// own (tours, auto-perturbs) run as they do on the site. A page that draws only
+// what a visitor changes names that change, `visit(engine, t, demo)` in its
+// config, and it runs before every frame: an untouched frame there is no work.
 //
 //   node examples/bench-pages.mjs [name…] [--opt='{"pass":false}']
 //
@@ -101,7 +103,7 @@ const timeFrames = (engine, { config, demo }, [W, H], plan = null) => {
   config.load?.(engine, demo)
   engine.setTheme?.(0, 0, 0, 235, 235, 235)
   let t = 0
-  const step = () => { t += 1 / 60; demo.t = t; config.frame(engine, t, demo) }
+  const step = () => { t += 1 / 60; demo.t = t; config.visit?.(engine, t, demo); config.frame(engine, t, demo) }
   // warm: compile tiers and let the simulation leave its first-frame transient
   const w0 = performance.now()
   let warm = 0
