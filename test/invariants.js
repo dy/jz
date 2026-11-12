@@ -794,10 +794,11 @@ test('invariant: static-data parts accumulator matches string-form bytes and off
 // ============================================================================
 // The dedup key moved from JSON.stringify of each closure's renamed tree
 // (measured 810.76 MB of transient churn on the jz×jz region-live self-compile)
-// to a rename-invariant rolling hash + exact alpha-aware comparator. Grouping
-// must be bit-compatible with the old key, including its accidental JSON-null
-// equivalence class: undefined/null/NaN/±Infinity all serialized to 'null'.
-test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and order counterexamples exactly', async () => {
+// to a rename-invariant rolling hash + exact alpha-aware comparator. Two bodies
+// are one where every leaf is the same value: the old key wrote undefined, null,
+// NaN and the infinities all as 'null' and -0 as 0, and closures returning
+// Infinity and -Infinity were one closure (test/node-keys.js).
+test('invariant: closure dedup groups alpha-duplicates, every leaf value apart, and order counterexamples exactly', async () => {
   const { dedupClosureBodies } = await import('../src/wat/assemble.js')
   const { ctx } = await import('../src/ctx.js')
   const savedTable = ctx.closure.table
@@ -813,12 +814,13 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
     const dupA = ['func', '$c1', ['param', '$x', 'f64'], ['result', 'f64'], ['f64.add', ['local.get', '$x'], ['f64.const', 1]]]
     const dupB = ['func', '$c2', ['param', '$y', 'f64'], ['result', 'f64'], ['f64.add', ['local.get', '$y'], ['f64.const', 1]]]
     is(run([dupA, dupB]), '$c1', 'alpha-renamed duplicate collapses to canonical')
-    // JSON-null class: NaN and null in the same slot stay ONE group (old-key parity)
+    // the leaves JSON writes alike, each its own value: NaN and null two groups, NaN and NaN one
     const nanF = mk('c3', ['f64.const', NaN])
     const nulF = mk('c4', ['f64.const', null])
-    is(run([nanF, nulF]), '$c3', 'NaN/null slots share the JSON-null equivalence class')
+    is(run([nanF, nulF]), '$c3,$c4', 'NaN and null slots stay apart')
+    is(run([mk('nan1', ['f64.const', NaN]), mk('nan2', ['f64.const', 0 / 0])]), '$nan1', 'every NaN is one value')
     is(run([NaN, null, undefined, Infinity, -Infinity].map((n, i) => mk(`sentinel${i}`, ['f64.const', n]))),
-      '$sentinel0', 'every JSON-null sentinel shares one equivalence class')
+      '$sentinel0,$sentinel1,$sentinel2,$sentinel3,$sentinel4', 'each leaf JSON writes as null is its own value')
     is(run([mk('bool', ['f64.const', false]), mk('zero', ['f64.const', 0])]),
       '$bool,$zero', 'boolean and numeric leaves stay distinct')
     // different local correspondence order must NOT dedup
@@ -833,8 +835,8 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
       2 ** 32, 2 ** 32 + 1, Number.MAX_SAFE_INTEGER, Number.MAX_VALUE]
     for (const values of [numbers, numbers, [3, 2, 3], numbers]) {
       const funcs = values.flatMap((n, i) => [mk(`n${i}`, ['f64.const', n]), mk(`copy${i}`, ['f64.const', n])])
-      const seen = new Set()
-      const expected = values.flatMap((n, i) => seen.has(n) ? [] : (seen.add(n), [`$n${i}`])).join(',')
+      const seen = []
+      const expected = values.flatMap((n, i) => seen.some(m => Object.is(m, n)) ? [] : (seen.push(n), [`$n${i}`])).join(',')
       is(run(funcs), expected, 'numeric hashes preserve signed zero, fractions, full-width integers and finite extremes')
     }
     is(run([]), '', 'an empty closure set stays empty')
@@ -852,7 +854,7 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
       '$a,$different', 'a different repeated local stays distinct on the next invocation')
     for (const value of [0, -0, 0.1, -0.1, Number.MIN_VALUE, Number.MAX_VALUE, 2 ** 32, 2 ** 53])
       is(run([mk('n1', ['f64.const', value]), mk('n2', ['f64.const', value])]), '$n1', `same numeric bits: ${value}`)
-    is(run([mk('z1', ['f64.const', 0]), mk('z2', ['f64.const', -0])]), '$z1', 'zero signs retain the existing grouping')
+    is(run([mk('z1', ['f64.const', 0]), mk('z2', ['f64.const', -0])]), '$z1,$z2', 'zero signs stay apart')
     is(run([mk('lo', ['f64.const', 0.1]), mk('hi', ['f64.const', 0.10000000000000002])]), '$lo,$hi', 'adjacent doubles stay distinct')
     const call = ['call', '$b'], untouched = ['call', '$elsewhere']
     is(run([mk('a', ['f64.const', 1]), mk('b', ['f64.const', 1]), mk('use', ['f64.add', call, untouched])]),
