@@ -7,7 +7,7 @@
  */
 
 import { constNumExpr } from '../static.js'
-import { walkAst } from '../ast.js'
+import { walkAst, nodeKey } from '../ast.js'
 import { includeForStringValue } from '../autoload.js'
 import { ctx } from '../ctx.js'
 import { MUTATING_ARRAY_METHODS, stringValue } from './const-fold.js'
@@ -144,7 +144,7 @@ export function hoistIndexedConstLiterals(root) {
     if (!elems.length) return
     const vals = elems.map(numLitVal)
     if (vals.some(v => v === null)) return
-    const key = vals.join(',')
+    const key = nodeKey(vals)
     let name = lits.get(key)
     if (name == null) {
       name = `__salit${lits.size}`

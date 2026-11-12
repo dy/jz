@@ -151,3 +151,12 @@ test('node keys: arms differing in a zero\'s sign choose between the two zeros',
   agree(src, [[-0], [0], [3]], levels(0, 2, 'speed'))
   ok(/\(select\s+\(f64\.const 0\)\s+\(f64\.const -0\)/.test(wat(src, { optimize: 2 })), 'the choice is between 0 and -0')
 })
+
+// Hoisted constant arrays shared a segment by the text of their values, written by
+// join, -0 as 0 (prepare/literals.js).
+test('node keys: [0, 1] and [-0, 1] are two arrays', () => {
+  for (const src of [
+    `export let f = (i) => 1 / [0, 1][i & 1] + 10 / [-0, 1][i & 1]`,
+    `export let f = (i) => 1 / [-0, 1][i & 1] + 10 / [0, 1][i & 1]`,
+  ]) agree(src, [[0], [1]], levels(0, 2, 'speed'))
+})
