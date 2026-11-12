@@ -249,11 +249,11 @@ export const logicalOps = {
     // `cond ? 1 : 0` is the condition bit itself; `cond ? 0 : 1` its negation. `cond`
     // (truthyIR) is already canonical 0/1, so the select + two const arms collapse to
     // the bit. (Both arms are literals here, so dropping their emitted IR is side-effect
-    // free.) Mirrors what `+(x > 0)` already produces.
+    // free.) Mirrors what `+(x > 0)` already produces. The zero is +0: the bit has no -0.
     if (isLit(vb) && isLit(vc)) {
       const lb = litVal(vb), lc = litVal(vc)
-      if (lb === 1 && lc === 0) return typed(cond, 'i32')
-      if (lb === 0 && lc === 1) return typed(['i32.eqz', cond], 'i32')
+      if (lb === 1 && Object.is(lc, 0)) return typed(cond, 'i32')
+      if (Object.is(lb, 0) && lc === 1) return typed(['i32.eqz', cond], 'i32')
     }
     // L: Use WASM select for pure ternaries — branchless, smaller bytecode
     if (vb.type === 'i32' && vc.type === 'i32') {

@@ -722,7 +722,8 @@ export const arithmeticOps = {
     if (cancelled != null) return emitNum(cancelled)
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
     if (_f) return _f
-    if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
+    // `x - 0` is x; `x - -0` is x for an integer x alone (a float -0 gives +0, as `+` above)
+    if (isLit(vb) && (Object.is(litVal(vb), 0) || litVal(vb) === 0 && isI32Num(va))) return toNumF64(a, va)
     // Unsigned uint32 operand: JS `-` is float (can go negative / exceed i32),
     // so avoid the wrapping i32.sub fast-path. See `+` above.
     if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)

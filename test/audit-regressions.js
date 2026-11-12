@@ -2209,3 +2209,34 @@ test('audit: a Boolean beside a binding\'s numbers reaches a reader that does no
   // serialized field that is undefined is left out, a null one written.
   for (const V of ['undefined', 'null']) for (const R of readers.slice(1, 4)) check(holders.local(V, R))
 })
+
+// A literal -0 is not +0 where a fold reads a zero. `c ? -0 : 1` was the negated bit of
+// the condition and `c ? 1 : -0` the bit, which has no -0 (emit/logical.js); `x - -0` was
+// x, which is -0 for x = -0 where JS answers +0 (emit/arithmetic.js).
+test('audit: a fold of a literal zero keeps the zero its sign', () => {
+  for (const src of [
+    `export let f = (k) => 1 / (k > -1 ? -0 : 1)`,
+    `export let f = (k) => 1 / (k > -1 ? 1 : -0)`,
+    `export let f = (k) => { const v = k > -1 ? -0 : 1; return Object.is(v, -0) ? 2 : v }`,
+    `const g = (k) => k > -1 ? -0 : 1; export let f = (k) => 1 / g(k)`,
+    `export let f = (k) => 1 / Math.min(k > -1 ? -0 : 1, 5)`,
+    `export let f = (k) => 1 / (k - -0)`,
+    `export let f = (k) => 1 / (k - 0)`,
+    `export let f = (k) => 1 / ((k | 0) - -0)`,
+    `export let f = (k) => 1 / (k * 0 - -0)`,
+    `export let f = (k) => 1 / (k + -0)`,
+    `export let f = (k) => 1 / (k + 0)`,
+  ]) {
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [-2, -0, 0, 3]) ok(Object.is(got.f(k), host.f(k)), `${src} f(${Object.is(k, -0) ? '-0' : k}) at ${optimize}: ${got.f(k)}, Node ${host.f(k)}`)
+    }
+  }
+  // (the folds stand for +0: the bit and its negation, no select)
+  for (const src of [`export let f = (k) => k > 1 ? 1 : 0`, `export let f = (k) => k > 1 ? 0 : 1`])
+  {
+    const body = funcWat(compile(src, { optimize: false, wat: true }), 'f')
+    ok(/f64\.gt/.test(body) && !/select|\(if/.test(body), `${src} is the condition's bit`)
+  }
+})
