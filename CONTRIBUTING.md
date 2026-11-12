@@ -1473,7 +1473,11 @@ reads the array, run twice (prepare/split-bindings.js, the plan's nested pass):
 under `Array.isArray` with the array as a binding of its own, whose reads the
 summary types, and as written otherwise; the copy's own declarations are
 bindings of their own, and plan/alias.js keeps the guarded declaration (not an
-alias). A number the loops after a declaration index by or divide by, not
+alias). A binding that is an array wherever it holds a value (an element of an
+array of arrays, a `find`'s result: the mix is with null or undefined alone)
+is not versioned: the guard's miss is the missing value's TypeError, which the
+statements as written throw at the same read, and a copy only doubled the
+loops (`mixes`). A number the loops after a declaration index by or divide by, not
 integral by its syntax (a bag's write index, a ratio a division made), is
 versioned the same way: the guard tests `Object.is(x, x | 0)` with `x >= 0`
 for an index (`x > 0` for a divisor, `x < arr.length` for the array it

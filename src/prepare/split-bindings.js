@@ -23,7 +23,7 @@
  */
 import { T, noted, copyNode } from '../ast.js'
 import { ctx } from '../ctx.js'
-import { tagsOf, paramOf, UNKNOWN, NUMBER as NUMBER_KIND, K, kind as kindOfTag, isNullable as isNullableKind } from '../summary/kind.js'
+import { tagsOf, paramOf, UNKNOWN, NUMBER as NUMBER_KIND, K, kind as kindOfTag, isNullable as isNullableKind, core as presentKind } from '../summary/kind.js'
 import { nodeSize } from '../compile/plan/common.js'
 const ARRAY_KIND = kindOfTag(K.ARRAY)
 const MAX_VERSION_SIZE = 2400   // nodes a version copies at most (three of plan/integral-loops.js's loop budget)
@@ -197,7 +197,7 @@ export function splitReassigned(fn, nested = false) {
     walk(loop)
     const out = []
     // a binding this pass declared continues one the summary knows
-    for (const name of reads) if (!writes.has(name) && !captured.has(name) && own.has(name) && view?.isMixed(roots.get(name) ?? name)) out.push(name)
+    for (const name of reads) if (!writes.has(name) && !captured.has(name) && own.has(name) && mixes(name)) out.push(name)
     return out
   }
   // the names declared anywhere in a statement, closures aside
@@ -233,6 +233,16 @@ export function splitReassigned(fn, nested = false) {
     for (const set of [index, divisor]) for (let grown = true; grown;) { grown = false; for (const name of set) { const init = inits.get(name); if (init == null || straight.has(name) && typeof init !== 'string' && !integral(init, inits)) continue; const before = set.size; mention(init, set); if (set.size !== before) grown = true } }
     return { index, divisor }
   }
+  // A name that holds an array or a value of another kind: the guard's arm reads it as
+  // the array. One that is an array wherever it holds a value (an element of an array of
+  // arrays, a `find`'s result) is no mix to guard: the miss is the missing value's
+  // TypeError alone, which the statements as written throw at the same read.
+  const mixes = (name) => {
+    const root = roots.get(name) ?? name
+    if (!view?.isMixed(root)) return false
+    const k = view.kindOf(root)
+    return k == null || tagsOf(presentKind(k)) !== tagsOf(ARRAY_KIND)
+  }
   // a name the summary proves an array that is present
   const isArrayName = (name) => { const k = view.kindOf(name); return k != null && tagsOf(k) === tagsOf(ARRAY_KIND) && !isNullableKind(k) }
   // a value integral by its syntax needs no guard: a literal, a bit operation, a length, a rounding
@@ -260,7 +270,7 @@ export function splitReassigned(fn, nested = false) {
     if (!rest.some(hasLoop)) return null
     const restNode = [';', ...rest], assigned = assignedIn(restNode)
     const picked = [], cursors = []
-    for (const name of candidates ?? declaredBy(list[k])) if (!assigned.has(name) && view.isMixed(roots.get(name) ?? name) && elementReceivers(restNode).includes(name)) picked.push(name)
+    for (const name of candidates ?? declaredBy(list[k])) if (!assigned.has(name) && mixes(name) && elementReceivers(restNode).includes(name)) picked.push(name)
     // A number the loops index or divide by, declared before this point and
     // not integral by its syntax (a bag's write index, a ratio a division
     // made): the arm runs it as an int32 the guard proves, non-negative as an

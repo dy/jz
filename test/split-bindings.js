@@ -12,7 +12,7 @@ import { splitReassigned } from '../src/prepare/split-bindings.js'
 import { scanReassignedTopLevel, writtenNames } from '../src/prepare/ident-purity.js'
 import { parse } from '../src/parse.js'
 import { belowOpt, levels } from './_matrix.js'
-import { foldWords, oracle, run, wat, compile } from './util.js'
+import { foldWords, funcWat, oracle, run, wat, compile } from './util.js'
 import { parse as probeParse, walk as probeWalk } from '../scripts/wat-probe.mjs'
 
 const ARGS = [[1, 3], [5, 3], [-2, 3], [0.5, -7], [1e3, 0]]
@@ -374,4 +374,41 @@ test('split bindings: a default inside a version arm splits, its later reads ren
   })
   ok(perSample > 0, 'the per-sample loop is there')
   is(normalized, 0, 'its sum adds raw')
+})
+
+// A guard by Array.isArray reads a binding that mixes an array with a number or a
+// string apart, its loops copied behind the guard. One that is an array wherever it
+// holds a value (an element of an array of arrays, a find's or a get's result) has
+// nothing to read apart: the guard's miss is the missing value's TypeError, which
+// the statements as written throw at the same read. Since `Array.isArray` asks the
+// value where its operand may be missing the guard no longer folded, and every such
+// loop was emitted twice.
+test('split bindings: an array that may be missing is read as written, in one loop', () => {
+  const src = `const rows = [[1, 2, 3], [4, 5, 6, 7], [8]]
+    export let f = (k) => { const a = rows[k]; let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+    export let g = (k) => { const a = rows.find(r => r.length === k); const out = []; for (let i = 0; i < a.length; i++) out.push(a[i] + 1); return out.length }
+    export let h = (k) => { const a = k < 3 ? rows[k] : 5; let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }`
+  const js = oracle(src)
+  const threw = (fn) => { try { fn() } catch { return true } return false }
+  for (const optimize of levels(0, 2, 'size', 'speed')) {
+    const e = run(src, { optimize })
+    for (const k of [0, 1, 2]) is(e.f(k), js.f(k), `O${optimize}: f(${k})`)
+    for (const k of [1, 3, 4]) is(e.g(k), js.g(k), `O${optimize}: g(${k})`)
+    for (const k of [0, 2, 3]) is(e.h(k), js.h(k), `O${optimize}: h(${k}), an array or a number`)
+    ok(threw(() => e.f(5)), `O${optimize}: a row past the end has no length`)
+    ok(threw(() => e.g(9)), `O${optimize}: a row not found has no length`)
+  }
+  if (belowOpt(2)) return
+  // every eighth document copies the one before it, an element that may be missing:
+  // the pass copies no loop for it (as many loops as with the bindings left whole)
+  const docs = `export let f = (n) => { const docs = []; let s = 0
+      for (let d = 0; d < n; d++) { const doc = []
+        if (d % 8 === 7) { const prev = docs[d - 1]; for (let k = 0; k < prev.length; k++) doc.push(prev[k] + 1) }
+        else { for (let k = 0; k < 3; k++) doc.push(k + d) }
+        docs.push(doc) }
+      for (let d = 0; d < n; d++) s += docs[d].length
+      return s }`
+  is(run(docs).f(20), oracle(docs).f(20), 'the documents answer')
+  const loops = (optimize) => (funcWat(wat(docs, { optimize }), 'f').match(/\(loop\b/g) || []).length
+  for (const level of levels(2, 'size')) is(loops(level), loops({ level, splitBindings: false }), `O${level}: no loop is copied for a row that may be missing`)
 })
