@@ -1,8 +1,8 @@
-import { cloneNode, walkAst } from '../../ast.js'
+import { cloneNode, walkAst, nodeEqual } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet } from './addr-model.js'
 import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { liftCtx, liftFail, vecState } from './lift.js'
-import { isArr } from './node-utils.js'
+import { isArr, f64PosInf } from './node-utils.js'
 import { simdBound } from './scaffold.js'
 
 // ---- Mixed-lane tone-map (tryToneMap, experimental) ------------------------
@@ -50,7 +50,7 @@ function matchInfCanonTone(sel) {
   if (!isArr(sel) || sel[0] !== 'select' || sel.length !== 4) return null
   if (!(isI32Const(sel[2]) && constNum(sel[2]) === 0)) return null
   const c = sel[3]
-  if (!(isArr(c) && c[0] === 'f64.ne' && isArr(c[2]) && c[2][0] === 'f64.const' && /inf/i.test(String(c[2][1])))) return null
+  if (!(isArr(c) && c[0] === 'f64.ne' && f64PosInf(c[2]))) return null
   const tr = matchTruncF64(sel[1])
   return tr?.wrap && tr.signed ? tr.inner : null
 }
@@ -469,7 +469,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       const elseStore = elseLast && isArr(elseLast) && STORE_OPS[elseLast[0]] && elseLast.length === 3
       // (a) Conditional STORE — both arms (or then-only) end in a store to the same address.
       if (thenStore && (elseStore || !hasElse)) {
-        if (elseStore && JSON.stringify(thenLast[1]) !== JSON.stringify(elseLast[1])) { liftFail(ctx, 'tonemap: arms store to different addresses'); return }
+        if (elseStore && !nodeEqual(thenLast[1], elseLast[1])) { liftFail(ctx, 'tonemap: arms store to different addresses'); return }
         // The test first, as the scalar loop runs it; its low two i32 lanes are the pixels'.
         const m = liftMask(stmt[1], 'i32'); if (ctx.fail) return
         const mt = freshMask(), lanes = ['i64x2.extract_lane', 0, ['local.get', mt]]

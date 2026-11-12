@@ -2,7 +2,7 @@
  * Compile-time static evaluation — literals, property keys, schema ids.
  * @module static
  */
-import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned } from './ast.js'
+import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned, nodeKey } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { STRING, K, tagOf, paramOf, typedAux, UNKNOWN } from './summary/kind.js'
@@ -837,7 +837,7 @@ export function objLiteralSchemaId(expr) {
 export const inplaceKey = (arrName, lit) => {
   const props = lit.slice(1)
   const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ',' ? props[0].slice(1) : props
-  return `${arrName}|${JSON.stringify(flat)}`
+  return `${arrName}|${nodeKey(flat)}`
 }
 
 /** K schema-ordered field-value AST nodes of an object literal `{S}` — the

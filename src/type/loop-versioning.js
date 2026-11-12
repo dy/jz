@@ -10,7 +10,7 @@
  *
  * @module type/loop-versioning
  */
-import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs } from '../ast.js'
+import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs, nodeKey, nodeEqual } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { isNullable, core, NUMBER } from '../summary/kind.js'
 import { repOf, repOfGlobal, intCertainOf } from '../reps.js'
@@ -164,8 +164,7 @@ export function affineIdxOfIV(idx, iv, body, env) {
   // cancellation cannot recover low bits lost by an earlier wide product.
   const exact = r => Number.isSafeInteger(Math.abs(r.bConst) + 2147483648 *
     (Math.abs(r.a) + r.slots.reduce((sum, t) => sum + Math.abs(t.k), 0))) ? r : null
-  const slotEq = (p, q) => p === q || (typeof p !== 'string' && typeof q !== 'string'
-    && JSON.stringify(p) === JSON.stringify(q))
+  const slotEq = (p, q) => p === q || (typeof p !== 'string' && typeof q !== 'string' && nodeEqual(p, q))
   const MAX_SLOTS = 2   // butterfly's `b = i + j + half` carries two symbolic terms
   const addSlots = (A, B, s) => {
     const out = A.map(t => ({ k: t.k, e: t.e }))
@@ -663,7 +662,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
         if (!typedIdxProven(n[1], n[2], n)) {
           const aff = scanTop >= 0 ? affineIdxOfIV(n[2], iv, body, pos.envs[scanTop] ?? env) : null
           if (!aff || !aff.slots.every(t => stableExpr(t.e)) || aff.slots.length === 0 && loC != null && aff.a * loC + aff.bConst < 0) o.bad = true
-          else o.forms.set(JSON.stringify([aff.a, aff.bConst, aff.slots.map(t => [t.k, t.e])]), aff)
+          else o.forms.set(nodeKey([aff.a, aff.bConst, aff.slots.map(t => [t.k, t.e])]), aff)
         }
         return
       }

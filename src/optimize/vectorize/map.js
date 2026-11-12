@@ -22,7 +22,7 @@ import { simdLoop, simdBound } from './scaffold.js'
 function constantFlagStore(body, name) {
   let constant = null, ok = true
   const isConst = (v) => isArr(v) && (v[0] === 'i32.const' || v[0] === 'i64.const' || v[0] === 'f32.const' || v[0] === 'f64.const') && v.length === 2
-  const sameConst = (v) => isConst(v) && (constant == null ? (constant = v, true) : constant[0] === v[0] && constant[1] === v[1])
+  const sameConst = (v) => isConst(v) && (constant == null ? (constant = v, true) : exprEq(constant, v))
   const flagIf = (n) => isArr(n) && n[0] === 'if' && n.length === 3 && isArr(n[2]) && n[2][0] === 'then' && n[2].length === 2
     && isArr(n[2][1]) && n[2][1][0] === 'local.set' && n[2][1][1] === name && sameConst(n[2][1][2])
   const walk = (n) => {

@@ -29,6 +29,7 @@
 // take to settle, whatever the nesting. Only the last walk records.
 
 import { isPureIR, writesLocal } from '../ir/classify.js'
+import { nodeEqual } from '../ast.js'
 import { guardDefinitions } from './guard-defs.js'
 import { nrBinary, nrPoint, nrValue } from '../summary/num-range.js'
 
@@ -192,8 +193,6 @@ export const plainNaN = n => {
 // Discarding a decided operand needs both no effect and no trap. Use the
 // shared scalar IR authority; an unlisted operation remains evaluated.
 export const pure = n => !isArr(n) || isPureIR(n)
-const same = (a, b) => a === b || (isArr(a) && isArr(b) && a.length === b.length && a.every((x, i) => same(x, b[i]))) ||
-  (!isArr(a) && !isArr(b) && String(a) === String(b))
 
 /** The parts of an `if`: its test, and its arms where it has them. A kernel
  *  written as text keeps its comments among its children. */
@@ -314,7 +313,7 @@ export const remainderOf = n => {
   if (!isArr(x)) return null
   const read = x[0] === 'local.tee' ? ['local.get', x[1]] : x
   if (x[0] !== 'local.tee' && !pure(x)) return null
-  return again.every(a => same(a, read)) ? { x, k, again } : null
+  return again.every(a => nodeEqual(a, read)) ? { x, k, again } : null
 }
 /** `trunc(x / K)` for a constant K, the quotient of `(x / K) | 0`. */
 export const quotientOf = n => {

@@ -51,7 +51,7 @@
 import { SPAN_BINARY, spanBinary } from './span.js'
 import { NR_NONE, nrPoint, nrInts, nrReals, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
 import { powRuntime } from '../prepare/math-kernel.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP, nodeEqual } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -4755,7 +4755,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== made[2]) return
     if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return
     const only = Array.isArray(body) && body[0] === '{}' ? (Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 ? body[1][1] : body[1]) : body
-    if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || JSON.stringify(only[1][1]) !== JSON.stringify(target)) return
+    if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || !nodeEqual(only[1][1], target)) return
     const k = typeof target === 'string' ? readKey(keyOf(target)) : selectedExpr(target, 7)
     if (k == null || !celled(k)) return
     const c = cell(paramOf(k))

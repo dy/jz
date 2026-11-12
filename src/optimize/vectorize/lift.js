@@ -509,7 +509,7 @@ export function liftStmt(stmt, ctx) {
     }
     const thenA = armOf(stmt[2]), elseA = (isArr(stmt[3]) && stmt[3][0] === 'else') ? armOf(stmt[3]) : null
     if (!thenA || (isArr(stmt[3]) && !elseA)) return liftFail(ctx, 'if-store: arm is not a conditional store')
-    if (elseA && (JSON.stringify(thenA.addr) !== JSON.stringify(elseA.addr) || thenA.store !== elseA.store)) return liftFail(ctx, 'if-store: arms store differently')
+    if (elseA && (!nodeEqual(thenA.addr, elseA.addr) || thenA.store !== elseA.store)) return liftFail(ctx, 'if-store: arms store differently')
     // Speculation safety: an arm's `inter` statements (everything before its own tail store)
     // are lifted via the ORDINARY `liftStmt` dispatch below (`liftInter`) — which, for a bare
     // store, hits the UNCONDITIONAL `STORE_OPS` branch above (line ~3319), not this masked one.

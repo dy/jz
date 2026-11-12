@@ -13,7 +13,7 @@ import { LAYOUT, FORWARDING_MASK, ctx } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR, numberNanIR } from '../ir.js'
 import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '../ir/numeric.js'
-import { isLeaf, walkAst } from '../ast.js'
+import { isLeaf, walkAst, nodeEqual } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
 import { atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 import { IR_FULL, irSize } from '../growth.js'
@@ -690,7 +690,7 @@ function mergeByteStores(list, start, reads) {
     const width = first.node[0] === 'i32.store8' ? 1 : 2, kind = first.node[0]
     const head = addrKey(first.parts.addr), word = wordByte(first.parts.value, width, 0)
     if (!head || !head.key || !word) continue
-    const mask = width === 1 ? 255 : 65535, key = JSON.stringify(word)
+    const mask = width === 1 ? 255 : 65535
     // The locals the later stores re-evaluate: no temp of theirs may write one.
     const fixed = new Set([...head.reads, ...localsOf(word)])
     let run = 1
@@ -700,7 +700,7 @@ function mergeByteStores(list, start, reads) {
       const a = addrKey(next.parts.addr)
       if (!a || a.key !== head.key || a.offset + next.parts.offset !== head.offset + first.parts.offset + run * width) break
       const w = wordByte(next.parts.value, width, run)
-      if (!w || JSON.stringify(w) !== key) break
+      if (!w || !nodeEqual(w, word)) break
       run++
     }
     const bytes = run * width

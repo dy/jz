@@ -11,7 +11,7 @@
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS, REFS_IN_EXPR, refsName, callArgs, alwaysLeaves, collectAssignedNames, effectiveWriteValue,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, REFS_IN_EXPR, refsName, callArgs, alwaysLeaves, collectAssignedNames, effectiveWriteValue, nodeEqual,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, typedCtorRawOf, intExprRange, staticObjectProps } from '../static.js'
@@ -117,7 +117,6 @@ const exactDivs = new WeakSet()
 export const isExactDivision = (n) => exactDivs.has(n)
 /** Mark every quotient of a body under a test of its remainder (plan/integral-loops.js reads them ahead of the walk). */
 export const markExactDivisions = (body) => walkAst(body, { enter: n => { if (n[0] === 'if' && n.length >= 3) noteExactDivs(n[1], n[2]) } })
-const sameNode = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b)
 const plainOperand = (e) => !some(e, n => n[0] === '()' || n[0] === 'new' || n[0] === '.' || n[0] === '?.' || n[0] === '[]' || MUTATE_OPS.has(n[0]), REFS_THROUGH_ARROWS)
 const writesAny = (node, names) => some(node, n => {
   const decl = n[0] === 'let' || n[0] === 'const'
@@ -138,7 +137,7 @@ function noteExactDivs(test, arm) {
     const names = new Set()
     someDeep(rem, x => { if (typeof x === 'string') names.add(x); return false })
     if (writesAny(test, names) || writesAny(arm, names)) continue
-    walkAst(arm, { enter: n => { if (n[0] === '=>') return false; if (n[0] === '/' && n.length === 3 && sameNode(n[1], rem[1]) && sameNode(n[2], rem[2])) exactDivs.add(n) } })
+    walkAst(arm, { enter: n => { if (n[0] === '=>') return false; if (n[0] === '/' && n.length === 3 && nodeEqual(n[1], rem[1]) && nodeEqual(n[2], rem[2])) exactDivs.add(n) } })
   }
 }
 

@@ -23,6 +23,7 @@
  * @module optimize/share-quotients
  */
 import { findBodyStart } from '../ir.js'
+import { nodeEqual } from '../ast.js'
 
 const isArr = Array.isArray
 // a choice → the divisions its arms may share
@@ -34,7 +35,6 @@ const OPAQUE = /^(?:call|return|br|if|block|loop|try|throw|rethrow|unreachable|g
 const STATEMENT = /^(?:local\.set|drop|(?:[if](?:32|64)|v128)\.store(?:8|16|32)?)$/
 const LEAF = new Set(['local.get', 'global.get', 'f64.const', 'f32.const', 'i32.const', 'i64.const', 'v128.const'])
 
-const same = (a, b) => a === b || isArr(a) && isArr(b) && a.length === b.length && a.every((x, i) => same(x, b[i]))
 // one value, computed nowhere: a local or global read, a literal, a splat of one
 const leaf = n => isArr(n) && (LEAF.has(n[0]) || n.length === 2 && n[0].endsWith('.splat') && leaf(n[1]))
 const has = (n, test) => isArr(n) && (test(n) || n.some(c => has(c, test)))
@@ -118,8 +118,8 @@ function shareStatement(s, fresh) {
       const a = within(n[1], kinds), b = within(n[2], kinds)
       if (a.length !== 1 || b.length !== 1 || a[0].div !== b[0].div) return n
       const x = a[0], y = b[0]
-      const byDen = leaf(x.den) && same(x.den, y.den)
-      if (!byDen && !(leaf(x.num) && same(x.num, y.num)) || has(n[3], c => c[0] === '__qt')) return n
+      const byDen = leaf(x.den) && nodeEqual(x.den, y.den)
+      if (!byDen && !(leaf(x.num) && nodeEqual(x.num, y.num)) || has(n[3], c => c[0] === '__qt')) return n
       let m = n[3]
       if (!leaf(m)) { const name = fresh(MASK[n[0]]); masks.push(['local.set', name, m]); m = ['local.get', name] }
       const q = id++

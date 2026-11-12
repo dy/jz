@@ -40,6 +40,7 @@
  * @module optimize/carry-stores
  */
 import { nextLocalId, findBodyStart } from '../ir.js'
+import { nodeEqual } from '../ast.js'
 
 const isArr = Array.isArray
 const LOADS = new Set(['i32.load', 'i64.load', 'f32.load', 'f64.load'])
@@ -57,12 +58,6 @@ const label = (n) => typeof n[1] === 'string' && n[1][0] === '$' ? n[1] : null
 const typed = (n) => n.some((c, i) => i > 0 && isArr(c) && (c[0] === 'result' || c[0] === 'param' || c[0] === 'type'))
 const some = (n, f) => isArr(n) && (f(n) || n.some((c, i) => i > 0 && some(c, f)))
 const clone = (n) => isArr(n) ? n.map(clone) : n
-const same = (a, b) => {
-  if (!isArr(a) || !isArr(b)) return a === b
-  if (a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) if (!same(a[i], b[i])) return false
-  return true
-}
 const pure = (e) => isArr(e) && PURE.has(e[0]) && e.every((c, i) => i === 0 || !isArr(c) || pure(c))
 const localsOf = (e, out) => { if (isArr(e)) { if (e[0] === 'local.get') out.add(e[1]); for (let i = 1; i < e.length; i++) localsOf(e[i], out) } return out }
 const writesAny = (n, names) => some(n, m => (m[0] === 'local.set' || m[0] === 'local.tee') && names.has(m[1]))
@@ -117,7 +112,7 @@ function carryLoop(fn, loop, parent, pos) {
       if (m[0].startsWith('memory.') || m[0].indexOf('.atomic') > 0) return true
       if (m[0].indexOf('.store') < 0) return false
       const o = access(m), ow = STORE_W[m[0]]
-      if (!o || !ow || !same(addrOf(o.addr, alias), A)) return true
+      if (!o || !ow || !nodeEqual(addrOf(o.addr, alias), A)) return true
       return o.off < s.off + w && s.off < o.off + ow
     })
     if (!after.every(misses)) continue
@@ -138,7 +133,7 @@ function carryLoop(fn, loop, parent, pos) {
           if (found || stop) return
           if (LOADS.has(e[0]) && e[0] === ld) {
             const a = access(e)
-            if (a && a.off === s.off && e.length === a.at + 1 && same(a.addr, A)) { found = e; tests = conds.slice(); return }
+            if (a && a.off === s.off && e.length === a.at + 1 && nodeEqual(a.addr, A)) { found = e; tests = conds.slice(); return }
           }
           if (e[0] === 'br_if') { stop = true; return }
           if (e[0] === 'local.set' || e[0] === 'local.tee') { if (names.has(e[1])) { stop = true; return } written.add(e[1]) }

@@ -8,7 +8,7 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { ASSIGN_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet, nodeEqual } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
@@ -337,8 +337,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     } })
     const inits = declInits.get(name)
     if (!inits || inits.length < 2) return false
-    const first = JSON.stringify(inits[0])
-    return inits.every(i => JSON.stringify(i) === first)
+    return inits.every(i => nodeEqual(i, inits[0]))
   }
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {

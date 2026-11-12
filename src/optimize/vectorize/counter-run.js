@@ -1,4 +1,4 @@
-import { cloneNode, walkAst } from '../../ast.js'
+import { cloneNode, walkAst, nodeKey } from '../../ast.js'
 import { constNum, hasBranchOrReturn, isI32Const, isLocalGet } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { matchBlockLoop } from './scaffold.js'
@@ -115,7 +115,7 @@ export function canonicalizeCounters(node, fnLocals, freshIdRef) {
         const m = cursorAddr(holder[slot], op, writes)
         const stride = m && Math.imul(c, 1 << m.s)
         if (m && stride > 0 && (stride & (stride - 1)) === 0) {
-          const key = JSON.stringify([m.base, m.k, m.s])
+          const key = nodeKey([m.base, m.k, m.s])
           let P = bases.get(key)
           if (!P) {
             P = fresh('p')

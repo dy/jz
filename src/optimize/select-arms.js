@@ -23,12 +23,12 @@
  */
 
 import { intRanges } from './int-range.js'
+import { nodeEqual } from '../ast.js'
 
 const isArr = Array.isArray
 const LEAF = new Set(['local.get', 'global.get', 'f64.const', 'f32.const', 'i32.const', 'i64.const'])
 // operations the shared tree may hold: no effect beyond a trap both paths took, no memory
 const PURE = /^(?:[if](?:32|64)\.(?:const|add|sub|mul|div|div_s|div_u|rem_s|rem_u|and|or|xor|shl|shr_s|shr_u|rotl|rotr|clz|ctz|popcnt|eqz|eq|ne|lt|lt_s|lt_u|gt|gt_s|gt_u|le|le_s|le_u|ge|ge_s|ge_u|abs|neg|ceil|floor|trunc|nearest|sqrt|min|max|copysign|wrap_i64|extend_i32_s|extend_i32_u|extend8_s|extend16_s|extend32_s|trunc_sat_f64_s|trunc_sat_f64_u|trunc_sat_f32_s|trunc_sat_f32_u|convert_i32_s|convert_i32_u|convert_i64_s|convert_i64_u|demote_f64|promote_f32|reinterpret_f64|reinterpret_f32|reinterpret_i64|reinterpret_i32)|select|local\.get|global\.get)$/
-const same = (a, b) => a === b || (isArr(a) && isArr(b) && a.length === b.length && a.every((x, i) => same(x, b[i]))) || (!isArr(a) && !isArr(b) && String(a) === String(b))
 const num = n => { const v = typeof n[1] === 'number' ? n[1] : typeof n[1] === 'string' && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(n[1]) ? Number(n[1]) : NaN; return Number.isFinite(v) ? v : null }
 // `a - k` as `a + (-k)` (k a finite literal), or the node itself
 const addForm = n => {
@@ -105,7 +105,7 @@ const deadAfter = (path, L) => {
  * the locals the shared tree tees.
  */
 const merge = (a, b, pa, pb, s) => {
-  if (same(a, b) && pure(a)) return a
+  if (nodeEqual(a, b) && pure(a)) return a
   if (!isArr(a) || !isArr(b)) return null
   // a dead tee is its value
   if (a[0] === 'local.tee' && (b[0] !== 'local.tee' || b[1] !== a[1]) && deadAfter(pa, a[1])) return merge(a[2], b, [...pa, [a, 2]], pb, s)
@@ -132,7 +132,7 @@ const merge = (a, b, pa, pb, s) => {
   if (!PURE.test(a[0])) return null
   const out = [a[0]]
   for (let i = 1; i < a.length; i++) {
-    if (!isArr(a[i]) || !isArr(b[i])) { if (!same(a[i], b[i])) return null; out.push(a[i]); continue }
+    if (!isArr(a[i]) || !isArr(b[i])) { if (!nodeEqual(a[i], b[i])) return null; out.push(a[i]); continue }
     const c = merge(a[i], b[i], [...pa, [a, i]], [...pb, [b, i]], s)
     if (!c) return null
     out.push(c)

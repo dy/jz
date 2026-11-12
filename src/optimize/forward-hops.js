@@ -47,7 +47,7 @@
  *
  * @module optimize/forward-hops
  */
-import { walkAst } from '../ast.js'
+import { walkAst, nodeEqual } from '../ast.js'
 import { findBodyStart, nextLocalId } from '../ir.js'
 import { isMemWrite } from 'watr/optimize'
 import { LAYOUT, ctx } from '../ctx.js'
@@ -65,12 +65,6 @@ const BOX = new Set(['f64', 'i64'])
 const COLD = new Set(['$__arr_room', '$__arr_grow', '$__arr_grow_known', '$__arr_set_idx_ptr', '$__iter_release', '$__iter_take', '$__durable_arr_snap'])
 const COPY = new Set(['i32.wrap_i64', 'i64.reinterpret_f64', 'f64.reinterpret_i64'])
 
-const same = (a, b) => {
-  if (!isArr(a) || !isArr(b)) return a === b
-  if (a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) if (!same(a[i], b[i])) return false
-  return true
-}
 const isConst = (n, op, v) => isArr(n) && n.length === 2 && n[0] === op && String(n[1]) === String(v)
 const isMask = (n) => isConst(n, 'i64.const', LAYOUT.OFFSET_MASK)
 const isGet = (n) => isArr(n) && n.length === 2 && n[0] === 'local.get' && typeof n[1] === 'string'
@@ -210,7 +204,7 @@ export function hoistForwardHops(fn, still, results, writes) {
     const load = c[1]
     return isArr(load) && load.length === 2 && load[0] === 'i32.load' ? load[1] : null
   }
-  const isFwdOf = (call, arg) => isArr(call) && call.length === 3 && call[0] === 'call' && call[1] === FWD && same(call[2], arg)
+  const isFwdOf = (call, arg) => isArr(call) && call.length === 3 && call[0] === 'call' && call[1] === FWD && nodeEqual(call[2], arg)
   /** A hop at `n` and the receiver it resolves: { root } for the value form
    *  `(if (result i32) T (then (call fwd RAW)) (else RAW))`, { root, into } for
    *  the statement form `(if T (then (local.set $o (call fwd (local.get $o)))))`

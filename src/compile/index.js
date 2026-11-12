@@ -35,7 +35,7 @@ import { ctx, checkpointed, err, PTR, HEAP, getFactStore, declGlobal, inc } from
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD, symbolSlotBits } from '../../layout.js'
-import { beginAssignedMemo, endAssignedMemo, some } from '../ast.js'
+import { beginAssignedMemo, endAssignedMemo, some, nodeKey } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, clearBodyFacts,
 } from './analyze.js'
@@ -139,7 +139,7 @@ export function tailFacts(cfg) {
 // for checking a reuse under an unchanged key.
 function summaryInputs(ast, ids) {
   const node = (n) => {
-    if (!Array.isArray(n)) return typeof n === 'bigint' ? `${n}n` : JSON.stringify(n) ?? String(n)
+    if (!Array.isArray(n)) return nodeKey(n)
     let id = ids.of.get(n)
     if (id == null) ids.of.set(n, id = ++ids.next)
     return `[${id}:${n.map(node).join(',')}]`
@@ -147,9 +147,9 @@ function summaryInputs(ast, ids) {
   const data = (v, d = 0) => d > 6 ? '…'
     : v instanceof Map || v instanceof Set ? `<${[...v].map(x => data(x, d + 1)).join(',')}>`
     : Array.isArray(v) ? `[${v.map(x => data(x, d + 1)).join(',')}]`
-    : typeof v === 'bigint' ? `${v}n` : typeof v === 'function' ? 'fn'
+    : typeof v === 'function' ? 'fn'
     : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${k}=${data(v[k], d + 1)}`).join(',')}}`
-    : JSON.stringify(v) ?? String(v)
+    : nodeKey(v)
   const funcs = ctx.funcs.list.map(f => [f.name, node(f.body), f.closure, f.rest, isExported(f),
     data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), dispatcher: f.sig?.dispatcher }),
     Object.entries(f.defaults ?? {}).map(([k, v]) => `${k}=${node(v)}`).join('&')].join('|'))

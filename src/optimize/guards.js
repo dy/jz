@@ -22,6 +22,7 @@
 // Runs after the integer pass, over what the specialization built.
 
 import { constBits, conditional } from './int-range.js'
+import { nodeKey } from '../ast.js'
 
 const isArr = Array.isArray
 const DECL = new Set(['param', 'local', 'result', 'export', 'type'])
@@ -208,7 +209,7 @@ const combine = (loop, holder, tag, types) => {
     later.delete(st[1])
     if (form) given.set(st[1], form)
   }
-  const keyOf = p => JSON.stringify([p.a, p.c, [...p.terms].map(([x, t]) => [x, t.k]).sort((u, v) => u[0] < v[0] ? -1 : 1)])
+  const keyOf = p => nodeKey([p.a, p.c, [...p.terms].map(([x, t]) => [x, t.k]).sort((u, v) => u[0] < v[0] ? -1 : 1)])
   const less = (p, c) => ({ c, a: p.a, moves: p.moves, terms: p.terms })
 
   // A read the program keeps from an index it does not take (`i > 0 ? a[i - 1]
@@ -304,7 +305,7 @@ const combine = (loop, holder, tag, types) => {
     gone(g.by)
   }
   const tests = [], asked = new Set()
-  const ask = test => { const key = JSON.stringify(test); if (!asked.has(key)) { asked.add(key); tests.push(['br_if', slow, test]) } }
+  const ask = test => { const key = nodeKey(test); if (!asked.has(key)) { asked.add(key); tests.push(['br_if', slow, test]) } }
   for (const { g, lo, hi } of ahead.values()) {
     const base = less(g.index, 0), len = wide(g.length, null)
     if (!base.a) {

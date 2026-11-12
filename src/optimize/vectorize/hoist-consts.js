@@ -18,6 +18,7 @@
  *
  * @module optimize/vectorize/hoist-consts
  */
+import { constText } from '../../ast.js'
 
 const isArr = Array.isArray
 const LISTS = new Set(['func', 'block', 'loop', 'then', 'else'])
@@ -60,7 +61,7 @@ export function hoistVectorConsts(module) {
           if (!isArr(c) || c[0] === 'loop' || made.has(c)) continue
           if (c[0] === 'v128.const') {
             if (cheap(c)) continue
-            const key = c.join(' '), name = localOf(key)
+            const key = constText(c), name = localOf(key)
             found.set(name, c)
             n[i] = ['local.get', name]
           } else walk(c)

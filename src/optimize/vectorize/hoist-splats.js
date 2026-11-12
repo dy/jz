@@ -25,7 +25,7 @@
  *
  * @module optimize/vectorize/hoist-splats
  */
-import { cloneNode, walkAst } from '../../ast.js'
+import { cloneNode, walkAst, nodeKey } from '../../ast.js'
 import { readsBeforeWrite } from './addr-model.js'
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
@@ -135,7 +135,7 @@ function hoistIn(block, at, freshIdRef, kept) {
   if (!take.length) return []
   const id = freshIdRef.next++, sets = [], decls = [], shared = new Map()
   for (const f of take) {
-    const key = JSON.stringify(f.value)
+    const key = nodeKey(f.value)
     let name = shared.get(key)
     if (!name) {
       name = `$__hs${id}_${shared.size}`

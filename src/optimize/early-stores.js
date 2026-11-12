@@ -34,6 +34,7 @@
  */
 import { findBodyStart } from '../ir.js'
 import { constOf } from './vectorize/access.js'
+import { nodeEqual } from '../ast.js'
 
 const isArr = Array.isArray
 const STORE = /^(?:i32|i64|f32|f64)\.store(?:8|16|32)?$/
@@ -125,7 +126,7 @@ const rootOf = (n, list, at, from, distinct, depthLeft = 8) => {
 const misses = (a, at, b, bt, ctx, written) => {
   const ra = rootOf(a.addr, ctx.list, at, ctx.from, ctx.distinct), rb = rootOf(b.addr, ctx.list, bt, ctx.from, ctx.distinct)
   if (ra && rb && ra !== 'num' && rb !== 'num' && ra !== rb) return true
-  if (JSON.stringify(a.addr) !== JSON.stringify(b.addr)) return false
+  if (!nodeEqual(a.addr, b.addr)) return false
   let touched = false
   walk(a.addr, (c) => { if (c[0] === 'local.get' && written.has(c[1])) touched = true })
   return !touched && (a.off + a.bytes <= b.off || b.off + b.bytes <= a.off)

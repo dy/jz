@@ -9,7 +9,7 @@ import { encodePtrHi, i64Hex, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } f
 import { enumKeys } from '../../../module/schema.js'
 import {
   T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, collectBareRefs, some, walkAst,
-isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
+isArrayIndexKey, RELATIONAL_OPS, nodeKey } from '../../ast.js'
 import { HEAP, LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
   asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
@@ -899,7 +899,7 @@ export const controlFlowOps = {
         // expr like `y*w`); an 'f64' slot adds `v integral ∧ |v| ≤ 2^31` conjuncts —
         // the int model of `a*iv + v` is exact only for integral v (trunc does NOT
         // distribute over f64 sums)
-        const slotKey = (s) => typeof s === 'string' ? s : JSON.stringify(s)
+        const slotKey = (s) => typeof s === 'string' ? s : nodeKey(s)
         const slots = new Map(), slotRanges = new Map()
         const slotI64 = (slot, kind) => {
           const key = slotKey(slot)

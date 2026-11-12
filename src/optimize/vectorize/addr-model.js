@@ -1,4 +1,4 @@
-import { nodeEqual as exprEq, walkAst } from '../../ast.js'
+import { nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
@@ -592,8 +592,8 @@ export function assertBodyModelSound(body, ind, bm) {
     if (LOAD_OPS[op] || STORE_OPS[op]) {
       const ref = matchLaneAddr(node[1], ind, undefined, offsetTees)
       const got = siteAccess.get(node)
-      const refKey = ref ? `${ref.strideLog2}|${JSON.stringify(ref.base)}|${ref.pixelStride || 1}|${ref.teeName || ''}` : null
-      const gotKey = got ? `${got.strideLog2}|${JSON.stringify(got.base)}|${got.pixelStride || 1}|${got.teeName || ''}` : null
+      const refKey = ref ? `${ref.strideLog2}|${nodeKey(ref.base)}|${ref.pixelStride || 1}|${ref.teeName || ''}` : null
+      const gotKey = got ? `${got.strideLog2}|${nodeKey(got.base)}|${got.pixelStride || 1}|${got.teeName || ''}` : null
       if (refKey !== gotKey)
         throw new Error(`BodyModel siteAccess diverges at a load/store site: ref=${refKey} got=${gotKey}`)
     }

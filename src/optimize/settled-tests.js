@@ -8,6 +8,7 @@
 // each local holds, so a guard on a capture (`$ai = $doc`) is the guard on the
 // binding. A fact holds where it dominates: down into arms and loops that
 // leave its locals alone, and past an `if` or a block only by every way out.
+import { constText } from '../ast.js'
 
 const isArr = Array.isArray
 const PURE = /^(?:i32|i64|f64)\.(?:const|eq|ne|eqz|and|or|lt_[su]|le_[su]|gt_[su]|ge_[su]|lt|le|gt|ge|wrap_i64|reinterpret_[fi]\d\d)$/
@@ -64,7 +65,7 @@ const evalIn = (n, s) => {
     return op === 'local.tee' ? v : null
   }
   if (!PURE.test(op)) { walk(n, s); return null }
-  if (op.endsWith('.const')) return { key: `${op}:${n[1]}`, reads: new Set() }
+  if (op.endsWith('.const')) return { key: constText(n), reads: new Set() }
   let key = op, pure = true
   const reads = new Set()
   for (let i = 1; i < n.length; i++) {

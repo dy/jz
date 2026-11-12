@@ -9,7 +9,7 @@
  * @module optimize/unswitch
  */
 import { findBodyStart, nextLocalId, cloneIR } from '../ir.js'
-import { walkAst } from '../ast.js'
+import { walkAst, nodeKey } from '../ast.js'
 import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_CLAMPED_FLAG, TYPED_ELEM_F16_FLAG } from '../../layout.js'
 import { matchExitBrIf, isLocalGet } from './vectorize/addr-model.js'
 import { readsVar } from './vectorize/outer-scaffold.js'
@@ -170,7 +170,7 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(n[3]), ['i32.const', 3]]]]
     const guarded = n[0] === 'if' ? receiverGuardedRead(n, p) : null
     if (guarded && isLocalGet(guarded.index, ind)) {
-      for (const d of guarded.drops) { const key = JSON.stringify(d); if (!hoisted.has(key)) hoisted.set(key, cloneIR(d)) }
+      for (const d of guarded.drops) { const key = nodeKey(d); if (!hoisted.has(key)) hoisted.set(key, cloneIR(d)) }
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(guarded.index), ['i32.const', 3]]]]
     }
     return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base, hoisted, ind))

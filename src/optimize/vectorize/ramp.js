@@ -1,4 +1,4 @@
-import { cloneNode, walkAst } from '../../ast.js'
+import { cloneNode, walkAst, nodeKey } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet, matchLaneAddr } from './addr-model.js'
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftStmt } from './lift.js'
@@ -192,7 +192,7 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
     const collectLoads = (e) => {
       if (!isArr(e)) return
       if (e[0] === 'i32.load8_u') {
-        const k = JSON.stringify(e[1])
+        const k = nodeKey(e[1])
         if (!loadTemps.has(k)) { const t = freshV128('win'); loadTemps.set(k, t); loadSets.push(['local.set', t, ['v128.load', at(e[1])]]) }
       } else for (let i = 1; i < e.length; i++) collectLoads(e[i])
     }
@@ -200,7 +200,7 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
     const liftW = (e, half) => {
       const op = e[0]
       if (op === 'i32.const') return ['i16x8.splat', e]
-      if (op === 'i32.load8_u') return [`i16x8.extend_${half}_i8x16_u`, ['local.get', loadTemps.get(JSON.stringify(e[1]))]]
+      if (op === 'i32.load8_u') return [`i16x8.extend_${half}_i8x16_u`, ['local.get', loadTemps.get(nodeKey(e[1]))]]
       if (op === 'i32.add') return ['i16x8.add', liftW(e[1], half), liftW(e[2], half)]
       if (op === 'i32.sub') return ['i16x8.sub', liftW(e[1], half), liftW(e[2], half)]
       if (op === 'i32.mul') return ['i16x8.mul', liftW(e[1], half), liftW(e[2], half)]

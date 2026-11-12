@@ -34,7 +34,7 @@
  *
  * @module optimize/sink-stores
  */
-import { walkAst } from '../ast.js'
+import { walkAst, nodeKey } from '../ast.js'
 import { findBodyStart } from '../ir.js'
 import { accessOf, hasOp, localGetCounts, resolveAddr, clone, CONTROL_OPS } from './vectorize/access.js'
 import { isArr } from './vectorize/node-utils.js'
@@ -109,7 +109,7 @@ function sinkLoop(fn, block, path, copies, fresh) {
     if (!r) return null
     let fixed = true
     walkAst(r, { enter: n => { if (n[0] === 'local.get' && (n[1].includes('@') || writes.has(n[1]))) fixed = false } })
-    return fixed ? JSON.stringify(r) : null
+    return fixed ? nodeKey(r) : null
   }
   const stores = []     // { slot, key, off, mem, at, node, list, arm, base }: the candidates
   const others = []     // { key, off, f64, mem }: every other access

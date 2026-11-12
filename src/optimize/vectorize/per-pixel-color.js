@@ -1,5 +1,5 @@
 import { findBodyStart } from '../../ir.js'
-import { walkAst } from '../../ast.js'
+import { walkAst, nodeEqual } from '../../ast.js'
 import { isI32Const } from './addr-model.js'
 import { LANE_PURE, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
@@ -49,8 +49,7 @@ export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, o
     const defs = new Map()
     forEachLocalDef(obody, (name, rhs) => { (defs.get(name) || defs.set(name, []).get(name)).push(rhs) })
     for (const [name, rhss] of defs) {
-      const j = JSON.stringify(rhss[0])
-      if (!rhss.every(r => JSON.stringify(r) === j)) continue   // multiple distinct defs → not a stable alias
+      if (!rhss.every(r => nodeEqual(r, rhss[0]))) continue   // multiple distinct defs → not a stable alias
       const r = rhss[0]
       if (isArr(r) && r[0] === 'f64.convert_i32_s' && isArr(r[1]) && r[1][0] === 'local.get' && pivType.get(r[1][1]) === 'i32') pxAlias.set(name, r[1][1])
       else if (isArr(r) && r[0] === 'local.get' && pivType.get(r[1]) === 'f64') pxAlias.set(name, r[1])

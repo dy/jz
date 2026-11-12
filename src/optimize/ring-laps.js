@@ -55,6 +55,7 @@
  *
  * @module optimize/ring-laps
  */
+import { nodeEqual } from '../ast.js'
 
 const isArr = Array.isArray
 const MAX_NODES = 1200   // nodes of a loop copied at most (its body runs twice, the laps and the loop as written)
@@ -74,7 +75,7 @@ const has = (n, pred) => isArr(n) && (pred(n) || n.some(c => has(c, pred)))
 const names = (n, x) => has(n, c => (c[0] === 'local.get' || c[0] === 'local.set' || c[0] === 'local.tee') && c[1] === x)
 const reads = (n, x) => has(n, c => c[0] === 'local.get' && c[1] === x)
 const writes = (n, x) => has(n, c => (c[0] === 'local.set' || c[0] === 'local.tee') && c[1] === x)
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const same = (a, b) => nodeEqual(a, b)
 const copy = (n) => isArr(n) ? n.map(copy) : n
 const size = (n) => isArr(n) ? n.reduce((s, c) => s + size(c), 1) : 0
 const g = (x) => ['local.get', x], k = (v) => ['i32.const', String(v)]

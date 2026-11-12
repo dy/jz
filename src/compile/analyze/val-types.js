@@ -1,6 +1,6 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
 import { OPTF, ctx } from '../../ctx.js'
-import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR, nodeEqual } from '../../ast.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
@@ -36,11 +36,11 @@ function dictWalkLean(body, name) {
     // emit-assign's _rmwStructEq fuses exactly that) is part of the same slot
     // op; any OTHER same-name `[]` in the RHS is a plain read → reject below.
     if (ASSIGN_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1][1] === name) {
-      const tgt = JSON.stringify(n[1])
+      const tgt = n[1]
       if (n[1][2] != null) stack.push(n[1][2])
       const pushSkippingFused = (m) => {
         if (!Array.isArray(m)) { stack.push(m); return }
-        if (m[0] === '[]' && m[1] === name && JSON.stringify(m) === tgt) { if (m[2] != null) stack.push(m[2]); return }
+        if (m[0] === '[]' && m[1] === name && nodeEqual(m, tgt)) { if (m[2] != null) stack.push(m[2]); return }
         if (m[0] === '[]' && m[1] === name) { stack.push(m); return }   // plain read — rejected by the arm below
         for (let i = 1; i < m.length; i++) pushSkippingFused(m[i])
       }

@@ -23,6 +23,7 @@ import { registerPowTranscend } from './math/pow-transcend.js'
 import { powFold, powLog } from '../src/prepare/math-kernel.js'
 import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, PIO2_C63, TWO_OVER_PI_HEX, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
+import { nodeEqual } from '../src/ast.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
 import { registerMathRandom } from './math/random.js'
@@ -128,9 +129,8 @@ export default (ctx) => {
   const pureF64 = (n) => !Array.isArray(n) ? true :
     (n[0] === 'local.get' || n[0] === 'global.get' || n[0] === 'f64.const' || n[0] === 'i32.const' || n[0] === 'i64.const') ? true :
     (n[0] === 'f64.add' || n[0] === 'f64.sub' || n[0] === 'f64.mul' || n[0] === 'f64.div' || n[0] === 'f64.neg' || n[0] === 'f64.abs' || n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') ? n.slice(1).every(pureF64) : false
-  const sameIR = (a, b) => Array.isArray(a) !== Array.isArray(b) ? false : !Array.isArray(a) ? a === b : (a.length === b.length && a.every((x, i) => sameIR(x, b[i])))
   const nonNegF64 = (n) => !Array.isArray(n) ? false :
-    n[0] === 'f64.mul' ? (pureF64(n[1]) && sameIR(n[1], n[2])) :     // x·x ≥ 0
+    n[0] === 'f64.mul' ? (pureF64(n[1]) && nodeEqual(n[1], n[2])) :     // x·x ≥ 0
     n[0] === 'f64.add' ? (nonNegF64(n[1]) && nonNegF64(n[2])) :      // (≥0) + (≥0) ≥ 0
     n[0] === 'f64.const' ? (typeof n[1] === 'number' && n[1] >= 0) : false
   const sqrtIR = (a) => { const ir = f('f64.sqrt', a); return nonNegF64(ir[1]) ? ir : canon(ir) }

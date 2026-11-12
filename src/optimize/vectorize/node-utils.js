@@ -10,11 +10,10 @@ export const forEachLocalDef = (roots, visit) => {
   for (const root of roots) walkAst(root, { enter })
 }
 
-// Structural node equality — must be non-finite- AND bigint-safe: plain
-// JSON.stringify maps Infinity/-Infinity/NaN→null and -0→0, so it would equate a
-// `[Inf,-Inf]` lane pair and splat it (dropping -Inf). nodeEqual tags those.
 export const localGetName = n => isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' ? n[1] : null
 export const f64Zero = n => isArr(n) && n[0] === 'f64.const' && Number(n[1]) === 0
+// `(f64.const inf)`, +Infinity alone (not -inf)
+export const f64PosInf = n => isArr(n) && n[0] === 'f64.const' && /^\+?inf(?:inity)?$/i.test(String(n[1]))
 
 // jz wraps every NaN-producing float builtin (Math.sqrt/min/max/…) in a
 // canonicalizing select so a non-canonical NaN never crosses to JS:

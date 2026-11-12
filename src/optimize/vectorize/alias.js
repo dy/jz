@@ -1,4 +1,4 @@
-import { cloneNode, nodeEqual as exprEq, walkAst } from '../../ast.js'
+import { cloneNode, nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
 import { constNum, hasSideEffect, isI32Const, isLocalGet, laneAccess } from './addr-model.js'
 import { normTee } from './idioms.js'
 import { isArr } from './node-utils.js'
@@ -32,7 +32,7 @@ function linearIndex(n, defs) {
     if (isArr(x) && x[0] === 'i32.mul' && x.length === 3 && isI32Const(x[2])) return add(x[1], Math.imul(m, constNum(x[2])))
     if (isArr(x) && x[0] === 'i32.mul' && x.length === 3 && isI32Const(x[1])) return add(x[2], Math.imul(m, constNum(x[1])))
     if (isArr(x) && x[0] === 'i32.shl' && x.length === 3 && isI32Const(x[2])) return add(x[1], Math.imul(m, 1 << (constNum(x[2]) & 31)))
-    const key = JSON.stringify(normTee(x)), t = terms.get(key)
+    const key = nodeKey(normTee(x)), t = terms.get(key)
     if (t) t.coeff = (t.coeff + m) | 0
     else terms.set(key, { key, node: x, coeff: m | 0 })
   }
@@ -87,7 +87,7 @@ export function aliasGuards(sites, stride, lanes, { defs = null, varying, versio
       let reads = false
       for (const t of d.terms) walkAst(t.node, { enter: c => { if (c[0] === 'local.get' && varying.has(c[1])) reads = true } })
       if (reads) return null
-      const key = JSON.stringify([d.k, d.terms.map(t => [t.key, t.coeff])])
+      const key = nodeKey([d.k, d.terms.map(t => [t.key, t.coeff])])
       if (guards.has(key)) continue
       const D = distanceExpr(d)
       guards.set(key, ['i32.or',
@@ -157,7 +157,7 @@ function addressFacts(node, loop, fnLocals) {
   for (const c of node) {
     if (c === loop) break
     if (!isArr(c) || c[0] !== 'local.set' || fnLocals.get(c[1]) !== 'i32') continue
-    const key = JSON.stringify(normTee(c[2])), first = held.get(key)
+    const key = nodeKey(normTee(c[2])), first = held.get(key)
     if (first) copies.set(c[1], ['local.get', first])
     else held.set(key, c[1])
   }
@@ -251,7 +251,7 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
     const a = resolve(n[1]), b = resolve(n[2])
     return leaf(a) && !invariant(b) ? a : leaf(b) && !invariant(a) ? b : null
   }
-  const key = n => n && JSON.stringify(n)
+  const key = n => n && nodeKey(n)
   for (const s of sites) {
     s.at = expand(s.addr)
     s.motion = motion(s.at)
@@ -291,7 +291,7 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
         unequal.set([s.base, st.base].sort().join(), [s.base, st.base])
         continue
       }
-      const key = JSON.stringify([d.k, d.terms.map(t => [t.key, t.coeff]), JSON.stringify(s.at), JSON.stringify(st.at)])
+      const key = nodeKey([d.k, d.terms.map(t => [t.key, t.coeff]), s.at, st.at])
       if (!pairs.has(key)) pairs.set(key, { d, s, st })
     }
   }

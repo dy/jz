@@ -31,6 +31,7 @@
  *
  * @module optimize/forward-checked
  */
+import { constText } from '../ast.js'
 
 const isArr = Array.isArray
 // what changes a value a load or a global read named
@@ -158,7 +159,7 @@ function forwardIn(fn, callsOut) {
       return c != null && a != null && b != null ? num(`if ${c} ${a} ${b}`) : null
     }
     if (typeof op !== 'string' || UNKEYED.has(op) || memWrite(op)) return null
-    if (op.endsWith('.const')) return num(`${op} ${e[1]}`)
+    if (op.endsWith('.const')) return num(constText(e))
     const parts = []
     for (let i = 1; i < e.length; i++) { const k = keyOf(e[i]); if (k == null) return null; parts.push(k) }
     if (!LOAD.test(op) && op !== 'global.get') return num(`${op} ${parts.join(' ')}`)

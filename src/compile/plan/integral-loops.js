@@ -155,7 +155,7 @@
 import { ctx } from '../../ctx.js'
 import { frameNode } from '../../function.js'
 import { includeModule } from '../../autoload.js'
-import { T, I32_MIN, I32_MAX, MUTATE_OPS, TYPEOF, REFS_THROUGH_ARROWS, numberGuard, some, walkAst, cloneNode, extractParams, collectParamName, isReassigned, callArgs, refsName } from '../../ast.js'
+import { T, I32_MIN, I32_MAX, MUTATE_OPS, TYPEOF, REFS_THROUGH_ARROWS, numberGuard, some, walkAst, cloneNode, extractParams, collectParamName, isReassigned, callArgs, refsName, nodeKey, nodeEqual } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
@@ -1199,7 +1199,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           const arm = Array.isArray(next) && next[0] === 'if' && next.length === 3 && Array.isArray(next[1]) && next[1][0] === '>=' && next[1][1] === c ? next[2] : null
           const r = arm == null ? null : litReset(arm, c) ?? (Array.isArray(arm) && arm[0] === '{}' && arm[1]?.[0] === ';' && arm[1].length === 2 ? litReset(arm[1][1], c) : null)
           const ns = r != null ? boundTerms(next[1][2]) : null
-          if (step < 1 || r == null || (k != null && k !== step) || (L != null && L !== r) || (B != null && JSON.stringify(B) !== JSON.stringify(next[1][2])) ||
+          if (step < 1 || r == null || (k != null && k !== step) || (L != null && L !== r) || (B != null && !nodeEqual(B, next[1][2])) ||
               !ns || !ns.every(x => stableBound(x) && !loopWrites.has(x))) { bad = true; return false }
           k = step; L = r; B = next[1][2]
         }
@@ -1319,7 +1319,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (no element of a typed array: one past the end reads NaN, which a word takes to zero;
     // an invariant product, `py * w` in an element loop, stays the versioning's slot)
     const lit = (v) => [null, v], isLit = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number'
-    const same = (a, b) => a === b || Array.isArray(a) && Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b)
+    const same = (a, b) => nodeEqual(a, b)
     // An end at the type's extreme (an int32 element's, a bit operation's) stands
     // for no bound: moved by anything but a literal it is open, and the hull is
     // none (a test of it would hold for a width of one at most). Moved by a
@@ -1653,9 +1653,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         }
         return true
       }
-      const rest = [], lifted = [], seen = new Set(extra.map(t => JSON.stringify(t)))
+      const rest = [], lifted = [], seen = new Set(extra.map(t => nodeKey(t)))
       for (const t of v.conj.rest) if (!lift(cloneWithSubst(t, new Map(), subst), lifted)) rest.push(t)
-      for (const t of lifted) { const k = JSON.stringify(t); if (!seen.has(k)) { seen.add(k); extra.push(t) } }
+      for (const t of lifted) { const k = nodeKey(t); if (!seen.has(k)) { seen.add(k); extra.push(t) } }
       for (const t of extra) accept([t])
       absorbs.set(s, { subst, extra, rest })
     }
@@ -1955,7 +1955,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const wordTests = [], seenTests = new Set()
     for (const [lo, hi] of [...words.values(), ...prods, ...[...absorbs.values()].flatMap(a => a.extra.map(t => ['test', t]))]) for (const t of lo === 'test' ? [hi] : [span(lo)[0] >= I32_MIN ? null : ['>=', lo, lit(I32_MIN)], span(hi)[1] <= I32_MAX ? null : ['<=', hi, lit(I32_MAX)]]) {
       if (!t) continue
-      const k = JSON.stringify(t)
+      const k = nodeKey(t)
       if (!seenTests.has(k)) { seenTests.add(k); wordTests.push(t) }
     }
     if (!names.length && !heldDivisors.length && !numbers.length && !present.length && !counterBound && !cursors.size && !wraps.length) continue

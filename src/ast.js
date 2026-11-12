@@ -823,13 +823,52 @@ export function cloneNode(node) {
   return out
 }
 
-// Share exact literal keys with watr's LICM. The recursive key distinguishes
-// BigInt, NaN, infinities and signed zero on both the host and self-hosted compiler;
-// JSON.stringify alone (or its unsupported in-kernel replacer) cannot do that.
-import { structuralKey as stableNodeKey } from 'watr/optimize'
+// A node is one node where every leaf is the same value (Object.is: NaN is NaN, -0 is
+// not 0, null is not undefined, 1 is not '1', 1n is not 1) and every array has the
+// same length. A literal's head, a hole or null, marks the literal either way. JSON
+// text writes NaN, the infinities, null and undefined all as `null` and -0 as `0`, and
+// throws at a BigInt: compare and key nodes here, never by their JSON text
+// (test/node-keys.js holds every JSON.stringify of the compiler to a reason).
+/** Whether two nodes are one node. */
 export function nodeEqual(a, b) {
-  return stableNodeKey(a) === stableNodeKey(b)
+  if (!Array.isArray(a) || !Array.isArray(b)) return Object.is(a, b)
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  if (a[0] == null ? b[0] != null : !nodeEqual(a[0], b[0])) return false
+  for (let i = 1; i < a.length; i++) if (!nodeEqual(a[i], b[i])) return false
+  return true
 }
+
+/** A node's text, one text to one node (as nodeEqual tells them): its JSON text where
+ *  that is (no leaf JSON writes as another's), else a text of the same form writing
+ *  such a leaf as itself (`NaN`, `-Infinity`, `-0`, `undefined`, `5n`). */
+export function nodeKey(n) {
+  return plainNode(n) ? JSON.stringify(n) : nodeText(n)
+}
+// (a leaf JSON writes as no other: a string, a boolean, null, a finite number but -0)
+const plainLeaf = (v) => typeof v === 'string' || typeof v === 'boolean' || v === null ||
+  typeof v === 'number' && Number.isFinite(v) && (v !== 0 || 1 / v > 0)
+function plainNode(n) {
+  if (!Array.isArray(n)) return plainLeaf(n)
+  for (let i = 0; i < n.length; i++) {
+    const c = n[i]
+    if (Array.isArray(c) ? !plainNode(c) : !(plainLeaf(c) || i === 0 && c === undefined)) return false
+  }
+  return true
+}
+function nodeText(n) {
+  if (!Array.isArray(n)) {
+    if (typeof n === 'string') return JSON.stringify(n)
+    if (typeof n === 'number') return n === 0 && 1 / n < 0 ? '-0' : String(n)
+    return typeof n === 'bigint' ? n + 'n' : String(n)
+  }
+  let s = '['
+  for (let i = 0; i < n.length; i++) s += (i ? ',' : '') + (i === 0 && n[0] == null ? 'null' : nodeText(n[i]))
+  return s + ']'
+}
+/** An IR constant's text by its value (`(i32.const 2)` and `(i32.const '2')` one): its
+ *  instruction and every immediate, a vector's lanes all, -0 as -0. */
+export const constText = (n) => n.map(v => typeof v === 'number' && v === 0 && 1 / v < 0 ? '-0' : v).join(' ')
 
 /** Property entries of an object-literal AST node (`['{}', …]`). */
 export function descriptorProps(node) {

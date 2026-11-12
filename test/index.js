@@ -224,6 +224,7 @@ const TESTS = [
   'preeval',
   'inference',
   'audit-regressions',
+  'node-keys',
   'provenance-inference',
   'speculate',
   'unsigned',

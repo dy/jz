@@ -1,11 +1,11 @@
-import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
+import { nodeEqual as exprEq, nodeKey, cloneNode, walkAst } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet, matchStrideAddr, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
 import { aliasGuards } from './alias.js'
 import { isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
 import { liftCtx, liftFail, liftStmt } from './lift.js'
-import { forEachLocalDef, isArr } from './node-utils.js'
+import { forEachLocalDef, isArr, f64PosInf } from './node-utils.js'
 import { simdLoop, simdBound } from './scaffold.js'
 
 // A stencil's bound is re-evaluated for the SIMD guard, so it must be a PURE loop-invariant
@@ -114,7 +114,7 @@ function stencilIndexModel(body, incVar, writes, fnLocals) {
       const w = isWrapSelect(n)
       if (w) { peel.needed = true; if (w.dir === 'R' && !peel.rightBs.some(b => exprEq(b, w.B))) peel.rightBs.push(w.B); return 1 }
       // jz overflow-canon `select(wrap(trunc_sat(…)), 0, ≠Inf)`: finite (grids) ⇒ the trunc branch.
-      if (n.length === 4 && isI32Const(n[2]) && isArr(n[3]) && n[3][0] === 'f64.ne' && isArr(n[3][2]) && n[3][2][0] === 'f64.const' && /inf/i.test(String(n[3][2][1])))
+      if (n.length === 4 && isI32Const(n[2]) && isArr(n[3]) && n[3][0] === 'f64.ne' && f64PosInf(n[3][2]))
         return ivCoeff(n[1])
     }
     return null
@@ -251,7 +251,7 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
 
   // In-place / loop-carried gate: every access to a WRITTEN base must touch the
   // SAME element (idx + memarg). Else SIMD reads stale data vs scalar.
-  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
+  const elemKey = (s) => `${nodeKey(normTee(s.idx))}@${s.memBytes / stride}`
   for (const st of sites) {
     if (st.kind !== 'store') continue
     for (const s of sites) if (exprEq(normTee(s.base), normTee(st.base)) && elemKey(s) !== elemKey(st)) return null

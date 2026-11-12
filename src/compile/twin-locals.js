@@ -32,7 +32,7 @@
  * @module compile/twin-locals
  */
 import { ctx, getFactStore } from '../ctx.js'
-import { walkAst, some, cloneNode, collectAllBoundNames, collectAssignedNames, refsName, REFS_THROUGH_ARROWS, MUTATE_OPS, T } from '../ast.js'
+import { walkAst, some, cloneNode, collectAllBoundNames, collectAssignedNames, refsName, REFS_THROUGH_ARROWS, MUTATE_OPS, T, nodeKey } from '../ast.js'
 import { freshId } from '../ir.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
@@ -68,7 +68,7 @@ function extentTest(spec, locals) {
   const trips = () => plus(B(), (incl ? 1 : 0) - C)
   const last = () => incl ? B() : plus(B(), -1)
   const tests = [], seen = new Set()
-  const push = (t) => { const k = JSON.stringify(t); if (!seen.has(k)) { seen.add(k); tests.push(t) } }
+  const push = (t) => { const k = nodeKey(t); if (!seen.has(k)) { seen.add(k); tests.push(t) } }
   const cursors = new Map()
   for (const c of cands) {
     if (c.presence || c.range || c.ind != null || (c.post && c.cursor == null) || receiverMayBeAbsent(c.recv, c.idx)) return null

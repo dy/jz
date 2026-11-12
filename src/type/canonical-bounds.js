@@ -10,7 +10,7 @@
  *
  * @module type/canonical-bounds
  */
-import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS } from '../ast.js'
+import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS, nodeKey, nodeEqual } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
 import { NUMBER, STRING } from '../summary/kind.js'
@@ -18,9 +18,9 @@ import { runsAccessor, runsConversion, primitiveKind } from '../evaluation-effec
 import { frameNode } from '../function.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
- *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
+ *  versioning scan and typedIdxProven. The key is the node's, so it matches even
  *  when the prover sees a clone of the scanned node. */
-export const idxKey = (recv, idx) => recv + '\x00' + (typeof idx === 'string' ? idx : JSON.stringify(idx))
+export const idxKey = (recv, idx) => recv + '\x00' + (typeof idx === 'string' ? idx : nodeKey(idx))
 
 // =============================================================================
 // charCodeAt in-bounds proof
@@ -423,7 +423,7 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
   const testNames = new Set()
   if (minimum && roundTest) { const walk = (y) => { if (!Array.isArray(y)) return; for (let i = 1; i < y.length; i++) if (typeof y[i] === 'string') testNames.add(y[i]); else walk(y[i]) }; walk(roundTest) }
   let testWrites = [...testNames].some(x => closureWrites.has(x)) ? 1 : 0
-  const sameTest = (c) => roundTest != null && JSON.stringify(c) === JSON.stringify(roundTest)
+  const sameTest = (c) => roundTest != null && nodeEqual(c, roundTest)
   const floors = new Map()
   const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
   const bodyDecls = new Map()

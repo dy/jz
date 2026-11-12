@@ -40,7 +40,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, noted, extractParams, collectParamName, collectParamNames } from '../../ast.js'
+import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, noted, extractParams, collectParamName, collectParamNames, nodeEqual } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
@@ -354,7 +354,7 @@ function reroll(stmts, k, q) {
     if (isIndexOf(n, k)) { const a = affineIn(n[2], k); return ['[]', norm(n[1], j), ['#', a.inv, a.coef, a.off - j]] }
     return n.map((c, at) => at ? norm(c, j) : c)
   }
-  const same = (a, j, b) => JSON.stringify(norm(a, j)) === JSON.stringify(norm(b, 0))
+  const same = (a, j, b) => nodeEqual(norm(a, j), norm(b, 0))
   const rolled = (n) => {
     if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return n
     if (isIndexOf(n, k)) { const a = affineIn(n[2], k); return like(n, ['[]', rolled(n[1]), ['+', a.inv == null ? lit(a.off) : add(a.inv, a.off), q]]) }

@@ -29,6 +29,7 @@
  * @module optimize/pair-tests
  */
 import { liveSeq } from './liveness.js'
+import { nodeKey, nodeEqual } from '../ast.js'
 
 const isArr = Array.isArray
 // (sets, not patterns: the compiler compiles itself, and its source keeps to plain string tests)
@@ -44,7 +45,6 @@ const HEADER = new Set(['export', 'param', 'result', 'local', 'type'])
 export const MIN_TESTS = 4
 
 const some = (n, f) => isArr(n) && (f(n) || n.some((c, i) => i > 0 && some(c, f)))
-const same = (a, b) => a === b || isArr(a) && isArr(b) && a.length === b.length && a.every((c, i) => same(c, b[i]))
 const clone = (n) => isArr(n) ? n.map(clone) : n
 const isMemWrite = (op) => typeof op === 'string' && (op.includes('.store') || op.startsWith('memory.') || op.includes('.atomic.') || op.startsWith('table.'))
 const ops = (n) => { if (!isArr(n)) return 0; let s = n[0] === 'local.get' || n[0] === 'local.tee' || typeof n[0] === 'string' && n[0].endsWith('.const') ? 0 : 1; for (let i = 1; i < n.length; i++) s += ops(n[i]); return s }
@@ -126,7 +126,7 @@ function pairJoin(join, stmt, live, loops, fresh, hoists) {
   let cost = 0
   // a leaf both lanes share, splatted once: the first with its tee, the rest its local
   const shared = (a) => {
-    const key = a[0] === 'local.get' || a[0] === 'local.tee' ? 'L' + a[1] : JSON.stringify(a)
+    const key = a[0] === 'local.get' || a[0] === 'local.tee' ? 'L' + a[1] : nodeKey(a)
     if (splats.has(key)) return ['local.get', splats.get(key)]
     const name = fresh()
     splats.set(key, name)
@@ -142,7 +142,7 @@ function pairJoin(join, stmt, live, loops, fresh, hoists) {
   // the vector of `a` (lane 0) beside `b` (lane 1), or null
   const lanes = (a, b) => {
     if (!isArr(a) || !isArr(b)) return null
-    if (a[0] === 'local.tee' && b[0] === 'local.get' && a[1] === b[1] || same(a, b) && !some(a, n => n[0] === 'local.tee')) return shared(a)
+    if (a[0] === 'local.tee' && b[0] === 'local.get' && a[1] === b[1] || nodeEqual(a, b) && !some(a, n => n[0] === 'local.tee')) return shared(a)
     if (a[0] === 'local.tee') return dead(a[1]) ? lanes(a[2], b) : null
     if (b[0] === 'local.tee') return dead(b[1]) ? lanes(a, b[2]) : null
     if (a[0] === b[0] && LANEWISE.has(a[0]) && a.length === b.length) {

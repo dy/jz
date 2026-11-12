@@ -33,7 +33,7 @@
 // integral copies: they read the copy's counters, the summary its fresh names.
 
 import { litN, loopLitVal, normalizeLoop, rewriteBlocks, freshLoopId, soleUnitInc, unitIncVar, loopHazards, closureMutatedVars } from './loop-model.js'
-import { T, some, numberGuard, walkAst } from '../ast.js'
+import { T, some, numberGuard, walkAst, nodeEqual } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { frameNode } from '../function.js'
 import { freshId } from '../ir.js'
@@ -50,7 +50,6 @@ const and = (tests) => tests.reduce((a, b) => ['&&', a, b])
 const word = (n) => ['&&', numberGuard(n), ['===', n, ['|', n, lit(0)]]]
 const notNegZero = (n) => ['||', ['!==', n, lit(0)], ['>', ['/', lit(1), n], lit(0)]]
 const intLit = (n) => { const v = loopLitVal(n); return v != null && Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX && !Object.is(v, -0) ? v : null }
-const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b)
 
 // a `continue` that targets THIS loop (not one nested inside) — would skip a while loop's increment
 const hasOuterContinue = (n) => Array.isArray(n) &&
@@ -127,7 +126,7 @@ const isZero = (n) => litN(n, 0)
 
 /** Rewrite the reads of one (E, w) pair in a loop body to its counters r and q. */
 function rewritePair(body, P, r, q, baseNonneg) {
-  const isKey = (n) => same(n, P.key)
+  const isKey = (n) => nodeEqual(n, P.key)
   const isRem = (n) => Array.isArray(n) && n[0] === '%' && n.length === 3 && isKey(n[1]) && n[2] === P.w
   const isQuot = (n) => Array.isArray(n) && n[0] === '/' && n.length === 3 && isKey(n[1]) && n[2] === P.w
   const used = { r: false, q: false, base: false }

@@ -43,7 +43,7 @@
  * Runs post-analyze (purity known) and pre-emit, mutating the body. Purely conservative.
  */
 
-import { ASSIGN_OPS, walkAst, isReassigned } from '../ast.js'
+import { ASSIGN_OPS, walkAst, isReassigned, nodeKey } from '../ast.js'
 import { NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS } from '../kind-traits.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from './analyze-scans.js'
 import { unitIncVar } from './loop-model.js'
@@ -70,13 +70,9 @@ const stableIdx = (e, runsUserCode) => {
   return false
 }
 
-const idxKey = (e) => {
-  if (isName(e)) return e
-  if (typeof e === 'number') return `#${e}`
-  if (isArr(e) && e[0] == null) return `#${e[1]}`
-  if (isArr(e)) return `(${e[0]} ${idxKey(e[1])} ${e[2] !== undefined ? idxKey(e[2]) : ''})`
-  return '?'
-}
+// An index's key: a literal by the property key it names (`a[1]`, `a['1']`, `a[-0]` one
+// slot), an expression by its node (in `i + '1'` the literal is a value, not a key).
+const idxKey = (e) => isName(e) ? e : typeof e === 'number' ? `#${e}` : isArr(e) && e[0] == null ? `#${e[1]}` : nodeKey(e)
 
 const idxVars = (e, out) => {
   if (isName(e)) out.add(e)

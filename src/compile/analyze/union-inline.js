@@ -468,7 +468,7 @@ export function unionInlinePass(programFacts) {
         if (akey != null) {
           if (pkey !== akey) { black.add(akey); if (pkey != null) black.add(pkey) }
           if (typeof a !== 'string') verifyCall(a, refs)
-        } else if (Array.isArray(a) && a[0] === '[]' && typeof a[1] === 'string' && uArr.has(a[1]) &&
+        } else if (Array.isArray(a) && a[0] === '[]' && typeof a[1] === 'string' && uArr.has(a[1]) && typeof a[2] === 'string' &&
                    inbCursorPairs.has(a[1] + '\x00' + a[2])) {
           // element cursor crossing — needs param schemaIdSet agreement.
           if (cParams?.get(k)?.schemaIdSet !== uArr.get(a[1])) black.add(uArr.get(a[1]))

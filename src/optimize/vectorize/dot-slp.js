@@ -1,5 +1,5 @@
 import { ctx } from '../../ctx.js'
-import { nodeEqual as exprEq, walkAst } from '../../ast.js'
+import { nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
 import { collectWrites } from './addr-model.js'
 import { accessOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, sameBase, windowDefs, clone, TEE } from './access.js'
 import { f64Zero, forEachLocalDef, isArr, localGetName } from './node-utils.js'
@@ -109,7 +109,7 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
     let prefix = []
     let addend = a.addend
     if (addend) {
-      const key = JSON.stringify(addend)
+      const key = nodeKey(addend)
       let tmp = addendTemps.get(key)
       if (!tmp) {
         tmp = `$__dotadd_${freshIdRef.next++}`

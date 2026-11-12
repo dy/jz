@@ -19,7 +19,7 @@
 // overwrites it unread. A local rewritten between a store and a load gives its
 // addresses a new identity, so the two no longer match; a rewrite of a forwarded
 // value's local forgets that value.
-import { walkAst } from '../ast.js'
+import { walkAst, nodeKey } from '../ast.js'
 import { findBodyStart } from '../ir.js'
 import { accessOf, deadTees, hasOp, inertFor, localGetCounts, resolveAddr, CONTROL_OPS, clone } from './vectorize/access.js'
 import { normalizeTransparentBlocks } from './vectorize/scaffold.js'
@@ -128,7 +128,7 @@ const forwardIn = (list, from, counts, copies, path, fresh) => {
   const w = { defs: new Map(), writes: NONE, root: copies && (name => copies.root(name, path)) }
   const entries = new Map(), pending = new Map()
   const dead = []
-  const keyOf = (base, at, win = w) => { const r = resolveAddr(base, win, at); return r && JSON.stringify(r) }
+  const keyOf = (base, at, win = w) => { const r = resolveAddr(base, win, at); return r && nodeKey(r) }
   const written = (name, maps) => { for (const m of maps) for (const [k, e] of m) if (e.value && e.value[0] === 'local.get' && e.value[1] === name) m.delete(k) }
   // A load that reads memory: its own slot, and any slot of another name it may reach
   // (src/ir/mem-alias.js); a slot of its own base at another offset is other bytes.
