@@ -1,4 +1,3 @@
-import { registerResetHook } from '../../ctx.js'
 import { cloneNode, isLeaf, nodeEqual, walkAst } from '../../ast.js'
 import { guardedInt32Operand } from '../../ir/numeric.js'
 import { hasBranchOrReturn, hasSideEffect, isI32Const, isLocalGet, matchMirrorAddr } from './addr-model.js'
@@ -75,9 +74,9 @@ export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: fal
 // these flags armed for the rest of the warm process. Registering a session-
 // boundary reset means that leak can never survive past the NEXT compile's
 // reset()/beginSession(), even though within-compile correctness still relies on
-// the call-site arm/disarm (unchanged here).
-const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
-registerResetHook(resetVectorizeState)
+// the call-site arm/disarm (unchanged here). The module stage registers it
+// (wat/assemble/optimize-module.js): no pass reads the compile's state.
+export const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
 
 // The one lift context shape: the self-compile kernel infers one struct layout per shared
 // callee (liftStmt/liftExprV/liftFail), so every recognizer builds its ctx here rather than

@@ -7,7 +7,7 @@
  *
  * @module optimize/globals
  */
-import { LAYOUT, ctx } from '../ctx.js'
+import { LAYOUT } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
@@ -162,18 +162,19 @@ export function collectReachableGlobalWrites(funcs, later = null) {
  * zero-trip loop or an early return is safe.
  *
  * @param {Array} fn - func IR node
- * @param {Set<string>} stablePtrGlobals - '$name's of VAL.TYPED module globals
+ * @param {Map<string, string>} stablePtrGlobals - '$name' → value type of the stable-pointee module globals (stablePtrGlobalNames)
  * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
  */
 // Never-forwarding pointee kinds: every PTR tag outside __ptr_offset's
 // forwarding set {ARRAY, HASH, SET, MAP} — same bits ⇒ same offset.
 const STABLE_PTR_VALS = new Set([VAL.TYPED, VAL.STRING, VAL.OBJECT, VAL.BUFFER, VAL.CLOSURE])
 
-/** '$name' set of stable-pointee module globals (hoistGlobalPtrOffset targets). */
-export const stablePtrGlobalNames = () => {
-  const out = new Set()
-  if (ctx.scope.globalValTypes)
-    for (const [k, v] of ctx.scope.globalValTypes) if (STABLE_PTR_VALS.has(v)) out.add(`$${k}`)
+/** '$name' → value type of the stable-pointee module globals (hoistGlobalPtrOffset
+ *  targets), of the module's value types (ctx.scope.globalValTypes). */
+export const stablePtrGlobalNames = (globalValTypes) => {
+  const out = new Map()
+  if (globalValTypes)
+    for (const [k, v] of globalValTypes) if (STABLE_PTR_VALS.has(v)) out.set(`$${k}`, v)
   return out
 }
 
@@ -269,7 +270,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
     const addr = node[0] === 'i32.load' && node.length === 2 ? node[1] : null
     if (addr?.[0] === 'i32.sub' && addr[2]?.[0] === 'i32.const' && addr[2][1] === 8) {
       const g = siteGlobal(addr[1])
-      if (chosen.has(g) && ctx.scope.globalValTypes?.get(g.slice(1)) === VAL.TYPED) {
+      if (chosen.has(g) && stablePtrGlobals.get(g) === VAL.TYPED) {
         let name = lengths.get(g)
         if (!name) lengths.set(g, name = freshId())
         parent[idx] = ['local.get', name]
@@ -312,7 +313,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
 // This is load-CSE across the call/loop boundary: ordinary CSE cannot retain a
 // memory value past an unrelated store (for example, writes to an output
 // buffer), even when both bases are proven-distinct module allocations.
-const typedGlobalByteLengths = () => {
+const typedGlobalByteLengths = (globalTypedLen, globalTypedElem) => {
   const widths = new Map([
     ['new.Int8Array', 1], ['new.Uint8Array', 1], ['new.Uint8ClampedArray', 1],
     ['new.Int16Array', 2], ['new.Uint16Array', 2],
@@ -320,8 +321,8 @@ const typedGlobalByteLengths = () => {
     ['new.BigInt64Array', 8], ['new.BigUint64Array', 8], ['new.Float64Array', 8],
   ])
   const out = new Map()
-  for (const [name, len] of ctx.scope.globalTypedLen || []) {
-    const width = widths.get(ctx.scope.globalTypedElem?.get(name))
+  for (const [name, len] of globalTypedLen || []) {
+    const width = widths.get(globalTypedElem?.get(name))
     if (width && Number.isInteger(len) && len >= 0) out.set(`$${name}`, len * width)
   }
   return out
@@ -453,17 +454,18 @@ export function collectReachableMemoryWrites(funcs) {
   return direct
 }
 
-export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachableGlobalWrites) {
+// Facts: the module's fixed typed-array globals, their lengths and kinds (`globalTypedLen`,
+// `globalTypedElem`), and those holding buffers of their own (`freshTypedGlobals`).
+export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachableGlobalWrites, { globalTypedLen = null, globalTypedElem = null, freshTypedGlobals: own = null } = {}) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') return
   const aliases = globalBaseAliases(fn)
   if (!aliases.size) return
-  const byteLens = typedGlobalByteLengths()
+  const byteLens = typedGlobalByteLengths(globalTypedLen, globalTypedElem)
   if (!byteLens.size) return
   const writes = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
   if (writes.has('*') || !reachableGlobalWrites) return
   // A store through one global leaves another's elements alone only when both
   // hold buffers of their own: `b = a`, or a view of `a.buffer`, is a.
-  const own = ctx.scope.freshTypedGlobals
   const apart = global => !writes.size || !!own?.has(global) && [...writes].every(g => own.has(g))
   const opWidth = op => op.startsWith('v128.') ? 16
     : op.startsWith('f64.') || op.startsWith('i64.') ? 8
@@ -712,7 +714,7 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
  * broader write proof already holds; other globals use per-loop snapshots.
  *
  * @param {Array} fn - func IR node
- * @param {Set<string>} stablePtrGlobals - '$name's of never-forwarding module globals
+ * @param {Map<string, string>} stablePtrGlobals - '$name's of never-forwarding module globals (stablePtrGlobalNames)
  * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
  */
 // hoistLoopGlobalPtrOffset keeps its hand-rolled inspect/replace recursion on

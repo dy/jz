@@ -47,7 +47,6 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
 import { findBodyStart, writtenLocals, dollar } from '../../ir.js'
-import { warn, ctx } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import { constNum, isI32Const } from './addr-model.js'
 import { tryChannelReduce } from './blur-channel.js'
@@ -81,8 +80,8 @@ import { tryToneMap } from './tone-map.js'
 // block array between emission and here (pre-trio spec 2: fail-open) — proves nothing, asserts
 // nothing. A HIT that disagrees is a genuine finding: the two derivations describe the SAME loop
 // and must name the same induction variable / the same constant bound where both resolve one.
-function assertLoopPlanAgrees(node, bl) {
-  const link = ctx.plans.loweringLinks.get(node)
+function assertLoopPlanAgrees(node, bl, links) {
+  const link = links?.get(node)
   if (!link) return
   const { plan, lowering } = link
   if (lowering.ivName != null && dollar(lowering.ivName) !== bl.incVar)
@@ -99,11 +98,14 @@ function assertLoopPlanAgrees(node, bl) {
  */
 // opts gates the recognizer set + lift variants (all default-safe so a bare
 // `vectorizeLaneLocal(fn)` is the conservative scalar-preserving pass):
-//   multiAcc, relaxedFloat, relaxedSimd, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
+//   multiAcc, relaxedFloat, relaxedSimd, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap;
+// and the facts of the compile it reads: `links` (each emitted loop's block → what the
+// emitter proved of it, src/ir/control.js), `typedView` (a typed view of another's
+// buffer exists, which the store pairing does not model) and `warn` (the advisory sink).
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFloat = false, relaxedSimd = false, blurMP = true, whyNot = false,
     stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
-    aliasVersion = true, pairIterations = false } = opts
+    aliasVersion = true, pairIterations = false, links = null, typedView = false, warn = null } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -170,7 +172,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   if (relaxedFloat) hoistReductionInvariantsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
   // Unified SLP packer (dot-sequence tier, then element-store tier) — see slpPairsIn.
   // (a fused dot pair is both: the relaxed opcode and its one rounding)
-  slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFloat && relaxedSimd, slp)
+  slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFloat && relaxedSimd, slp && !typedView)
   if (newLocalDeclsAll.length) simdFired = true
 
   // The locals live out of the loop at the end of `chain` ([parent, idx]
@@ -232,7 +234,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // assertLoopPlanAgrees's own doc. `bl`-scoped only (the IV/bound facts it exists to
       // cross-check); a null `bl` has nothing to compare. Runs BEFORE the consultation below
       // so it still checks the fresh WAT derivation, unmodified by the override.
-      if (DBG_INVARIANTS && bl) assertLoopPlanAgrees(node, bl)
+      if (DBG_INVARIANTS && bl) assertLoopPlanAgrees(node, bl, links)
       // FIRST REAL CONSUMPTION (.work/evidence.md §BodyModel): the shadow-assert above runs
       // across the full battery with zero divergences, so wherever the link resolves an IV
       // name, it is PROVEN to equal `bl.incVar`'s WAT-derived one. Roles invert: the plan
@@ -257,7 +259,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       let live = null
       const outsideReads = { has: (name) => (live ??= liveOutOf(here)).has(name) }
       if (bl) {
-        const link = ctx.plans.loweringLinks.get(node)
+        const link = links?.get(node)
         if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)
         bl.outsideReads = outsideReads
       }
@@ -332,7 +334,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // Reuses `op` (already matched above) instead of re-running matchOuterPixelLoop.
       if (!r && vecState.whyNotActive && (bl || op)) {
         whyNotN++
-        warn('simd-why-not',
+        warn?.('simd-why-not',
           `${fnName.replace(/^\$/, '')}: loop #${whyNotN} not vectorized — ${vecState.whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
           { fn: `${fnName}#${whyNotN}` })
       }

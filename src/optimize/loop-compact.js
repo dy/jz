@@ -55,9 +55,7 @@
  *
  * @module optimize/loop-compact
  */
-import { ctx } from '../ctx.js'
 import { T as MARK } from '../ast.js'
-import { compactSlack } from '../../module/core/stub-log.js'
 import { liveSeq } from './liveness.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
@@ -79,12 +77,15 @@ const NONE = new Set()
 /**
  * @param funcs  emitted function arrays
  * @param owners Map of function name (`$name`) → { labels: Set of loop labels, raw: [[`$local`, tag, aux]…] }
+ * @param facts  the memory (shared, its maximum in pages), the module's globals, the loops that
+ *               allocate nothing as optimized (quietOptimizedLoops) and the build's slack in bytes
+ * @returns whether a compaction went in
  */
-export function insertLoopCompacts(funcs, owners) {
-  if (!owners?.size || ctx.memory.shared || !ctx.scope.globals.has('__heap')) return
+export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, quietLoops, compactSlack }) {
+  if (!owners?.size || shared || !globals.has('__heap')) return false
   // the memory's cap in bytes, as an i32: its declared maximum, else the address space
-  const cap = (ctx.memory.max > 0 && ctx.memory.max < 65536 ? ctx.memory.max * 65536 : 2 ** 32) | 0
-  let id = 0
+  const cap = (memoryMax > 0 && memoryMax < 65536 ? memoryMax * 65536 : 2 ** 32) | 0
+  let id = 0, compacted = false
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
     const own = owners.get(fn[1])
@@ -151,7 +152,7 @@ export function insertLoopCompacts(funcs, owners) {
       }
       // declined (the kernel has no room, a checkpoint holds parked data, the
       // stub log overflowed): asked again a slack later, or never past the end
-      const later = ['i32.add', ['global.get', '$__heap'], ['i32.const', compactSlack()]]
+      const later = ['i32.add', ['global.get', '$__heap'], ['i32.const', compactSlack]]
       return ['if', ['call', '$__gc_begin', ['local.get', mark]],
         ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
           ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]],
@@ -188,7 +189,7 @@ export function insertLoopCompacts(funcs, owners) {
         if (!Array.isArray(n)) continue
         const loopNode = n[0] === 'loop' && own.labels.has(written(n[1])) ? n
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && own.labels.has(written(n[2][1])) ? n[2] : null
-        if (loopNode !== null && !done.has(loopNode) && !ctx.plans.quietLoopNodes?.has(loopNode)) {
+        if (loopNode !== null && !done.has(loopNode) && !quietLoops?.has(loopNode)) {
           done.add(loopNode)
           const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`, out = `$${MARK}lrc${id}out`, again = `$${MARK}lrc${id}again`, exit = `$${MARK}lrc${id}exit`, ended = `$${MARK}lrc${id}end`, endBlock = `$${MARK}lrc${id}ends`
           id++
@@ -244,7 +245,7 @@ export function insertLoopCompacts(funcs, owners) {
           // which sets the threshold properly). Nothing else: a store to a
           // global here cost a parser five percent.
           const entry = [['local.set', mark, ['global.get', '$__heap']],
-            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack()]]]]
+            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack]]]]
           if (ends) entry.push(['local.set', ended, ['i32.const', 0]])
           list.splice(i, 0, ...entry)
           // past them, at the loop: the walk goes on with the statement after it (a second loop)
@@ -255,7 +256,8 @@ export function insertLoopCompacts(funcs, owners) {
     }
     visit(fn, 1)
     if (!locals.length) continue
-    ctx.plans.hasCompactLoops = true
+    compacted = true
     fn.splice(body, 0, ...locals)
   }
+  return compacted
 }

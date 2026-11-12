@@ -18,7 +18,7 @@
  *
  * @module optimize/loop-rewind
  */
-import { ctx, HEAP } from '../ctx.js'
+import { HEAP } from '../../layout.js'
 import { T as MARK } from '../ast.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
@@ -29,13 +29,14 @@ const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)
 /**
  * @param funcs    emitted function arrays
  * @param owners   Map of function name (`$name`) → Set of its loop labels (`['loop', label, ...body]`) to rewind
+ * @param facts    whether the memory is shared, the module's globals, and the
+ *                 loops that allocate nothing as optimized (quietOptimizedLoops)
  * A module with no allocator declares no heap pointer (the stdlib pull
  * declares `__heap` for an owned memory), and then nothing rewinds.
  */
-export function insertLoopRewinds(funcs, owners) {
+export function insertLoopRewinds(funcs, owners, { shared, globals, quietLoops }) {
   if (!owners?.size) return
-  const shared = ctx.memory.shared
-  if (!shared && !ctx.scope.globals.has('__heap')) return
+  if (!shared && !globals.has('__heap')) return
   const save = (name) => ['local.set', name, shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap']]
   const restore = (name) => shared ? ['i32.store', ['i32.const', HEAP.PTR_ADDR], ['local.get', name]] : ['global.set', '$__heap', ['local.get', name]]
   let id = 0
@@ -50,7 +51,7 @@ export function insertLoopRewinds(funcs, owners) {
         if (!Array.isArray(n)) continue
         const loopNode = n[0] === 'loop' && labels.has(written(n[1])) ? n
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && labels.has(written(n[2][1])) ? n[2] : null
-        if (loopNode !== null && !done.has(loopNode) && !ctx.plans.quietLoopNodes?.has(loopNode)) {
+        if (loopNode !== null && !done.has(loopNode) && !quietLoops?.has(loopNode)) {
           done.add(loopNode)
           const name = `$${MARK}lrw${id++}`
           locals.push(['local', name, 'i32'])

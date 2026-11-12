@@ -67,7 +67,6 @@ import { link } from '../link/index.js'
 import { summarize, K, hasTag, tagOf, tagsOf, paramOf, UNKNOWN } from '../summary/index.js'
 import { bitOf, NULL_BITS, ANY } from '../summary/kind.js'
 import { unboundedPresent } from '../summary/contract.js'
-import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers, synthesizeClassExports, hostClassTable } from './emit/class-dispatch.js'
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
@@ -119,18 +118,47 @@ export function linkAssembled({ module, link: options }, profiler) {
  * from the compile context once: plain data the kernel checkpoints beside
  * the assembled module.
  */
-export function tailFacts(cfg) {
+export function tailFacts() {
   return {
     funcCount: ctx.funcs.list.length,
-    boundaryPins: programPins(cfg),
+    boundaryPins: programPins(),
     targetProfile: ctx.transform.targetProfile,
     lazyDataSpans: ctx.runtime.lazySpans,
     staticDataSpan: ctx.runtime.staticPrefixSpan,
     dataRecords: ctx.memory.shared ? null : ctx.runtime.dataRecords,
-    stableGlobals: stablePtrGlobalNames(),
+    stableGlobals: stablePtrGlobalNames(ctx.scope.globalValTypes),
     fixedMemory: fixedMemoryFacts(),
     noSimd: !!ctx.transform.noSimd,
+    // the program's own functions, by name: the tail tells them from the runtime's
+    userFuncs: new Set(ctx.funcs.map.keys()),
   }
+}
+
+/**
+ * The functions watr's single-caller inliner must leave intact, from the live
+ * compile: JS-boundary vectorized functions (their `$name$exp` wrapper must
+ * not swallow the body the host tests inspect) and the typed runtime the
+ * typed-index proofs name. One list for both callers (compiler.js, scripts/self.js).
+ */
+function programPins() {
+  return [
+    // The dynamic `+`'s cold path (ToPrimitive, concat or add) stays a call: spliced
+    // into the hot arithmetic loops that reach it, it costs size for a path a
+    // numeric program never takes.
+    ...(ctx.core.includes.has('__add_slow') ? ['$__add_slow'] : []),
+    // A loop its caller had no room for stays a function (plan/inline.js): the
+    // single-caller inliner has no bound of its own.
+    ...[...ctx.plans.keptKernels ?? []].map(name => `$${name}`),
+    // A runtime throw only leaves: spliced into its one caller, a hot loop's
+    // cold arm would carry the error's allocation and stores.
+    ...[...ctx.runtime.throwHelpers].filter(name => ctx.core.includes.has(name.slice(1))),
+    ...(ctx.plans.vectorizedFns?.size
+      ? [...ctx.plans.vectorizedFns].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
+      : []),
+    ...(ctx.linkDemand.typedRuntime
+      ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
+        .filter(name => ctx.core.includes.has(name.slice(1))) : []),
+  ]
 }
 
 /** Every pass before link: the module's sections in order, and link's inputs. */

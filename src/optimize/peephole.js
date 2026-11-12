@@ -9,13 +9,12 @@
  * @module optimize/peephole
  */
 import { simplifyCast } from 'watr/optimize'
-import { LAYOUT, FORWARDING_MASK, ctx } from '../ctx.js'
+import { LAYOUT, FORWARDING_MASK, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 import { nanboxF64 } from '../abi/index.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR, numberNanIR } from '../ir.js'
 import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst, nodeEqual } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
-import { atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 import { IR_FULL, irSize } from '../growth.js'
 const TWO_63 = 2 ** 63
 
@@ -260,7 +259,10 @@ export function inlinePtrOffsetFastPass(fn) {
 //                    i32.wrap_i64 over (i64.extend_i32_u/_s X) or (i64.or HIGH_ONLY extend X)
 //   foldMemarg     — (load/store (i32.add base (i32.const N)) …) → (load/store offset=N base …)
 // They discriminate on node[0] and don't overlap, so one visit suffices for all three.
-export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
+// `links` maps an emitted loop's block to the facts the emitter proved of it
+// (ctx.plans.loweringLinks, src/ir/control.js): a counter's hull bounds a float
+// accumulator's steps.
+export function fusedRewrite(fn, bigint = false, inlineTruthy = true, links = null) {
   if (!Array.isArray(fn) || fn[0] !== 'func') {
     if (Array.isArray(fn)) {
       for (let i = 0; i < fn.length; i++) {
@@ -338,7 +340,7 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
     // reads back through a local under enclosure is unknown while it is built.
     if (!bounds.has(name)) {
       bounds.set(name, null)
-      bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params, v => f64Range(v, n => get(n, true), true)))
+      bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params, links, v => f64Range(v, n => get(n, true), true)))
     }
     return bounds.get(name)
   }
@@ -526,7 +528,7 @@ export function lowerToInt32Tails(fn) {
 // rounding is monotone, and each integral bound + floor/ceil(step) is exact
 // while its magnitude stays within 2^53. These are magnitude bounds, not an
 // integer-value proof; the accumulator itself remains f64.
-function boundedFloatLocal(name, writes, owners, params, range = null) {
+function boundedFloatLocal(name, writes, owners, params, links, range = null) {
   if (!writes) return null
   let lo = 0, hi = 0, steps
   const changes = (n, key) => {
@@ -572,7 +574,7 @@ function boundedFloatLocal(name, writes, owners, params, range = null) {
     }
     const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
     const info = owners.get(w), loop = info?.node, block = info?.parent?.node
-    const facts = block && ctx.plans.loweringLinks?.get(block)?.plan
+    const facts = block && links?.get(block)?.plan
     if (!facts?.hull) {
       // Repeated finite additions eventually stop changing an f64. Choose
       // endpoints beyond the step's rounding threshold, then verify the

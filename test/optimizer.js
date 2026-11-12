@@ -28,6 +28,7 @@ import encodeWat from 'watr/compile'
 import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '../src/optimize/licm.js'
 import { selectArms } from '../src/optimize/select-arms.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
+import { passFacts } from '../src/wat/assemble/optimize-module.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
@@ -883,10 +884,10 @@ test('devirtSchemaReads: empty and populated branch memos preserve reads and wri
     const bytes = encodeWat(ast)
     const original = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports
     const fn = findFunc(ast, '$f')
-    devirtSchemaReads(fn)
+    devirtSchemaReads(fn, passFacts(ctx.transform.optimize), ctx.transform.optimize)
     is(encodeWat(ast), bytes, 'an untagged function stays byte-identical')
     walk(fn, n => { if (n[0] === 'call' && n[1] === '$__dyn_get_test') n.dvProp = 'x' })
-    devirtSchemaReads(fn)
+    devirtSchemaReads(fn, passFacts(ctx.transform.optimize), ctx.transform.optimize)
     const optimized = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
     for (const flag of [0, 1, 1, 0]) for (const n of [0, 1, 3]) {
       for (const ex of [original, optimized]) new DataView(ex.memory.buffer).setBigInt64(0, 11n, true)
@@ -921,7 +922,7 @@ test('devirtSchemaReads: a receiver local the function writes keeps its reads to
     const original = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
     const fn = findFunc(ast, '$f')
     walk(fn, n => { if (n[0] === 'call' && n[1] === '$__dyn_get_test') n.dvProp = 'x' })
-    devirtSchemaReads(fn)
+    devirtSchemaReads(fn, passFacts(ctx.transform.optimize), ctx.transform.optimize)
     if (body === bodies[0]) ok(JSON.stringify(fn).includes('$__dsrm'), 'two reads of one value share a memo')
     const optimized = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
     for (const flag of [0, 1]) for (const n of [0, 1, 3]) {
@@ -2911,15 +2912,13 @@ test('fractional recurrence IR uses trip bounds or finite steps and rejects nume
     })
     const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
     const before = instantiate(fn)
-    const links = ctx.plans.loweringLinks
-    ctx.plans.loweringLinks = new WeakMap()
-    try {
-      if (mode !== 'unlinked') walk(fn, n => {
-        if (n[0] === 'block' && n[1] === '$exit')
-          ctx.plans.loweringLinks.set(n, { plan: { hull: { lo: 0, hi: 2 }, step: 1 }, lowering: { ivName: 'i', guardName: 'i' } })
-      })
-      fusedRewrite(fn)
-    } finally { ctx.plans.loweringLinks = links }
+    // the facts the pass is handed: each emitted loop's block → what the emitter proved of it
+    const links = new WeakMap()
+    if (mode !== 'unlinked') walk(fn, n => {
+      if (n[0] === 'block' && n[1] === '$exit')
+        links.set(n, { plan: { hull: { lo: 0, hi: 2 }, step: 1 }, lowering: { ivName: 'i', guardName: 'i' } })
+    })
+    fusedRewrite(fn, false, true, links)
     const after = instantiate(fn)
     for (const again of [0, 0, 1, 0]) is(after(again), before(again), `${mode}, again=${again}`)
     const guards = count(fn, n => n[0] === 'f64.ne')

@@ -13,10 +13,9 @@
  * @module optimize/devirt
  */
 import { NUMBER } from '../summary/kind.js'
-import { LAYOUT, ctx, declGlobal } from '../ctx.js'
 import { findBodyStart, nextLocalId, cloneIR, isPureIR } from '../ir.js'
 import { walkAst } from '../ast.js'
-import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, i64Hex } from '../../layout.js'
+import { LAYOUT, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, i64Hex } from '../../layout.js'
 import { inlinePureCallExpr } from './vectorize/inline-pure.js'
 
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
@@ -39,12 +38,15 @@ const PURE_I64 = new Set(['i64.const', 'i64.reinterpret_f64', 'f64.reinterpret_i
  *  schema slot is authoritative for its own fields (dyn writes to schema keys
  *  mirror into the slot — buildObjectSchemaSetArm), so the direct load is
  *  bit-identical where it fires. Emit tagged the call (.dvProp) because
- *  schema.list is still growing while function bodies emit. */
-export function devirtSchemaReads(fn) {
+ *  schema.list is still growing while function bodies emit.
+ *  Facts: the schema list and its fields by name (`schemasByProp`), the
+ *  summary's kind of a schema's field (`fieldKind`), the runtime's names
+ *  (`includes`: `__ptr_type`, `__jp_obj`), and `icSite`, which declares an inline
+ *  cache's two globals and answers its number. */
+export function devirtSchemaReads(fn, { schemas = null, schemasByProp = null, fieldKind = null, includes = null, icSite = null } = {}, cfg = null) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const schemas = ctx.schema?.list
   if (!schemas || !schemas.length) return
-  if (!ctx.core.includes.has('__ptr_type')) return
+  if (!includes?.has('__ptr_type')) return
   // Receiver-stable sid cache: a devirt read whose receiver is a bare local that
   // is NEVER written in this function (param or single-init const — this pass
   // runs before watr inlining, so `measure(o)`-style helpers still have their
@@ -124,12 +126,12 @@ export function devirtSchemaReads(fn) {
   const rewrite = (parent, i) => {
     // A schema fast path retains the generic call as its fallback. Size mode
     // shares that call instead of adding dispatch arms; read reuse still runs.
-    if (ctx.transform.optimize.leanRuntime) return
+    if (cfg?.leanRuntime) return
     const node = parent[i]
     const prop = node.dvProp
     // Registration already indexes each field's {id, slot} in schema order.
     // Consume that census without rebuilding it at every read site.
-    const withProp = ctx.schema._byProp.get(prop)
+    const withProp = schemasByProp.get(prop)
     // Price the schemas this property can reach, not unrelated module shapes.
     if (!withProp?.length) return
     const sparse = withProp[withProp.length - 1].id - withProp[0].id + 1 > withProp.length * 2
@@ -165,7 +167,7 @@ export function devirtSchemaReads(fn) {
     const recvBits = () => stable ? cloneIR(stable.bits) : ['local.get', rT]
     // Schema loads enter the same generic carrier as the fallback call.
     // Raw Number slots need its domain conversion even when dispatch is inlined.
-    const exactNumber = sid => ctx.summary?.fieldKind(sid, prop) === NUMBER
+    const exactNumber = sid => fieldKind?.(sid, prop) === NUMBER
     const numberField = withProp.some(({ id }) => exactNumber(id))
     // `sids`: the schemas an arm loads for. Where they agree the conversion is
     // known there: none raw, nothing to do; all raw, the NaN canonicalized
@@ -191,12 +193,12 @@ export function devirtSchemaReads(fn) {
     // loads the slot behind one high-word compare. A layout JSON.parse
     // registered has an id a reset reissues: `__clear` empties every site
     // (optimize-module.js). Any other receiver takes the generic read.
+    // Cached highs have zero low bits: a site's high starts at -1, which
+    // cannot match any masked receiver, including numeric zero before the
+    // site's first successful object read (`icSite` declares the pair).
     const cached = (fallback) => {
-      const site = ctx.runtime.icSites = (ctx.runtime.icSites ?? 0) + 1
+      const site = icSite()
       const hiG = `__ic_hi${site}`, slotG = `__ic_slot${site}`, vT = `$__dsrv${id}`
-      // Cached highs have zero low bits. -1 cannot match any masked receiver,
-      // including numeric zero before the site's first successful object read.
-      declGlobal(hiG, 'i64', -1); declGlobal(slotG, 'i32')
       newDecls.push(['local', vT, 'i64'])
       return ['if', ['result', 'i64'],
         ['i64.eq', ['i64.and', recvBits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['global.get', `$${hiG}`]],
@@ -210,7 +212,7 @@ export function devirtSchemaReads(fn) {
     }
     // A layout the program never wrote (JSON.parse's) reaches the generic read
     // past every arm below: such a read keeps a cache of its own there.
-    const runtimeLayouts = ctx.core.includes.has('__jp_obj')
+    const runtimeLayouts = includes.has('__jp_obj')
     if (useCache) {
       const fallback = [...genericCall]
       if (!stable) fallback[2] = ['local.get', rT]
@@ -427,7 +429,7 @@ export function devirtSchemaReads(fn) {
 
 /** Fold the base/len ceremony of `constArr[i]` element reads whose receiver is a
  *  STATIC array literal bound to a const global (module/array.js tags `.saArr` /
- *  `.saBits` on the read IR; the decl registers ctx.scope.staticArrs). The
+ *  `.saBits` on the read IR; the decl registers ctx.scope.staticArrs, `staticArrs`). The
  *  data-segment offset and length are compile-time constants, so the per-read
  *  `__ptr_offset` call + header len load collapse to literals — decisive in
  *  loops containing calls, where a callee may write memory and watr's LICM must
@@ -437,13 +439,11 @@ export function devirtSchemaReads(fn) {
  *  nameEscapes, collectProgramFacts) keeps the generic form — an alias or a
  *  grow could relocate the payload (header forwarding) or change len, and a
  *  folded base would read stale memory. */
-export function foldStaticConstArrayReads(fn) {
+export function foldStaticConstArrayReads(fn, { staticArrs: sa = null, arrResized: resized = null, nameEscapes: escapes = null } = {}) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const sa = ctx.scope.staticArrs
   if (!sa || !sa.size) return
   // Facts must EXIST to fold — an absent fact set means the program was never
   // walked for resize/escape, not that the name is safe.
-  const resized = ctx.types.arrResized, escapes = ctx.types.nameEscapes
   if (!resized || !escapes) return
   const rewrite = (node) => {
     const st = sa.get(node.saArr)
@@ -592,10 +592,11 @@ const foldImpossibleConvertGuards = (n) => {
  *  arrow: the switch reads the index the element read already holds
  *  (`.dvKey`), not the box it loaded, and an index past the end takes the
  *  callability test's miss arm, the TypeError a call of undefined throws. The
- *  test and the generic call leave the dispatch. */
-export function devirtConstFnArrayCalls(fn, cfg) {
+ *  test and the generic call leave the dispatch.
+ *  Facts: the tables and their arrows (`constFnArrays`), the arrows' bodies
+ *  (`dvArmFns`, optimize-module.js) and foldStaticConstArrayReads' three. */
+export function devirtConstFnArrayCalls(fn, { constFnArrays: cfa = null, dvArmFns = null, staticArrs = null, arrResized = null, nameEscapes = null } = {}, cfg = null) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const cfa = ctx.scope.constFnArrays
   if (!cfa || !cfa.size) return
   const armInline = !cfg || cfg.inlineDevirtArms !== false
   let uid = null
@@ -663,7 +664,7 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     // safe to substitute verbatim — inlinePureCallExpr itself enforces the
     // straight-line shape and read-only params, and returns null for anything it
     // can't prove (the call stays). Purity mattered only for value-motion uses.
-    const bodies = ctx.scope.dvArmFns
+    const bodies = dvArmFns
     const nodeCount = (n) => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
     // i32 block-narrow: when the receiver is a facts-qualified STATIC table (the
     // same never-resized/never-aliased gate as foldStaticConstArrayReads — its
@@ -692,12 +693,12 @@ export function devirtConstFnArrayCalls(fn, cfg) {
       if (last && last[0] !== 'return') exits.push(last)
       return exits.length > 0 && exits.every(e => Array.isArray(e) && e[0] === 'f64.convert_i32_s')
     }
-    const sa = ctx.scope.staticArrs?.get(node.dvArr)
-    const fns = ctx.scope.dvArmFns
+    const sa = staticArrs?.get(node.dvArr)
+    const fns = dvArmFns
     // An arbitrary key can select a named method outside the element family.
     // Its checked call may share identity dispatch, but not the elements' result width.
-    const narrow = !!(!node.dvOpen && sa && fns && ctx.types.arrResized && ctx.types.nameEscapes &&
-      !ctx.types.arrResized.has(node.dvArr) && !ctx.types.nameEscapes.has(node.dvArr) &&
+    const narrow = !!(!node.dvOpen && sa && fns && arrResized && nameEscapes &&
+      !arrResized.has(node.dvArr) && !nameEscapes.has(node.dvArr) &&
       cands.every(c => convertTopped(fns.get(`$${c.name}`))))
     const intOf = (v) => {
       if (Array.isArray(v) && v[0] === 'f64.convert_i32_s') return v[1]

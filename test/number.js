@@ -816,7 +816,7 @@ test('Number schema reader tables relocate and reset across compilations', () =>
 
 test('Number schema dispatch fast paths preserve the generic carrier contract', async () => {
   if(onKernel())return
-  const {ctx}=await import('../src/ctx.js'),{devirtSchemaReads}=await import('../src/optimize/devirt.js')
+  const {ctx}=await import('../src/ctx.js'),{devirtSchemaReads}=await import('../src/optimize/devirt.js'),{passFacts}=await import('../src/wat/assemble/optimize-module.js')
   const {NUMBER,STRING}=await import('../src/summary/kind.js'),{objectSchemaGuardHex}=await import('../layout.js')
   for(const form of ['single','dense','sparse','cache']){
     compile('',{optimize:{level:1,watr:false}})
@@ -838,7 +838,7 @@ test('Number schema dispatch fast paths preserve the generic carrier contract', 
       ['call','$__schema_value',get('obj'),c(0),['i64.load',c(128)]]]
     const read=['call','$__dyn_get_test',get('obj')];read.dvProp='value';read.dvObject=true
     const fn=['func','$f',['export','"f"'],['param','$obj','i64'],['result','i64'],read]
-    devirtSchemaReads(fn)
+    devirtSchemaReads(fn,passFacts(ctx.transform.optimize),ctx.transform.optimize)
     const globals=new Map([['$__ic_found_hi','i64'],['$__ic_found_slot','i32']])
     const scan=n=>{if(!Array.isArray(n))return;if((n[0]==='global.get'||n[0]==='global.set')&&n[1].startsWith('$__ic_'))
       globals.set(n[1],n[1].includes('_hi')?'i64':'i32');for(const child of n)scan(child)}

@@ -31,7 +31,7 @@ import jzify from '../jzify/index.js'
 // Final-optimizer tail shared with the host pipeline: its inputs are the
 // compile context's facts read once (tailFacts), so it runs after the arena
 // was rewound; watr option policy remains owned by watr-tail.js.
-function optimizeTail(module, cfg, facts = tailFacts(cfg)) {
+function optimizeTail(module, cfg, facts = tailFacts()) {
   return watrTail(module, cfg, facts)
 }
 
@@ -420,7 +420,7 @@ function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, b
   // link and the optimizer run.
   const assembled = assemble(ast, stageMarks)
   let cfg = ctx.transform.optimize
-  let facts = tailFacts(cfg)
+  let facts = tailFacts()
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
   let module
   if (__heap_large(heapMark)) {

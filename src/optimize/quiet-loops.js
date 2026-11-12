@@ -46,7 +46,6 @@
  *
  * @module optimize/quiet-loops
  */
-import { ctx } from '../ctx.js'
 
 const isArr = Array.isArray
 const ALLOCATORS = new Set(['$__alloc', '$__alloc_hdr', '$__alloc_hdr_n'])
@@ -102,12 +101,14 @@ function scan(n, out = { raises: false, thrown: false, calls: new Set(), throws:
 /** Whether a call of a function may move the heap's top up: `strict`, on any
  *  path, a throw caught on the way included; `returning`, on a path that
  *  returns to a caller with no handler around it (a function with a handler
- *  answers strictly: what it catches returns). Asked by name, answered once. */
-function heapRaisers(sec) {
+ *  answers strictly: what it catches returns). Asked by name, answered once.
+ *  The program's imports and the runtime's templates (`stdlib`, a text or a
+ *  thunk by name) answer for what the module does not hold yet. */
+function heapRaisers(sec, { imports: programImports, stdlib }) {
   const ir = new Map()
   for (const list of [sec.funcs, sec.start]) for (const f of list) if (isArr(f) && f[0] === 'func' && typeof f[1] === 'string') ir.set(f[1], f)
   const imports = new Set()
-  for (const list of [sec.imports, ctx.module.imports]) for (const imp of list ?? [])
+  for (const list of [sec.imports, programImports]) for (const imp of list ?? [])
     if (isArr(imp)) for (const d of imp) if (isArr(d) && d[0] === 'func' && typeof d[1] === 'string') imports.add(d[1])
   const RAISES = { handles: false, raises: true, thrown: false, calls: new Set(), throws: new Set() }
   const facts = new Map()   // name → { handles, raises, thrown, calls, throws }
@@ -115,7 +116,7 @@ function heapRaisers(sec) {
     if (ALLOCATORS.has(name) || imports.has(name)) return RAISES
     const f = ir.get(name)
     if (f) return { handles: hasHandler(f), ...scan(f) }
-    const v = ctx.core.stdlib[name.slice(1)]
+    const v = stdlib[name.slice(1)]
     let text = null
     try { text = typeof v === 'function' ? v() : v } catch { text = null }
     if (typeof text !== 'string' || TEXT_RAISES.test(text)) return RAISES
@@ -193,12 +194,14 @@ function dropRelease(fn, rel) {
 
 /**
  * Drop the compaction and the iteration release of every loop in `sec`'s
- * functions that allocates nothing as emitted.
+ * functions that allocates nothing as emitted. Facts: the loops the census
+ * gave a compaction (`compactLoopLabels`, which this edits), the runtime's
+ * names (`includes`) and heapRaisers'.
  */
-export function quietLoops(sec) {
-  const compacts = ctx.plans.compactLoopLabels
+export function quietLoops(sec, facts) {
+  const compacts = facts.compactLoopLabels, includes = facts.includes
   // (a release includes its kernel as it is emitted: none, and no compaction, asks nothing)
-  if (!compacts?.size && !ctx.core.includes.has('__iter_release') && !ctx.core.includes.has('__iter_take')) return
+  if (!compacts?.size && !includes.has('__iter_release') && !includes.has('__iter_take')) return
   // candidates: each loop the census gave a compaction or a release
   const loops = []
   for (const list of [sec.funcs, sec.start]) for (const fn of list) {
@@ -218,7 +221,7 @@ export function quietLoops(sec) {
     visit(fn)
   }
   if (!loops.length) return
-  const heap = heapRaisers(sec)
+  const heap = heapRaisers(sec, facts)
   for (const l of loops) { l.scan = scan(l.loop); l.handles = hasHandler(l.loop) }
   heap.reach(loops.flatMap(l => [...l.scan.calls, ...l.scan.throws]))
   for (const { fn, loop, compact, rel, scan: s, handles } of loops) {
@@ -241,13 +244,14 @@ export function quietLoops(sec) {
  * strings and objects left to the loop as written) allocates nothing in the
  * copy, though the loop it copies does: the copy's iterations pay no release
  * test, and no compaction or rewind goes in around it (loop-compact.js,
- * loop-rewind.js, `ctx.plans.quietLoopNodes`). Only the test the copy carries
+ * loop-rewind.js: the loops answered, which this returns). Only the test the copy carries
  * at its top goes: the release's marks before the loop and its floor after it
  * are the loop as written's too, and a test only gives memory back.
+ * Facts: quietLoops', and the loops the census gave a rewind (`rewindLoopLabels`).
  */
-export function quietOptimizedLoops(sec) {
-  const compacts = ctx.plans.compactLoopLabels, rewinds = ctx.plans.rewindLoopLabels
-  if (!compacts?.size && !rewinds?.size && !ctx.core.includes.has('__iter_take')) return
+export function quietOptimizedLoops(sec, facts) {
+  const compacts = facts.compactLoopLabels, rewinds = facts.rewindLoopLabels
+  if (!compacts?.size && !rewinds?.size && !facts.includes.has('__iter_take')) return null
   const loops = []
   for (const list of [sec.funcs, sec.start]) for (const fn of list) {
     if (!isArr(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
@@ -265,15 +269,16 @@ export function quietOptimizedLoops(sec) {
     }
     visit(fn)
   }
-  if (!loops.length) return
-  const heap = heapRaisers(sec)
+  if (!loops.length) return null
+  const heap = heapRaisers(sec, facts)
   const scans = loops.map(loop => ({ loop, s: scan(loop), handles: hasHandler(loop) }))
   heap.reach(scans.flatMap(({ s }) => [...s.calls, ...s.throws]))
-  const quiet = ctx.plans.quietLoopNodes ??= new WeakSet()
+  const quiet = new WeakSet()
   for (const { loop, s, handles } of scans) {
     if (handles ? s.raises || s.thrown || [...s.calls, ...s.throws].some(c => heap.raises(c, false))
       : s.raises || [...s.calls].some(c => heap.raises(c, true))) continue
     quiet.add(loop)
     for (let i = loop.length - 1; i >= 2; i--) if (isArr(loop[i]) && loop[i].iterRelease) loop.splice(i, 1)
   }
+  return quiet
 }

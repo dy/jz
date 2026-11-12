@@ -50,7 +50,7 @@
 import { walkAst, nodeEqual } from '../ast.js'
 import { findBodyStart, nextLocalId } from '../ir.js'
 import { isMemWrite } from 'watr/optimize'
-import { LAYOUT, ctx } from '../ctx.js'
+import { LAYOUT } from '../../layout.js'
 import { HEADER_STORE_FREE } from './licm.js'
 
 const isArr = Array.isArray
@@ -144,8 +144,9 @@ export function collectResults(funcs, imports) {
   return out
 }
 
-/** Hoist the forward hops of each loop's unrebound receivers in `fn`. */
-export function hoistForwardHops(fn, still, results, writes) {
+/** Hoist the forward hops of each loop's unrebound receivers in `fn`; a module global
+ *  is a receiver where it holds a box (`globalTypes`, its wasm type by name). */
+export function hoistForwardHops(fn, still, results, writes, globalTypes = null) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const start = findBodyStart(fn)
   if (start < 0) return
@@ -178,7 +179,7 @@ export function hoistForwardHops(fn, still, results, writes) {
   const boxRoot = (e, env, d) => {
     if (d > 16 || !isArr(e)) return null
     if (e.length === 2 && (e[0] === 'i64.reinterpret_f64' || e[0] === 'f64.reinterpret_i64')) return boxRoot(e[1], env, d + 1)
-    if (e.length === 2 && e[0] === 'global.get' && typeof e[1] === 'string') return ctx.scope.globalTypes?.get(e[1].slice(1)) === 'f64' ? '@' + e[1] : null
+    if (e.length === 2 && e[0] === 'global.get' && typeof e[1] === 'string') return globalTypes?.get(e[1].slice(1)) === 'f64' ? '@' + e[1] : null
     if (!isGet(e)) return null
     const v = env.get(e[1])
     return v ? boxRoot(v, env, d + 1) : BOX.has(types.get(e[1])) ? e[1] : null

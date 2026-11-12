@@ -15,7 +15,6 @@ import { foldWrappedWords, narrowBoxedLocals, narrowFlagLocals } from './int-nar
  */
 import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
-import { ctx } from '../ctx.js'
 import { constWords, hexHalf } from '../static-data.js'
 import {
   SIMD_PINNED, LANE_PINS, collectReachableGlobalWrites, hoistGlobalPtrOffset,
@@ -77,33 +76,6 @@ const OUT_OF_LINE = ['$__rem_div', '$__len_tail', '$__length_tail', '$__length.v
  * cfg-only approximation (fine for small/synthetic corpora).
  * @returns {Object|false} watr options, or `false` when `cfg.watr` is off.
  */
-/**
- * The functions watr's single-caller inliner must leave intact, from the live
- * compile: JS-boundary vectorized functions (their `$name$exp` wrapper must
- * not swallow the body the host tests inspect) and the typed runtime the
- * typed-index proofs name. One list for both callers (index.js, scripts/self.js).
- */
-export function programPins(cfg) {
-  return [
-    // The dynamic `+`'s cold path (ToPrimitive, concat or add) stays a call: spliced
-    // into the hot arithmetic loops that reach it, it costs size for a path a
-    // numeric program never takes.
-    ...(ctx.core.includes.has('__add_slow') ? ['$__add_slow'] : []),
-    // A loop its caller had no room for stays a function (plan/inline.js): the
-    // single-caller inliner has no bound of its own.
-    ...[...ctx.plans.keptKernels ?? []].map(name => `$${name}`),
-    // A runtime throw only leaves: spliced into its one caller, a hot loop's
-    // cold arm would carry the error's allocation and stores.
-    ...[...ctx.runtime.throwHelpers].filter(name => ctx.core.includes.has(name.slice(1))),
-    ...(cfg._vectorizedFnNames?.size
-      ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
-      : []),
-    ...(ctx.linkDemand.typedRuntime
-      ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
-        .filter(name => ctx.core.includes.has(name.slice(1))) : []),
-  ]
-}
-
 export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) {
   if (!cfg.watr) return false
   let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true
@@ -677,7 +649,7 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
  */
 export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
-  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, noSimd = false,
+  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, noSimd = false, userFuncs = null,
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   // A split binding of its predecessor's type takes that slot: the generic optimizer
@@ -760,7 +732,7 @@ export function watrTail(module, cfg, {
   if (cfg.pairTests === true) time('pairTests', () => pairTests(optimized, { simd: !noSimd }))
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
-  const user = name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4))
+  const user = name => !!userFuncs?.has(name.slice(1)) || name.endsWith('$exp') && !!userFuncs?.has(name.slice(1, -4))
   // (after the passes that read the runtime's calls by name: a helper of a few instructions joins
   // its callers, a larger one the program's loops)
   if (cfg.inlineTiny === true && watrOpts)

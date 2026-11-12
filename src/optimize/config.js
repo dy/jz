@@ -46,19 +46,18 @@
  *
  * @module optimize/config
  */
-// The registry lives in src/passes.js (single authority, zero imports — ctx.js
-// derives the hot bitmask from the same lists). Re-exported from index.js so
+// The registry lives in src/passes.js (single authority, zero imports — the
+// compile context derives the hot bitmask from the same lists). Re-exported from index.js so
 // existing consumers (test/passes.js, test/optimizer.js) keep their import site.
-import { PASS_NAMES, TUNING_KEYS } from '../passes.js'
-import { OPTF } from '../ctx.js'
+import { PASS_NAMES, TUNING_KEYS, HOT_PASSES } from '../passes.js'
 export { PASS_NAMES, TUNING_KEYS }
 
-// Registry↔bitmask coherence: every hot flag (ctx.js OPTF/HOT_PASSES — this
-// file cannot be imported there, cycle) must be REGISTERED — a level-gated
-// pass (PASS_NAMES) or a tuning mode (TUNING_KEYS) — so a flag added on one
+// Registry↔bitmask coherence: every hot flag (HOT_PASSES, the bits of the
+// context's OPTF) must be REGISTERED — a level-gated pass (PASS_NAMES) or a
+// tuning mode (TUNING_KEYS) — so a flag added on one
 // side but forgotten on the other fails at load, not as a silently-dead (or
 // silently-always-off) optimization.
-for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.includes(n))
+for (const n of HOT_PASSES) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.includes(n))
   throw new Error(`OPTF flag '${n}' is not registered (PASS_NAMES / TUNING_KEYS) — register it or remove the flag`)
 
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))

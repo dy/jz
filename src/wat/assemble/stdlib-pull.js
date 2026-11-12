@@ -223,7 +223,7 @@ export function pullStdlib(sec) {
   // calls never enters this set — so allocator, memory, and exports reflect real use.
   // First, a loop that allocates nothing as emitted loses the compaction and the
   // release the census gave it (optimize/quiet-loops.js), and with them what they call.
-  quietLoops(sec)
+  quietLoops(sec, { compactLoopLabels: ctx.plans.compactLoopLabels, includes: ctx.core.includes, imports: ctx.module.imports, stdlib: ctx.core.stdlib })
   let reachable = reachableStdlib(sec)
   const realize = (n) => { const v = ctx.core.stdlib[n]; try { return typeof v === 'function' ? v() : v } catch { return '' } }
 

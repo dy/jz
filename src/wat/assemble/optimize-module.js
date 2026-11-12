@@ -8,17 +8,20 @@
  * a real cross-seam call (`appendLateStdlib`, the late f64x2-vectorizer
  * stdlib top-up, lives in `./stdlib-pull.js`) — every other assemble/*.js
  * pair is fully independent.
+ *
+ * What the passes read of the compile is read here, once a compile
+ * (`passFacts`): no pass under src/optimize reads `ctx`.
  */
 
 import parseWat from 'watr/parse'
-import { ctx, checkpointed, eachChecked, declGlobal } from '../../ctx.js'
+import { ctx, checkpointed, eachChecked, declGlobal, warn, registerResetHook } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
   specializeMkptr, scalarizeStaticScratch, dropStaticRoots, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
-import { dataLen } from '../../static-data.js'
+import { dataLen, dataBytes } from '../../static-data.js'
 import { HEAP } from '../../../layout.js'
 import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
@@ -27,26 +30,78 @@ import { quietOptimizedLoops } from '../../optimize/quiet-loops.js'
 import { outlineToInt32 } from '../../optimize/to-int32.js'
 import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
 import { hoistForwardHops, collectStillFuncs, collectResults } from '../../optimize/forward-hops.js'
+import { resetVectorizeState } from '../../optimize/vectorize/lift.js'
+import { representationProgramHasBigint } from '../../compile/representation-plan.js'
+import { compactSlack } from '../../../module/core/stub-log.js'
 const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh']
+
+// The vectorizer's module state starts each compile disarmed (optimize/vectorize/lift.js).
+registerResetHook(resetVectorizeState)
+
+/**
+ * What the optimizer's passes read of the compile: one value a compile, read
+ * when the module stage starts. The facts the stage derives of the module as
+ * it stands (the write closure, the pure functions, the header-safe calls, the
+ * quiet loops) join it as they are made; `icSite`, `warn` and `vectorized` are
+ * what the passes hand back.
+ */
+export const passFacts = (cfg) => ({
+  // the program
+  hasBigint: representationProgramHasBigint(ctx),
+  funcCount: ctx.funcs.list.length,
+  exports: ctx.funcs.exports,
+  imports: ctx.module.imports,
+  f16: ctx.linkDemand.f16, typedView: ctx.linkDemand.typedView,
+  resizable: ctx.features.resizable,
+  // the memory and the module's bindings
+  shared: ctx.memory.shared, memoryMax: ctx.memory.max,
+  staticData: dataBytes,
+  globals: ctx.scope.globals, globalTypes: ctx.scope.globalTypes, globalValTypes: ctx.scope.globalValTypes,
+  globalTypedLen: ctx.scope.globalTypedLen, globalTypedElem: ctx.scope.globalTypedElem,
+  freshTypedGlobals: ctx.scope.freshTypedGlobals, consts: ctx.scope.consts, userGlobals: ctx.scope.userGlobals,
+  // promoteGlobals' types, by `$name`, of the bindings as the stage starts
+  globalRefTypes: cfg?.promoteGlobals !== false && ctx.scope.globalTypes
+    ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null,
+  // what the emitter proved and marked
+  loweringLinks: ctx.plans.loweringLinks,
+  staticArrs: ctx.scope.staticArrs, constFnArrays: ctx.scope.constFnArrays,
+  arrResized: ctx.types.arrResized, nameEscapes: ctx.types.nameEscapes,
+  schemas: ctx.schema.list, schemasByProp: ctx.schema._byProp,
+  fieldKind: ctx.summary ? (sid, prop) => ctx.summary.fieldKind(sid, prop) : null,
+  // the runtime
+  includes: ctx.core.includes, stdlib: ctx.core.stdlib,
+  compactLoopLabels: ctx.plans.compactLoopLabels, rewindLoopLabels: ctx.plans.rewindLoopLabels,
+  compactSlack: compactSlack(),
+  // made by the stage
+  reachableWrites: null, pureFuncMap: null, dvArmFns: null, headerSafeFuncs: null, quietLoops: null,
+  // handed back
+  vectorized: new Set(),
+  warn,
+  icSite: () => {
+    // A site's inline cache: two globals of its own (optimize/devirt.js devirtSchemaReads).
+    const site = ctx.runtime.icSites = (ctx.runtime.icSites ?? 0) + 1
+    declGlobal(`__ic_hi${site}`, 'i64', -1); declGlobal(`__ic_slot${site}`, 'i32')
+    return site
+  },
+})
+
 /**
  * Phase: whole-module + per-function optimization passes.
  */
 export function optimizeModule(sec, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, () => checkpointed(fn)) : (_, fn) => checkpointed(fn)
   const cfg = ctx.transform.optimize
+  const facts = passFacts(cfg)
   // (a binding of static typed storage the compaction never moves is no root of it)
-  t('dropStaticRoots', () => dropStaticRoots([...sec.funcs, ...sec.stdlib, ...sec.start]))
+  t('dropStaticRoots', () => dropStaticRoots([...sec.funcs, ...sec.stdlib, ...sec.start], facts))
   // First: it reads the accesses as emitted, before a pass stages their bases in locals.
   if (!cfg || cfg.staticScratch !== false) t('staticScratch', () =>
-    scalarizeStaticScratch([...sec.funcs, ...sec.stdlib, ...sec.start]))
+    scalarizeStaticScratch([...sec.funcs, ...sec.stdlib, ...sec.start], facts))
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
     specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false }))))
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
   // both disabled across the bench + examples corpora AND the self-compile kernel at
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
-  // (globalTypes backfill gone: declGlobal sets the type at declaration.)
-  // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
-  const globalTypesMap = cfg?.promoteGlobals !== false && ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
   const allFuncs = [...sec.funcs, ...sec.stdlib, ...sec.start]
   // Build the shared proof only if a global-load optimization consumes it.
   // Its precise call graph also subsumes the old coarse volatility census.
@@ -57,7 +112,7 @@ export function optimizeModule(sec, profiler) {
   // Share function-entry snapshots with the loop-scoped complement. Both use
   // the same write proof and run before promoteGlobals hides global.get.
   if (!cfg || cfg.hoistGlobalPtrOffset !== false || cfg.hoistLoopGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {
-    const stable = stablePtrGlobalNames()
+    const stable = stablePtrGlobalNames(facts.globalValTypes)
     if (!stable.size) return
     const writes = globalWrites()
     for (const s of allFuncs) {
@@ -71,7 +126,7 @@ export function optimizeModule(sec, profiler) {
   if (cfg && cfg.vectorizeLaneLocal === true) {
     const pureFuncMap = buildPureFuncMap(allFuncs)
     if (pureFuncMap.size) {
-      cfg._pureFuncMap = pureFuncMap
+      facts.pureFuncMap = pureFuncMap
       // jz semantic inlining (LOWERING) — inline pure user functions into their call sites BEFORE the
       // vectorizer, so it sees the callee arithmetic (the pow/decode a colour helper hides). jz owns
       // this because the decision is purity+type-driven; watr keeps only mechanical residual inlining.
@@ -105,19 +160,20 @@ export function optimizeModule(sec, profiler) {
   // and can't see sibling functions. No purity filter: the inliner enforces
   // straight-line shape itself, and an arm executes exactly when the original
   // call did, so side-effecting bodies substitute safely.
-  if (ctx.scope.constFnArrays?.size) {
+  if (facts.constFnArrays?.size) {
     const candNames = new Set()
-    for (const list of ctx.scope.constFnArrays.values()) for (const c of list) candNames.add(`$${c.name}`)
-    ctx.scope.dvArmFns = new Map(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
+    for (const list of facts.constFnArrays.values()) for (const c of list) candNames.add(`$${c.name}`)
+    facts.dvArmFns = new Map(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
   }
   t('optimizeFuncs', () => {
-    const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
+    facts.reachableWrites = cfg?.promoteGlobals !== false ? globalWrites() : null
     // The user functions a loop may call without a header changing (optimize/licm.js).
-    ctx.scope.headerSafeFuncs = collectHeaderSafeFuncs(allFuncs)
+    facts.headerSafeFuncs = collectHeaderSafeFuncs(allFuncs)
     // (each function's passes keep nothing of their own past it: a hosted compile's phases)
-    eachChecked(allFuncs, func => optimizeFunc(func, cfg, globalTypesMap, writes))
-    ctx.scope.headerSafeFuncs = null
+    eachChecked(allFuncs, func => optimizeFunc(func, cfg, facts))
   })
+  // The functions the lane vectorizer lifted, for the pins of watr's inliner (compile/index.js programPins).
+  ctx.plans.vectorizedFns = facts.vectorized
   // A site's inline cache (optimize/devirt.js) may hold a layout JSON.parse
   // registered, whose id `__clear` reissues: the reset empties every site.
   if (ctx.runtime.icSites) {
@@ -127,19 +183,22 @@ export function optimizeModule(sec, profiler) {
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.
   // A specialized copy that allocates nothing as optimized: no release test, rewind or compaction (optimize/quiet-loops.js).
-  t('quietCopies', () => quietOptimizedLoops(sec))
-  if (ctx.plans.rewindLoopLabels) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels); ctx.plans.rewindLoopLabels = null })
-  if (ctx.plans.compactLoopLabels) t('loopCompacts', () => { insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels); ctx.plans.compactLoopLabels = null })
+  t('quietCopies', () => { facts.quietLoops = quietOptimizedLoops(sec, facts) })
+  if (ctx.plans.rewindLoopLabels) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels, facts); ctx.plans.rewindLoopLabels = null })
+  if (ctx.plans.compactLoopLabels) t('loopCompacts', () => {
+    if (insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels, facts)) ctx.plans.hasCompactLoops = true
+    ctx.plans.compactLoopLabels = null
+  })
   // A receiver a loop never rebinds: its forward hop once before the loop and
   // after each call that may move a block (optimize/forward-hops.js). After the
   // compaction goes in: a compacted loop is re-entered past the set before it.
   if (cfg && cfg.hoistForwardHops !== false) t('forwardHops', () => {
     const funcs = [...sec.funcs, ...sec.stdlib, ...sec.start]
-    const still = collectStillFuncs(funcs), results = collectResults(funcs, ctx.module.imports), writes = globalWrites()
-    for (const fn of funcs) hoistForwardHops(fn, still, results, writes)
+    const still = collectStillFuncs(funcs), results = collectResults(funcs, facts.imports), writes = globalWrites()
+    for (const fn of funcs) hoistForwardHops(fn, still, results, writes, facts.globalTypes)
   })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
-    const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
+    const wantLoads = cfg.hoistGlobalConstLoads !== false && !!facts.globalTypedLen?.size
     // The guarded form necessarily writes a declared v128 local. Keep scalar
     // programs on the old allocation-free path; only SIMD functions pay for
     // the DAG-safe deep opcode probe.
@@ -150,7 +209,7 @@ export function optimizeModule(sec, profiler) {
     const writes = globalWrites()
     const memoryWrites = collectReachableMemoryWrites(allFuncs)
     for (const s of allFuncs) {
-      if (wantLoads) hoistStableGlobalConstLoads(s, memoryWrites, writes)
+      if (wantLoads) hoistStableGlobalConstLoads(s, memoryWrites, writes, facts)
       if (masked.has(s)) guardMaskedVectorSuffix(s, memoryWrites)
     }
   })
@@ -159,12 +218,12 @@ export function optimizeModule(sec, profiler) {
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.
   if (cfg && cfg.vectorizeLaneLocal === true) t('appendLateStdlib', () => appendLateStdlib(allFuncs, sec.stdlib))
-  const dataBytes = dataLen()
+  const dataEnd = dataLen()
   // Past HEAP.PTR_ADDR the static data covers the cell the host's allocator keeps its
   // pointer in when the module exports no heap of its own (interop.js), and a host
   // allocation overwrites the data's last word: 1024 bytes of it, the exponentials'
   // table alone, lost its last entry's tail to the first memory.Float64Array.
-  if (dataBytes > HEAP.PTR_ADDR && !ctx.memory.shared) {
+  if (dataEnd > HEAP.PTR_ADDR && !ctx.memory.shared) {
     // 64-byte heap-base alignment: the compiler's own vectorizer emits v128
     // stream loads/stores, and a heap base that isn't 64-byte aligned makes
     // every such access straddle cache lines on memory-bound kernels — a real,
@@ -173,7 +232,7 @@ export function optimizeModule(sec, profiler) {
     // perf immune to prelude size changes — without it every stdlib edit
     // re-rolls the layout lottery.
     // Cost: ≤56 bytes of memory per module, zero code bytes.
-    const heapBase = (dataBytes + 63) & ~63
+    const heapBase = (dataEnd + 63) & ~63
     // Non-shared memory always carries a $__heap global — start it past the
     // static data so the bump allocator never overwrites a literal. `__heap_reset`
     // seeds to the same data end (its runtime value is overwritten by `__start`'s

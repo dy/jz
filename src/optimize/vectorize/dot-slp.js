@@ -1,4 +1,3 @@
-import { ctx } from '../../ctx.js'
 import { nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
 import { collectWrites } from './addr-model.js'
 import { accessOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, sameBase, windowDefs, clone, TEE } from './access.js'
@@ -218,7 +217,7 @@ export const hoistReductionInvariantsIn = (fn, fnLocals, freshIdRef, newLocalDec
 // BOTH lane values BEFORE either store, turning [read0, write0, read1, write1] into
 // [read0, read1, write0, write1].
 //   1. CROSS-base aliasing — guarded by one module fact: no typed-array VIEW exists
-//      (`ctx.linkDemand.typedView` false, checked at the dispatch). A view (subarray /
+//      (`ctx.linkDemand.typedView` false, checked at the dispatch, vectorize/index.js). A view (subarray /
 //      buffer-backed ctor) is the only way two DISTINCT typed bases can overlap;
 //      without one, distinct bases own disjoint allocations and can't alias.
 //   2. Read-after-write — the high value (read1) must not load the slot the low store
@@ -490,7 +489,7 @@ const fuseCanonStaging = (node, stored) => {
 // isomorphic roots, pack when both operand trees match (`slpPackF64x2` does the shared
 // recursive walk for both). Folded into ONE entry point here: same call order as before
 // the merge (dot-sequence tier — unconditional, no memory aliasing — then the
-// element-store tier, gated by `slp` + no-typed-view for aliasing safety), so this is a
+// element-store tier, gated by `slp`, which the dispatch clears where a typed view exists, for aliasing safety), so this is a
 // pure entry-point consolidation — behavior is unchanged by construction.
 // `hoistReductionInvariantsIn` is NOT folded in here — it is a different transform
 // category (LICM: reassociating hoist of loop-invariant partial products, not a packer;
@@ -505,7 +504,7 @@ export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFm
   // Necessary-op gates keep scalar/compiler functions out of both recursive
   // SLP walkers. They only reject functions that cannot contain either seed.
   if (hasF64Mul) vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
-  if (f64Stores >= 2 && slp && !ctx.linkDemand.typedView) {
+  if (f64Stores >= 2 && slp) {
     const stored = new Set()
     walkAst(fn, { enter: n => { if (n[0] === 'f64.store') { const v = localGetName(n[n.length - 1]); if (v) stored.add(v) } } })
     fuseCanonStaging(fn, stored)

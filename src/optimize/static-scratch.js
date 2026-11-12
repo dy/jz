@@ -19,10 +19,8 @@
 // both hold) and at a call to anything that may store to such an array: a function
 // that does, or calls one that does, or is not this module's.
 import { walkAst } from '../ast.js'
-import { ctx } from '../ctx.js'
 import { PTR, TYPED_ELEM_VIEW_FLAG, decodePtrType, decodePtrAux } from '../../layout.js'
 import { findBodyStart } from '../ir.js'
-import { dataBytes } from '../static-data.js'
 import { accessOf, clone } from './vectorize/access.js'
 import { isArr } from './vectorize/node-utils.js'
 
@@ -58,27 +56,33 @@ const staticTypedAddr = (init, bytes) => {
 }
 const i32At = (bytes, at) => bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16) | (bytes[at + 3] << 24)
 
+/** The bindings the program exports, of its exports (ctx.funcs.exports: a name, or `true` for itself). */
+const exportedNames = (exports) => {
+  const out = new Set()
+  if (exports) for (const name in exports) {
+    const v = exports[name]
+    out.add(v === true ? name : v)
+  }
+  return out
+}
+
 /** The module constants that hold static typed storage or share one's address:
  *  name → { addr, root, len }, from the single assignment each has in `__start`. */
-const staticBindings = (funcs, start) => {
+const staticBindings = (funcs, start, { staticData, shared, exports, globals, globalTypes, consts, userGlobals }) => {
   const found = new Map()
-  const bytes = dataBytes()
-  if (!bytes?.length || ctx.memory.shared) return found
+  const bytes = staticData?.()
+  if (!bytes?.length || shared) return found
   const writes = new Map()
   for (const fn of funcs) walkAst(fn, { enter: n => {
     if (n[0] === 'global.set' && typeof n[1] === 'string') writes.set(n[1], (writes.get(n[1]) || 0) + 1)
   } })
-  const exported = new Set()
-  for (const name in ctx.funcs.exports) {
-    const v = ctx.funcs.exports[name]
-    exported.add(v === true ? name : v)
-  }
+  const exported = exportedNames(exports)
   for (let i = findBodyStart(start); i < start.length; i++) {
     const s = start[i]
     if (!isArr(s) || s[0] !== 'global.set' || typeof s[1] !== 'string' || writes.get(s[1]) !== 1) continue
-    const name = s[1].slice(1), g = ctx.scope.globals.get(name)
-    if (!g || g.export || exported.has(name) || (ctx.scope.globalTypes.get(name) ?? g.type) !== 'i32') continue
-    if (!ctx.scope.consts?.has(name) || !ctx.scope.userGlobals?.has(name)) continue
+    const name = s[1].slice(1), g = globals.get(name)
+    if (!g || g.export || exported.has(name) || (globalTypes.get(name) ?? g.type) !== 'i32') continue
+    if (!consts?.has(name) || !userGlobals?.has(name)) continue
     const from = isArr(s[2]) && s[2][0] === 'global.get' ? found.get(s[2][1]) : null
     if (from) { found.set(s[1], { addr: from.addr, root: from.root, len: from.len, init: s }); continue }
     const addr = staticTypedAddr(s[2], bytes)
@@ -96,12 +100,14 @@ const staticBindings = (funcs, start) => {
  * reads, and a typed array holds no pointers, so its root line forwards the address to itself
  * and marks nothing. Dropped, the line no longer writes the binding, whose one write is again
  * its declaration (`scalarizeStaticScratch` below, hoistConstGlobalInits). `funcs` is every
- * function of the module, `__start` included.
+ * function of the module, `__start` included. Facts: the static data's bytes
+ * (`staticData`, joined on the first ask), the program's exports and the module's
+ * global declarations (`globals`).
  */
-export function dropStaticRoots(funcs) {
+export function dropStaticRoots(funcs, { staticData = null, exports = null, globals = null } = {}) {
   const roots = funcs.find(f => isArr(f) && f[0] === 'func' && f[1] === '$__gc_roots')
   const start = funcs.find(f => isArr(f) && f[0] === 'func' && f[1] === '$__start')
-  const bytes = roots && start ? dataBytes() : null
+  const bytes = roots && start ? staticData?.() : null
   if (!bytes?.length) return
   // A root line: `(if (local.get $fwd) (then (global.set $g …)) (else …))`.
   const rooted = s => {
@@ -112,16 +118,12 @@ export function dropStaticRoots(funcs) {
   for (const fn of funcs) if (fn !== roots) walkAst(fn, { enter: n => {
     if (n[0] === 'global.set' && typeof n[1] === 'string') writes.set(n[1], (writes.get(n[1]) || 0) + 1)
   } })
-  const exported = new Set()
-  for (const name in ctx.funcs.exports) {
-    const v = ctx.funcs.exports[name]
-    exported.add(v === true ? name : v)
-  }
+  const exported = exportedNames(exports)
   const statics = new Set()
   for (let i = findBodyStart(start); i < start.length; i++) {
     const s = start[i]
     if (!isArr(s) || s[0] !== 'global.set' || typeof s[1] !== 'string' || writes.get(s[1]) !== 1) continue
-    const name = s[1].slice(1), g = ctx.scope.globals.get(name)
+    const name = s[1].slice(1), g = globals.get(name)
     if (!g || g.export || exported.has(name)) continue
     if (isArr(s[2]) && s[2][0] === 'global.get' ? statics.has(s[2][1]) : staticTypedAddr(s[2], bytes) >= 0) statics.add(s[1])
   }
@@ -160,11 +162,13 @@ const scan = (root, bindings, onAccess, onStray) => {
 /**
  * Forward stores to loads and drop unread stores in the static typed arrays only
  * constant-index accesses reach. `funcs` is every function of the module, `__start` included.
+ * Facts: dropStaticRoots', whether the memory is shared, and of the module's
+ * bindings their wasm types, the constants and the program's own (`userGlobals`).
  */
-export function scalarizeStaticScratch(funcs) {
+export function scalarizeStaticScratch(funcs, facts) {
   const start = funcs.find(f => isArr(f) && f[0] === 'func' && f[1] === '$__start')
   if (!start) return
-  const bindings = staticBindings(funcs, start)
+  const bindings = staticBindings(funcs, start, facts)
   if (!bindings.size) return
   const inits = new Set([...bindings.values()].map(b => b.init))
 

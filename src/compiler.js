@@ -327,7 +327,7 @@ const compilePipeline = (code, opts = {}, jzify) => {
   }
 
   const cfg = ctx.transform.optimize
-  const facts = tailFacts(cfg)
+  const facts = tailFacts()
   verifyFixedScratch(module, facts.fixedMemory)
   // The shared final-optimizer tail (src/optimize/watr-tail.js): watr options +
   // watr (the sole generic fixpoint, once) + the ONE narrow post-watr proof

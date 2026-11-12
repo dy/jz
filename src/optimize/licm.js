@@ -10,12 +10,11 @@
  *
  * @module optimize/licm
  */
-import { LAYOUT, ctx } from '../ctx.js'
+import { LAYOUT, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { findBodyStart, writtenLocals, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
 import { pureKernel } from './pure-funcs.js'
-import { TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
@@ -308,20 +307,18 @@ const NUMERIC_INDEX = /^(i32|i64)\.trunc(_sat)?_f64_[su]$/, TEST_OP = /^[if](32|
 // The buffers a function's addresses are proven pairwise distinct among: its
 // typed-array parameters every caller passes fresh (plan/literals.js
 // analyzeParamDistinctness) and the module bindings that only hold buffers of
-// their own (analyzeFreshTypedGlobals), keyed `global $name`.
-const distinctBases = (fn) => {
-  const globals = ctx.scope.freshTypedGlobals
-  if (!globals) return fn.distinctParams || null
-  return new Set([...fn.distinctParams ?? [], ...[...globals].map(g => `global ${g}`)])
+// their own (analyzeFreshTypedGlobals, `freshGlobals`), keyed `global $name`.
+const distinctBases = (fn, freshGlobals) => {
+  if (!freshGlobals) return fn.distinctParams || null
+  return new Set([...fn.distinctParams ?? [], ...[...freshGlobals].map(g => `global ${g}`)])
 }
 
 // Resolve an address to one parameter through pure arithmetic and single-def
 // locals. Closed numeric recurrences (constants and their own prior value only)
 // contribute no buffer root. Other multi-def locals, loads, calls and globals
 // have unknown origins and block alias-based motion.
-function buildBaseParamOf(fn, bodyStart, distinctParams) {
+function buildBaseParamOf(fn, bodyStart, distinctParams, freshGlobals) {
   if (!distinctParams) return () => null
-  const freshGlobals = ctx.scope.freshTypedGlobals
   const paramNames = new Set()
   for (let i = 2; i < bodyStart; i++)
     if (Array.isArray(fn[i]) && fn[i][0] === 'param' && typeof fn[i][1] === 'string') paramNames.add(fn[i][1])
@@ -533,10 +530,9 @@ function fixedTypedLoad(fn) {
   }
 }
 
-function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null, scopedLoad = null }) {
+function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSafe = null, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null, scopedLoad = null }) {
   const presentNames = presentArrays || stableHeaderNames
     ? new Set([...(presentArrays ?? []), ...(stableHeaderNames ?? [])]) : null
-  const headerSafe = ctx.scope.headerSafeFuncs ?? null
   const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
   let hasUnsafeCall = false, hasAnyCall = false, hasAllocatingCall = false, hasDirectStore = false, hasUnknownStore = false, hasHeaderStore = false, hasV128 = false
   const recordEffect = node => {
@@ -732,7 +728,8 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPri
 // linear walk assigns each use its unique dominating def), (c) is first accessed by a
 // WRITE (no value carried across the back-edge), (d) is only ever `local.set` (never
 // `local.tee`/conditionally defined). Each condition rejects a class that would miscompile.
-export function splitLoopPrivateScratch(fn) {
+// The facts are hoistInvariantLoop's.
+export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, headerSafeFuncs = null } = {}) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -762,8 +759,8 @@ export function splitLoopPrivateScratch(fn) {
   // survives into this 'post' pass) — lets pureGiven prove a read-only input-array load distinct
   // from the loop's output store, the SOUND replacement for the old address-local-disjointness
   // heuristic (which assumed two loads/stores in different locals never alias — false in general).
-  const distinctParams = distinctBases(fn)
-  const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
+  const distinctParams = distinctBases(fn, freshTypedGlobals)
+  const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams, freshTypedGlobals)
 
   const hasV128 = (n) => {
     let f = false
@@ -833,7 +830,7 @@ export function splitLoopPrivateScratch(fn) {
     // elsewhere (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
     // address-local-disjointness load test, which was unsound in general (two distinct locals can
     // hold the same address) and only worked by luck on the bench shapes.
-    const { pureGiven } = computeLoopInvariance(loop, { distinctParams, baseParamOf, allowPrivateSets: true })
+    const { pureGiven } = computeLoopInvariance(loop, { distinctParams, baseParamOf, headerSafe: headerSafeFuncs, allowPrivateSets: true })
     const motionSafe = (n) => {
       let hasTee = false
       walkAst(n, { enter: x => { if (hasTee) return false; if (x[0] === 'local.tee') { hasTee = true; return false } } })
@@ -916,11 +913,14 @@ const constTree = (n) => Array.isArray(n) && typeof n[0] === 'string' && n[0].st
 
 // JZ supplies only the language/representation proof and profitability policy.
 // Watr owns traversal, private-local checks, extraction, deduplication and typing.
-export function hoistInvariantLoop(fn) {
+// Facts: the module bindings that hold typed arrays of their own (`freshTypedGlobals`,
+// plan/literals.js) and the functions a loop may call without a header changing
+// (`headerSafeFuncs`, collectHeaderSafeFuncs).
+export function hoistInvariantLoop(fn, { freshTypedGlobals = null, headerSafeFuncs = null } = {}) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
-  const distinctParams = distinctBases(fn)
-  const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
+  const distinctParams = distinctBases(fn, freshTypedGlobals)
+  const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams, freshTypedGlobals)
   const stableHeaderNames = fn.stableHeaderNames || null
   const presentArrays = fn.presentArrays || null
   const defs = presentArrays || stableHeaderNames ? singleDefs(fn, bodyStart) : null
@@ -956,7 +956,7 @@ export function hoistInvariantLoop(fn) {
           if (at.boundsOwner === node.boundsOwner) return true
         return false
       } : null
-      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
+      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, headerSafe: headerSafeFuncs, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
       return (node, bound) => !constTree(node) && ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     },
   })

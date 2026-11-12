@@ -8,9 +8,7 @@
  *
  * @module optimize/driver
  */
-import { representationProgramHasBigint } from '../compile/representation-plan.js'
 import { DBG_INVARIANTS } from '../debug.js'
-import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
 import { dropSettledTests } from './settled-tests.js'
@@ -47,15 +45,15 @@ import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls }
  *
  * @param fn  func IR node
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
- * @param globalTypes optional global name → wasm type map (for promoteGlobals)
- * @param reachableWrites optional collectReachableGlobalWrites result (for promoteGlobals)
+ * @param facts what the passes read of the compile (wat/assemble/optimize-module.js
+ *   passFacts): when omitted, none, and a pass that needs one keeps its hand.
  * (The former 'post' phase and its csePureExprLoop arm are deleted, and the
  * straight-line csePureExpr followed in the 2026-07 ablation sweeps — watr's
  * write-clock CSE reaches a smaller fixpoint on its own; jz's optimizer runs
  * exactly once, before watr. splitLoopPrivateScratch remains as the flag-gated
  * migration seed; see the splitScratch gate below.)
  */
-export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
+export function optimizeFunc(fn, cfg, facts = {}) {
   // Entry verify attributes an invalid-IR failure to EMIT (already bad here)
   // vs an optimizer pass (bad only at the exit check) — the jzify free-name
   // `local.get $__it_drain` class was pinned this way. Debug-only cost.
@@ -77,7 +75,7 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // via node tags (.saArr/.saBits), and any later pass that rebuilds a subtree
   // (CSE, fused rewrite, LICM temp-splitting) strips array properties — the tag
   // only survives untouched nodes.
-  if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn)
+  if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn, facts)
   // Beside it, by emit's mark as well: a word local only float code reads holds its number.
   if (!cfg || cfg.fusedRewrite !== false) holdWordNumbers(fn)
   // Before every pass that reads locals: a cell no closure took is one of them.
@@ -92,16 +90,16 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // Unified LICM (replaces hoistInvariantToInt32 / PtrOffsetLoop / CellLoads).
   // Run at both maturity points (idempotent): pre-fusedRewrite catches the raw
   // ToInt32/ptr-offset/arithmetic shapes; post-hoistAddrBase catches cell loads.
-  if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
-  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, representationProgramHasBigint(ctx), !cfg?.leanRuntime)
-  if (cfg && cfg.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64 &&
+  if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn, facts)
+  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, !!facts.hasBigint, !cfg?.leanRuntime, facts.loweringLinks)
+  if (cfg && cfg.unswitchStringRepLoop === true && (facts.funcCount ?? 0) <= 64 &&
       fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
     unswitchStringRepLoop(fn)
   // After the peephole walk: the quotient and its scaling are in their i32 form.
   if (!cfg || cfg.shiftRemainder !== false) foldShiftRemainder(fn)
   if (cfg && cfg.boolConvertToSelect === true) boolConvertToSelect(fn)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
-  if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
+  if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn, facts)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   // After the address hoists: a chained kernel's out-parameter results stay in the locals
   // that staged them, and the stores the chain overwrites go.
@@ -110,7 +108,7 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (cfg && cfg.sinkStores === true) sinkStores(fn)
   // (on the stores forwarding kept: one ready before a computation it does not read goes first)
   if (cfg && cfg.earlyStores === true) earlyStores(fn)
-  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, reachableWrites)
+  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, facts.globalRefTypes, facts.reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
     // re-optimize). watr is the sole optimizer that runs after, and it preserves the
@@ -126,7 +124,7 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
     // folds a private CLONE for the one context where the substituted argument is
     // independently proven numeric (a per-lane typed-array read) — that's the only
     // place this fold is sound.
-    if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn, ctx.linkDemand.f16)
+    if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn, facts.f16)
     if (vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
       relaxedFloat: cfg.relaxedFloat === true,
@@ -135,12 +133,13 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
       whyNot: cfg.whyNotSimd === true,
       stencil: cfg.stencil !== false,
       outerStrip: cfg.outerStrip !== false,
-      pureFuncMap: cfg._pureFuncMap || null,
+      pureFuncMap: facts.pureFuncMap || null,
       toneMap: cfg.toneMap !== false,
       slp: cfg.slp !== false,  // SLP default-on
       crPow: cfg.crPow === true,
       pairIterations: cfg.pairIterations === true,
-    }) && typeof fn[1] === 'string') (cfg._vectorizedFnNames ??= new Set()).add(fn[1])
+      links: facts.loweringLinks, typedView: !!facts.typedView, warn: facts.warn,
+    }) && typeof fn[1] === 'string') facts.vectorized?.add(fn[1])
     // The vectorizer emits `v128.load/store (i32.add base K)` for the unrolled
     // multi-accumulator reduction (a[i],a[i+2],a[i+4]…) and stencil/strided reads.
     // fusedRewrite's memarg fold already ran (above, before vectorize), so fold the
@@ -152,20 +151,20 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
   // After the unswitch and the lift: the accesses they left to the helpers. A
   // view's length is fixed only where no buffer of the program resizes.
-  if (cfg && cfg.typedDecode === true && !ctx.features.resizable) hoistTypedDecode(fn)
+  if (cfg && cfg.typedDecode === true && !facts.resizable) hoistTypedDecode(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.
   if (cfg && cfg.splitScratch === true && (!cfg || cfg.hoistInvariantLoop !== false)) {
-    splitLoopPrivateScratch(fn)
-    hoistInvariantLoop(fn)
+    splitLoopPrivateScratch(fn, facts)
+    hoistInvariantLoop(fn, facts)
   }
   // Const-fn-array dispatch devirt: emit tagged the call_indirect of
   // `constOps[idx](args)` (the decl's candidate set only fills when module init
   // emits, AFTER function bodies) — rewrite to a br_table of direct calls with
   // the original call_indirect as the always-sound default arm.
-  if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn, cfg)
-  if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn)
+  if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn, facts, cfg)
+  if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn, facts, cfg)
   // After the lift, which reads the exact conversion as the kernel call, and
   // the devirtualizations, which read emit's marks: the conversion's inline
   // tail, then the loops specialized on reads that hit, integer registers for
