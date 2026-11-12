@@ -86,6 +86,10 @@ export const nrHull = (r) => r && !empty(r) && !r.nan && Number.isFinite(r.lo) &
 export const nrReal = (r) => r && (r === NR_NONE || !r.nan && Number.isFinite(r.lo) && Number.isFinite(r.hi)) ? r : null
 
 const U32_MAX = 0xffffffff
+/** ToInt32 of a number, exact where this compiler runs as wasm too: its own bitwise
+ *  conversion takes a number past 2^63 for -1 (README, "Bitwise operands under 2^63"),
+ *  so a number of the source is reduced below 2^32 before it is converted. */
+export const int32 = n => (n > -0x100000000 && n < 0x100000000 ? n : n % 0x100000000) | 0
 const WORD = make(I32_MIN, I32_MAX, true, true, false)
 const UWORD = make(0, U32_MAX, true, true, false)
 const nonNegative = v => v.lo >= 0 && v.nz
@@ -96,7 +100,7 @@ const words = (lo, hi) => make(lo, hi, true, true, false)
 // number's own word (a shift by -1 is by 31), any word else.
 const toWord = (v, top = I32_MAX) => {
   const all = top === I32_MAX ? WORD : UWORD
-  if (v && v.lo === v.hi && !v.nan) { const w = top === I32_MAX ? v.lo | 0 : v.lo >>> 0; return words(w, w) }
+  if (v && v.lo === v.hi && !v.nan) { const w = top === I32_MAX ? int32(v.lo) : int32(v.lo) >>> 0; return words(w, w) }
   if (!v || !(v.lo >= (top === I32_MAX ? I32_MIN : 0) && v.hi <= top || empty(v))) return all
   if (empty(v)) return words(0, 0)
   const lo = Math.trunc(v.lo) || 0, hi = Math.trunc(v.hi) || 0

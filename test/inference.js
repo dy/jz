@@ -80,6 +80,34 @@ test('integer width: only nonzero masked unsigned shifts prove signed storage', 
   }
 })
 
+// The compiler run as wasm takes a number past 2^63 for -1 in its own bitwise
+// conversions (README, "Bitwise operands under 2^63"): a count or an operand it
+// reads off the source goes through `int32` (summary/num-range.js) first. Through
+// the hosted compiler each of these answered for a count of 31, or an operand of
+// -1, where the native compiler answered right: the numeric table's word of one
+// number, the loop planner's shift hulls, the folder's imul and clz32.
+test('integer width: a literal past 2^63 is its word wherever the compiler reads it', () => {
+  const huge = ['1e100', '2 ** 64', '2 ** 63', '1.5e19', '1e21']
+  const forms = [
+    (K) => `let g = 0; export let f = (n) => { g = n >>> (${K}); return g }`,
+    (K) => `let g = 0, h = 0; export let pre = (n) => { g = n >>> (${K}); h = g + 1 }; export let f = (n) => h - g + g`,
+    (K) => `export let f = (n) => { const o = { x: n >>> (${K}), y: n >> (${K}) }; return o.x + o.y * 2 }`,
+    (K) => `export let f = (n) => { let s = 0; for (let i = 0; i < 4; i++) s += (n + i) >> (${K}); return s }`,
+    (K) => `export let f = (n) => Math.imul(${K}, 3) + Math.clz32(${K}) + n`,
+    (K) => `const t = new Uint32Array(4); export let f = (n) => { for (let i = 0; i < 4; i++) t[i] = (n + i) >>> (${K}); return t[1] + t[3] }`,
+  ]
+  for (const form of forms) for (const K of huge) {
+    const src = form(K), host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const n of [-1, 5, 2147483648, -2147483649]) {
+        host.pre?.(n); got.pre?.(n)
+        is(got.f(n), host.f(n), `O${optimize}: ${src} f(${n})`)
+      }
+    }
+  }
+})
+
 const count = (wat, re) => (wat.match(re) || []).length
 
 // The negative length-dispatch pins keep helpers outlined so they inspect

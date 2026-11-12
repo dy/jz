@@ -162,7 +162,7 @@ import { collectBindings, nodeSize } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
-import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
+import { constIntExpr, forCounterRange, intExprRange, int32 } from '../../static.js'
 import { normalTest } from '../../normalize.js'
 import { isExactDivision, markExactDivisions } from '../../type/interval-proof.js'
 import { MAX_SMALL_FOR_UNROLL } from '../../type/loop-unroll.js'
@@ -1445,7 +1445,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
       if (op === '>>' && e.length === 3 && isLit(e[2]) && e[2][1] === 0) { const a = hullOf(e[1], ps); return whole(a) && fits(a) ? a : [lit(I32_MIN), lit(I32_MAX)] }
       // (a signed shift right by k of any int32 lies within 32 - k bits: `x << 16 >> 16` is an int16)
-      if (op === '>>' && e.length === 3 && isLit(e[2]) && (e[2][1] & 31) >= 1) { const k = e[2][1] & 31; return [lit(I32_MIN >> k), lit(I32_MAX >> k)] }
+      if (op === '>>' && e.length === 3 && isLit(e[2]) && (int32(e[2][1]) & 31) >= 1) { const k = int32(e[2][1]) & 31; return [lit(I32_MIN >> k), lit(I32_MAX >> k)] }
       // (a cursor stepped inside an expression, `a[r++]`: the hull its budget holds it within)
       if (op === 'postfix' && e.length === 2 && Array.isArray(e[1]) && typeof e[1][1] === 'string' && cursors.has(e[1][1]) && litStep(e[1], e[1][1]) != null) return hullOf(e[1][1], ps)
       if ((op === '++' || op === '+1' || op === '+=') && typeof e[1] === 'string' && cursors.has(e[1]) && litStep(e, e[1]) != null) { const a = hullOf(e[1], ps); return whole(a) ? [add(a[0], lit(litStep(e, e[1]))), add(a[1], lit(litStep(e, e[1])))] : null }
@@ -1465,7 +1465,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         }
       }
       if (op === '|' || op === '^' || op === '<<' || op === '>>') return [lit(I32_MIN), lit(I32_MAX)]
-      if (op === '>>>') { const k = isLit(e[2]) ? e[2][1] & 31 : 0; return k >= 1 ? [lit(0), lit(2 ** (32 - k) - 1)] : null }
+      if (op === '>>>') { const k = isLit(e[2]) ? int32(e[2][1]) & 31 : 0; return k >= 1 ? [lit(0), lit(2 ** (32 - k) - 1)] : null }
       const a = hullOf(e[1], ps), b = hullOf(e[2], ps)
       if (!a || !b) return null
       if (op === '+') return [add(a[0], b[0]), add(a[1], b[1])]
@@ -1773,7 +1773,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (op === '?:' && e.length === 4) return int32Valued(e[2], ps, seen, before) && int32Valued(e[3], ps, seen, before)
       if (op === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max') && e[2]?.[0] === ',' && e[2].length === 3) return int32Valued(e[2][1], ps, seen, before) && int32Valued(e[2][2], ps, seen, before)
       if ((op === '+' || op === '-') && e.length === 3) return siteSums.has(e) || wordHull(e, ps, seen) != null
-      return BITWISE.has(op) && (op !== '>>>' || isLit(e[2]) && (e[2][1] & 31) >= 1)
+      return BITWISE.has(op) && (op !== '>>>' || isLit(e[2]) && (int32(e[2][1]) & 31) >= 1)
     }
     // the hull of a word the copy reads, its ends literal: a word of the copy within its hull, a literal,
     // an element the guard proves present, a name every write of which is an int32, a conditional, a sum or a difference of such within int32

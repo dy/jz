@@ -452,8 +452,9 @@ function evalMathCall(name, vs) {
   if (name === 'pow') return vs.length === 2 ? numResult(powFold(vs[0], vs[1])) : null
   if (name === 'min') return numResult(vs.length ? Math.min(...vs) : Infinity)
   if (name === 'max') return numResult(vs.length ? Math.max(...vs) : -Infinity)
-  if (name === 'imul') return vs.length === 2 ? numResult(Math.imul(vs[0], vs[1])) : null
-  if (name === 'clz32') return vs.length === 1 ? numResult(Math.clz32(vs[0])) : null
+  // (the operands' words by `int32`: this compiler's own conversion, run as wasm, is exact below 2^63 alone)
+  if (name === 'imul') return vs.length === 2 ? numResult(Math.imul(int32(vs[0]), int32(vs[1]))) : null
+  if (name === 'clz32') return vs.length === 1 ? numResult(Math.clz32(int32(vs[0]))) : null
   const uf = HOST_EXACT_UNARY[name]
   if (uf) return vs.length === 1 ? numResult(uf(vs[0])) : null
   const kfn = MATH_KERNEL['math.' + name]

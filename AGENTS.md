@@ -86,6 +86,10 @@ What this implies for HOW we optimize:
   programs through the wasm-hosted compiler. Codegen changes can break the bootstrap;
   so does compiler source outside the self-compilable subset: hosted, an index into a
   Number reads it as a pointer (a walker asks `Array.isArray` before indexing a child),
+  a bitwise operation or `Math.imul` on a number past 2^63 reads it as -1 (a count or
+  an operand read off the source goes through `int32`, summary/num-range.js, first;
+  the hosted suite of `test:bootstrap -- --full` and the `self-compile` workflow
+  are where it shows, never the native legs),
   and nothing is freed within a compile but a summary solve's arena, which its phase
   checkpoint releases (a walker shares what it can, a chain of links
   rather than a copy per node).

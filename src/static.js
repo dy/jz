@@ -8,13 +8,14 @@ import { repOf, VAL } from './reps.js'
 import { STRING, K, tagOf, paramOf, typedAux, UNKNOWN } from './summary/kind.js'
 import { TYPED_ELEM_CODE, DATA_VIEW_FLAG } from '../layout.js'
 import { typedCtorName } from './typed-provenance.js'
-import { nrBinary, nrInts, nrSpan } from './summary/num-range.js'
+import { nrBinary, nrInts, nrSpan, int32 } from './summary/num-range.js'
 
 // A loop guard's relational operators.
 
-// Compile-time ToInt32 must stay exact when this compiler runs as Wasm too:
-// its runtime bitwise conversion saturates outside i64, so reduce large inputs.
-export const int32 = n => (n > -0x100000000 && n < 0x100000000 ? n : n % 0x100000000) | 0
+// Compile-time ToInt32 must stay exact when this compiler runs as Wasm too: its
+// runtime bitwise conversion saturates outside i64 (summary/num-range.js `int32`).
+// A count or an operand read off the source goes through it before any `&`, `|`, shift.
+export { int32 }
 
 // Byte width per TYPED_ELEM_CODE index (0..7) — parallel to module/typedarray.js's
 // own private SHIFT table (log2 of this), duplicated here (layout.js-adjacent, no
@@ -424,7 +425,7 @@ export function typedValueExprRange(n) {
   }
   if (op === '>>>') {
     const s = typedValueLiteral(n[2])
-    if (s != null && (s & 31) !== 0) return [0, 0xFFFFFFFF >>> (s & 31)]
+    if (s != null && (int32(s) & 31) !== 0) return [0, 0xFFFFFFFF >>> (int32(s) & 31)]
   }
   if (op === 'u-' || op === '-') {
     if (n.length === 2) { const a = typedValueExprRange(n[1]); return a ? [-a[1], -a[0]] : null }
