@@ -9753,6 +9753,27 @@ test('wordRanges: every interval holds where its value is computed', () => {
   is(loopTrips(loop, wordRanges(fn)), Infinity, 'a loop no counter stops has no bound')
 })
 
+// The walk holds the locals' intervals at a point as a value, shared between points
+// in runs of 32: a write costs a run and a join the runs that differ. Held as a Map
+// copied at each write, a function of thousands of word locals (a decoder inlined
+// whole: decode-wav) cost every local at every write, 8 s for the function below and
+// 49 s of that case's 71 s compile. The bound is the old cost with a wide margin.
+test('wordRanges: a write costs a run of locals, not every local of the function', () => {
+  const N = 6000, g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
+  const fn = ['func', '$f', ['param', '$p', 'i32'], ['result', 'i32']]
+  for (let i = 0; i < N; i++) fn.push(['local', `$v${i}`, 'i32'])
+  for (let i = 0; i < N; i++) fn.push(['if', ['i32.lt_s', g('$p'), k(i)], ['then', ['local.set', `$v${i}`, k(i & 255)]], ['else', ['local.set', `$v${i}`, k(7)]]])
+  const first = g('$v0'), mid = g('$v3000'), last = g(`$v${N - 1}`), unset = ['local.get', '$p']
+  fn.push(['i32.add', ['i32.add', first, mid], ['i32.add', last, unset]])
+  const t0 = performance.now(), r = wordRanges(fn), ms = performance.now() - t0
+  is(r.get(first), { lo: 0, hi: 7 }, 'the first local: its two arms joined')
+  is(r.get(mid), { lo: 7, hi: 3000 & 255 }, 'one in the middle')
+  is(r.get(last), { lo: 7, hi: (N - 1) & 255 }, 'the last')
+  // (the parameter each test bounds on either side: the two arms joined, any word again)
+  is(r.get(unset), { lo: -2147483648, hi: 2147483647 }, 'a parameter the arms bound apart holds any word after them')
+  ok(ms < 2000, `${N} locals written under ${N} tests: ${ms.toFixed(0)} ms`)
+})
+
 // A constant base moves into the memarg (optimize/const-bases.js): where the flow holds a
 // local to one address, an access adding it to an index the flow holds non-negative reads
 // `offset=N` from the index. An index that may be negative keeps the add: `a[j + 1]` at

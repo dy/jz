@@ -46,29 +46,79 @@ const constOf = (n) => {
 }
 const join = (a, b) => !a || !b ? null : { lo: Math.min(a.lo, b.lo), hi: Math.max(a.hi, b.hi) }
 const within = (a, b) => !b || (!!a && a.lo >= b.lo && a.hi <= b.hi)
-const sameEnv = (a, b) => { if (a.size !== b.size) return false; for (const [k, x] of a) { const y = b.get(k); if (!y || y.lo !== x.lo || y.hi !== x.hi) return false } return true }
-// every interval of `a` within its local's in `b` (a local `b` lacks may hold anything)
-const withinEnv = (a, b) => { for (const [k, y] of b) if (!within(a.get(k), y)) return false; return true }
-const mergeEnv = (a, b) => {
-  if (!a) return b
-  if (!b) return a
-  const out = new Map()
-  for (const [k, x] of a) { const y = b.get(k); if (y) out.set(k, join(x, y)) }
-  return out
+const same = (u, v) => u === v || (!!u && !!v && u.lo === v.lo && u.hi === v.hi)
+
+// The intervals of the i32 locals at one point of the walk: a slot a local, null where
+// it may hold any word, the slots in runs of 32. An environment is a value, never
+// written in place: a write answers one that shares every run but the run it wrote, a
+// join the runs its two sides share. A write then costs a run and the list of runs,
+// and a join the runs that differ, whatever the function's size; held as a Map copied
+// at each write, a function of thousands of locals cost each of them at every write.
+const RUN = 32
+const at = (env, i) => env[i >> 5][i & 31]
+const put = (env, i, v) => {
+  const c = i >> 5, run = env[c]
+  if (same(run[i & 31], v)) return env
+  const e = env.slice(), r = run.slice()
+  r[i & 31] = v
+  e[c] = r
+  return e
 }
+// a run of `p` slot by slot through `of(u, v)`, `p` itself where no slot changes
+const zipRun = (p, q, of) => {
+  let r = null
+  for (let k = 0; k < RUN; k++) {
+    const u = p[k], j = of(u, q[k])
+    if (r) r.push(j)
+    else if (j !== u) { r = p.slice(0, k); r.push(j) }
+  }
+  return r ?? p
+}
+// the runs of `a` run by run through `of(p, q)` where the two differ, `a` itself where none changes
+const zipEnv = (a, b, of) => {
+  if (a === b) return a
+  let out = null
+  for (let c = 0; c < a.length; c++) {
+    const p = a[c], q = b[c], r = p === q ? p : of(p, q)
+    if (out) out.push(r)
+    else if (r !== p) { out = a.slice(0, c); out.push(r) }
+  }
+  return out ?? a
+}
+const sameEnv = (a, b) => {
+  if (a === b) return true
+  for (let c = 0; c < a.length; c++) {
+    const p = a[c], q = b[c]
+    if (p !== q) for (let k = 0; k < RUN; k++) if (!same(p[k], q[k])) return false
+  }
+  return true
+}
+// every interval of `a` within its local's in `b` (a local `b` lacks may hold anything)
+const withinEnv = (a, b) => {
+  if (a === b) return true
+  for (let c = 0; c < a.length; c++) {
+    const p = a[c], q = b[c]
+    if (p !== q) for (let k = 0; k < RUN; k++) if (!within(p[k], q[k])) return false
+  }
+  return true
+}
+// (a local either side lacks is lacked; the wider interval itself where it holds the other)
+const joinSlot = (u, v) => u === v ? u : !u || !v ? null : u.lo <= v.lo && u.hi >= v.hi ? u : v.lo <= u.lo && v.hi >= u.hi ? v : { lo: Math.min(u.lo, v.lo), hi: Math.max(u.hi, v.hi) }
+const joinRun = (p, q) => zipRun(p, q, joinSlot)
+const mergeEnv = (a, b) => !a ? b : !b ? a : zipEnv(a, b, joinRun)
 // the bits a non-negative value below 2^31 may set: [0, 2^k - 1]
 const mask = (hi) => hi <= 0 ? 0 : 2 ** (32 - Math.clz32(hi)) - 1
 
 /** The interval of each i32 expression of `fn` (a Map from its node), or null where the walk cannot follow the function. */
 export function wordRanges(fn) {
-  const words = new Set()
+  const words = new Map()   // an i32 local → its slot
   let body = 2
   for (; body < fn.length; body++) {
     const d = fn[body]
     if (!isArr(d) || d[0] === 'export' || d[0] === 'import' || d[0] === 'type' || d[0] === 'result') continue
     if (d[0] !== 'param' && d[0] !== 'local') break
     if (typeof d[1] !== 'string') return null   // an unnamed declaration: a reference by index the walk cannot name
-    if (d[2] === 'i32') words.add(d[1])
+    if (d[2] === 'i32') words.set(d[1], words.size)
   }
   const params = new Set(fn.filter(d => isArr(d) && d[0] === 'param').map(d => d[1]))
   const out = new Map(), labels = []
@@ -90,7 +140,7 @@ export function wordRanges(fn) {
     return null
   }
   const leave = (label, env) => { const f = frameOf(label); if (f) (f.loop ? f.backs : f.exits).push(env) }
-  const get = (env, x) => words.has(x) ? env.get(x) ?? null : null
+  const get = (env, x) => { const i = words.get(x); return i === undefined ? null : at(env, i) }
 
   // the facts a condition gives where it holds (`yes`) or fails: [local, interval, named by a tee of it]
   const facts = (c, env, yes, into) => {
@@ -134,14 +184,15 @@ export function wordRanges(fn) {
     facts(cond, env, yes, into)
     if (!into.length) return env
     // a fact of a local the condition writes holds only as the one fact of the one write, a tee it compares
-    const written = writesIn(cond), e = new Map(env)
+    const written = writesIn(cond)
+    let e = env
     for (const [x, r, tee] of into) {
       const w = written.get(x) || 0
       if (w && (w > 1 || !tee || into.filter(f => f[0] === x).length > 1)) continue
-      const cur = e.get(x)
+      const i = words.get(x), cur = at(e, i)
       // (an empty meet: the way cannot run, and any interval holds there)
       const lo = cur ? Math.max(cur.lo, r.lo) : r.lo, hi = cur ? Math.min(cur.hi, r.hi) : r.hi
-      e.set(x, lo <= hi ? { lo, hi } : r.lo <= r.hi ? r : cur ?? FULL)
+      e = put(e, i, lo <= hi ? { lo, hi } : r.lo <= r.hi ? r : cur ?? FULL)
     }
     return e
   }
@@ -169,8 +220,7 @@ export function wordRanges(fn) {
     if (op === 'local.set' || op === 'local.tee') {
       env = walk(n[2], env)
       if (!env || !words.has(n[1])) return env
-      const r = out.get(n[2]) ?? null, e = new Map(env)
-      if (r) e.set(n[1], r); else e.delete(n[1])
+      const r = out.get(n[2]) ?? null, e = put(env, words.get(n[1]), r)
       return op === 'local.tee' ? value(n, r, e) : e
     }
     if (op === 'block' || op === 'loop' || op === 'if') {
@@ -279,24 +329,26 @@ export function wordRanges(fn) {
     return null
   }
 
-  const entry = new Map()
-  for (const x of words) if (!params.has(x)) entry.set(x, { lo: 0, hi: 0 })
+  // (a local the function declares starts at 0, a parameter anywhere)
+  const ZERO = { lo: 0, hi: 0 }, entry = []
+  for (const [x, i] of words) {
+    if ((i & 31) === 0) entry.push(new Array(RUN).fill(null))
+    if (!params.has(x)) entry[i >> 5][i & 31] = ZERO
+  }
   seq(fn.slice(body), entry)
   return abort ? null : out
 }
 
 // widen each bound still moving to the next literal the loop compares with, then to none
 function widen(head, next, steps) {
-  const out = new Map()
-  for (const [x, r] of next) {
-    const h = head.get(x)
-    if (within(r, h)) { out.set(x, r); continue }
+  const slot = (r, h) => {
+    if (!r || within(r, h)) return r
     let lo = r.lo, hi = r.hi
-    if (!h || lo < h.lo) lo = steps.filter(s => s <= lo).reduce((m, s) => Math.max(m, s), MIN)
-    if (!h || hi > h.hi) hi = steps.filter(s => s >= hi).reduce((m, s) => Math.min(m, s), MAX)
-    if (lo > MIN || hi < MAX) out.set(x, { lo, hi })
+    if (lo < h.lo) lo = steps.filter(s => s <= lo).reduce((m, s) => Math.max(m, s), MIN)
+    if (hi > h.hi) hi = steps.filter(s => s >= hi).reduce((m, s) => Math.min(m, s), MAX)
+    return lo > MIN || hi < MAX ? { lo, hi } : null
   }
-  return out
+  return zipEnv(next, head, (q, p) => zipRun(q, p, slot))
 }
 
 // the literals a loop compares with, each and one on either side
