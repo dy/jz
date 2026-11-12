@@ -59,6 +59,7 @@ For the string program the user code is 5 functions, so nearly all of watOptimiz
 | # | pass (file) | ext reads | ext writes | output differs between compiles? |
 |---|---|---|---|---|
 | 1 | `foldStaticConstArrayReads` (devirt.js:442-518) | `ctx.scope.staticArrs`, `ctx.types.arrResized`, `ctx.types.nameEscapes`; tags `.saArr/.saBits` | none | only for tagged user nodes (declares per-compile array facts). No-op on helpers. |
+| 1a | `holdWordNumbers` (peephole.js) | tag `.wordOf` (emit: a field of a schema whose every write is a word, an element of a dense array of words) | none | only for tagged nodes: the tag is the program's census, so a function's reads carry it in one compile and not in another |
 | 2 | `stripDeadCanons` (nan-canon.js) | none | none | no |
 | 3 | `hoistPtrType` (cse-address.js) | none (fn-local ids) | none | no |
 | 4 | `hoistInvariantPtrOffset`, `hoistPtrOffset` (licm.js, cse-address.js) | none | none | no |

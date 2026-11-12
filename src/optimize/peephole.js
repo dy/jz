@@ -428,6 +428,56 @@ export function foldLoadCasts(fn) {
   for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'local' && retyped.has(fn[i][1])) fn[i] = ['local', fn[i][1], 'i64']
 }
 
+/** An i32 local every write of which truncates a number that is a word exactly
+ *  (emit's mark `wordOf`: a field of a schema whose every write is one, an
+ *  element of a dense array of words) and every read of which is converted
+ *  back holds the number: each write is the number, each read the local. The
+ *  word paid a truncation a write and a conversion a read where no integer
+ *  reads it (`const p = rows[i]; xs[i] = p.x + p.y * 0.25`, y a field of
+ *  integers). Before any pass that rebuilds a subtree: the mark is on emit's
+ *  node, and holds only while the node truncates the operand it was made with. */
+export function holdWordNumbers(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  // an i32 local, and whether a write of it was met; dropped at an access the number does not serve
+  const words = new Map()
+  for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'local' && fn[i][2] === 'i32') words.set(fn[i][1], false)
+  if (!words.size) return
+  const exact = (v) => Array.isArray(v) && v[0] === 'i32.trunc_sat_f64_s' && v.length === 2 && v.wordOf != null && v.wordOf === v[1]
+  let flat = false
+  const scan = (n, parent) => {
+    if (!Array.isArray(n)) { if (n === 'local.get' || n === 'local.set' || n === 'local.tee') flat = true; return }
+    const op = n[0]
+    if ((op === 'local.set' || op === 'local.tee') && n.length < 3) flat = true
+    if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && words.has(n[1])) {
+      // (a tee is a write and a read of what it wrote)
+      if (op !== 'local.set' && parent?.[0] !== 'f64.convert_i32_s' || op !== 'local.get' && !exact(n[2])) words.delete(n[1])
+      else if (op !== 'local.get') words.set(n[1], true)
+    }
+    for (let i = 1; i < n.length; i++) scan(n[i], n)
+  }
+  for (let i = bodyStart; i < fn.length; i++) scan(fn[i], null)
+  let any = false
+  for (const written of words.values()) any ||= written
+  // (a flat local access is out of the walk's view: none is retyped then)
+  if (flat || !any) return
+  const held = (n) => Array.isArray(n) && words.get(n[1]) === true
+  // (a node two parents share is rewritten once: its parents read the one result)
+  const done = new WeakMap()
+  const walk = (n) => {
+    if (!Array.isArray(n)) return n
+    if (done.has(n)) return done.get(n)
+    for (let i = 1; i < n.length; i++) n[i] = walk(n[i])
+    const r = (n[0] === 'local.set' || n[0] === 'local.tee') && held(n) ? [n[0], n[1], n[2][1]]
+      : n[0] === 'f64.convert_i32_s' && held(n[1]) && (n[1][0] === 'local.get' || n[1][0] === 'local.tee') ? n[1][0] === 'local.get' ? ['local.get', n[1][1]] : n[1]
+      : n
+    done.set(n, r); done.set(r, r)
+    return r
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
+  for (let i = 2; i < bodyStart; i++) if (held(fn[i]) && fn[i][0] === 'local') fn[i] = ['local', fn[i][1], 'f64']
+}
+
 /** The exact conversions no range proof folded (`call $__to_int32 X`, left by
  *  the walk above and read by the lane lift in that form) convert inline where
  *  the i64 truncation is exact, every finite |x| < 2^63 (NaN saturates to

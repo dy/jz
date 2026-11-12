@@ -2031,8 +2031,13 @@ export default (ctx) => {
     // exactly-int32, never -0): land the value directly in i32. trunc_sat of
     // such an f64 is a value-exact round-trip, and every int consumer skips
     // the ToInt32 guard/convert battery the f64 route pays (the immutable
-    // kernel's per-field cost); f64 consumers convert back at one op.
-    if (i32Certain) return typed(['i32.trunc_sat_f64_s', load], 'i32')
+    // kernel's per-field cost). A float consumer reads the load itself
+    // (ir/numeric.js asF64, `wordOf`), not the truncation converted back.
+    if (i32Certain) {
+      const word = typed(['i32.trunc_sat_f64_s', load], 'i32')
+      word.wordOf = typed(load, 'f64')
+      return word
+    }
     // CARRIER PROGRAM §15/§16: the third read surface Slice 3's arm inventory
     // never enumerated. A PROVEN-BIGINT slot (ctx.schema.slotBigintProvenAt/
     // BySid, module/schema.js — every write to this slot is proven BIGINT

@@ -21,7 +21,7 @@ import { earlyStores } from './early-stores.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
 import {
-  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs, foldLoadCasts,
+  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs, foldLoadCasts, holdWordNumbers,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { reuseLoads, narrowByteLoads } from './reuse-loads.js'
@@ -78,6 +78,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // (CSE, fused rewrite, LICM temp-splitting) strips array properties — the tag
   // only survives untouched nodes.
   if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn)
+  // Beside it, by emit's mark as well: a word local only float code reads holds its number.
+  if (!cfg || cfg.fusedRewrite !== false) holdWordNumbers(fn)
   // Before every pass that reads locals: a cell no closure took is one of them.
   if (!cfg || cfg.promoteCells !== false) promoteCells(fn)
   // Before the lifts read the sums: a canon only arithmetic reads is its value.
