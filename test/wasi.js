@@ -1164,6 +1164,17 @@ test('process.exit ends a WASI command with its status', async () => {
   is(codes, [3, 0, 2, 0, 4], 'one call of `exit` per exit')
   is(out.join(''), 'leaving\n'.repeat(3), 'what ran before the exit is written; nothing after it, no finally')
 
+  // an optional chain on it is the same exit: `process` is there under WASI
+  // (`process?.exit(1)` asked for an env import of `process`)
+  for (const call of ['process?.exit(code)', 'process?.exit?.(code)', 'process.exit?.(code)']) {
+    const opt = `export const f = (code) => { if (code !== -1) ${call}; return 5 }`
+    is(imports(opt, 'wasi'), ['wasi_snapshot_preview1.proc_exit'], `${call} imports proc_exit alone`)
+    const seen = [], inst = instantiate(compile(opt, { host: 'wasi' }), { wasi: { exit: (code) => { seen.push(code) } } })
+    try { inst.exports.f(6) } catch (e) { ok(e instanceof WebAssembly.RuntimeError, `${call} traps after the exit`) }
+    is(seen, [6], `${call} hands its code to the exit`)
+    is(inst.exports.f(-1), 5, `${call}: a path that does not exit returns`)
+  }
+
   // a JS host keeps its own `process`: an env import, no WASI one
   const js = imports(`export const f = (code) => { process.exit(code) }`, 'js')
   ok(js.includes('env.process') && !js.some(i => i.startsWith('wasi_')), `host:'js' imports the host's process: ${js}`)

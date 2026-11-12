@@ -1047,13 +1047,17 @@ const handlers = {
   // array for emit's runtime dispatch); the only difference is the nullish guard,
   // which is emit's concern. Without this, `obj?.m(…)` reaches emit missing the
   // `.m` emitter and falls to the dynamic path that needs an unincluded module.
-  '?.'(obj, prop) { includeForProperty(prop); return ['?.', prep(obj), prop] },
+  '?.'(obj, prop) { if (staticMember(obj, prop)) return prep(['.', obj, prop]); includeForProperty(prop); return ['?.', prep(obj), prop] },
   '?.[]'(obj, idx) {
+    const name = staticStringExpr(idx)
+    if (staticMember(obj, name)) return prep(['.', obj, name])
     includeForArrayAccess()
     const key = typeof idx === 'string' ? staticStringExpr(idx) : null
     return ['?.[]', prep(obj), key != null ? staticString(key) : prep(idx)]
   },
   '?.()'(callee, callArgs) {
+    // a function its module serves is there to call: `process.exit?.(1)`
+    if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && servedCallee(callee[1], callee[2])) return prep(['()', ['.', callee[1], callee[2]], callArgs])
     // Parser wraps multi-args in a comma list, like '()'. Unwrap so emit gets flat positional args.
     const items = callArgs == null ? []
       : Array.isArray(callArgs) && callArgs[0] === ',' ? callArgs.slice(1)
@@ -1163,6 +1167,10 @@ const handlers = {
     const chosen = choiceOfCalls(callee, args)
     if (chosen) return prep(chosen)
     if (typeof callee === 'string' && REJECT_IDENTS[callee]) err(REJECT_IDENTS[callee])
+    if (Array.isArray(callee) && (callee[0] === '?.' || callee[0] === '?.[]')) {
+      const prop = callee[0] === '?.' ? callee[2] : staticStringExpr(callee[2])
+      if (staticMember(callee[1], prop)) callee = ['.', callee[1], prop]
+    }
 
     // Compile-time folds: the callee names something resolvable now. Each fold
     // is gated by callee shape, so at most one of the three fires.
@@ -2882,6 +2890,15 @@ function normalizeMethodCallee(node) {
   includeForProperty(key)
   return [node[0] === '[]' ? '.' : '?.', node[1], key]
 }
+
+/** `ns?.member` of a name the compiler resolves where it is used is `ns.member`: a
+ *  builtin namespace (`Math?.max(a, b)`), a function its module serves on this target
+ *  (`process?.exit(1)` under WASI). The name is always there, and jz holds no object
+ *  for it to test. */
+const servedCallee = (obj, prop) => typeof obj === 'string' && typeof prop === 'string' && !shadowsBuiltin(obj) &&
+  includeForNamedCall(`${obj}.${prop}`) && ctx.core.emit[`${obj}.${prop}`] !== undefined
+const staticMember = (obj, prop) => typeof obj === 'string' && typeof prop === 'string' && !shadowsBuiltin(obj) &&
+  (namespaceModOf(obj) != null || servedCallee(obj, prop))
 
 function resolveCallee(callee, args) {
   if (typeof callee === 'string') {

@@ -44,6 +44,22 @@ test('native wasm2c postprocess is module-generic and fail-closed', () => {
   ok(bad.status !== 0, 'generator-format drift fails instead of silently losing tuning')
 })
 
+// WABT 1.0.42 passes each helper the memory's base and size from locals of the caller
+// (`i32_load_default32(wasm_rt_local_memory_base, wasm_rt_local_memory_size, mem, addr)`): the
+// two-argument shadows made its output no C ("too many arguments provided to function-like
+// macro invocation"). Its helpers are kept; the barriers still go. The fixture is the shape of
+// its declarations (src/template/wasm2c.declarations.c), not a build's output.
+test('native wasm2c postprocess: WABT 1.0.42 keeps its own helpers', () => {
+  const helpers = `#define DEFINE_LOAD(name, t1, t2, t3, force_read) \\
+  static inline t3 name##_unchecked(uint8_t* const wasm_rt_local_memory_base, \\
+      wasm_rt_memory_t* mem, u64 addr) {}
+`
+  const out = execFileSync('awk', ['-f', POST], { input: fixture.replace('#define DEFINE_STORE(name, t1, t2)', helpers + '#define DEFINE_STORE(name, t1, t2)'), encoding: 'utf8' })
+  ok(!/_md/.test(out), 'no shadow and no hoisted base of ours')
+  ok(!/__asm__/.test(out), 'the barriers are removed')
+  ok(/DEFINE_STORE\(i64_store32, u32, u64\)/.test(out) && /w2c_kernel_main\(w2c_kernel\* instance\) \{/.test(out), 'the rest is as it came')
+})
+
 test('native bench adapters: installed/source headers and current/legacy w2c2 ABIs', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'jz native adapters '))
   try {

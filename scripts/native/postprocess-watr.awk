@@ -24,6 +24,11 @@
 #   3. After the opening `{` of every generated module function whose first
 #      parameter is `w2c_<module>* instance`, declare `_md`. Functions that don't access memory
 #      keep an unused const local — DCE'd at -O3 with no register cost.
+#
+# WABT 1.0.42 hands every helper the memory's base and size, which it keeps in
+# locals of the calling function (`wasm_rt_local_memory_base`): its helpers take
+# four and five arguments where the shadows take two and three, and that hoist is
+# its own. Its output keeps WABT's helpers: only the barriers of 1 are removed.
 
 # Route each helper's `_default32` form through its shadow macro.
 function default32(names, params,    n, i, list) {
@@ -32,11 +37,14 @@ function default32(names, params,    n, i, list) {
 }
 
 function inject_memory_base() {
-  print "  __attribute__((unused)) u8* const _md = instance->w2c_memory.data;"
+  if (!local_base) print "  __attribute__((unused)) u8* const _md = instance->w2c_memory.data;"
   functions++
 }
 
-BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_function = 0 }
+BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_function = 0; local_base = 0 }
+
+# (the helper definitions name it ahead of the DEFINE_STORE block)
+/wasm_rt_local_memory_base/ { local_base = 1 }
 
 # WABT emits one GNU-asm definition for integers and one architecture-selected
 # definition for floats. They force each loaded value through a register and act
@@ -48,6 +56,7 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
 # Detect end of DEFINE_STORE block (last DEFINE_STORE line). Insert overrides after.
 /^DEFINE_STORE\(i64_store32,/ {
   print
+  if (local_base) { injected = 1; next }
   print ""
   print "/* A2b: shadow wasm2c load/store inlines with macros that use the function-local"
   print " * `_md` (== instance->w2c_memory.data). Lets clang hoist the data base above each"
@@ -89,6 +98,7 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
 # call sites removes 3 memory-base reloads per v128 load/store on clang/arm64.
 /^\/\/ clang-format on$/ {
   print
+  if (local_base) { simd_injected = 1; next }
   print ""
   print "/* Native SIMD memory access through the same hoisted, stable base. */"
   print "#if WASM_RT_MEMCHECK_GUARD_PAGES"

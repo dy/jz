@@ -38,7 +38,10 @@ of each function and drops WABT's load barriers (`postprocess-watr.awk`): bench/
 runs in 0.31× the time on an M4, bench/entity in 0.42×. Without the barriers, a load
 whose value goes unused may be dropped, and with it an out-of-bounds trap it would
 have raised. A 32-bit host, or `CFLAGS=-DWASM_RT_MEMCHECK_BOUNDS_CHECK`, gets
-explicit bounds checks and WABT's own memory helpers.
+explicit bounds checks and WABT's own memory helpers. WABT 1.0.42 keeps its own
+helpers too: it hands them the base from locals of the calling function, so there
+the barriers are dropped and the hoist is WABT's (its speed is not measured here,
+and CI builds with 1.0.41).
 
 With clang, two LLVM codegen options keep choices jz's wasm already made, as V8
 keeps them; under `-flto` they go to the linker too:

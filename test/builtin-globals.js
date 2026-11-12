@@ -62,6 +62,23 @@ test('builtin globals: a held callable alias calls the builtin', () => agree([
   ['module parseInt', `const P = parseInt; export let f = () => P('12', 8)`],
 ]))
 
+// An optional chain on such a name is the plain member: the name is always
+// there, and there is no object to test. `Math?.max(a, b)` was refused
+// ("'Math' as a value is not supported"), with JSON, console and Object.
+test('builtin globals: an optional chain on a namespace is the member', () => agree([
+  ['call', `export let f = (k) => Math?.max(k, 2) + Math?.PI`, 5],
+  ['nested', `export let f = (k) => JSON?.stringify([k, Math?.floor(k)]).length`, 2.5],
+  ['constructors', `export let f = (k) => Number?.isInteger(k) ? Object?.keys({ a: k, b: 1 }).length : -1`, 3],
+  ['statics', `export let f = (k) => String?.fromCharCode(65 + k).length + Array?.isArray([k]) * 2`, 1],
+  ['a literal key', `export let f = (k) => Math?.["min"](k, 2) + Math?.["PI"]`, 5],
+  ['grouped', `export let f = (k) => (Math?.max)(k, 2)`, 5],
+  ['console', `export let f = (k) => { console?.log; return k }`, 1],
+  // a binding that takes the name is tested as any value is
+  ['a binding of the name', `export let f = (k) => { const Math = k > 1 ? { max: (a, b) => a - b } : null; return Math?.max(k, 2) ?? -1 }`, 5],
+  ['a binding of the name, null', `export let f = (k) => { const Math = k > 1 ? { max: (a, b) => a - b } : null; return Math?.max(k, 2) ?? -1 }`, 0],
+  ['an object', `export let f = (k) => { const o = k > 1 ? { a: 7 } : null; return o?.["a"] ?? -1 }`, 0],
+]))
+
 test('builtin globals: unsupported value uses are rejected naming it', () => {
   for (const [name, src] of [
     ['Math', `let g = (m) => m.sqrt(9)\nexport let f = () => g(Math)`],
