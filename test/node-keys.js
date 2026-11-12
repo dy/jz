@@ -6,7 +6,7 @@
  * programs are the miscompiles such a comparison made.
  */
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative } from 'path'
 import { nodeEqual, nodeKey, constText } from '../src/ast.js'
@@ -38,6 +38,9 @@ test('node keys: a node is one node only where every leaf is the same value', ()
   is(nodeKey([, null]), '[null,null]')
   is(nodeKey([, undefined]), '[null,undefined]')
   is(nodeKey(['f64.const', -0]), '["f64.const",-0]')
+  // an object has no text of its own, and no node holds one: its key is refused, not shared
+  throws(() => nodeKey(['+', 'x', {}]), /no text of its own/)
+  ok(!nodeEqual(['+', 'x', {}], ['+', 'x', {}]), 'two objects are two leaves')
   // a constant's text is its value's: the spelling of a number aside, -0 and every lane kept
   is(constText(['i32.const', '2']), constText(['i32.const', 2]))
   ok(constText(['f64.const', -0]) !== constText(['f64.const', 0]), '-0 is not 0')

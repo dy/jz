@@ -860,7 +860,10 @@ function nodeText(n) {
   if (!Array.isArray(n)) {
     if (typeof n === 'string') return JSON.stringify(n)
     if (typeof n === 'number') return n === 0 && 1 / n < 0 ? '-0' : String(n)
-    return typeof n === 'bigint' ? n + 'n' : String(n)
+    if (typeof n === 'bigint') return n + 'n'
+    if (n === undefined || n === null || typeof n === 'boolean') return String(n)
+    // (an object, a function, a symbol: no text is that leaf's alone, and no node holds one)
+    throw new Error('nodeKey: a leaf that has no text of its own (' + typeof n + ')')
   }
   let s = '['
   for (let i = 0; i < n.length; i++) s += (i ? ',' : '') + (i === 0 && n[0] == null ? 'null' : nodeText(n[i]))
