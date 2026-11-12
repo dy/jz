@@ -4,13 +4,15 @@
  * # Stage contract
  *   IN:  WAT-as-array IR (function body or module-level).
  *   OUT: equivalent WAT-as-array IR (same semantics, smaller encoding).
- *   INVARIANTS: semantics-preserving IR→IR rewrites. Leaf passes are context-free;
- *        explicitly documented module-proof passes may read immutable ctx facts. No ctx writes.
- *        No new top-level declarations except those surfaced via `addGlobal`.
+ *   INVARIANTS: semantics-preserving IR→IR rewrites. A pass is a function of the IR it
+ *        is given and of the facts handed to it: no file here reads the compile context
+ *        (what the passes read of the compile is read once, wat/assemble/optimize-module.js
+ *        passFacts; what one hands back, a global an inline cache declares, goes through
+ *        a fact's callback).
  *
- * Each pass is orthogonal. Apply order matters: structural hoists (hoistPtrType) introduce
- * new locals before the fused walk, which mixes peephole rebox folds, ptr-helper inlining,
- * and memarg-offset folding in one bottom-up traversal.
+ * Apply order matters, and it is one table (pass-table.js): every stage walks it,
+ * each step with its flags, the steps it follows and why, the facts it takes and
+ * makes, the emitter's marks it reads and drops; test/pass-table.js holds it.
  *
  * Passes:
  *   hoistPtrType      — repeated `(call $__ptr_type X)` on same X → single local.tee + local.get reuse

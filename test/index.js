@@ -225,6 +225,7 @@ const TESTS = [
   'inference',
   'audit-regressions',
   'node-keys',
+  'pass-table',
   'provenance-inference',
   'speculate',
   'unsigned',
@@ -358,6 +359,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
   'self-compile-source', 'self-compile-includes', 'self-checkpoint', 'abi', 'examples', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory',
+  'pass-table', // the optimizer's order as data, read in the host: the kernel leg would run it again unchanged
   'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
   // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
   // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
