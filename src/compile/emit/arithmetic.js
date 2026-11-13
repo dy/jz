@@ -177,6 +177,8 @@ const peelI32 = (v) =>
     : (Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u'))
       ? (Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1])
       : null
+// The i32 whose signed reading is the value: no uint32 word, flagged or behind its widening.
+const signedWord = (v) => v.unsigned || Array.isArray(v) && v[0] === 'f64.convert_i32_u' ? null : peelI32(v)
 
 // The remainder of a non-negative word by a positive runtime word `m`: a dividend
 // below m is its own remainder, one below 2m its difference with m, and only
@@ -911,8 +913,9 @@ export const arithmeticOps = {
     // remainder behind a test of the divisor (NaN there, as JS answers), the
     // dividend's sign kept for an exact zero. Both operands run once, in order.
     // (`c % gw` of a queue's cell by a grid width, where a call to fmod ran.)
-    if (!isLit(vb) && !va.unsigned && !vb.unsigned) {
-      const pa = peelI32(va), pb = peelI32(vb)
+    // (a uint32 element reaches here as its widening, `u[i] % n`: rem_s read it negative)
+    if (!isLit(vb)) {
+      const pa = signedWord(va), pb = signedWord(vb)
       if (pa && pb) {
         const ta = '$' + tempI32('rem'), tb = '$' + tempI32('rem')
         return typed(['block', ['result', 'f64'],

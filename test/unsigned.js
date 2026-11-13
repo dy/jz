@@ -34,7 +34,7 @@
  */
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import { run, evaluate, compileSrc, oracle } from './util.js'
+import { run, evaluate, compileSrc, oracle, jz } from './util.js'
 import { scalarCase } from './_scalar-core-cases.js'
 import { instantiate } from '../interop.js'
 import { execFileSync } from 'node:child_process'
@@ -908,4 +908,42 @@ test('agreeing-SIGNED `&&` / `||` arms keep the branchless i32-if fast path (no 
   const { f: fOr } = run(srcOr)
   is(fOr(1, -9), 1)
   is(fOr(0, -9), -9)
+})
+
+// `(a / b) | 0` and `a % b` where an operand is a uint32: JS divides the Numbers (ECMA-262
+// 13.7 Multiplicative Operators over Number::divide and Number::remainder, then 7.1.6
+// ToInt32); a signed i32 division or remainder of the word's bits reads a value past 2^31
+// as negative. compile/emit/bitwise.js tryIntDivTrunc took any 'i32' dividend to i32.div_s
+// (`((x >>> 0) / 3) | 0` was -715827882 at x = 2^31, at levels 2 and over), and the
+// remainder's last i32 path took a Uint32Array element by its widening (`u[1] % n`, every
+// level). Expected values are Node's.
+test('uint32: a division truncated by | 0 and a remainder read the unsigned value', () => {
+  const U = {
+    element: ['const a = new Uint32Array(4); a[1] = x', 'a[1]'], shift: ['', '(x >>> 0)'], local: ['const u = x >>> 0', 'u'],
+    assigned: ['let u = 0; u = x >>> 0', 'u'], sum: ['', '((x + y) >>> 0)'],
+  }
+  const S = { int: ['const s = y | 0', 's'], 'Int32Array element': ['const c = new Int32Array(2); c[1] = y', 'c[1]'] }
+  const P = {}
+  for (const [un, [upre, u]] of Object.entries(U)) {
+    for (const d of [1, 2, 3, 7, 16, 65536, 1000000007, -1, -2, -3, 0]) P[`${un} / ${d}`] = `${upre}; return (${u} / ${d}) | 0`
+    P[`${un} / a uint32 local`] = `${upre}; const v = y >>> 0; return (${u} / v) | 0`
+    P[`${un} / a Uint32Array element`] = `${upre}; const b = new Uint32Array(2); b[1] = y; return (${u} / b[1]) | 0`
+    for (const [sn, [spre, s]] of Object.entries(S)) {
+      P[`${un} / ${sn}`] = `${upre}; ${spre}; return (${u} / ${s}) | 0`
+      P[`${sn} / ${un}`] = `${upre}; ${spre}; return (${s} / ${u}) | 0`
+    }
+    P[`${un} % 7`] = `${upre}; return (${u} % 7) | 0`
+    P[`${un} % an int`] = `${upre}; const s = y | 0; return (${u} % s) | 0`
+    P[`${un} / 3 stored`] = `${upre}; const o = new Uint32Array(2); o[0] = (${u} / 3) | 0; return o[0]`
+    P[`${un} / 2 | 0, + 1`] = `${upre}; return ((${u} / 2) | 0) + 1`
+  }
+  const X = [0, 1, 5, 2147483647, 2147483648, 3000000000, 4294967295, -1, -5], Y = [0, 1, 3, -3, 2147483648, 4294967295, -2147483648]
+  for (const [name, body] of Object.entries(P)) {
+    const src = `export let f = (x, y) => { ${body} }`
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const x of X) for (const y of Y) is(got.f(x, y), want.f(x, y), `${name} at (${x}, ${y}), ${optimize}`)
+    }
+  }
 })
