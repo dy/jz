@@ -8,7 +8,7 @@ import { ERR } from '../../../err-codes.js'
 import { ctx } from '../../ctx.js'
 import { asF64, asI32, emitNum, isLit, litVal, toI32, toInt32, toNumF64, typed } from '../../ir.js'
 import { intExprRange, intLiteralValue, int32 } from '../../static.js'
-import { exprType } from '../../type.js'
+import { exprType, isUnsignedI32Expr } from '../../type.js'
 import {
   bigIntDomainsCanMix, bigIntJointDispatch, bigIntNumericOperand, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
@@ -22,15 +22,25 @@ import { isI32Num } from './shared.js'
 // all i32 a,b: |a|<2³³≪2⁵³ so the f64 quotient never rounds across the truncation
 // boundary — EXCEPT b=0 (`(a/0)|0` is ToInt32(±Inf)=0, but i32.div_s traps) and
 // INT_MIN/-1 (ToInt32 wraps to INT_MIN, i32.div_s traps); both guarded. A constant
-// divisor folds the guards away. `exprType==='i32'` excludes unsigned operands
-// (those return 'f64'), where div_s would misread the sign. Returns IR or null.
+// divisor folds the guards away. Returns IR or null.
+// A uint32 (an element of a Uint32Array, `x >>> 0`, a local holding one) is 'i32' to
+// exprType, whose word-coercing readers keep its bits, and no signed word: past 2^31
+// div_s read it negative, `((x >>> 0) / 3) | 0` answering -715827882 at x = 2^31. By a
+// positive literal it is the unsigned division of its bits, exact (the quotient is below
+// 2^32 and `| 0` keeps its bits); any other unsigned operand takes the f64 division.
 const INT_MIN_I32 = -2147483648
 function tryIntDivTrunc(aNode, bNode) {
   const o = ctx.transform.optimize
   if (!o || o.intDivLower === false) return null
   const L = ctx.func.locals
   if (exprType(aNode, L) !== 'i32' || exprType(bNode, L) !== 'i32') return null
+  if (isUnsignedI32Expr(bNode, L)) return null
   const dv = intLiteralValue(bNode)
+  if (isUnsignedI32Expr(aNode, L)) {
+    if (dv == null || dv <= 0) return null
+    const va = asI32(emit(aNode))
+    return typed(dv & (dv - 1) ? ['i32.div_u', va, ['i32.const', dv | 0]] : ['i32.shr_u', va, ['i32.const', 31 - Math.clz32(dv)]], 'i32')
+  }
   if (dv != null) {                         // constant divisor — no runtime guard
     const va = asI32(emit(aNode))
     if (dv === 0) return typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', 0]], 'i32')
