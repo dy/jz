@@ -259,6 +259,345 @@ export let f = () => {
 }`)
 })
 
+// The RGBA box sums (blur-channel.js): a statement after the four stores or between the taps
+// and the stores, a tap count each pixel sets, a window longer than the 16-bit guard holds, a sum
+// read or seeded beside its accumulation, a pixel local read after the loop, a row offset the
+// pixel loop sets before its sums.
+test('vector legality: channels', () => {
+  agree("CH-3-a-tailstore", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    aux[x] = x + 1
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-3-d-prestore-reads-acc", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; aux[x] = s0; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0; 
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-3-e-tail-aux5", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    aux[x] = x + 1
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  return aux[4] * 1000 + aux[5]
+}`)
+  agree("CH-3-f-pre-aux5", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; aux[x] = x + 1; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0; 
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  return aux[4] * 1000 + aux[5]
+}`)
+  agree("CH-3-g-tail-total", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  let total = 0
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    total += s0
+  }
+  aux[0] = total
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  return aux[0]
+}`)
+  agree("CH-4-a-tap-le-x", `
+
+const R = 4, W = 64
+const src = new Uint8Array(4096), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 9
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = 0; k <= x; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-4-b-long-window", `
+
+const R = 4, W = 64
+const src = new Uint8Array(8192), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 1005
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -1000; k <= r; k++) {
+      
+      const p = (x + k + 1000) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-5-c-break-on-acc", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      if (s0 > 700) break
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-5-e-cond-seed", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 9
+  for (let i = 0; i < 70; i++) aux[i] = i * 3 + 1
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    if (aux[x] > 100) s0 = 5000
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-5-f-inner-reads-acc-int", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  for (let i = 0; i < 70; i++) aux[i] = i * 3 + 1
+  for (let x = r; x < w - r; x++) {
+    let cnt = 0
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      cnt = (cnt + (s0 & 1)) | 0
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    const o = x << 2; dst[o] = ((s0 + cnt) / n) | 0; dst[o + 1] = ((s1 + cnt) / n) | 0; dst[o + 2] = ((s2 + cnt) / n) | 0; dst[o + 3] = ((s3 + cnt) / n) | 0
+    
+  }
+  
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; for (let i = 0; i < aux.length; i++) h = (Math.imul(h, 31) + aux[i]) | 0; return h
+}`)
+  agree("CH-7-c-o-ret", `
+
+const R = 4, W = 64
+const src = new Uint8Array(W * 4 + 64), dst = new Uint8Array(W * 4 + 64), aux = new Int32Array(W + 8)
+const blurRow = (src, dst, aux, w, r) => {
+  const n = 2 * r + 1
+  let o = 0
+  for (let x = r; x < w - r; x++) {
+    
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+    
+    for (let k = -r; k <= r; k++) {
+      
+      const p = (x + k) << 2
+      s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      
+    }
+    o = x << 2; ; dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0; 
+    
+  }
+  aux[0] = o
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  for (let i = 0; i < dst.length; i++) dst[i] = (i * 5) & 255
+  blurRow(src, dst, aux, W, R)
+  return aux[0]
+}`)
+  agree("CH-8-a-row-local-in-pixel-loop", `
+
+const src = new Uint8Array(4096), dst = new Uint8Array(4096)
+const blurRows = (src, dst, w, r) => {
+  const n = 2 * r + 1
+  for (let y = 0; y < 6; y++) {
+    
+    for (let x = r; x < w - r; x++) {
+      const rowb = y * 64
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+      for (let k = -r; k <= r; k++) {
+        const p = (rowb + x + k + 8) << 2
+        s0 += src[p]; s1 += src[p + 1]; s2 += src[p + 2]; s3 += src[p + 3]
+      }
+      const o = (rowb + x) << 2
+      dst[o] = (s0 / n) | 0; dst[o + 1] = (s1 / n) | 0; dst[o + 2] = (s2 / n) | 0; dst[o + 3] = (s3 / n) | 0
+    }
+  }
+}
+export let f = () => {
+  for (let i = 0; i < src.length; i++) src[i] = (i * 73 + (i >> 3) * 29 + 11) & 255
+  blurRows(src, dst, 64, 4)
+  let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; return h
+}`)
+})
+
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted
 // (its own function's WAT holds a vector op) and answering what Node answers. A load one ahead
 // of its store, an element in place, a store a pixel and a half ahead, a load a pixel ahead, a

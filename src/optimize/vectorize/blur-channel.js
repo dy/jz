@@ -1,7 +1,7 @@
 import { walkAst } from '../../ast.js'
-import { constNum, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, hasSideEffect, isI32Const, isLocalGet } from './addr-model.js'
 import { isArr } from './node-utils.js'
-import { buildPivotCoeff, readsVar } from './outer-scaffold.js'
+import { buildPivotCoeff, readsVar, writesName } from './outer-scaffold.js'
 import { strips } from './scaffold.js'
 
 // ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
@@ -103,6 +103,14 @@ function matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd) {
   if (!grp) return null
   // the four channels summed must be exactly the four that were zero-inited (any order)
   if (grp.accs.slice().sort().join('\x00') !== accInits.slice().sort().join('\x00')) return null
+  // Both tiers hold the four sums in a vector from the inits to the end of the inner block,
+  // and land them only past it: nothing between may read or write one (a seed under a
+  // condition, a test of a running sum, a count of its bits).
+  const accs = new Set(accInits), group = new Set(innerBody.slice(grp.idx, grp.idx + 4))
+  let touched = false
+  const touch = n => { if (group.has(n)) return false; if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && accs.has(n[1])) touched = true }
+  for (let i = initIdx + 4; i <= innerIdx; i++) walkAst(loopNode[i], { enter: touch })
+  if (touched) return null
 
   return { initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp }
 }
@@ -153,6 +161,18 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
     && isArr(ic[2][1]) && ic[2][1][0] === 'i32.le_s' && isLocalGet(ic[2][1][1]))) return null
   const rBound = ic[2][1][2]
   if (!(isLocalGet(rBound) || isI32Const(rBound))) return null
+  // The i16 guard below (r < 128) holds a window of 2r + 1 taps the same for every pixel of
+  // a group: the tap counter runs from −r, steps by one and nothing else writes it, and r is
+  // no value the pixel loop writes (`k <= x` gives each pixel its own trip count).
+  const tap = ic[2][1][1][1]
+  if (isLocalGet(rBound) && writesName(loopNode, rBound[1])) return null
+  const minusR = (v) => isI32Const(rBound) ? isI32Const(v) && constNum(v) === -constNum(rBound)
+    : isArr(v) && v[0] === 'i32.sub' && isI32Const(v[1]) && constNum(v[1]) === 0 && isLocalGet(v[2], rBound[1])
+  const tapSets = []
+  walkAst(loopNode, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === tap) tapSets.push(n) } })
+  const tapStep = innerLoop[ilEnd - 1], tapInit = loopNode.slice(scan.initIdx + 4, scan.innerIdx).find(s => isArr(s) && s[0] === 'local.set' && s[1] === tap)
+  if (tapSets.length !== 2 || !tapInit || !minusR(tapInit[2]) || !(isArr(tapStep) && tapStep[0] === 'local.set' && tapStep[1] === tap &&
+      isArr(tapStep[2]) && tapStep[2][0] === 'i32.add' && isLocalGet(tapStep[2][1], tap) && isI32Const(tapStep[2][2]) && constNum(tapStep[2][2]) === 1)) return null
 
   // the RGBA store: 4 i32.store8 at `ab1 + c`, ab1 tee'd in the first. jz's raw pre-watr
   // emission of `dst[o]=(sr/win)|0` materializes the divide into its own single-use temp
@@ -190,6 +210,8 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
     storeVals.push(resolveStoreVal(scanIdx, s[3]))
     scanIdx++
   }
+  // The four stores end the pixel: the lifted body has no place for a statement past them.
+  if (scanIdx !== bodyEnd) return null
   // each store value must read its accumulator (the divided sum)
   for (let c = 0; c < 4; c++) if (!readsVar(storeVals[c], accInits[c])) return null
 
@@ -204,15 +226,19 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // 16-byte load spans the wrong source pixels. Bails on strided indices
   // ((xi*2+row)<<2) and non-constant ones ((yi*W + x + k*x)<<2 → x*(1+k)).
   if (pivotDelta(grp.teeExpr) !== 4) return null
-  // (b) No dropped pivot-dependent setup: statements before the inits (loopNode[3..
-  // initIdx)) are NOT carried into the 4-pixel loop, so a per-pixel value computed
-  // there (e.g. `x2 = x*2`) would go stale. Bail if any such statement is pivot-
-  // dependent. (Statements between the inits and the inner loop ARE carried.)
+  // (b) Statements before the inits (loopNode[3..initIdx)) run once a group, at its
+  // first pixel: only those no pixel changes, computing (no store, no call) values that
+  // do not depend on the pivot (`x2 = x*2` would be stale for pixels 1-3; a row offset
+  // set there, `rowb = y * 64`, is the same for all four). Statements between the inits
+  // and the inner loop are carried likewise.
   for (let i = 3; i < initIdx; i++) {
-    let bad = false
+    let bad = hasSideEffect(loopNode[i])
     walkAst(loopNode[i], { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && pivotDelta(n[2]) !== 0) bad = true } })
     if (bad) return null
   }
+  // The destination steps one RGBA pixel a pixel too: the stores of pixel j go 4·j bytes past
+  // the group's first.
+  if (pivotDelta(dstExpr) !== 4) return null
   // (c) Store values must read only the accumulators (set per-pixel by the epilogue)
   // and pivot-invariants — never a per-pixel local like the pivot itself, since the
   // store template is reused verbatim for all 4 pixels (`dst[o]=(sr+x)&255` would use
@@ -249,6 +275,9 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // carries their RHS directly), else a dead `tw15 = sr/win` reading a stale `sr` gets
   // carried into the 4-pixel loop (harmless — unused — but unnecessary bytes/work).
   const preStore = loopNode.slice(innerIdx + 1, storeIdx).filter(s => !(isArr(s) && s[0] === 'local.set' && resolvedTemps.has(s[1])))
+  // (what runs between the tap loop and the stores runs once a group, before the sums land:
+  // it may only compute, and never read a sum)
+  for (const s of preStore) if (hasSideEffect(s) || grp.accs.some(a => readsVar(s, a))) return null
   const epilogue = [...preStore, ['local.set', ab1, dstExpr]]
   for (let j = 0; j < 4; j++) {
     const vec = j < 2 ? accLo : accHi, base = (j % 2) * 4
@@ -262,6 +291,7 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   const v4label = `$__bmpx${id}`, v4brk = `$__bmpe${id}`
   const fourBody = [
     ['br_if', v4brk, ['i32.eqz', ['i32.lt_s', ['local.get', pivot], ['local.get', b4]]]],
+    ...loopNode.slice(3, initIdx),
     ['local.set', accLo, Z], ['local.set', accHi, Z],
     ...loopNode.slice(initIdx + 4, innerIdx),
     newInnerBlock,
