@@ -1181,6 +1181,46 @@ too, proved for one trip under a box at the head; the box test joins the loop
 condition; when it fails the copy leaves at a head and the loop as written takes over
 from that state. No relation, no trip count, and not rfft's alone.
 
+## A uint32 read as a signed word in the extent guard (2026-11-13)
+
+Found by the integrator's own population for the counter widths step
+(`SCRATCH/cwpop.mjs`, 612 loop programs at the word's edges against Node at six levels),
+run on the base before the writer's change: 13 programs wrong at levels 2, 3 and
+`speed`, every one with a bound `b >>> 0`.
+
+**The root**: the emitter's versioning on typed extents (`compile/emit/control-flow.js`,
+"Typed-bounds loop VERSIONING") computes its guard in i64 and extended every i32 word
+it read with `i64.extend_i32_s`: the loop's bound, the counter's start, a stride, an
+offset of the index. A uint32 past 2^31 has a negative word's bits, so `B - 1 < length`
+held for a bound no array reaches and the unchecked arm ran. `const B = b >>> 0; for
+(let i = 0; i < B; i++) { if (++c > 44) break; sum += x[i] }` at `b = 2^31` gave 36
+where Node gives NaN (the elements past the end read as the memory there); `x[i] = c +
+10` from a uint32 start wrote into the array through the wrapped address (the checksum
+of `x` moved 204 to 369) or trapped; `x[i - off]` with `off = 2^32 - 1` read `x[i + 1]`.
+The line is in every tag from v0.9.1 on (`git grep`); run here on the base and on the
+tree before 6a, both wrong. It needs a uint32 of 2^31 or more and a loop that leaves
+before the bound, so ordinary sizes never met it, but what it does there is read and
+write outside the array.
+
+**The fix** (33690d097 on `fix-uext`, off 2e9c2ffe7): the extension follows the word's
+own sign (`ir.unsigned`), one line. A test in `test/unsigned.js`: nine loop shapes,
+three bodies, two array types, twelve argument rows, against Node; it fails at its
+first row with the line put back.
+
+**Run**: a population for the class (`SCRATCH/uextpop.mjs`: a uint32 as bound, inline
+bound, bound less and plus one, halved, mirrored index, `while`, counting down to and
+from it, start, stride, six offsets of the index, cursors, nests; read, presence test,
+store, read and store; four array types): 124 programs, 695,640 checks, 28 programs
+wrong on the base (21,606 checks), none with the fix. The counter population's uint
+programs: 66, 312,900 checks, none wrong with the fix. Bench bytes: 0 of 105 cases
+moved. `unsigned`, `optimizer`, `integral-loops`, `index-width`, `element-bounds`,
+`licm-loop-bounds`, `typed-length`: 627 tests pass; lint and audit clean. Not run on
+this commit alone: the battery. It lands under the counter widths change and takes
+that landing's battery.
+
+**Read and left**: `optimize/guards.js combineGuards` also sign-extends i32 terms, but
+only for a counter the loop itself compares signed and for sums the copy tested as
+wrapped words; the population's offset and cursor shapes pass at `speed` with it.
 ## Counter widths built: the battery green, the landing held on what it costs (2026-11-14)
 
 Not on main. Branch `fix-uext`, 2cfadf01a: 2e9c2ffe7, the extent-guard fix (33690d097,
