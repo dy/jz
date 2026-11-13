@@ -229,3 +229,15 @@ e232efb25 land-nk                            the landing branch: the agent's fou
 997ea6733 worktree-agent-aceadade46685f9fd   the node-keys agent's four commits as handed back, on 0ebaad572; landed as f9021e648, f6b4caf27, d4289e960, cf79b518f
 06a4d9cca bump-subscript                     the subscript bump (landed as 360770d24); its worktree held the modules the agent's worktree linked
 ```
+
+## Branches of the pass-table landing (2026-11-12), tips before deletion
+
+```
+47103b716 land-d                             the landing branch: eight commits on 6e641dbde, the tree the battery ran on; an ancestor of main
+77d1d2846 fix-hosted                         the two CI fixes, the range walk (268279fc0) and the doubled loops on 6e641dbde, without the table: the base of the bench bytes; landed as f2b4a81fe, 4a7728aec, 963a49a64, 47103b716
+b8d12a2bd land-c                             the two CI fixes, the agent's two commits and the facts guard: the table as first reviewed, its runners still records the table collected; superseded by land-d
+5d73d262a land-5a                            the agent's two commits and the facts guard on 6e641dbde, before the two CI fixes went under them; superseded
+e31f723a5 worktree-agent-af27fe75514ac7432   the 5a agent's two commits as handed back (53374f76c, e31f723a5); landed as d462f1b6e, e7e5d1fd2
+b8d12a2bd worktree-agent-a7a27ad570fcecfee   the census scout's tree, land-c's tip with no commit of its own; its reports were session scratch, the plan's section on the index holds what was kept
+6e641dbde land-nk                            the node-keys landing branch, an ancestor of main
+```

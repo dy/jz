@@ -70,7 +70,7 @@ Rules for every change here:
 | 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a landed: the table is `src/summary/num-range.js` (`{lo, hi, int, nz, nan, gap}`, no rule reads a name), every `%` rule but two reads it (left: integral-loops' symbolic hull, the summary's `keepHull`), ring `% M` equals the mask spelling (2/27), `mixed` back to 2264/1060. `src/` +49 lines net. 2b landed: the proof's environment holds table values and is the reader behind every local's lifetime range, a sum's trip bound and the widening's word test; `stampBodyRanges`, `fractionalLoopRange`, `outerDeclInits` and the widening's own `held`/`boundOf` are deleted (`src/` 59 lines fewer over the phase); the proof's bitwise, shift and mask rules are the table's. Ring "step first" 35 -> 4 at level 2 and 37 -> 29 at speed (canonical 2 and 27), dot and map `for i<=N-1` and `i!==N` vectorize, 76 gaps of 470, `mixed` 2250/1046; proof time -23% over the 94 single-file bench cases (3.8% of compile), total within noise on a loaded machine. Still scans: a countdown in an arm of `\|\|`/`&&` (`stampCountdowns`: the proof refines neither arm), and the emitter's own `intExprRange`/`forCounterRange` and `extractRefinements` (it asks about nodes the proof never walked: plan rewrites, inlined copies, version twins). 2c landed: a local's storage is one decision over the proof's lifetime value (`analyze/body-facts.js` `widenLocalTypes`: a word where every number it holds is one, or where it holds integers and every read re-applies ToInt32), a module global's the same over the whole program (`plan/scope.js` `inferModuleIntGlobals`: the proof per flow under the hypothesis that the candidates still standing are words; the fraction classifier, the integer default and the `int-global-truncation` warning are deleted), carriers enter the proof as values (a word parameter's, a call's, a sized property's, a code unit's), and the widening's hypothesis loop and integer levels are gone; `src/` 209 lines fewer, `mixed` 2234/1045, bench bytes -802 at size and -9,313 at speed (the landing tree: core 7,285, level 0 7,068, level 3 7,082, wasi 7,157, generated 68, self-compile 89; the earlier phases' batteries equal but 3c's review battery, 2 diffs -> 0). 2d landed (9bafbb6a6, eaf0ffabb, 1ee4305aa; `.work/phase-2d-int-certain.md`): `type/int-certain.js` is deleted and every reader of integrality (a local's, a parameter's, a cell's, a module global's, a schema slot's) reads the proof. The table holds an integer wherever finite as one fact (`whole`); a binding other flows write holds the meet of its writes in every flow, each walked under the hypothesis that it holds its rung (type/interval-proof.js `bindingFlows`, `flowNumbers`); a module global every write of which is an integer reads as one. `src/` and `module/` 102 lines fewer; two regressions in time (pcmconvert 1.2×, aos 2.16×) found by timing the cases whose bytes moved and fixed in the landing ("2d landed" below). Open cells: ring "step first" keeps the copy `q = p` (2 ops; needs the update sunk below `q`'s reads, a scheduling change), `reverse i--` is refused by the vectorizer's exit-shape check (optimize/vectorize/addr-model.js, phase 6), `offset idx i-1` keeps 4 and 2 ops, not analyzed |
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
-| 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a (the table, no `ctx` under `src/optimize`) briefed (`.work/phase-5a-pass-table.md`), in work on the node-keys tree |
+| 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
 | 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
@@ -316,7 +316,8 @@ decode-tta, movavg, jessie) and `Array.isArray` asking the value (polytri +2,407
 +6,464, setops, watr at speed): the kind's one tag for null and undefined makes a
 comparison pay the null test where only undefined can arrive, and two of polytri's
 loop-versioning guards on names of kind array-or-absent stay run-time tests. Both are
-precision to return, not defects. The other six fixes moved no byte.
+precision to return, not defects. The other six fixes moved no byte. (The versioning
+guards' bytes are returned, 47103b716: "CI read whole" below. The null test stays.)
 
 The landing tree (267ad34bb): core 7,294, level 0 7,077, level 3 7,091, wasi 7,166,
 generated 68, self-compile 89.
@@ -615,6 +616,244 @@ The integration suite is a step of a landing from here: CI runs it on each of th
 legs and the integrator's battery did not (it ran green on CI's legs for the landings
 before; no failure was missed, the step was).
 
+## CI read whole: three regressions of the takeover's landings (2026-11-12)
+
+A push runs six workflows (test, self-compile, bench, test262, examples-perf, pages).
+The integrator read `test` alone after each push. Read whole, two of the others had
+gone red on its landings, and a native defect of the same landing sat beside the first:
+
+| what | since | cause | fix |
+|---|---|---|---|
+| `self-compile`: the hosted suite's "integer width: only nonzero masked unsigned shifts prove signed storage", level 1 | 6ccc51b90 (2c) | the numeric table's word of one number by `v.lo \| 0`: run as wasm, the compiler takes a number past 2^63 for -1, so `n >>> 1e100` was a shift by 31 to the storage decision | f2b4a81fe |
+| a module binding that holds +Infinity and is read only as a word held -1 (`const C = Infinity; C \| 0`), native, every level | 9ea3a640c (2c) for any numeric binding; before it for one a function writes | the binding's store converted by asI32, which has no test for the infinity; a local's store uses toI32 | 4a7728aec |
+| `bench`: "size setops jz < as": 5,069 B against AssemblyScript's 5,037 | 4f5754644 (the eight fixes) | `Array.isArray` asks the value where its operand may be missing, so the guard split-bindings puts before the loops over a binding that mixes an array with primitives no longer folded for one that mixes it with nothing but a missing value, and each such loop was emitted twice | 47103b716 |
+
+The hosted compiler (f2b4a81fe). The compiler's source has to convert a number it reads off
+the source by `int32` before any bitwise operation, since compiled by itself it
+converts as its own output does (README, "Bitwise operands under 2^63"). Four places
+did not: the numeric table's `toWord`, the loop planner's hulls of a shift by a
+literal, the typed element range of `x >>> K`, the folder's `Math.imul` and
+`Math.clz32`. `int32` is the numeric table's now. The battery of the rule (a literal past
+2^63 as a count or an operand in 29 forms, 348 programs at six levels, through a
+hosted compiler built from each tree): 43 differing on `main`, 7 after, the same 7
+the native compiler gives (a constant local read at run time at levels 0 and 1: the
+documented divergence). The native legs cannot see this class; `test:bootstrap --
+--full` and the `self-compile` workflow can, and AGENTS.md says so now.
+
+An infinity held as a word (4a7728aec). A battery of the rule (+Infinity from ten sources
+into eighteen holders under eight converting reads, 1,344 programs at six levels):
+104 differing before 2c, 368 on `main`, 0 after; every one a module binding (locals,
+parameters, cells, fields and elements were right). One bench case moved
+(stdlib-dists, 24 bytes smaller at speed; 111.5 ms against 111.4 in eight paired
+rounds).
+
+The doubled loops (47103b716). A binding that is an array wherever it holds a value (an
+element of an array of arrays, a `find`'s result) is not versioned by split-bindings:
+the guard's miss is the missing value's TypeError, which the statements as written
+throw at the same read. Eight bench cases moved, all smaller: 10,769 bytes at size and
+40,312 at speed (setops 5,069 to 4,980, under AssemblyScript again; polytri 31,326 to
+28,932 and 66,173 to 62,248; webaudio 369,044 to 361,101 and 1,280,363 to 1,243,965;
+async and the four three.js cases 67 to 69 bytes at size). Their times, twelve paired
+rounds each (webaudio twenty-four): 0.985 to 1.004 of before. A battery of the
+rule (an array that may be missing, from 14 holders, read by 14 loop forms, there and
+not, 196 programs at six levels): 0 differing before and after. This returns the
+bytes the plan's note on the eight fixes called "precision to return" for polytri and
+setops; the null test kept beside an undefined one (the other half of that note) stays.
+
+The Porffor evidence gate of `bench` and the `claims` job of `test` are red as before
+the takeover (handover, "Red"): the reference run is the owner's.
+
+The procedure, from here: after a push, every workflow of the push is read (`gh run
+list --limit 8`), and the battery has two more legs, the invariants leg
+(`JZ_TEST_OPTIMIZE=3 JZ_DEBUG_INVARIANTS=1`) and `test:bootstrap -- --full`, whose
+hosted suite is the one place a compiler source outside the hosted subset shows.
+
+## 5a landed: the pass table (2026-11-12)
+
+The agent's two commits (d462f1b6e, e7e5d1fd2; brief `.work/phase-5a-pass-table.md`) and
+two of the review (b8d12a2bd, b03e99d4e).
+
+What it is. No file under `src/optimize` imports `ctx.js` (15 did): what the passes read
+of the compile is read once, as the module stage starts (wat/assemble/optimize-module.js
+`passFacts`; link's and the tail's facts were values already), and what a pass wrote into
+the context it hands back (an inline cache's globals through `icSite`, the lifted
+functions, the quiet loops, whether a loop compacts). The order is one table,
+`src/optimize/pass-table.js`: 123 entries in 7 stages (module 17, each function 43, the
+two per-function pairs the module stage interleaves 2 and 2, link 12, link's
+per-function bodies 2, the tail 45), each with its flags, the steps it follows and why
+(98, each from the code's own order comment), the facts it takes and makes, the
+emitter's marks it reads and drops. The four hand sequences (driver.js, optimize-module.js,
+link/index.js, watr-tail.js) are walks of it: each stage lists its runners in the
+table's order, and `stage` fails where it loads if the two differ. `src` is 359 lines
+longer (945 added and 586 removed in 24 files): the table is data that was comments
+and `if`s spread over four files, and no pass was deleted. Phase 7 deletes.
+
+No byte moved natively. The integrator's two differentials, each tree hashed in a
+process of its own: every optimize flag (196: the registry's and the five the code
+reads beside it) set true, false and 1, one at a time at level 2 and at speed, with
+watr off and its six cleanup flags, and 12 pairs the hand sequences nested, on four
+programs and six bench cases (7,902 compiles, 82 of the flags moving a byte somewhere:
+0 differing, on the first three commits and again on the fourth's content); the review
+batteries' programs at six levels and two WASI levels (10,960 compiles: 0 differing,
+on the first three commits, not run again on the fourth). Bench bytes by hash, the
+landing's tree against the same tree without the four commits (77d1d2846): 0 of 105
+cases moved at size and at speed.
+The agent's own (1,729 compiles of the phase-4 feature programs
+with flags flipped, the bench at five configurations, the examples): 0.
+
+What the review changed:
+- Nothing held a step to the facts its entry states (b8d12a2bd): link's rewind listed 8
+  of the 19 it reads. Under JZ_DEBUG_INVARIANTS every step is handed its facts through a
+  guard (test/_facts-guard.js; a Proxy, so it lives with the tests): a read of a fact
+  the entry does not take, or a write of one it does not make, fails the compile naming
+  the step and the fact. The suite's level-3 invariants leg and CI's fuzz job run under
+  it. `checkOrder` compared positions across stages, the run's order only while a walked
+  stage's entries stand right behind the step that walks them: it now fails a table
+  where they do not.
+- The hosted compiler (b03e99d4e). As handed back, the compiler compiled by itself came
+  out 9.5% larger and 9% slower (39,275,064 bytes against 35,851,758; ten bench cases
+  at two levels in 10.1 s against 9.3), and no native check shows it: the integrator
+  met it reading the bootstrap leg's build line. Two causes, each found by measuring a
+  hosted build (a census of the inline-cache sites by property name and by function,
+  and of the closures the summary gives up on):
+  - A step is named after its flag, and the runners were records keyed by step name
+    (an entry's `after` too). A field of that name in any record gave every read of the
+    flag off the config, the compiler over, an inline cache that never hits, the config
+    being a dictionary: 4,123 cache sites more, of 9,641 (optimize/devirt.js
+    devirtSchemaReads keys on the property's name program-wide).
+  - Collected into a Map and called off a list made from it, the runners were closures
+    of unknown use, and 1,542 closures more were with them: the comparators and
+    predicates the passes hand `sort`, `some`, `filter`, emitter handlers. The chain
+    from the one to the other was not traced.
+  A stage's runners are now a list of `[id, runner]` it walks itself, where it calls
+  them. The hosted compiler is 2.1% larger and 1.3% slower than with the hand
+  sequences (36,617,101 bytes; 9.93 s against 9.80 in four paired rounds on a loaded
+  machine): the cost of 123 calls through a list.
+
+Two defects of jz the table met, open (each general: any large program with a config
+dictionary, or with a table of handlers):
+- A read of a property through a receiver the summary knows nothing of takes an inline
+  cache wherever any record of the program has a field of that name, also where the
+  receiver there is never a record. Smallest known source: the compiler itself.
+- Closures collected from one list into another (through a Map, a `map`) are of
+  unknown use, and take other closures with them.
+
+What holds the table, and what does not:
+- Held: the flags are registered keys; a step runs after the steps it follows and after
+  the maker of what it takes; first and last of a stage; a walked stage's place; a
+  stage's runners against its entries; takes and makes, as it runs.
+- Not held: `drops` and `lost` are a measurement (571 compiles: the bench at three
+  levels, the examples, the phase-4 features), true of that corpus. A step's `after`
+  says what the comment said; that the order is needed is proven for none.
+- The passes' helpers outside `src/optimize` were read for the same rule: of the
+  modules they import that import `ctx.js` (ir/numeric.js, ir/mem-alias.js, reps.js,
+  static-data.js, static.js), none of the functions they call reads it, nor calls one
+  of the three in ir/numeric.js that do (`asF64`, `toInt32`, `wordQuotient`).
+
+What the table shows, left as it is (phases 6 and 7 decide each):
+- `splitLoopPrivateScratch` rebuilds more marked nodes than any other step (19 marks,
+  among them 9,921 of about 88,000 `irange`, 1,100 `presentNumRead`, 428 of 5,273
+  `checkedTwin`) and runs before the readers of most: the schema devirtualization, the
+  loop specializer, the integer narrowing, the third LICM. Those act on the marks left.
+- `mem` (the alias class of a load or store) is dropped by fusedRewrite (648 of 17,797),
+  forwardStores (531), foldLoadCasts (950) before sinkStores and reuseLoads read it; 12
+  steps drop `irange` before int-range's readers. A dropped mark is a missed
+  optimization, not a wrong answer (a miss means no fact): inferred from the code.
+- optimizeFunc's all-off gate tests 13 flags, two of them no function step's
+  (propagateLocals, sortLocalsByUse), and omits the flags of 24 function steps: with
+  the 13 off, `{ level: 0, intNarrow: true }` runs nothing.
+- The write closure (which function may write which global) is built where a step first
+  asks, so before or after the function walk by program and flags; forwardHops and
+  hoistGlobalConstLoads may read one built before the walk added the inline caches'
+  writes. Sound for the globals they ask about by reading; not proven.
+- `holdWordNumbers` reads word locals ahead of `promoteCells`, whose comment says
+  before every pass that reads locals; `poolFloats`' comment says last and four tail
+  steps follow it.
+- Not in the table: `quietLoops` at the stdlib pull; the vectorizer's recognizer order
+  (phase 6).
+
+Found by the agent, by reading: the hosted compiler's large-compile path resets the
+compile state before the tail (scripts/self.js `releaseTo`), and the tail then read
+`ctx.funcs.map` (which function is the program's: inlineTiny, loopPasses) and
+`ctx.scope.globalValTypes` (the typed-length capture of the pointer hoist after watr),
+both empty by then. The tail's facts now carry both from before the release, so a
+large program compiled by the hosted compiler may change toward the native compiler's
+output. The integrator read the same in the code; no large hosted compile was
+compared apart from the bootstrap leg's recursive check.
+
+The memo of phase 4 (outcome 3 of the brief) is not built, as decided: the agent's
+key for a parsed helper (its text after the per-compile patches, the function stage's
+flags, four program facts, the header-safe entries of its callees, the globals it
+reads) is in its hand-back.
+
+Compile time, native (CPU, base and new at the same time each round, on the agent's
+two commits and the first of the review): the 94 single-file bench cases at level 2,
+151.9 s against 151.2, 152.4 against 152.4, 158.9 against 161.9; at speed 217.0
+against 216.6, 216.4 against 215.1, 221.6 against 223.9; 1,200 small programs at five
+levels, 172.4 against 174.7, 177.7 against 174.3, 193.8 against 193.7.
+
+## The index of phase 5b, measured before it was built (2026-11-12)
+
+A census of the analyses the optimizer's passes each rebuild (a Sonnet scout and five
+under it; `scratchpad/index-census/`, on b8d12a2bd; the bench corpus but jz, watr and
+jessie, 103 cases at speed and at level 2, load 6 to 14, shares ±3 points):
+- Where the compile goes: the function stage 15 to 17% (11,680 functions through 43
+  steps), the tail 51 to 55% (watr's own fixpoint 24 to 32%, `constBases` 17 to 20%),
+  the module stage 1.4 to 1.8%, link 1%.
+- The same analysis run again on a function no step changed between: 0.6% of the
+  compile's CPU over every named helper (`buildRefcount` three times a function, 0.25%;
+  `copyRoots` 0.14%; `findBodyStart` 32 calls a function, 0.08%).
+- 96.6% of function-and-step pairs leave the function as it was (97.5% in the tail).
+- `watOptimize` replaces every function's array: nothing keyed by a node survives it.
+  `narrowInts`, `narrowWrappedWords`, `narrowFloat32`, `narrowBoxedLocals` and
+  `poolFloats` copy the whole body of each function they touch.
+- What the passes derive apart, by count of sites: a function's body start 40 and over
+  (five variants that differ on what a header is), the header's names and types 30,
+  a fresh local name 13 through `nextLocalId` and 25 schemes beside it (four with no
+  test for a name taken: `$__ran`, `__sr`, `$__w64_`, select-bits), a local's read
+  count 18, its definitions 14, the locals a loop writes 32, the loops and their
+  nesting 40, a node's parent 25, liveness four times, value ranges five ways.
+
+So an index built once to be read many times saves no time worth the name (0.6%), and
+was not built for that. What the census gives phase 7, which is where an index earns
+its place, as the ground of one value numbering and one memory model: the list above
+is what its passes ask, `watOptimize` and the body-copying passes are where it ends,
+and a step that says whether it changed its function (96% do not) is what keeps it.
+5b as planned is closed with the census; its two certain items are done or listed:
+- `wordRanges` (below), the one helper that was a fifth of the corpus's compile.
+- One source of fresh local names and one of a function's header: the four schemes
+  that test for no name taken can collide only if a pass runs twice on a function,
+  which none does today; listed for phase 7, whose passes run again.
+
+## The range walk's environments (2026-11-12)
+
+`optimize/word-ranges.js` held the intervals of the i32 locals at each point as a Map
+and copied it at every write, refinement and join, so a walk cost writes times locals:
+decode-wav, a decoder inlined into one function of thousands of locals, spent 49 s of a
+71 s compile at speed in it, which was 20% of the compile CPU of the whole bench corpus
+(the phase-4 agent had measured 18.9% and the cause was not looked for until the
+census named the case). The environment is still a value, now slots in runs of 32
+shared between points (963a49a64). No interval changed: the walk as it was and as it
+is answer the same on every function of every bench case at speed, at size and with
+the functions left whole (24,102 functions, 1,251,330 intervals; 82 s of walks against
+13). decode-wav compiles in 23 s at speed and 19 s at level 2 (71 and 48) to the same
+bytes; bench bytes 0 of 105 moved. Still slow, and not looked into: webaudio 78 s,
+stdlib-special 46 s, stdlib-dists 36 s at speed, on a loaded machine.
+
+## The landing of the table and the three fixes: the battery (2026-11-12)
+
+Eight commits on 6e641dbde, landed together: the hosted compiler's words (f2b4a81fe),
+an infinity held as a word (4a7728aec), the pass table (d462f1b6e, e7e5d1fd2,
+b8d12a2bd, b03e99d4e), the range walk (963a49a64), the doubled loops (47103b716). On
+the last of them, one leg at a time: `lint:imports` and `audit:files` clean; bench
+bytes by hash 0 of 105 moved against the same tree without the table; the invariants
+leg (level 3, the facts guard on) 7,127; core 7,328; `test:bootstrap -- --full`, its
+five parts (round trip, kernel parity, checkpoint, the hosted suite, recursive); level
+0 7,111; level 3 7,125; wasi 7,200; generated 68; the integration suite 224 (1
+skipped), 76, 76 and 79 at the default, level 0, level 3 and wasi; test262 4,120 and 0
+failing; the core suite in one process 7,328. All passing. Five and three quarter
+hours, the hosted suite 81 minutes of it.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -626,6 +865,13 @@ before; no failure was missed, the step was).
 - watr stays generic. JS-level facts live in jz.
 - Phase 4's memo is not landed (the owner, 2026-11-12): phase 5's facts make the cache
   it was a lookup, and its measurements are in phase 5's brief.
+- The index of phase 5 is not built ahead of its readers (the integrator, 2026-11-12,
+  on the census: 0.6% of compile CPU is all it saves alone). Phase 7 builds it with
+  its first value pass. The owner was told and may say otherwise.
+- The compiler's own source keeps to the forms jz compiles well where a table is
+  central (pass-table.js's header: no record keyed by a flag's name, no list of
+  closures made from another), until jz's two defects there are fixed.
+- A push is read whole: every workflow of it, not `test` alone.
 - A defect found on the way is fixed where the phase's change touches it or where
   ordinary code answers wrong; the rest is listed here with its smallest source and
   left to the phase that rebuilds its ground (the owner, 2026-11-12: no time on what a
