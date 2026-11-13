@@ -260,6 +260,7 @@ const TESTS = [
   'slp',
   'cond-vectorize',
   'vector-legality',
+  'vector-dependence',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
@@ -410,7 +411,7 @@ const LEG_INVARIANT = new Set([
 // Files that choose their own optimize levels (an explicit `optimize` on every
 // compile; fuzz and wat-invariants sweep {0,1,2,3} themselves) but compile under the
 // leg's host: the opt0/opt3 legs skip them, the wasi leg keeps them.
-const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'spellings', 'refactor-oracle', 'self-compile-includes', 'snapshot'])
+const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'spellings', 'refactor-oracle', 'self-compile-includes', 'snapshot', 'vector-dependence'])
 const onOptLeg = process.env.JZ_TEST_OPTIMIZE != null, onHostLeg = !!process.env.JZ_TEST_HOST
 const legSkips = (name) => (onOptLeg && (LEG_INVARIANT.has(name) || OPT_INVARIANT.has(name))) || (onHostLeg && LEG_INVARIANT.has(name))
 

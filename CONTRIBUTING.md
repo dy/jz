@@ -5415,6 +5415,29 @@ lifts typed-array loops to WASM-SIMD. Recognizers are tried in order in its disp
 shared `matchBlockLoop` descriptor and returns a wrapper or `null` — a `null` is fail-safe (the loop
 stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
 
+No wrapper reaches the output but past one legality, the same for every recognizer
+(`src/optimize/vectorize/legality.js`), a function of the scalar loop and of how many
+iterations a strip runs together. Memory: a strip runs each site of the body for all its
+iterations before the next site, so for every pair of sites with a store, one base or two,
+no two iterations of one strip touch the same bytes in an order the strip reverses
+(`gateStrips`, `alias.js`): `a[i] = a[i + 1] * 2` stays lifted, `a[2 * i + 2] = a[2 * i] + 1`
+declines, a mirror or another distance the loop cannot fix opens its strip past a run-time
+test. Locals: every local the loop writes is an induction stepped once an iteration (the
+strip's counter, or one the result names in `inductions`), private to an iteration and dead
+after the loop, a reduction the lift merges (`reductions`), or one it leaves holding what
+the loop leaves (`landed`); anything else declines, so a recognizer that says nothing lifts
+nothing it cannot account for. A lift that runs statements lane by lane in the loop's order
+names them (`inOrder`, an outer strip's epilogue), one that versions its own one-base
+distances says so (`versioned`), one that keeps the order of every effect is `ordered`. A
+loop that leaves on an unsigned `iv <u n` opens its strips only where both ends are
+non-negative. What no gate sees stays each lift's own: a store under a condition is stored
+under it, a lane narrower than the scalar's word means what the word meant (a shift by its
+width, an unsigned byte product), an address the lift keeps reads no value only lane 0 holds,
+and an outer strip's two pixels share an inner loop only where its bound, its start and its
+splatted loads are no pixel's own (`pixelShared`, `outer-scaffold.js`).
+`test/vector-legality.js` pins a program for each class a lift got wrong;
+`test/vector-dependence.js`, in the generated suite, sweeps dependence-shaped loops.
+
 Typed extent guards may give their fast arm fresh signed-word locals for
 stable integral entries (a parameter the loop never writes as a local),
 private affine index definitions, and secondary cursors whose final update
