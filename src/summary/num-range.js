@@ -163,9 +163,11 @@ export function nrBinary(op, a, b, powOf) {
   if (op === '*') {
     const p = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi]
     // (a product is -0 only where it is a zero, an operand's or an underflow's, and the signs differ;
-    // an integer's past every double is an infinity; a zero times an infinity is NaN)
+    // an integer's past every double is an infinity; a zero times an infinity is NaN; of two
+    // integers, one above zero, the zero is the other's, +0 where that is never -0: `2 * (q - 1)`)
     const lo = Math.min(...p), hi = Math.max(...p)
-    return make(lo, hi, a.int && b.int && Number.isFinite(lo) && Number.isFinite(hi), a.gap * b.gap > 0 || nonNegative(a) && nonNegative(b),
+    const positive = (x, y) => x.int && y.int && x.lo > 0 && y.nz
+    return make(lo, hi, a.int && b.int && Number.isFinite(lo) && Number.isFinite(hi), a.gap * b.gap > 0 || nonNegative(a) && nonNegative(b) || positive(a, b) || positive(b, a),
       nan || zero(a) && (posInf(b) || negInf(b)) || zero(b) && (posInf(a) || negInf(a)), a.gap * b.gap, whole)
   }
   if (op === '/') {

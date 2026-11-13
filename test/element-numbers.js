@@ -156,6 +156,20 @@ test('element numbers: bit fields and shifts of words', async () => {
   is(nrSpan(nrUnary('~', nrInts(0, 7))), [-8, -1], 'a complement')
 })
 
+// A product of two integers, one above zero, is zero only where the other is, and -0
+// only where the other is -0: `2 * (q - 1)` over a q of [0, 2^15 - 1] is a word.
+test('element numbers: a product of integers, one above zero and one never -0', async () => {
+  const { nrInts, nrPoint, nrBinary, nrWord } = await import('../src/summary/num-range.js')
+  const pred = nrBinary('-', nrInts(0, 32767), nrPoint(1))
+  ok(pred.nz && !(pred.gap > 0), 'q - 1: zero among it, never -0')
+  ok(nrWord(nrBinary('*', nrPoint(2), pred)), '2 * (q - 1): a word')
+  ok(nrWord(nrBinary('*', pred, nrInts(1, 4))), '(q - 1) * k over k of [1, 4]: a word')
+  ok(!nrBinary('*', nrPoint(-2), pred).nz, '-2 * (q - 1) is -0 where q is 1')
+  ok(!nrBinary('*', nrPoint(2), nrInts(-0, 3)).nz, 'an operand that may be -0 makes a -0')
+  // (two fractions may underflow to -0: 1e-200 times -1e-200)
+  ok(!nrBinary('*', nrPoint(1e-200), nrBinary('-', nrPoint(0), nrPoint(1e-200))).nz, 'no rule of integers over fractions')
+})
+
 // The remainder by a nonzero integer of an integer that is never NaN: below the
 // divisor's magnitude whatever the dividend's (a counter a loop widened to an
 // open end), the dividend's sign, -0 only of a negative or -0 dividend.
