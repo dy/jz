@@ -831,7 +831,9 @@ export const controlFlowOps = {
           return [...result, ...stmts]
         }
         const i64c = (n) => ['i64.const', n]
-        const ext = (ir) => ['i64.extend_i32_s', ir]
+        // (a uint32 is the value it holds: its bits read as a signed word are negative past
+        // 2^31, and a guard over that holds for a bound no length reaches)
+        const ext = (ir) => [ir.unsigned ? 'i64.extend_i32_u' : 'i64.extend_i32_s', ir]
         const conjs = []
         let implicitEffects
         const wordLocal = name => {

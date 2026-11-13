@@ -947,3 +947,47 @@ test('uint32: a division truncated by | 0 and a remainder read the unsigned valu
     }
   }
 })
+
+// A uint32 where a loop versioned on its typed extents reads a word (compile/emit/control-flow.js,
+// "Typed-bounds loop VERSIONING"): the loop's bound, the counter's start, a stride, an offset of the
+// index. The guard sign-extended each into its i64 sums, so `b >>> 0` past 2^31 was a negative
+// bound, `B - 1 < length` held and the unchecked arm ran: an element past the end read as the
+// memory there, and a store landed in it. ECMA-262, TypedArray exotic objects: an index
+// IsValidIntegerIndex refuses reads undefined (TypedArrayGetElement) and stores nothing
+// (TypedArraySetElement). Every loop leaves by its own count. Expected values are Node's.
+test('uint32: a bound, a start, a stride or an offset past 2^31 is no negative word in a loop\'s extent guard', () => {
+  const BODY = {
+    read: ix => `sum += x[${ix}]`,
+    'missing counted': ix => `if (x[${ix}] === undefined) u++; else sum += x[${ix}]`,
+    store: ix => `x[${ix}] = c + 10`,
+  }
+  const cap = 'if (++c > 20) break'
+  const LOOP = {
+    bound: at => `const B = b >>> 0; for (let i = 0; i < B; i++) { ${cap}; ${at('i')} }`,
+    'bound, inclusive, by 2': at => `const B = b >>> 0; for (let i = 0; i <= B; i += 2) { ${cap}; ${at('i')} }`,
+    'bound in the test': at => `for (let i = 0; i < (b >>> 0); i++) { ${cap}; ${at('i')} }`,
+    'bound, the index mirrored': at => `const B = b >>> 0; for (let i = 0; i < B; i++) { ${cap}; ${at('B - 1 - i')} }`,
+    'bound of a while': at => `const B = b >>> 0; let i = 0; while (i < B) { ${cap}; ${at('i')}; i++ }`,
+    'start and bound': at => `const S = s >>> 0, B = b >>> 0; for (let i = S; i < B; i++) { ${cap}; ${at('i')} }`,
+    'offset taken off the index': at => `const off = s >>> 0, B = b & 15; for (let i = 0; i < B; i++) { ${cap}; ${at('i - off')} }`,
+    'stride and bound': at => `const st = t >>> 0, B = b >>> 0; for (let i = 0; i < B; i += st) { ${cap}; ${at('i')} }`,
+    'inner bound of a nest': at => `const B = b >>> 0; for (let j = 0; j < 2; j++) for (let i = 0; i < B; i++) { ${cap}; ${at('i + j')} }`,
+  }
+  const ARGS = [[3, 0, 1], [8, 0, 1], [9, 2, 2], [2147483647, 0, 1], [2147483648, 0, 1], [4294967295, 0, 2], [-1, 0, 1],
+    [2147483653, 2147483647, 1], [1, 4294967295, 1], [12, 4294967293, 3], [2147483648, 2147483648, 2147483648], [20, 5, 4294967295]]
+  const show = v => [...v].map(String).join(' ')
+  const call = (f, a) => { try { return show(f(...a)) } catch (e) { return 'throws ' + e.constructor.name } }
+  for (const ctor of ['Float64Array', 'Uint8Array']) for (const [loop, make] of Object.entries(LOOP)) for (const [body, at] of Object.entries(BODY)) {
+    const src = `export let f = (b, s, t) => {
+      const x = new ${ctor}(8); x[0] = 1; x[1] = 2; x[2] = 3; x[3] = 4; x[4] = 5; x[5] = 6; x[6] = 7; x[7] = 8
+      let c = 0, u = 0, sum = 0
+      ${make(at)}
+      return [c, sum, u, x[0] + 2 * x[1] + 3 * x[2] + 4 * x[3] + 5 * x[4] + 6 * x[5] + 7 * x[6] + 8 * x[7]]
+    }`
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const a of ARGS) is(call(got.f, a), call(want.f, a), `${ctor}, ${loop}, ${body} at (${a}), ${optimize}`)
+    }
+  }
+})
