@@ -1143,6 +1143,44 @@ ulam and lenia, the gate's other two on CI (0.84x, 0.75x on the x64 bench runner
 on the M4 (1.34x, 1.32x) and in `examples-perf`'s page harness on all three runners:
 not reproduced here, needs x64 runs.
 
+## Counter widths, measured before they were designed (2026-11-13)
+
+A scout (Sonnet 5.5) on 557fbd525, read-only: `.work/maps/counter-removed.md`,
+`counter-deciders.md`, `counter-rfft.md`, `counter-census.md`, `counter-guards.md`.
+Leads; the integrator compiled five of its reduced programs and saw the same locals.
+
+**What October removed was one assumption**: a local is a word because it is compared,
+or feeds an index. On `e88a8e907` `x *= 65536; a[x]` read `a[0]`, a counter started at
+2^31 - 1 ran no trip, and the reduced first pass of rfft never ended for `n >= 2^31 -
+1`. Today a local is a word by proof alone (`widenLocalTypes`: a closed word hull, or
+an integer whose magnitude no read observes).
+
+**No proof exists for rfft's locals.** `id *= 4` leaves the word for `N >= 2^31 - 1`,
+`i0 += id` for `N >= 3 * 2^29 - 1` (run: equal to Node at 1610612734, not at
+1610612735), the stage loops' `ix = (id << 1) - n2` for `N >= 2^29`. A test of `N` at
+the function's entry excludes them all, and under it the interval proof still cannot
+close `id` and `ix`: geometric growth bounded only through another variable's loop
+test. So the reading before the scout ("the inference does not reach these loops") was
+half of it: there is nothing to infer; the words must be earned by a test at run time
+that the copy keeps checking where the loop writes the names.
+
+**The 252 by cause**: a bound with no range 117; a hull a step or a sum past the word
+45; a counter that starts from or is updated by an f64-typed expression 49 (rfft's); a
+side counter 16; not an integer 6; a step by a name 4; closure bodies 14; one other. A
+test on the bound alone (emulated, an upper bound) turns 139 into words: 102, 28 and 2
+of the first three. The planner's integer copies (`versionIntegralLoops`) refuse most of
+them for want of something to test or a budget, not for soundness.
+
+**Where a test can sit**: `transform` at N = 2048 enters its loops 1,213 times for
+5,865 trips; the innermost twiddle loop 652 times for 1,252. A test at each of those
+entries is about 12% of that loop, one hoisted to the `j` loop 0.2%.
+
+**The brief** is `.work/counter-widths.md`. Its candidate, the integrator's, for the
+writer to refute or adopt by measurement: the integer copy takes names the loop writes
+too, proved for one trip under a box at the head; the box test joins the loop
+condition; when it fails the copy leaves at a head and the loop as written takes over
+from that state. No relation, no trip count, and not rfft's alone.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
