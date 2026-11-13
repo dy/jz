@@ -126,15 +126,21 @@ const accessWidth = op => {
   return m ? +m[1] / 8 : op.startsWith('v128') ? 16 : op.startsWith('i32') || op.startsWith('f32') ? 4 : 8
 }
 
-/** The sites of a loop, each at its byte address, memarg included. */
+const isAccess = n => typeof n[0] === 'string' && /\.(load|store)/.test(n[0])
+
+/** The sites of a loop, each at its byte address, memarg included, and its place in the
+ *  order an iteration runs them (`order`: an access after its operands, so a load in a
+ *  store's value runs before the store). */
 function memorySites(loop) {
-  const sites = []
+  const sites = [], open = []
+  let order = 0
   walkAst(loop, { enter: n => {
-    if (typeof n[0] !== 'string' || !/\.(load|store)/.test(n[0])) return
+    if (!isAccess(n)) return
     let i = 1, off = 0
     for (; typeof n[i] === 'string'; i++) if (n[i].startsWith('offset=')) off = +n[i].slice(7)
-    sites.push({ store: n[0].includes('.store'), width: accessWidth(n[0]), ptr: n[i], addr: off ? ['i32.add', n[i], ['i32.const', off]] : n[i] })
-  } })
+    const s = { node: n, store: n[0].includes('.store'), width: accessWidth(n[0]), ptr: n[i], addr: off ? ['i32.add', n[i], ['i32.const', off]] : n[i] }
+    sites.push(s); open.push(s)
+  }, exit: n => { if (isAccess(n)) open.pop().order = order++ } })
   return sites
 }
 
@@ -213,6 +219,10 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
   const sites = loop ? memorySites(loop) : []
   if (!sites.some(s => s.store)) return r
   const { defs, copies, steps, written } = addressFacts(node, loop, fnLocals)
+  // The statements a lift runs lane by lane, in the loop's order (an outer strip's epilogue):
+  // two of their sites on one base meet as the loop meets them.
+  const inOrder = new Set()
+  for (const s of r.inOrder ?? []) walkAst(s, { enter: n => { if (isAccess(n)) inOrder.add(n) } })
   const expand = n => !isArr(n) ? n : isLocalGet(n) && defs.has(n[1]) ? expand(defs.get(n[1])) : n[0] === 'local.tee' ? expand(n[2]) : n.map(expand)
   const invariant = n => {
     let ok = !hasSideEffect(n)
@@ -276,14 +286,23 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
     const bases = d.terms.filter(t => isLocalGet(t.node) && distinct?.has(t.node[1]))
     return bases.some(t => t.coeff === 1) && bases.some(t => t.coeff === -1)
   }
-  const pairs = new Map(), unequal = new Map()
+  const pairs = new Map(), unequal = new Map(), meets = []
   for (const st of sites) {
     if (!st.store) continue
     for (const s of sites) {
       if (s === st) continue
-      // (one base as the recognizers read bases: the lift's own dependence test)
-      if (s.raw && s.raw === st.raw) continue
       const d = distance(s.addr, st.addr, copies)
+      // One base as the recognizers read bases. A constant distance is the strip's order to
+      // keep (`meets`, decided where the strip's lanes are known); any other distance is the
+      // test below, unless the lift versions such distances itself (`r.versioned`).
+      if (s.raw && s.raw === st.raw) {
+        if (inOrder.has(s.node) && inOrder.has(st.node)) continue
+        if (!d.terms.length) {
+          if (!s.store || s.order < st.order) meets.push(s.order < st.order ? { a: s, b: st, D: -d.k | 0 } : { a: st, b: s, D: d.k })
+          continue
+        }
+        if (r.versioned) continue
+      }
       if (!d.terms.length && !d.k) continue
       if (separate(d)) continue
       if (s.same !== st.same && s.base && st.base) {
@@ -295,7 +314,7 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       if (!pairs.has(key)) pairs.set(key, { d, s, st })
     }
   }
-  if (!pairs.size && !unequal.size) return r
+  if (!pairs.size && !unequal.size && !meets.length) return r
   // A site's address with each counter stepped `tail` times: the iterations left, so the far
   // end holds whether the counters step before the access or after it.
   const last = (n, tail) => !isArr(n) ? n : isLocalGet(n) && steps.has(n[1])
@@ -314,6 +333,14 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
   // The test a strip of `lanes` from `iv` to `bound` needs, `true` for none, null for none that
   // holds.
   const open = ({ iv, lanes, bound }) => {
+    // A strip runs each site for all its iterations before the next site, `a` before `b`:
+    // `b` of iteration j − k touching what `a` of j touches, for 0 < k < lanes, is the
+    // order the scalar loop runs them reversed (a later step's load before an earlier
+    // step's store, `a[2i + 2] = a[2i] + 1`). At k ≤ 0, or k past the strip, it is kept.
+    for (const { a, b, D } of meets) {
+      if (a.step == null || a.step !== b.step) return null
+      for (let k = 1; k < lanes; k++) { const x = D - a.step * k; if (x > -b.width && x < a.width) return null }
+    }
     let test = null
     const and = t => { test = test ? ['i32.and', test, t] : t }
     for (const [p, q] of unequal.values()) and(['i32.ne', ['local.get', p], ['local.get', q]])

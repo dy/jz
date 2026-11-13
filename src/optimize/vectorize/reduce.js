@@ -494,7 +494,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
     ...Array.from({ length: NACC - 1 }, (_, k) => ['local', accK(k + 1), 'v128']),
     ...extraDecls,
   ]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, reductions: new Set([accName]) }
 }
 
 // Bit-exact f64 map-reduce (the direct-summation n-body force loop). A loop that
@@ -594,7 +594,7 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
   const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, 2)]
   const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
-  return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls] }
+  return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls], reductions: accSet }
 }
 
 // ---- Unified REDUCTION recognizer (dispatch entry) --------------------------

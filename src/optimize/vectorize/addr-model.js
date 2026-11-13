@@ -29,6 +29,25 @@ export function matchIncN(stmt) {
   return c == null ? null : { name: x, c }
 }
 
+/** Whether `body` writes `copy` once an iteration, and only as `iv + 1`: the step of a
+ *  counter CSE folded into a body tee, read back as `iv = copy`. The one write must run on
+ *  every pass, outside any arm, block or loop (`let y = x + 1; if (c) y = x + 2; x = y` is
+ *  no unit step). */
+export function stepsByOneVia(body, iv, copy) {
+  let writes = 0, plain = 0
+  const visit = (n, sure) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === copy) {
+      writes++
+      if (sure && isArr(n[2]) && n[2][0] === 'i32.add' && isLocalGet(n[2][1], iv) && constNum(n[2][2]) === 1) plain++
+    }
+    const inner = sure && n[0] !== 'then' && n[0] !== 'else' && n[0] !== 'block' && n[0] !== 'loop'
+    for (let i = 1; i < n.length; i++) visit(n[i], inner)
+  }
+  for (const s of body) visit(s, true)
+  return writes === 1 && plain === 1
+}
+
 /**
  * Match `(br_if $LABEL (i32.eqz (i32.lt_{s,u} (local.get $I) BOUND)))`.
  * Returns { ind, bound } or null.

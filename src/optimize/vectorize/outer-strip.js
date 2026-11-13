@@ -199,7 +199,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
     ['br', sOl]]]
   stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, inductions: pixelIVs.map(p => p.name), inOrder: epilogue }
 }
 
 // ---- Per-pixel iterated-map reduction (tryIteratedReduce, experimental) ----------------------
@@ -390,7 +390,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     ['br', sOl]]]
   stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, inductions: pixelIVs.map(p => p.name), inOrder: epilogue }
 }
 
 // ---- Integer convolution column-strip-mine (tryConvColumn, experimental) ---------------------
@@ -527,7 +527,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
     ['br', sOl]]]
   stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 8)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, inductions: pixelIVs.map(p => p.name), inOrder: epilogue }
 }
 
 // ---- Unified OUTER-STRIP recognizer (dispatch entry) -------------------------

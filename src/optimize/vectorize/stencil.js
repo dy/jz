@@ -472,5 +472,6 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
     : [...peelStmts, boundSetup, simdBlock]
   const wrapper = ['block', ...preamble.map(cloneNode), ...simdPath, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
-  return { wrapper, newLocalDecls }
+  // (its one-base distances are its own guards)
+  return { wrapper, newLocalDecls, versioned: true }
 }

@@ -1,7 +1,7 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
 import { cloneNode, walkAst } from '../../ast.js'
-import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchIncN } from './addr-model.js'
+import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchIncN, stepsByOneVia } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { SAFE_OFFSET_CALLS } from '../licm.js'
 
@@ -305,11 +305,7 @@ export function matchBlockLoop(blockNode, opts = {}) {
   // increment as `x = $t` reusing it. Recover the IV when `$t` is `(tee/set $t (i32.add x 1))` in body.
   if (!incVar && opts.allowInlinedLi) {
     const inc = loopNode[incIdx]
-    if (isArr(inc) && inc[0] === 'local.set' && inc.length === 3 && isLocalGet(inc[2])) {
-      const copyOf = inc[2][1], iv = inc[1]
-      const findInc1 = (m) => isArr(m) && (((m[0] === 'local.set' || m[0] === 'local.tee') && m[1] === copyOf && isArr(m[2]) && m[2][0] === 'i32.add' && isLocalGet(m[2][1], iv) && constNum(m[2][2]) === 1) || m.some(findInc1))
-      if (loopNode.slice(3, incIdx).some(findInc1)) incVar = iv
-    }
+    if (isArr(inc) && inc[0] === 'local.set' && inc.length === 3 && isLocalGet(inc[2]) && stepsByOneVia(loopNode.slice(3, incIdx), inc[1], inc[2][1])) incVar = inc[1]
   }
   if (!incVar) return null
 

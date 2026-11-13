@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { constNum, hasGlobalSet, isI32Const } from './addr-model.js'
+import { collectWrites, constNum, hasGlobalSet, isI32Const } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { simdBound } from './scaffold.js'
 
@@ -159,5 +159,9 @@ export function tryPrefilter(bl, fnLocals, freshIdRef) {
   const wrapper = ['block', ...preamble.map(cloneNode),
     ['local.set', end, simdBound(incVar, bound, t.lanes)],
     scan, blockNode]
-  return { wrapper, newLocalDecls: [['local', end, 'i32'], ['local', stop, 'i32'], ['local', mask, 'i32']] }
+  // A span no lane's test holds on writes only what the scalar loop's failing tests do: the
+  // guarded work runs where the loop runs it, and the zeros above stand for the rest.
+  const landed = new Set(first.zeros)
+  collectWrites(guarded, landed)
+  return { wrapper, newLocalDecls: [['local', end, 'i32'], ['local', stop, 'i32'], ['local', mask, 'i32']], landed }
 }

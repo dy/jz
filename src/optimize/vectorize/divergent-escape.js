@@ -584,5 +584,5 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
   // SIMD even-pixel loop, then the original scalar block handles the odd-pixel tail.
   const tailBlock = ['block', oLabel, loopNode]
   const wrapper = ['block', nm('w'), ...preamble, ...innerPre, simdOuter, tailBlock]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, inductions: pixelIVs.map(p => p.name), inOrder: epilogue }
 }

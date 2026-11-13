@@ -367,5 +367,5 @@ export function tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, 
     ...bumps,
     ['br', pl]]]
   stripBlock(paired, iv.name, iv.type === 'f64' ? null : widthBound, 2)
-  return { wrapper: ['block', ...preamble.map(cloneNode), paired, node], newLocalDecls: decls }
+  return { wrapper: ['block', ...preamble.map(cloneNode), paired, node], newLocalDecls: decls, inductions: pixelIVs.map(p => p.name) }
 }

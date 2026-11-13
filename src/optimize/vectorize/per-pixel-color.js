@@ -268,5 +268,5 @@ export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, o
     ['br', sOl]]]
   stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, inductions: pixelIVs.map(p => p.name), inOrder: epilogue }
 }

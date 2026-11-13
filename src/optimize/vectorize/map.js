@@ -443,7 +443,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     ...extraLocals,
   ]
 
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, landed: new Set(flagLandings.keys()) }
 }
 
 // The integer operators of an index computed from the counter (counterGather).
@@ -639,5 +639,6 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     : [boundSetup, simdBlock]
   const wrapper = ['block', ...preamble.map(cloneNode), ...simdPath, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
-  return { wrapper, newLocalDecls }
+  // (its secondary counters step by their lanes; its one-base distances are its own guards)
+  return { wrapper, newLocalDecls, inductions: ivs.map(iv => iv.name), versioned: true }
 }

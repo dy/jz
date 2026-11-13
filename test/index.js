@@ -259,6 +259,7 @@ const TESTS = [
   'iteration',
   'slp',
   'cond-vectorize',
+  'vector-legality',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',

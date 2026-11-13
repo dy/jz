@@ -107,8 +107,12 @@ export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
   const boundSetup = ['local.set', limit, simdBound(incVar, bound, 2)]
   const strip = simdLoop(id, incVar, limit, [...packed,
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]]])
+  // (the scalar part runs each iteration in order: what it writes, it leaves as the loop does)
+  const landed = new Set()
+  for (const s of [...prefix, ...tail]) collectWrites(s, landed)
   return {
     wrapper: ['block', ...bl.preamble.map(cloneNode), boundSetup, strip, bl.blockNode],
     newLocalDecls: [['local', limit, 'i32'], ...[...laned.values()].map(n => ['local', n, 'v128']), ...extra],
+    landed,
   }
 }

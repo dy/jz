@@ -65,7 +65,8 @@ import { tryOuterStripRest } from './outer-strip.js'
 import { tryRampMap } from './ramp.js'
 import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduce } from './reduce.js'
-import { arrayPointers, gateStrips } from './alias.js'
+import { arrayPointers } from './alias.js'
+import { countsSigned, legal, localsHold } from './legality.js'
 import { canonicalizeIfBr, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks } from './scaffold.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
@@ -142,6 +143,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       fnLocals.set(d[1], d[2])
     }
   }
+  const env = { fnLocals, distinct: distinctParams, pointerOf: () => pointerOf ??= arrayPointers(fn) }
 
   // Loop-invariant constant locals — hoistConstantPool's `$…_pg` pool (`set $L (f64.const C)`,
   // written exactly once). name → numeric value, used to resolve a constant `pow` exponent that
@@ -181,8 +183,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // the rest of its own straight line (a branch, block or loop body scans
   // with its own copy of the kills, so a write one path may skip never
   // kills past it); an enclosing loop's body is a continuation too (its
-  // back edge).
-  function liveOutOf(chain) {
+  // back edge). `exact`, the scan the legality asks (legality.js): an `if`'s
+  // other arm is no continuation of the arm taken, and a write on both arms
+  // of an `if` kills past it. The recognizers' own declines read the coarser
+  // scan they were measured against, so no loop they decline today lifts.
+  function liveOutOf(chain, exact) {
     const live = new Set()
     const scan = (n, kills) => {
       if (!isArr(n)) return
@@ -193,14 +198,23 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         if (typeof n[1] === 'string') kills.add(n[1])
         return
       }
-      if (op === 'if') { scan(n[1], kills); scan(n[2], kills); for (let i = 3; i < n.length; i++) scan(n[i], new Set(kills)); return }
+      if (op === 'if' && !exact) { scan(n[1], kills); scan(n[2], kills); for (let i = 3; i < n.length; i++) scan(n[i], new Set(kills)); return }
+      if (op === 'if') {
+        let i = 1
+        for (; i < n.length && !(isArr(n[i]) && (n[i][0] === 'then' || n[i][0] === 'else')); i++) scan(n[i], kills)
+        const arms = []
+        for (; i < n.length; i++) { const k = new Set(kills); for (let j = 1; j < n[i].length; j++) scan(n[i][j], k); arms.push(k) }
+        if (arms.length === 2) for (const x of arms[0]) if (arms[1].has(x)) kills.add(x)
+        return
+      }
       if (op === 'block' || op === 'loop' || op === 'then' || op === 'else') { const k = new Set(kills); for (let i = 1; i < n.length; i++) scan(n[i], k); return }
       for (let i = 1; i < n.length; i++) scan(n[i], kills)
     }
     const kills = new Set()
     for (let d = chain.length - 1; d >= 0; d--) {
       const [parent, idx] = chain[d]
-      for (let i = idx + 1; i < parent.length; i++) scan(parent[i], kills)
+      const arm = exact && parent[0] === 'if' && isArr(parent[idx]) && (parent[idx][0] === 'then' || parent[idx][0] === 'else')
+      if (!arm) for (let i = idx + 1; i < parent.length; i++) scan(parent[i], kills)
       if (parent[0] === 'loop') for (let i = 1; i < parent.length; i++) scan(parent[i], new Set(kills))
     }
     return live
@@ -256,8 +270,9 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // builds its own scaffold, so it takes the set directly.
       // Scanned on the first query: the scan reads the whole continuation, and
       // most blocks never reach a recognizer that asks.
-      let live = null
-      const outsideReads = { has: (name) => (live ??= liveOutOf(here)).has(name) }
+      let live = null, exact = null
+      const outsideReads = { has: (name) => (live ??= liveOutOf(here, false)).has(name) }
+      const liveAfter = { has: (name) => (exact ??= liveOutOf(here, true)).has(name) }
       if (bl) {
         const link = links?.get(node)
         if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)
@@ -316,18 +331,20 @@ export function vectorizeLaneLocal(fn, opts = {}) {
             // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
             ?? tryReduce(cbl, fnLocals, freshIdRef, multiAcc)
             ?? tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)
-          if (lifted) { r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls], ordered: lifted.ordered }; scalar = canon.node }
+          if (lifted) { r = { ...lifted, wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }; scalar = canon.node }
         }
       }
-      // A guard whose first test the lanes can answer, over work too heavy to be common.
-      // Bases nothing proves apart may be one array: the strip opens past a test of it.
-      if (r && !gateStrips(r, scalar, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) r = null
+      // No lift reaches the output but past the one legality (legality.js): what it leaves
+      // in the locals the loop writes, and the order of the bytes its strips touch. Bases
+      // nothing proves apart may be one array: the strip opens past a test of it.
+      r = legal(r, scalar, liveAfter, env)
       // Past that test, a splat no pass of a strip changes is computed where the strip opens.
       if (r) r.newLocalDecls = [...r.newLocalDecls, ...hoistStripSplats(r.wrapper, freshIdRef, outsideReads)]
-      if (!r) r = tryPrefilter(bl, fnLocals, freshIdRef)
+      // A guard whose first test the lanes can answer, over work too heavy to be common: it
+      // keeps the order of every access, and answers for its locals as a lift does.
+      if (!r) { r = tryPrefilter(bl, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
-      let paired = r ? null : tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations)
-      if (paired && !gateStrips(paired, node, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) paired = null
+      const paired = r ? null : legal(tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations), node, liveAfter, env)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
