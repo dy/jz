@@ -175,3 +175,31 @@ export let flush = () => [...enc.flush().slice(0, 8)]`
     is(got, want, `header bytes at ${optimize}`)
   }
 })
+
+// An assignment yields the value it stored, unconverted (ECMA-262 13.15.2
+// AssignmentExpression: `a = b` returns b's value): where that is a Boolean or a
+// Number and the target keeps the Boolean as its atom, a test, an addition, typeof
+// and a strict comparison of the assignment read the atom. kind/val-type-of.js VT['=']
+// called it a Number, and `if (t = x === 3 || x & 1)` took the false arm at x = 3.
+// Expected values are Node's.
+test('bool or number: an assignment yields what it stored, a Boolean as itself', () => {
+  const VALUES = { or: '(x === 3 || (x & 1))', ternary: '(x === 3 ? true : x & 1)' }
+  // [what the module declares, what the function declares, the target]
+  const TARGETS = {
+    local: ['', 'let t = 7', 't'], global: ['let t = 7', '', 't'], captured: ['', 'let t = 7; const g = () => t', 't'],
+    field: ['', 'const o = { p: 7 }', 'o.p'], element: ['', 'const a = [7, 8]', 'a[1]'], chained: ['', 'let t = 7, u = 8', 'u = t'],
+  }
+  const READS = {
+    test: e => `if (${e}) return 1; return 2`, plus: e => `return ${e} + 10`, type: e => `return typeof ${e}`,
+    isTrue: e => `return ${e} === true`, and: e => `return ${e} && 5`, not: e => `return !${e}`,
+    loop: e => `let n = 0; while (${e}) { n++; x += 2; if (n > 3) break } return n`,
+  }
+  for (const [vn, value] of Object.entries(VALUES)) for (const [tn, [pre, decl, target]] of Object.entries(TARGETS)) for (const [rn, read] of Object.entries(READS)) {
+    const src = `${pre}\nexport let f = (x) => { ${decl}; ${read(`(${target} = ${value})`)} }`
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 3)) {
+      const got = jz(src, { optimize }).exports
+      for (let x = 0; x < 5; x++) is(got.f(x), want.f(x), `${vn} into ${tn}, ${rn}, x = ${x} at ${optimize}`)
+    }
+  }
+})

@@ -589,7 +589,12 @@ VT[','] = (args) => {
 // Assignment & compound-assign expressions return the rhs value. Without this,
 // `(a = x*x) + (b = y*y)` falls through to null and `+` emits the polymorphic
 // string-concat dispatch on two pure-numeric subexpressions.
-VT['='] = (args) => valTypeOf(args[1])
+// An assignment yields what it stored: where the right side is a Boolean or a Number
+// (hasAmbiguousBoolMerge) and the target keeps a Boolean as its atom (a binding that is
+// boolTagged, a field, an element), the value is that atom and no Number: a Number's test
+// read `if (t = x === 3 || x & 1)` false where t became true, and `+` added a NaN.
+VT['='] = (args) => hasAmbiguousBoolMerge(args[1]) && (typeof args[0] !== 'string' || boolTagged(args[0]))
+  ? null : valTypeOf(args[1])
 VT.postfix = (args) => valTypeOf(args[0])
 VT['+='] = (args) => {
   const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
