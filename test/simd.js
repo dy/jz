@@ -5174,3 +5174,32 @@ test('per-pixel scaffold: a body that leaves its loop is not per-pixel work', ()
   is(pixelLoop('(br_if $o (f64.gt (local.get $v) (f64.const 100)))'), null, 'a conditional break leaves the loop: not per-pixel')
   is(pixelLoop('(if (f64.gt (local.get $v) (f64.const 100)) (then (br $l)))'), null, 'a continue skips the pixel step: not per-pixel')
 })
+
+// A comparison in a byte or 16-bit lane sees the lane's bits, the scalar the whole word: they
+// agree where both operands fit the lane under one reading (lift.js laneCompare). A store into
+// a Uint8ClampedArray clamps by `v < 0` and `v > 255` on the word; lifted to byte lanes and
+// compared signed, every byte past 127 was "negative" and stored as 0. Expected values are Node's.
+test('lane-local lift: narrow comparisons', () => {
+  const agree = (name, src) => {
+    const want = oracle(src).f()
+    for (const optimize of levels(2, 3)) is(jz(src, { optimize }).exports.f(), want, `${name} at ${optimize}`)
+  }
+  const clamped = (name, e) => agree(`u8c ${name}`, `const a = new Uint8ClampedArray(64), b = new Uint8ClampedArray(64), c = new Uint8ClampedArray(64)
+export let f = () => { for (let k = 0; k < 64; k++) { a[k] = k * 37 % 251; c[k] = (k + 7) * 37 % 251 }
+  for (let i = 0; i < 64; i++) b[i] = ${e}
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`)
+  clamped('and', 'a[i] & c[i]')
+  clamped('copy', 'a[i] | 0')
+  clamped('not', '~a[i]')
+  clamped('shl', 'a[i] << 3')
+  clamped('equal', 'a[i] === c[i] ? 255 : 0')
+  clamped('sum', 'a[i] + c[i]')
+  clamped('difference', 'a[i] - c[i]')
+  // (what fits stays lifted: unsigned bytes against a byte constant, by the unsigned lane operator)
+  const src = `const a = new Uint8Array(64), b = new Uint8Array(64)
+export let f = () => { for (let k = 0; k < 64; k++) a[k] = k * 37 % 251
+  for (let i = 0; i < 64; i++) b[i] = a[i] > 100 ? 255 : 0
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`
+  agree('u8 above a constant', src)
+  if (!belowOpt(2)) for (const optimize of levels(2, 3)) ok(/i8x16\.gt_u/.test(compile(src, { optimize, wat: true })), `u8 above a constant: lifted at ${optimize}`)
+})
