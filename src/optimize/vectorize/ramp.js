@@ -1,6 +1,6 @@
 import { cloneNode, walkAst, nodeKey } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet, matchLaneAddr } from './addr-model.js'
-import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
+import { LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftStmt } from './lift.js'
 import { isArr } from './node-utils.js'
 import { matchBlockLoop, simdLoop, simdBound } from './scaffold.js'
@@ -84,6 +84,15 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
   const storeAddr = storeStmt[1]
   const addrM = matchLaneAddr(storeAddr, ivName, addrLocals, offsetTees)
   if (!addrM || addrM.strideLog2 !== elemLog2) return null
+  // A store under a condition reaches the lift through liftStmt, which keeps its address as
+  // written: it must be a lane address at its own element's stride, as the store above is.
+  let nestedOk = true
+  for (const s of body) if (!STORE_OPS[s[0]]) walkAst(s, { enter: n => {
+    if (!STORE_OPS[n[0]]) return
+    const m = n.length === 3 && matchLaneAddr(n[1], ivName, addrLocals, offsetTees)
+    if (!m || (1 << m.strideLog2) !== LANE_INFO[STORE_OPS[n[0]]].stride) nestedOk = false
+  } })
+  if (!nestedOk) return null
 
   // Memory loads turn this into a widening byte-map: out[i] = narrow(f(widen(a[i])…)).
   // Only the u8 shape is supported — every load must be a narrow UNSIGNED u8 load

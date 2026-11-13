@@ -509,6 +509,9 @@ export function liftStmt(stmt, ctx) {
     const thenA = armOf(stmt[2]), elseA = (isArr(stmt[3]) && stmt[3][0] === 'else') ? armOf(stmt[3]) : null
     if (!thenA || (isArr(stmt[3]) && !elseA)) return liftFail(ctx, 'if-store: arm is not a conditional store')
     if (elseA && (!nodeEqual(thenA.addr, elseA.addr) || thenA.store !== elseA.store)) return liftFail(ctx, 'if-store: arms store differently')
+    // The masked store writes a whole vector of the lane type: an element of another width
+    // (a byte under i32 lanes, the ramp's) would be written as lanes, 16 bytes for 4.
+    if (STORE_OPS[thenA.store] !== ctx.laneType) return liftFail(ctx, `if-store: ${thenA.store} under ${ctx.laneType} lanes`)
     // Speculation safety: an arm's `inter` statements (everything before its own tail store)
     // are lifted via the ORDINARY `liftStmt` dispatch below (`liftInter`) — which, for a bare
     // store, hits the UNCONDITIONAL `STORE_OPS` branch above (line ~3319), not this masked one.

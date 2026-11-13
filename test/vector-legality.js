@@ -24,6 +24,13 @@ export let f = () => { for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) - 5.75
   agree("W2 ramp two steps", `const a = new Uint8Array(64)
 export let f = () => { for (let i = 0; i < 64; i++) { a[i] = i & 127; i++ }
   let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + a[i]) % 1000003; return h }`)
+  agree("W3 ramp conditional store", `const a = new Uint8Array(64), b = new Uint8Array(64)
+export let f = () => { for (let i = 0; i < 64; i++) { a[i] = i & 127; if ((i & 1) === 0) b[i] = 7 }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + b[i]) % 1000003; return h }`)
+  agree("W5 tone-map arm store", `const d = new Int32Array(64), a = new Int32Array(64), b = new Int32Array(64)
+export let f = () => { for (let i = 0; i < 64; i++) d[i] = (i * 37 + 11) & 127
+  for (let i = 0; i < 64; i++) { const v = d[i]; if (v > 60) { b[i] = 7; a[i] = (Math.log(v * 1.5 + 1) * 20) | 0 } }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + a[i] + b[i]) % 1000003; return h }`)
   agree("W6 divergent escape carried scalar", `const out = new Float64Array(64)
 export let f = () => { let k = 0.5
   for (let x = 0; x < 64; x++) { let zx = 0, it = 0
@@ -122,6 +129,13 @@ export let f = () => { for (let k = 0; k < 80; k++) { a[k] = (k % 3 === 0 ? -1 :
   let x = 0
   while (x < 64) { const v = a[x]; b[x] = v * 2; let y = x + 1; if (v < 0) y = x + 2; x = y }
   let h = 0; for (let k = 0; k < 80; k++) h = h * 1.5 + b[k] + k * 0.01 * b[k]; return h + x }`)
+})
+
+// A store under a condition beside a ramp, at an address no lane address names.
+test('vector legality: arms', () => {
+  agree("C-ramp cond store strided", `const o = new Int32Array(64), p = new Int32Array(160)
+export let f = () => { for (let i = 0; i < 64; i++) { o[i] = i * 3; if ((i & 1) === 0) p[2 * i] = 5 }
+  let h = 0; for (let k = 0; k < 160; k++) h = (h * 31 + p[k]) % 1000003; return h + o[7] }`)
 })
 
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted

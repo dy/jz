@@ -27,6 +27,7 @@ import { simdBound } from './scaffold.js'
 // trap-free (log/convert/mul/min/trunc never trap; there is no div/rem). Gated until
 // proven across the corpus, then promoted like the stencil/outer-strip wins.
 const _toneCalls = (n) => isArr(n) && (n[0] === 'call' || n.some(_toneCalls))
+const hasStore = (n) => isArr(n) && (!!STORE_OPS[n[0]] || n.some(hasStore))
 const _toneStripTee = (n) => isArr(n) && n[0] === 'local.tee' && n.length === 3 ? n[2] : n
 
 // `(i32.wrap_i64 (i64.trunc_sat_f64_{s,u} X))` or `(i32.trunc_sat_f64_{s,u} X)` — the
@@ -477,9 +478,14 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
         // Each arm, then its value. An arm that calls (a log, an exp) runs only where
         // a pixel takes it: the scalar loop skips it per pixel, and a sparse density
         // map leaves most pairs on the cheap arm.
+        // A store before the arm's last runs only where a pixel takes the arm: lifted, it
+        // would store both pixels (lift.js declines the same arm).
         const arm = (stmts, last, taken) => {
           const pre = []
-          for (const s of stmts.slice(0, -1)) { liftS(s, pre); if (ctx.fail) return null }
+          for (const s of stmts.slice(0, -1)) {
+            if (hasStore(s)) return liftFail(ctx, 'tonemap: arm has a store before its last')
+            liftS(s, pre); if (ctx.fail) return null
+          }
           const v = liftV(last[2]); if (ctx.fail) return null
           if (!stmts.some(s => _toneCalls(s))) { out.push(...pre); return v }
           const t = freshMask()
