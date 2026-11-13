@@ -1,6 +1,7 @@
 import { nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
-import { collectWrites } from './addr-model.js'
-import { accessOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, sameBase, windowDefs, clone, TEE } from './access.js'
+import { collectWrites, laneAccess } from './addr-model.js'
+import { arrayPointers, linearIndex } from './alias.js'
+import { accessOf, constOf, deadTees, hasOp, inertFor, localGetCounts, localReads, memarg, resolveAddr, sameBase, windowDefs, clone, TEE } from './access.js'
 import { f64Zero, forEachLocalDef, isArr, localGetName } from './node-utils.js'
 
 const matchF64MulLocals = n => {
@@ -46,7 +47,7 @@ const matchF64DotSeq = (stmts, i) => {
     right.push(pair[1])
   }
   const store = matchDotStore(stmts[i + 1 + DOT_UNROLL], acc)
-  return store ? { end: i + 2 + DOT_UNROLL, acc, left, right, ...store } : null
+  return store ? { end: i + 2 + DOT_UNROLL, acc, zero: reset[2], left, right, ...store } : null
 }
 
 const f64x2Pair = (lo, hi) => ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', lo]], ['local.get', hi]]
@@ -57,8 +58,13 @@ const f64x2Pair = (lo, hi) => ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.
 // to `f64x2.relaxed_madd(splat(a[i]), p[i], acc)` — one VFMADD instruction with
 // a single rounding. Faster and more accurate, but the fused rounding diverges
 // from the non-fused reference (the bench `fma` parity class). Opt-in only.
-const dotPairExpr = (a, pairs, useRelaxedFma = false) => {
-  let expr = ['f64x2.mul', ['f64x2.splat', ['local.get', a[0]]], pairs[0]]
+// The scalar sum starts from its reset: `+0 + p0` is +0 where p0 is -0, so a +0
+// reset is added first (a -0 one adds nothing: `-0 + x` is x).
+const dotPairExpr = (a, pairs, useRelaxedFma = false, plusZero = false) => {
+  const zero = ['v128.const', 'i64x2', '0', '0']
+  let expr = useRelaxedFma && plusZero ? ['f64x2.relaxed_madd', ['f64x2.splat', ['local.get', a[0]]], pairs[0], zero]
+    : ['f64x2.mul', ['f64x2.splat', ['local.get', a[0]]], pairs[0]]
+  if (plusZero && !useRelaxedFma) expr = ['f64x2.add', zero, expr]
   for (let i = 1; i < 4; i++) {
     expr = useRelaxedFma
       ? ['f64x2.relaxed_madd', ['f64x2.splat', ['local.get', a[i]]], pairs[i], expr]
@@ -80,11 +86,36 @@ const dotPairExpr = (a, pairs, useRelaxedFma = false) => {
 // surface against, and the byte-identical gate would have no way to distinguish a sound
 // generalization from an unintended new-vectorization case — folded in AS-IS (design's own
 // instruction: "do not debug or delete it standalone").
-const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma = false) => {
+// The pair computes both dots before either output lands, keeps one copy of the addend and
+// of each lane pair for the whole list, and drops every write of the accumulator: the two
+// dots must not read the first's output or each other's accumulator, the addend must be
+// register arithmetic (evaluated once, before both), a kept copy must read nothing written
+// since it was made, and nothing past the pair may read the accumulator it no longer sets.
+const dotPairHolds = (fn, node, i, a, b) => {
+  const acc = a.acc
+  if (a.out === acc || b.out === acc || a.left.includes(a.out) || b.right.includes(a.out)) return false
+  if (a.addend && (!slpSplatSafe(a.addend) || localReads(a.addend).has(acc) || localReads(a.addend).has(a.out))) return false
+  const after = laneAccess(node.slice(b.end), acc)
+  if (after) return after === 'write'
+  let elsewhere = false
+  walkAst(fn, { enter: (x, parent) => { if (parent === node || elsewhere) return false; if (x[0] === 'local.get' && x[1] === acc) elsewhere = true } })
+  return !elsewhere && laneAccess(node.slice(1, i), acc) !== 'read'
+}
+// A kept copy (`memo` name → { tmp, def, reads }) still holds its value at `i` when no
+// statement since its definition writes what it read.
+const keptAt = (node, memo, key, i) => {
+  const m = memo.get(key)
+  if (!m) return null
+  const from = node.indexOf(m.def), written = new Set()
+  for (let j = from + 1; j < i; j++) collectWrites(node[j], written)
+  for (const r of m.reads) if (written.has(r)) return null
+  return m.tmp
+}
+const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma = false, fn = node) => {
   if (!isArr(node)) return
   for (let i = 0; i < node.length; i++) {
     const child = node[i]
-    if (isArr(child)) vectorizeStraightLineF64DotPairsIn(child, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma)
+    if (isArr(child)) vectorizeStraightLineF64DotPairsIn(child, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma, fn)
   }
   // Allocate dedup tables only after this statement list proves it contains a
   // packable pair. Most compiler IR nodes never contain a dot seed; eagerly
@@ -96,7 +127,7 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
     if (!a) { i++; continue }
     const b = matchF64DotSeq(node, a.end)
     if (!b || a.acc !== b.acc || !exprEq(a.left, b.left) || !exprEq(a.addend, b.addend) ||
-        fnLocals.get(a.out) !== 'f64' || fnLocals.get(b.out) !== 'f64') {
+        fnLocals.get(a.out) !== 'f64' || fnLocals.get(b.out) !== 'f64' || !dotPairHolds(fn, node, i, a, b)) {
       i++
       continue
     }
@@ -109,30 +140,32 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
     let addend = a.addend
     if (addend) {
       const key = nodeKey(addend)
-      let tmp = addendTemps.get(key)
+      let tmp = keptAt(node, addendTemps, key, i)
       if (!tmp) {
         tmp = `$__dotadd_${freshIdRef.next++}`
-        addendTemps.set(key, tmp)
+        const def = ['local.set', tmp, addend]
+        addendTemps.set(key, { tmp, def, reads: localReads(addend) })
         newLocalDecls.push(['local', tmp, 'f64'])
         fnLocals.set(tmp, 'f64')
-        prefix = [['local.set', tmp, addend]]
+        prefix = [def]
       }
       addend = ['local.get', tmp]
     }
     const pairs = []
     for (let k = 0; k < DOT_UNROLL; k++) {
       const key = `${a.right[k]}\0${b.right[k]}`
-      let tmp = pairTemps.get(key)
+      let tmp = keptAt(node, pairTemps, key, i)
       if (!tmp) {
         tmp = `$__dotpair_${freshIdRef.next++}`
-        pairTemps.set(key, tmp)
+        const def = ['local.set', tmp, f64x2Pair(a.right[k], b.right[k])]
+        pairTemps.set(key, { tmp, def, reads: new Set([a.right[k], b.right[k]]) })
         newLocalDecls.push(['local', tmp, 'v128'])
         fnLocals.set(tmp, 'v128')
-        prefix.push(['local.set', tmp, f64x2Pair(a.right[k], b.right[k])])
+        prefix.push(def)
       }
       pairs.push(['local.get', tmp])
     }
-    const dot = dotPairExpr(a.left, pairs, useRelaxedFma)
+    const dot = dotPairExpr(a.left, pairs, useRelaxedFma, Object.is(Number(a.zero[1]), 0))
     const expr = addend ? ['f64x2.add', dot, ['f64x2.splat', addend]] : dot
     node.splice(i, b.end - i,
       ...prefix,
@@ -181,8 +214,11 @@ const hoistDotInvariant = (loop, parent, idx, fnLocals, freshIdRef, newLocalDecl
       const invKs = [], varKs = []
       for (let k = 0; k < DOT_UNROLL; k++) (isInv(seq.left[k]) && isInv(seq.right[k]) ? invKs : varKs).push(k)
       if (invKs.length === 0) { i = seq.end; continue }  // nothing loop-invariant — leave for the vectorizer
-      // INV = Σ invariant products, in original k-order, computed once before the loop.
-      let inv = ['f64.const', '0']
+      // (a product of the sum itself, `s += s * y`, reads what the reorder changes: not a reassociation)
+      if (seq.left.includes(seq.acc) || seq.right.includes(seq.acc)) { i = seq.end; continue }
+      // INV = Σ invariant products, in original k-order, computed once before the loop, from
+      // the reset's own zero (a -0 start keeps a sum of -0 products -0).
+      let inv = ['f64.const', seq.zero[1]]
       for (const k of invKs) inv = ['f64.add', inv, ['f64.mul', ['local.get', seq.left[k]], ['local.get', seq.right[k]]]]
       const invName = `$__rinv_${freshIdRef.next++}`
       newLocalDecls.push(['local', invName, 'f64']); fnLocals.set(invName, 'f64')
@@ -257,15 +293,72 @@ const slpSplatSafe = (n) => {
   return !unsafe
 }
 
-// Does `value` load the slot at offset `off` — through any base (obligation 2)?
-const slpReadsSlot = (value, off) => {
+// Whether `value`, evaluated at statement `at` of the window `w`, may load a byte the low
+// store `u0` writes, through any name (obligation 2). Each address is an allocation's start
+// (`pointerOf`, or a global array) plus an index: two starts are one array or two disjoint
+// ones, so the bytes meet only where the indices do, with the starts taken equal. Equal
+// indices meet where the constants do; indices apart by multiples of g (`x[4 * i + 1]`
+// against `x[4 * j + 2]`) meet where the constants' difference does modulo g; an address with
+// no start found (`x[i]` against `y[j]` through locals the proof does not take) may meet any.
+// A low store within an allocation the window makes (`p = __alloc_hdr(2, 2)`, a Map entry's
+// pair) is met by no address made of what the window held before it: the allocator hands
+// out bytes no live value points into.
+const LOAD_WIDTH = { 'f64.load': 8, 'i64.load': 8, 'f32.load': 4, 'i32.load': 4 }
+// (the bytes past the pointer an allocation returns: module/core.js __alloc_hdr, __alloc_hdr_n)
+const allocBytes = e => e[1] === '$__alloc_hdr' ? constOf(e[3]) * 8 : e[1] === '$__alloc_hdr_n' ? constOf(e[3]) * constOf(e[4]) : NaN
+// a local of a resolved address (access.js resolveAddr) as [name, the statement of its window
+// definition, or -1 for a value from before the window]
+const defSite = n => { const [name, at] = String(n[1]).split('@'); return [name, at === undefined ? -1 : Number(at)] }
+const slpMayReadSlot = (value, u0, at, w, pointerOf) => {
+  const isStart = n => isArr(n) && (n[0] === 'global.get' || n[0] === 'local.get' && pointerOf(String(n[1]).split('@')[0]))
+  // the address `b` at statement `k` as { start, form }, its start's term dropped from the form
+  const split = (b, k) => {
+    const r = resolveAddr(b, w, k)
+    if (!r) return null
+    const form = linearIndex(r)
+    let start = null
+    for (const t of form.terms.values()) if (t.coeff === 1 && isStart(t.node)) { if (start) return null; start = t }
+    if (!start) return null
+    form.terms.delete(start.key)
+    form.start = start.node
+    return form
+  }
+  const S = split(u0.base, u0.at)
+  // the statement of the window's allocation the low store writes within, or -1
+  const [name, made] = S && !S.terms.size && isArr(S.start) && S.start[0] === 'local.get' ? defSite(S.start) : ['', -1]
+  const d = made >= 0 && w.defs.get(name), e = d && d.at === made && d.e
+  const fresh = isArr(e) && e[0] === 'call' && S.k + u0.off >= 0 && S.k + u0.off + 8 <= allocBytes(e) ? made : -1
+  // (every local the address reads holds a value from before that statement)
+  const before = r => {
+    let ok = true
+    walkAst(r, { enter: n => { if (!ok) return false; if (n[0] === 'local.get' && defSite(n)[1] >= fresh) ok = false } })
+    return ok
+  }
   let hit = false
   walkAst(value, { enter: n => {
     if (hit || !isArr(n)) return false
-    if (n[0] === 'f64.load' && accessOf(n).off === off) hit = true
+    if (typeof n[0] !== 'string' || !n[0].includes('.load')) return
+    const a = accessOf(n), width = LOAD_WIDTH[n[0]] ?? (/8/.test(n[0]) ? 1 : /16/.test(n[0]) ? 2 : /32/.test(n[0]) ? 4 : 16)
+    if (fresh >= 0) { const r = resolveAddr(a.base, w, at); if (r && before(r)) return false }
+    const L = !sameBase(a.base, at, u0.base, u0.at, w) && split(a.base, at)
+    if (L === null || L && !S) { hit = true; return false }
+    // the load's bytes less the store's: c plus a multiple of g (g a power of two, as 2^32 is)
+    let c = a.off - u0.off, g = 0
+    if (L) {
+      c += L.k - S.k
+      const coeffs = new Map()
+      for (const t of L.terms.values()) coeffs.set(t.key, t.coeff)
+      for (const t of S.terms.values()) coeffs.set(t.key, (coeffs.get(t.key) || 0) - t.coeff)
+      for (const k of coeffs.values()) if (k) g = g ? gcd(g, Math.abs(k)) : Math.abs(k)
+      g = g & -g
+    }
+    // (some c + g * m within (-width, 8): the two accesses overlap)
+    const r = g ? ((c % g) + g) % g : c
+    if (g ? r < 8 || r - g > -width : c > -width && c < 8) hit = true
   } })
   return hit
 }
+const gcd = (a, b) => b ? gcd(b, a % b) : a
 
 // ---- Field pairs ---------------------------------------------------------------
 // A kernel that loads its operands' fields into locals first (`ax = a[0], ay = a[1]`,
@@ -437,7 +530,7 @@ const slpStorePairsIn = (node, sp) => {
     if (u0.keep && localReads(u1.value).has(u0.keep) || u1.keep && localReads(u0.addr).has(u1.keep)) continue
     let inert = true
     for (let j = i + 1; j < k && inert; j++) inert = j === u1.def || inertFor(node[j], reads, true) && !(u1.keep && localReads(node[j]).has(u1.keep))
-    if (!inert || slpReadsSlot(u1.value, u0.off)) continue
+    if (!inert || slpMayReadSlot(u1.value, u0, u1.def >= 0 ? u1.def : k, windowDefs(node, Math.max(1, lo - SLP_WINDOW), k), sp.pointerOf)) continue
     sp.touched = []
     sp.pendingLocals = []
     const packed = slpPackF64x2(u0.value, u1.value, sp, u0.keep, u1.keep)
@@ -508,7 +601,7 @@ export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFm
     const stored = new Set()
     walkAst(fn, { enter: n => { if (n[0] === 'f64.store') { const v = localGetName(n[n.length - 1]); if (v) stored.add(v) } } })
     fuseCanonStaging(fn, stored)
-    const sp = { fnLocals, freshIdRef, newLocalDecls: newLocalDeclsAll, getCounts: localGetCounts(fn), pairs: slpFieldPairs(fn), touched: [], pendingLocals: [] }
+    const sp = { fnLocals, freshIdRef, newLocalDecls: newLocalDeclsAll, getCounts: localGetCounts(fn), pairs: slpFieldPairs(fn), touched: [], pendingLocals: [], pointerOf: arrayPointers(fn) }
     slpStorePairsIn(fn, sp)
     slpPlaceFieldPairs(fn, sp)
   }

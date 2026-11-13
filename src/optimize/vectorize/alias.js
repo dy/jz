@@ -19,7 +19,7 @@ import { strips } from './scaffold.js'
  *  or a subexpression the form does not decompose), terms keyed by structure. An index
  *  temporary (`defs`) or a tee stands for its value. Arithmetic is modulo 2^32, like the
  *  index itself, so a difference of forms is exact whatever either side wraps to. */
-function linearIndex(n, defs) {
+export function linearIndex(n, defs) {
   let k = 0
   const terms = new Map()
   const add = (x, m) => {

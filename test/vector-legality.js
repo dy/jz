@@ -652,6 +652,346 @@ export let f = () => {
   let h = 0; for (let i = 0; i < 64; i++) h = h * 1.25 + out[i]; return h }`)
 })
 
+// The straight-line packer (dot-slp.js): the sign of a zero sum, a load the low store may write
+// through another index or name, a dot reading the first's output, an accumulator read past the
+// pair, a kept addend or lane pair rewritten between pairs, an addend that calls, the hoist's
+// reorder of a product of the sum itself and of a -0 reset.
+test('vector legality: pairs', () => {
+  agree("L-D1-a", `
+const multiplyMany = (a, b, out, iters) => {
+  for (let n = 0; n < iters; n++) {
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        let s = 0
+        for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
+        out[r * 4 + c] = s
+      }
+    }
+    
+  }
+}
+export let f = (x, y, iters) => {
+  const a = new Float64Array(16)
+  const b = new Float64Array(16)
+  const out = new Float64Array(16)
+  for (let i = 0; i < 16; i++) { a[i] = x; b[i] = y }
+  multiplyMany(a, b, out, iters | 0)
+  return (1 / out[0] < 0 ? 1 : 0) + (1 / out[1] < 0 ? 2 : 0) + (1 / out[2] < 0 ? 4 : 0) + (1 / out[3] < 0 ? 8 : 0)
+}`, [0,1.5,1])
+  agree("L-D1-d", `export let f = (w, y, iters) => {
+  let x0 = w
+  let x1 = w
+  let x2 = w
+  let x3 = w
+  let y0 = y
+  let y1 = y
+  let y2 = y
+  let y3 = y
+  let z0 = y
+  let z1 = y
+  let z2 = y
+  let z3 = y
+  let o0 = 0
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s
+    h = h + (1 / o0 < 0 ? 1 : 0) + 2 * (1 / o1 < 0 ? 1 : 0)
+    x0 = n < 100000 ? x0 : w
+    x1 = n < 100000 ? x1 : y
+    x2 = n < 100000 ? x2 : y
+    x3 = n < 100000 ? x3 : w
+    y0 = n < 100000 ? y0 : y
+    y1 = n < 100000 ? y1 : y
+    y2 = n < 100000 ? y2 : w
+    y3 = n < 100000 ? y3 : y
+    z0 = n < 100000 ? z0 : y
+    z1 = n < 100000 ? z1 : w
+    z2 = n < 100000 ? z2 : y
+    z3 = n < 100000 ? z3 : y
+  }
+  return h
+}`, [0,1.5,2])
+  agree("L-D2-d", `const x = new Float64Array(64)
+export let f = (I, J) => {
+  const i = I & 31
+  const j = J & 31
+  for (let k = 0; k < 64; k++) x[k] = k * 1.5 + 1
+  x[i] = x[j] * 2
+  x[i + 1] = x[j + 1] * 2
+  let h = 0
+  for (let k = 0; k < 64; k++) h = h * 1.01 + x[k] * (k + 1)
+  return h
+}`, [5,4])
+  agree("L-D2-h", `const x = new Float64Array(64)
+const y = x
+export let f = (I, J) => {
+  const i = I & 31
+  const j = J & 31
+  for (let k = 0; k < 64; k++) x[k] = k * 1.5 + 1
+  x[i] = y[j] * 2
+  x[i + 1] = y[j + 1] * 2
+  let h = 0
+  for (let k = 0; k < 64; k++) h = h * 1.01 + x[k] * (k + 1)
+  return h
+}`, [5,4])
+  agree("L-D3-c", `
+const row = (a, b, out, iters) => {
+  for (let n = 0; n < iters; n++) {
+    for (let c = 0; c < 4; c++) {
+      let s = 0
+      for (let k = 0; k < 4; k++) s += a[k] * b[k * 4 + c]
+      out[c] = s
+    }
+  }
+}
+export let f = (x, iters) => {
+  const a = new Float64Array(16)
+  const b = new Float64Array(16)
+  for (let i = 0; i < 16; i++) { a[i] = (i + 1) * 0.125 + x; b[i] = (16 - i) * 0.0625 + x }
+  row(a, b, a, iters | 0)
+  let h = 0; for (let i = 0; i < 16; i++) h = h * 1.0001 + a[i] * 3 + b[i] * 5; return h
+}`, [0.5,1])
+  agree("L-D3-e", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; x0 = s
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s
+    h = h + x0 * 3 + o1
+    x1 = n < 100000 ? x1 : 1
+    x2 = n < 100000 ? x2 : 2
+    x3 = n < 100000 ? x3 : 3
+    y0 = n < 100000 ? y0 : 1
+    y1 = n < 100000 ? y1 : 2
+    y2 = n < 100000 ? y2 : 3
+    y3 = n < 100000 ? y3 : 1
+    z0 = n < 100000 ? z0 : 2
+    z1 = n < 100000 ? z1 : 3
+    z2 = n < 100000 ? z2 : 1
+    z3 = n < 100000 ? z3 : 2
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,2])
+  agree("L-D3-f", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; z0 = s
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s
+    h = h + z0 * 3 + o1
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    y0 = n < 100000 ? y0 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    z1 = n < 100000 ? z1 : 3
+    z2 = n < 100000 ? z2 : 1
+    z3 = n < 100000 ? z3 : 2
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,2])
+  agree("L-D4-a", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
+  let o0 = 0
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s + s
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s + s
+    h = h + o0 * 3 + o1
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    y0 = n < 100000 ? y0 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    z0 = n < 100000 ? z0 : 3
+    z1 = n < 100000 ? z1 : 1
+    z2 = n < 100000 ? z2 : 2
+    z3 = n < 100000 ? z3 : 3
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,2])
+  agree("L-D4-b", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
+  let o0 = 0
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s
+    h = h + o0 * 3 + o1 + s * 7
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    y0 = n < 100000 ? y0 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    z0 = n < 100000 ? z0 : 3
+    z1 = n < 100000 ? z1 : 1
+    z2 = n < 100000 ? z2 : 2
+    z3 = n < 100000 ? z3 : 3
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,2])
+  agree("L-D5-a", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, p0, p1, p2, p3, q0, q1, q2, q3, r0, r1, r2, r3, t, iters) => {
+  let o0 = 0
+  let o1 = 0
+  let o2 = 0
+  let o3 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s + t
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s + t
+    t = t + 100
+    s = 0; s += p0 * q0; s += p1 * q1; s += p2 * q2; s += p3 * q3; o2 = s + t
+    s = 0; s += p0 * r0; s += p1 * r1; s += p2 * r2; s += p3 * r3; o3 = s + t
+    h = h + o0 + 2 * o1 + 3 * o2 + 4 * o3
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    y0 = n < 100000 ? y0 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    z0 = n < 100000 ? z0 : 3
+    z1 = n < 100000 ? z1 : 1
+    z2 = n < 100000 ? z2 : 2
+    z3 = n < 100000 ? z3 : 3
+    p0 = n < 100000 ? p0 : 1
+    p1 = n < 100000 ? p1 : 2
+    p2 = n < 100000 ? p2 : 3
+    p3 = n < 100000 ? p3 : 1
+    q0 = n < 100000 ? q0 : 2
+    q1 = n < 100000 ? q1 : 3
+    q2 = n < 100000 ? q2 : 1
+    q3 = n < 100000 ? q3 : 2
+    r0 = n < 100000 ? r0 : 3
+    r1 = n < 100000 ? r1 : 1
+    r2 = n < 100000 ? r2 : 2
+    r3 = n < 100000 ? r3 : 3
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,1,2,3,4,5,6,7,8,9,10,11,12,0.5,2])
+  agree("L-D5-b", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, p0, p1, p2, p3, iters) => {
+  let o0 = 0
+  let o1 = 0
+  let o2 = 0
+  let o3 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s
+    y0 = y0 + 100
+    s = 0; s += p0 * y0; s += p1 * y1; s += p2 * y2; s += p3 * y3; o2 = s
+    s = 0; s += p0 * z0; s += p1 * z1; s += p2 * z2; s += p3 * z3; o3 = s
+    h = h + o0 + 2 * o1 + 3 * o2 + 4 * o3
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    z0 = n < 100000 ? z0 : 2
+    z1 = n < 100000 ? z1 : 3
+    z2 = n < 100000 ? z2 : 1
+    z3 = n < 100000 ? z3 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    p0 = n < 100000 ? p0 : 3
+    p1 = n < 100000 ? p1 : 1
+    p2 = n < 100000 ? p2 : 2
+    p3 = n < 100000 ? p3 : 3
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,1,2,3,4,2])
+  agree("L-D5-c", `let cnt = 0
+const g = (u) => { cnt = cnt + u; return cnt }
+export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
+  let o0 = 0
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s + g(1)
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s + g(1)
+    h = h + o0 * 3 + o1
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    y0 = n < 100000 ? y0 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    z0 = n < 100000 ? z0 : 3
+    z1 = n < 100000 ? z1 : 1
+    z2 = n < 100000 ? z2 : 2
+    z3 = n < 100000 ? z3 : 3
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,2])
+  agree("L-D5-d", `export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
+  let o0 = 0
+  let o1 = 0
+  let s = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += x0 * y0; s += x1 * y1; s += x2 * y2; s += x3 * y3; o0 = s + o0
+    s = 0; s += x0 * z0; s += x1 * z1; s += x2 * z2; s += x3 * z3; o1 = s + o0
+    h = h + o0 * 3 + o1
+    x0 = n < 100000 ? x0 : 1
+    x1 = n < 100000 ? x1 : 2
+    x2 = n < 100000 ? x2 : 3
+    x3 = n < 100000 ? x3 : 1
+    y0 = n < 100000 ? y0 : 2
+    y1 = n < 100000 ? y1 : 3
+    y2 = n < 100000 ? y2 : 1
+    y3 = n < 100000 ? y3 : 2
+    z0 = n < 100000 ? z0 : 3
+    z1 = n < 100000 ? z1 : 1
+    z2 = n < 100000 ? z2 : 2
+    z3 = n < 100000 ? z3 : 3
+  }
+  return h
+}`, [1,2,3,4,5,6,7,8,9,10,11,12,2])
+  agree("L-D6-a", `export let f = (u, v, y, p, q, r, t, iters) => {
+  let s = 0
+  let o = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = 0; s += u * v; s += s * y; s += p * q; s += r * t; o = s
+    h = h + o
+    u = u + o * 0.001
+  }
+  return h
+}`, [1.5,2,0.5,3,4,5,6,3])
+  agree("L-D7-a", `export let f = (p, q, iters) => {
+  let s = 0
+  let o = 0
+  let h = 0
+  for (let n = 0; n < iters; n++) {
+    s = -0; s += p * q; s += p * q; s += p * q; s += p * q; o = s
+    h = h + (1 / o < 0 ? 1 : 0)
+  }
+  return h
+}`, [0,1.5,3])
+})
+
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted
 // (its own function's WAT holds a vector op) and answering what Node answers. A load one ahead
 // of its store, an element in place, a store a pixel and a half ahead, a load a pixel ahead, a
