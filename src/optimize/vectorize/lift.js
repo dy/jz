@@ -1,6 +1,6 @@
 import { cloneNode, isLeaf, nodeEqual, walkAst } from '../../ast.js'
 import { guardedInt32Operand } from '../../ir/numeric.js'
-import { hasBranchOrReturn, hasSideEffect, isI32Const, isLocalGet, matchMirrorAddr } from './addr-model.js'
+import { constNum, hasBranchOrReturn, hasSideEffect, isI32Const, isLocalGet, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
 import { inlinePureCallExpr } from './inline-pure.js'
@@ -909,6 +909,10 @@ export function liftExprV(expr, ctx) {
       if (!isI32Const(b) && !(isArr(b) && b[0] === 'local.get' && ctx.localKind.get(b[1]) === 'invariant')) {
         return liftFail(ctx, `${op}: shift amount not a constant or loop-invariant`)
       }
+      // A narrow lane shifts by its count modulo its width; the scalar shifts the i32 by the
+      // count modulo 32 and the store keeps the low bits: they agree on a count below the width.
+      const bits = ctx.laneType === 'i8' ? 8 : ctx.laneType === 'i16' ? 16 : 0
+      if (bits && !(isI32Const(b) && (constNum(b) & 31) < bits)) return liftFail(ctx, `${op}: a count past the ${ctx.laneType} lane`)
       return [entry.simd, a, b]
     }
     if (expr.length === 2) {  // unary (neg, abs, sqrt)

@@ -27,6 +27,10 @@ export let f = () => { for (let i = 0; i < 64; i++) { a[i] = i & 127; i++ }
   agree("W3 ramp conditional store", `const a = new Uint8Array(64), b = new Uint8Array(64)
 export let f = () => { for (let i = 0; i < 64; i++) { a[i] = i & 127; if ((i & 1) === 0) b[i] = 7 }
   let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + b[i]) % 1000003; return h }`)
+  agree("W4 ramp shift 16", `const a = new Uint8Array(64), b = new Uint8Array(64)
+export let f = () => { for (let i = 0; i < 64; i++) a[i] = (i * 37 + 11) & 127
+  for (let i = 0; i < 64; i++) b[i] = (a[i] * a[i]) >> 16
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + b[i]) % 1000003; return h }`)
   agree("W5 tone-map arm store", `const d = new Int32Array(64), a = new Int32Array(64), b = new Int32Array(64)
 export let f = () => { for (let i = 0; i < 64; i++) d[i] = (i * 37 + 11) & 127
   for (let i = 0; i < 64; i++) { const v = d[i]; if (v > 60) { b[i] = 7; a[i] = (Math.log(v * 1.5 + 1) * 20) | 0 } }
@@ -136,6 +140,40 @@ test('vector legality: arms', () => {
   agree("C-ramp cond store strided", `const o = new Int32Array(64), p = new Int32Array(160)
 export let f = () => { for (let i = 0; i < 64; i++) { o[i] = i * 3; if ((i & 1) === 0) p[2 * i] = 5 }
   let h = 0; for (let k = 0; k < 160; k++) h = (h * 31 + p[k]) % 1000003; return h + o[7] }`)
+})
+
+// A lane narrower than the scalar's word: a byte or 16-bit lane shifts by its count modulo
+// its width, the word by it modulo 32; a product of two unsigned bytes overflows a 16-bit lane.
+test('vector legality: narrow', () => {
+  agree("S-u8 shl 8", `const a = new Uint8Array(64), b = new Uint8Array(64)
+export let f = () => { for (let k = 0; k < 64; k++) a[k] = k * 7 + 3
+  for (let i = 0; i < 64; i++) b[i] = a[i] << 8
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`)
+  agree("S-u8 shl by arg 8", `const a = new Uint8Array(64), b = new Uint8Array(64)
+export let f = (s) => { for (let k = 0; k < 64; k++) a[k] = k * 7 + 3
+  for (let i = 0; i < 64; i++) b[i] = a[i] << s
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`, [8])
+  agree("S-u16 shl 16", `const a = new Uint16Array(64), b = new Uint16Array(64)
+export let f = () => { for (let k = 0; k < 64; k++) a[k] = k * 997 + 3
+  for (let i = 0; i < 64; i++) b[i] = a[i] << 16
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`)
+  agree("S-i16 shl 17", `const a = new Int16Array(64), b = new Int16Array(64)
+export let f = () => { for (let k = 0; k < 64; k++) a[k] = k * 997 - 3000
+  for (let i = 0; i < 64; i++) b[i] = a[i] << 17
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`)
+  agree("OS-5-j-mixloop", `
+const wt2 = new Int8Array(64)
+const inp = new Uint8Array(4096), wt = new Uint8Array(64), out = new Int32Array(4096)
+export let f = () => {
+  for (let i = 0; i < 4096; i++) inp[i] = 200 + (i & 31)
+  for (let i = 0; i < 64; i++) wt[i] = 180 + (i & 15)
+  for (let i = 0; i < 64; i++) wt2[i] = i * 7 - 100
+  for (let ox = 0; ox < 256; ox++) {
+    let acc = 0; for (let kx = 0; kx < 4; kx++) { acc += inp[ox + kx] * wt[kx]; acc += inp[ox + kx + 4] * wt2[kx] } out[ox] = acc
+  }
+  
+  let h = 0; for (let i = 0; i < 256; i++) h = (Math.imul(h, 31) + out[i]) | 0; return h
+}`)
 })
 
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted

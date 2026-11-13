@@ -451,6 +451,8 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
     const g = ag && !bg ? a : bg && !ag ? b : null            // exactly one per-pixel gather
     if (!g) return null
     const inv = g === a ? b : a
+    // A product of two unsigned bytes reaches 255 · 255, past an i16 lane.
+    if (!a.signed && !b.signed) return null
     const gI16 = [g.signed ? 'i16x8.extend_low_i8x16_s' : 'i16x8.extend_low_i8x16_u', load64(g.load)]
     return ['i16x8.mul', gI16, ['i16x8.splat', inv.load]]      // splat the invariant weight (fits i16)
   }
