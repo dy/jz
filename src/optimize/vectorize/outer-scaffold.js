@@ -174,6 +174,27 @@ export function bumpPixelIV(pivType, n, k) {
   return isArr(n) ? n.map(c => bumpPixelIV(pivType, c, k)) : n
 }
 
+/** Whether an expression holds the same value for every pixel of a strip: `shared(e, but)` is
+ *  true when `e` reads no local a pixel may hold its own value of, `but` aside. Those are the
+ *  pixel counters and every local the pixel body writes from one of them, or under a test
+ *  (an arm, or past a branch a block or loop holds), which may be a pixel's: the closure. */
+export function pixelShared(obody, pixelIVs) {
+  const varies = new Set(pixelIVs.map(p => p.name)), writes = []
+  const branches = n => { let b = false; walkAst(n, { enter: x => { if (b) return false; if (x[0] === 'br' || x[0] === 'br_if' || x[0] === 'br_table') b = true } }); return b }
+  const visit = (n, tested) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.push([n[1], n[2], tested])
+    const inner = tested || n[0] === 'if' || n[0] === 'select' || (n[0] === 'block' || n[0] === 'loop') && branches(n)
+    for (let i = 1; i < n.length; i++) visit(n[i], inner)
+  }
+  for (const s of obody) visit(s, false)
+  for (let changed = true; changed;) {
+    changed = false
+    for (const [name, rhs, tested] of writes) if (!varies.has(name) && (tested || [...varies].some(v => readsVar(rhs, v)))) { varies.add(name); changed = true }
+  }
+  return (e, but = null) => { let ok = true; walkAst(e, { enter: x => { if (x[0] === 'local.get' && x[1] !== but && varies.has(x[1])) ok = false } }); return ok }
+}
+
 /**
  * The two lanes of a pixel-IV local (or its alias) as an f64x2 ramp [v, v+1] — an i32 IV
  * converts per lane. Every outer-pixel recognizer that builds a per-pixel coordinate lane

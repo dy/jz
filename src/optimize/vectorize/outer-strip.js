@@ -1,8 +1,8 @@
 import { walkAst, cloneNode } from '../../ast.js'
-import { hasSideEffect, isI32Const, isLocalGet, matchIncN } from './addr-model.js'
+import { collectWrites, hasSideEffect, isI32Const, isLocalGet, matchIncN } from './addr-model.js'
 import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
-import { CMP_LANE, buildPivotCoeff, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
+import { CMP_LANE, buildPivotCoeff, bumpPixelIV, epilogueIsSafe, pixelShared, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
 import { tryPerPixelColor } from './per-pixel-color.js'
 import { matchBlockLoop, stripBlock } from './scaffold.js'
 
@@ -37,9 +37,14 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   // No impure calls (a non-pure call would read stale state in the per-lane epilogue). $math.*
   // pure. Fact computed once at the dispatch (LoopPlan: matchOuterPixelLoop) — see hasImpureCall.
   if (outer.hasImpureCall) return null
+  // The pair's two pixels share the inner loop's trips and its splatted loads: its bound, its
+  // counter's start and a load's address hold no value of one pixel (a bound of the pixel,
+  // `i < x`; an address through `const base = x`; a row's own range, `k < rowPtr[r + 1]`).
+  const shared = pixelShared(obody, pixelIVs)
 
   const id = freshIdRef.next++
   const nm = (s) => `$__os${id}_${s}`
+  if (!shared(ibl.bound)) return null
 
   const laneMap = new Map()   // f64 lane-local (per-pixel-varying) name → its v128 shadow
   // Lift a scalar f64 expr to f64x2 (null = not liftable). pxVar → ramp; lane local → shadow;
@@ -62,7 +67,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
       // pixel-invariant load (address reads neither the pixel IV nor any per-pixel lane) is the
       // same value for both lanes → load once, splat. A per-pixel gather is not supported.
       const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
-      if (readsVar(addr, pxVar) || [...laneMap.keys()].some(lv => readsVar(addr, lv))) return null
+      if (!shared(addr, innerIV)) return null
       return ['f64x2.splat', n]
     }
     if (op === 'call') {
@@ -131,6 +136,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
       laneMap.set(name, sh)
       laneInit.push(['local.set', sh, lane]); continue
     }
+    if (name === innerIV && !shared(s[2])) return null
     laneInit.push(s)                                // scalar (inner IV init `b=0`, invariant setup)
   }
 
@@ -151,7 +157,10 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
     const name = s[1], rhs = s[2]
     if (fnLocals.get(name) !== 'f64') return null
     if (accNames.has(name)) {
-      const addend = isLocalGet(rhs[1], name) ? rhs[2] : rhs[1]
+      // (each write of an accumulator is a step of its sum, `acc + E`: `s -= b[i]` or `s *= 0.5`
+      // beside `s += a[i]` is not one the lift's f64x2.add carries out)
+      const addend = isArr(rhs) && rhs[0] === 'f64.add' ? (isLocalGet(rhs[1], name) ? rhs[2] : isLocalGet(rhs[2], name) ? rhs[1] : null) : null
+      if (addend == null || readsVar(addend, name)) return null
       const lifted = liftOS(addend)
       if (!lifted) return null
       liftedInner.push(['local.set', laneMap.get(name), ['f64x2.add', ['local.get', laneMap.get(name)], lifted]]); continue
@@ -239,12 +248,15 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const shadowOf = (v) => { let s = laneMap.get(v); if (!s) { s = nm(v.replace(/\W/g, '')); laneMap.set(v, s) } return s }
   let sawHeavy = false            // a transcendental lifted inside a loop → SIMD is worth it
 
-  // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes.
+  // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes
+  // (nor an f64 the loop writes: a lane the body sets after this read, a recurrence).
+  const loopWrites = new Set()
+  collectWrites(loopNode, loopWrites)
   const laneInvariant = (root) => {
     let found = false
     walkAst(root, { enter: n => {
       if (found) return false
-      if (n[0] === 'local.get' && (laneMap.has(n[1]) || pivType.has(n[1]))) { found = true; return false }
+      if (n[0] === 'local.get' && (laneMap.has(n[1]) || pivType.has(n[1]) || fnLocals.get(n[1]) === 'f64' && loopWrites.has(n[1]))) { found = true; return false }
     } })
     return !found
   }
@@ -277,7 +289,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
     if (LOAD_OPS[op] === 'f64') {
       const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
-      if (readsVar(addr, pxVar) || [...laneMap.keys()].some(lv => readsVar(addr, lv))) return null   // per-lane gather: unsupported
+      if (!laneInvariant(addr)) return null   // per-lane gather (any pixel counter, any lane): unsupported
       return ['f64x2.splat', n]
     }
     if (op === 'call') {
@@ -338,7 +350,9 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   const liftInnerLoop = (block) => {
     const ibl = matchBlockLoop(block, { allowPreamble: true })
-    if (!ibl) return null
+    // (both pixels run the inner loop's trips together, and its hoisted invariants once: a bound
+    // that is a pixel's, `i < x`, or an invariant of one, `p = a + (j << 3)`, is neither)
+    if (!ibl || !laneInvariant(ibl.bound) || !ibl.preamble.every(p => laneInvariant(p[2]))) return null
     const lifted = []
     for (const s of ibl.body) { const out = liftInnerStmt(s, ibl.incVar); if (!out) return null; lifted.push(...out) }
     // (a hoisted invariant ahead of the loop runs ahead of the lanes' loop as it did: pure, set once)

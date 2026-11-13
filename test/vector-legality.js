@@ -13,6 +13,10 @@ const agree = (name, src, args = []) => {
   const want = oracle(src).f(...args)
   for (const optimize of levels(2, 3)) is(jz(src, { optimize }).exports.f(...args), want, `${name} at ${optimize}`)
 }
+const agreeOff = (name, src, args = []) => {
+  const want = jz(src, { optimize: { level: 'speed', vectorizeLaneLocal: false, slp: false } }).exports.f(...args)
+  for (const optimize of levels(2, 3)) is(jz(src, { optimize }).exports.f(...args), want, `${name} at ${optimize}`)
+}
 
 // The nine programs of phase 6's census (.work/maps/vectorize-leads.md), W1 to W9.
 test('vector legality: nine', () => {
@@ -596,6 +600,56 @@ export let f = () => {
   blurRows(src, dst, 64, 4)
   let h = 0; for (let i = 0; i < dst.length; i++) h = (Math.imul(h, 31) + dst[i]) | 0; return h
 }`)
+})
+
+// The outer strips' pair of pixels (outer-strip.js): an accumulator stepped other than by `+`,
+// an inner bound or a load address that is a pixel's own, a hoisted invariant of a pixel counter,
+// bench/spmv's rows (each its own range of nonzeros; the bench's checksum samples even rows).
+// (The hoisted invariant's program answers an ulp from the host's `Math.log` with the vectorizer
+// off as on: it is held to the loop as written.)
+test('vector legality: outer', () => {
+  agree("OS-2 accumulator stepped by -=", `export let f = () => { const a = new Float64Array(64), b = new Float64Array(64), out = new Float64Array(64), c = new Float64Array(64), n = 16, w = 32
+  for (let i = 0; i < 64; i++) { a[i] = ((i * 7) % 13) - 5.75; b[i] = i * 0.5 } 
+  for (let x = 0; x < w; x++) { let s = 0; for (let i = 0; i < n; i++) { s += a[i]; s -= b[i] } out[x] = s * (x + 1) }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + out[i] + c[i] * 7) % 1000003; return h }`)
+  agree("OS-2 accumulator scaled", `export let f = () => { const a = new Float64Array(64), b = new Float64Array(64), out = new Float64Array(64), c = new Float64Array(64), n = 16, w = 32
+  for (let i = 0; i < 64; i++) { a[i] = ((i * 7) % 13) - 5.75; b[i] = i * 0.5 } 
+  for (let x = 0; x < w; x++) { let s = 0; for (let i = 0; i < n; i++) { s += a[i]; s *= 0.5 } out[x] = s * (x + 1) }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + out[i] + c[i] * 7) % 1000003; return h }`)
+  agree("OS-3c triangular inner bound", `export let f = () => { const a = new Float64Array(64), b = new Float64Array(64), out = new Float64Array(64), c = new Float64Array(64), n = 16, w = 32
+  for (let i = 0; i < 64; i++) { a[i] = ((i * 7) % 13) - 5.75; b[i] = i * 0.5 }
+  for (let x = 0; x < w; x++) { let s = 0; for (let i = 0; i < x; i++) { s += a[i]; s += b[i] } out[x] = s * (x + 1) }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + out[i] + c[i] * 7 + a[i]) % 1000003; return h + 0 }`)
+  agree("OS-3d pixel-derived load address", `export let f = () => { const a = new Float64Array(64), b = new Float64Array(64), out = new Float64Array(64), c = new Float64Array(64), n = 16, w = 32
+  for (let i = 0; i < 64; i++) { a[i] = ((i * 7) % 13) - 5.75; b[i] = i * 0.5 }
+  for (let x = 0; x < w; x++) { const base = x; let s = 0; for (let i = 0; i < n; i++) { s += a[base + i]; s += b[i] } out[x] = s }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + out[i] + c[i] * 7 + a[i]) % 1000003; return h + 0 }`)
+  agree("IR-3 triangular inner bound", `export let f = () => { const a = new Float64Array(64), out = new Float64Array(64)
+  for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) * 0.05 + 0.1
+  for (let x = 0; x < 32; x++) { const r = 2.5 + x * 0.03; let v = 0.5, s = 0; for (let i = 0; i < x; i++) { v = r * v * (1 - v); s += Math.log(v + 1) } out[x] = s }
+  let h = 0; for (let i = 0; i < 64; i++) h = h * 1.25 + out[i]; return h }`)
+  agree("OS-3 spmv rows, each its own range", `const ROWS = 64, NPR = 16, NNZ = ROWS * NPR
+const spmv = (rowPtr, colIdx, values, x, y) => {
+  for (let r = 0; r < ROWS; r++) {
+    let sum = 0
+    const end = rowPtr[r + 1]
+    for (let k = rowPtr[r]; k < end; k++) sum += values[k] * x[colIdx[k]]
+    y[r] = sum
+  }
+}
+export let f = () => {
+  const rowPtr = new Int32Array(ROWS + 1), colIdx = new Int32Array(NNZ), values = new Float64Array(NNZ), x = new Float64Array(ROWS), y = new Float64Array(ROWS)
+  let s = 0x1234abcd | 0
+  const next = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return s >>> 0 }
+  for (let r = 0; r <= ROWS; r++) rowPtr[r] = r * NPR
+  for (let k = 0; k < NNZ; k++) { colIdx[k] = next() % ROWS; values[k] = (next() % 9) - 4 }
+  for (let i = 0; i < ROWS; i++) x[i] = (next() % 7) - 3
+  spmv(rowPtr, colIdx, values, x, y)
+  let h = 0; for (let i = 0; i < ROWS; i++) h = (h * 31 + y[i]) % 1000003; return h }`)
+  agreeOff("IR-2 second pixel counter in an address", `export let f = () => { const a = new Float64Array(64), out = new Float64Array(64)
+  for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) * 0.05 + 0.1
+  let j = 3; for (let x = 0; x < 32; x++, j++) { const r = 2.5 + x * 0.03; let v = 0.5, s = 0; for (let i = 0; i < 16; i++) { v = r * v * (1 - v); s += Math.log(v + a[j]) } out[x] = s }
+  let h = 0; for (let i = 0; i < 64; i++) h = h * 1.25 + out[i]; return h }`)
 })
 
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted
