@@ -180,6 +180,31 @@ export let f = () => {
 }`)
 })
 
+// A comparison in a byte or 16-bit lane sees the lane's bits, the scalar the whole word: they
+// agree where both operands fit the lane under one reading (lift.js laneCompare). A store into
+// a Uint8ClampedArray clamps by `v < 0` and `v > 255` on the word; lifted to byte lanes and
+// compared signed, every byte past 127 was "negative" and stored as 0.
+test('vector legality: narrow comparisons', () => {
+  const clamped = (name, e) => agree(`u8c ${name}`, `const a = new Uint8ClampedArray(64), b = new Uint8ClampedArray(64), c = new Uint8ClampedArray(64)
+export let f = () => { for (let k = 0; k < 64; k++) { a[k] = k * 37 % 251; c[k] = (k + 7) * 37 % 251 }
+  for (let i = 0; i < 64; i++) b[i] = ${e}
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`)
+  clamped('and', 'a[i] & c[i]')
+  clamped('copy', 'a[i] | 0')
+  clamped('not', '~a[i]')
+  clamped('shl', 'a[i] << 3')
+  clamped('equal', 'a[i] === c[i] ? 255 : 0')
+  clamped('sum', 'a[i] + c[i]')
+  clamped('difference', 'a[i] - c[i]')
+  // (what fits stays lifted: unsigned bytes against a byte constant, by the unsigned lane operator)
+  const src = `const a = new Uint8Array(64), b = new Uint8Array(64)
+export let f = () => { for (let k = 0; k < 64; k++) a[k] = k * 37 % 251
+  for (let i = 0; i < 64; i++) b[i] = a[i] > 100 ? 255 : 0
+  let h = 0; for (let k = 0; k < 64; k++) h = (h * 31 + b[k]) % 1000003; return h }`
+  agree('u8 above a constant', src)
+  if (!belowOpt(2)) for (const optimize of levels(2, 3)) ok(/i8x16\.gt_u/.test(compile(src, { optimize, wat: true })), `u8 above a constant: lifted at ${optimize}`)
+})
+
 // An address the lift keeps as written, lane 0's, reading what only lane 0 holds: the ramp's
 // copy of the counter, a convolution tap strided, reversed or scaled, a store or a local the
 // convolution's setup computes once for eight pixels.

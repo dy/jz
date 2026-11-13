@@ -86,7 +86,57 @@ export const resetVectorizeState = () => { vecState.whyNotActive = false; vecSta
 export const liftCtx = (laneType, incVar, localKind, freshIdRef, fnLocals = null, newLanedLocals = new Map(), extraLocals = [],
   aosPixelStride = 1, pureFuncMap = null, constLocals = null, rampVar = null, widenLoads = false) =>
   ({ laneType, incVar, rampVar, rampTemp: null, widenLoads, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef,
-    fail: false, failReason: null, aosPixelStride, pureFuncMap, inlineDepth: 0, constLocals })
+    fail: false, failReason: null, aosPixelStride, pureFuncMap, inlineDepth: 0, constLocals, laneFit: new Map() })
+
+// ---- A comparison in a byte or 16-bit lane -------------------------------------
+// The scalar compares two i32; the lane sees only its own bits. They agree where both
+// operands fit the lane under one reading. An element loaded zero-extended, a mask of one
+// and a constant within 0..2^w-1 fit unsigned, and are compared by the unsigned lane
+// operator whichever the scalar's is (both are non-negative, where the two orders are
+// one). An element loaded sign-extended and a constant in the signed range fit signed,
+// and keep the scalar's operator: sign extension keeps both orders. Anything else, a sum,
+// a shift, a clamp's temporary, may hold what the lane drops, and is no lane comparison:
+// a Uint8ClampedArray's store clamps by `v < 0` and `v > 255` on the i32, and lanes
+// compared signed wrote 0 for every byte past 127 of `b[i] = a[i] & c[i]`.
+const NARROW_BITS = { i8: 8, i16: 16 }
+/** How the i32 `n` fits a lane of `bits`: 'u' within 0..2^bits-1, 's' within the signed
+ *  range, 'b' within both, null where nothing says. */
+const narrowFit = (n, bits, ctx) => {
+  if (!isArr(n)) return null
+  const op = n[0]
+  if (op === 'i32.const') {
+    const c = constNum(n)
+    return c >= 0 && c < 2 ** (bits - 1) ? 'b' : c >= 0 && c < 2 ** bits ? 'u' : c < 0 && c >= -(2 ** (bits - 1)) ? 's' : null
+  }
+  if (op === `i32.load${bits}_u`) return 'u'
+  if (op === `i32.load${bits}_s`) return 's'
+  if (op === 'local.tee' && n.length === 3) return narrowFit(n[2], bits, ctx)
+  if (op === 'local.get') return ctx.laneFit.get(n[1]) ?? null
+  if (op === 'i32.and' && n.length === 3) {
+    // (a mask by a non-negative operand is within it, whatever the other holds)
+    const a = narrowFit(n[1], bits, ctx), b = narrowFit(n[2], bits, ctx)
+    return a === 'b' || b === 'b' ? 'b' : a === 'u' || b === 'u' ? 'u' : null
+  }
+  return null
+}
+/** The lane operator of the scalar comparison `op` of `a` and `b` (scalar nodes), or null. */
+function laneCompare(ctx, op, a, b) {
+  const simd = LANE_COMPARE[ctx.laneType]?.[op] ?? null
+  const bits = NARROW_BITS[ctx.laneType]
+  if (!simd || !bits) return simd
+  const fa = narrowFit(a, bits, ctx), fb = narrowFit(b, bits, ctx)
+  if (!fa || !fb) return null
+  if (fa !== 's' && fb !== 's') return simd.replace(/_s$/, '_u')
+  return fa !== 'u' && fb !== 'u' ? simd : null
+}
+/** A lane local's write, for the comparisons that read it: `value` its scalar value where
+ *  the write is its one plain definition, null where an arm or a mask sets it. */
+const noteLaneWrite = (ctx, name, value) => {
+  const bits = NARROW_BITS[ctx.laneType]
+  if (!bits) return
+  const fit = value && !ctx.laneFit.has(name) ? narrowFit(value, bits, ctx) : null
+  ctx.laneFit.set(name, fit)
+}
 
 // A counter's advance over `lanes` iterations of `step` (a constant or an invariant local).
 export const laneStep = (step, lanes) => isI32Const(step) ? ['i32.const', Number(step[1]) * lanes]
@@ -165,7 +215,7 @@ function tryLiftLaneIf(stmt, ctx) {
     if (thenBody.length !== 1 || !fits(thenBody[0])) return false
     let cond = node[1]
     if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
-    if (!(isArr(cond) && cond.length === 3 && LANE_COMPARE[ctx.laneType]?.[cond[0]])) return false
+    if (!(isArr(cond) && cond.length === 3 && laneCompare(ctx, cond[0], cond[1], cond[2]))) return false
     if (node.length > 3) {
       if (!isArr(node[3]) || node[3][0] !== 'else') return false
       const elseBody = armBody(node[3])
@@ -182,7 +232,7 @@ function tryLiftLaneIf(stmt, ctx) {
       if (thenBody.length !== 1) return liftFail(ctx, 'lane-if: non-single then arm')
       let cond = node[1]
       if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
-      const cmp = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
+      const cmp = isArr(cond) && cond.length === 3 ? laneCompare(ctx, cond[0], cond[1], cond[2]) : null
       if (!cmp) return liftFail(ctx, 'lane-if: condition is not a lane comparison')
       const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
       const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
@@ -201,6 +251,7 @@ function tryLiftLaneIf(stmt, ctx) {
   }
   const val = buildVal(stmt)
   if (ctx.fail || val == null) return null
+  noteLaneWrite(ctx, lane, null)
   return ['local.set', getOrAllocLanedLocal(lane, ctx.newLanedLocals), val]
 }
 
@@ -253,7 +304,7 @@ function invariantScalar(n, ctx) {
 function condMask(cond, ctx) {
   if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
   const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-  const cmp = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
+  const cmp = cmpOp && cond.length === 3 ? laneCompare(ctx, cmpOp, cond[1], cond[2]) : null
   if (cmp) {
     const a = liftExprV(cond[1], ctx); if (ctx.fail) return null
     const b = liftExprV(cond[2], ctx); if (ctx.fail) return null
@@ -355,6 +406,7 @@ function liftPredicated(stmt, ctx, outer = null) {
       }
       const v = liftExprV(s[2], ctx); if (ctx.fail) return null
       const lane = getOrAllocLanedLocal(s[1], ctx.newLanedLocals)
+      noteLaneWrite(ctx, s[1], null)
       out.push(['local.set', lane, ['v128.bitselect', v, ['local.get', lane], ['local.get', mask]]])
     }
     return true
@@ -387,6 +439,7 @@ export function liftStmt(stmt, ctx) {
       const laneName = getOrAllocLanedLocal(name, ctx.newLanedLocals)
       const v = liftExprV(stmt[2], ctx)
       if (ctx.fail) return null
+      noteLaneWrite(ctx, name, stmt[2])
       return ['local.set', laneName, v]
     }
     return liftFail(ctx, `local.set ${name}: loop-carried or unclassified local`)
@@ -806,7 +859,7 @@ export function liftExprV(expr, ctx) {
     if (expr.length === 4) {
       const cond = expr[3]
       const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-      const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
+      const cmpSimd = cmpOp && cond.length === 3 ? laneCompare(ctx, cmpOp, cond[1], cond[2]) : null
       const intMask = cmpSimd ? null : liftIntMask(cond, ctx)
       if (!cmpSimd && !intMask) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
       const x = liftExprV(expr[1], ctx); if (ctx.fail) return null
@@ -868,7 +921,7 @@ export function liftExprV(expr, ctx) {
     // f32 lane: operands were promoted, so the compare is `f64.*` — use its f32x4 form
     // (operands are exact f32→f64 promotions, so the lane comparison is unchanged).
     const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-    const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
+    const cmpSimd = cmpOp && cond.length === 3 ? laneCompare(ctx, cmpOp, cond[1], cond[2]) : null
     const intMask = cmpSimd ? null : liftIntMask(cond, ctx)
     if (!cmpSimd && !intMask) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
     const ca = intMask ? null : liftExprV(cond[1], ctx); if (ctx.fail) return null
