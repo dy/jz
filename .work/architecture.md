@@ -71,7 +71,7 @@ Rules for every change here:
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
-| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | |
+| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | Measured, not started in code: nine programs answer wrongly at levels 2 and over, in 1.0.2 too, and the special recognizers hold 60% of the lifts. Three steps: 6a one legality for every lift (briefed, `.work/phase-6a-legality.md`), 6b the loop's facts from the emitter and the forms the scaffold refuses, 6c lowerings chosen by cost. See "Phase 6 measured before it was designed" |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
 | 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | |
@@ -854,6 +854,65 @@ skipped), 76, 76 and 79 at the default, level 0, level 3 and wasi; test262 4,120
 failing; the core suite in one process 7,328. All passing. Five and three quarter
 hours, the hosted suite 81 minutes of it.
 
+## Phase 6 measured before it was designed (2026-11-12)
+
+Three measurements on d50ccbfbf, then the design. The scout's reports are
+`.work/maps/vectorize.md`, `vectorize-leads.md`, `vectorize-census.md`.
+
+**The lifts are not sound.** Nine plain programs answer differently from Node at levels
+2, 3 and `speed`, and right with the vectorizer off; the published 1.0.2 answers the same
+nine wrongly (run on both trees by the integrator). A local read after a reduction
+(`d = a[i] * 2; s = s + d * d`, then `s + d`); `a[63 - i] = a[i]` in place;
+`a[2 * i + 2] = a[2 * i] + 1`; a store under a condition beside a ramp; `(a[i] * a[i])
+>> 16` into bytes; a counter stepped twice; a conditional arm's first store; a scalar an
+outer pixel loop rewrites. The programs are whole in `vectorize-leads.md`. An alias
+battery written the same day (two views of one buffer, 28 unit-step kernels, five
+element types, 450 programs, 596,700 checks) found 0: it held no kernel shaped like the
+nine, and the integrator told the owner "sound" on it before the scout's report came. A
+battery proves its shapes, not the pass.
+
+**The cause is one.** Legality is each recognizer's own: beside the shared helpers the
+scout counts 4 private exit matchers, 4 step matchers, 9 address matchers, 8 write
+censuses, 6 first-access classifiers, 5 alias tests and 5 lift bodies. The gate every
+lift passes (`gateStrips`) tests two bases and skips two sites on one base as "the lift's
+own dependence test"; six of the thirteen recognizers have none. Seven steps never ask
+what the continuation reads.
+
+**What the recognizers hold.** 589 loops lifted at `speed`, 425 at level 2, over 423
+units (105 bench cases, 83 example kernels, the perf corpus, the spellings). 341 of the
+589 have one possible taker. With only the bulk copy and the general map, stencil and
+reduce, 350 of 587 lose their lift (`tryVectorize` 185, `tryStencil` 118). With the
+general three moved to the front, 157 loops change taker, none is lost and three units
+change bytes. Timed on 54 bench cases: alpha 10x from the ramp, blur 4.3x from the
+channel reduce, hsl 4.7x and hwb 3.7x from `tryVectorize`, conv2d 2.9x from the outer
+strip.
+
+**What ordinary loops get nothing** (the alias battery's kernels, 178 of 450 lifted at
+`speed`, 5 at `size`): a bound of `i + 1 < n` and the three-point stencil with it; a
+descending loop; a step of 2; a counter or a local read after the loop; a load the store
+may change; `min` and a conditional minimum; a ternary over integers; integer sums and
+dot products. The spelling gate lists the descending loop (4 cells) and two counters at
+`speed` (1 cell, the loop arrives unrolled by two). These are the scaffold refusing a
+form (`matchBlockLoop`: one exit form, a unit ascending step, the step last), not a
+limit of legality.
+
+**The design, corrected by the numbers.** The reading before the census was that the
+special recognizers collapse onto the general map, stencil and reduce. The ablation
+refutes it: they hold 60% of the lifts. The order of the chain, though, holds almost
+nothing. So:
+
+- 6a (`.work/phase-6a-legality.md`): one legality for every lift, a function of the
+  scalar loop: a dependence test over every pair of sites, one base or two; one account
+  of the locals the loop writes; each private lift held to what the shared lifter
+  refuses. The nine fixed by class, the thirty leads run down, a population of
+  dependence-shaped loops in the generated suite. No byte moves but where a lift was
+  wrong.
+- 6b: the loop's facts (induction, bound, steps) from the emitter's own, not matched
+  back out of WAT, and the forms above lifted through them: the coverage table is its
+  gate beside the spelling gate.
+- 6c: the recognizers become lowerings of a loop the legality has passed, chosen by
+  cost; the private re-derivations and the fixed-order chain go.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -876,6 +935,8 @@ hours, the hosted suite 81 minutes of it.
   ordinary code answers wrong; the rest is listed here with its smallest source and
   left to the phase that rebuilds its ground (the owner, 2026-11-12: no time on what a
   later phase replaces).
+- Phase 6 keeps the recognizers as lowerings and makes legality one (the integrator,
+  2026-11-12, on the ablation). Soundness comes first, as its own landing.
 
 ## Open questions
 
