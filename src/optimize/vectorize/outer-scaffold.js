@@ -186,3 +186,54 @@ export function rampPixelIV(pivType, piv) {
     : ['f64x2.replace_lane', 1, ['f64x2.splat', ['f64.convert_i32_s', ['local.get', piv]]], ['f64.convert_i32_s', ['i32.add', ['local.get', piv], ['i32.const', 1]]]]
 }
 
+// Pivot-stride analysis for the multi-pixel lifts (blur-channel.js, the convolution column of
+// outer-strip.js): one vector load at the address for pixel `pivot` holds its neighbours'
+// elements only when consecutive pixels read consecutive source elements: the address must
+// advance by EXACTLY its element stride per pivot step (4 bytes an RGBA pixel, 1 a byte tap). Build, in
+// program order, each local's value-delta per unit-pivot increment (`pivot` → 1, every
+// other local → its assigned expr's delta, unknown/outer locals → 0 = pivot-invariant).
+// `delta(e)` returns that constant byte-delta, or null when the dependence is non-
+// constant (e.g. x*k) or uses an op we don't model — both of which must bail.
+// Index arithmetic is often f64-lowered (JS number `*`): `(yi*ww + x)` becomes
+// `(f64(yi)*ww + f64(x)) |0` = trunc_sat with a NaN-guard `select`. We model those
+// passthrough/arith ops too, so a runtime-dimension vblur (x carried through f64)
+// analyses the same as a literal-dimension one (x in plain i32). The select is the
+// `|0` coercion (value branch when the index is finite — always so for an integer
+// array index); we take the value branch's delta. Multiplies need a compile-time
+// constant factor on the pivot-bearing side (else the stride isn't constant).
+export function buildPivotCoeff(loopNode, pivot) {
+  const coeff = new Map([[pivot, 1]])
+  const cval = (n) => isI32Const(n) ? constNum(n) : (isArr(n) && n[0] === 'f64.const' && n[1] != null ? Number(n[1]) : null)
+  const delta = (e) => {
+    if (isI32Const(e)) return 0
+    if (isLocalGet(e)) return coeff.has(e[1]) ? coeff.get(e[1]) : 0
+    if (!isArr(e)) return null
+    const [op, a, b] = e
+    switch (op) {
+      case 'i32.add': case 'f64.add': { const x = delta(a), y = delta(b); return x == null || y == null ? null : x + y }
+      case 'i32.sub': case 'f64.sub': { const x = delta(a), y = delta(b); return x == null || y == null ? null : x - y }
+      case 'i32.shl': { const c = cval(b), x = delta(a); return c == null || x == null ? null : x << c }
+      case 'i32.mul': case 'f64.mul': {
+        const ca = cval(a), cb = cval(b), x = delta(a), y = delta(b)
+        if (x == null || y == null) return null
+        if (ca != null) return ca * y          // const × expr
+        if (cb != null) return cb * x          // expr × const
+        return x === 0 && y === 0 ? 0 : null    // var × var: pivot-dependent ⇒ non-constant
+      }
+      // value-preserving conversions: passthrough. `local.tee $v EXPR` yields EXPR.
+      case 'f64.convert_i32_s': case 'f64.convert_i32_u': case 'i64.trunc_sat_f64_s':
+      case 'i64.trunc_sat_f64_u': case 'i32.wrap_i64': case 'i64.extend_i32_s':
+        return delta(a)
+      case 'local.tee': return delta(b)
+      // the `(expr)|0` NaN/Inf-guard `select(value, 0, finite?)`: take the value branch
+      // (the index is a finite integer in any real blur). Only when the else-branch is
+      // the const-0 guard — a general ternary index whose arms differ in stride bails.
+      case 'select': return isI32Const(e[2]) && constNum(e[2]) === 0 ? delta(a) : null
+      default: return null                     // any other op (and/or/div/…) ⇒ unanalyzable
+    }
+  }
+  walkAst(loopNode, { enter: n => {
+    if (isArr(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') coeff.set(n[1], delta(n[2]))
+  } })
+  return delta
+}

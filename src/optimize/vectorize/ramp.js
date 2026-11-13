@@ -130,6 +130,20 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
       localKind.set(name, 'invariant')
     }
   }
+  // The lift keeps every address as written, lane 0's: a local an address reads must hold its
+  // scalar there. A tee inside an address sets it as the address runs; a lane local's set
+  // (`const j = i; o[j] = …`) fills only its vector shadow, and the address would read j stale.
+  const sets = new Map(), addrSets = new Map(), addrReads = new Set()
+  const count = (m, k) => m.set(k, (m.get(k) || 0) + 1)
+  for (const s of body) walkAst(s, { enter: n => {
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') count(sets, n[1])
+    if (!LOAD_OPS[n[0]] && !STORE_OPS[n[0]]) return
+    walkAst(n[1], { enter: a => {
+      if (a[0] === 'local.get') addrReads.add(a[1])
+      else if (a[0] === 'local.tee' && typeof a[1] === 'string') count(addrSets, a[1])
+    } })
+  } })
+  for (const name of addrReads) if (name !== ivName && sets.has(name) && sets.get(name) !== addrSets.get(name)) return null
 
   // Lift. lane type is always i32 (the ramp and all narrow stores compute in i32).
   const newLanedLocals = new Map()

@@ -176,6 +176,89 @@ export let f = () => {
 }`)
 })
 
+// An address the lift keeps as written, lane 0's, reading what only lane 0 holds: the ramp's
+// copy of the counter, a convolution tap strided, reversed or scaled, a store or a local the
+// convolution's setup computes once for eight pixels.
+test('vector legality: addresses', () => {
+  agree("L-R4-a copy of i used as index and data", `const o = new Uint8Array(64), p = new Uint8Array(64), s = new Uint8Array(64)
+export let f = () => {
+  for (let i = 0; i < 64; i++) { const j = i; o[j] = (j * 5) & 255 }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + o[i] + p[i]) % 1000003; return h }`)
+  agree("L-R4-e pure ramp with lane temps feeding address copy", `const o = new Uint8Array(64), p = new Uint8Array(64), s = new Uint8Array(64)
+export let f = () => {
+  for (let i = 0; i < 64; i++) { const j = i; const t = (j * 7) & 255; o[j] = t }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + o[i] + p[i]) % 1000003; return h }`)
+  agree("L-R4-f copy of i, widening u8 map", `const o = new Uint8Array(64), p = new Uint8Array(64), s = new Uint8Array(64)
+export let f = () => { for (let i = 0; i < 64; i++) s[i] = (i * 37 + 11) & 127
+  for (let i = 0; i < 64; i++) { const j = i; o[j] = (s[j] * 3) & 255 }
+  let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + o[i] + p[i]) % 1000003; return h }`)
+  agree("OS-6-a-stride2", `
+
+const inp = new Int8Array(4096), wt = new Int8Array(64), out = new Int32Array(4096)
+export let f = () => {
+  for (let i = 0; i < 4096; i++) inp[i] = (i * 37 + 11) & 255
+  for (let i = 0; i < 64; i++) wt[i] = (i * 91 + 5) & 255
+  
+  for (let ox = 0; ox < 256; ox++) {
+    let acc = 0; for (let kx = 0; kx < 4; kx++) acc += inp[ox * 2 + kx] * wt[kx]; out[ox] = acc
+  }
+  
+  let h = 0; for (let i = 0; i < 256; i++) h = (Math.imul(h, 31) + out[i]) | 0; return h
+}`)
+  agree("OS-6-c-reverse", `
+
+const inp = new Int8Array(4096), wt = new Int8Array(64), out = new Int32Array(4096)
+export let f = () => {
+  for (let i = 0; i < 4096; i++) inp[i] = (i * 37 + 11) & 255
+  for (let i = 0; i < 64; i++) wt[i] = (i * 91 + 5) & 255
+  
+  for (let ox = 0; ox < 256; ox++) {
+    let acc = 0; for (let kx = 0; kx < 4; kx++) acc += inp[1000 - ox + kx] * wt[kx]; out[ox] = acc
+  }
+  
+  let h = 0; for (let i = 0; i < 256; i++) h = (Math.imul(h, 31) + out[i]) | 0; return h
+}`)
+  agree("OS-6-e-mulvar", `
+
+const inp = new Int8Array(4096), wt = new Int8Array(64), out = new Int32Array(4096)
+export let f = () => {
+  for (let i = 0; i < 4096; i++) inp[i] = (i * 37 + 11) & 255
+  for (let i = 0; i < 64; i++) wt[i] = (i * 91 + 5) & 255
+  const s = 3
+  for (let ox = 0; ox < 256; ox++) {
+    let acc = 0; for (let kx = 0; kx < 4; kx++) acc += inp[ox * s + kx] * wt[kx]; out[ox] = acc
+  }
+  
+  let h = 0; for (let i = 0; i < 256; i++) h = (Math.imul(h, 31) + out[i]) | 0; return h
+}`)
+  agree("OS-6-f-storebefore", `
+const side = new Int32Array(4096)
+const inp = new Int8Array(4096), wt = new Int8Array(64), out = new Int32Array(4096)
+export let f = () => {
+  for (let i = 0; i < 4096; i++) inp[i] = (i * 37 + 11) & 255
+  for (let i = 0; i < 64; i++) wt[i] = (i * 91 + 5) & 255
+  
+  for (let ox = 0; ox < 256; ox++) {
+    side[ox] = ox + 1; let acc = 0; for (let kx = 0; kx < 4; kx++) acc += inp[ox + kx] * wt[kx]; out[ox] = acc
+  }
+  for (let i = 0; i < 256; i++) out[i] = out[i] + side[i]
+  let h = 0; for (let i = 0; i < 256; i++) h = (Math.imul(h, 31) + out[i]) | 0; return h
+}`)
+  agree("OS-6-g-derivedlocal", `
+
+const inp = new Int8Array(4096), wt = new Int8Array(64), out = new Int32Array(4096)
+export let f = () => {
+  for (let i = 0; i < 4096; i++) inp[i] = (i * 37 + 11) & 255
+  for (let i = 0; i < 64; i++) wt[i] = (i * 91 + 5) & 255
+  
+  for (let ox = 0; ox < 256; ox++) {
+    const q = (ox * 3) | 0; let acc = 0; for (let kx = 0; kx < 4; kx++) acc += inp[ox + kx] * wt[kx]; out[ox] = acc + q
+  }
+  
+  let h = 0; for (let i = 0; i < 256; i++) h = (Math.imul(h, 31) + out[i]) | 0; return h
+}`)
+})
+
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted
 // (its own function's WAT holds a vector op) and answering what Node answers. A load one ahead
 // of its store, an element in place, a store a pixel and a half ahead, a load a pixel ahead, a

@@ -1,8 +1,8 @@
 import { walkAst, cloneNode } from '../../ast.js'
-import { isI32Const, isLocalGet, matchIncN } from './addr-model.js'
+import { hasSideEffect, isI32Const, isLocalGet, matchIncN } from './addr-model.js'
 import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
-import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
+import { CMP_LANE, buildPivotCoeff, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
 import { tryPerPixelColor } from './per-pixel-color.js'
 import { matchBlockLoop, stripBlock } from './scaffold.js'
 
@@ -425,6 +425,9 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   for (const s of obody) walkAst(s, { enter: collectSets })
   for (let changed = true; changed;) { changed = false; for (const [name, rhs] of allSets) if (!oxDep.has(name) && [...oxDep].some(d => readsVar(rhs, d))) { oxDep.add(name); changed = true } }
   const isGatherAddr = (addr) => [...oxDep].some(d => readsVar(addr, d))
+  // The eight lanes of one 8-byte load are the gathers of pixels ox … ox + 7 only where the
+  // address steps one byte a pixel (`inp[ox * 2 + k]` steps two, `inp[w - ox]` back one).
+  const pixelDelta = buildPivotCoeff(loopNode, pxVar)
 
   // A byte tap operand: convert_i32_{s,u}(i32.load8_{s,u}(addr)). Returns { load, addr, signed }.
   const matchByteLoad = (n) => {
@@ -449,7 +452,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (!a || !b) return null
     const ag = isGatherAddr(a.addr), bg = isGatherAddr(b.addr)
     const g = ag && !bg ? a : bg && !ag ? b : null            // exactly one per-pixel gather
-    if (!g) return null
+    if (!g || pixelDelta(g.addr) !== 1) return null
     const inv = g === a ? b : a
     // A product of two unsigned bytes reaches 255 · 255, past an i16 lane.
     if (!a.signed && !b.signed) return null
@@ -505,6 +508,8 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
       laneCompute.push(...accStmts(prod)); continue
     }
     if (readsVar(s, accName)) return null                       // scalar setup must not touch acc
+    // (it runs once for the eight pixels, lane 0's: it may compute their gathers, nothing more)
+    if (hasSideEffect(s)) return null
     laneCompute.push(s)
   }
 
@@ -514,6 +519,9 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const findStore = n => { if (STORE_OPS[n[0]]) hasStore = true }
   for (const s of epilogue) walkAst(s, { enter: findStore })
   if (!hasStore) return null
+  // The epilogue runs per pixel: what it reads the loop writes must be the pixel's own, the
+  // column sum, a pixel counter or its own work, never a value the setup computed for lane 0.
+  if (!epilogueIsSafe(epilogue, loopNode, new Map([[accName, true]]), pivType)) return null
   const epiLane = (k) => [
     ['local.set', accName, ['f64.convert_i32_s', ['i32x4.extract_lane', k & 3, ['local.get', k < 4 ? loV : hiV]]]],
     ...epilogue.map(s => bumpPixelIV(pivType, s, k)),
