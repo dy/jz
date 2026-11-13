@@ -71,7 +71,7 @@ Rules for every change here:
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
-| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | Measured, not started in code: nine programs answer wrongly at levels 2 and over, in 1.0.2 too, and the special recognizers hold 60% of the lifts. Three steps: 6a one legality for every lift (briefed, `.work/phase-6a-legality.md`), 6b the loop's facts from the emitter and the forms the scaffold refuses, 6c lowerings chosen by cost. See "Phase 6 measured before it was designed" |
+| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Next, ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter). Then 6b the loop's facts from the emitter (briefed, `.work/phase-6b-loop-facts.md`), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
 | 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | |
@@ -913,6 +913,236 @@ nothing. So:
 - 6c: the recognizers become lowerings of a loop the legality has passed, chosen by
   cost; the private re-derivations and the fixed-order chain go.
 
+## CI of d50ccbfbf, read whole (2026-11-13)
+
+`pages`, `examples-perf`, `test262`, `self-compile` green: `self-compile` was red from 2c
+to this push. `test`: fuzz, default, level 0, level 3 and wasi green; `claims` red as
+before the takeover (the reference evidence lacks cases, is stale and was measured under
+swap: the owner's reference run). `bench`: 319 of 320, the one failing the Porffor
+evidence check (alpha 13 committed, alpha 19 required: the same run); the size gate that
+was red since the eight fixes passes.
+
+One thing the count does not show. Inside `npm run test:bench` the examples gate
+(`examples/bench.mjs`: geomean over 1 and every gated example at 0.9x of V8 or better)
+exits non-zero on CI's bench runner and no test fails for it: `okTiming`
+(`test/bench.js:234`) prints a timing assertion as "informational on CI". On this push:
+ulam 0.84x, lenia 0.75x, rfft 0.45x. It is not of the takeover: 32cc7697b (2026-11-06)
+printed lenia 0.84x and rfft 0.46x, and the eight runs read between print rfft at 0.29x
+to 0.47x every time, lenia at 0.73x to 0.90x. The other workflow (`examples-perf`,
+`examples/bench-pages.mjs`, whole pages on three machines) has ulam at 1.20x to 1.55x and
+lenia at 1.04x to 1.48x on the same commit. So either the bench runner's CPU loses where
+the others win, or the frame harness measures what the page harness does not. Open: not
+run down. The comment over the gate says a demo's regression "trips CI, not a user"; on
+CI it trips nothing.
+
+## 6a landed: one legality for every vector lift (2026-11-13)
+
+Eight commits of the writer (6ae8ff1f1 to 07da84014, `.work/phase-6a-legality.md`) and
+three of the integrator's review (21112c9aa, dc4858fbc, cdc3b0711).
+
+**The legality** is `src/optimize/vectorize/legality.js`, `legal(r, node, liveAfter,
+env)`, called by `index.js` on every chain lift, every retry on rewritten counters and
+the paired iterations; the prefilter, which has no strip, passes its locals and its
+count through the same two checks. It takes the lift (its strips from the scaffold's
+registry and what the recognizer declares on its result), the scalar loop, and what the
+continuation reads (an exact scan: an `if`'s other arm is no continuation, a write on
+both arms kills). Three parts:
+
+- Memory (`alias.js gateStrips`, now over two sites of one base too). A constant
+  distance is held to the order a strip runs the sites in: with A before B in the
+  body, B of iteration j - k touching what A of j touches, 0 < k < the strip, is the
+  reversal and declines; every other constant distance is kept (`a[i] = a[i + 1] * 2`
+  stays lifted). Any other distance on one base takes the run-time test two bases
+  already had. A lift that versions its own one-base distances says `versioned` (the
+  general map and stencil), one that runs statements lane by lane in the loop's order
+  says `inOrder` (an outer strip's epilogue).
+- Locals (`localsHold`). Every local the loop writes is an induction (a strip's counter
+  or one the lift names, written once, at the top level, as `x = x + step`), private to
+  an iteration (written before read on every path, not read after), a reduction the
+  lift declares, or one it declares landed. Anything else declines; a recognizer that
+  says nothing lifts no loop with a carried or live-out local.
+- Iterations (`countsSigned`). A loop that leaves on `i <u bound` opens its strips only
+  behind `i >= 0 && bound >= 0`, where the signed count the strip keeps is the loop's.
+
+What each recognizer declares: `tryVectorize` its flag landings; the general map its
+secondary counters and `versioned`; both reduce tiers their accumulators; the general
+stencil `versioned`; the gather map and the prefilter what their scalar parts write;
+the divergent escape, the per-pixel colour and the three outer strips their pixel
+counters and the epilogue `inOrder`; the paired iterations their counters; the bulk copy
+and the channel sums `ordered` (they keep the loop's order of every effect and answer
+for themselves).
+
+**The nine** by class: W7 to W9 the dependence test; W1, W2 and W6 the account of
+locals; W3 and W5 a store under a condition (the shared if-store declines a store whose
+width is not the lane's, the tone map an arm with a store before its last); W4 a shift
+in a narrow lane (a constant count below the lane's width). **The leads**: 15 programs
+of the straight-line packer (a zero sum's sign, a load the low store may write, a second
+dot reading the first's output, an accumulator read past the pair, a kept addend
+rewritten, `s += s * y` hoisted, a -0 reset), a counter bumped mid-body, an address
+through a copy of the counter, u8 x u8 taps in 16-bit lanes, a strided or reversed tap,
+ten of the channel sums, a pixel local read after, the prefilter and four others under
+an unsigned exit: all wrong on base, fixed, pinned in `test/vector-legality.js`. Four
+leads answer right, with the check named; eight are unreachable from source, with the
+reason (the writer's report; not re-derived by the integrator).
+
+**What it cost.** One loop lost its lift: `bench/spmv`'s rows, whose lift was wrong (see
+below). Takers over the 423 units: 424 to 423 at level 2, 589 to 588 at speed, no other
+taker moved. Bench bytes by hash: spmv at speed alone (6,458 to 6,264); the census
+units: `examples/rfft` (+63, +64: its cepstrum mirror behind a run-time test) and
+`bench/mat4` at level 2 (+58: its dot pairs' +0 seed). The hosted compiler 36,627,017 to
+36,735,135 bytes (+0.30%, the writer's build). Compile time: within noise on
+stdlib-special, stdlib-dists and decode-wav; webaudio +0.6% in 6 of 8 paired rounds,
+with the vectorizer's own inclusive time unchanged in a profile (628 ms of 54 s): cause
+not located, listed.
+
+**Not reached.** "One check where one serves": five private alias tests stay
+(`aliasGuards`, the stencil's in-place gate, the bulk copy's overlap test, the paired
+iterations' roots, the gather map's distinct parameters): removing each made new lifts
+or moved bytes, which is 6c's to weigh. `tone-map.js`'s header still says "gated".
+
+## Found reviewing 6a (2026-11-13)
+
+The integrator's populations, written without reading the writer's tests, each program
+against Node at six levels.
+
+- 683 dependence-shaped loops (two sites of one base in either statement order at
+  distances around a strip, stencils and records in place, what a loop leaves in a local
+  or a global, ramps, arms, exits, outer loops, straight lines, one function over arrays
+  apart or one): base answers 16 wrongly, the landed tree none.
+- 1,000 programs of narrow-element arithmetic (48 expressions over seven integer element
+  types and twelve mixed triples, eleven reductions): base answers 11 wrongly.
+  - **A comparison in a narrow lane** (dc4858fbc). A store into a `Uint8ClampedArray`
+    clamps by `v < 0` and `v > 255` on the word; the lift compared byte lanes signed, and
+    `b[i] = a[i] & c[i]` stored 0 for every byte past 127. A comparison lifts to a byte
+    or 16-bit lane only where both operands fit it under one reading (`lift.js
+    laneCompare`). No census unit's bytes move.
+  - **A uint32 divided as a signed word** (cdc3b0711), no fault of the vectorizer:
+    `((x >>> 0) / 3) | 0` was -715827882 at x = 2^31, at levels 2 and over and at size,
+    for a `Uint32Array` element, `x >>> 0` and a local holding one; `u[i] % n` by a
+    runtime divisor the same at every level. 53 of 135 programs.
+  - Not a defect: `(u * v) | 0` of two uint32 whose product reaches 2^63 is -1 at every
+    level, the README's "Bitwise operands under 2^63". The integrator listed it to the
+    owner as a defect before reading the README; a grep that finds nothing is not a
+    reading. The same of float sums: a scout reported sums, dots and products
+    over a Float64Array differing from Node in the last digits at levels 2 and over as
+    undocumented; the README's "Float sums in lanes" covers it, though it says "two
+    lanes" where `speed` runs four accumulators of two and a product is reassociated
+    as a sum is (phase 10).
+- **An assignment's value** (21112c9aa), found by the writer as a lead it could not
+  place: `if (t = x === 3 || x & 1)` took the false arm when t became true, `(t = …) +
+  10` was NaN, at every level, for a local, a module binding, a captured one, a field, an
+  element. `VT['=']` called a Boolean beside a Number a Number. 30 of 42 programs. Open:
+  `(f64[1] = (x === 3 || x & 1)) === true`.
+
+All three, and the nine, are in the published 1.0.2.
+
+**bench/spmv was measured on wrong code.** The outer strip summed the even row's range
+of nonzeros for both rows of a pair: every odd row of `y` was wrong at levels 2 and
+over, in 1.0.2 too (`rowPtr[r] .. rowPtr[r + 1]` taken at the first row for both). The
+bench's checksum reads every 256th 32-bit word of `y`, which falls on even rows, and
+agreed with Node's. Scalar, as written, the kernel takes 1.87 ms against the wrong
+lift's 1.08; in six paired rounds on the M4 it still leads every wasm producer and both
+JS engines (AssemblyScript 2.38 ms, bun 2.66, V8 3.34, C to wasm 5.93; native C 1.69).
+The checksum is the bench's and is not touched here: a checksum that samples cannot
+hold a parity claim, and the other cases' are not audited.
+
+**Left to the later steps**, from what 6a declined. For 6b: a local read after the loop
+landed by a last scalar iteration; an in-place mirror versioned at its midpoint. For
+6c: an outer strip whose rows have their own ranges (spmv: equal trip counts tested at
+run time, each lane its own index); a clamped store as a saturating narrow from wider
+lanes, where today a clamp declines; the comparisons through a lane local of several
+definitions.
+
+## The landing of 6a: the battery (2026-11-13)
+
+Eleven commits on 6beb3dc53, landed together: the writer's eight (6ae8ff1f1 to
+07da84014) and the review's three (21112c9aa, dc4858fbc, cdc3b0711). On the last of
+them, one leg at a time: `lint:imports` and `audit:files` clean; bench bytes by hash 1
+of 105 moved (spmv at `speed`, 6,458 to 6,264: the lift that was wrong, gone); the
+invariants leg (level 3, the facts guard on) 7,142; core 7,343; `test:bootstrap --
+--full`, its five parts (round trip, kernel parity, checkpoint, the hosted suite,
+recursive); level 0 7,126; level 3 7,140; wasi 7,215; generated 69; the integration
+suite 224 (1 skipped), 76, 76 and 79 at the default, level 0, level 3 and wasi; test262
+4,120 and 0 failing; the core suite in one process 7,343. All passing. Five hours and
+thirty-five minutes, the hosted suite 76 minutes of it.
+
+The battery had no timing leg, and a gate that fails nothing on CI (above) was not seen
+by it either. After it, the examples benchmark (`examples/bench.mjs`) on the base and the
+landing tree, alternated twice on the M4: no example's jz time moved past 2.4% (rfft
+14.8 us and 14.9, 0.64x of V8 on both; geomean 1.60x). The benchmark is a leg of the
+battery from here, compared against the base's run.
+
+## The loop's facts, measured for 6b (2026-11-13)
+
+A second scout (Sonnet 5.5) on cdc3b0711, read-only: `.work/maps/loop-facts.md` (what
+the emitter knows of a loop and what reaches the optimizer), `loop-refused.md`
+(seventeen loop forms, the first check that refuses each), `loop-census.md` (the
+refusals over the 423 units at `speed`). Leads, not facts.
+
+- The emitter's link per loop (`compile/emit/control-flow.js`, `loop-model.js
+  loopFacts`) carries the counter, its hull, the step's magnitude and the bound's range;
+  the start, the bound's shift, the step's sign and the exit comparison are computed and
+  dropped. It has three readers, not the two 6a's brief named: the vectorizer (the
+  counter's name, and an assertion) and `optimize/peephole.js:577-596` (hull and step).
+- Of 5,159 loops of user code with a load or a store, 1,318 have no scaffold. What an
+  emitter fact would reach: a counter still an f64 where the vectorizer runs (252
+  loops), a descending step (138), a constant step other than 1 (68), `<=` (20), a step
+  by an invariant (8). What is a lowering's to gain (6c): a call in the body (1,241), a
+  nested loop (604), the general map's decline (513, of which 298 a store's width
+  differing from its load's), a call with no lane mapping (244), a carried local (325).
+- `legal()` refused no lift in the corpus: 6a costs coverage nothing but spmv's rows.
+- The two-counter loop reaches the vectorizer unrolled by two at `speed`
+  (`compile/loop-recurrence.js stepOf` does not read the normalized `++k`).
+
+The brief is `.work/phase-6b-loop-facts.md`. It waits on the counter widths (below),
+which change its largest row.
+
+## The examples gate: rfft below V8 since October (2026-11-13)
+
+The owner asked for the examples gate's failures to be chased unless a later phase rules
+them out (the gate prints them on CI and fails nothing: "CI of d50ccbfbf, read whole").
+Measured on the M4 with `examples/bench.mjs`'s own protocol for one example, V8's time
+9.6 to 10.1 us in every run:
+
+| commit | date | jz, us | against V8 |
+|---|---|---:|---:|
+| 910a162d2 | 2026-06-15 | 5.10 | 1.89x |
+| 167343490 | 2026-08-01 | 6.88 | 1.40x |
+| f40a2a191 | 2026-09-15 | 7.15 | 1.39x |
+| 3b61c97ef | 2026-09-21 | 8.04 | 1.22x |
+| a2bb0b975 | 2026-09-27 | 9.51 | 1.02x |
+| e88a8e907 | 2026-10-01 | 9.36 | 1.04x |
+| 2c842394d | 2026-10-01 | 11.73 | 0.83x |
+| b30443c4f | 2026-10-01 | 16.50 | 0.59x |
+| v1.0.0, v1.0.2 | 2026-11-02, 03 | 16.3, 16.1 | 0.62x, 0.61x |
+| d50ccbfbf | 2026-11-12 | 15.5 | 0.65x |
+
+The example's source has not changed since May. The cliff is two soundness fixes of one
+day: 2c842394d ("prove counter widths and preserve full Number loop bounds") and
+b30443c4f ("Require true width bounds for index-local storage"). Both removed an
+unsound assumption that a local used as an index is a word. In `transform` (the
+split-radix butterflies: `while (i0 < N) { … i0 += id }`, `N` a module binding set from
+a parameter, `id` stepped by `id *= 4` and `id << 2` in the loop around, eight indices
+`i0 + j + 1`, `i1 + n4` … derived per trip) the index locals went from i32 to f64:
+`trunc_sat` 8 to 163, `f64.lt` 0 to 51, f64 locals 21 to 52. The fixes were right; the
+inference that should have replaced the assumption does not reach these loops: a while
+whose counter starts outside its head and steps by a name the loop around it writes
+gets no hull (`loop-model.js loopFacts`) and no integer copy
+(`compile/plan/integral-loops.js`, whose cursors step by literals). The slower drift
+before the cliff (5.1 us in June to 9.4 at the end of September) is spread over many
+commits and is not bisected.
+
+It is one root with the vectorizer's largest refusal an emitter fact would lift (252
+loops whose counter is still an f64: webaudio 40, dwa 19, stdlib-special 14). No later
+phase replaces it: it is a step of its own, before 6b, which then reads a counter that
+is a word. Its gates: the examples gate passes on the M4 (rfft at 0.9x of V8 or better,
+the aim above it), the census's f64-counter row drops, no source of a bench or an
+example changes, and every byte that moves is timed.
+
+ulam and lenia, the gate's other two on CI (0.84x, 0.75x on the x64 bench runner), pass
+on the M4 (1.34x, 1.32x) and in `examples-perf`'s page harness on all three runners:
+not reproduced here, needs x64 runs.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -937,6 +1167,11 @@ nothing. So:
   later phase replaces).
 - Phase 6 keeps the recognizers as lowerings and makes legality one (the integrator,
   2026-11-12, on the ablation). Soundness comes first, as its own landing.
+- Counter widths are a step of their own ahead of 6b (the owner, 2026-11-13: the
+  examples gate's failures are chased unless a later phase rules them out; none does,
+  and rfft's cliff is one root with the vectorizer's largest emitter-fact refusal).
+- The landing battery times: the examples benchmark is a leg, compared against the
+  base's run. A gate that fails nothing on CI is read by the integrator, not trusted.
 
 ## Open questions
 

@@ -241,3 +241,14 @@ e31f723a5 worktree-agent-af27fe75514ac7432   the 5a agent's two commits as hande
 b8d12a2bd worktree-agent-a7a27ad570fcecfee   the census scout's tree, land-c's tip with no commit of its own; its reports were session scratch, the plan's section on the index holds what was kept
 6e641dbde land-nk                            the node-keys landing branch, an ancestor of main
 ```
+
+## Branches of the 6a landing (2026-11-13), tips before deletion
+
+```
+cdc3b0711 land-e                             the landing branch: the writer's eight commits and the review's three on 6beb3dc53, the tree the battery ran on; the notes commit above it; an ancestor of main
+6beb3dc53 land-d                             main before 6a: the base of the populations, the census, the bench bytes and the examples timing
+07da84014 worktree-agent-a70ba6383107b4dac   the 6a writer's eight commits as handed back, on 6beb3dc53; landed as they are
+93f880b86 fix-udiv                           the uint32 division fix on 21112c9aa, built beside the review run; landed as cdc3b0711 (cherry-picked)
+d50ccbfbf worktree-agent-a874443978e8f17a0   the first vectorizer scout's tree, no commit of its own; its instrumentation was session scratch, its reports are `.work/maps/vectorize*.md`
+cdc3b0711 worktree-agent-af1e6a4d36ea469c7   the loop-facts scout's tree, no commit of its own; its instrumentation was session scratch, its reports are `.work/maps/loop-*.md`
+```
