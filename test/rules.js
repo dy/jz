@@ -210,7 +210,7 @@ for (const row of TABLE) {
       const any = rewriteBy(free, clone(tree))
       if (Array.isArray(any)) refused.push([params, result, tree, any])
     }
-    ok(admitted.length > 0, `${name}: no instance on the grid is admitted`)
+    ok(admitted.length > 0, `${name}: ` + (admitted.length ? 'instances on the grid admitted' : 'no instance on the grid admitted'))
     const helpers = match[0] === 'call' ? RUNTIME : [], count = counts()
     const ex = instantiate(admitted, helpers)
     for (let i = 0; i < admitted.length; i++) {
@@ -252,7 +252,7 @@ const code = (name, relation, pass, params, result, bodies, opts = {}) => test(`
     if (printTree(after) === printTree(body) && printTree(decls) === printTree(locals)) continue
     pairs.push([params, result, body, after, locals, decls, label])
   }
-  ok(pairs.length > 0, `${name}: no pattern rewritten`)
+  ok(pairs.length > 0, `${name}: ` + (pairs.length ? 'patterns rewritten' : 'no pattern rewritten'))
   const count = counts()
   if (result === null) {
     // (a body of stores: each side an instance of its own, its memory's two ends compared after each call)
@@ -567,6 +567,25 @@ for (const words of ['wide', 'add']) {
   tops.forEach((top, t) => code(`integer arithmetic of Numbers, ${['a Number', 'a wide truncation', 'a word truncation', 'a test'][t]}, words ${words} (narrowInts)`, EXACT,
     (fn) => narrowInts(fn, null, true, words), ['i32', 'i32'], t ? 'i32' : 'f64', Array.from({ length: 150 }, (_, i) => [`#${i}`, top(num(3))]),
     { locals: [['local', '$a', 'f64']], only: [I32.slice(0, 30), I32.slice(0, 30)] }))
+}
+// selectBits' running minimum: a minimum of values of no sign held as an integer, compared unsigned
+{
+  const steps = (valueOf, init) => {
+    const body = [['local.set', '$m', init]]
+    for (let i = 0; i < 4; i++) body.push(['local.set', '$d', valueOf(i)], ['local.set', '$m', ['select', ['local.get', '$d'], ['local.get', '$m'], ['f64.lt', ['local.get', '$d'], ['local.get', '$m']]]])
+    return ['block', ['result', 'f64'], ...body, ['local.get', '$m']]
+  }
+  const sq = (i) => ['f64.mul', g(i), g(i)]
+  code('a running minimum of values of no sign (selectBits)', EXACT, (m) => selectBits(m, { simd: true }), ['f64', 'f64', 'f64', 'f64'], 'f64', [
+    ['squares', steps(sq, f(Infinity))], ['magnitudes', steps((i) => ['f64.abs', g(i)], f(Infinity))], ['sums of squares', steps((i) => ['f64.add', sq(i), sq((i + 1) % 4)], f(Infinity))],
+    ['roots of squares', steps((i) => ['f64.sqrt', sq(i)], f(1e300))], ['plain values', steps((i) => g(i), f(Infinity))],
+  ], { module: true, locals: [['local', '$m', 'f64'], ['local', '$d', 'f64']], only: [F64, F64.slice(0, 12), F64.slice(0, 12), F64.slice(0, 12)] })
+}
+// narrowFloat32's locals: an f64 local written only exact f32s and read only by demotions, an f32 local
+{
+  const P = (i) => ['f64.promote_f32', g(i)]
+  const body = (op) => ['block', ['result', 'f32'], ['local.set', '$l0', P(0)], ['local.set', '$l1', [`f64.${op}`, ['local.get', '$l0'], P(1)]], ['f32.demote_f64', ['local.get', '$l1']]]
+  code('an f64 local of f32s (narrowFloat32)', NAN, narrowFloat32, ['f32', 'f32'], 'f32', ['add', 'sub', 'mul', 'div'].map(op => [op, body(op)]), { locals: [['local', '$l0', 'f64'], ['local', '$l1', 'f64']] })
 }
 // narrowFloat32: a float operation on promoted f32s, demoted, as the f32 operation
 {
