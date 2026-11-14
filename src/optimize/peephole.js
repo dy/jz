@@ -41,8 +41,10 @@ const BOOL_RESULT_OPS = new Set([
  * thresholds this chain is the loop-carried critical path, so that one cross roughly
  * doubles the per-step latency (V8 keeps the JS threshold entirely in the FP domain).
  *
- * `X - (B?1:0) ≡ (B ? X-1 : X) ≡ select(X-1, X, B)`  (likewise `+` → `select(X+1, X, B)`),
- * which never leaves the f64 domain. `select` evaluates BOTH arms, so X must be a
+ * `X - (B?1:0) ≡ (B ? X-1 : X) ≡ select(X-1, X, B)`, and `X + (B?1:0) ≡ select(X+1, X+0, B)`:
+ * `X + 0` is not X where X is -0, which it turns to +0 (`X - 0` is X for every X),
+ * so the add form keeps the add on its arm of no step. Neither leaves the f64
+ * domain. `select` evaluates BOTH arms, so X must be a
  * side-effect-free duplicable leaf (a `local.get`/const); B is the i32 condition,
  * evaluated once (exactly as the convert did). A pure win on latency-bound recurrences;
  * speed-gated (it adds a const + an arithmetic op — a size↔speed trade) — off at 'size'.
@@ -82,7 +84,7 @@ export function boolConvertToSelect(fn) {
       let X = null, B = null
       if (conv(n[2]) && isLeaf(n[1])) { X = n[1]; B = n[2][1] }
       else if (n[0] === 'f64.add' && conv(n[1]) && isLeaf(n[2])) { X = n[2]; B = n[1][1] }
-      if (X) return ['select', [n[0], cloneIR(X), ['f64.const', 1]], cloneIR(X), B]
+      if (X) return ['select', [n[0], cloneIR(X), ['f64.const', 1]], n[0] === 'f64.add' ? ['f64.add', cloneIR(X), ['f64.const', 0]] : cloneIR(X), B]
     }
     return n
   }

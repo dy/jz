@@ -2,7 +2,10 @@
 // answers at levels 0 to 3, size and speed:
 // - two shifts by constants, every pair of counts from a set with negatives and counts past the
 //   width, for each operator pair, on Numbers (a count taken mod 32) and on BigInts (a count of
-//   either sign and any size, the result wrapped to 64 bits: README, "BigInt is 64-bit").
+//   either sign and any size, the result wrapped to 64 bits: README, "BigInt is 64-bit");
+// - a Boolean as an addend or a subtrahend of a Number, written as a comparison, a ternary of
+//   1 and 0 and a local every write of which is a comparison (the speed tier's select), the
+//   Number -0, +0, NaN, an infinity or a fraction.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
@@ -41,3 +44,22 @@ for (const a of ['<<', '>>']) for (const b of ['<<', '>>'])
     for (const k1 of BIG_COUNTS) for (const k2 of BIG_COUNTS) fns.push(`(x) => BigInt.asIntN(64, BigInt.asIntN(64, x ${a} ${k1}n) ${b} ${k2}n)`)
     population(`BigInt (x ${a} K1) ${b} K2`, program(fns), names(fns), BIGS)
   })
+
+test('rules population: a Boolean as an addend of a Number', () => {
+  const tests = ['a < b', 'a >= b', 'a === b', 'x < a']
+  const fns = []
+  for (const t of tests) fns.push(
+    `(x, a, b) => { a = a | 0; b = b | 0; return x + (${t}) }`,
+    `(x, a, b) => { a = a | 0; b = b | 0; return (${t}) + x }`,
+    `(x, a, b) => { a = a | 0; b = b | 0; return x - (${t}) }`,
+    `(x, a, b) => { a = a | 0; b = b | 0; return x + (${t} ? 1 : 0) }`,
+    `(x, a, b) => { a = a | 0; b = b | 0; return x - (${t} ? 1 : 0) }`,
+    `(x, a, b) => { a = a | 0; b = b | 0; let on = ${t} ? 1 : 0; return x + on }`,
+    `(x, a, b) => { a = a | 0; b = b | 0; let on = ${t} ? 1 : 0; return x - on }`,
+    // (a recurrence: the select the speed tier makes is read again each round)
+    `(x, a, b) => { a = a | 0; b = b | 0; let acc = x; for (let i = 0; i < 3; i++) { let on = acc >= a ? 1 : 0; acc = acc + on * 0 + (${t}) } return acc }`)
+  const xs = [-0, 0, NaN, Infinity, -Infinity, 1.5, -1]
+  const inputs = []
+  for (const x of xs) for (const [a, b] of [[1, 0], [0, 1], [2, 2], [-1, 0]]) inputs.push([x, a, b])
+  population('Boolean addend', program(fns), names(fns), inputs)
+})
