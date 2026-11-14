@@ -189,7 +189,7 @@ export const PASSES = [
   P('coalesceLocals', 'tail', '!watr coalesceLocals', { why: 'large recursive functions need compact frames even without the fixpoint' }),
   P('localReuse', 'tail', '!watr coalesceLocals|propagateLocals'),
   P('poolConstants', 'tail', '!watr hoistConstantPool'),
-  P('postGlobalPtr', 'tail', 'hoistGlobalPtrOffset', { after: [['watOptimize', 'watr\'s inliner can merge stable-pointee decodes into one caller']], takes: 'stableGlobals' }),
+  P('postGlobalPtr', 'tail', 'hoistGlobalPtrOffset', { after: [['watOptimize', 'watr\'s inliner can merge stable-pointee decodes into one caller']], takes: 'stableGlobals callsNothing' }),
   P('guardToInt32', 'tail', '+guardedToInt32', { after: [['watOptimize', 'on what the optimizer left']] }),
   P('foldWrappedWords.late', 'tail', '', { after: [['guardToInt32', 'over what the propagation and the truncation\'s lowering brought together']] }),
   P('narrowFlagLocals', 'tail', '', { after: [['watOptimize', 'a flag of literals, read as the optimizer leaves it']] }),

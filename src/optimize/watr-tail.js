@@ -671,7 +671,7 @@ export const TAIL = [
   ['postGlobalPtr', (t, cfg, x) => {
     const funcs = t.m.filter(node => Array.isArray(node) && node[0] === 'func')
     if (x.stableGlobals?.size) {
-      const reach = collectReachableGlobalWrites(funcs)
+      const reach = collectReachableGlobalWrites(funcs, null, x.callsNothing)
       for (const node of funcs) hoistGlobalPtrOffset(node, x.stableGlobals, reach)
     }
   }],
@@ -736,9 +736,9 @@ const TAIL_STEPS = stage('tail', TAIL)
  */
 export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
-  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, noSimd = false, userFuncs = null,
+  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, callsNothing = null, noSimd = false, userFuncs = null,
 } = {}) {
-  const x = { funcCount, boundaryPins, targetProfile, lazyDataSpans, staticDataSpan, dataRecords, stableGlobals, noSimd }
+  const x = { funcCount, boundaryPins, targetProfile, lazyDataSpans, staticDataSpan, dataRecords, stableGlobals, callsNothing, noSimd }
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => !!userFuncs?.has(name.slice(1)) || name.endsWith('$exp') && !!userFuncs?.has(name.slice(1, -4))

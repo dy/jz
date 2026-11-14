@@ -127,6 +127,7 @@ export function tailFacts() {
     staticDataSpan: ctx.runtime.staticPrefixSpan,
     dataRecords: ctx.memory.shared ? null : ctx.runtime.dataRecords,
     stableGlobals: stablePtrGlobalNames(ctx.scope.globalValTypes),
+    callsNothing: ctx.module.callsNothing,
     fixedMemory: fixedMemoryFacts(),
     noSimd: !!ctx.transform.noSimd,
     // the program's own functions, by name: the tail tells them from the runtime's
@@ -668,6 +669,7 @@ export function assemble(ast, profiler) {
         ['result', sig.result],
       ]
       jssImports.push(['import', '"wasm:js-string"', `"${name}"`, funcNode])
+      ctx.module.callsNothing.add(funcNode[1])   // the engine's own: no export is called from it
     }
   }
 

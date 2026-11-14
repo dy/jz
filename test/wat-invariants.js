@@ -40,6 +40,7 @@ import {
   typedIntSource, typedIntMinMaxSource, typedIVSRSource, typedByteScanSource, typedMapSource,
 } from './_fuzz.js'
 import { compile } from './util.js'
+import { onWasi, onKernel } from './_matrix.js'
 
 // Test-specific predicates (the shared ones live in scripts/wat-probe.mjs):
 // the loop trip-count overhead narrowLoopBound removes
@@ -146,6 +147,19 @@ test('ablation: promoteGlobals snapshots a repeatedly-read global to one functio
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   ok(count(parse(src, { promoteGlobals: false }), gGet) > 1, 'control: multiple global.get $g with pass OFF')
   ok(count(parse(src, 2), gGet) <= 1, 'INVARIANT: global read once, snapshotted to a local, with pass ON')
+})
+
+// What a call to the host ends. A shim of the runtime's own (the seed Math.random asks for
+// once) calls no export, so the copy of a global stands across it; a function the user
+// imports is JavaScript and may call `set`, so past it the global is read again
+// (optimize/globals.js collectReachableGlobalWrites; the values, test/interop.js).
+test('promoteGlobals: a runtime shim ends no copy of a global, a function the user imports does', () => {
+  const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
+  const body = (call) => `let g = 5.5; export let set = (v) => { g = v }; export let f = () => { const r = ${call}; return g + g + g + g + g + r }`
+  ok(count(parse(body('Math.random()'), 2), gGet) <= 1, 'the seed import: g read once')
+  if (onWasi() || onKernel()) return
+  const user = parseWat(compile(`import { cb } from 'host'; ${body('cb()')}`, { optimize: 2, wat: true, imports: { host: { cb: () => 0 } } }))
+  ok(count(user, gGet) >= 5, 'a user import: each of the five reads past it is the global')
 })
 
 test('ablation: promoteCells holds in a local a cell no closure took', () => {

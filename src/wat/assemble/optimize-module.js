@@ -53,7 +53,7 @@ export const passFacts = (cfg) => ({
   hasBigint: representationProgramHasBigint(ctx),
   funcCount: ctx.funcs.list.length,
   exports: ctx.funcs.exports,
-  imports: ctx.module.imports,
+  imports: ctx.module.imports, callsNothing: ctx.module.callsNothing,
   f16: ctx.linkDemand.f16, typedView: ctx.linkDemand.typedView,
   resizable: ctx.features.resizable,
   // the memory and the module's bindings
@@ -229,11 +229,12 @@ export function optimizeModule(sec, profiler) {
   // The write closure, built where a step first needs it. A loop's compaction goes in
   // after the steps that read it (loopCompacts): its kernels count as written already.
   const compacting = facts.compactLoopLabels?.size ? new Map([...facts.compactLoopLabels.keys()].map(name => [name, COMPACT_KERNELS])) : null
+  const callsNothing = facts.callsNothing
   let allFuncs = null, reachableWrites = null
   const ms = {
     t,
     funcs: () => allFuncs ??= [...sec.funcs, ...sec.stdlib, ...sec.start],
-    writes: () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(ms.funcs(), compacting)),
+    writes: () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(ms.funcs(), compacting, callsNothing)),
   }
   for (let i = 0; i < MODULE_STEPS.length; i++) if (on(MODULE_STEPS[i], cfg)) MODULE[i][1](sec, cfg, facts, ms)
   const dataEnd = dataLen()
