@@ -287,7 +287,7 @@ export function solveEffects(funcs, { imports = null, callsNothing = null, later
   const typedNames = [...tIds.keys()]
   return {
     /** May a call of `name` set module global `g`. */
-    sets: (name, g) => { const r = row(name), id = gIds.get(g); return id !== undefined ? has(r, G0 + id) : (r[0] & HOST) !== 0 },
+    sets: (name, g) => { const id = gIds.get(g); return id !== undefined && has(row(name), G0 + id) },
     /** May it set any global. */
     setsAny: (name) => { const r = row(name); for (let b = G0; b < bits; b++) if (has(r, b)) return true; return false },
     /** May it write memory a program value reaches. */

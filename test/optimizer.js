@@ -333,7 +333,7 @@ test('LICM effects: non-mutating allocation still changes allocator globals', ()
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br_if $loop (i32.lt_u (local.get $i) (i32.const 2))))
       (local.get $sum)))`)
-  hoistInvariantLoop(findFunc(ast, '$f'))
+  hoistInvariantLoop(findFunc(ast, '$f'), { effects: solveEffects(ast.filter(n => Array.isArray(n) && n[0] === 'func')) })
   const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
   is(f(), 3, 'the global is read after each allocation')
 })
