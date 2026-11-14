@@ -41,6 +41,7 @@
  */
 import { nextLocalId, findBodyStart } from '../ir.js'
 import { nodeEqual } from '../ast.js'
+import { NO_MODULE } from './effects.js'
 
 const isArr = Array.isArray
 const LOADS = new Set(['i32.load', 'i64.load', 'f32.load', 'f64.load'])
@@ -61,7 +62,9 @@ const clone = (n) => isArr(n) ? n.map(clone) : n
 const pure = (e) => isArr(e) && PURE.has(e[0]) && e.every((c, i) => i === 0 || !isArr(c) || pure(c))
 const localsOf = (e, out) => { if (isArr(e)) { if (e[0] === 'local.get') out.add(e[1]); for (let i = 1; i < e.length; i++) localsOf(e[i], out) } return out }
 const writesAny = (n, names) => some(n, m => (m[0] === 'local.set' || m[0] === 'local.tee') && names.has(m[1]))
-const calls = (n) => some(n, m => typeof m[0] === 'string' && (m[0].startsWith('call') || m[0].startsWith('return_call')))
+// a call that may write memory (optimize/effects.js): one that writes none leaves the slot to the store
+const writesCall = (m, fx) => typeof m[0] === 'string' && (m[0] === 'call' || m[0] === 'return_call' ? fx.writes(m[1]) : m[0].startsWith('call') || m[0].startsWith('return_call'))
+const calls = (n, fx) => some(n, m => writesCall(m, fx))
 const memOp = (n) => some(n, m => typeof m[0] === 'string' && (m[0].indexOf('.store') > 0 || m[0].startsWith('memory.') || m[0].indexOf('.atomic') > 0))
 
 /** An access `(op offset=o … ADDR …)`: { op, off, addr, rest } with the immediates read, or null. */
@@ -82,7 +85,7 @@ const addrOf = (a, alias) => {
 }
 
 /** Carry the value of `loop` (child `pos` of `parent`) that its rounds store last and read first. */
-function carryLoop(fn, loop, parent, pos) {
+function carryLoop(fn, loop, parent, pos, fx) {
   const L = label(loop)
   if (!L || typed(loop) || parent[0] !== 'block' && parent[0] !== 'loop' && parent[0] !== 'then' && parent[0] !== 'else' && parent[0] !== 'func') return false
   const last = loop[loop.length - 1]
@@ -106,7 +109,7 @@ function carryLoop(fn, loop, parent, pos) {
     // what follows the store, to the latch
     const after = loop.slice(j + 1)
     const alias = new Map(tee ? [[tee, A]] : [])
-    if (after.some(n => writesAny(n, names) || calls(n) || tee && writesAny(n, new Set([tee])))) continue
+    if (after.some(n => writesAny(n, names) || calls(n, fx) || tee && writesAny(n, new Set([tee])))) continue
     const misses = (n) => !some(n, m => {
       if (typeof m[0] !== 'string') return false
       if (m[0].startsWith('memory.') || m[0].indexOf('.atomic') > 0) return true
@@ -137,7 +140,7 @@ function carryLoop(fn, loop, parent, pos) {
           }
           if (e[0] === 'br_if') { stop = true; return }
           if (e[0] === 'local.set' || e[0] === 'local.tee') { if (names.has(e[1])) { stop = true; return } written.add(e[1]) }
-          if (typeof e[0] === 'string' && (e[0].indexOf('.store') > 0 || e[0].startsWith('memory.') || e[0].indexOf('.atomic') > 0 || e[0].startsWith('call'))) { stop = true; return }
+          if (typeof e[0] === 'string' && (e[0].indexOf('.store') > 0 || e[0].startsWith('memory.') || e[0].indexOf('.atomic') > 0 || writesCall(e, fx))) { stop = true; return }
         }
         if (n[0] === 'block' && !typed(n)) { scan(n, label(n) ? 2 : 1, conds); if (!found) stop = true; continue }
         if (n[0] === 'if' && !typed(n)) {
@@ -145,7 +148,7 @@ function carryLoop(fn, loop, parent, pos) {
           look(c)
           if (found || stop) return
           const reads = localsOf(c, new Set())
-          if (memOp(c) || calls(c) || some(c, m => m[0] === 'local.tee' || m[0] === 'local.set') || [...reads].some(r => written.has(r))) { stop = true; return }
+          if (memOp(c) || calls(c, fx) || some(c, m => m[0] === 'local.tee' || m[0] === 'local.set') || [...reads].some(r => written.has(r))) { stop = true; return }
           if (isArr(th) && th[0] === 'then') scan(th, 1, conds.concat([{ test: c, reads }]))
           if (!found && isArr(el) && el[0] === 'else') { stop = false; scan(el, 1, conds.concat([{ test: ['i32.eqz', c], reads }])) }
           stop = true
@@ -173,8 +176,9 @@ function carryLoop(fn, loop, parent, pos) {
   return false
 }
 
-/** Carry each loop's stored element to its next round, in every function of `ast` (a module). */
-export function carryStores(ast) {
+/** Carry each loop's stored element to its next round, in every function of `ast` (a module),
+ *  asking `fx` (its effects) what a call does. */
+export function carryStores(ast, fx = NO_MODULE) {
   if (!isArr(ast)) return ast
   for (const fn of ast) {
     if (!isArr(fn) || fn[0] !== 'func' || !some(fn, n => n[0] === 'loop')) continue
@@ -183,7 +187,7 @@ export function carryStores(ast) {
         const c = n[i]
         if (!isArr(c)) continue
         walk(c)
-        if (c[0] === 'loop' && carryLoop(fn, c, n, i)) i++
+        if (c[0] === 'loop' && carryLoop(fn, c, n, i, fx)) i++
       }
     }
     walk(fn)

@@ -58,7 +58,7 @@
  * @module growth
  */
 import { some } from './ast.js'
-import { pureKernel } from './optimize/pure-funcs.js'
+import { mathKernel } from './optimize/effects.js'
 
 /** The source nodes past which a function takes no more copies but its kernel
  *  loops' versions: the inliner's caller room (a driver of three hundred
@@ -85,7 +85,7 @@ export const kernelLoop = (loop) => !some(loop, n => n[0] === 'new' || n[0] === 
 // remainder, a throw, which never comes back to the loop, and the chase of a
 // relocated array's forwarding, which runs only where its header says it moved.
 const kernelCall = (name) => typeof name === 'string' &&
-  (pureKernel(name) || name === '$__to_int32' || name === '$__rem' || name.startsWith('$__throw_') || name === '$__ptr_offset_fwd')
+  (mathKernel(name) || name === '$__to_int32' || name === '$__rem' || name.startsWith('$__throw_') || name === '$__ptr_offset_fwd')
 
 /** Whether IR code (a loop, or the version that would run in its place) is a
  *  kernel's: it calls nothing but `kernelCall`s. */

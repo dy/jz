@@ -100,10 +100,10 @@ test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a
   //    (SAFE_OFFSET/READONLY_MEM/NON_MUTATING/PURE_CALL whitelist only) — a
   //    call to an ordinary user function (`helper`, forced un-inlined via a
   //    second call site) trips it even though `helper` provably never writes
-  //    idx/cur (collectReachableGlobalWrites over the direct call graph).
+  //    idx/cur (optimize/effects.js over the direct call graph).
   // hoistLoopGlobalPtrOffset is the only pass that clears BOTH: scoped to the
-  // loop (ignores the unrelated call_indirect outside it) AND reachableWrites-
-  // aware (tolerates the in-loop call once the callee is proven clean).
+  // loop (ignores the unrelated call_indirect outside it) AND effects-aware
+  // (tolerates the in-loop call once the callee is proven clean).
   // `cur` is a string by every store (src/summary): `String(s)`, not the
   // host's `s`, which could be anything.
   const src = `
@@ -152,7 +152,7 @@ test('ablation: promoteGlobals snapshots a repeatedly-read global to one functio
 // What a call to the host ends. A shim of the runtime's own (the seed Math.random asks for
 // once) calls no export, so the copy of a global stands across it; a function the user
 // imports is JavaScript and may call `set`, so past it the global is read again
-// (optimize/globals.js collectReachableGlobalWrites; the values, test/interop.js).
+// (optimize/effects.js; the values, test/interop.js).
 test('promoteGlobals: a runtime shim ends no copy of a global, a function the user imports does', () => {
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   const body = (call) => `let g = 5.5; export let set = (v) => { g = v }; export let f = () => { const r = ${call}; return g + g + g + g + g + r }`

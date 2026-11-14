@@ -1,9 +1,9 @@
 /**
- * Global/memory hoisting family: module-wide write-set analyses
- * (collectReachableGlobalWrites, collectReachableMemoryWrites) that feed the per-function hoists
- * (hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads,
- * guardMaskedVectorSuffix, promoteGlobals) — all built on the shared
- * `globalBaseAliases`/`memGlobal` address-resolution helpers.
+ * Global/memory hoisting family: the per-function hoists (hoistGlobalPtrOffset,
+ * hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix,
+ * promoteGlobals), each asking the module's effects summary (optimize/effects.js) what
+ * a call may write, all built on the shared `globalBaseAliases`/`memGlobal`
+ * address-resolution helpers.
  *
  * @module optimize/globals
  */
@@ -12,143 +12,6 @@ import { VAL } from '../reps.js'
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { hasIROp } from './ir-scan.js'
-import { isMemWrite } from 'watr/optimize'
-
-/**
- * Transitive global-write sets per function: name → Set of globals the function
- * writes directly OR through any (transitively) called function: a global
- * written only by `init` stays stable inside a function whose call graph never
- * reaches `init`.
- *
- * A callee absent from `funcs` is a host import: a JS function, which may call
- * an export back (README, "Host functions"), so it writes what any function
- * writes, as an unknown wasm target does (`call_indirect`/`call_ref`): the
- * sound over-approximation, and the answer collectReachableMemoryWrites gives
- * for memory. `callsNothing` names the imports that are the runtime's own
- * (bridge.js hostImport: the seed, the clock, a printed line, WASI; the
- * engine's string builtins): those call no export and write nothing.
- * `later`: callees a pass still to run puts in a function (name → names): a
- * loop's compaction kernels (optimize/loop-compact.js), which bump the epochs
- * and empty the logs.
- */
-export function collectReachableGlobalWrites(funcs, later = null, callsNothing = null) {
-  const writes = new Map(), callees = new Map(), indirect = new Set(), all = new Set()
-  const EMPTY = new Set(), defined = new Set()
-  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') defined.add(fn[1])
-  let w = null, c = null, fnName = null
-  // One stable dispatcher instead of one closure + two eager Sets per function.
-  const recordEffect = n => {
-    if (!Array.isArray(n)) return
-    if (n[0] === 'global.set' && typeof n[1] === 'string') {
-      if (!w) w = new Set()
-      w.add(n[1]); all.add(n[1])
-    } else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
-      if (!defined.has(n[1])) { if (!callsNothing?.has(n[1])) indirect.add(fnName); return }
-      if (!c) c = new Set()
-      c.add(n[1])
-    } else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect' || n[0] === 'return_call_ref') {
-      indirect.add(fnName)
-    }
-  }
-  const walkOptions = { enter: recordEffect }
-  for (const fn of funcs) {
-    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
-    w = null; c = null; fnName = fn[1]
-    walkAst(fn, walkOptions)
-    const more = later?.get(fnName)
-    if (more) { if (!c) c = new Set(); for (const m of more) c.add(m) }
-    if (w || c || indirect.has(fnName)) writes.set(fnName, w || new Set())
-    if (c) callees.set(fnName, c)
-  }
-  // Dense transitive rows are the expensive part of this analysis: thousands
-  // of Sets repeat the same handful of global-name pointers. Convert direct
-  // rows once to compact u32 bitsets, then run the closure as word-wise OR.
-  const globalIds = new Map()
-  for (const name of all) globalIds.set(name, globalIds.size)
-  const words = Math.max(1, Math.ceil(globalIds.size / 32))
-  const rows = new Map()
-  for (const [name, direct] of writes) {
-    const bits = new Uint32Array(words)
-    for (const g of direct) {
-      const id = globalIds.get(g)
-      bits[id >>> 5] |= 1 << (id & 31)
-    }
-    rows.set(name, bits)
-  }
-  const allBits = new Uint32Array(words)
-  for (let id = 0; id < globalIds.size; id++) allBits[id >>> 5] |= 1 << (id & 31)
-  // Collapse recursive call components once, then propagate on the resulting
-  // DAG. A bit crosses each component edge once instead of once per newly-
-  // discovered bit (the event worklist degenerates on large cyclic compilers).
-  const names = [...rows.keys()]
-  const ids = new Map()
-  for (let i = 0; i < names.length; i++) ids.set(names[i], i)
-  const index = new Int32Array(names.length), low = new Int32Array(names.length)
-  const onStack = new Uint8Array(names.length), componentOf = new Int32Array(names.length)
-  index.fill(-1); componentOf.fill(-1)
-  const stack = []
-  let nextIndex = 0, componentCount = 0
-  const strong = v => {
-    index[v] = nextIndex
-    low[v] = nextIndex++
-    stack.push(v); onStack[v] = 1
-    for (const callee of callees.get(names[v]) || EMPTY) {
-      const w = ids.get(callee)
-      if (w == null) continue
-      if (index[w] === -1) { strong(w); low[v] = Math.min(low[v], low[w]) }
-      else if (onStack[w]) low[v] = Math.min(low[v], index[w])
-    }
-    if (low[v] !== index[v]) return
-    const cid = componentCount++
-    while (stack.length) {
-      const w = stack.pop()
-      onStack[w] = 0
-      componentOf[w] = cid
-      if (w === v) break
-    }
-  }
-  for (let v = 0; v < names.length; v++) if (index[v] === -1) strong(v)
-
-  const componentBits = [], componentEdges = []
-  for (let i = 0; i < componentCount; i++) { componentBits.push(new Uint32Array(words)); componentEdges.push(null) }
-  for (let v = 0; v < names.length; v++) {
-    const cid = componentOf[v], target = componentBits[cid], direct = rows.get(names[v])
-    for (let i = 0; i < words; i++) target[i] |= direct[i]
-    if (indirect.has(names[v])) for (let i = 0; i < words; i++) target[i] |= allBits[i]
-    for (const callee of callees.get(names[v]) || EMPTY) {
-      const w = ids.get(callee)
-      if (w != null && componentOf[w] !== cid) {
-        let edges = componentEdges[cid]
-        if (!edges) { edges = new Set(); componentEdges[cid] = edges }
-        edges.add(componentOf[w])
-      }
-    }
-  }
-  const solved = new Uint8Array(componentCount)
-  const solve = cid => {
-    if (solved[cid]) return
-    const target = componentBits[cid]
-    for (const dep of componentEdges[cid] || EMPTY) {
-      solve(dep)
-      const source = componentBits[dep]
-      for (let i = 0; i < words; i++) target[i] |= source[i]
-    }
-    solved[cid] = 1
-  }
-  for (let cid = 0; cid < componentCount; cid++) solve(cid)
-
-  return {
-    has(name, global) {
-      const id = globalIds.get(global), fid = ids.get(name)
-      if (id == null) return false
-      // (no row: a function that writes and calls nothing, or a name outside `funcs`, the
-      // host's, which a pass asks of as a callee)
-      if (fid == null) return !defined.has(name) && !callsNothing?.has(name)
-      const row = componentBits[componentOf[fid]]
-      return !!(row[id >>> 5] & (1 << (id & 31)))
-    },
-  }
-}
 
 /**
  * Hoist `__ptr_offset` resolution of stable typed-array GLOBALS to one resolve
@@ -165,14 +28,13 @@ export function collectReachableGlobalWrites(funcs, later = null, callsNothing =
  * The precise facts make it sound here: TYPED pointees never forward (only
  * ARRAY/SET/MAP do — same bits ⇒ same offset), so the snapshot is stable iff
  * the global's VALUE is stable through the function — i.e. the function
- * neither writes G itself nor (transitively) calls anything that does
- * (`collectReachableGlobalWrites`). The entry-time resolve is total
+ * neither writes G itself nor calls anything that may (`effects.sets`). The entry-time resolve is total
  * (`__ptr_offset` bounds-checks garbage to itself), so hoisting past a
  * zero-trip loop or an early return is safe.
  *
  * @param {Array} fn - func IR node
  * @param {Map<string, string>} stablePtrGlobals - '$name' → value type of the stable-pointee module globals (stablePtrGlobalNames)
- * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
+ * @param fx - the module's effects (optimize/effects.js)
  */
 // Never-forwarding pointee kinds: every PTR tag outside __ptr_offset's
 // forwarding set {ARRAY, HASH, SET, MAP} — same bits ⇒ same offset.
@@ -187,7 +49,7 @@ export const stablePtrGlobalNames = (globalValTypes) => {
   return out
 }
 
-export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
+export function hoistGlobalPtrOffset(fn, stablePtrGlobals, fx) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -249,7 +111,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
 
   const calleeWrites = (g) => {
     if (hasIndirect) return true  // unknown targets — assume they write
-    for (const c of ownCallees) if (reachableWrites?.has(c, g)) return true
+    for (const c of ownCallees) if (fx?.sets(c, g)) return true
     return false
   }
 
@@ -349,7 +211,7 @@ const irI32Const = n => {
   if (n[0] === 'i32.shl') return a << b
   return null
 }
-const globalBaseAliases = fn => {
+export const globalBaseAliases = fn => {
   const aliases = new Map(), assigns = [], poisoned = new Set()
   walkAst(fn, { enter: n => {
     if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigns.push([n[1], n[2]])
@@ -416,7 +278,7 @@ const memAddress = n => {
 }
 const plainLoadOp = op => typeof op === 'string' &&
   /^(?:v128|f32|f64|i32|i64)\.load(?:8|16|32)?(?:_[su])?$/.test(op)
-const memGlobal = (n, aliases) => {
+export const memGlobal = (n, aliases) => {
   const { addr, offset } = memAddress(n)
   if (Array.isArray(addr) && addr[0] === 'local.get' && aliases.has(addr[1])) {
     const rec = aliases.get(addr[1])
@@ -429,50 +291,16 @@ const memGlobal = (n, aliases) => {
   return { global: found.size === 1 ? [...found][0] : null, offset, exact: false }
 }
 
-/** Per-function transitive set of typed globals written through memory; `*` is unknown aliasing. */
-export function collectReachableMemoryWrites(funcs) {
-  const direct = new Map(), calls = new Map(), names = new Set()
-  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') names.add(fn[1])
-  for (const fn of funcs) {
-    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
-    const aliases = globalBaseAliases(fn), writes = new Set(), callees = new Set()
-    walkAst(fn, { enter: n => {
-      if (!Array.isArray(n)) return
-      const op = n[0]
-      if (typeof op === 'string' && op.includes('.store')) {
-        const { global } = memGlobal(n, aliases)
-        writes.add(global || '*')
-      } else if (typeof op === 'string' && isMemWrite(op)) writes.add('*')
-      else if ((op === 'call' || op === 'return_call') && typeof n[1] === 'string') {
-        // A missing target is a host import. It can observe an exported memory
-        // through its JS closure and mutate arbitrary bytes: fail closed.
-        if (names.has(n[1])) callees.add(n[1]); else writes.add('*')
-      } else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref') writes.add('*')
-    } })
-    direct.set(fn[1], writes); calls.set(fn[1], callees)
-  }
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const [name, writes] of direct) {
-      const before = writes.size
-      for (const callee of calls.get(name) || []) for (const g of direct.get(callee) || ['*']) writes.add(g)
-      if (writes.size !== before) changed = true
-    }
-  }
-  return direct
-}
-
 // Facts: the module's fixed typed-array globals, their lengths and kinds (`globalTypedLen`,
 // `globalTypedElem`), and those holding buffers of their own (`freshTypedGlobals`).
-export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachableGlobalWrites, { globalTypedLen = null, globalTypedElem = null, freshTypedGlobals: own = null } = {}) {
+export function hoistStableGlobalConstLoads(fn, fx, { globalTypedLen = null, globalTypedElem = null, freshTypedGlobals: own = null } = {}) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') return
   const aliases = globalBaseAliases(fn)
   if (!aliases.size) return
   const byteLens = typedGlobalByteLengths(globalTypedLen, globalTypedElem)
   if (!byteLens.size) return
-  const writes = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
-  if (writes.has('*') || !reachableGlobalWrites) return
+  const writes = fx ? fx.memOf(fn[1]) : new Set(['*'])
+  if (writes.has('*')) return
   // A store through one global leaves another's elements alone only when both
   // hold buffers of their own: `b = a`, or a view of `a.buffer`, is a.
   const apart = global => !writes.size || !!own?.has(global) && [...writes].every(g => own.has(g))
@@ -502,7 +330,7 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
   const baseByGlobal = new Map()
   for (const [name, rec] of aliases) if (rec.offset === 0 && !baseByGlobal.has(rec.global)) baseByGlobal.set(rec.global, name)
   const chosen = [...sites.values()].filter(rec =>
-    (rec.nodes.length >= 2 || rec.depth > 0) && baseByGlobal.has(rec.global) && !reachableGlobalWrites.has(fn[1], rec.global))
+    (rec.nodes.length >= 2 || rec.depth > 0) && baseByGlobal.has(rec.global) && !fx.sets(fn[1], rec.global))
   if (!chosen.length) return
 
   const bodyStart = findBodyStart(fn)
@@ -589,10 +417,10 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
 // earlier convergence loop. If every lane selects the fallback, none of the
 // expensive producer (normal/shadow/AO-style vector work) needs to run. Mixed
 // groups retain the exact original bitselect and lane semantics.
-export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
+export function guardMaskedVectorSuffix(fn, fx) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !hasIROp(fn, 'v128.bitselect')) return
   const aliases = globalBaseAliases(fn), byteLens = typedGlobalByteLengths()
-  const memoryWrites = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
+  const memoryWrites = fx ? fx.memOf(fn[1]) : new Set(['*'])
   const safeLoad = n => {
     if (memoryWrites.has('*')) return false
     const { global, offset, exact } = memGlobal(n, aliases)
@@ -701,9 +529,8 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
  * a global's base is hoisted to a loop's preheader iff, within that loop's
  * subtree, (1) the global is never `global.set`, (2) no `call_indirect` /
  * `call_ref` appears at all (fail-closed: an unknown target could write
- * anything), and (3) every DIRECTLY-called function does not (transitively,
- * via `reachableWrites` — `collectReachableGlobalWrites`, itself fail-closed
- * the same way) write the global. No route (b) (re-derive-at-write /
+ * anything), and (3) no DIRECTLY-called function may write the global
+ * (`effects.sets`, fail-closed the same way). No route (b) (re-derive-at-write /
  * generation guard) — a loop that fails (1)-(3) is left exactly as
  * `hoistGlobalPtrOffset` left it.
  *
@@ -724,14 +551,14 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
  *
  * @param {Array} fn - func IR node
  * @param {Map<string, string>} stablePtrGlobals - '$name's of never-forwarding module globals (stablePtrGlobalNames)
- * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
+ * @param fx - the module's effects (optimize/effects.js)
  */
 // hoistLoopGlobalPtrOffset keeps its hand-rolled inspect/replace recursion on
 // purpose: the self-compiled kernel (dist/jz.wasm) miscompiles walkAst callbacks
 // that capture this pass's per-loop state — the same divergence the loop-hoist
 // trio hit (.work/archive/handoff-2026-08-22.md §"Full test:wasm loop-hoist trio");
 // test/index.js's kernel leg pins it ("ablation: hoistLoopGlobalPtrOffset …").
-export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites, entrySnapshots) {
+export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, fx, entrySnapshots) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -826,7 +653,7 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites, 
       const chosenGlobals = [], chosenNames = []
       for (const g of sites.keys()) {
         let calleeWrites = false
-        for (const callee of calleeNames) if (reachableWrites?.has(callee, g)) { calleeWrites = true; break }
+        for (const callee of calleeNames) if (fx?.sets(callee, g)) { calleeWrites = true; break }
         if (!stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites) continue
         chosenGlobals.push(g)
         chosenNames.push(entrySnapshots?.get(g) ?? freshId())
@@ -896,15 +723,15 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites, 
  * the global changes between reads.
  *
  * A within-function read-only check is NOT sufficient: a callee can mutate the
- * global between two reads in this function. `reachableWrites` (see
- * collectReachableGlobalWrites) gates that case per call edge; without it,
- * calls are not checked (unit-test callers only).
+ * global between two reads in this function. `fx` (the module's effects,
+ * optimize/effects.js) gates that case per call edge; without it, calls are not
+ * checked (unit-test callers only).
  *
  * @param {Array} fn - Function IR (WAT-as-array)
  * @param {Map<string,string>} [globalTypes] - Optional: global name → wasm type ('i32'|'f64'|'i64'|'funcref')
- * @param [reachableWrites] - collectReachableGlobalWrites result
+ * @param [fx] - the module's effects
  */
-export function promoteGlobals(fn, globalTypes, reachableWrites) {
+export function promoteGlobals(fn, globalTypes, fx) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -946,10 +773,10 @@ export function promoteGlobals(fn, globalTypes, reachableWrites) {
     // Unsound to cache a global what the function runs may write: a callee
     // (the test is exact per call edge: a global written only by init stays
     // promotable in functions whose call graph never reaches init), or a
-    // kernel a later pass calls in it (`later` of collectReachableGlobalWrites:
+    // kernel a later pass calls in it (`later` of the effects' solve:
     // a loop's compaction, which bumps the epoch an iteration's release
     // reads), which the function's own row holds.
-    if (reachableWrites && (hasIndirect || reachableWrites.has(fn[1], gName) || [...callees].some(c => reachableWrites.has(c, gName)))) continue
+    if (fx && (hasIndirect || fx.sets(fn[1], gName) || [...callees].some(c => fx.sets(c, gName)))) continue
     // Determine type: use provided map, or infer from context
     const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
     if (!type) continue  // can't determine type, skip

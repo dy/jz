@@ -42,16 +42,17 @@
  * read of a record then asks once however many fields it reads, in a loop with
  * calls and handlers as well: a job queue's drain reads three slots and a length
  * and hands them to a closure. A receiver a module global holds counts here,
- * `@$name` beside a local's `$name`, until the global is written (`writes`,
- * optimize/globals.js).
+ * `@$name` beside a local's `$name`, until the global is written (`fx.sets`).
+ *
+ * A call may move a block where it may write a header word (optimize/effects.js
+ * `header`: the allocator moves the heap's top, a throw never comes back, an
+ * escape's lowering writes its log, none moves a block).
  *
  * @module optimize/forward-hops
  */
 import { walkAst, nodeEqual } from '../ast.js'
 import { findBodyStart, nextLocalId } from '../ir.js'
-import { isMemWrite } from 'watr/optimize'
 import { LAYOUT } from '../../layout.js'
-import { HEADER_STORE_FREE } from './licm.js'
 
 const isArr = Array.isArray
 const FWD = '$__ptr_offset_fwd'
@@ -82,11 +83,6 @@ const reads = (v, name) => {
   return false
 }
 
-// The allocator moves the heap's top, no block; a throw helper never returns;
-// an escape's lowering writes the flag and the log made as the module starts
-// (module/core.js `__esc_*`, module/core/reach.js `__root`), no block.
-const LOWERINGS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell', '$__esc_root', '$__esc_new', '$__root'])
-const stillByName = (callee) => callee.startsWith('$__alloc') || callee.startsWith('$__throw_') || LOWERINGS.has(callee)
 // A compaction's forward of a local into itself (optimize/loop-compact.js):
 // `$x = __gc_fwd($x)`, through the box's reinterprets, or `__gc_fwd_raw`.
 const FORWARDS = new Set(['$__gc_fwd', '$__gc_fwd_raw'])
@@ -96,57 +92,10 @@ const forwards = (set) => {
   return isArr(v) && v.length === 3 && v[0] === 'call' && FORWARDS.has(v[1]) && isGet(unbox(v[2])) && unbox(v[2])[1] === set[1]
 }
 
-/**
- * The functions that move no block, read off their bodies: no indirect call,
- * no store but an element's payload (a forward word is an `i32.store`, a
- * bulk copy may carry one), and calls only to the allocator or to functions
- * of the same kind, found by a fixpoint over the call graph. A global they
- * write is no block. An import may call back into the module: it moves.
- */
-export function collectStillFuncs(funcs) {
-  const facts = new Map()
-  for (const fn of funcs) {
-    if (!isArr(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
-    const calls = new Set()
-    let ok = true
-    walkAst(fn, { enter: n => {
-      if (!ok) return false
-      const op = n[0]
-      if (op === 'call') { if (typeof n[1] === 'string') calls.add(n[1]); else ok = false }
-      else if (op === 'call_indirect' || op === 'call_ref' || LEAVES.has(op)) ok = false
-      else if (isMemWrite(op) && !HEADER_STORE_FREE.has(op)) ok = false
-    } })
-    facts.set(fn[1], { calls, ok })
-  }
-  const still = new Set()
-  for (const [name, f] of facts) if (f.ok) still.add(name)
-  for (let changed = true; changed;) {
-    changed = false
-    for (const name of [...still]) for (const c of facts.get(name).calls)
-      if (!stillByName(c) && !still.has(c)) { still.delete(name); changed = true; break }
-  }
-  return still
-}
-
-/** The result types of every function the module defines or imports, by name. */
-export function collectResults(funcs, imports) {
-  const out = new Map()
-  const resultsOf = (node) => {
-    const r = []
-    for (const c of node) if (isArr(c) && c[0] === 'result') for (let i = 1; i < c.length; i++) r.push(c[i])
-    return r
-  }
-  for (const fn of funcs) if (isArr(fn) && fn[0] === 'func' && typeof fn[1] === 'string') out.set(fn[1], resultsOf(fn))
-  for (const imp of imports ?? []) {
-    if (!isArr(imp)) continue
-    for (const c of imp) if (isArr(c) && c[0] === 'func' && typeof c[1] === 'string') out.set(c[1], resultsOf(c))
-  }
-  return out
-}
-
-/** Hoist the forward hops of each loop's unrebound receivers in `fn`; a module global
- *  is a receiver where it holds a box (`globalTypes`, its wasm type by name). */
-export function hoistForwardHops(fn, still, results, writes, globalTypes = null) {
+/** Hoist the forward hops of each loop's unrebound receivers in `fn`, asking `fx` (the
+ *  module's effects) what a call does; a module global is a receiver where it holds a box
+ *  (`globalTypes`, its wasm type by name). */
+export function hoistForwardHops(fn, fx, globalTypes = null) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const start = findBodyStart(fn)
   if (start < 0) return
@@ -160,7 +109,7 @@ export function hoistForwardHops(fn, still, results, writes, globalTypes = null)
   const fresh = (type) => { const name = `$__fh${id++}`; locals.push(['local', name, type]); return name }
   const temps = new Map()   // a result type → the local a followed call parks its result in
   const temp = (type) => { if (!temps.has(type)) temps.set(type, fresh(type)); return temps.get(type) }
-  const moves = (callee) => !(typeof callee === 'string' && (stillByName(callee) || still.has(callee)))
+  const moves = (callee) => typeof callee !== 'string' || fx.header(callee)
   // What a loop writes. A compaction site's forward of a root (optimize/
   // loop-compact.js, `$x = __gc_fwd($x)`) is no write: a root the loop it
   // stands outside never writes holds what it held before that loop began,
@@ -253,7 +202,7 @@ export function hoistForwardHops(fn, still, results, writes, globalTypes = null)
       if (!ok) return false
       const op = n[0]
       if (HANDLERS.has(op) || op === 'call_indirect' || op === 'call_ref') ok = false
-      else if (op === 'call' && moves(n[1]) && (!COLD.has(n[1]) || (results.get(n[1])?.length ?? 2) > 1)) ok = false
+      else if (op === 'call' && moves(n[1]) && (!COLD.has(n[1]) || (fx.results(n[1])?.length ?? 2) > 1)) ok = false
     } })
     return ok
   }
@@ -343,10 +292,10 @@ export function hoistForwardHops(fn, still, results, writes, globalTypes = null)
     if (!found) {
       if (op === 'global.set') asked.delete('@' + n[1])
       else if (op === 'call_indirect' || op === 'call_ref' || LEAVES.has(op) || op === 'call' && moves(n[1])) asked.clear()
-      else if (op === 'call' && asked.size) for (const root of [...asked.keys()]) if (root[0] === '@' && writes?.has(n[1], root.slice(1))) asked.delete(root)
+      else if (op === 'call' && asked.size) for (const root of [...asked.keys()]) if (root[0] === '@' && fx.sets(n[1], root.slice(1))) asked.delete(root)
     }
     if (!found && active.length && op === 'call' && moves(n[1])) {
-      const t = results.get(n[1]) ?? []
+      const t = fx.results(n[1]) ?? []
       const sets = active.map(g => ['local.set', g.r, resolve(g.root)])
       for (const s of sets) resets.add(s)
       const w = t.length === 0 ? ['block', n, ...sets]
@@ -373,7 +322,7 @@ export function hoistForwardHops(fn, still, results, writes, globalTypes = null)
       if (moved) return false
       if (c[0] === 'call_indirect' || c[0] === 'call_ref' || LEAVES.has(c[0]) || c[0] === 'call' && moves(c[1])) moved = true
       else if (c[0] === 'global.set') w.add('@' + c[1])
-      else if (c[0] === 'call' && [...asked.keys()].some(root => root[0] === '@' && writes?.has(c[1], root.slice(1)))) moved = true
+      else if (c[0] === 'call' && [...asked.keys()].some(root => root[0] === '@' && fx.sets(c[1], root.slice(1)))) moved = true
     } })
     if (!moved) for (const [root, r] of asked) if (!w.has(root) && !w.has(r)) out.set(root, r)
     return out

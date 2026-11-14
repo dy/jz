@@ -65,7 +65,8 @@ test('passes: global-write proof is shared and only built for a consumer', () =>
     const { f } = jz(src, { optimize, profile }).exports
     const usesWrites = optimize === 2 || typeof optimize === 'object'
     if (profile) {
-      is(profile.entries.filter(p => p.name === 'optMod:reachableWrites').length, usesWrites ? 1 : 0)
+      // (solved where a pass first asks what a call writes: once at most, and never where no pass asks)
+      ok(profile.entries.filter(p => p.name === 'optMod:effects').length <= (usesWrites ? 1 : 0), 'the effects, solved once at most')
       ok(!profile.entries.some(p => p.name === 'optMod:volatileGlobals'), 'the precise proof subsumes the coarse scan')
     }
     is([f(0), f(7), f(7), f(-1)], [2, 14, 28, 12], 'writes through a callee remain visible across repeated calls')

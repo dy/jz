@@ -9,7 +9,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { funcWat as funcWatOf, run, wat } from './util.js'
 import { buildPureFuncMap } from '../src/optimize/pure-funcs.js'
-import { collectReachableMemoryWrites } from '../src/optimize/globals.js'
+import { solveEffects } from '../src/optimize/effects.js'
 import parseWat from 'watr/parse'
 
 const ON = { optimize: 'speed' }
@@ -165,7 +165,7 @@ test('purity: every store width and SIMD lane store is effectful', () => {
   for (const op of ['i32.store', 'i32.store8', 'i32.store16', 'i64.store', 'i64.store8', 'i64.store16', 'i64.store32', 'f32.store', 'f64.store', 'v128.store', 'v128.store8_lane', 'v128.store16_lane', 'v128.store32_lane', 'v128.store64_lane']) {
     const fn = ['func', '$write', ['param', '$x', 'f64'], [op, ['i32.const', 0], ['local.get', '$x']]]
     ok(!buildPureFuncMap([fn]).has('$write'), `${op} is not lane-inline pure`)
-    ok(collectReachableMemoryWrites([fn]).get('$write').has('*'), `${op} invalidates memory hoists`)
+    ok(solveEffects([fn]).memOf('$write').has('*'), `${op} invalidates memory hoists`)
   }
 })
 
@@ -174,5 +174,5 @@ test('purity: random calls and atomic writes stay effectful', () => {
   ok(!buildPureFuncMap([random]).has('$random'))
   const writer = ['func', '$write', ['drop', ['i32.atomic.rmw8.add_u', ['i32.const', 0], ['i32.const', 1]]]]
   ok(!buildPureFuncMap([writer]).has('$write'))
-  ok(collectReachableMemoryWrites([writer]).get('$write').has('*'))
+  ok(solveEffects([writer]).memOf('$write').has('*'))
 })

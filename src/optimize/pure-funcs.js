@@ -1,17 +1,14 @@
 /**
- * The math runtime's purity, and the SIMD lane inliner's numeric-argument
- * context: numeric lane clones may remove coercions that ordinary calls still
- * need. (Read-only user functions are watr's to find, from call effects.)
+ * The SIMD lane inliner's numeric-argument context: numeric lane clones may remove
+ * coercions that ordinary calls still need. (Read-only user functions are watr's to
+ * find, from call effects.)
  *
  * @module optimize/pure-funcs
  */
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { isMemWrite } from 'watr/optimize'
-
-/** The math runtime depends only on its operands, except for its random source, and
- *  cannot trap: jz vouches for it to watr's value numbering and scheduling (watr-tail.js). */
-export const pureKernel = name => typeof name === 'string' && name.startsWith('$math.') && !name.startsWith('$math.random')
+import { mathKernel } from './effects.js'
 
 /** Build private candidates for call sites whose substituted SIMD arguments are
  *  proven numeric. A bare f64 parameter can carry a NaN box, so ordinary calls
@@ -25,7 +22,7 @@ export function buildPureFuncMap(funcs) {
       const op = n[0]
       if (op === 'global.set' ||
           (typeof op === 'string' && (isMemWrite(op) || op.startsWith('memory.') || op.startsWith('table.') || op.includes('atomic'))) ||
-          ((op === 'call' || op === 'return_call') && typeof n[1] === 'string' && !pureKernel(n[1]) && n[1] !== '$__to_num') ||
+          ((op === 'call' || op === 'return_call') && typeof n[1] === 'string' && !mathKernel(n[1]) && n[1] !== '$__to_num') ||
           op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref') { found = true; return false }
     } })
     return found

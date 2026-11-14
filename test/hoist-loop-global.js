@@ -4,10 +4,9 @@
  * w.r.t. a stable-pointee module global (no write, no call_indirect/call_ref
  * anywhere); one unrelated indirect call elsewhere in a large function
  * poisons every such global for the whole function even when a specific
- * loop inside it never reaches that call. This pass re-tries per loop, using
- * collectReachableGlobalWrites (the same fail-closed, direct-call-graph
- * fixpoint hoistGlobalPtrOffset already uses) narrowed to just the loop's
- * own subtree.
+ * loop inside it never reaches that call. This pass re-tries per loop, asking
+ * the module's effects (optimize/effects.js, the same fail-closed summary
+ * hoistGlobalPtrOffset asks) of the calls in just the loop's own subtree.
  *
  * The structural (wat-probe) positive pin lives in test/wat-invariants.js
  * alongside the sibling hoistGlobalPtrOffset ablation test. This file pins
@@ -49,7 +48,7 @@ test('hoist-loop-global: DIRECT reassignment of the global inside the loop stays
 test('hoist-loop-global: TRANSITIVE reassignment through a callee reachable from the loop stays correct', () => {
   // `reassign` writes `cur` and is called FROM WITHIN the loop — no direct
   // `global.set $cur` inside the loop body itself, so this is the
-  // collectReachableGlobalWrites leg: calleeWrites('$cur') must trace
+  // effects leg: calleeWrites('$cur') must trace
   // scan -> reassign -> global.set $cur and veto the hoist.
   const src = `
     export let cur = 'abcdefgh', idx = 0

@@ -93,8 +93,8 @@ test('pass table: a step reads of the facts what its entry takes, and writes wha
     }
     without('fusedRewrite', 'takes', 'hasBigint', () =>
       throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'fusedRewrite' reads the fact 'hasBigint', which its entry does not take/))
-    without('optimizeFuncs', 'makes', 'headerSafeFuncs', () =>
-      throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'optimizeFuncs' writes the fact 'headerSafeFuncs', which its entry does not make/))
+    without('optimizeFuncs', 'makes', 'effects', () =>
+      throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'optimizeFuncs' writes the fact 'effects', which its entry does not make/))
     without('treeshake', 'takes', 'userFuncs', () =>
       throws(() => compile(PROGRAMS[0], { optimize: 2 }), /'treeshake' reads the fact 'userFuncs'/))
     without('legalize', 'takes', 'targetProfile', () =>

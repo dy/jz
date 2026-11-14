@@ -16,8 +16,9 @@
  *
  * "The same" is by value: every pure expression is numbered as it is evaluated, a local
  * holding one carries its number, and a load's or a global read's number names the memory
- * it read (a store, a global write, or a call to a function that may write either starts
- * new memory). The store is a 4-byte element's under its array's bound check
+ * it read: a store, or a call of a function that may write memory, starts new memory; a
+ * global's write, or a call that may make one, starts new globals, and leaves memory as it
+ * was (a global is no memory). The store is a 4-byte element's under its array's bound check
  * (`i < header >> 2`): it writes inside the array's elements, so the header the later
  * check loads is the one the store's loaded.
  *
@@ -34,39 +35,9 @@
 import { constText } from '../ast.js'
 
 const isArr = Array.isArray
-// what changes a value a load or a global read named
-const memWrite = (op) => typeof op === 'string' && (/^(i32|i64|f32|f64|v128)\.(store|atomic)/.test(op) || op.startsWith('memory.') || op.startsWith('table.') || op === 'global.set')
-// a call that never returns to the code after it (the runtime's throws) ends nothing
-const noReturn = (callee) => typeof callee === 'string' && callee.startsWith('$__throw_')
+// what changes a value a load named
+const memWrite = (op) => typeof op === 'string' && (/^(i32|i64|f32|f64|v128)\.(store|atomic)/.test(op) || op.startsWith('memory.') || op.startsWith('table.'))
 const INDIRECT = new Set(['call_indirect', 'call_ref', 'return_call_indirect', 'return_call_ref'])
-// The functions a call to which may change memory or a global: an import, one that writes
-// either or calls indirectly, one that calls such a function or one the module lacks.
-// A call to any other (`__to_int32`, the math runtime) leaves both as they were.
-const writers = (module) => {
-  const funcs = new Map(), may = new Set()
-  for (const n of module) {
-    if (!isArr(n)) continue
-    if (n[0] === 'func' && typeof n[1] === 'string') (n.some(x => isArr(x) && x[0] === 'import') ? may.add(n[1]) : funcs.set(n[1], n))
-    else if (n[0] === 'import' && isArr(n[3]) && n[3][0] === 'func' && typeof n[3][1] === 'string') may.add(n[3][1])
-  }
-  const callees = new Map()
-  for (const [name, f] of funcs) {
-    const out = new Set()
-    const walk = (x) => {
-      if (!isArr(x)) return
-      if (memWrite(x[0]) || INDIRECT.has(x[0])) may.add(name)
-      else if ((x[0] === 'call' || x[0] === 'return_call') && typeof x[1] === 'string') out.add(x[1])
-      for (let i = 1; i < x.length; i++) walk(x[i])
-    }
-    walk(f)
-    callees.set(name, out)
-  }
-  for (let grew = true; grew;) {
-    grew = false
-    for (const [name, out] of callees) if (!may.has(name) && [...out].some(c => may.has(c) || !funcs.has(c))) { may.add(name); grew = true }
-  }
-  return may
-}
 const STORE_LOAD = { 'i32.store': 'i32.load', 'i64.store': 'i64.load', 'f32.store': 'f32.load', 'f64.store': 'f64.load' }
 const LOAD = /^(i32|i64|f32|f64|v128)\.load/
 const UNKEYED = new Set(['call', 'call_indirect', 'call_ref', 'block', 'loop', 'if', 'br', 'br_if', 'br_table', 'return', 'unreachable',
@@ -118,15 +89,17 @@ function foldCompare(n) {
   return fold(read)
 }
 
-export function forwardCheckedElements(module) {
-  const may = writers(module)
-  // a call that may write starts new memory; one that never returns ends nothing
-  const callsOut = (n) => ((n[0] === 'call' || n[0] === 'return_call') && !noReturn(n[1]) && may.has(n[1])) || INDIRECT.has(n[0])
-  for (const fn of module) if (isArr(fn) && fn[0] === 'func') forwardIn(fn, callsOut)
+/** Over `module`, asking `fx` (its effects, optimize/effects.js) what a call does. */
+export function forwardCheckedElements(module, fx) {
+  // a call that may write memory starts new memory, one that may set a global new globals;
+  // one that never returns ends nothing
+  const calls = (n, what) => ((n[0] === 'call' || n[0] === 'return_call') && fx.returns(n[1]) && what(n[1])) || INDIRECT.has(n[0])
+  const writes = (n) => calls(n, fx.writes), sets = (n) => n[0] === 'global.set' || calls(n, fx.setsAny)
+  for (const fn of module) if (isArr(fn) && fn[0] === 'func') forwardIn(fn, writes, sets)
   return module
 }
 
-function forwardIn(fn, callsOut) {
+function forwardIn(fn, callsOut, setsGlobal) {
   let bodyStart = typeof fn[1] === 'string' ? 2 : 1
   while (bodyStart < fn.length && isArr(fn[bodyStart]) && ['export', 'import', 'param', 'result', 'local', 'type'].includes(fn[bodyStart][0])) bodyStart++
   const names = new Map(), decls = []
@@ -134,7 +107,7 @@ function forwardIn(fn, callsOut) {
   let fresh = 0
   const freshLocal = (type) => { let n; do { n = `$__fw${fresh++}` } while (names.has(n)); names.set(n, type); decls.push(['local', n, type]); return n }
 
-  let version = 0, epoch = 0, depth = 0
+  let version = 0, epoch = 0, globals = 0, depth = 0
   const held = []             // the enclosing then arms: { keys: their guard's numbers and its conjuncts', depth, c: the whole guard's }
   const loads = new Map()     // `cond|addr` → { c, a, load, w, arm }: a load at the top of guard c's arm, its word for later loads under c
   const key = new Map()       // local → the number of the value it holds
@@ -162,7 +135,8 @@ function forwardIn(fn, callsOut) {
     if (op.endsWith('.const')) return num(constText(e))
     const parts = []
     for (let i = 1; i < e.length; i++) { const k = keyOf(e[i]); if (k == null) return null; parts.push(k) }
-    if (!LOAD.test(op) && op !== 'global.get') return num(`${op} ${parts.join(' ')}`)
+    if (op === 'global.get') return num(`${op}@${globals} ${parts.join(' ')}`)
+    if (!LOAD.test(op)) return num(`${op} ${parts.join(' ')}`)
     return num(`${op}@${parts[parts.length - 1] === kept ? keptEpoch : epoch} ${parts.join(' ')}`)
   }
   const set = (name, value) => { key.set(name, keyOf(value) ?? num(`${name}@${++version}`)) }
@@ -198,13 +172,15 @@ function forwardIn(fn, callsOut) {
     const base = keyOf(addr[1]), idx = keyOf(sh[1]), hdr = keyOf(ld[1]), key = keyOf(b[1])
     return base && idx && key && idx === (wide ? num(`i32.wrap_i64 ${key}`) : key) && hdr === num(`i32.sub ${base} ${num('i32.const 8')}`) ? hdr : null
   }
-  // what a construct wrote: its locals hold new values, a write to memory starts new memory
+  // what a construct wrote: its locals hold new values, a write to memory starts new memory,
+  // a global's new globals
   const forget = (n) => {
     let mem = false
     const walk = (x) => {
       if (!isArr(x)) return
       if ((x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string') key.set(x[1], num(`${x[1]}@${++version}`))
       else if (memWrite(x[0]) || callsOut(x)) mem = true
+      if (setsGlobal(x)) globals++
       for (let i = 1; i < x.length; i++) walk(x[i])
     }
     walk(n)
@@ -235,7 +211,7 @@ function forwardIn(fn, callsOut) {
     const f = foldCompare(n)
     if (f) return f
     if ((op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string') { set(n[1], n[2]); vn.set(n, key.get(n[1])) }
-    else { vn.set(n, keyOf(n)); if (memWrite(op) || callsOut(n)) wrote() }
+    else { vn.set(n, keyOf(n)); if (memWrite(op) || callsOut(n)) wrote(); if (setsGlobal(n)) globals++ }
     return n
   }
 

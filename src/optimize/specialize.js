@@ -56,7 +56,7 @@
 
 import { integerPlan } from './int-narrow.js'
 import { plainNaN, conditional, boundOf, boxBits, constBits, LIMIT } from './int-range.js'
-import { pureKernel } from './pure-funcs.js'
+import { mathKernel } from './effects.js'
 import { IR_FULL, kernelLoopIR } from '../growth.js'
 import { TOMB_NAN } from '../../layout.js'
 
@@ -76,7 +76,7 @@ const LEAVES = new Set(['return', 'unreachable', 'throw', 'throw_ref', 'rethrow'
 // A call that writes nothing the loop as written could read differently: the
 // math kernels, the integer conversion, the tests of a value's kind, an
 // allocation (the block it bumped is unreachable).
-const quiet = name => pureKernel(name) || name === '$__to_int32' || name === '$__rem' || /^\$__(alloc|mkptr|is_)/.test(name)
+const quiet = name => mathKernel(name) || name === '$__to_int32' || name === '$__rem' || /^\$__(alloc|mkptr|is_)/.test(name)
 const calls = n => n[0] === 'call' || n[0] === 'return_call' ? !(typeof n[1] === 'string' && quiet(n[1])) : n[0] === 'call_indirect' || n[0] === 'call_ref'
 const typed = n => n.some(c => isArr(c) && (c[0] === 'result' || c[0] === 'param'))
 const writesMemory = n => isArr(n) && (STORE.test(n[0]) || calls(n) || n.some(writesMemory))

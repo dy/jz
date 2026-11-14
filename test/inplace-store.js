@@ -93,7 +93,7 @@ test('inplace-store: fires on the immutable-update kernel and bit-matches JS', (
 
 test('inplace-store: loop-invariant array base hoists out of the step loop', () => {
   // The in-place store's re-boxed result is a $__mkptr call — pure bit-packing.
-  // With it whitelisted (NON_MUTATING_CALLS), hoistInvariantLoop lifts the
+  // A pure helper (optimize/effects.js HELPERS), hoistInvariantLoop lifts the
   // `__ptr_offset(ps)` base resolution to the loop preheader: the inner loop
   // body must not re-resolve the array base per iteration.
   const wat = compile(KERNEL, { wat: true, optimize: PRE_WATR })

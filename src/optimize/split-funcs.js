@@ -110,7 +110,7 @@ const size = (n) => {
   return s
 }
 const union = (a, b) => { for (const x of b) a.add(x); return a }
-/** The math runtime depends only on its operands (pure-funcs.js pureKernel): a call to it is arithmetic. */
+/** The math runtime depends only on its operands (effects.js mathKernel): a call to it is arithmetic. */
 const pureCall = (name) => typeof name === 'string' && name.startsWith('$math.') && !name.startsWith('$math.random')
 
 /**

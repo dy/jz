@@ -45,7 +45,7 @@ test('header hoist: the kernels answer what the host answers, a zero-trip loop r
   }
 })
 
-// A call the loop makes settles by the callee's own body (collectHeaderSafeFuncs):
+// A call the loop makes settles by the callee's own body (optimize/effects.js `header`):
 // one that stores elements only lets the hops out, one that grows an array keeps them in.
 test('header hoist: a header-safe callee lets the hops out, a growing one keeps them in', () => {
   if (belowOpt(2)) return

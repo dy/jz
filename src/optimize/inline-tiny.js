@@ -59,7 +59,7 @@
  * @module optimize/inline-tiny
  */
 import { inline, inlineOnce, propagate, mergeBlocks, vacuum, coalesceLocals } from 'watr/optimize'
-import { pureKernel } from './pure-funcs.js'
+import { mathKernel } from './effects.js'
 import { IR_FULL, irSize } from '../growth.js'
 
 const isArr = Array.isArray
@@ -139,7 +139,7 @@ const spliceKernels = (module, bound, user) => {
   const kernel = (name) => {
     if (!fits.has(name)) {
       const fn = byName.get(name)
-      fits.set(name, !!fn && pureKernel(name) && scalar(fn) && !exported(fn) && !calls(fn, name) && tinySize(fn, bound) <= bound)
+      fits.set(name, !!fn && mathKernel(name) && scalar(fn) && !exported(fn) && !calls(fn, name) && tinySize(fn, bound) <= bound)
     }
     return fits.get(name)
   }

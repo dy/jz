@@ -8,13 +8,14 @@
 // offset) at an address in the same local, and between them the walk, in the order the
 // code runs, passes no store that may reach the bytes the load read (src/ir/mem-alias.js: a
 // store into an array of another cell, or into another field, leaves it), no bulk or
-// atomic memory operation and no call, and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
+// atomic memory operation and no call that may write memory (optimize/effects.js), and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
 // branch leaves) keeps only what holds on both. The later load's address is the local
 // itself: dropping it drops nothing that runs. A load inside a conditional arm the first
 // load is outside of stays: it runs only on that path, and its arm, a local read, would
 // become a select (a predictable branch is cheaper than the select's dependence).
 import { nextLocalId, findBodyStart } from '../ir.js'
 import { mayAlias } from '../ir/mem-alias.js'
+import { NO_MODULE } from './effects.js'
 
 const isArr = Array.isArray
 const LOAD = /^(i32|i64|f32|f64)\.load(8_[su]|16_[su]|32_[su])?$/
@@ -31,7 +32,7 @@ const keyOf = (n) => {
   return { key: n[0] + ' ' + off + ' ' + a[1], local: a[1], pure: a[0] === 'local.get' }
 }
 
-export function reuseLoads(fn) {
+export function reuseLoads(fn, fx = NO_MODULE) {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const bodyStart = findBodyStart(fn)
   const temps = [], shared = new Set()
@@ -80,7 +81,7 @@ export function reuseLoads(fn) {
     if (op === 'local.set' || op === 'local.tee') { kill(state, n[1]); return state }
     // a marked store forgets the loads it may overwrite, an unmarked one every load
     if (typeof op === 'string' && STORE.test(op) && n.mem != null) { for (const [k, v] of state) if (mayAlias(n.mem, v.node.mem)) state.delete(k); return state }
-    if (typeof op === 'string' && CLOBBER.test(op)) return new Map()
+    if (typeof op === 'string' && CLOBBER.test(op) && !((op === 'call' || op === 'return_call') && !fx.writes(n[1]))) return new Map()
     if (typeof op === 'string' && LOAD.test(op)) {
       const k = keyOf(n)
       if (!k || shared.has(n) || shared.has(parent)) return state

@@ -12,7 +12,7 @@
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
 import { onKernel, levels } from './_matrix.js'
-import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
+import { solveEffects, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite, lowerToInt32Tails, foldLoadCasts, holdWordNumbers } from '../src/optimize/peephole.js'
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
@@ -8070,7 +8070,7 @@ test('source-inlined call-free boolean leaves stay eager inside call-bearing cal
   is(ex(3, 2), 0, 'false chain exact')
 })
 
-test('reachable-global-write SCC bitsets close cycles and indirect calls', () => {
+test('effects: the SCC bitsets close cycles and indirect calls', () => {
   const funcs = [
     ['func', '$a', ['call', '$b']],
     ['func', '$b', ['global.set', '$x', ['i32.const', 1]], ['call', '$a']],
@@ -8079,11 +8079,11 @@ test('reachable-global-write SCC bitsets close cycles and indirect calls', () =>
     ['func', '$e', ['call_indirect', '$ft', ['i32.const', 0]]],
     ['func', '$ywriter', ['global.set', '$y', ['i32.const', 1]]],
   ]
-  const reach = collectReachableGlobalWrites(funcs)
-  ok(reach.has('$a', '$x') && reach.has('$b', '$x') && reach.has('$c', '$x'),
+  const fx = solveEffects(funcs)
+  ok(fx.sets('$a', '$x') && fx.sets('$b', '$x') && fx.sets('$c', '$x'),
     'one direct write propagates through an SCC and its caller')
-  ok(!reach.has('$d', '$x') && !reach.has('$d', '$y'), 'no-effect function keeps the shared empty row')
-  ok(reach.has('$e', '$x') && reach.has('$e', '$y'), 'indirect call conservatively reaches every written global')
+  ok(!fx.sets('$d', '$x') && !fx.sets('$d', '$y'), 'no-effect function keeps the shared empty row')
+  ok(fx.sets('$e', '$x') && fx.sets('$e', '$y'), 'indirect call conservatively reaches every written global')
 })
 
 test('fixed global typed cells cache across loops but reachable mutation fails closed', () => {

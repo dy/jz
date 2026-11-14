@@ -23,6 +23,7 @@ import { PTR, TYPED_ELEM_VIEW_FLAG, decodePtrType, decodePtrAux } from '../../la
 import { findBodyStart } from '../ir.js'
 import { accessOf, clone } from './vectorize/access.js'
 import { isArr } from './vectorize/node-utils.js'
+import { solveEffects } from './effects.js'
 
 // op → [bytes, the type of the value stored or loaded, sign-extending]
 const STORES = new Map([
@@ -180,30 +181,16 @@ export function scalarizeStaticScratch(funcs, facts) {
   for (const [name, b] of bindings) if (open.has(b.root)) bindings.delete(name)
   if (!bindings.size) return
 
-  // The functions a call to which may store to such an array.
-  const names = new Set(), stores = new Map(), calls = new Map()
-  for (const fn of funcs) if (isArr(fn) && fn[0] === 'func' && typeof fn[1] === 'string') names.add(fn[1])
-  for (const fn of funcs) {
-    if (!isArr(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
+  // The functions a call to which may store to such an array: one that stores to one or
+  // copies or fills memory, or calls one (optimize/effects.js, which closes it over the calls).
+  const fx = solveEffects(funcs, { callsNothing: facts.callsNothing, mark: fn => {
     let writes = false
-    const callees = new Set()
-    walkAst(fn, { enter: n => {
-      const op = n[0]
-      if (OPEN_CALLS.has(op) || BULK.has(op)) writes = true
-      else if ((op === 'call' || op === 'return_call') && typeof n[1] === 'string') { if (names.has(n[1])) callees.add(n[1]); else writes = true }
-    } })
+    walkAst(fn, { enter: n => { if (BULK.has(n[0])) writes = true } })
     scan(fn, bindings, a => { if (a.store) writes = true })
-    stores.set(fn[1], writes); calls.set(fn[1], callees)
-  }
-  for (let changed = true; changed;) {
-    changed = false
-    for (const [name, callees] of calls) {
-      if (stores.get(name)) continue
-      for (const c of callees) if (stores.get(c)) { stores.set(name, true); changed = true; break }
-    }
-  }
+    return writes
+  } })
 
-  for (const fn of funcs) if (users.has(fn)) forwardIn(fn, bindings, name => stores.get(name) !== false)
+  for (const fn of funcs) if (users.has(fn)) forwardIn(fn, bindings, name => fx.marked(name))
 
   // The bytes a load still reads; a store to none of them goes.
   const read = new Set(), written = []

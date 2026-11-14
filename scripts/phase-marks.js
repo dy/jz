@@ -40,7 +40,7 @@ export const PHASE_NAMES = [
   'plan:collectSlotConstants', 'plan:narrowSignatures', 'plan:analyzeParamDistinctness', 'plan:analyzeFreshTypedGlobals', 'plan:refineSlotWriteHazards',
   'plan:analyzeParamNeverGrown', 'plan:scanInplaceStores', 'plan:specializeBimorphicTyped', 'plan:specializeValKindDichotomy',
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',
-  'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
+  'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:effects', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
   'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:dropStaticRoots', 'optMod:staticScratch', 'analyzeClosures', 'shareSplitSlots', 'guardToInt32', 'forwardChecked', 'unrollTrips', 'unsignedDivision', 'poolFloatConstants', 'truncChoice', 'selectArms', 'testedChoices', 'shareQuotients', 'selectBits', 'ringLaps', 'pointerExits', 'jumpPointers', 'leadChains', 'issueOrder', 'maskOperands', 'searchLoops', 'leadGathers', 'carryStores', 'skipLatches', 'guardExtremes', 'stillLoads', 'pairTests', 'inlineTiny', 'constBases', 'loopPasses', 'splitFuncs', 'relaxExtremes', 'hoistVectorConsts', 'optMod:forwardHops', 'optMod:quietCopies', 
   // a phase checkpoint's verdict (scripts/self.js checkpointPhase), recorded before the phase's own record

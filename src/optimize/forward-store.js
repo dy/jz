@@ -13,14 +13,17 @@
 // An `if` whose arms only set locals and store is a join: what both arms leave holds
 // past it (quat.invert's early return of zeros, which quat.multiply then reads back).
 // Whatever could touch memory or leave the straight line forgets what is known: a
-// call other than the header reads, the durable-array snapshot and a throw guard, a
-// branch, a nested block or loop; a store through another base (two names can be one
-// array or object) forgets the value, but leaves an earlier store dead where the list
-// overwrites it unread. A local rewritten between a store and a load gives its
-// addresses a new identity, so the two no longer match; a rewrite of a forwarded
-// value's local forgets that value.
+// call that may write memory (optimize/effects.js), a branch, a nested block or loop; a
+// store through another base (two names can be one array or object) forgets the value,
+// but leaves an earlier store dead where the list overwrites it unread. A global's write,
+// or a call's, is no memory: it forgets a slot whose address reads that global. A call
+// that may read the slot or may throw keeps a store made before it (memory outlives the
+// activation: a caller's catch reads what the store left). A local rewritten between a
+// store and a load gives its addresses a new identity, so the two no longer match; a
+// rewrite of a forwarded value's local forgets that value.
 import { walkAst, nodeKey } from '../ast.js'
 import { findBodyStart } from '../ir.js'
+import { NO_MODULE } from './effects.js'
 import { accessOf, deadTees, hasOp, inertFor, localGetCounts, resolveAddr, CONTROL_OPS, clone } from './vectorize/access.js'
 import { normalizeTransparentBlocks } from './vectorize/scaffold.js'
 import { isArr } from './vectorize/node-utils.js'
@@ -30,7 +33,7 @@ const NONE = new Set()
 const CALLS = new Set(['call', 'call_indirect', 'call_ref'])
 const isLeaf = v => isArr(v) && (v[0] === 'local.get' && typeof v[1] === 'string' || v[0] === 'f64.const')
 
-export function forwardStores(fn) {
+export function forwardStores(fn, fx = NO_MODULE) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -43,7 +46,7 @@ export function forwardStores(fn) {
   let next = 0
   const fresh = () => { let n = `$__fj${next++}`; while (names.has(n)) n = `$__fj${next++}`; names.add(n); added.push(['local', n, 'f64']); return n }
   const visit = (list, from, path) => {
-    forwardIn(list, from, counts, copies, path, fresh)
+    forwardIn(list, from, counts, copies, path, fresh, fx)
     for (let i = from; i < list.length; i++) if (isArr(list[i])) visit(list[i], 1, copies && [...path, [list, list[i]]])
   }
   visit(fn, bodyStart, copies && [])
@@ -114,7 +117,7 @@ export const copyRoots = (fn, bodyStart) => {
 // value to forward and the statement's index. `pending` holds the stores no load has
 // read since: a later store to the slot finds its predecessor dead. A store through
 // another name forgets what the slot holds, but it reads nothing: what is pending stays.
-const forwardIn = (list, from, counts, copies, path, fresh) => {
+const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
   // Only these statements can seed an entry. Operand lists without either cannot
   // forward or remove anything; rescanning their subtrees makes deep expressions
   // quadratic. The caller still visits their children to find nested candidates.
@@ -129,6 +132,19 @@ const forwardIn = (list, from, counts, copies, path, fresh) => {
   const entries = new Map(), pending = new Map()
   const dead = []
   const keyOf = (base, at, win = w) => { const r = resolveAddr(base, win, at); return r && nodeKey(r) }
+  // A global the statement sets (`g`, or any a call may): every slot whose address reads it
+  // (its key names it), as the store left it or not.
+  const setGlobal = (g) => { for (const m of [entries, pending]) for (const k of [...m.keys()]) if (k.includes(g ?? 'global.get')) m.delete(k) }
+  // What a statement that writes no memory a load reads ends: its global writes the slots
+  // they address; a call that may read the slot, or throw, the stores left pending.
+  const callsOut = (s) => walkAst(s, { enter: n => {
+    if (n[0] === 'global.set') setGlobal(n[1])
+    else if (n[0] === 'call') {
+      const c = n[1], kind = fx.kind(c)
+      if (!fx.returns(c) || fx.throws(c) || kind !== 'pure' && kind !== 'header') pending.clear()
+      if (fx.setsAny(c)) setGlobal(null)
+    }
+  } })
   const written = (name, maps) => { for (const m of maps) for (const [k, e] of m) if (e.value && e.value[0] === 'local.get' && e.value[1] === name) m.delete(k) }
   // A load that reads memory: its own slot, and any slot of another name it may reach
   // (src/ir/mem-alias.js); a slot of its own base at another offset is other bytes.
@@ -170,7 +186,9 @@ const forwardIn = (list, from, counts, copies, path, fresh) => {
     const isStore = s[0] === 'f64.store'
     const access = isStore ? accessOf(s) : null
     const parts = isStore ? [access.addr, access.val] : [s]
-    if (!parts.every(p => inertFor(p, NONE))) { if (set) w.defs.set(set, { e: null, at: i }); entries.clear(); pending.clear(); continue }
+    if (!parts.every(p => inertFor(p, NONE, false, fx))) { if (set) w.defs.set(set, { e: null, at: i }); entries.clear(); pending.clear(); continue }
+    // (before the loads: a call in the statement may run ahead of them)
+    callsOut(s)
     loads(s, i, w, entries, true)
     if (set) w.defs.set(set, { e: s[2], at: i })
     if (set && whole && isArr(s[2]) && s[2][0] === 'f64.load') {

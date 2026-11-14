@@ -6,6 +6,7 @@
  * @module optimize/cse-address
  */
 import { findBodyStart, nextLocalId, buildRefcount } from '../ir.js'
+import { HEADER_STORE_FREE, NO_MODULE } from './effects.js'
 
 /**
  * CSE repeated `(call $__ptr_type X)` on same X across stable regions.
@@ -48,18 +49,17 @@ export function hoistPtrType(fn) {
   })
 }
 
-// Calls that never move an array's storage: tag and box bit-packing, and the
-// resolution itself.
-const KEEPS_STORAGE = new Set(['$__ptr_type', '$__ptr_offset', '$__ptr_aux', '$__mkptr'])
+// What may move a block: a store of a header word (a payload store never writes one,
+// HEADER_STORE_FREE), a bulk memory operation, an indirect or tail call.
 const MOVES_MEMORY = /^(?:[if](?:32|64)\.(?:store|atomic)|v128\.store|memory\.(?:grow|copy|fill|init)|call_indirect|call_ref|return_call)/
 
 /**
  * CSE repeated `(call $__ptr_offset X)` on same X — an array's live storage,
  * through its forwarding header. Storage moves only when a runtime helper
  * relocates it or a store rewrites a header, so a region also ends at every
- * store and every call but the bit-packing ones above.
+ * store of a header word and every call that may write one (`fx.header`).
  */
-export function hoistPtrOffset(fn) {
+export function hoistPtrOffset(fn, fx = NO_MODULE) {
   return regionTrackCSE(fn, {
     matchSite(node, parent, pi, root) {
       if (node[0] !== 'call' || node[1] !== '$__ptr_offset' || node.length !== 3) return null
@@ -71,7 +71,7 @@ export function hoistPtrOffset(fn) {
     },
     barrier(node) {
       const op = node[0]
-      return op === 'call' ? !KEEPS_STORAGE.has(node[1]) : typeof op === 'string' && MOVES_MEMORY.test(op)
+      return op === 'call' ? fx.header(node[1]) : typeof op === 'string' && MOVES_MEMORY.test(op) && !HEADER_STORE_FREE.has(op)
     },
     localPrefix: 'po',
     localType: 'i32',

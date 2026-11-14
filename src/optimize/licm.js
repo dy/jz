@@ -1,12 +1,11 @@
 /**
- * Loop-invariant code motion family: the per-function whitelist of read-only
- * helper calls jz's own LICM trusts (SAFE_OFFSET_CALLS / READONLY_MEM_CALLS /
- * NON_MUTATING_CALLS / PURE_CALL_I32), the shared invariance/purity predicate
+ * Loop-invariant code motion family: the shared invariance/purity predicate
  * (computeLoopInvariance, consumed by both splitLoopPrivateScratch and
- * hoistInvariantLoop), the two loop-shape hoists (splitLoopPrivateScratch,
- * hoistInvariantLoop), invariant Number threshold snapping
- * (narrowLoopBound), the entry-hoisted pointer-offset snapshot
- * (hoistInvariantPtrOffset), and straight-line scalar-load CSE (cseScalarLoad).
+ * hoistInvariantLoop), which asks the module's effects (optimize/effects.js) what a
+ * call in the loop may write, the two loop-shape hoists (splitLoopPrivateScratch,
+ * hoistInvariantLoop), invariant Number threshold snapping (narrowLoopBound), the
+ * entry-hoisted pointer-offset snapshot (hoistInvariantPtrOffset), and straight-line
+ * scalar-load CSE (cseScalarLoad).
  *
  * @module optimize/licm
  */
@@ -14,143 +13,24 @@ import { LAYOUT, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { findBodyStart, writtenLocals, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
-import { pureKernel } from './pure-funcs.js'
+import { HEADER_STORE_FREE, NO_MODULE } from './effects.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
  * when X is an f64-NaN-boxed parameter that's never reassigned and only ever
- * passed to known-pure helpers. Aos-style hot loops read `rows[i]` once per
+ * passed to calls that move no block. Aos-style hot loops read `rows[i]` once per
  * iteration; without this, V8 keeps re-extracting the offset each time.
  *
  * Safety: __ptr_offset on an Array follows the realloc-forwarding chain. Once
  * a function commits to "this param won't realloc inside me", caching is
- * sound for the duration. The whitelist below is the read-only set
- * (no mutation possible); any other callee touching X invalidates hoisting.
+ * sound for the duration: a callee that may write a header (`fx.header`) may
+ * move X's block, and invalidates hoisting.
  */
-// Read-only i32-returning calls: safe to hoist when operands are invariant,
-// and their presence in a loop must not block other hoists (hasUnsafeCall).
-// __jss_* are wasm:js-string host builtins over IMMUTABLE JS strings — pure by
-// the same argument as the __ptr_* helpers (charCodeAt won't itself hoist —
-// its index varies — but whitelisting it keeps hasUnsafeCall false so the
-// loop-invariant __jss_length in the same loop condition CAN hoist).
+// The calls the vectorizer's loop scaffold lets a hoisted preamble make
+// (vectorize/scaffold.js, its own file: a list it reads, not an effect of a call).
 export const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_offset_fwd', '$__ptr_type', '$__ptr_aux', '$__len', '$__jss_length', '$__jss_charCodeAt'])
-// The offset readers among them read a header (the forwarding word, a length):
-// their answer holds while no header is written, whatever the loop stores into
-// element cells (HEADER_STORE_FREE below).
-const HEADER_READ_CALLS = new Set(['$__ptr_offset', '$__ptr_offset_fwd', '$__len'])
-// A call that never returns to the loop (the throw helpers): what it does
-// cannot reach a later iteration, so it is no barrier to motion.
-const noReturnCall = (callee) => typeof callee === 'string' && callee.startsWith('$__throw_')
-// Stores of an element payload (8 or 16 bytes at an element address): jz
-// writes every array or typed header word with `i32.store` (the runtime's
-// helpers and the inline length/forwarding writes), and a payload store lands
-// inside its own allocation, so these never change a header. A header load
-// with an invariant address is invariant across them.
-export const HEADER_STORE_FREE = new Set(['f64.store', 'f32.store', 'i64.store', 'v128.store'])
-// Globals an allocating helper may move: the runtime's own (`$__heap` and its
-// limits, the durable-reset log, the caches). A user global (a module `const`
-// array) is not among them.
-const allocGlobal = (name) => name.startsWith('$__')
 
-/**
- * The user functions a loop may call without a header changing under it: a
- * body that stores only element payloads (HEADER_STORE_FREE), writes no user
- * global, makes no indirect call, and calls only the runtime's read-only,
- * non-mutating and throwing helpers or functions safe by the same rule, found
- * by a fixpoint over the call graph. `alloc` marks those that reach the
- * allocator: they move the heap globals, not a user global or a header.
- * Before watr inlines it, `quat.invert(inv, a[i])` in a loop is such a call;
- * without this every loop with a call kept its receivers' hops inside.
- * @returns {Map<string, {alloc: boolean}>}
- */
-export function collectHeaderSafeFuncs(funcs) {
-  const bodies = new Map()
-  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') bodies.set(fn[1], fn)
-  const facts = new Map()   // name → { calls: Set, ok: boolean, alloc: boolean } from the body alone
-  for (const [name, fn] of bodies) {
-    const calls = new Set()
-    let ok = true, alloc = false
-    walkAst(fn, { enter: n => {
-      if (!ok) return
-      const op = n[0]
-      if (op === 'call') { if (typeof n[1] === 'string') calls.add(n[1]); else ok = false }
-      else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref') ok = false
-      else if (op === 'global.set') { if (typeof n[1] !== 'string' || !allocGlobal(n[1])) ok = false; else alloc = true }
-      else if (isMemWrite(op) && !HEADER_STORE_FREE.has(op)) ok = false
-    } })
-    facts.set(name, { calls, ok, alloc })
-  }
-  const known = (callee) => SAFE_OFFSET_CALLS.has(callee) || READONLY_MEM_CALLS.has(callee) || NON_MUTATING_CALLS.has(callee) || isPureFnCall(callee) || noReturnCall(callee)
-  const allocating = (callee) => callee.startsWith('$__alloc') || callee === '$__mkptr' || NON_MUTATING_CALLS.has(callee) && !isPureFnCall(callee) && callee !== '$__mkptr'
-  // Every function starts safe; one that calls an unknown or unsafe callee falls, until nothing falls.
-  const safe = new Set([...facts].filter(([, f]) => f.ok).map(([n]) => n))
-  for (let changed = true; changed;) {
-    changed = false
-    for (const name of safe) {
-      for (const c of facts.get(name).calls) if (!known(c) && !safe.has(c) && !c.startsWith('$__alloc')) { safe.delete(name); changed = true; break }
-    }
-  }
-  const out = new Map()
-  for (const name of safe) {
-    let alloc = facts.get(name).alloc
-    const seen = new Set([name]), stack = [name]
-    while (stack.length && !alloc) {
-      const cur = stack.pop()
-      for (const c of facts.get(cur)?.calls ?? []) {
-        if (allocating(c)) { alloc = true; break }
-        if (safe.has(c) && !seen.has(c)) { seen.add(c); stack.push(c) }
-      }
-    }
-    out.set(name, { alloc })
-  }
-  return out
-}
-
-// Calls that don't modify EXISTING heap memory: they may allocate (bump the heap
-// pointer) or do tag dispatch, but they never write to an address a hoisted
-// __typed_idx element read would revisit. Their presence must not
-// block readonly-mem-call LICM (else any `s += unknown` — which dispatches via
-// __is_str_key/__str_concat — would pin every invariant array element in-loop:
-// the jagged-array `grid[i][j]` deopt).
-// $__mkptr is pure bit-packing over its i32 args (no memory access at all) — its
-// only loop-body producer is the in-place replace-store's re-boxed result, which
-// otherwise pinned the loop's `__ptr_offset(arr)` base resolution in-body (the
-// immutable-update kernel paid the full forwarding+bounds dance per iteration).
-// $__durable_arr_snap (module/core/durable-log.js) allocates a record and
-// marks a bitmap the reset owns; no array header or element changes under it.
-const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__str_concat_fresh', '$__to_num', '$__to_str', '$__str_length', '$__mkptr', '$__str_idx', '$__durable_arr_snap'])
-
-// __str_idx may allocate a non-ASCII UTF-16 unit: it is non-mutating but not
-// safe to speculate before a zero-trip loop (allocation can trap).
-// Read-only element access: hoist only without mutating calls or direct writes,
-// since either can alias array storage. The tagged BigInt sibling allocates
-// and is deliberately absent. This permits invariant `grid[i]` in a read-only
-// inner loop without treating allocation as an effect-free read.
-const READONLY_MEM_CALLS = new Set(['$__typed_idx'])
-
-// PURE FUNCTION calls — result is a function of the ARGUMENTS alone, with no
-// dependence on mutable state: math reads no memory; the string search/compare
-// helpers read only their operands' bytes, and jz strings are IMMUTABLE, so their
-// content can't change under the loop's stores. So on loop-invariant args the
-// RESULT is loop-invariant regardless of anything else the loop does (unlike a
-// READONLY_MEM_CALLS element read, which an aliasing store could invalidate — no
-// !hasDirectStore guard is needed here). Speculative pre-header execution can't
-// trap: math returns NaN/∞ rather than trapping, and a value reaching .indexOf/===
-// is a valid string (in-bounds reads). This is the LICM V8's wasm tier won't do —
-// it treats every call as opaque and recomputes the search/transcendental each
-// iteration. (Math.random is INLINED — it mutates a global PRNG seed, never a
-// `$math.` call — but exclude it by name defensively; $__str_eq_cold is the cold
-// half of __str_eq, equally pure.) $__length stays OUT: it is polymorphic over
-// MUTABLE arrays (push changes it), so it isn't arg-pure. $__str_length is IN:
-// its operand is a string (immutable), and the one in-place length mutator —
-// the heap-top bump-extend twins (module/string.js) — is only emitted where the
-// OLD string value is provably dead, so a live, loop-invariant operand's length
-// cannot change under the loop (`for (j = 0; j < line.length; j++)` hoists to
-// one call instead of one per character — the strbuild row-scan shape).
-const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key', '$__str_length'])
-const isPureFnCall = (callee) => pureKernel(callee) || PURE_CALL_I32.has(callee)
-
-export function hoistInvariantPtrOffset(fn) {
+export function hoistInvariantPtrOffset(fn, fx = NO_MODULE) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -189,7 +69,7 @@ export function hoistInvariantPtrOffset(fn) {
           return false
         }
       }
-      const isSafe = SAFE_OFFSET_CALLS.has(callee)
+      const isSafe = !fx.header(callee)
       for (let i = 2; i < node.length; i++) {
         const arg = node[i]
         const inner = (Array.isArray(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) ? arg[1] : arg
@@ -377,12 +257,12 @@ function buildBaseParamOf(fn, bodyStart, distinctParams, freshGlobals) {
 
 // Per-loop invariance/purity analysis — the single proven predicate both LICM passes share.
 // Scans the loop into an effect summary (locals/globals it writes, cells/buffers it stores to,
-// whether it has any call / unsafe call / direct store / v128 op), then closes `pureGiven(node,
-// bound)` over it: true iff `node` is side-effect-free AND loop-invariant, given that the locals
-// in `bound` are private to the candidate (a `local.get` of a bound local reads the in-subtree
-// teed invariant; a free `local.get` must be unwritten by the loop). Memory leaves are admitted
-// only under the summary: a `$__cell_`/distinct-param load iff no aliasing store + no call; a
-// SAFE_OFFSET/READONLY_MEM call iff no unsafe call (+ no direct store for heap reads).
+// the calls it makes and what they may write, direct stores, v128 ops), then closes
+// `pureGiven(node, bound)` over it: true iff `node` is side-effect-free AND loop-invariant,
+// given that the locals in `bound` are private to the candidate (a `local.get` of a bound
+// local reads the in-subtree teed invariant; a free `local.get` must be unwritten by the
+// loop). Memory leaves are admitted only under the summary: a `$__cell_`/distinct-param load
+// iff no aliasing store and no call that writes memory; a helper call by what it reads.
 // The read of a binding that holds a present array (compile/emit-func.js
 // `presentArrays`, a stable-header name too), bare or under the box coercions:
 // a header word at a fixed distance from it is a valid address in every
@@ -530,11 +410,13 @@ function fixedTypedLoad(fn) {
   }
 }
 
-function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSafe = null, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null, scopedLoad = null }) {
+function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, fx = NO_MODULE, allowPrivateSets = false, stableHeaderNames = null, presentArrays = null, presentTyped = null, defs = null, views = null, fixedLoad = null, scopedLoad = null }) {
   const presentNames = presentArrays || stableHeaderNames
     ? new Set([...(presentArrays ?? []), ...(stableHeaderNames ?? [])]) : null
   const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
-  let hasUnsafeCall = false, hasAnyCall = false, hasAllocatingCall = false, hasDirectStore = false, hasUnknownStore = false, hasHeaderStore = false, hasV128 = false
+  // the calls the loop makes that come back, but for those whose result is a function of their operands
+  const calls = []
+  let indirect = false, hasDirectStore = false, hasUnknownStore = false, hasHeaderStore = false, hasV128 = false
   const recordEffect = node => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -543,17 +425,9 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
     if (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op)) hasV128 = true
     if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]) }
     else if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]) }
-    else if (op === 'call' && noReturnCall(node[1])) { /* leaves the loop for good */ }
-    else if (op === 'call' && headerSafe?.has(node[1])) {
-      // A user function that changes no header and no user global (collectHeaderSafeFuncs).
-      hasAnyCall = true
-      if (headerSafe.get(node[1]).alloc) hasAllocatingCall = true
-    }
-    else if (op === 'call') {
-      hasAnyCall = true
-      if (NON_MUTATING_CALLS.has(node[1]) && !isPureFnCall(node[1]) && node[1] !== '$__mkptr') hasAllocatingCall = true
-      if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1]) && !isPureFnCall(node[1])) hasUnsafeCall = true
-    } else if (op === 'call_ref' || op === 'call_indirect') hasAnyCall = hasUnsafeCall = true
+    // (one that never returns leaves the loop for good: what it does reaches no later iteration)
+    else if (op === 'call') { if (fx.returns(node[1]) && fx.kind(node[1]) !== 'pure') calls.push(node[1]) }
+    else if (op === 'call_ref' || op === 'call_indirect') indirect = true
     if (isMemWrite(op)) {
       hasDirectStore = true
       if (!HEADER_STORE_FREE.has(op)) hasHeaderStore = true
@@ -571,15 +445,16 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
     }
   }
   for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: recordEffect })
+  // what the loop's calls may do: write memory a program value reaches, write a header word
+  const callWrites = indirect || calls.some(c => fx.writes(c)), callHeader = indirect || calls.some(c => fx.header(c))
 
   const pureGiven = (node, bound) => {
     if (!Array.isArray(node)) return true   // bare operand string/number
     const op = node[0]
     if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return true
     if (op === 'local.get') return typeof node[1] === 'string' && (bound.has(node[1]) || !locals.has(node[1]))
-    // Unknown calls may modify user globals; allocating helpers may modify
-    // allocator globals. Both prevent motion. Locals remain frame-private.
-    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !hasUnsafeCall && (!hasAllocatingCall || !allocGlobal(node[1]))
+    // A global the loop sets, or a call in it may, is no invariant. Locals remain frame-private.
+    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !indirect && !calls.some(c => fx.sets(c, node[1]))
     if (op === 'local.tee') {
       if (typeof node[1] !== 'string') return false
       // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X`
@@ -608,9 +483,9 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
       // A fixed, addressable cell needs no alias relation when the loop cannot
       // write memory or call anything. With writes, use the separate distinct
       // buffer proof below, just as the double-precision lane does.
-      if (op === 'f32.load' && !hasAnyCall && !hasDirectStore && pureGiven(addr, bound)) return true
+      if (op === 'f32.load' && !callWrites && !hasDirectStore && pureGiven(addr, bound)) return true
       if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)
-        && !hasAnyCall && !hasUnknownStore && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
+        && !callWrites && !hasUnknownStore && !storedCells.has(a[1]) && (bound.has(a[1]) || !locals.has(a[1]))) return true
       // Length-HEADER load: `i32.load(i32.sub(local.get $X, i32.const 8))` where $X is a
       // proven stable-header pointer (stableHeaderNames — VAL.TYPED or ARRAY neverGrown, see
       // the compile/index.js stamp). Unlike the cell/distinctParam admissions, this needs NO
@@ -627,7 +502,7 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
       // and calls nothing that could: the element stores of the kernel it
       // guards cannot move it. This is the read-side of `arr[i]` on a module
       // array in a loop that writes another (`quat.multiply(out, a[i], b[i])`).
-      if (op === 'i32.load' && !hasHeaderStore && !hasUnsafeCall && Array.isArray(a) && a[0] === 'i32.sub' && a.length === 3 &&
+      if (op === 'i32.load' && !hasHeaderStore && !callHeader && Array.isArray(a) && a[0] === 'i32.sub' && a.length === 3 &&
           Array.isArray(a[2]) && a[2][0] === 'i32.const' && (Number(a[2][1]) === 8 || Number(a[2][1]) === 4) &&
           presentPtr(a[1], presentNames, defs) && pureGiven(node[1], bound)) return true
       // Alias-analysis LICM: a load from a typed-array param PROVEN distinct from every buffer
@@ -636,27 +511,24 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
       // hoist read-only input arrays out of a write loop (raytrace's spheres vs the framebuffer).
       // `pureGiven(a, bound)` proves the address itself invariant (base param unwritten + invariant
       // offset); the calls guard rules out callee memory mutation.
-      if (distinctParams && !hasAnyCall && !hasUnknownStore) {
+      if (distinctParams && !callWrites && !hasUnknownStore) {
         const base = baseParamOf(a)
         if (base && distinctParams.has(base) && !storedBases.has(base) && pureGiven(a, bound)) return true
       }
       return false
     }
     if (op === 'call') {
-      // Pure-function call: invariant iff its ARGS are. No effect-summary barrier —
-      // its result depends on nothing the loop can mutate (math: no memory; string
-      // search/compare: immutable operands), so neither a store nor another call
-      // can invalidate it. This hoists the loop-invariant transcendental / substr
-      // search V8's wasm tier recomputes every iteration.
-      if (isPureFnCall(node[1]))
-        return node.slice(2).every(c => pureGiven(c, bound))
-      if (HEADER_READ_CALLS.has(node[1]) && node.slice(2).every(c => presentPtr(c, presentNames, defs)))
-        return !hasUnsafeCall && !hasHeaderStore && node.slice(2).every(c => pureGiven(c, bound))
-      if (SAFE_OFFSET_CALLS.has(node[1]))
-        return !hasUnsafeCall && !hasUnknownStore && node.slice(2).every(c => pureGiven(c, bound))
-      // Read-only heap reads: additionally require no direct store (alias-safe).
-      if (READONLY_MEM_CALLS.has(node[1]))
-        return !hasUnsafeCall && !hasDirectStore && node.slice(2).every(c => pureGiven(c, bound))
+      // What the call reads (optimize/effects.js HELPERS: none of them writes or traps).
+      // Pure: invariant iff its ARGS are, its result depending on nothing the loop can
+      // mutate (math: no memory; string search/compare: immutable operands). This hoists
+      // the loop-invariant transcendental / substr search V8's wasm tier recomputes
+      // every iteration. A header reader: while no header is written. (An element read,
+      // `$__typed_idx`, throws on a receiver it cannot index: no read ahead of a loop that
+      // may run no round.)
+      const kind = fx.kind(node[1]), args = () => node.slice(2).every(c => pureGiven(c, bound))
+      if (kind === 'pure') return args()
+      if (kind === 'header' && node.slice(2).every(c => presentPtr(c, presentNames, defs))) return !callHeader && !hasHeaderStore && args()
+      if (kind === 'header') return !callHeader && !hasUnknownStore && args()
       return false
     }
     // A value-producing block with private scratch sets is pure when every
@@ -687,7 +559,7 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
     if (PURE_LICM_OPS.has(op)) return node.slice(1).every(c => pureGiven(c, bound))
     return false
   }
-  return { pureGiven, locals, globals, storedCells, storedBases, hasUnsafeCall, hasAnyCall, hasDirectStore, hasUnknownStore, hasV128 }
+  return { pureGiven, hasV128 }
 }
 
 /**
@@ -729,7 +601,7 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, headerSa
 // WRITE (no value carried across the back-edge), (d) is only ever `local.set` (never
 // `local.tee`/conditionally defined). Each condition rejects a class that would miscompile.
 // The facts are hoistInvariantLoop's.
-export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, headerSafeFuncs = null } = {}) {
+export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects = NO_MODULE } = {}) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -830,7 +702,7 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, headerSa
     // elsewhere (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
     // address-local-disjointness load test, which was unsound in general (two distinct locals can
     // hold the same address) and only worked by luck on the bench shapes.
-    const { pureGiven } = computeLoopInvariance(loop, { distinctParams, baseParamOf, headerSafe: headerSafeFuncs, allowPrivateSets: true })
+    const { pureGiven } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, allowPrivateSets: true })
     const motionSafe = (n) => {
       let hasTee = false
       walkAst(n, { enter: x => { if (hasTee) return false; if (x[0] === 'local.tee') { hasTee = true; return false } } })
@@ -915,8 +787,8 @@ const constTree = (n) => Array.isArray(n) && typeof n[0] === 'string' && n[0].st
 // Watr owns traversal, private-local checks, extraction, deduplication and typing.
 // Facts: the module bindings that hold typed arrays of their own (`freshTypedGlobals`,
 // plan/literals.js) and the functions a loop may call without a header changing
-// (`headerSafeFuncs`, collectHeaderSafeFuncs).
-export function hoistInvariantLoop(fn, { freshTypedGlobals = null, headerSafeFuncs = null } = {}) {
+// (`effects`, optimize/effects.js).
+export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_MODULE } = {}) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
   const distinctParams = distinctBases(fn, freshTypedGlobals)
@@ -944,11 +816,7 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, headerSafeFun
   }
   hoistInvariants(fn, {
     prefix: '$__li',
-    callType: callee => {
-      if (SAFE_OFFSET_CALLS.has(callee) || PURE_CALL_I32.has(callee)) return 'i32'
-      if (READONLY_MEM_CALLS.has(callee) || typeof callee === 'string' && callee.startsWith('$math.')) return 'f64'
-      return null
-    },
+    callType: callee => effects.kind(callee) ? effects.results(callee)?.[0] ?? null : null,
     analyze: (loop, nested) => {
       const scopedLoad = parents ? node => {
         if (node.boundsOwner == null) return false
@@ -956,7 +824,7 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, headerSafeFun
           if (at.boundsOwner === node.boundsOwner) return true
         return false
       } : null
-      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, headerSafe: headerSafeFuncs, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
+      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
       return (node, bound) => !constTree(node) && ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     },
   })
@@ -1160,7 +1028,7 @@ export function narrowLoopBound(fn) {
  *     the whitelist already guarantees this never happens)
  * Blocks are treated as transparent — recurse into children.
  */
-export function cseScalarLoad(fn) {
+export function cseScalarLoad(fn, fx = NO_MODULE) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -1233,7 +1101,7 @@ export function cseScalarLoad(fn) {
       const callee = node[1]
       // Process args first.
       for (let i = 2; i < node.length; i++) walk(node[i], node, i)
-      if (!SAFE_OFFSET_CALLS.has(callee)) table.clear()
+      if (fx.writes(callee)) table.clear()
       return
     }
 

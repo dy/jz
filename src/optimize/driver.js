@@ -43,8 +43,8 @@ export const RUN = [
   ['promoteCells', (fn) => promoteCells(fn)],
   ['nanCanon', (fn) => stripDeadCanons(fn)],
   ['hoistPtrType', (fn) => hoistPtrType(fn)],
-  ['hoistInvariantPtrOffset', (fn) => hoistInvariantPtrOffset(fn)],
-  ['hoistPtrOffset', (fn) => hoistPtrOffset(fn)],
+  ['hoistInvariantPtrOffset', (fn, cfg, facts) => hoistInvariantPtrOffset(fn, facts.effects)],
+  ['hoistPtrOffset', (fn, cfg, facts) => hoistPtrOffset(fn, facts.effects)],
   ['narrowLoopBound', (fn) => narrowLoopBound(fn)],
   // Unified LICM (replaces hoistInvariantToInt32 / PtrOffsetLoop / CellLoads), at both maturity points (idempotent).
   ['hoistInvariantLoop', (fn, cfg, facts) => hoistInvariantLoop(fn, facts)],
@@ -56,14 +56,14 @@ export const RUN = [
   ['boolConvertToSelect', (fn) => boolConvertToSelect(fn)],
   ['hoistAddrBase', (fn) => hoistAddrBase(fn)],
   ['hoistInvariantLoop.late', (fn, cfg, facts) => hoistInvariantLoop(fn, facts)],
-  ['cseScalarLoad', (fn) => cseScalarLoad(fn)],
+  ['cseScalarLoad', (fn, cfg, facts) => cseScalarLoad(fn, facts.effects)],
   // a chained kernel's out-parameter results stay in the locals that staged them, and the stores the chain overwrites go
-  ['forwardStores', (fn) => forwardStores(fn)],
+  ['forwardStores', (fn, cfg, facts) => forwardStores(fn, facts.effects)],
   // (a loop's every-round stores to a slot it never reads, stored as it leaves)
-  ['sinkStores', (fn) => sinkStores(fn)],
+  ['sinkStores', (fn, cfg, facts) => sinkStores(fn, facts.effects)],
   // (one ready before a computation it does not read goes first)
-  ['earlyStores', (fn) => earlyStores(fn)],
-  ['promoteGlobals', (fn, cfg, facts) => promoteGlobals(fn, facts.globalRefTypes, facts.reachableWrites)],
+  ['earlyStores', (fn, cfg, facts) => earlyStores(fn, facts.effects)],
+  ['promoteGlobals', (fn, cfg, facts) => promoteGlobals(fn, facts.globalRefTypes, facts.effects)],
   ['unswitchTypedParamLoop', (fn, cfg, facts) => unswitchTypedParamLoop(fn, facts.f16)],
   // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
   // re-optimize). watr is the sole optimizer that runs after, and it preserves the
@@ -135,7 +135,7 @@ export const RUN = [
   // A load only its bits are read of is the load of the integer type.
   ['foldLoadCasts', (fn) => foldLoadCasts(fn)],
   // A load an earlier one read, nothing stored between; then a part of a word read alone, the narrow load of it.
-  ['reuseLoads', (fn) => reuseLoads(fn)],
+  ['reuseLoads', (fn, cfg, facts) => reuseLoads(fn, facts.effects)],
   ['narrowByteLoads', (fn) => narrowByteLoads(fn)],
   // One a dominating test settled goes.
   ['settledTests', (fn) => dropSettledTests(fn)],

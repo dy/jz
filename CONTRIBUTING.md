@@ -2951,7 +2951,7 @@ percent, a store to a global at the loop's entry as much again). A loop
 whose iterations are released as well (emit/control-flow.js
 iterationRelease) asks the compaction epoch past one comparison of the heap
 with its mark, and afresh: the site's kernels are calls a later pass puts in
-the function, which `collectReachableGlobalWrites` takes as `later`, and
+the function, which the effects' solve (optimize/effects.js) takes as `later`, and
 promoteGlobals asks the function's own row of it, so the epoch is never a
 local read as the function is entered (it was, and a release after a
 compaction of the loop's own walked the log the move had emptied and freed
@@ -3611,6 +3611,7 @@ src/
                 every row, and every rule that stays code (a fact, flow, fresh locals or effects) by running its own function on patterns: both
                 trees assembled and run over grids of constants and arguments, a difference on an admitted input a failure. Checked means run
                 on that grid, evidence and not a proof);
+                effects.js (what a call does, solved once a module and again over what watr hands back: the globals it may set, the memory it may write and through which typed global, whether it may write a header word, throw, reach the host or return; the runtime helpers whose body does not show a fact are HELPERS, test/effects.js holding each to its body; every pass asks it, and none closes over the call graph itself);
                 quiet-loops.js (as the runtime is pulled: a loop that allocates nothing as emitted loses the compaction and the release the census gave it);
                 forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops; a compaction site's forward of a root the loop never writes hands back what the root held before the loop, below the floor, and is no write of it, so the hop is set again as the site re-enters the loop; an escape's lowering writes the flag and the log, no block; a hop no loop takes is asked once between calls that may move a block, the first teeing its answer and a later one of the receiver on every path after it reading the local, of a module global's receiver too until the global is written);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
@@ -4148,8 +4149,8 @@ since the host can store to it (`test/held-number.js`). preEval decides a test t
 reads a module constant (`const DEBUG = false`, a `var` written once) and
 drops the dead arm; only the test reads the constant, a reference in the code
 that stays keeps its name. A loop that writes no array header
-(element stores only, calls to functions the module-wide census finds header
-safe, `collectHeaderSafeFuncs`) reads a present array's forwarding word and
+(element stores only, calls to functions that may write no header word,
+optimize/effects.js `header`) reads a present array's forwarding word and
 length once before the loop (`presentArrays`, optimize/licm.js); a durable
 array such a loop stores into is saved for the reset ahead of it. An element
 receiver whose one missing value is absence throws from its own bounds test;
@@ -5607,7 +5608,7 @@ sixteen reads are the values the compose stored (`test/mem-alias.js`). A local L
 once from a local written once (`$__li1 = $__li10`, `$__li8 = $__li10`, one per access of
 one base) is that local where its write has run (forward-store.js `copyRoots`), so the two
 reads of `local[i]` are one address; a call of the math runtime, which touches no memory of
-the program (optimize/pure-funcs.js `pureKernel`), forgets nothing. A tree of i32
+the program (optimize/effects.js HELPERS: `pure`), forgets nothing. A tree of i32
 constants stays out of LICM's hoists (licm.js `constTree`): in a local of its own it is an
 operand the memarg fold no longer sees.
 

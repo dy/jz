@@ -4,7 +4,7 @@
 // evaluated across.
 import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { isArr } from './node-utils.js'
-import { pureKernel } from '../pure-funcs.js'
+import { helperKind } from '../effects.js'
 
 // Decompose a load/store node, normalizing the optional `offset=K` attribute jz
 // folds adjacent accesses into: `(op addr …)` → off 0, `(op offset=K addr …)` → K.
@@ -114,14 +114,19 @@ export const localReads = (n) => {
   return r
 }
 // A statement a value (or a load) may be evaluated across: it writes none of the value's
-// locals or any global, stores nothing, branches nowhere, and calls only what writes
-// no memory: the durable-array snapshot (which records an array), the header reads
-// behind an element access (a pointer's forwarding hop, a length), or a throw guard
-// (which either does nothing or ends the activation, whose locals then no one reads).
-// A store crossing it (`strict`) needs more: no load could see the store's slot, no
-// call could, and a guard that throws would leave the store made.
-export const INERT_CALLS = new Set(['$__durable_arr_snap', '$__ptr_offset_fwd', '$__ptr_offset', '$__len'])
-export const inertFor = (stmt, reads, strict = false) => {
+// locals or any global, stores nothing, branches nowhere, and calls only what writes no
+// memory, or a throw guard (which either does nothing or ends the activation, whose
+// locals then no one reads). With the module's effects (`fx`, optimize/effects.js) a
+// call is asked of them, and a global's write is let through for the caller to settle
+// (forward-store.js forgets a slot whose address reads it); without, a helper is asked
+// of HELPERS. A store crossing it (`strict`) needs more: no load could see the store's
+// slot, no call could (a call's result a function of its operands alone), and a guard
+// that throws would leave the store made.
+const QUIET = new Set(['pure', 'header', 'log'])
+const quietCall = (c, strict, fx) => typeof c === 'string' && (fx
+  ? (strict ? fx.kind(c) === 'pure' : !fx.writes(c) || !fx.returns(c))
+  : (strict ? helperKind(c) === 'pure' : QUIET.has(helperKind(c)) || helperKind(c) === 'throw'))
+export const inertFor = (stmt, reads, strict = false, fx = null) => {
   if (!isArr(stmt)) return typeof stmt === 'string'
   let ok = true
   walkAst(stmt, { enter: n => {
@@ -129,9 +134,9 @@ export const inertFor = (stmt, reads, strict = false) => {
     const op = n[0]
     if (typeof op !== 'string') { ok = false; return false }
     if (op === 'local.set' || op === 'local.tee') { if (reads.has(n[1])) ok = false; return }
-    // (the math runtime reads and writes nothing of the program's: optimize/pure-funcs.js pureKernel)
-    if (op === 'call') { if (!pureKernel(n[1]) && (strict || !INERT_CALLS.has(n[1]) && !n[1].startsWith('$__throw_'))) ok = false; return }
+    if (op === 'call') { if (!quietCall(n[1], strict, fx)) ok = false; return }
     if (op === 'unreachable') { if (strict) ok = false; return }
+    if (op === 'global.set' && fx && !strict) return
     if (op === 'global.set' || op.includes('.store') || op.startsWith('memory.') || op.includes('.atomic.') || op.startsWith('call') || BRANCH_OPS.has(op)
         || strict && op.includes('.load')) ok = false
   } })

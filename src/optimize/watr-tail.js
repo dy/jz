@@ -17,9 +17,9 @@ import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { constWords, hexHalf } from '../static-data.js'
 import {
-  SIMD_PINNED, LANE_PINS, collectReachableGlobalWrites, hoistGlobalPtrOffset,
+  SIMD_PINNED, LANE_PINS, solveEffects, hoistGlobalPtrOffset,
 } from './index.js'
-import { pureKernel } from './pure-funcs.js'
+import { mathKernel } from './effects.js'
 import { guardToInt32 } from './to-int32.js'
 import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
@@ -646,12 +646,12 @@ export const TAIL = [
   // A split binding of its predecessor's type takes that slot: the generic optimizer
   // then reads the function the source wrote.
   ['shareSplitSlots', (t) => { t.time('shareSplitSlots', () => { for (const n of t.m) shareSplitSlots(n) }) }],
-  // The math runtime depends only on its operands and cannot trap (its loads read constant
-  // tables, its truncations are guarded): value numbering and scheduling treat its calls
-  // like arithmetic.
+  // The math runtime depends only on its operands and cannot trap (optimize/effects.js
+  // HELPERS: its loads read constant tables, its truncations are guarded): value numbering
+  // and scheduling treat its calls like arithmetic.
   ['watrOptions', (t, cfg, x) => {
     t.watrOpts = resolveWatrOpts(cfg, x)
-    if (t.watrOpts) t.watrOpts.pure = t.m.filter(n => Array.isArray(n) && n[0] === 'func' && pureKernel(n[1])).map(n => n[1])
+    if (t.watrOpts) t.watrOpts.pure = t.m.filter(n => Array.isArray(n) && n[0] === 'func' && mathKernel(n[1])).map(n => n[1])
   }],
   // (a wrapped word operation over extended words is the word operation: `avail & -avail` negates in the word)
   ['foldWrappedWords', (t) => { foldWrappedWords(t.m) }],
@@ -669,10 +669,9 @@ export const TAIL = [
   ['localReuse', (t) => { t.time('watCleanup', () => localReuse(t.m)) }],
   ['poolConstants', (t) => { t.m = t.time('watCleanup', () => poolConstants(t.m)) }],
   ['postGlobalPtr', (t, cfg, x) => {
-    const funcs = t.m.filter(node => Array.isArray(node) && node[0] === 'func')
     if (x.stableGlobals?.size) {
-      const reach = collectReachableGlobalWrites(funcs, null, x.callsNothing)
-      for (const node of funcs) hoistGlobalPtrOffset(node, x.stableGlobals, reach)
+      const fx = t.effects(x)
+      for (const node of t.m) if (Array.isArray(node) && node[0] === 'func') hoistGlobalPtrOffset(node, x.stableGlobals, fx)
     }
   }],
   ['guardToInt32', (t, cfg) => { t.time('guardToInt32', () => guardToInt32(t.m, cfg.wordTruncation === 'add')) }],
@@ -681,7 +680,7 @@ export const TAIL = [
   // optimizer leaves it, against literals, is a word)
   ['foldWrappedWords.late', (t) => { foldWrappedWords(t.m) }],
   ['narrowFlagLocals', (t) => { for (const n of t.m) narrowFlagLocals(n) }],
-  ['forwardChecked', (t) => { t.time('forwardChecked', () => forwardCheckedElements(t.m)) }],
+  ['forwardChecked', (t, cfg, x) => { t.time('forwardChecked', () => forwardCheckedElements(t.m, t.effects(x))) }],
   ['stripDeadLateData', (t, cfg, x) => { stripDeadLateData(t.m, x.lazyDataSpans, x.staticDataSpan, x.dataRecords) }],
   ['unrollTrips', (t) => { t.time('unrollTrips', () => unrollTrips(t.m)) }],
   ['ringLaps', (t) => { t.time('ringLaps', () => ringLaps(t.m)) }],
@@ -703,7 +702,7 @@ export const TAIL = [
   // (where the round uses it)
   ['leadGathers', (t) => { t.time('leadGathers', () => leadGathers(t.m)) }],
   // (a round's last store, read back first by the next round, through a local)
-  ['carryStores', (t) => { t.time('carryStores', () => carryStores(t.m)) }],
+  ['carryStores', (t, cfg, x) => { t.time('carryStores', () => carryStores(t.m, t.effects(x))) }],
   // (a round that skips one takes the latch without a jump past it)
   ['skipLatches', (t) => { t.time('skipLatches', () => skipLatches(t.m)) }],
   ['guardExtremes', (t) => { t.time('guardExtremes', () => guardExtremes(t.m)) }],
@@ -742,7 +741,18 @@ export function watrTail(module, cfg, {
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => !!userFuncs?.has(name.slice(1)) || name.endsWith('$exp') && !!userFuncs?.has(name.slice(1, -4))
-  const t = { m: module, watrOpts: null, user, time }
+  // What each call does, solved again over the module watr hands back (its functions are
+  // new arrays, and link added the arena's kernels): the first step that asks solves it.
+  let solved = null
+  const effects = (facts) => {
+    if (solved?.m !== t.m) {
+      const funcs = [], imports = []
+      for (const n of t.m) if (Array.isArray(n)) (n[0] === 'func' ? funcs : n[0] === 'import' ? imports : []).push(n)
+      solved = { m: t.m, fx: time('effects', () => solveEffects(funcs, { imports, callsNothing: facts.callsNothing })) }
+    }
+    return solved.fx
+  }
+  const t = { m: module, watrOpts: null, user, time, effects }
   for (let i = 0; i < TAIL_STEPS.length; i++) if (on(TAIL_STEPS[i], cfg)) TAIL[i][1](t, cfg, x, null)
   return t.m
 }

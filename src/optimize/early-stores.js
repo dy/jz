@@ -35,6 +35,7 @@
 import { findBodyStart } from '../ir.js'
 import { constOf } from './vectorize/access.js'
 import { nodeEqual } from '../ast.js'
+import { NO_MODULE } from './effects.js'
 
 const isArr = Array.isArray
 const STORE = /^(?:i32|i64|f32|f64)\.store(?:8|16|32)?$/
@@ -68,6 +69,12 @@ const walk = (n, f) => { if (!isArr(n)) return; f(n); for (let i = 1; i < n.leng
 const writes = (c) => (c[0] === 'local.set' || c[0] === 'local.tee') && typeof c[1] === 'string'
 /** Whether a node's operation is one no statement may cross: control, a call, a trap, a global or memory-wide write. */
 const fixed = (op) => typeof op !== 'string' || STOP.has(op) || TRAPS.test(op) || op.startsWith('memory.') || op.includes('atomic') || op.startsWith('v128.') && (op.includes('load') || op.includes('store'))
+/** What an access moving past node `c` cannot pass, of the module's effects `fx`: a fixed node,
+ *  but a call whose result is a function of its operands alone and that cannot throw (it reads
+ *  and writes nothing of the program), and a global's write, which is no memory, but to an
+ *  access whose operands read that global (`globals`). */
+const stops = (c, fx, globals) => c[0] === 'call' ? !(typeof c[1] === 'string' && fx.kind(c[1]) === 'pure' && !fx.throws(c[1]))
+  : c[0] === 'global.set' ? globals.has(c[1]) : fixed(c[0])
 
 /** The cycles of the deepest dependence chain of an expression (a coarse x64 table). */
 const depth = (n) => {
@@ -144,15 +151,15 @@ const pure = (n) => {
 
 /** Read each load set into a local read once, by a later statement of `list`, where it is read. */
 const sink = (ctx) => {
-  const { list, from, counts } = ctx
+  const { list, from, counts, fx } = ctx
   for (let i = from; i < list.length; i++) {
     const s = list[i]
     if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3 || typeof s[1] !== 'string' || counts.get(s[1]) !== 1) continue
     const load = s[2]
     if (!isArr(load) || !LOAD.test(load[0])) continue
-    const x = s[1], mine = accessOf(load), deps = new Set()
+    const x = s[1], mine = accessOf(load), deps = new Set(), globals = new Set()
     let plain = true
-    walk(mine.addr, (c) => { if (fixed(c[0]) || writes(c) || LOAD.test(c[0])) plain = false; else if (c[0] === 'local.get') deps.add(c[1]) })
+    walk(mine.addr, (c) => { if (fixed(c[0]) || writes(c) || LOAD.test(c[0])) plain = false; else if (c[0] === 'local.get') deps.add(c[1]); else if (c[0] === 'global.get') globals.add(c[1]) })
     if (!plain) continue
     // the statement reading x, past statements that leave the load's value alone
     const written = new Set()
@@ -163,7 +170,7 @@ const sink = (ctx) => {
       const stores = []
       walk(p, (c) => {
         if (c[0] === 'local.get' && c[1] === x) reads = true
-        else if (fixed(c[0]) || writes(c) && (c[1] === x || deps.has(c[1]))) ok = false
+        else if (stops(c, fx, globals) || writes(c) && (c[1] === x || deps.has(c[1]))) ok = false
         else if (STORE.test(c[0])) stores.push(c)
       })
       if (reads) {
@@ -186,7 +193,7 @@ const sink = (ctx) => {
 
 /** Move each store of the list ahead of the long computations before it that it may cross. */
 const raise = (ctx) => {
-  const { list, from, counts } = ctx
+  const { list, from, counts, fx } = ctx
   for (let j = from + 1; j < list.length; j++) {
     const s = list[j]
     if (!isArr(s) || typeof s[0] !== 'string' || !STORE.test(s[0])) continue
@@ -200,8 +207,8 @@ const raise = (ctx) => {
     }
     // the store itself: no control, no call, no trap, no local written
     let plain = true
-    const reads = new Set()
-    walk(s, (c) => { if (fixed(c[0]) || writes(c)) plain = false; else if (c[0] === 'local.get') reads.add(c[1]) })
+    const reads = new Set(), globals = new Set()
+    walk(s, (c) => { if (fixed(c[0]) || writes(c)) plain = false; else if (c[0] === 'local.get') reads.add(c[1]); else if (c[0] === 'global.get') globals.add(c[1]) })
     if (!plain) continue
     const mine = accessOf(s), myLoads = []
     walk(s[s.length - 1], (c) => { if (LOAD.test(c[0])) myLoads.push(accessOf(c)) })
@@ -215,7 +222,7 @@ const raise = (ctx) => {
       let ok = true
       const accesses = []
       walk(p, (c) => {
-        if (fixed(c[0]) || writes(c) && reads.has(c[1])) ok = false
+        if (stops(c, fx, globals) || writes(c) && reads.has(c[1])) ok = false
         else if (LOAD.test(c[0]) || STORE.test(c[0])) accesses.push(c)
       })
       if (!ok) break
@@ -238,8 +245,9 @@ const raise = (ctx) => {
   }
 }
 
-/** Raise the stores of function `fn` (a func node) where they may go earlier. */
-export function earlyStores(fn) {
+/** Raise the stores of function `fn` (a func node) where they may go earlier, asking `fx` (the
+ *  module's effects) what a call does. */
+export function earlyStores(fn, fx = NO_MODULE) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const distinct = fn.distinctParams
   if (!distinct?.size) return
@@ -256,7 +264,7 @@ export function earlyStores(fn) {
     lists.push([n, k])
   })
   for (const [list, from] of lists) {
-    const ctx = { list, from, distinct, counts }
+    const ctx = { list, from, distinct, counts, fx }
     sink(ctx)
     raise(ctx)
   }

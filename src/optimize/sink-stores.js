@@ -19,7 +19,8 @@
  *
  * Exact under these conditions:
  *  - the loop is `(br_if $B …)` first and `(br $L)` last, the last of its block, with
- *    no other branch out, no loop within and no call but a throw guard's;
+ *    no other branch out, no loop within and no call but a throw guard's or one that
+ *    writes nothing, reads no slot and does not throw;
  *  - the slot is an f64 at an address of locals the loop never writes, stored every
  *    round, by a statement of the body or by both arms of an `if` of it whose arms
  *    only set locals and store;
@@ -40,17 +41,17 @@ import { accessOf, hasOp, localGetCounts, resolveAddr, clone, CONTROL_OPS } from
 import { isArr } from './vectorize/node-utils.js'
 import { mayAlias } from '../ir/mem-alias.js'
 import { copyRoots } from './forward-store.js'
-import { pureKernel } from './pure-funcs.js'
+import { NO_MODULE } from './effects.js'
 
 const NONE = new Set()
 const BRANCH = new Set(['br', 'br_if', 'br_table'])
 const EXIT = new Set(['return', 'return_call', 'return_call_indirect', 'return_call_ref', 'throw', 'rethrow', 'try', 'try_table', 'delegate', 'call_indirect', 'call_ref', 'loop', 'global.set'])
 const ARITH = /^(?:(?:f64|f32|i32|i64)\.(?:const|add|sub|mul|div|neg|abs|sqrt|min|max|copysign|floor|ceil|trunc|nearest|eq|ne|lt|gt|le|ge|convert_\w+|promote_f32|demote_f64|reinterpret_\w+)|local\.get|global\.get|select)$/
-// (the header reads behind an element access: a block's forwarding hop, a length)
-const HEADERS = new Set(['$__ptr_offset_fwd', '$__ptr_offset', '$__len'])
-const isThrow = n => n[0] === 'call' && typeof n[1] === 'string' && n[1].startsWith('$__throw_')
-
-export function sinkStores(fn) {
+// Asks `fx` (the module's effects, optimize/effects.js) what a call does: the loop may make a
+// throw guard's (a call that never returns, before which the sunk stores are made) and one
+// that writes nothing, reads no slot of the program (its result a function of its operands,
+// or a header word) and does not throw.
+export function sinkStores(fn, fx = NO_MODULE) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   const names = new Set(), added = []
@@ -64,7 +65,7 @@ export function sinkStores(fn) {
       const here = [...path, [list, s]]
       if (s[0] === 'block' && isArr(s.at(-1)) && s.at(-1)[0] === 'loop') {
         if (copies === undefined) copies = copyRoots(fn, bodyStart)
-        const flush = sinkLoop(fn, s, here, copies, fresh)
+        const flush = sinkLoop(fn, s, here, copies, fresh, fx)
         if (flush) { list.splice(i + 1, 0, flush); i++; continue }
       }
       visit(s, 1, here)
@@ -75,7 +76,9 @@ export function sinkStores(fn) {
 }
 
 // The flush past the block, the loop rewritten; or null, the loop as it was
-function sinkLoop(fn, block, path, copies, fresh) {
+function sinkLoop(fn, block, path, copies, fresh, fx) {
+  const isThrow = n => n[0] === 'call' && typeof n[1] === 'string' && !fx.returns(n[1])
+  const quiet = c => (fx.kind(c) === 'pure' || fx.kind(c) === 'header') && !fx.throws(c)
   const loop = block.at(-1), B = block[1], L = loop[1]
   if (typeof B !== 'string' || typeof L !== 'string' || loop.length < 5) return null
   const head = loop[2], tail = loop.at(-1), end = loop.length - 1
@@ -90,7 +93,7 @@ function sinkLoop(fn, block, path, copies, fresh) {
     if ((op === 'block' || op === 'if') && typeof n[1] === 'string') inner.add(n[1])
     if ((op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string') writes.add(n[1])
     if (EXIT.has(op) || op.startsWith('memory.') || op.includes('.atomic.')) ok = false
-    else if (op === 'call' && !isThrow(n) && !pureKernel(n[1]) && !HEADERS.has(n[1])) ok = false
+    else if (op === 'call' && !isThrow(n) && !quiet(n[1])) ok = false
     else if (BRANCH.has(op) && n !== loop[2] && !(op === 'br_table' ? n.slice(1).filter(x => typeof x === 'string').every(x => inner.has(x)) : inner.has(n[1]))) ok = false
   } })
   if (!ok) return null

@@ -38,9 +38,10 @@ export { hasIROp } from './ir-scan.js'
 // Level/string presets + resolveOptimize(): level semantics, the jz-vs-watr contract.
 export { PASS_NAMES, TUNING_KEYS, resolveOptimize } from './config.js'
 
-// Module-wide write sets and the global/memory hoists built on them.
+// What a call does, and the global/memory hoists that ask it.
+export { solveEffects, lazyEffects } from './effects.js'
 export {
-  collectReachableGlobalWrites, collectReachableMemoryWrites, stablePtrGlobalNames,
+  stablePtrGlobalNames,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix,
 } from './globals.js'
 

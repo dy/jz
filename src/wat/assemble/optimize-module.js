@@ -19,7 +19,7 @@ import parseWat from 'watr/parse'
 import { ctx, checkpointed, eachChecked, declGlobal, warn, registerResetHook } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import {
-  optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
+  optimizeFunc, solveEffects, lazyEffects,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
   specializeMkptr, scalarizeStaticScratch, dropStaticRoots, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
@@ -31,8 +31,7 @@ import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 import { insertLoopCompacts } from '../../optimize/loop-compact.js'
 import { quietOptimizedLoops } from '../../optimize/quiet-loops.js'
 import { outlineToInt32 } from '../../optimize/to-int32.js'
-import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
-import { hoistForwardHops, collectStillFuncs, collectResults } from '../../optimize/forward-hops.js'
+import { hoistForwardHops } from '../../optimize/forward-hops.js'
 import { resetVectorizeState } from '../../optimize/vectorize/lift.js'
 import { representationProgramHasBigint } from '../../compile/representation-plan.js'
 import { compactSlack } from '../../../module/core/stub-log.js'
@@ -44,8 +43,8 @@ registerResetHook(resetVectorizeState)
 /**
  * What the optimizer's passes read of the compile: one value a compile, read
  * when the module stage starts. The facts the stage derives of the module as
- * it stands (the write closure, the pure functions, the header-safe calls, the
- * quiet loops) join it as they are made; `icSite`, `warn` and `vectorized` are
+ * it stands (what each call does, the pure functions, the quiet loops) join it
+ * as they are made; `icSite`, `warn` and `vectorized` are
  * what the passes hand back.
  */
 export const passFacts = (cfg) => ({
@@ -76,8 +75,8 @@ export const passFacts = (cfg) => ({
   compactLoopLabels: ctx.plans.compactLoopLabels, rewindLoopLabels: ctx.plans.rewindLoopLabels,
   compactSlack: compactSlack(),
   // made by the stage
-  reachableWrites: null, stableGlobals: null, pureFuncMap: null, dvArmFns: null, headerSafeFuncs: null,
-  quietLoops: null, masked: null, memoryWrites: null,
+  effects: null, stableGlobals: null, pureFuncMap: null, dvArmFns: null,
+  quietLoops: null, masked: null,
   // handed back
   vectorized: new Set(),
   warn,
@@ -91,17 +90,18 @@ export const passFacts = (cfg) => ({
 
 // The per-function steps two module steps walk (`hoistGlobalPtr`, `hoistGlobalConstLoads`).
 export const GLOBAL_PTR = [
-  ['hoistGlobalPtrOffset', (fn, cfg, facts, st) => { st.snapshots = hoistGlobalPtrOffset(fn, facts.stableGlobals, facts.reachableWrites) }],
-  ['hoistLoopGlobalPtrOffset', (fn, cfg, facts, st) => hoistLoopGlobalPtrOffset(fn, facts.stableGlobals, facts.reachableWrites, st.snapshots ?? null)],
+  ['hoistGlobalPtrOffset', (fn, cfg, facts, st) => { st.snapshots = hoistGlobalPtrOffset(fn, facts.stableGlobals, facts.effects) }],
+  ['hoistLoopGlobalPtrOffset', (fn, cfg, facts, st) => hoistLoopGlobalPtrOffset(fn, facts.stableGlobals, facts.effects, st.snapshots ?? null)],
 ]
 export const GLOBAL_LOADS = [
-  ['hoistStableGlobalConstLoads', (fn, cfg, facts) => { if (facts.globalTypedLen?.size) hoistStableGlobalConstLoads(fn, facts.memoryWrites, facts.reachableWrites, facts) }],
-  ['guardMaskedVectorSuffix', (fn, cfg, facts) => { if (facts.masked.has(fn)) guardMaskedVectorSuffix(fn, facts.memoryWrites) }],
+  ['hoistStableGlobalConstLoads', (fn, cfg, facts) => { if (facts.globalTypedLen?.size) hoistStableGlobalConstLoads(fn, facts.effects, facts) }],
+  ['guardMaskedVectorSuffix', (fn, cfg, facts) => { if (facts.masked.has(fn)) guardMaskedVectorSuffix(fn, facts.effects) }],
 ]
 const GLOBAL_PTR_STEPS = stage('globalPtr', GLOBAL_PTR), GLOBAL_LOADS_STEPS = stage('globalLoads', GLOBAL_LOADS)
 
 // Each module step, `(sec, cfg, facts, ms)`: `ms` holds the stage's timer `t`, the module's
-// functions once the helpers specializeMkptr adds are in (`funcs()`), and the write closure (`writes()`).
+// functions once the helpers specializeMkptr adds are in (`funcs()`), and what each call does
+// (`effects()`, optimize/effects.js), solved where a step first asks.
 export const MODULE = [
   // (a binding of static typed storage the compaction never moves is no root of it)
   ['dropStaticRoots', (sec, cfg, facts, ms) => ms.t('dropStaticRoots', () => dropStaticRoots([...sec.funcs, ...sec.stdlib, ...sec.start], facts))],
@@ -116,7 +116,7 @@ export const MODULE = [
     const stable = stablePtrGlobalNames(facts.globalValTypes)
     if (!stable.size) return
     facts.stableGlobals = stable
-    facts.reachableWrites = ms.writes()
+    facts.effects = ms.effects()
     for (const s of ms.funcs()) { const st = {}; for (let i = 0; i < GLOBAL_PTR_STEPS.length; i++) if (on(GLOBAL_PTR_STEPS[i], cfg)) GLOBAL_PTR[i][1](s, cfg, facts, st) }
   })],
   // The pure-function map for tryPerPixelColor's Phase-2 lane inline, before the
@@ -163,9 +163,7 @@ export const MODULE = [
     facts.dvArmFns = new Map(ms.funcs().filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
   }],
   ['optimizeFuncs', (sec, cfg, facts, ms) => ms.t('optimizeFuncs', () => {
-    if (cfg?.promoteGlobals !== false) facts.reachableWrites = ms.writes()
-    // The user functions a loop may call without a header changing (optimize/licm.js).
-    facts.headerSafeFuncs = collectHeaderSafeFuncs(ms.funcs())
+    facts.effects = ms.effects()
     // (each function's passes keep nothing of their own past it: a hosted compile's phases)
     eachChecked(ms.funcs(), func => optimizeFunc(func, cfg, facts))
   })],
@@ -193,9 +191,8 @@ export const MODULE = [
   // A receiver a loop never rebinds: its forward hop once before the loop and
   // after each call that may move a block (optimize/forward-hops.js).
   ['forwardHops', (sec, cfg, facts, ms) => ms.t('forwardHops', () => {
-    const funcs = [...sec.funcs, ...sec.stdlib, ...sec.start]
-    const still = collectStillFuncs(funcs), results = collectResults(funcs, facts.imports), writes = ms.writes()
-    for (const fn of funcs) hoistForwardHops(fn, still, results, writes, facts.globalTypes)
+    const fx = facts.effects = ms.effects()
+    for (const fn of [...sec.funcs, ...sec.stdlib, ...sec.start]) hoistForwardHops(fn, fx, facts.globalTypes)
   })],
   ['hoistGlobalConstLoads', (sec, cfg, facts, ms) => ms.t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!facts.globalTypedLen?.size
@@ -206,8 +203,7 @@ export const MODULE = [
       fn.some(n => Array.isArray(n) && n[0] === 'local' && n[2] === 'v128')) : []
     const masked = new Set(simd.filter(fn => hasIROp(fn, 'v128.bitselect')))
     if (!wantLoads && !masked.size) return
-    facts.reachableWrites = ms.writes()
-    facts.memoryWrites = collectReachableMemoryWrites(ms.funcs())
+    facts.effects = ms.effects()
     facts.masked = masked
     for (const s of ms.funcs()) for (let i = 0; i < GLOBAL_LOADS_STEPS.length; i++) if (on(GLOBAL_LOADS_STEPS[i], cfg)) GLOBAL_LOADS[i][1](s, cfg, facts, null)
   })],
@@ -226,15 +222,15 @@ export function optimizeModule(sec, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, () => checkpointed(fn)) : (_, fn) => checkpointed(fn)
   const cfg = ctx.transform.optimize
   const facts = passFacts(cfg)
-  // The write closure, built where a step first needs it. A loop's compaction goes in
-  // after the steps that read it (loopCompacts): its kernels count as written already.
-  const compacting = facts.compactLoopLabels?.size ? new Map([...facts.compactLoopLabels.keys()].map(name => [name, COMPACT_KERNELS])) : null
-  const callsNothing = facts.callsNothing
-  let allFuncs = null, reachableWrites = null
+  // What each call does, solved where a step first asks. A loop's compaction goes in
+  // after the steps that read it (loopCompacts): its kernels count as called already.
+  const later = facts.compactLoopLabels?.size ? new Map([...facts.compactLoopLabels.keys()].map(name => [name, COMPACT_KERNELS])) : null
+  const { imports, callsNothing } = facts
+  let allFuncs = null, effects = null
   const ms = {
     t,
     funcs: () => allFuncs ??= [...sec.funcs, ...sec.stdlib, ...sec.start],
-    writes: () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(ms.funcs(), compacting, callsNothing)),
+    effects: () => effects ??= lazyEffects(() => t('effects', () => solveEffects(ms.funcs(), { imports, callsNothing, later }))),
   }
   for (let i = 0; i < MODULE_STEPS.length; i++) if (on(MODULE_STEPS[i], cfg)) MODULE[i][1](sec, cfg, facts, ms)
   const dataEnd = dataLen()
