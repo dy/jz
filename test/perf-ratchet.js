@@ -328,6 +328,13 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 //            with the wide accumulator, as every spelling compiled it before src/normalize.js:
 //            that program 63/63 -> 77/38, mixed 2250/1085 -> 2264/1060 on both hosts, the total
 //            the second wide copy's 14 ops, every other program as it was.
+//   the local rewrites read a constant by its value (src/optimize/rules.js, 2026-11-14): the
+//            table's rows and the one memarg fold now take the runtime's constants, which
+//            watr's parser spells as strings, where the chains took only numbers. JS host:
+//            buf 31533/2830 -> 31453/2820, slice 230812/30656 -> 230172/30576, condref
+//            202101/7587 -> 201461/7507; wasi: buf 24683/2830 -> 24673/2820, slice
+//            166684/28960 -> 166604/28880, condref 147364/7587 -> 147284/7507; the other
+//            categories as they were.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
