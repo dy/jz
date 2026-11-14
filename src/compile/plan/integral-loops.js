@@ -179,7 +179,9 @@
  * an inner box the same two ways, and a head read in another form (a `for`
  * over several counters, a negated test) with no box.
  * A name of the box read as written is tested for -0 where a write of it may
- * be one: the proof reads the names of the box as no -0. A loop that runs
+ * be one: the proof reads the names of the box as no -0. A length read as
+ * written is a count of an array, a string or a typed array alone: another
+ * receiver's is what it holds, `{ length: 2.5 }`'s a fraction. A loop that runs
  * user code takes no box, nor one whose integers the program holds within
  * 2^52 as written (`child = 2 * i + 1` under `child < n` over a length:
  * optimize/int-narrow.js carries those as they are).
@@ -610,6 +612,9 @@ const PURE_TEST = new Set(['<', '<=', '>', '>=', '===', '!==', '==', '!=', '&&',
 // (an unsigned shift by a literal count of 1 to 31: an int32 however large its operand)
 const isLitShift = (e) => Array.isArray(e[2]) && e[2][0] == null && Number.isInteger(e[2][1]) && (int32(e[2][1]) & 31) >= 1
 const isLitIn = (e, lo, hi) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number' && e[1] >= lo && e[1] <= hi
+// the compound assignments whose result is a word, and the typed arrays whose length is a count
+const WORD_COMPOUND = new Set(['|=', '&=', '^=', '<<=', '>>='])
+const TYPED_CTOR = /^(Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32|Float32|Float64|BigInt64|BigUint64)Array$/
 
 /** Version the loops of one body, a function's or a closure's
  *  (`params`, the names it binds; `view`, the summary's scope for it; `func`,
@@ -686,6 +691,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   const intArray = (e) => typeof e === 'string' && INT_ELEMENTS.test(ctorOf(e))
   const kindOf = (n) => view?.kindOf(unrenamed(n)) ?? 0, kindOfExpr = (e) => view?.kindOfExpr(unrenamed(e)) ?? 0
   let bodyWrites = null   // the body's writes, indexed once; a copy adds its own
+  // the names a step or a compound assignment moves other than to a word (`n++`, `s += k`; not
+  // `h |= b`), a closure's writes among them; read again after a copy, which adds its own
+  let moved = null
+  const movedNames = () => {
+    const out = new Set()
+    walkAst(body, { enter: (n) => { if (MUTATE_OPS.has(n[0]) && n[0] !== '=' && typeof n[1] === 'string' && !WORD_COMPOUND.has(n[0]) && !(n[0] === '>>>=' && isLitShift(n))) out.add(n[1]) } })
+    return out
+  }
   let storedAsIs = null   // what each write of the body stores as written (the interval proof's walk), for a box's gain
   const fresh = new Set()  // the copies' own Numbers: int32 aliases and rounded bounds
   // The guards this pass made, by their `if`: a test of names alone (no alias it
@@ -767,6 +780,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (the copy's names are the body's locals now: an enclosing loop's copy reads them so)
     for (const own of r.owns) for (const [n, m] of own) { locals.add(m); origin.set(m, origin.get(n) ?? n) }
     for (const d of r.boundDecls) locals.add(d[1])
+    moved = null
     rewrote = true
   }
   // The box's guard selects its copy; the other arm is the copy with no box, the loop as written
@@ -892,25 +906,39 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (params.has(n) ? !integralEntry(n) : values.length === 0) return false
       return values.every(v => v !== null && integral(v, found, intArray)) && [...found].every(x => already(x, seen))
     }
-    // a name the emitter holds to an int32 as written: a parameter every call passes an
-    // integer of none, a local every write of which selects among such (a peel's segment
-    // end, `r < w ? r : w`) or is an int32 by construction; a sum or difference of them
-    // it may widen, and an element it holds only where it proves the read present, so a
-    // bound of either takes the copy's word
-    const int32Held = (n, seen = new Set()) => {
+    // A name the emitter holds to an int32 on every run, which the copy may take as one: a
+    // parameter every call passes an integer of none, a module binding the program stores
+    // as a word (plan/scope.js), a local every write of which selects among such (a peel's
+    // segment end, `r < w ? r : w`) or is an int32 by construction, and which no step moves
+    // (`n++` grows past what it started from); a sum or difference of them it may widen, and
+    // an element it holds only where it proves the read present, so a bound of either takes
+    // the copy's word. `loose`: a name that reads as one as written, every write of it a
+    // literal, a bit operation, a length or a selection of such, steps and all: no proof,
+    // only what the planner with no bound tier leaves to the emitter.
+    const int32Held = (n, loose = false, seen = new Set()) => {
       if (seen.has(n)) return true
       seen.add(n)
       if (params.has(n)) return integralEntry(n)
+      if (!loose && !locals.has(n)) return ctx.scope.globals.get(n)?.type === 'i32'
       const values = bodyWrites.get(n) ?? NO_WRITES
-      return values.length > 0 && values.every(v => selects(v, seen))
+      return values.length > 0 && (loose || !(moved ??= movedNames()).has(n)) && values.every(v => selects(v, loose, seen))
     }
-    const selects = (e, seen) => typeof e === 'string' ? int32Held(e, seen)
+    // (an int32 by construction: a bit operation but an unsigned shift of any count, the
+    // length of an array, a string or a typed array; another receiver's `length` is what
+    // it holds, `{ length: 2.5 }`'s a fraction)
+    const selects = (e, loose, seen) => typeof e === 'string' ? int32Held(e, loose, seen)
       : !Array.isArray(e) ? false
       : e[0] == null ? Number.isInteger(e[1]) && e[1] >= I32_MIN && e[1] <= I32_MAX
-      : e[0] === '?:' && e.length === 4 ? selects(e[2], seen) && selects(e[3], seen)
-      : e[0] === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max') && e[2]?.[0] === ',' && e[2].length === 3 ? selects(e[2][1], seen) && selects(e[2][2], seen)
-      : e[0] === '()' && e.length === 2 ? selects(e[1], seen)
-      : BITWISE.has(e[0]) || (e[0] === '.' && e[2] === 'length')
+      : e[0] === '?:' && e.length === 4 ? selects(e[2], loose, seen) && selects(e[3], loose, seen)
+      : e[0] === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max') && e[2]?.[0] === ',' && e[2].length === 3 ? selects(e[2][1], loose, seen) && selects(e[2][2], loose, seen)
+      : e[0] === '()' && e.length === 2 ? selects(e[1], loose, seen)
+      : BITWISE.has(e[0]) ? loose || e[0] !== '>>>' || isLitShift(e)
+      : e[0] === '.' && e[2] === 'length' && (loose || e.length === 3 && countedLength(e[1]))
+    const readsHeld = (n) => int32Held(n, true)
+    const countedLength = (r) => {
+      const t = tagOf(core(kindOfExpr(r)))
+      return t === K.ARRAY || t === K.STRING || t === K.TYPED && TYPED_CTOR.test(ctorOf(r))
+    }
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const isNumberKind = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k != null && k !== 0 && tagOf(core(k)) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) }
@@ -988,7 +1016,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (loop[2][1] === counter && terms &&
           !captured.has(counter) && !writesIn(loop[4]).has(counter) &&
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
-          !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && int32Held(n)))
+          !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && readsHeld(n)))
         counterBound = { name: n, terms, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust), entryWords,
           // (the trips: a literal start, a unit step up, a Number's `++i`: src/normalize.js)
           trip: up && init?.[0] == null && Number.isInteger(init[1]) && COUNTS.has(loop[3]?.[0]) && !/^-/.test(loop[3][0]) ? { n, adj: inclusive ? 1 : 0, entry: init[1] } : null }
@@ -1017,7 +1045,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (loop[0] === 'while' && (loop[1]?.[0] === '<' || loop[1]?.[0] === '<=')) {
       const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '<='
       const terms = stableTerms(n)
-      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && int32Held(n))) {
+      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && readsHeld(n))) {
         const advance = maxAdvanceBudget(loop[2], counter, budget)
         if (advance > 0 && advance <= 2147483647) {
           const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]
@@ -1037,7 +1065,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (loop[0] === 'while' && (loop[1]?.[0] === '>' || loop[1]?.[0] === '>=')) {
       const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '>='
       const terms = stableTerms(n)
-      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && int32Held(n)) &&
+      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && readsHeld(n)) &&
           unitFall(loop[2], counter)) {
         const descent = maxMovementBudget(loop[2], counter, budget)
         if (descent > 0 && descent <= 2147483647) {
@@ -1077,7 +1105,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       dividends.some(a => !fractional(a))).map(([n]) => n)
     // (one an int32 by construction, a length, needs no word of its own: the copy tests it above zero as it is,
     // and keeps what an enclosing guard proved of it)
-    const divisors = allDivisors.filter(n => !int32Held(n)), heldDivisors = allDivisors.filter(n => int32Held(n))
+    const divisors = allDivisors.filter(n => !readsHeld(n)), heldDivisors = allDivisors.filter(n => readsHeld(n))
     const names = bounds.length || allDivisors.length || indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? [...new Set([...indexed, ...bounds, ...divisors])] : []
     // A walk over links: `while (c >= 0)` over a local the loop writes only as an
     // element of one int32 array (`j = gnext[j]`, a cell's chain of next
@@ -1321,7 +1349,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       for (const w of held) for (const v of loopWrites.get(w)) integral(v, reads, intArray)
       // (a word as written: every write of it a literal, a bit operation or a length, none a step)
       const asWord = (n) => locals.has(n) && !params.has(n) && some(body, m => (m[0] === 'let' || m[0] === 'const') && m.slice(1).some(d => Array.isArray(d) && d[0] === '=' && d[1] === n)) &&
-        !some(body, m => MUTATE_OPS.has(m[0]) && m[1] === n && m[0] !== '=') && (bodyWrites.get(n) ?? NO_WRITES).every(v => selects(v, new Set([n])))
+        !some(body, m => MUTATE_OPS.has(m[0]) && m[1] === n && m[0] !== '=') && (bodyWrites.get(n) ?? NO_WRITES).every(v => selects(v, false, new Set([n])))
       const stable = [...reads].filter(n => typeof n === 'string' && !held.includes(n) && !inner.has(n) && !loopWrites.has(n) && (outerOk(n) || stableGlobal(n)) &&
         mayBeNumber(n) && !intExprRange(n) && !fractional(n))
       // every name the loop's test reads is held, in the box, or a literal: its test reads no conversion

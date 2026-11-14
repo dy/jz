@@ -157,6 +157,27 @@ export let f = (n, s, t) => {
 }`, [[1, 0, 1], [8, 0, 2], [40, 3, 1], [2 ** 30, 5, 2], [0, 0, 1], [8, -1, 1], [8, -0, 3], [NaN, 0, 1], [8, 0, -0], [8, 1, 0], [8, 2, -1]])
 })
 
+test('boxed counters: a length the receiver may not make an integer is no word of it', () => {
+  // A `length` is a count only of an array, a string or a typed array: another receiver's is what
+  // it holds (`{ length: 40.5 }`). Read as a word as written, the box tested the name within [0, top]
+  // and the proof read it as an integer, so `ix = n - k` was `(n - k) | 0` and `x[ix]` read x[39]
+  // where Node reads x[39.5], undefined (levels 2 and over). Expected values are Node's.
+  for (const recv of ['new Float64Array(10)', '[1, 2, 3, 4, 5]', "'abcdefghij'"]) compare(`export let f = (b, d, t) => {
+  const o = t ? { length: b } : ${recv}
+  const n = o.length
+  const x = new Float64Array(64)
+  for (let q = 0; q < 64; q++) x[q] = q + 1
+  let ix = 0, k = d, s = 0, c = 0
+  while (ix < n) {
+    if (++c > 40) break
+    s += x[ix] === undefined ? 1000 : x[ix]
+    k *= 2
+    ix = n - k
+  }
+  return [s, c, ix]
+}`, [[40.5, 1, 1], [40, 1, 1], [33.25, 2, 1], [10, 1, 0], [7.5, 3, 0], [1e10 + 0.5, 1, 1], [2147483648.5, 1, 1]])
+})
+
 test('boxed counters: rfft answers what Node answers, its index locals words of the copy', () => {
   const src = readFileSync(new URL('../examples/rfft/rfft.js', import.meta.url), 'utf8')
   for (const optimize of levels(2, 'speed')) {

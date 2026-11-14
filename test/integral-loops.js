@@ -2174,6 +2174,31 @@ test('integral loops: a counter entering from a name counts in a word', () => {
   ok(copy, 'the counter counts in a word of the copy, under the rounded bound')
 })
 
+// A start the copy takes as a word untested must be one on every run: a `length` is
+// a count of an array, a string or a typed array alone. `{ length: 2.5 }` read as one
+// started the copy's counter at 2.5 under the bound rounded up, `ceil(4.2) = 5`, one
+// trip past Node's (levels 2 and over; the bound an exported parameter, which the
+// copy tests by its range alone). Expected values are Node's.
+test('integral loops: a start read from another receiver\'s length is tested as a word', () => {
+  for (const recv of ['new Float64Array(3)', '[1, 2, 3]', "'abc'"]) for (const [step, test] of [['j++', 'j < num'], ['j--', 'j > num - 4']]) {
+    const src = `export let f = (b, num, t) => {
+      const o = t ? { length: b } : ${recv}
+      const lim = o.length
+      const x = new Float64Array(64)
+      for (let q = 0; q < 64; q++) x[q] = q + 1
+      let s = 0, c = 0
+      for (let j = lim; ${test}; ${step}) { if (++c > 50) break; s += x[j] === undefined ? 1000 + j : x[j] }
+      return [s, c]
+    }`
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const a of [[2.5, 4.2, 1], [2.5, 4, 1], [3.5, 9.9, 1], [0.5, 3.7, 1], [2, 4.2, 1], [7, 4.2, 0], [1.25, 6.5, 1], [-1.5, 2.2, 1]])
+        is(got.f(...a), host.f(...a), `${JSON.stringify(optimize)} ${recv} ${step}: f(${a})`)
+    }
+  }
+})
+
 // A head declaring names beside its counter and stepping them in its update
 // (decode-wav's `for (let x = ch[c], i = 0, k = c * 3; i < frames; i++, k += nCh * 3)`)
 // reads as the loop over its counter alone; a cursor stepped by a stride of the
