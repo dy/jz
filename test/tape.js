@@ -346,6 +346,13 @@ test('fold on the tape: a finite value against an infinity or a NaN decides, a s
   // the dropped arm must be inert
   const effect = fn(['select', ['local.get', '$x'], ['call', '$g'], ['i32.const', 1]])
   ok(same(body(effect, fold), effect), 'an arm with an effect is kept')
+  // and unable to trap: a division by zero, a truncation of NaN would trap where the select does
+  for (const arm of [['i32.div_s', ['local.get', '$x'], ['local.get', '$x']], ['i32.rem_u', ['local.get', '$x'], ['local.get', '$x']], ['i32.trunc_f64_s', ['local.get', '$d']]]) {
+    const trapping = fn(['select', ['local.get', '$x'], arm, ['i32.const', 1]])
+    ok(same(body(trapping, fold), trapping), `an arm that may trap is kept: ${arm[0]}`)
+  }
+  const sat = fn(['select', ['local.get', '$x'], ['i32.trunc_sat_f64_s', ['local.get', '$d']], ['i32.const', 1]])
+  ok(same(body(sat, fold), fn(['local.get', '$x'])), 'a saturating truncation cannot trap')
 })
 
 test('fold on the tape: a comparison of two constants is its answer, a mask by a constant its operand or the constant', () => {

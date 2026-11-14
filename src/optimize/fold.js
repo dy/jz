@@ -1,7 +1,8 @@
 /**
  * Constant folding on the tape: an instruction whose value is known from
  * its operands becomes that value, and a `select` on a constant condition
- * becomes the arm taken, when the operand it drops has no effect. What the
+ * becomes the arm taken, when the operand it drops has no effect and cannot
+ * trap (a division by zero dropped would answer where the select traps). What the
  * fold knows today: a finite value (`f64.convert_i32_s`, a finite constant,
  * a local every definition of which is finite) compared against a NaN or
  * an infinity (`f64.ne` is 1, `f64.eq` 0: the guard jz's integer arithmetic
@@ -16,12 +17,16 @@
 import { T, NONE, OP_NUM, OP_STR, node, num, replace, intern } from '../ir/tape.js'
 import { FX, fxOf, nameOf, bodyOf, ops, i32Const } from './fn.js'
 
-/** Whether evaluating the subtree at `id` has no effect and cannot trap: reads of locals and globals, arithmetic. */
+// An instruction of no effect that may yet trap: an integer division or remainder (by zero,
+// or the least integer by -1), a truncation that does not saturate (NaN, out of range).
+const TRAPS = /^i(?:32|64)\.(?:div|rem)_|^i(?:32|64)\.trunc_f/
+/** Whether evaluating the subtree at `id` has no effect and cannot trap: reads of locals and globals, arithmetic that cannot trap. */
 const inert = (id) => {
   const stack = [id]
   while (stack.length) {
     const n = stack.pop(), fx = fxOf(n)
     if (fx !== FX.PURE && fx !== FX.GET && fx !== FX.GLOBAL_GET) return false
+    if (T.op[n] >= 0 && TRAPS.test(T.syms[T.op[n]])) return false
     for (let c = T.a[n]; c !== NONE; c = T.next[c]) stack.push(c)
   }
   return true
