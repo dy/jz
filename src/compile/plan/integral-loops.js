@@ -164,7 +164,10 @@
  * head, over the names it wrote back: a head is a state both forms share, and
  * the loop's test, pure, runs there once either way. Standing alone, a copy
  * that can leave has one cold loop: the loop as written past the guard, which
- * runs where the guard fails and resumes where the copy left. A loop that runs
+ * runs where the guard fails and resumes where the copy left (a `for` with an
+ * init keeps a resumption of its own: the loop as written would run the init
+ * again). A name of the box read as written is tested for -0 where a write of
+ * it may be one: the proof reads the names of the box as no -0. A loop that runs
  * user code takes no box, nor one whose integers the program holds within
  * 2^52 as written (`child = 2 * i + 1` under `child < n` over a length:
  * optimize/int-narrow.js carries those as they are).
