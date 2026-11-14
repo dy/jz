@@ -453,8 +453,11 @@ function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, fx = NO_
     const op = node[0]
     if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'f32.const') return true
     if (op === 'local.get') return typeof node[1] === 'string' && (bound.has(node[1]) || !locals.has(node[1]))
-    // A global the loop sets, or a call in it may, is no invariant. Locals remain frame-private.
-    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !indirect && !calls.some(c => fx.sets(c, node[1]))
+    // A global the loop sets, or a call in it may, is no invariant; nor one read in a loop
+    // whose calls write memory: the copy would live across the call, a spill a round, where
+    // the read after it is a load (stdlib-gamma's PIO2 decode, lifted, ran 1.1x slower).
+    // Locals remain frame-private.
+    if (op === 'global.get') return typeof node[1] === 'string' && !globals.has(node[1]) && !indirect && !calls.some(c => fx.sets(c, node[1]) || fx.writes(c) || fx.header(c))
     if (op === 'local.tee') {
       if (typeof node[1] !== 'string') return false
       // The operand is evaluated BEFORE the tee writes $X, so a `local.get $X`
