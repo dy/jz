@@ -31,67 +31,41 @@ export const nanboxF64 = {
   /**
    * Carrier-specific peephole rules — folds that depend on the NaN-box layout.
    * Called by the optimizer's fused-rewrite walk after generic folds; returns
-   * a replacement node or `null` to leave the node unchanged.
+   * a replacement node or `null` to leave the node unchanged. (The folds that
+   * hold in Wasm alone, the low word of a slot's load and of a high part or'ed
+   * with a word, are the table's, optimize/rules.js; the cast round trips are
+   * watr's `simplifyCast`.)
    *
-   * The folds (the cast round trips are watr's `simplifyCast`, which the
-   * walk asks first):
-   *   1. `i32.wrap_i64 (i64.reinterpret_f64 (f64.load A ?off))` → `i32.load A ?off`.
-   *      Wasm is little-endian; the low 32 bits of a NaN-boxed f64 at A are
-   *      exactly i32.load(A). Saves two ops on every pointer extraction from
-   *      an array slot or struct field.
-   *   2. `i32.wrap_i64 (i64.reinterpret_f64 (call $__mkptr* … offset))` → offset.
+   *   1. `i32.wrap_i64 (i64.reinterpret_f64 (call $__mkptr* … offset))` → offset.
    *      A NaN-boxed pointer keeps type/aux in the high bits and the i32
    *      offset in the low 32, so the f64 round-trip is pure overhead when the
    *      consumer only wants the offset. Covers generic `$__mkptr` and
    *      specialized `$__mkptr_T_A_d` trampolines (offset is the last arg).
-   *   3. As (2) but reaching through `(block (result f64) … (call $__mkptr …))`
+   *   2. As (1) but reaching through `(block (result f64) … (call $__mkptr …))`
    *      — `new TypedArray(n)` lowers to this shape — by retyping the block
    *      to i32 and dropping the box on its tail.
-   *   4. `i32.wrap_i64 (i64.or HIGH_ONLY (i64.extend_i32_* X))` → X.
-   *      The NaN-tag-or-extend pattern: high bits hold the NaN prefix + tag,
-   *      low 32 bits carry the i32 offset unchanged.
    */
   peephole(node) {
-    const op = node[0]
-
-    if (op === 'i32.wrap_i64' && node.length === 2) {
-      const a = node[1]
-
-      if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) {
-        const inner = a[1]
-        // (1) wrap(reinterpret(f64.load ADDR ?offset)) → (i32.load ADDR ?offset)
-        if (Array.isArray(inner) && inner[0] === 'f64.load') {
-          const out = ['i32.load']
-          for (let i = 1; i < inner.length; i++) out.push(inner[i])
-          return out
-        }
-        // (2) wrap(reinterpret(call $__mkptr* … offset)) → offset
-        if (isMkptr(inner)) return inner[inner.length - 1]
-        // (3) reach through (block (result f64) … (call $__mkptr*))
-        if (Array.isArray(inner) && inner[0] === 'block' && isMkptr(inner[inner.length - 1])) {
-          let ri = -1
-          for (let i = 1; i <= 2 && i < inner.length; i++) {
-            if (Array.isArray(inner[i]) && inner[i][0] === 'result') { ri = i; break }
-          }
-          if (ri >= 0 && inner[ri][1] === 'f64') {
-            const tail = inner[inner.length - 1]
-            const nb = inner.slice()
-            nb[ri] = ['result', 'i32']
-            nb[nb.length - 1] = tail[tail.length - 1]
-            return nb
-          }
-        }
-        return null
+    if (node[0] !== 'i32.wrap_i64' || node.length !== 2) return null
+    const a = node[1]
+    if (!Array.isArray(a) || a[0] !== 'i64.reinterpret_f64' || a.length !== 2) return null
+    const inner = a[1]
+    // (1) wrap(reinterpret(call $__mkptr* … offset)) → offset
+    if (isMkptr(inner)) return inner[inner.length - 1]
+    // (2) reach through (block (result f64) … (call $__mkptr*))
+    if (Array.isArray(inner) && inner[0] === 'block' && isMkptr(inner[inner.length - 1])) {
+      let ri = -1
+      for (let i = 1; i <= 2 && i < inner.length; i++) {
+        if (Array.isArray(inner[i]) && inner[i][0] === 'result') { ri = i; break }
       }
-
-      // (4) wrap(or HIGH_ONLY (extend X)) → X
-      if (Array.isArray(a) && a[0] === 'i64.or' && a.length === 3) {
-        const l = a[1], r = a[2]
-        if (isHighOnly(l) && isExtend(r)) return r[1]
-        if (isHighOnly(r) && isExtend(l)) return l[1]
+      if (ri >= 0 && inner[ri][1] === 'f64') {
+        const tail = inner[inner.length - 1]
+        const nb = inner.slice()
+        nb[ri] = ['result', 'i32']
+        nb[nb.length - 1] = tail[tail.length - 1]
+        return nb
       }
     }
-
     return null
   },
 }
@@ -100,17 +74,3 @@ export const nanboxF64 = {
 
 const isMkptr = (n) => Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string'
   && (n[1] === '$__mkptr' || n[1].startsWith('$__mkptr_'))
-
-const isExtend = (n) => Array.isArray(n) &&
-  (n[0] === 'i64.extend_i32_u' || n[0] === 'i64.extend_i32_s') && n.length === 2
-
-const isHighOnly = (n) => {
-  if (!Array.isArray(n) || n[0] !== 'i64.const') return false
-  const v = n[1]
-  let bi
-  if (typeof v === 'number') bi = BigInt(v)
-  else if (typeof v === 'string') {
-    try { bi = v.startsWith('-') ? -BigInt(v.slice(1)) : BigInt(v) } catch { return false }
-  } else return false
-  return (bi & 0xFFFFFFFFn) === 0n
-}

@@ -1,7 +1,9 @@
 // ToInt32 of a number of unknown range, as the IR writes it: the low word of
 // its 64-bit truncation, Infinity taken to zero
 //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s x)) (i32.const 0) (f64.ne x inf))
-// exact for every number. On x64 V8 runs the 64-bit truncation at several times
+// exact for every number of magnitude under 2^63; past it the truncation
+// saturates and the word reads -1, or 0 when negative (README, "Bitwise operands
+// under 2^63"). On x64 V8 runs the 64-bit truncation at several times
 // the cost of the 32-bit one (bench/lowering.mjs), and a number nearly always
 // lies inside the 32-bit range, where the 32-bit truncation is the integer. One
 // test of the magnitude takes that path and keeps the exact form for the rest

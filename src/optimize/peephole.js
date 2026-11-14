@@ -15,11 +15,11 @@ import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthy
 import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst, nodeEqual } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
+import { rewriteBy, WALK, HELPERS, LOADS } from './rules.js'
 import { IR_FULL, irSize } from '../growth.js'
 const TWO_63 = 2 ** 63
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
-const NULL_BITS = atomNanHex(1)
 const UNDEF_BITS = atomNanHex(2)
 
 // wasm comparison ops — each yields an i32 that is exactly 0 or 1.
@@ -370,12 +370,11 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true, links = nu
  *  low word of an i64 load is the i32 load at its address (little-endian): a plain
  *  array's pointer element (`coefs[j]`, `state[j]` of a filter cascade) loads into
  *  an integer register, not through a float one and a move. After the loop
- *  specializer, whose copies read a hit element bare. (Cast rules: watr's
- *  simplifyCast is their home.) */
+ *  specializer, whose copies read a hit element bare. (The casts of a load are the
+ *  table's LOADS, optimize/rules.js.) */
 export function foldLoadCasts(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
-  const memarg = (l) => l.slice(1).filter(x => !(typeof x === 'string' && x.startsWith('align=')))
   // An f64 local every write of which is a load and every read of which takes its bits
   // (`i64.reinterpret_f64`) holds them as an i64: each write loads the i64, each read is
   // the local. (A local written from anything else keeps its float and its reads: the
@@ -397,16 +396,15 @@ export function foldLoadCasts(fn) {
   for (let i = bodyStart; i < fn.length; i++) scan(fn[i], null)
   // (a flat local access is out of the walk's view: none is retyped then)
   const retyped = new Set(flat ? [] : [...bitsOnly].filter(([, only]) => only).map(([name]) => name))
-  // a cast of a value: into a load, through a block's or an arm's result
+  // a cast of a value: into a load (the table's rows, optimize/rules.js), through a block's result
   const cast = (op, v) => {
-    if (!Array.isArray(v)) return [op, v]
-    if (op === 'i64.reinterpret_f64' && v[0] === 'f64.load') return ['i64.load', ...v.slice(1)]
-    if (op === 'f64.reinterpret_i64' && v[0] === 'i64.load') return ['f64.load', ...v.slice(1)]
-    if (op === 'i64.reinterpret_f64' && v[0] === 'f64.reinterpret_i64') return v[1]
-    if (op === 'i32.wrap_i64' && v[0] === 'i64.load') return ['i32.load', ...memarg(v)]
+    const n = [op, v]
+    if (!Array.isArray(v)) return n
+    const r = rewriteBy(LOADS, n)
+    if (r !== null) return r
     const type = op === 'i64.reinterpret_f64' ? 'i64' : op === 'f64.reinterpret_i64' ? 'f64' : 'i32'
     if (v[0] === 'block' && Array.isArray(v[1]) && v[1][0] === 'result' && v.length > 2) return ['block', ['result', type], ...v.slice(2, -1), cast(op, v[v.length - 1])]
-    return [op, v]
+    return n
   }
   // (a node two parents share is rewritten once: its parents read the one result)
   const done = new WeakMap()
@@ -686,7 +684,11 @@ const wordByte = (value, width, k) => {
  *  which a temp the emitter sets beside each store may carry. The first store
  *  keeps its address and value expressions, so their tees stay, and the later
  *  stores go, each with the temp only it read (`reads` counts a local's reads
- *  in the function). */
+ *  in the function). The memory is the same where neither traps (the relation
+ *  AFTER_TRAP, optimize/rules.js): where a later byte lies past memory the bytes
+ *  before it were written and the wide store writes none. A store jz emits
+ *  addresses its object inside memory and does not trap (test/rules-population.js
+ *  writes past either end of arrays at every level). */
 function mergeByteStores(list, start, reads) {
   for (let i = start; i < list.length; i++) {
     const first = storeStmt(list[i])
@@ -893,48 +895,21 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
     }
   }
 
-  // Inline fixed tag tests and the shared runtime truthiness predicate.
-  if (doInline && op === 'call' && node.length === 3 && typeof node[1] === 'string') {
-    const fname = node[1]
-    if (fname === '$__ptr_type') return ['i32.and',
-      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', LAYOUT.TAG_SHIFT]]],
-      ['i32.const', LAYOUT.TAG_MASK]]
-    if (fname === '$__ptr_aux') return ['i32.and',
-      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', LAYOUT.AUX_SHIFT]]],
-      ['i32.const', LAYOUT.AUX_MASK]]
-    if (fname === '$__is_null') return ['i64.eq', node[2], ['i64.const', NULL_BITS]]
-    if (fname === '$__is_nullish' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
-        && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') return ['i32.or',
-      ['i64.eq', node[2], ['i64.const', NULL_BITS]],
-      ['i64.eq', node[2], ['i64.const', UNDEF_BITS]]]
-    if (inlineTruthy && fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
-        && Array.isArray(node[2][1])) {
-      let ref = node[2][1]
-      if (ref[0] !== 'local.get' && ref[0] !== 'local.tee') {
-        if (!freshF64) return node
-        ref = ['local.tee', freshF64(), ref]
-      }
-      return valueTruthyIR(ref, bigint)
+  // The table's rows (optimize/rules.js), the runtime's tag tests outside their own bodies.
+  const r = rewriteBy(WALK, node) ?? (doInline ? rewriteBy(HELPERS, node) : null)
+  if (r !== null) return r
+
+  // The shared runtime truthiness predicate, inline.
+  if (doInline && inlineTruthy && op === 'call' && node[1] === '$__is_truthy' && node.length === 3 &&
+      Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64' && Array.isArray(node[2][1])) {
+    let ref = node[2][1]
+    if (ref[0] !== 'local.get' && ref[0] !== 'local.tee') {
+      if (!freshF64) return node
+      ref = ['local.tee', freshF64(), ref]
     }
+    return valueTruthyIR(ref, bigint)
   }
 
-  // Peephole: rebox/unbox round-trips
-  if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && a[0] === 'i32.const') {
-      const n = typeof a[1] === 'number' ? a[1] : typeof a[1] === 'string' ? Number(a[1]) : NaN
-      if (Number.isFinite(n)) return ['f64.const', op === 'f64.convert_i32_u' ? n >>> 0 : n]
-    }
-  }
-  if (op === 'f64.mul' && node.length === 3) {
-    const a = node[1], b = node[2]
-    const isTwo = x => Array.isArray(x) && x[0] === 'f64.const' && x[1] === 2
-    const isCheapF64 = x => Array.isArray(x) &&
-      ((x[0] === 'local.get' && typeof x[1] === 'string') ||
-       (x[0] === 'f64.const' && typeof x[1] === 'number'))
-    if (isTwo(a) && isCheapF64(b)) return ['f64.add', b, b]
-    if (isTwo(b) && isCheapF64(a)) return ['f64.add', a, a]
-  }
   // The early SIMD preparation and final optimizer share exact cast rules.
   const cast = simplifyCast(node)
   if (cast) return cast
@@ -1002,38 +977,6 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
     const rng = f64Range(x, get, true)
     if (rng && rng.lo > -TWO_63 && rng.hi < TWO_63) return ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
   }
-  // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
-  // after the fold above, so the accumulator update is a bare i32.add the recognizer matches.
-  if (op === 'i32.or' && node.length === 3) {
-    const a = node[1], b = node[2]
-    if (Array.isArray(b) && b[0] === 'i32.const' && b[1] === 0) return a
-    if (Array.isArray(a) && a[0] === 'i32.const' && a[1] === 0) return b
-  }
-
-  // and-redundant-after-shr_u: (i32.and (i32.shr_u X K) M) → (i32.shr_u X K) when M's low
-  // (32-K) bits are all set. `X >>> K` is bounded to [0, 2^(32-K)-1] by the shift alone (it
-  // zero-fills the top K bits), so a mask that already covers every bit the shift can ever
-  // produce is a no-op — extra HIGH bits set in M beyond that range are harmless (the shift
-  // never sets them either way). K and M are both compile-time constants, so this is a pure
-  // identity, sound for every runtime X — not a proof-dependent fold. Flagship idiom: bit-field
-  // extraction after a hash/PRNG mix, `(state >>> 23) & 511` (xorshift32-style channel/lane
-  // split) — the mask is a leftover source-level safety habit, not a real constraint once the
-  // shift amount is known. wasm-opt's optimize-instructions finds this generically; jz didn't
-  // have an i32.and rule at all before this one.
-  if (op === 'i32.and' && node.length === 3) {
-    const isConstShrU = (n) => Array.isArray(n) && n[0] === 'i32.shr_u' && n.length === 3 &&
-      Array.isArray(n[2]) && n[2][0] === 'i32.const' && typeof n[2][1] === 'number'
-    const a = node[1], b = node[2]
-    const shr = isConstShrU(a) ? a : isConstShrU(b) ? b : null
-    const mask = shr === a ? b : a
-    if (shr && Array.isArray(mask) && mask[0] === 'i32.const' && typeof mask[1] === 'number') {
-      const k = ((shr[2][1] % 32) + 32) % 32
-      const bits = 32 - k
-      const lowMask = bits >= 32 ? 0xFFFFFFFF : (1 << bits) - 1
-      if (((mask[1] & lowMask) >>> 0) === (lowMask >>> 0)) return shr
-    }
-  }
-
   // if→select for a value-producing f64 `if` with PURE arms: (if (result f64) COND (then A)
   // (else B)) → (select A B COND). This is the branchless `cmov` lowering LLVM/clang apply to
   // every `cond ? a : b` — it removes the conditional branch (and its misprediction cost on
@@ -1088,62 +1031,6 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
 
   if (op === 'i32.and' && node.length === 3) { const r = foldRangeChecks(node); if (r) return r }
   if (op === 'i32.or' && node.length === 3) { const r = foldRangeUnions(node); if (r) return r }
-
-  // Canonical word scales expose the byte stride before lane recognition.
-  if (op === 'i32.mul' && node.length === 3) {
-    const a = node[1], b = node[2], c = a?.[0] === 'i32.const' ? a : b
-    const value = c === a ? b : a, n = c?.[0] === 'i32.const' ? Number(c[1]) : 0
-    if (Number.isInteger(n) && n > 0 && n <= 2147483648 && (n & (n - 1)) === 0)
-      return ['i32.shl', value, ['i32.const', 31 - Math.clz32(n)]]
-  }
-  if (op === 'i32.add' && node[2]?.[0] === 'i32.add' && node[2][2]?.[0] === 'i32.shl')
-    return ['i32.add', ['i32.add', node[1], node[2][1]], node[2][2]]
-
-  // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))
-  // → (i32.add (i32.shl x S) (i32.const K<<S)). Overflow-safe — both forms wrap
-  // mod 2^32 identically. Unlocks memarg offset= folding for biquad-style
-  // `arr[c+K0..KN]` reads where idx is precomputed but K is a small literal.
-  if (op === 'i32.shl' && node.length === 3) {
-    const a = node[1], b = node[2]
-    if (b?.[0] === 'i32.const' && Number.isInteger(Number(b[1])) && (Number(b[1]) & 31) === 0) return a
-    // shl-shl-merge: (i32.shl (i32.shl x K1) K2) → (i32.shl x (K1+K2)), each count
-    // taken mod 32 as the operator takes it, when the sum is below 32. Biquad:
-    // `sb = s<<2` then `__ab1 = state + (sb<<3)` ⇒ `s<<5` directly.
-    if (Array.isArray(a) && a[0] === 'i32.shl' && a.length === 3 &&
-        Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' &&
-        Array.isArray(a[2]) && a[2][0] === 'i32.const' && typeof a[2][1] === 'number') {
-      const sum = (a[2][1] & 31) + (b[1] & 31)
-      if (sum < 32) return ['i32.shl', a[1], ['i32.const', sum]]
-    }
-    if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 &&
-        Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 32) {
-      const ka = a[1], kb = a[2]
-      let inner, k
-      if (Array.isArray(kb) && kb[0] === 'i32.const' && typeof kb[1] === 'number') { inner = ka; k = kb[1] }
-      else if (Array.isArray(ka) && ka[0] === 'i32.const' && typeof ka[1] === 'number') { inner = kb; k = ka[1] }
-      if (inner != null) {
-        const shifted = (k * (1 << b[1])) | 0
-        return ['i32.add', ['i32.shl', inner, b], ['i32.const', shifted]]
-      }
-    }
-  }
-
-  // assoc-lift-const-add: (i32.add A (i32.add B (i32.const K))) → (i32.add (i32.add A B) (i32.const K))
-  // and mirror for left side. Lifts constant to top level so foldMemargOffsets
-  // recognizes the canonical (i32.add base const) shape.
-  if (op === 'i32.add' && node.length === 3) {
-    const a = node[1], b = node[2]
-    if (Array.isArray(b) && b[0] === 'i32.add' && b.length === 3) {
-      const bb1 = b[1], bb2 = b[2]
-      if (Array.isArray(bb2) && bb2[0] === 'i32.const') return ['i32.add', ['i32.add', a, bb1], bb2]
-      if (Array.isArray(bb1) && bb1[0] === 'i32.const') return ['i32.add', ['i32.add', a, bb2], bb1]
-    }
-    if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3) {
-      const aa1 = a[1], aa2 = a[2]
-      if (Array.isArray(aa2) && aa2[0] === 'i32.const') return ['i32.add', ['i32.add', aa1, b], aa2]
-      if (Array.isArray(aa1) && aa1[0] === 'i32.const') return ['i32.add', ['i32.add', aa2, b], aa1]
-    }
-  }
 
   // foldMemargOffsets: (load/store (i32.add base const) ...) → (load/store offset=N base ...)
   if (typeof op === 'string' && MEMOP.test(op)) {

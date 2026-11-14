@@ -8,7 +8,12 @@
 //   Number -0, +0, NaN, an infinity or a fraction;
 // - a ternary of a Boolean and a value of another kind under a condition the emitter reads as a
 //   constant (`(1 % 4294967296)`, a counter of an unrolled loop), compared strictly and loosely
-//   with 1, true, 0, false and 0.5, beside the same forms under a condition it does not.
+//   with 1, true, 0, false and 0.5, beside the same forms under a condition it does not;
+// - reads and writes of arrays at indexes computed past either end, the invariant the memarg
+//   fold, the low word of a slot's load and merged byte stores hold to (an access addresses
+//   its object inside memory, so its address sum does not wrap and it does not trap): typed
+//   arrays of each width and plain arrays, indexes a sum, a product and a word of an input that
+//   is negative, past 2^31, past 2^32, a fraction or NaN, and in a loop.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
@@ -78,4 +83,21 @@ test('rules population: a ternary of a Boolean and another kind, its condition a
   for (const cmp of cmps) fns.push(`(c, k) => { let r = 0; for (let i = 0; i < 3; i++) { r += ((i % 4294967296) ? (c !== i) : 0.5) ${cmp} } return r }`)
   const inputs = [[1, 1], [2, 0], [0, 2], [NaN, 1], [1, 0], [-0, 0]]
   population('constant ternary of mixed kinds', program(fns), names(fns), inputs)
+})
+
+test('rules population: reads and writes of arrays past either end', () => {
+  const kinds = ['Int32Array', 'Float64Array', 'Uint8Array', 'Uint16Array', 'Int8Array', 'Float32Array']
+  const at = ['i + 1', 'i - 1', 'i * 4 + 3', '(i + 4) | 0', 'i - 536870912 + 1', '(i << 2) + 8', 'i + 2147483647']
+  const fns = []
+  for (const k of kinds) for (const ix of at) fns.push(
+    `(i, v) => { const a = new ${k}(16); a[3] = 7; a[15] = 9; return a[${ix}] }`,
+    `(i, v) => { const a = new ${k}(16); a[${ix}] = v; let s = 0; for (let j = 0; j < 16; j++) s += a[j]; return s }`)
+  for (const ix of at) fns.push(`(i, v) => { const a = [1, 2, 3, 4]; return a[${ix}] }`)
+  // (a loop of reads around an index: the walk's sums and the lift's offsets)
+  for (const k of kinds) fns.push(`(i, v) => { const a = new ${k}(16); a[2] = 5; let s = 0; for (let j = 0; j < 4; j++) s += a[i + j + 2] | 0; return s }`,
+    `(i, v) => { const a = new ${k}(32); for (let j = 0; j < 32; j++) a[j] = j; let s = 0; for (let j = 0; j < 8; j++) s += a[(i & 7) + j * 2 + 1]; return s }`)
+  const inputs = []
+  for (const i of [0, 1, -1, 2, 3, 15, 16, 100, 2147483647, -2147483648, 1073741823, -1073741824, 536870911, 536870912, 4294967295, 4294967296, 1e9, -1e9, 12345678901, 2.5, NaN])
+    inputs.push([i, 3])
+  population('accesses past either end', program(fns), names(fns), inputs)
 })

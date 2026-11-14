@@ -25,6 +25,7 @@
 
 import { intRanges, isInt, fitsI32, remainderOf, quotientOf, pure, plainNaN, conditional, KIND, MADE, LIMIT } from './int-range.js'
 import { int32 } from '../static.js'
+import { rewriteBy, WORDS } from './rules.js'
 
 const isArr = Array.isArray
 const RESULT = n => isArr(n) && n[0] === 'result' ? n[1] : null
@@ -276,9 +277,9 @@ export function foldWrappedWords(module) {
       for (let i = 1; i < n.length; i++) n[i] = fold(n[i])
       // (a word rounded back stored as a word: the low word of the i64 is the word; truncated, a word is itself)
       if (n[0] === 'i64.store32') { const w = roundedWord(n[n.length - 1]); if (w) return ['i32.store', ...n.slice(1, -1), w] }
-      if (n[0] === 'f64.trunc' && converted(n[1])) return converted(n[1])
-      // (a literal word converted is the literal Number)
-      if ((n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n[1]?.[0] === 'i32.const' && Number.isInteger(Number(n[1][1]))) return ['f64.const', n[0] === 'f64.convert_i32_u' ? Number(n[1][1]) >>> 0 : Number(n[1][1]) | 0]
+      // (a word truncated is itself, a literal word converted the literal Number: the table's rows, optimize/rules.js)
+      const r = rewriteBy(WORDS, n)
+      if (r !== null) return r
       if (n[0] === 'i64.sub') return roundedWide(n) ?? n
       if (n[0] !== 'i32.wrap_i64') return n
       let x = n[1]

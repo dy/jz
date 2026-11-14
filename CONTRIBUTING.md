@@ -3600,6 +3600,13 @@ src/
                 (driver.js), link's and the tail's are walks of it, and test/pass-table.js fails a step run out of its stated order.
                 No file here reads the compile context: wat/assemble/optimize-module.js `passFacts` reads what the passes take, once a compile,
                 and under JZ_DEBUG_INVARIANTS the suite fails a step that reads a fact its entry does not take or writes one it does not make, test/_facts-guard.js);
+                rules.js (the local rewrites of WAT as one table: a row `[name, relation, match, out, when]` claims a tree computes what another
+                does under a condition on its constants, one matcher applies the rows, and fusedRewrite's walk, foldWrappedWords and foldLoadCasts
+                each apply a list of them where their chains of tests stood; a row's relation is part of it: exact, exact but for a NaN's payload,
+                or the same where neither traps with the replacement trapping on fewer inputs under an invariant it names. test/rules.js checks
+                every row, and every rule that stays code (a fact, flow, fresh locals or effects) by running its own function on patterns: both
+                trees assembled and run over grids of constants and arguments, a difference on an admitted input a failure. Checked means run
+                on that grid, evidence and not a proof);
                 quiet-loops.js (as the runtime is pulled: a loop that allocates nothing as emitted loses the compaction and the release the census gave it);
                 forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops; a compaction site's forward of a root the loop never writes hands back what the root held before the loop, below the floor, and is no write of it, so the hop is set again as the site re-enters the loop; an escape's lowering writes the flag and the log, no block; a hop no loop takes is asked once between calls that may move a block, the first teeing its answer and a later one of the receiver on every path after it reading the local, of a module global's receiver too until the global is written);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
