@@ -2187,7 +2187,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (dead || !Array.isArray(s)) return
       const op = s[0], v = versions.get(s)
       if (v || ALL_LOOPS.has(op)) {
-        if (v) absorb(s, v)
+        // (a tier's copy with no box too, as the other arm where the box's test stays)
+        if (v) { absorb(s, v); if (v.tier) absorb(v.tier.wrapped, v.tier.record) }
         for (const n of writesIn(s).keys()) env.set(n, v?.cursorHulls.get(n) ? [lit(v.cursorHulls.get(n)[0]), lit(v.cursorHulls.get(n)[1])] : null)
         endCands(s)
         prefixImpure = true
@@ -2355,6 +2356,29 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (an inner box's tier taken in, and the slots of copies below boxes read as their loops for the copy)
     let tookBox = false
     const below = []
+    // (a Number the inner copy wrote under a name of its own, for the loop as
+    // written beside it: alone in this copy, it writes the name itself)
+    const fastOf = (v) => {
+      if (!v.undo.size) return v.version
+      const fast = cloneWithSubst(v.version, new Map(), v.undo)
+      const list = fast[1], decl = list[1]
+      const self = (d) => Array.isArray(d) && d[0] === '=' && (d[2] === d[1] || Array.isArray(d[2]) && d[2][0] === 'u+' && d[2][1] === d[1])
+      for (let k = decl.length - 1; k >= 1; k--) if (self(decl[k])) decl.splice(k, 1)
+      if (decl.length === 1) list.splice(1, 1)
+      for (let k = list.length - 1; k >= 1; k--) if (self(list[k])) list.splice(k, 1)
+      return fast
+    }
+    // (an absorbed version: its tests this copy leaves, over its fast arm and `other`; an alias a
+    // dropped test captured is declared from its name's word: the name is an int32 here, and the
+    // alias keeps that representation where the name's own may be wider; the other aliases stay
+    // declared around)
+    const takeIn = (v, ab, other) => {
+      const fast = fastOf(v), rest = ab.rest
+      const kept = v.aliases.filter(a => !ab.subst.has(a))
+      const guarded = rest.length ? ['if', rest.reduce((a, b) => ['&&', a, b]), fast, other] : fast
+      const decls = [...kept.map(a => ['=', a, [null, 0]]), ...[...ab.subst].map(([a, n]) => ['=', a, ['|', n, [null, 0]]])]
+      return decls.length ? ['{}', [';', ['let', ...decls], guarded]] : guarded
+    }
     walkAst(loop, { enter: (n, p, i) => {
       if (n[0] === '=>') return false
       const v = versions.get(n)
@@ -2369,30 +2393,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (v.test) innerTests.push(v.aliases.length ? cloneWithSubst(v.test, new Map(), own) : v.test)
         for (const a of v.aliases) hoistedAliases.push(own.get(a) ?? a)
       }
-      // (a Number the inner copy wrote under a name of its own, for the loop as
-      // written beside it: alone in this copy, it writes the name itself)
-      let fast = v.version
-      if (v.undo.size) {
-        fast = cloneWithSubst(v.version, new Map(), v.undo)
-        const list = fast[1], decl = list[1]
-        const self = (d) => Array.isArray(d) && d[0] === '=' && (d[2] === d[1] || Array.isArray(d[2]) && d[2][0] === 'u+' && d[2][1] === d[1])
-        for (let k = decl.length - 1; k >= 1; k--) if (self(decl[k])) decl.splice(k, 1)
-        if (decl.length === 1) list.splice(1, 1)
-        for (let k = list.length - 1; k >= 1; k--) if (self(list[k])) list.splice(k, 1)
-      }
       if (v.box) tookBox = true
-      if (ab) {
-        // (an alias a dropped test captured is declared from its name's word: the
-        // name is an int32 here, and the alias keeps that representation where
-        // the name's own may be wider; the other aliases stay declared around)
-        // (where a test of a box stays, its other arm is the copy below the box, as the box's guard has it)
-        const rest = ab.rest
-        const kept = v.aliases.filter(a => !ab.subst.has(a))
-        const other = v.tier ? (v.tier.slot && (v.tier.slot[0][v.tier.slot[1]] = v.tier.real, below.push(v.tier)), v.tier.wrapped) : v.asWritten
-        const guarded = rest.length ? ['if', rest.reduce((a, b) => ['&&', a, b]), fast, other] : fast
-        const decls = [...kept.map(a => ['=', a, [null, 0]]), ...[...ab.subst].map(([a, n]) => ['=', a, ['|', n, [null, 0]]])]
-        fast = decls.length ? ['{}', [';', ['let', ...decls], guarded]] : guarded
-      }
+      // (where a test of a box stays, its other arm is the copy below the box, as the box's guard has
+      // it: taken in as this copy takes any inner version, where it can be, else with its guard)
+      const t = v.tier, tab = t && absorbs.get(t.wrapped)
+      const fast = !ab ? fastOf(v) : takeIn(v, ab, !t ? v.asWritten : tab ? takeIn(t.record, tab, t.record.asWritten)
+        : (t.slot && (t.slot[0][t.slot[1]] = t.real, below.push(t)), t.wrapped))
       swapped.push([p, i, p[i]]); place(p, i, fast)
       return false
     } })
