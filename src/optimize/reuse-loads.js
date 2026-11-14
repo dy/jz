@@ -8,7 +8,8 @@
 // offset) at an address in the same local, and between them the walk, in the order the
 // code runs, passes no store that may reach the bytes the load read (src/ir/mem-alias.js: a
 // store into an array of another cell, or into another field, leaves it), no bulk or
-// atomic memory operation and no call that may write memory (optimize/effects.js), and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
+// atomic memory operation and no call but one whose result is a function of its operands (optimize/effects.js:
+// the math runtime, a string's readers), and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
 // branch leaves) keeps only what holds on both. The later load's address is the local
 // itself: dropping it drops nothing that runs. A load inside a conditional arm the first
 // load is outside of stays: it runs only on that path, and its arm, a local read, would
@@ -81,7 +82,9 @@ export function reuseLoads(fn, fx = NO_MODULE) {
     if (op === 'local.set' || op === 'local.tee') { kill(state, n[1]); return state }
     // a marked store forgets the loads it may overwrite, an unmarked one every load
     if (typeof op === 'string' && STORE.test(op) && n.mem != null) { for (const [k, v] of state) if (mayAlias(n.mem, v.node.mem)) state.delete(k); return state }
-    if (typeof op === 'string' && CLOBBER.test(op) && !((op === 'call' || op === 'return_call') && !fx.writes(n[1]))) return new Map()
+    // (a call that writes nothing ends the loads too: a block's forward hop reads its word by the
+    // hop's shape (optimize/forward-hops.js), which a reused word would hide: arraydowngrade ran 4.4x slower)
+    if (typeof op === 'string' && CLOBBER.test(op) && !((op === 'call' || op === 'return_call') && fx.kind(n[1]) === 'pure')) return new Map()
     if (typeof op === 'string' && LOAD.test(op)) {
       const k = keyOf(n)
       if (!k || shared.has(n) || shared.has(parent)) return state

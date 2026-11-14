@@ -181,6 +181,13 @@ test('effects: a pure call ends no remembered load (reuseLoads)', () => {
   const w = ['func', '$w', ['param', '$p', 'i32'], ['f64.store', ['local.get', '$p'], ['f64.const', 0]]]
   reuseLoads(g, solveEffects([g, w]))
   is(count(g, 'f64.load'), 2, 'a call that writes memory ends it')
+  // (one that writes nothing too, but a pure one: a forward hop reads its word by its shape, forward-hops.js)
+  const h = ['func', '$f', ['param', '$p', 'i32'], ['local', '$x', 'i32'], ['local', '$y', 'i32'],
+    ['local.set', '$x', ['i32.load', ['local.get', '$p']]],
+    ['drop', ['call', '$__ptr_offset_fwd', ['local.get', '$p']]],
+    ['local.set', '$y', ['i32.load', ['local.get', '$p']]]]
+  reuseLoads(h, solveEffects([h]))
+  is(count(h, 'i32.load'), 2, 'a header read ends it as well')
 })
 
 test('effects: a store goes ahead of a pure call and of a global\'s write (earlyStores)', () => {
