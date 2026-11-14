@@ -7,7 +7,7 @@ import { typedCtorName } from '../typed-provenance.js'
 import { boundedSteps } from '../type/bounded-counters.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
-import { valTypeOf } from '../kind.js'
+import { valTypeOf, holdsBoolBeside } from '../kind.js'
 import { paramValTrustworthy } from '../param-reps.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
@@ -542,6 +542,9 @@ export function analyzeFuncForEmit(func, programFacts) {
     const capturedIntLevels = intLevelMap(body, boxedNames, undefined, undefined, undefined, boundedSteps(body, boxedNames))
     for (const name of boxedNames) {
       if (sig.params.some(p => p.name === name)) continue
+      // (a Boolean beside a number keeps no word: the level counts a comparison a strict int32 for the
+      // arithmetic that converts it, and a cell of words stored the Boolean's box truncated, 0 for true)
+      if (summary && holdsBoolBeside(name, summary)) continue
       if (capturedIntLevels.get(name) === 2) (cellTypes ??= new Set()).add(name)
     }
   }

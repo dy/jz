@@ -203,3 +203,23 @@ test('bool or number: an assignment yields what it stored, a Boolean as itself',
     }
   }
 })
+
+// A captured variable lives in a cell, a word where every value written to it is a strict
+// int32 (compile/analyze-for-emit.js). The integer level counts a comparison and a Boolean as
+// one, for the arithmetic that converts them, so a variable holding an integer and later a
+// Boolean took a cell of words, and the store truncated the Boolean's box: `let t = 7; const
+// g = () => t; t = x === 3` read false at x = 3, its typeof "number", `if (t)` the false arm.
+// A Boolean beside a number keeps no word. Expected values are Node's.
+test('bool or number: a captured variable holding an integer, then a Boolean', () => {
+  const VALUES = ['(x === 3)', '!x', '(x === 3 || (x & 1))', '(x > 2 && (x & 1))', '(x === 3 || x === 1)', '((x & 2) && x === 3)', '(x === 3 ? true : 2)']
+  const WRITES = { own: v => `t = ${v}`, closure: v => `const s = () => { t = ${v} }; s()`, again: v => `t = 5; t = ${v}` }
+  const READS = { value: 'return t', type: 'return typeof t', closure: 'return g()', plus: 'return t + 10', test: 'return t ? 1 : 2', isTrue: 'return t === true' }
+  for (const value of VALUES) for (const [wn, write] of Object.entries(WRITES)) for (const [rn, read] of Object.entries(READS)) {
+    const src = `export let f = (x) => { let t = 7; const g = () => t; ${write(value)}; ${read} }`
+    const want = oracle(src)
+    for (const optimize of levels(0, 2)) {
+      const got = jz(src, { optimize }).exports
+      for (let x = 0; x < 5; x++) is(got.f(x), want.f(x), `${value} by ${wn}, ${rn}, x = ${x} at ${optimize}`)
+    }
+  }
+})
