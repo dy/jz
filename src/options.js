@@ -44,6 +44,7 @@ const OPTIMIZE = {
   level: level('optimize.level'),
   simd: bool('optimize.simd'),
   relaxedSimd: bool('optimize.relaxedSimd'),
+  relaxedFloat: bool('optimize.relaxedFloat'),
   tailCall: bool('optimize.tailCall'),
   exceptions: bool('optimize.exceptions'),
   alloc: bool('optimize.alloc'),

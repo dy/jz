@@ -206,11 +206,13 @@ test('options: optimize object, alloc:false: instantiation and calls write no wo
   is(typed.f(new Float64Array([1, 2, 3])), 4, 'a host allocation claims the cell')
 })
 
-test('options: optimize object — its eight keys; a pass name or a typo refused', () => {
+test('options: optimize object — its nine keys; a pass name or a typo refused', () => {
   ok(compile(LOOP, { optimize: { level: 'size' } }).byteLength > 0, 'level:size')
   ok(compile(LOOP, { optimize: { level: 'speed', compact: false, rationalConst: false } }).byteLength > 0, 'compact and rationalConst')
-  throws(() => compile(LOOP, { optimize: { level: 'speed', stencil: false } }), /^TypeError: Unknown optimize option 'stencil' \(optimize takes level, simd, relaxedSimd, tailCall, exceptions, alloc, compact, rationalConst\)$/)
+  ok(compile(LOOP, { optimize: { level: 'speed', relaxedFloat: false } }).byteLength > 0, 'relaxedFloat')
+  throws(() => compile(LOOP, { optimize: { level: 'speed', stencil: false } }), /^TypeError: Unknown optimize option 'stencil' \(optimize takes level, simd, relaxedSimd, relaxedFloat, tailCall, exceptions, alloc, compact, rationalConst\)$/)
   throws(() => compile(LOOP, { optimize: { relaxedSimd: 'off' } }), /^TypeError: optimize\.relaxedSimd takes true or false; got 'off'$/)
+  throws(() => compile(LOOP, { optimize: { relaxedFloat: 1 } }), /^TypeError: optimize\.relaxedFloat takes true or false; got 1$/)
   throws(() => compile(LOOP, { optimize: { relaxedSIMD: false } }), /^TypeError: Unknown optimize option 'relaxedSIMD'; did you mean 'relaxedSimd'\? /)
   throws(() => compile(LOOP, { optimize: { levle: 'size' } }), /Unknown optimize option 'levle'; did you mean 'level'\?/)
   throws(() => compile(LOOP, { optimize: { noSimd: true } }), /^TypeError: Unknown optimize option 'noSimd'; did you mean 'simd'\? \(optimize takes /)

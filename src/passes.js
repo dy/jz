@@ -182,7 +182,9 @@ export const TUNING_KEYS = [
   'splitFn', 'splitTo', 'splitArm', // the instruction nodes past which a function splits, it is brought down to, and an arm must reach to move (optimize/split-funcs.js)
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
-  'reduceUnroll', 'relaxedFloat', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
+  'reduceUnroll',
+  'relaxedFloat',             // public: every rewrite whose float answer may differ from JavaScript's (optimize/config.js, 'speed')
+  'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
   'maskOperands',             // a byte or halfword mask over `^`/`|` moves onto the operand it narrows (optimize/mask-operands.js, speed tier)
   'carryKeys',                // a loop whose scalar reads a table at a key of itself and the next input carries the key, the input mixed off the chain (compile/loop-recurrence.js, speed tier)
   'inlineTiny', 'tinyNodes',  // a function of at most tinyNodes instructions joins every caller (optimize/inline-tiny.js, speed tier)
@@ -213,9 +215,9 @@ export const TUNING_KEYS = [
                               // of the string equality/hash family
   'scalarTypedLoopUnroll', 'scalarTypedNestedUnroll', 'scalarTypedArrayLen',
   'snapshotInit',
-  'rationalConst',            // SEMANTIC precision lowering (rational constant carry — pinned
-                              // by the precision suite at EVERY tier incl. O0), opt-out only:
-                              // not a level-gated optimization, so not in PASS_NAMES/ALL_OFF
+  'rationalConst',            // SEMANTIC precision lowering (rational constant carry, prepare/pre-eval.js):
+                              // unset, it follows relaxedFloat; set, it holds at any level. Not a
+                              // level-gated pass, so not in PASS_NAMES/ALL_OFF
   'splitBindings',            // an assignment of a function's own statement list declares its value as a
                               // binding of its own (prepare/split-bindings.js). A normal form of the
                               // source, at EVERY tier: what a parameter is used as (README, "Numeric

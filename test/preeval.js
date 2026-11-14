@@ -169,7 +169,9 @@ test('value: Math.pow / ** constant fold — exact 3-way split emit.js already u
 // ============================================================================
 // Precision-improvement — rational carry rounds the WHOLE formula once,
 // strictly tighter than sequential per-op f64 rounding (module/math.js /
-// pre-eval.js doc: the 0.1+0.2-0.3 example the charter names).
+// pre-eval.js doc: the 0.1+0.2-0.3 example the charter names). It is not
+// JavaScript's result, so it runs where relaxedFloat is on ('speed') or
+// rationalConst asks for it (test/relaxed-float.js holds the default to JS).
 // ============================================================================
 
 test('precision: rational carry beats sequential per-op rounding', () => {
@@ -179,7 +181,7 @@ test('precision: rational carry beats sequential per-op rounding', () => {
   // ceiling, so the SAME exact-rational fold now runs on every leg (test/kernel-parity.js
   // fold|0/2/3 graduated out of PARITY_TODO).
   const naive = 0.1 + 0.2 - 0.3   // per-op: round(round(0.1+0.2) - 0.3) = 1/2^54
-  const folded = run('export let f = () => 0.1 + 0.2 - 0.3').f()
+  const folded = run('export let f = () => 0.1 + 0.2 - 0.3', { optimize: { rationalConst: true } }).f()
   ok(Math.abs(folded) < Math.abs(naive), `expected |${folded}| < |${naive}|`)
   is(folded, Math.pow(2, -55), 'exact rational result: (double(0.1)+double(0.2)-double(0.3)) rounded ONCE')
 })
@@ -196,7 +198,7 @@ test('precision: a case where naive intermediate rounding loses a whole unit, ra
   // exact: the true value of the formula over the exact double literals is 1.
   const naive = 1e16 + 1 - 1e16
   is(naive, 0)
-  const folded = run('export let f = () => 1e16 + 1 - 1e16').f()
+  const folded = run('export let f = () => 1e16 + 1 - 1e16', { optimize: { rationalConst: true } }).f()
   is(folded, 1)
 })
 

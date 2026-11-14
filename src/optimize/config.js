@@ -185,9 +185,13 @@ const LEVEL_PRESETS = Object.freeze({
   // reduceUnroll: vectorize reductions with N independent accumulators (ILP/latency
   // hiding, ~3x on dot/FIR sums) — a size↔speed trade like the pool-off above, so
   // speed-only; level 2 / balanced / size keep the single-accumulator reduce.
-  // relaxedFloat: answers that differ from the scalar order in their last bits (f32
-  // lanes for f64 math, a reassociated sum, pmax/pmin's sign of a zero, a fused
-  // multiply-add): the bench `fma` parity class. speed-only.
+  // relaxedFloat (public, `optimize: { relaxedFloat }`): every rewrite whose float answer
+  // may differ from JavaScript's in its last bits: a sum or product reduced in lanes
+  // (vectorize/reduce.js, and with reduceUnroll in four accumulators), f32 lanes for f64
+  // math over f32 data, pmax/pmin's sign of a zero, hoisted invariant terms of a dot, a
+  // fused multiply-add, and constant chains carried as rationals (prepare/pre-eval.js:
+  // `rationalConst` defaults to it). On at 'speed' only; off, a level keeps JavaScript's
+  // float results (the bench lane `jz-exact` is 'speed' with it off).
   // relaxedSimd: the engine runs relaxed SIMD (Safari only behind a flag). With
   // relaxedFloat, f64x2 dot-pairs fold to f64x2.relaxed_madd (single fused VFMADD, one
   // rounding); a lane truncation a word test holds takes i32x4.relaxed_trunc, the

@@ -73,8 +73,8 @@
  *   - `Math.pow`/`**` folds via the exact 3-way split emit.js's own
  *     constant-arg fast path already uses (math-kernel.js `pow`) — zero new
  *     divergence from today's compiled output.
- *   - `optimize.rationalConst !== false` (default ON) gates the rational
- *     carry; off, numeric folding still happens (still shrinks WAT) via
+ *   - `optimize.rationalConst` gates the rational carry, by default as
+ *     `relaxedFloat` is set (on at 'speed' alone); off, numeric folding still happens (still shrinks WAT) via
  *     plain sequential per-op f64 rounding — bit-exact vs naive JS
  *     evaluation, for callers who want that instead.
  *
@@ -973,7 +973,8 @@ export function preEval(ast) {
   // no width ceiling, no native-BigInt dependency, so it's unconditionally
   // available: native and the self-compile kernel fold identically
   // (test/kernel-parity.js fold|0/2/3).
-  const rationalOn = ctx.transform.optimize?.rationalConst !== false
+  // (one rounding per chain is not JavaScript's float result: on where relaxedFloat is, unless set)
+  const rationalOn = ctx.transform.optimize?.rationalConst ?? ctx.transform.optimize?.relaxedFloat === true
   const funcByName = new Map()
   for (const f of ctx.funcs.list) funcByName.set(f.name, f)
   // Module constants bound to a name, and every name the program writes after

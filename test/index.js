@@ -251,6 +251,7 @@ const TESTS = [
   'pow',
   'pow-base',
   'pow-int',
+  'relaxed-float',
   'wat-invariants',
   'loop-square',
   'inplace-store',

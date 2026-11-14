@@ -22,6 +22,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 
 
 const SIMD_OPT = { optimize: { vectorizeLaneLocal: true, watr: true } }
+// A float sum or product reduced in lanes adds in another order than the loop: relaxedFloat's
+// alone ('speed' turns it on), so the tests of that lift ask for it.
+const SIMD_RELAXED = { optimize: { vectorizeLaneLocal: true, watr: true, relaxedFloat: true } }
 // The disjointness guard of a versioned loop: `i32.or` of its two halves, or the
 // half that is left where the offset's interval decides the other.
 const GUARD = /i32\.or|i32\.(ge|le)_s/
@@ -1170,7 +1173,7 @@ test('SIMD - a reduction over elements at an offset from the counter', () => {
     export let tap = (n) => { let s = 0; for (let i = 0; i < n; i++) s += x[i] * h[i + 3]; return s }
     function lag (v, k) { let n = v.length, s = 0; for (let i = 0; i + k < n; i++) s += v[i] * v[i + k]; return s }
     export let ac = (k, from) => lag(x.subarray(from, from + 40), k)`
-  ok(/f64x2\.add/.test(funcWat(wat(src, { optimize: 2 }), 'tap')), 'the tap sum runs in lanes')
+  ok(/f64x2\.add/.test(funcWat(wat(src, { optimize: { level: 2, relaxedFloat: true } }), 'tap')), 'the tap sum runs in lanes')
   const js = oracle(src)
   for (const optimize of levels(0, 2, 3)) {
     const m = jz(src, { optimize }).exports
@@ -2451,11 +2454,11 @@ test('vectorize: f64 reduction unrolls to N accumulators under reduceUnroll', ()
       return s
     }
   `
-  const UNROLL = { optimize: { vectorizeLaneLocal: true, watr: true, reduceUnroll: true } }
+  const UNROLL = { optimize: { vectorizeLaneLocal: true, watr: true, reduceUnroll: true, relaxedFloat: true } }
   is(runVec(src, UNROLL).main(), runVec(src, NOVEC).main())   // correct despite reassociation
-  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main()) // single-acc oracle also matches
+  is(runVec(src, SIMD_RELAXED).main(), runVec(src, NOVEC).main()) // single-acc oracle also matches
   ok(/\$__simd_acc\d+_\d+/.test(wat(src, UNROLL)), 'reduceUnroll → independent accumulators')
-  ok(!/\$__simd_acc\d+_\d+/.test(wat(src, SIMD_OPT)), 'default reduce stays single-accumulator')
+  ok(!/\$__simd_acc\d+_\d+/.test(wat(src, SIMD_RELAXED)), 'default reduce stays single-accumulator')
 })
 
 test('vectorize: unrolled accumulators shift a load whose element offset rides its memarg', () => {
@@ -2470,7 +2473,7 @@ test('vectorize: unrolled accumulators shift a load whose element offset rides i
       return s
     }
   `
-  const UNROLL = { optimize: { vectorizeLaneLocal: true, watr: true, reduceUnroll: true } }
+  const UNROLL = { optimize: { vectorizeLaneLocal: true, watr: true, reduceUnroll: true, relaxedFloat: true } }
   for (const n of [0, 2, 9, 33, 64]) is(runVec(src, UNROLL).main(n), runVec(src, NOVEC).main(n))
   ok(/\$__simd_acc\d+_\d+/.test(wat(src, UNROLL)), 'reduceUnroll → independent accumulators')
 })
@@ -2616,8 +2619,9 @@ test('vectorize: f64 sum reduction lifts (associativity tolerated)', () => {
       return s | 0
     }
   `
-  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
-  ok(/f64x2\.add/.test(wat(src, SIMD_OPT)), 'expected f64x2.add')
+  is(runVec(src, SIMD_RELAXED).main(), runVec(src).main())
+  ok(/f64x2\.add/.test(wat(src, SIMD_RELAXED)), 'expected f64x2.add')
+  ok(!/f64x2\.add/.test(wat(src, SIMD_OPT)), 'not without relaxedFloat')
 })
 
 test('vectorize: i32 product (Math.imul) reduction lifts to i32x4.mul (exact mod 2^32)', () => {
@@ -2650,9 +2654,9 @@ test('vectorize: f64 product reduction lifts to f64x2.mul', () => {
       return (p * 1024) | 0
     }
   `
-  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
-  is(runVec(src, SIMD_OPT).main(), 1024)
-  ok(/f64x2\.mul/.test(wat(src, SIMD_OPT)), 'expected f64x2.mul')
+  is(runVec(src, SIMD_RELAXED).main(), runVec(src).main())
+  is(runVec(src, SIMD_RELAXED).main(), 1024)
+  ok(/f64x2\.mul/.test(wat(src, SIMD_RELAXED)), 'expected f64x2.mul')
 })
 
 test('vectorize: a shared lane temporary needs one dominating assignment', () => {
@@ -4402,7 +4406,7 @@ test('SIMD inline - small v128 helpers fold into every caller at speed, bit-exac
 
 // jz semantic inliner is OPT-IN (optimize.inlinePureFns) — the architectural home for purity+type-driven
 // inlining, exercised here even though it's off in the default corpus build.
-const INLINE_OPT = { optimize: { vectorizeLaneLocal: true, watr: true, inlinePureFns: true } }
+const INLINE_OPT = { optimize: { vectorizeLaneLocal: true, watr: true, inlinePureFns: true, relaxedFloat: true } }   // (its sums lift in lanes)
 test('jz semantic inliner - small single-caller pure helper inlines pre-watr, exposing vectorization', () => {
   // A pure single-caller helper called in a map loop is opaque to the vectorizer as a `call`. jz
   // inlines it as LOWERING (pre-watr, purity+size-gated) so the arithmetic is visible → the loop lifts
@@ -5113,10 +5117,10 @@ test('SIMD general-reduce f64 - sum over a runtime-offset window vectorizes, bit
     for (let i = 0; i < n; i++) s = s + a[i + off + 5]
     return s
   }`
-  const w = wat(src, SIMD_OPT)
+  const w = wat(src, SIMD_RELAXED)
   ok(/f64x2\.add/.test(w), 'f64x2.add reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(runVec(src, SIMD_RELAXED).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -5130,10 +5134,10 @@ test('SIMD general-reduce f64 - dot-style two-array combine, one array at a runt
     for (let i = 0; i < n; i++) s = s + a[i + off + 5] * b[i]
     return s
   }`
-  const w = wat(src, SIMD_OPT)
+  const w = wat(src, SIMD_RELAXED)
   ok(/f64x2\.mul/.test(w) && /f64x2\.add/.test(w), 'f64x2.mul + f64x2.add reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(runVec(src, SIMD_RELAXED).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 

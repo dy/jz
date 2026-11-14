@@ -511,8 +511,8 @@ test('kernel oracle: BigInt typed-array stores reject a Number before in-range o
 
 // preEval's rational constant-folding (src/prepare/pre-eval.js) carries an
 // EXACT rational through a whole numeric chain and rounds ONCE at the end
-// (module doc, "Purity / precision guards": `optimize.rationalConst !== false`,
-// default ON). Naive JS rounds after EVERY op ("double rounding"). For
+// (module doc, "Purity / precision guards": `optimize.rationalConst`, by default
+// as `relaxedFloat`: on at 'speed' alone). Naive JS rounds after EVERY op ("double rounding"). For
 // `0.1 + 0.2 - 0.3` these genuinely disagree: JS's sequential rounding gives
 // 5.551115123125783e-17; jz's single-rounding exact-rational fold gives
 // 2.7755575615628914e-17 (exactly half — the classic double-rounding artifact
@@ -522,22 +522,26 @@ test('kernel oracle: BigInt typed-array stores reject a Number before in-range o
 // constant-fold disagreeing with naive JS BY DESIGN, on both legs identically.
 // The escape hatch (`optimize.rationalConst: false`) is asserted too, as the
 // design's own regression pin: turning rational folding off must recover
-// exact JS-oracle parity.
+// exact JS-oracle parity; and the levels where it is off by default answer as JS.
 test('kernel oracle: fold — documented divergence (rational constant-fold vs naive JS double-rounding)', async () => {
   if (onWasi()) return
   const src = CORPUS.fold
   const mod = await oracle(src)
   const want = mod.f()
   is(want, 5.551115123125783e-17, 'JS oracle baseline (pin so a V8 change is visible, not silently absorbed)')
-  for (const opt of levels(0, 2, 3)) {
+  for (const opt of [3, { level: 0, rationalConst: true }, { level: 2, rationalConst: true }]) {
     const nat = runNative(src, opt).f()
     const ker = runKernel(src, opt).f()
-    is(nat, 2.7755575615628914e-17, `fold O${opt}: native's single-rounding rational fold (documented, not naive-JS-equal)`)
-    is(ker, nat, `fold O${opt}: kernel matches native exactly (both fold the same way)`)
+    is(nat, 2.7755575615628914e-17, `fold ${JSON.stringify(opt)}: native's single-rounding rational fold (documented, not naive-JS-equal)`)
+    is(ker, nat, `fold ${JSON.stringify(opt)}: kernel matches native exactly (both fold the same way)`)
+  }
+  for (const opt of levels(0, 2)) {
+    is(runNative(src, opt).f(), want, `fold O${opt}: rationals off by default, JS's per-op rounding`)
+    is(runKernel(src, opt).f(), want, `fold O${opt}: the kernel as well`)
   }
   // rationalConst:false is the documented escape hatch — with it, jz folds via
   // plain sequential per-op f64 rounding and MUST recover oracle parity.
-  is(runNative(src, { level: 2, rationalConst: false }).f(), want,
+  is(runNative(src, { level: 3, rationalConst: false }).f(), want,
     'fold: rationalConst:false recovers naive-JS parity (proves the divergence above is a chosen tradeoff, not an uncontrolled bug)')
 })
 

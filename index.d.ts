@@ -54,12 +54,16 @@ export interface OptimizeOptions {
   level?: OptimizeLevel
   simd?: boolean
   relaxedSimd?: boolean
+  /** Let float results differ from JavaScript's in their last bits for speed: sums and products
+   *  reduced in lanes, single precision over Float32Array elements, fused multiply-adds, a zero's
+   *  sign in a minimum or maximum, constant chains rounded once. On at `'speed'`, off at every other level. */
+  relaxedFloat?: boolean
   tailCall?: boolean
   exceptions?: boolean
   alloc?: boolean
   /** Compact what the module keeps as each outermost call returns (owned memory). Default on, off at `'size'`. */
   compact?: boolean
-  /** Fold constant arithmetic exactly, rounding once (default); false rounds per operation, as JavaScript does. */
+  /** Fold constant arithmetic exactly, rounding once; false rounds per operation, as JavaScript does. Default: as `relaxedFloat`. */
   rationalConst?: boolean
 }
 

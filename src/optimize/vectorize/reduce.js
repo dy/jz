@@ -609,7 +609,9 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 // A single-statement reduction's entry: the plain operators, and a min/max whose
 // canon the dead-canon pass took (optimize/nan-canon.js) where only arithmetic
 // reads the accumulator; the merge then needs no canon of its own (canonC null).
-const plainReduceEntry = (opName) => REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
+// A float sum or product in lanes adds in another order than the loop: relaxedFloat's alone.
+const REASSOCIATES = new Set(['f64.add', 'f64.mul', 'f32.add', 'f32.mul'])
+const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relaxF32 ? null : REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
 
 export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   return tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc) ?? tryReduceBitExact(bl, fnLocals, freshIdRef)
