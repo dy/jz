@@ -572,7 +572,8 @@ test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
     export const m1 = () => sumArr(new Float64Array([1, 2, 3, 4])) | 0
     export const m2 = () => sumArr(new Float64Array([5, 6, 7])) | 0
   `
-  const wat = compile(src, { wat: true })
+  // (the float sum lifts to lanes where relaxedFloat lets it reorder: its lift is the probe)
+  const wat = compile(src, { wat: true, optimize: { relaxedFloat: true } })
   ok(/v128\.load\b/.test(wat), 'expected SIMD vectorization')
   is(count(wat, /\$__typed_idx\b/g), 0, 'no runtime typed-idx dispatch')
   is(count(wat, /\$__length\b/g), 0, 'no polymorphic length')
@@ -874,7 +875,7 @@ test('recordGlobalRep: module-level Float64Array enables SIMD in consumers', () 
       for (let i = 0; i < buf.length; i++) s = s + buf[i]
       return s | 0
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { relaxedFloat: true } })   // (the float sum's lane lift, relaxedFloat's, is the probe)
   ok(/v128\.load\b/.test(wat), 'expected SIMD over module-level typed buf')
   is(count(wat, /\$__length\b/g), 0, 'no poly length over typed global')
 })
