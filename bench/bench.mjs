@@ -107,7 +107,7 @@ const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
 // Porffor: the release binary its installer puts under ~/.local/bin
 // (`curl -fsSL https://porffor.dev/install.sh | sh`, the install the author
-// asks for; CI pins alpha 19, test/_porffor-floor.js), else a git checkout of the
+// asks for; CI pins alpha 23, test/_porffor-floor.js), else a git checkout of the
 // same line, else PATH; npm's 0.61.x is the frozen pre-rewrite engine. Same
 // committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
 const PORF_RELEASE = join(process.env.PORFFOR_INSTALL || join(homedir(), '.local/bin'), 'porf')
@@ -383,6 +383,25 @@ const bendIdentity = () => _bendIdentity ??= (() => {
     .find(m => m && +m[2] >= 14)
   return [version, cc && `C compiler ${cc[1] || ''}clang ${cc[0].split(' ').pop()}`].filter(Boolean).join(', ')
 })()
+// The compilers behind the rust, zig, go and tinygo lanes and their wasm twins
+// (c-wasm is `zig cc`, the clang that zig release bundles; `zig cc --version`
+// would name it and leaves an empty a.o where it runs): what each says it is,
+// recorded in the evidence and in the prep stamp, so a toolchain upgrade
+// rebuilds its lanes.
+const _toolIdentity = new Map()
+const toolIdentity = (cmd, ...args) => {
+  const key = [cmd, ...args].join(' ')
+  if (!_toolIdentity.has(key)) {
+    let out = null
+    try { out = has(cmd) ? spawnSync(cmd, args, { encoding: 'utf8' }).stdout?.trim().split('\n')[0] || null : null } catch {}
+    _toolIdentity.set(key, out)
+  }
+  return _toolIdentity.get(key)
+}
+const rustIdentity = () => toolIdentity('rustc', '--version')
+const zigIdentity = () => toolIdentity('zig', 'version')
+const goIdentity = () => toolIdentity('go', 'version')
+const tinygoIdentity = () => toolIdentity('tinygo', 'version')
 const canRun = cmd => {
   try { return spawnSync(cmd, ['--help'], { stdio: 'ignore' }).status === 0 }
   catch { return false }
@@ -583,7 +602,9 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
     const key = `${id}:${c.id}`
     if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
       const stamp = join(caseBuild(c), `.prep-${id}`)
-      const identity = { 'porf-native': porfIdentity, goose: gooseIdentity, bend: bendIdentity }[id]?.() || ''
+      const identity = { 'porf-native': porfIdentity, goose: gooseIdentity, bend: bendIdentity,
+        rust: rustIdentity, 'rust-wasm': rustIdentity, zig: zigIdentity, 'zig-wasm': zigIdentity, 'c-wasm': zigIdentity,
+        go: goIdentity, 'go-wasm': goIdentity, tinygo: tinygoIdentity }[id]?.() || ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
         !['perry', 'scriptc', 'tslang', 'tov'].includes(id) &&
         !(id === 'porf-native' && _porfCheckoutDirty)
@@ -1442,8 +1463,8 @@ const TARGET_VERSIONS = {
   'qjs-wasi': ['quickjs-ng', 'node'], 'componentize-qjs': ['componentize-qjs', 'wasmtime'],
   'componentize-js': ['componentize-js', 'wasmtime'], js2wasm: ['js2wasm', 'node'],
   'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'],
-  'c-wasm': ['node'], 'rust-wasm': ['node'], 'go-wasm': ['node'], 'zig-wasm': ['node'],
-  wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['node'],
+  'c-wasm': ['zig', 'node'], 'rust-wasm': ['rust', 'node'], 'go-wasm': ['go', 'node'], 'zig-wasm': ['zig', 'node'],
+  wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['tinygo', 'node'],
   tslang: ['tslang', 'clang'], tov: ['tov', 'clang'],
 }
 
@@ -2068,6 +2089,10 @@ if (JSON_PATH) {
       tov: has(TOV_BIN) && tovIdentity(),
       goose: has(GOOSE_BIN) && gooseIdentity(),
       bend: has(BEND_BIN) && bendIdentity(),
+      rust: rustIdentity(),
+      zig: zigIdentity(),
+      go: goIdentity(),
+      tinygo: tinygoIdentity(),
       jsc: jscBuild(),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),

@@ -103,7 +103,7 @@ jobs:
           echo "bun=$(bun --version)" >> "$GITHUB_OUTPUT"
           # jsvu's own source of the latest Linux JavaScriptCore build
           echo "jsc=$(curl -fsSL https://webkitgtk.org/jsc-built-products/x86_64/release/LAST-IS | grep -o '^[0-9]*')" >> "$GITHUB_OUTPUT"
-          echo "asc=$(npm view 'assemblyscript@~0.27.0' version --json | node -e 'console.log([].concat(JSON.parse(require("fs").readFileSync(0, "utf8"))).at(-1))')" >> "$GITHUB_OUTPUT"
+          echo "asc=$(npm view 'assemblyscript@~0.28.0' version --json | node -e 'console.log([].concat(JSON.parse(require("fs").readFileSync(0, "utf8"))).at(-1))')" >> "$GITHUB_OUTPUT"
       - if: env.MEASURE == 'true'
         run: npm ci --ignore-scripts
       - id: plan
@@ -220,26 +220,32 @@ jobs:
           tinygo version
           printf 'package main\nfunc main() {}\n' > /tmp/tg.go
           tinygo build -target=wasip1 -o /tmp/tg.wasm /tmp/tg.go
-      # Rust→wasm baseline needs the wasm target added to the preinstalled rustc;
-      # the runner ships rustc but NOT the wasm32-wasip1 std, so without this every
-      # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm
-      # stat goes null (why the 3rd hero stat was dropped in 83d6add5).
-      - name: rust wasm target
-        run: rustup target add wasm32-wasip1 || test -z "$BENCH_STRICT"
+      # Rust, pinned to 1.100.0 (0ef1bc386, 2026-11-09): the runner's preinstalled
+      # rustc moves with the image, and the evidence named no rustc. The wasm
+      # target comes with it: without the wasm32-wasip1 std every rust-wasm case
+      # fails ("can't find crate for std") and the hero's Rust→wasm stat goes null
+      # (why the 3rd hero stat was dropped in 83d6add5).
+      - name: rust 1.100.0 (pinned) with the wasm target
+        run: |
+          { rustup toolchain install 1.100.0 --profile minimal --target wasm32-wasip1 &&
+            rustup default 1.100.0 &&
+            rustc --version | grep -q '^rustc 1\.100\.0 '; } || test -z "$BENCH_STRICT"
+          rustc --version
       # Competitor toolchains + binaryen (provides wasm-opt), in one install: a
       # second --no-save install would prune this one's packages. jco builds the
       # ComponentizeJS lane, componentize-qjs its QuickJS twin; js2wasm is
       # @loopdive/js2 (its wasm-opt pass takes binaryen ^132).
-      - run: npm install --ignore-scripts --no-save assemblyscript@${{ needs.plan.outputs.asc || '~0.27.0' }} binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
-      # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
+      - run: npm install --ignore-scripts --no-save assemblyscript@${{ needs.plan.outputs.asc || '~0.28.0' }} binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
+      # Porffor's npm 0.61.x is the frozen pre-rewrite engine (npm's
+      # 0.0.0-alpha.N are these releases, by the commit each names). The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
-      # release, alpha 19 (0c135ce, 2026-10-21), by its tag so the comparison is
+      # release, alpha 23 (a97a0ae, 2026-11-10), by its tag so the comparison is
       # reproducible; a failed rival install is fatal rather than silently
       # weakening coverage.
-      - name: porffor alpha 19 (release, pinned)
+      - name: porffor alpha 23 (release, pinned)
         env:
-          PORFFOR_RELEASE: alpha-19
-          PORFFOR_REV: 0c135ce2f36fdd3467d5a58daa92283810705a51
+          PORFFOR_RELEASE: alpha-23
+          PORFFOR_REV: a97a0ae8e296009aee482dff11b150528098a9b7
         run: |
           curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
           test -x "$HOME/.local/bin/porf"
@@ -320,15 +326,15 @@ jobs:
       # library from bend2/ beside it. `bend <file> -o <bin>` builds the C it
       # emits with the first clang 14 or newer it finds (the apt clang above), at
       # -O3; the smoke proves that path and the one-core flags the bench passes.
-      - name: install Bend 2.0.39
+      - name: install Bend 2.0.40
         if: matrix.kind == 'shard'
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/bend.tar.gz" https://github.com/bendlang/bend/releases/download/v2.0.39/bend-2.0.39-linux-x64.tar.gz
-          echo "6cf462fd8f70b094a4950ebb709a9c4ffd8f1d1189d9cedf1fd63cd5d041c7ab  $RUNNER_TEMP/bend.tar.gz" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/bend.tar.gz" https://github.com/bendlang/bend/releases/download/v2.0.40/bend-2.0.40-linux-x64.tar.gz
+          echo "c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b  $RUNNER_TEMP/bend.tar.gz" | sha256sum -c -
           tar xzf "$RUNNER_TEMP/bend.tar.gz" -C "$RUNNER_TEMP"
           bend="$RUNNER_TEMP/bend/bin/bend"
           echo "BEND_BIN=$bend" >> "$GITHUB_ENV"
-          test "$("$bend" version)" = 'bend 2.0.39'
+          test "$("$bend" version)" = 'bend 2.0.40'
           printf 'import Base\n\ndef main() -> IO(Unit):\n  do IO<Unit>:\n    IO.print("bend ready")\n' > "$RUNNER_TEMP/bend-smoke.bend"
           "$bend" "$RUNNER_TEMP/bend-smoke.bend" -o "$RUNNER_TEMP/bend-smoke"
           test "$("$RUNNER_TEMP/bend-smoke" +RTS --threads 1 --gpu off -RTS)" = 'bend ready'

@@ -56,8 +56,9 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: rustup target add wasm32-wasip1
-      - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen
+      # the bench workflow's rustc (bench.yml pins the same release)
+      - run: rustup toolchain install 1.100.0 --profile minimal --target wasm32-wasip1 && rustup default 1.100.0 && rustc --version
+      - run: npm install --ignore-scripts --no-save assemblyscript@~0.28.0 binaryen
       - run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: machine
         run: |
