@@ -39,16 +39,22 @@ an export back**. `collectReachableGlobalWrites` said an import writes no global
 `promoteGlobals`, `hoistGlobalPtrOffset` and `hoistLoopGlobalPtrOffset` kept a copy of a
 global across the call (`g * k + g; cb(); g * k + g` read the old `g` at the default
 level and at `speed`; a typed-array global replaced by the export read the old buffer at
-`size` too). Fixed ahead of this phase on your base (the commit before this brief: a
-callee outside the module writes what any function writes, the answer the memory closure
-already gave; `test/interop.js` "a host import that calls an export back"; the
-population `SCRATCH/reentrypop.mjs`, 36 of its first 60 programs wrong before the fix).
-What the fix gives up: a function that calls the host keeps no copy of a global at all.
-12 of 105 bench cases move at `speed` and none at `size` (`main` beside `env.logResult`
-and `performance.now` loses one promoted global in cam16 and hct; the runtime's
-`__json_val` beside `__ext_json` reads `$__jgaplen` each time). The copy could be taken
-again after each such call, as `forwardHops` resolves its hop again after a call that
-may move a block: that is a generation per global, which is 7c's numbering, not 7a.
+`size` too). Fixed ahead of this phase on your base (c835d2aac and 5dff9fc29: a callee
+outside the module writes what any function writes, the answer the memory closure
+already gave, unless the runtime registered the import for itself, `ctx.module
+.callsNothing`: the seed, the clock, a printed line, a timer armed, WASI, the engine's
+string builtins; `test/interop.js` "a host import that calls an export back",
+`test/wat-invariants.js` "a runtime shim ends no copy of a global"; the population
+`SCRATCH/reentrypop.mjs`, 36 of its first 60 programs wrong before the fix, none of 700
+after). What the fix gives up: a function that calls the user's import, or an `__ext_*`
+call that runs a host value, keeps no copy of a global at all. 12 of 105 bench cases
+move at `speed` and none at `size` (`main` beside `env.logResult` and `performance.now`
+loses one promoted global in cam16 and hct; the runtime's `__json_val` beside
+`__ext_json` reads `$__jgaplen` each time), and one example of 70 (lsystem's `frame`
+beside `__ext_get` loses three copies and ten typed-array bases). The copy could be
+taken again after each such call, as `forwardHops` resolves its hop again after a call
+that may move a block: that is a generation per global, which is 7c's numbering, not
+7a.
 
 A numbering laid over this would be the tenth address model and the seventh closure.
 So the phase is three steps, each a landing of its own:

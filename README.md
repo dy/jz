@@ -281,6 +281,8 @@ const scale = x => x * 10
 jz`export const f = n => ${scale}(n) + ${[10, 20, 30]}[1]`   // f(2) → 40
 ```
 
+A host function may call the module's exports while it runs.
+
 Ship the `.wasm` and load it with `instantiate` from `jz/interop`, a 20 KB
 gzipped runtime that marshals values and decodes errors; the compiler stays in
 the build.
