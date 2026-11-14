@@ -66,6 +66,7 @@ const ALLOWED = [
   ['src/snapshot.js', '.includes(\'"memory"\')', 'an import\'s text searched for a name'],
   ['src/optimize/devirt.js', 'console.error', DEBUG],
   ['src/optimize/unswitch.js', 'console.error', DEBUG],
+  ['src/optimize/effects.js', 'a wide store may write a header word', MESSAGE],
   ['src/compile/loop-recurrence.js', 'console.error', DEBUG],
   ['src/compile/narrow/specialize.js', 'console.error', DEBUG],
   ['src/compile/index.js', "sec.customs.push(['@custom'", 'a custom section: the JSON of names and numbers the host reads'],
