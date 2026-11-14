@@ -48,7 +48,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
-import { funcWat, run, ulpDiff, wat } from './util.js'
+import { funcWat, jz, oracle, run, ulpDiff, wat } from './util.js'
 
 const CR_POW = { optimize: { crPow: true } }
 const CR_POW_APPROX = { optimize: { crPow: true, approxPow: true } }
@@ -381,4 +381,26 @@ export let scalar = (x, y) => Math.pow(x, y)`
     if (!Object.is(got[i], s) && ++bad < 6) ok(false, `pow(${xs[i]}, ${ys[i]}): lanes ${got[i]} scalar ${s} host ${Math.pow(xs[i], ys[i])}`)
   }
   is(bad, 0, `${bad} of ${xs.length} lanes differ from the scalar path`)
+})
+
+// `x ** 0.5` and `Math.pow(x, 0.5)` lower to a square root (module/math.js emitPow; the
+// constant fold, src/prepare/math-kernel.js pow). At -0 the root keeps the sign where
+// the power does not: `(-0) ** 0.5` and `Math.pow(-0, 0.5)` are +0 (ECMA-262 2024
+// 6.1.6.1.3 Number::exponentiate: base -0, exponent > 0 and not an odd integer; 21.3.2.26
+// Math.pow). Against Node, bit for bit, in a lane loop too.
+const bitsOf = x => Object.is(x, -0) ? '-0' : String(x)
+const agreeRoots = (src, optimize, calls) => {
+  const want = oracle(src), got = jz(src, { optimize }).exports
+  for (const [fn, args] of calls) for (const a of args)
+    is(bitsOf(got[fn](...a)), bitsOf(want[fn](...a)), `${fn}(${a.map(bitsOf).join(', ')}) at ${JSON.stringify(optimize)}`)
+}
+const ROOTS = `export let pow = (x) => x ** 0.5
+export let mathPow = (x) => Math.pow(x, 0.5)
+export let literal = () => (-0) ** 0.5
+export let norm = (x, y) => (x * x + y * y) ** 0.5
+export let lane = (n) => { const a = new Float64Array(n), o = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i % 3 === 0 ? -0 : i / 4; for (let i = 0; i < n; i++) o[i] = a[i] ** 0.5; let h = 0; for (let i = 0; i < n; i++) h += 1 / o[i] > 0 ? 1 : 0; return h }`
+
+test('(-0) ** 0.5 is +0 at every level', () => {
+  for (const optimize of [false, true, 'size', 'speed'])
+    agreeRoots(ROOTS, optimize, [['pow', [[-0], [0], [4], [2], [NaN]]], ['mathPow', [[-0], [0], [2]]], ['literal', [[]]], ['norm', [[-0, -0], [0, -0], [3, 4]]], ['lane', [[3], [16], [33]]]])
 })

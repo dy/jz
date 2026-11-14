@@ -203,11 +203,11 @@ function log1p(x) {
 /** Fully-constant `Math.pow`/`**` fold: the lowering module/math.js's emitPow gives
  *  a constant exponent, computed now, so a fold and a run of the same expression
  *  agree bit for bit: an integer |n| ≤ 16 square-and-multiplies (foldPow), 0.5 is
- *  f64.sqrt, a k/5 exponent in (0, 5) is $math.pow_fifths, base 2 is $math.exp2,
- *  and everything else is $math.pow. */
+ *  the f64.abs of f64.sqrt (so -0 gives +0), a k/5 exponent in (0, 5) is
+ *  $math.pow_fifths, base 2 is $math.exp2, and everything else is $math.pow. */
 function pow(a, b) {
   if (Number.isInteger(b) && Math.abs(b) <= 16) return powInt(a, b)
-  if (b === 0.5) return Math.sqrt(a)
+  if (b === 0.5) return Math.abs(Math.sqrt(a))
   if (b > 0 && b < 5 && !Number.isInteger(b) && Number.isInteger(b * 5)) { const f = fifthFold(b); return powFifths(a, b, f.lo, f.hi) }
   if (a === 2 && !Number.isInteger(b)) return exp2(b)
   return powRuntime(a, b)

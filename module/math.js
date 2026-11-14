@@ -132,7 +132,7 @@ export default (ctx) => {
   const nonNegF64 = (n) => !Array.isArray(n) ? false :
     n[0] === 'f64.mul' ? (pureF64(n[1]) && nodeEqual(n[1], n[2])) :     // x·x ≥ 0
     n[0] === 'f64.add' ? (nonNegF64(n[1]) && nonNegF64(n[2])) :      // (≥0) + (≥0) ≥ 0
-    n[0] === 'f64.const' ? (typeof n[1] === 'number' && n[1] >= 0) : false
+    n[0] === 'f64.const' ? (typeof n[1] === 'number' && (n[1] > 0 || 1 / n[1] > 0)) : false   // (its sign bit clear: not -0)
   const sqrtIR = (a) => { const ir = f('f64.sqrt', a); return nonNegF64(ir[1]) ? ir : canon(ir) }
 
   // Constants — each folds to its `(f64.const …)` inline (no stdlib dep, hence
@@ -333,9 +333,10 @@ export default (ctx) => {
   // normal input it is bit-identical to V8's `Math.pow(x, 0.5)`, and it agrees with
   // jz's own `Math.sqrt(x)` by construction (mirrors the math.sqrt emit: always
   // canon, since a negative finite base yields a NaN whose sign needs canonicalizing).
-  // Two exotic inputs follow sqrt rather than Math.pow semantics — a deliberate
-  // trade in the same class as jz's other boundary divergences: `(-0) ** 0.5` is -0
-  // (Math.pow: +0; and -0 === 0), `(-Infinity) ** 0.5` is NaN (Math.pow: +Infinity).
+  // `(-0) ** 0.5` is +0 (ECMA-262 6.1.6.1.3 Number::exponentiate), where sqrt keeps the
+  // sign: the root's absolute value, unless the base's sign bit is proven clear. One
+  // exotic input follows sqrt rather than Math.pow, a deliberate trade in the same class
+  // as jz's other boundary divergences: `(-Infinity) ** 0.5` is NaN (Math.pow: +Infinity).
   // `** -0.5` is intentionally NOT folded: 1/sqrt double-rounds and loses the last
   // ULP vs Math.pow's single rounding, so it keeps the exact $math.pow path.
   const powCall = emitter(['math.pow'], (a, b) => fn('math.pow', a, b))
@@ -343,7 +344,7 @@ export default (ctx) => {
   const emitPow = (a, b, allowExpPos) => {
     const n = constInt(b)
     if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
-    if (constNum(b) === 0.5) { const ir = typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'); return nonNegF64(ir[1]) ? ir : canon(ir) }
+    if (constNum(b) === 0.5) { const x = toNumF64(a, emit(a)); return nonNegF64(x) ? typed(['f64.sqrt', x], 'f64') : canon(typed(['f64.abs', ['f64.sqrt', x]], 'f64')) }
     // Both args are compile-time constants: evaluate now, emit f64.const, as the lowering
     // below would compute it (src/prepare/math-kernel.js powFold, the kernels' twin).
     // Catches pow(2, -2/12) where the arithmetic folds emit f64.const for both sides.
