@@ -2602,8 +2602,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const built = { node: wrapped, records: [[wrapped, record]], versions: [version], owns: [own], boundDecls: [boundDecl], record, test, asWritten, slot: otherAt, aliases, merged, bailFlag, fast: merged ? guarded[0][2] : null }
     pending.done = true
     if (!passB && pending.needB) {
-      // (the pass with no box hands over to the boxes': the loop as it found it)
-      for (const n of marked) delete n.cold
+      // (the pass with no box hands over to the boxes': the loop as it found it; the mark is
+      // set false, not removed: every reader tests it, and the compiler, compiled by jz,
+      // removes no field of a node)
+      for (const n of marked) n.cold = false
       for (const [p, i, v] of innerAt) p[i] = v
       fromBase(pending.swaps)
       stash.set(loop, built); boxPass.add(loop)
