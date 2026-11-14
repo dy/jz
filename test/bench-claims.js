@@ -28,7 +28,7 @@ import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
-import { CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, contenders, exceptionsOf, JIT_RIVALS, JSC_FAMILY_RIVALS, PARITY_EXEMPT, unmetOf, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { baseOf, CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, claimOf, CONTESTED_FLOOR, contenders, exceptionsOf, FAST_RIVALS, JIT_RIVALS, LANE_CMDS, LANE_FLAGS, PARITY_EXEMPT, unmetOf, WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
@@ -298,15 +298,45 @@ test('claims: jz-w2c native lowering within regression bands', () => {
   ok(gm <= W2C_GEOMEAN_MAX, `w2c/jz geomean ${gm.toFixed(3)}× > ${W2C_GEOMEAN_MAX}×`)
 })
 
+// The builds the claims are made of (bench/claims.mjs LANE_FLAGS, which the harness
+// builds from and records): jz timed at 'speed', its float rewrites on; the exact lane
+// the same build with them off; jz's bytes its size build; every strict rival without a
+// float relaxation; the fast C lane the strict one with -ffast-math alone added; the
+// AssemblyScript bytes at -Oz --converge, as CONTRIBUTING and bench/README state them.
+const RELAXES = /fast-math|^-Ofast$|associative-math|reciprocal-math|no-signed-zeros|finite-math|ffp-contract=(fast|on)/
+test('claims: the claim lanes build with the pinned flags', () => {
+  is(LANE_FLAGS.jz, { level: 'speed' }, "jz's time at 'speed'")
+  is(LANE_FLAGS['jz-exact'], { level: 'speed', relaxedFloat: false }, 'the exact lane: speed at JavaScript\'s floats')
+  is(LANE_FLAGS['jz-size'], { level: 'size' }, "jz's bytes at 'size'")
+  for (const lane of ['c-wasm', 'rust-wasm', 'zig-wasm', 'tinygo', 'as', 'as-size'])
+    ok(!LANE_FLAGS[lane].some(f => RELAXES.test(f)), `${lane}: no float relaxation (${LANE_FLAGS[lane].join(' ')})`)
+  ok(LANE_FLAGS['c-wasm'].includes('-ffp-contract=off'), 'c-wasm: no multiply-add contracted')
+  is(LANE_FLAGS['c-wasm-fast'].filter(f => f !== '-ffast-math'), LANE_FLAGS['c-wasm'].filter(f => f !== '-ffp-contract=off'), 'c-wasm-fast: c-wasm with -ffast-math for its float mode')
+  ok(LANE_FLAGS['c-wasm-fast'].includes('-ffast-math'), 'c-wasm-fast: -ffast-math')
+  is(LANE_FLAGS['as-size'].slice(0, 2), ['-Oz', '--converge'], "AssemblyScript's bytes at -Oz --converge")
+  for (const doc of ['CONTRIBUTING.md'])
+    ok(readFileSync(join(ROOT, doc), 'utf8').includes('asc -Oz --converge'), `${doc} states the size lane's flags`)
+  for (const [lane, cmd] of Object.entries(LANE_CMDS)) ok(typeof cmd === 'string' && cmd.length > 0, `${lane}: an invocation recorded`)
+})
+
+test('claims: the evidence was measured by the pinned builds (meta.invocations)', () => {
+  const recorded = res.meta?.invocations ?? {}
+  const off = Object.entries(LANE_CMDS).filter(([lane, cmd]) => recorded[lane] !== cmd)
+    .map(([lane, cmd]) => `${lane}: recorded ${JSON.stringify(recorded[lane] ?? null)}, built ${JSON.stringify(cmd)}`)
+  ok(off.length === 0, `claim lanes the evidence measured otherwise than they build now (${off.length}):\n${off.join('\n')}`)
+})
+
 test('claims: contenders are the fastest stored rivals of each class, with jz and Porffor', () => {
   const row = medianUs => ({ medianUs, parity: 'ok' })
   const c = { targets: { jz: row(100), 'c-wasm': row(120), as: row(110), 'rust-wasm': row(300), tinygo: { status: 'fail', reason: 'no build' },
     v8: row(200), deno: row(190), bun: row(150), 'porf-native': row(900) } }
-  is(contenders(c, 2).join(','), 'jz,as,c-wasm,deno,v8,bun,porf-native', 'two per class, ranked by the stored median; a failed lane is unranked')
-  is(contenders(c, 1).join(','), 'jz,as,deno,bun,porf-native', 'one per class')
+  is(contenders(c, 2).join(','), 'jz,jz-exact,as,c-wasm,deno,v8,bun,porf-native', 'two per class, ranked by the stored median; a failed lane is unranked; the exact lane beside jz')
+  is(contenders(c, 1).join(','), 'jz,jz-exact,as,deno,bun,porf-native', 'one per class')
   is(contenders(c, 2, ['jz', 'c-wasm', 'rust-wasm', 'v8']).join(','), 'jz,c-wasm,rust-wasm,v8', 'ranked among the selected lanes')
   is(contenders(c, 1, ['jz', 'jz-w2c', 'nat', 'as', 'tinygo']).join(','), 'jz,as,jz-w2c,nat', 'a selected lane no claim ranks is measured as selected')
-  is(contenders(undefined, 2).join(','), 'jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,v8,deno,bun,jsc,porf-native',
+  is(contenders({ targets: { ...c.targets, 'c-wasm-fast': row(105) } }, 1, ['jz', 'jz-exact', 'c-wasm', 'c-wasm-fast', 'as']).join(','), 'jz,jz-exact,c-wasm-fast,as',
+    'the fast C lane is a wasm rival; the strict class ranks its own nearest')
+  is(contenders(undefined, 2).join(','), 'jz,jz-exact,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,c-wasm-fast,v8,deno,bun,jsc,porf-native',
     'a case without evidence measures every rival: no class can rank it')
   is(contenders({ targets: { jz: row(100), 'jz-w2c': row(90), v8: row(200) } }, 1, ['jz', 'jz-w2c', 'c-wasm', 'as', 'v8', 'deno', 'bun', 'porf-native']).join(','),
     'jz,c-wasm,as,v8,bun,porf-native,jz-w2c', 'a class with no timed row measures its selected lanes; a ranked class keeps its nearest')
@@ -325,12 +355,12 @@ const wasmSource = id => WASM_SOURCES.some(ext => existsSync(join(ROOT, 'bench',
 // them: COVERAGE_FLOOR sizes one lane's portability, not a class over its own field.
 const SOURCED_FLOOR = 0.95
 // A wasm producer's program for a case, the source its lane compiles.
-const RIVAL_SOURCE = { 'c-wasm': '.c', 'rust-wasm': '.rs', 'go-wasm': '.go', tinygo: '.go', 'zig-wasm': '.zig', as: '.as.ts' }
+const RIVAL_SOURCE = { 'c-wasm': '.c', 'c-wasm-fast': '.c', 'rust-wasm': '.rs', 'go-wasm': '.go', tinygo: '.go', 'zig-wasm': '.zig', as: '.as.ts' }
 test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
   const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id))
   for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
-    const field = label === 'wasm' ? covered.filter(([id]) => wasmSource(id)) : covered
-    const needCovered = Math.ceil(field.length * (label === 'wasm' ? SOURCED_FLOOR : COVERAGE_FLOOR))
+    const field = claimOf(label) === 'wasm' ? covered.filter(([id]) => wasmSource(id)) : covered
+    const needCovered = Math.ceil(field.length * (claimOf(label) === 'wasm' ? SOURCED_FLOOR : COVERAGE_FLOOR))
     const rows = field.filter(([, c]) => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
     ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${field.length} cases (floor ${needCovered})${res.meta?.contenders ? ` under --contenders=${res.meta.contenders}` : ''}`)
   }
@@ -338,7 +368,7 @@ test('claims: every named rival is contested (coverage ≥ floor of the corpus)'
   // Every lane measured: each rival over the cases it has a program for. An engine or
   // Porffor runs every case's JavaScript; a wasm producer only its own language's port,
   // which the library cases (stdlib, three.js, pmndrs/math) have none of.
-  for (const rival of [...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native']) {
+  for (const rival of [...CLAIM_RIVALS, ...FAST_RIVALS, ...JIT_RIVALS, 'porf-native']) {
     const ext = RIVAL_SOURCE[rival]
     const field = Object.keys(cases).filter(id => !ext || existsSync(join(ROOT, 'bench', id, id + ext)))
     const need = Math.ceil(field.length * COVERAGE_FLOOR)
@@ -459,16 +489,19 @@ const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'stringify', '
 const describeRow = row => row == null ? 'missing'
   : row.status != null ? `${row.status}${row.reason ? ` (${String(row.reason).split('\n')[0].slice(0, 100)})` : ''}`
     : !correctBenchmarkRow(row) ? `parity ${row.parity ?? 'unknown'}` : 'no positive timing'
-const claimEvidence = (source, pending = PENDING_CASES) => {
+const claimEvidence = (source, pending = PENDING_CASES, lane = 'jz') => {
   const missing = [], uncontested = []
   for (const [id, c] of Object.entries(source)) {
-    const jz = c.targets?.jz
-    if (pending.has(id) || timedBenchmarkRow(jz)) continue
+    const jz = c.targets?.[lane]
+    if (pending.has(id) || timedBenchmarkRow(jz) || lane !== 'jz' && NO_EXACT.has(id)) continue
     if (jz != null && jz.status == null && !Object.values(c.targets).some(correctBenchmarkRow)) uncontested.push(id)
     else missing.push(`${id}: ${describeRow(jz)}`)
   }
   return { missing, uncontested }
 }
+// The self-compile case runs no exact lane: a second build of the compiler is most of an
+// hour, and no wasm rival contests it (bench/bench.mjs, the jz-exact lane).
+const NO_EXACT = new Set(['jz'])
 
 test('claims: a claimed case without a timed JZ row fails by name', () => {
   const timed = { parity: 'ok', medianUs: 1 }, diff = { parity: 'DIFF', medianUs: 1 }
@@ -495,11 +528,18 @@ test('claims: every claimed case carries a timed, parity-valid JZ row', () => {
     : 'every claimed case carries a timed, parity-valid JZ row')
 })
 
-const caseRatios =(rivals, ids = null, source = cases) => {
+test('claims: every claimed case carries a timed, parity-valid row of the exact lane (jz-exact)', () => {
+  const { missing } = claimEvidence(cases, PENDING_CASES, 'jz-exact')
+  ok(missing.length === 0, missing.length
+    ? `claimed cases without a timed, parity-valid jz-exact row (${missing.length}): ${missing.slice(0, 12).join('; ')}${missing.length > 12 ? '; …' : ''}`
+    : 'every claimed case carries a timed, parity-valid jz-exact row')
+})
+
+const caseRatios = (rivals, ids = null, source = cases, base = 'jz') => {
   const out = []
   for (const [id, c] of Object.entries(source)) {
     if (ids ? !ids.has(id) : PENDING_CASES.has(id)) continue
-    const jz = c.targets?.jz
+    const jz = c.targets?.[base]
     if (!timedBenchmarkRow(jz)) continue
     let best = null, who = null
     for (const rival of rivals) {
@@ -517,15 +557,15 @@ const caseRatios =(rivals, ids = null, source = cases) => {
 // proves tolerance, not leadership). Both gate the release, for every promise
 // this file enforces (fastest-wasm vs CLAIM_RIVALS; outruns-the-JIT vs the
 // V8-family / bun-jsc splits below).
-const strictTest = (label, rivals, ids = null) => test(`claims: strict leadership — jz beats the best ${label} on every case`, () => {
-  const notLed = caseRatios(rivals, ids).filter(([, r]) => r >= 1.0)
+const strictTest = (label, rivals, ids = null, base = 'jz') => test(`claims: strict leadership — ${base} beats the best ${label} on every case`, () => {
+  const notLed = caseRatios(rivals, ids, cases, base).filter(([, r]) => r >= 1.0)
     .map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
   ok(notLed.length === 0, `strict ${label} leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
 })
 
-const bandTest = (label, rivals, ids = null, tol = WASM_BAND_TOL) => test(`claims: no red cases — jz within the band of the best ${label} everywhere`, () => {
+const bandTest = (label, rivals, ids = null, base = 'jz', tol = WASM_BAND_TOL) => test(`claims: no red cases — ${base} within the band of the best ${label} everywhere`, () => {
   const red = [], band = []
-  for (const [id, r, who] of caseRatios(rivals, ids)) {
+  for (const [id, r, who] of caseRatios(rivals, ids, cases, base)) {
     if (r > tol) red.push(`${id} ${r.toFixed(3)}× (${who})`)
     else if (r >= 1.0) band.push(`${id} ${r.toFixed(3)}× (${who})`)
   }
@@ -536,16 +576,45 @@ const bandTest = (label, rivals, ids = null, tol = WASM_BAND_TOL) => test(`claim
 // Each claim class over the cases it claims: every case but the pending ones, the
 // ones it excepts by name (bench/claims.mjs CLAIM_EXCEPTIONS), which answer to
 // their bands below, and the ones it does not lead yet (CLAIM_UNMET), a todo.
-const NAMES = { wasm: 'wasm rival', v8: 'V8-family JIT (v8/node, deno)', jsc: 'bun/jsc JIT' }
+const NAMES = { wasm: 'wasm rival, strict or -ffast-math (jz at speed, relaxed floats)', 'wasm-exact': 'wasm rival built strict (jz-exact, JavaScript\'s floats)', v8: 'V8-family JIT (v8/node, deno)', jsc: 'bun/jsc JIT' }
 const RIVALS = Object.fromEntries(CLAIM_CLASSES)
 for (const [label, rivals] of CLAIM_CLASSES) {
   const excepted = exceptionsOf(label), unmet = unmetOf(label)
   const name = NAMES[label] + (excepted.size ? ` (outside its named exceptions: ${[...excepted.keys()].join(', ')})` : '')
     + (unmet.size ? ` (unmet: ${[...unmet].join(', ')})` : '')
   const ids = new Set(Object.keys(cases).filter(id => !PENDING_CASES.has(id) && !excepted.has(id) && !unmet.has(id)))
-  strictTest(name, rivals, ids)
-  bandTest(name, rivals, ids)
+  strictTest(name, rivals, ids, baseOf(label))
+  bandTest(name, rivals, ids, baseOf(label))
 }
+
+// What each class actually contests: the claimed cases where its jz lane and at least one
+// rival carry a timed, correct row. A class whose rivals vanish from a case leaves that
+// case out of its strict and band tests in silence; the count makes it seen and the floor
+// (bench/claims.mjs CONTESTED_FLOOR) makes it fail.
+const contested = (source = cases, pending = PENDING_CASES) => Object.fromEntries(CLAIM_CLASSES.map(([label, rivals]) => {
+  const excepted = exceptionsOf(label), unmet = unmetOf(label)
+  const ids = new Set(Object.keys(source).filter(id => !pending.has(id) && !excepted.has(id) && !unmet.has(id)))
+  return [label, caseRatios(rivals, ids, source, baseOf(label)).length]
+}))
+test('claims: the cases each class contests are counted, each class at its floor', () => {
+  const n = contested()
+  console.log(`  contested: ${CLAIM_CLASSES.map(([label]) => `${label} ${n[label]} (floor ${CONTESTED_FLOOR[label]})`).join(', ')}`)
+  for (const [label] of CLAIM_CLASSES) {
+    ok(Number.isInteger(CONTESTED_FLOOR[label]), `${label}: a floor`)
+    ok(n[label] >= CONTESTED_FLOOR[label], `class '${label}' contests ${n[label]} cases, under its floor of ${CONTESTED_FLOOR[label]}`)
+  }
+})
+test('claims: a contested case needs the class\'s jz lane and a rival, both timed and correct', () => {
+  const t = { parity: 'ok', medianUs: 1 }, wrong = { parity: 'DIFF', medianUs: 1 }
+  const n = contested({
+    both: { targets: { jz: t, 'jz-exact': t, 'c-wasm': t, v8: t, bun: t } },
+    noExact: { targets: { jz: t, 'c-wasm': t } },
+    fastOnly: { targets: { jz: t, 'jz-exact': t, 'c-wasm-fast': t } },
+    wrongRival: { targets: { jz: t, 'jz-exact': t, 'c-wasm': wrong, v8: wrong } },
+    pending: { targets: { jz: t, 'jz-exact': t, 'c-wasm': t } },
+  }, new Set(['pending']))
+  is(n, { wasm: 3, 'wasm-exact': 1, v8: 1, jsc: 1 }, 'the exact class needs jz-exact; the fast C lane contests the relaxed class alone; a wrong row contests nothing; a pending case nothing')
+})
 test.todo('claims: the unmet cases lead their class (CLAIM_UNMET)', () => {
   const notLed = CLAIM_UNMET.flatMap(e => {
     const [row] = caseRatios(RIVALS[e.class], new Set([e.case]))
@@ -567,22 +636,49 @@ test('claims: the unmet table is well formed', () => {
     seen.add(key)
   }
 })
-test.todo('claims: the pending library cases lead every V8-family and bun/jsc engine (PENDING_CASES)', () => {
-  const measured = new Set([...PENDING_CASES].filter(id => cases[id]))
-  ok(measured.size === PENDING_CASES.size, `unmeasured: ${[...PENDING_CASES].filter(id => !cases[id]).join(', ')}`)
-  for (const rivals of [V8_FAMILY_RIVALS, JSC_FAMILY_RIVALS]) {
-    const notLed = caseRatios(rivals, measured).filter(([, r]) => r >= 1.0).map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
-    ok(notLed.length === 0, `not led: ${notLed.join(', ')}`)
+// A pending case that leads every class it is contested in is promoted, or the gate
+// fails: the hedge goes the commit jz leads (AGENTS.md "removed the commit jz leads"). A
+// class counts where any rival has a timed, correct row; there the class's jz lane must
+// have one too and lead strictly, or the case does not lead it. A case no class contests
+// leads nothing.
+const leadsEveryClass = (c) => {
+  let any = false
+  for (const [label, rivals] of CLAIM_CLASSES) {
+    if (!rivals.some(r => timedBenchmarkRow(c.targets?.[r]))) continue
+    any = true
+    const [row] = caseRatios(rivals, new Set(['x']), { x: c }, baseOf(label))
+    if (!row || row[1] >= 1) return false
   }
+  return any
+}
+const promotable = (source = cases, pending = PENDING_CASES) => [...pending].filter(id => source[id] && leadsEveryClass(source[id]))
+test('claims: a pending case that leads every class is promoted', () => {
+  const ready = promotable()
+  console.log(`  pending: ${[...PENDING_CASES].map(id => `${id}${!cases[id] ? ' (unmeasured)' : ready.includes(id) ? ' (leads every class)' : ''}`).join(', ')}`)
+  ok(ready.length === 0, `pending cases that lead every class they are contested in, to promote out of PENDING_CASES: ${ready.join(', ')}`)
+})
+test('claims: promotion asks for a strict lead in every contested class, the exact lane included', () => {
+  const r = (medianUs) => ({ parity: 'ok', medianUs })
+  const ready = promotable({
+    leads: { targets: { jz: r(90), 'jz-exact': r(95), 'c-wasm': r(100), v8: r(200), bun: r(150) } },
+    tie: { targets: { jz: r(100), 'jz-exact': r(95), 'c-wasm': r(100), v8: r(200), bun: r(150) } },
+    exactTrails: { targets: { jz: r(90), 'jz-exact': r(110), 'c-wasm': r(100), v8: r(200), bun: r(150) } },
+    noExact: { targets: { jz: r(90), 'c-wasm': r(100), v8: r(200), bun: r(150) } },
+    jsOnly: { targets: { jz: r(90), v8: r(200), deno: r(180), bun: r(150) } },
+    alone: { targets: { jz: r(90) } },
+  }, new Set(['leads', 'tie', 'exactTrails', 'noExact', 'jsOnly', 'alone', 'unmeasured']))
+  is(ready, ['leads', 'jsOnly'], 'a tie, a trailing or missing exact lane, no rival or no row keep a case pending')
 })
 
 // NAMED EXCEPTIONS — each excepted case against its class's fastest rival:
 // within its band it holds (a lead says the entry may go), past it the gate fails.
 // A case the evidence does not time is reported, not passed as held.
-const exceptionVerdicts = (source = cases, table = CLAIM_EXCEPTIONS.filter(e => RIVALS[e.class])) => table.map(e => {
-  const [row] = caseRatios(RIVALS[e.class], new Set([e.case]), source)
-  return { ...e, ratio: row?.[1] ?? null, who: row?.[2] ?? null }
-})
+// (a class that is the entry's claim measured another way, wasm-exact for wasm, answers to it with its own lane)
+const exceptionVerdicts = (source = cases, table = CLAIM_EXCEPTIONS.filter(e => RIVALS[e.class])) => table.flatMap(e =>
+  CLAIM_CLASSES.filter(([label]) => claimOf(label) === e.class).map(([label, rivals]) => {
+    const [row] = caseRatios(rivals, new Set([e.case]), source, baseOf(label))
+    return { ...e, class: label, ratio: row?.[1] ?? null, who: row?.[2] ?? null }
+  }))
 const verdictText = v => `${v.case} vs ${v.class} ${v.ratio == null ? 'unmeasured' : `${v.ratio.toFixed(3)}× (${v.who})`}, band ${v.band}×`
 
 test('claims: the named-exception table is well formed', () => {
@@ -614,7 +710,8 @@ test('claims: an excepted case holds to its band and fails past it', () => {
   const table = [{ case: 'held', class: 'wasm', band: 1.1 }, { case: 'broken', class: 'wasm', band: 1.1 },
     { case: 'led', class: 'wasm', band: 1.1 }, { case: 'wrong', class: 'jsc', band: 1.5 }]
   const verdicts = exceptionVerdicts({ held: row(109, 100), broken: row(111, 100), led: row(90, 100), wrong: row(100, 100) }, table)
-  is(verdicts.map(v => v.ratio == null ? null : +v.ratio.toFixed(2)).join(), '1.09,1.11,0.9,', 'ratios against the class\'s fastest timed rival; a wrong rival row times nothing')
+  is(verdicts.map(v => `${v.class}:${v.ratio == null ? null : +v.ratio.toFixed(2)}`).join(), 'wasm:1.09,wasm-exact:null,wasm:1.11,wasm-exact:null,wasm:0.9,wasm-exact:null,jsc:null',
+    'ratios against the class\'s fastest timed rival, the exact class on its own lane (here unmeasured); a wrong rival row times nothing')
   is(verdicts.filter(v => v.ratio != null && v.ratio > v.band).map(v => v.case).join(), 'broken', 'only the case past its band breaks')
 })
 

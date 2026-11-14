@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CLAIM_CLASSES, exceptionsOf, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { baseOf, CLAIM_CLASSES, exceptionsOf, WASM_BAND_TOL } from '../bench/claims.mjs'
 import { MEMORY_CASES } from '../test/_memory-floor.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -90,11 +90,11 @@ const findJson = dir => {
   return null
 }
 
-/** The worst ratio a claim class holds against jz on one case: [ratio, rival]. */
-const worst = (us, rivals) => {
+/** The worst ratio a claim class holds against its jz lane on one case: [ratio, rival]. */
+const worst = (us, rivals, base = 'jz') => {
   let best = null
-  if (!(us?.jz > 0)) return best
-  for (const r of rivals) if (us[r] > 0 && (!best || us.jz / us[r] > best[0])) best = [us.jz / us[r], r]
+  if (!(us?.[base] > 0)) return best
+  for (const r of rivals) if (us[r] > 0 && (!best || us[base] / us[r] > best[0])) best = [us[base] / us[r], r]
   return best
 }
 const claimWorst = (id, us) => {
@@ -102,7 +102,7 @@ const claimWorst = (id, us) => {
   // (a class's named exceptions answer to their bands, not to this column)
   for (const [label, rivals] of CLAIM_CLASSES) {
     if (exceptionsOf(label).has(id)) continue
-    const w = worst(us, rivals)
+    const w = worst(us, rivals, baseOf(label))
     if (w && (!best || w[0] > best[0])) best = w
   }
   return best

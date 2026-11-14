@@ -3,26 +3,84 @@
 // harness's contenders (bench/bench.mjs --contenders).
 import { timedBenchmarkRow } from '../assets/headline.js'
 
-/** "Fastest wasm": every wasm producer the reference dataset must contest. */
+/** "Fastest wasm": every wasm producer the reference dataset must contest, each built
+ *  strict (LANE_FLAGS): no fast-math, no multiply-add contracted to one rounding. */
 export const CLAIM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as']
+/** The rivals' own float relaxation beside jz's: the C ports with -ffast-math. */
+export const FAST_RIVALS = ['c-wasm-fast']
 /** "Outruns the JIT", by engine family. */
 export const V8_FAMILY_RIVALS = ['v8', 'deno']
 export const JSC_FAMILY_RIVALS = ['bun', 'jsc']
 export const JIT_RIVALS = [...V8_FAMILY_RIVALS, ...JSC_FAMILY_RIVALS]
 /** A ratio inside the band is a tie, never a lead. */
 export const WASM_BAND_TOL = 1.05
+
+/** The flags each claim lane is built with: one definition for the harness's builds,
+ *  the dataset's record of them (meta.invocations, LANE_CMDS) and the test that pins
+ *  them (test/bench-claims.js). jz is timed at 'speed', where its float rewrites may
+ *  round otherwise than JavaScript (README, "Float results at 'speed'"); `jz-exact` is
+ *  the same build at JavaScript's float results; jz's bytes are its size build. The
+ *  rivals build as their compilers do by default for speed, which keeps the source's
+ *  float order: clang with no fast-math and no contraction (`-ffp-contract=off`), rustc
+ *  and zig with no float relaxation (zig's ReleaseFast leaves its float mode strict),
+ *  asc with none to offer. AssemblyScript's bytes are `-Oz --converge`, the expansion
+ *  of its `-Osize` (asc 0.28's options table). */
+export const LANE_FLAGS = {
+  jz: { level: 'speed' },
+  'jz-exact': { level: 'speed', relaxedFloat: false },
+  'jz-size': { level: 'size' },
+  'c-wasm': ['-target', 'wasm32-wasi', '-msimd128', '-O3', '-ffp-contract=off'],
+  'c-wasm-fast': ['-target', 'wasm32-wasi', '-msimd128', '-O3', '-ffast-math'],
+  'rust-wasm': ['--target', 'wasm32-wasip1', '-C', 'opt-level=3', '-C', 'target-feature=+simd128'],
+  'zig-wasm': ['-target', 'wasm32-wasi', '-mcpu=generic+simd128', '-O', 'ReleaseFast'],
+  tinygo: ['-target=wasip1', '-opt=2', '-no-debug'],
+  as: ['-O3', '--runtime', 'stub', '--noAssert'],
+  'as-size': ['-Oz', '--converge', '--runtime', 'stub', '--noAssert'],
+}
+// (a level alone is written as the option takes it, `'speed'`, the record's form before the table)
+const optimizeText = o => Object.keys(o).length === 1 && 'level' in o ? `'${o.level}'` : `{ ${Object.entries(o).map(([k, v]) => `${k}: ${typeof v === 'string' ? `'${v}'` : v}`).join(', ')} }`
+/** The record of each claim lane's build in the dataset (meta.invocations), from LANE_FLAGS. */
+export const LANE_CMDS = {
+  jz: `time: compile(src, { optimize: ${optimizeText(LANE_FLAGS.jz)} }); size: compile(src, { optimize: ${optimizeText(LANE_FLAGS['jz-size'])} }) → node (V8 wasm)`,
+  'jz-exact': `compile(src, { optimize: ${optimizeText(LANE_FLAGS['jz-exact'])} }) → node (V8 wasm)`,
+  'c-wasm': `zig cc ${LANE_FLAGS['c-wasm'].join(' ')} <case>.c → node (V8 wasm)`,
+  'c-wasm-fast': `zig cc ${LANE_FLAGS['c-wasm-fast'].join(' ')} <case>.c → node (V8 wasm)`,
+  'rust-wasm': `rustc ${LANE_FLAGS['rust-wasm'].join(' ')} <case>.rs → node (V8 wasm)`,
+  'zig-wasm': `zig build-exe ${LANE_FLAGS['zig-wasm'].join(' ')} <case>.zig (no libc) → node (V8 wasm)`,
+  tinygo: `tinygo build ${LANE_FLAGS.tinygo.join(' ')} <case>.go → node (V8 wasm)`,
+  'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
+  as: `time: asc <case>.as.ts ${LANE_FLAGS.as.join(' ')}; size: asc <case>.as.ts ${LANE_FLAGS['as-size'].join(' ')}`,
+}
 /** Cases the gate does not require a correct JZ timing for: the compiler workloads
  *  (watr, jessie, the jz self-compile, whose build can outlast a runner). They enter
  *  every aggregate; only this check passes over them. (The colour probes left it on
  *  2026-11-14: hashed at 16 significant bits, every engine's libm and jz's agree.) */
 export const PARITY_EXEMPT = new Set(['watr', 'jessie', 'jz'])
 
-/** The claim classes as [label, rivals]. */
+/** The claim classes as [label, rivals]. "Fastest wasm" is held twice, like against
+ *  like: `wasm`, the jz lane (relaxed floats) against the best of the strict rivals and
+ *  the fast ones; `wasm-exact`, the jz-exact lane (JavaScript's floats) against the
+ *  strict rivals. */
 export const CLAIM_CLASSES = [
-  ['wasm', CLAIM_RIVALS],
+  ['wasm', [...CLAIM_RIVALS, ...FAST_RIVALS]],
+  ['wasm-exact', CLAIM_RIVALS],
   ['v8', V8_FAMILY_RIVALS],
   ['jsc', JSC_FAMILY_RIVALS],
 ]
+/** The jz lane a class times, where it is not `jz`. */
+export const CLASS_BASE = { 'wasm-exact': 'jz-exact' }
+export const baseOf = label => CLASS_BASE[label] ?? 'jz'
+/** A class that is a claim measured another way answers to that claim's named
+ *  exceptions and unmet cases: `wasm-exact` is "fastest wasm" as `wasm` is. */
+const CLAIM_OF = { 'wasm-exact': 'wasm' }
+export const claimOf = label => CLAIM_OF[label] ?? label
+/** The floor of cases each class contests: claimed cases (not pending, excepted or
+ *  unmet) where its jz lane and at least one of its rivals carry a timed, correct row.
+ *  Set from the reference run of 2026-11-14 (3420027c: wasm 76, v8 and jsc 82 each);
+ *  wasm-exact takes wasm's, its lane running every case jz runs but the self-compile,
+ *  which no wasm rival contests. A floor only rises: a lane lost on a case shows here
+ *  before it leaves a claim vacuous. */
+export const CONTESTED_FLOOR = { wasm: 76, 'wasm-exact': 76, v8: 82, jsc: 82 }
 
 /** Named exceptions: a case one claim class holds to a band instead of leadership,
  *  jz over the class's fastest rival by the reference medians. Measurement earns an
@@ -85,7 +143,7 @@ export const CLAIM_EXCEPTIONS = [
   },
 ]
 /** The cases a claim class holds to a band: case → its exception. */
-export const exceptionsOf = label => new Map(CLAIM_EXCEPTIONS.filter(e => e.class === label).map(e => [e.case, e]))
+export const exceptionsOf = label => new Map(CLAIM_EXCEPTIONS.filter(e => e.class === claimOf(label)).map(e => [e.case, e]))
 
 /** Unmet cases: a case a claim class claims where jz does not lead yet. No band
  *  holds it: the gate lists it as todo until jz leads, the README names it beside
@@ -126,22 +184,24 @@ export const CLAIM_UNMET = [
   },
 ]
 /** The cases a claim class claims and does not lead yet. */
-export const unmetOf = label => new Set(CLAIM_UNMET.filter(e => e.class === label).map(e => e.case))
+export const unmetOf = label => new Set(CLAIM_UNMET.filter(e => e.class === claimOf(label)).map(e => e.case))
 
-/** The lanes measured for a case under --contenders: jz, the `n` fastest rivals of each
- *  claim class by the stored evidence, Porffor, and every selected lane no claim ranks
- *  (jz's own native lanes, the reference C). A rival with no timed row for the case
- *  cannot be ranked and waits for a full refresh, unless its class has no timed row at
- *  all (a case new to the corpus): a class the evidence cannot rank measures every one
- *  of its lanes. `lanes` is the selection (every lane when null), so a rival absent
- *  from it is neither ranked nor measured. */
-const RANKED = new Set([...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native'])
+/** The lanes measured for a case under --contenders: jz and the jz lanes the classes
+ *  time (jz-exact), the `n` fastest rivals of each claim class by the stored evidence,
+ *  Porffor, and every selected lane no claim ranks (jz's own native lanes, the reference
+ *  C). A rival with no timed row for the case cannot be ranked and waits for a full
+ *  refresh, unless its class has no timed row at all (a case new to the corpus): a class
+ *  the evidence cannot rank measures every one of its lanes. `lanes` is the selection
+ *  (every lane when null), so a rival absent from it is neither ranked nor measured. */
+const BASES = ['jz', ...Object.values(CLASS_BASE)]
+const RANKED = new Set([...BASES, ...CLAIM_RIVALS, ...FAST_RIVALS, ...JIT_RIVALS, 'porf-native'])
 export const contenders = (caseEvidence, n, lanes = null) => {
   const rows = caseEvidence?.targets ?? {}
   const fastest = rivals => {
     const here = rivals.filter(r => !lanes || lanes.includes(r)), timed = here.filter(r => timedBenchmarkRow(rows[r]))
     return timed.length ? timed.sort((a, b) => rows[a].medianUs - rows[b].medianUs).slice(0, n) : here
   }
-  return ['jz', ...CLAIM_CLASSES.flatMap(([, rivals]) => fastest(rivals)), ...fastest(['porf-native']),
-    ...(lanes ?? []).filter(l => l !== 'jz' && !RANKED.has(l))]
+  return [...new Set([...BASES.filter(b => b === 'jz' || !lanes || lanes.includes(b)),
+    ...CLAIM_CLASSES.flatMap(([, rivals]) => fastest(rivals)), ...fastest(['porf-native']),
+    ...(lanes ?? []).filter(l => !RANKED.has(l))])]
 }

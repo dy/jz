@@ -16,13 +16,14 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CLAIM_RIVALS, JIT_RIVALS } from './claims.mjs'
+import { CLAIM_RIVALS, FAST_RIVALS, JIT_RIVALS } from './claims.mjs'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 
 /** The lanes the claims gate decides on: paired in the reference protocol, jz first
- *  (the ratio base). jz-w2c answers the native-lowering bands. */
-export const CLAIM_LANES = ['jz', ...CLAIM_RIVALS, 'porf-native', ...JIT_RIVALS, 'jz-w2c']
+ *  (the ratio base), jz-exact second (the base of the exact wasm class, paired against
+ *  the same rivals). jz-w2c answers the native-lowering bands. */
+export const CLAIM_LANES = ['jz', 'jz-exact', ...CLAIM_RIVALS, ...FAST_RIVALS, 'porf-native', ...JIT_RIVALS, 'jz-w2c']
 /** Every lane CI installs: the claim lanes, then the references the page and chart show. */
 export const LANES = [...CLAIM_LANES, 'nat', 'moonbit', 'rust', 'zig', 'go', 'goose', 'bend', 'perry', 'scriptc', 'tslang',
   'shermes', 'js2wasm', 'qjs-wasi', 'componentize-qjs', 'componentize-js', 'jz-wasmtime', 'wat', 'numpy']

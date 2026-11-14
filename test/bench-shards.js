@@ -9,14 +9,15 @@ import { fileURLToPath } from 'node:url'
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { ALONE, BUDGET_S, caseCosts, CLAIM_LANES, LANES, MODES, mergeShards, planShards } from '../bench/shards.mjs'
-import { CLAIM_RIVALS, JIT_RIVALS } from '../bench/claims.mjs'
+import { CLAIM_RIVALS, FAST_RIVALS, JIT_RIVALS } from '../bench/claims.mjs'
 import { SVG_TARGETS } from '../scripts/bench-svg.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 test('shards: the reference pairs every claim lane, jz first; both modes run every lane', () => {
   is(CLAIM_LANES[0], 'jz', 'the paired ratios are against jz')
-  for (const rival of [...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native', 'jz-w2c']) ok(CLAIM_LANES.includes(rival), `${rival} is paired`)
+  for (const rival of [...CLAIM_RIVALS, ...FAST_RIVALS, ...JIT_RIVALS, 'porf-native', 'jz-w2c']) ok(CLAIM_LANES.includes(rival), `${rival} is paired`)
+  is(CLAIM_LANES[1], 'jz-exact', 'and against the exact lane, the base of the exact wasm class')
   for (const t of SVG_TARGETS) ok(LANES.includes(t.id), `chart lane ${t.id} is measured`)
   is(new Set(LANES).size, LANES.length, 'no lane twice')
   is(MODES.ci.paired, 0, 'the CI view times each lane once')

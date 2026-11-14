@@ -437,6 +437,26 @@ jobs:
             if (bad.length) { console.error("native-lane smoke FAILED:\n" + bad.join("\n")); process.exit(1); }
             console.log("native-lane smoke OK — both translators match checksums; WABT also passes multi-value returns");
           '
+      # The two lanes of the float comparison: jz's speed build at JavaScript's floats must
+      # answer the reference; C with -ffast-math must build and run (where the relaxation
+      # changes a port's output it reads DIFF and times nothing, as a row, not a failure).
+      - name: float-lane smoke (jz-exact checksum-verified, c-wasm-fast built and run)
+        if: matrix.kind == 'gate'
+        run: |
+          node bench/bench.mjs --targets=jz,jz-exact,c-wasm,c-wasm-fast --cases=dotprod,matmul,colorpq --json="$RUNNER_TEMP/float-smoke.json" || exit 1
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/float-smoke.json", "utf8")), bad = [];
+            for (const id of ["dotprod", "matmul", "colorpq"]) for (const tid of ["jz", "jz-exact"]) {
+              const t = r.cases?.[id]?.targets?.[tid];
+              if (!t || t.status === "fail" || t.parity !== "ok") bad.push(`${id}/${tid}: ${t ? t.status ?? "parity=" + t.parity : "missing"}`);
+            }
+            for (const id of ["dotprod", "matmul"]) {
+              const t = r.cases?.[id]?.targets?.["c-wasm-fast"];
+              if (!t || t.status === "fail") bad.push(`${id}/c-wasm-fast: ${t ? t.reason : "missing"}`);
+            }
+            if (bad.length) { console.error("float-lane smoke FAILED:\n" + bad.join("\n")); process.exit(1); }
+            console.log("float-lane smoke OK — jz and jz-exact answer the reference, c-wasm-fast builds and runs");
+          '
 
       # ── shard ──────────────────────────────────────────────────────────────
       # This job's cases, every lane, on this one machine: the claim lanes in

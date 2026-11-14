@@ -15,7 +15,7 @@ import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
 import { writeWasm } from '../scripts/portable.mjs'
 import { classifyBenchmarkChecksum, NO_WEB, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
-import { contenders } from './claims.mjs'
+import { contenders, LANE_CMDS, LANE_FLAGS } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 import { releaseBytes } from './_lib/release-bytes.js'
 
@@ -603,7 +603,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
     if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
       const stamp = join(caseBuild(c), `.prep-${id}`)
       const identity = { 'porf-native': porfIdentity, goose: gooseIdentity, bend: bendIdentity,
-        rust: rustIdentity, 'rust-wasm': rustIdentity, zig: zigIdentity, 'zig-wasm': zigIdentity, 'c-wasm': zigIdentity,
+        rust: rustIdentity, 'rust-wasm': rustIdentity, zig: zigIdentity, 'zig-wasm': zigIdentity, 'c-wasm': zigIdentity, 'c-wasm-fast': zigIdentity,
         go: goIdentity, 'go-wasm': goIdentity, tinygo: tinygoIdentity }[id]?.() || ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
         !['perry', 'scriptc', 'tslang', 'tov'].includes(id) &&
@@ -641,6 +641,8 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 // build that `run` measures) — each axis shows jz's best profile, mirroring how
 // a real deployment picks -Os for footprint-critical and speed for hot paths.
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
+// The exact lane's build: the speed build at JavaScript's float results (LANE_FLAGS['jz-exact']).
+const jzExactWasmPath = c => join(caseBuild(c), `${c.id}-exact.wasm`)
 const jzBaseWasmPath = c => join(caseBuild(c), `${c.id}-base-host.wasm`)
 const jzBaseSizeWasmPath = c => join(caseBuild(c), `${c.id}-base-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
@@ -675,6 +677,7 @@ const rustWasmPath = c => join(caseBuild(c), `${c.id}.rust.wasm`)
 const goWasmPath = c => join(caseBuild(c), `${c.id}.go.wasm`)
 const zigWasmPath = c => join(caseBuild(c), `${c.id}.zig.wasm`)
 const cWasmPath = c => join(caseBuild(c), `${c.id}.c.wasm`)
+const cWasmFastPath = c => join(caseBuild(c), `${c.id}.c-fast.wasm`)
 
 const compileJz = c => {
   // `jz-wasmtime` / `jz-w2c` consume the wasm standalone — no JS host. Lower
@@ -728,7 +731,7 @@ const compileJzHost = (c, path = jzHostWasmPath(c)) => {
   // tuning. If any pass at this level produces wrong checksums or crashes,
   // that's an optimizer bug to be fixed, not a reason to back off. This is the
   // build `run` times; the size column reads compileJzSize's -Os build instead.
-  const wasm = compileJzAt(c, { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) })
+  const wasm = compileJzAt(c, { ...LANE_FLAGS.jz, ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) })
   writeFileSync(path, wasm)
 }
 
@@ -736,7 +739,7 @@ const compileJzHost = (c, path = jzHostWasmPath(c)) => {
 // inline body-duplication the speed tier trades bytes for). Same source, same
 // host imports, same memory; only the optimize tier differs.
 const compileJzSize = (c, path = jzSizeWasmPath(c)) => {
-  writeFileSync(path, compileJzAt(c, { level: 'size' }))
+  writeFileSync(path, compileJzAt(c, LANE_FLAGS['jz-size']))
 }
 
 // Isolate the compiler graph; a failed build must not abort other benchmark rows.
@@ -1201,6 +1204,17 @@ const targets = {
       c.id === 'jz' ? () => compileJzSelfIsolated(c) : () => { compileJzHost(c); compileJzSize(c) },
       ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
   },
+  // The exact lane: jz's speed build at JavaScript's float results, timed beside `jz`
+  // against the same rivals (bench/claims.mjs, the `wasm-exact` class). Its bytes are
+  // its own build's. The self-compile cell stays with `jz`: a second build of the
+  // compiler is most of an hour, and no wasm rival contests the case.
+  'jz-exact': {
+    name: 'jz at JS float results → V8 wasm',
+    available: c => c.id !== 'jz' && has('node'),
+    bin: jzExactWasmPath,
+    run: c => tryRun('jz-exact', c, () => writeFileSync(jzExactWasmPath(c), compileJzAt(c, LANE_FLAGS['jz-exact'])),
+      ['node', join(LIB, 'run-jz-host.mjs'), jzExactWasmPath(c)]),
+  },
   'jz-base': {
     name: 'jz at base → V8 wasm',
     // The self-compile cell stays with `jz`: its prep is a child process of this tree.
@@ -1213,12 +1227,12 @@ const targets = {
   as: {
     name: 'AssemblyScript (asc -O3)',
     available: c => !!c.as && has('asc'),
-    // Size column = asc -Osize (AS's smallest); timing = the -O3 speed build —
+    // Size column = asc -Oz --converge (AS's smallest, what its -Osize expands to); timing = the -O3 speed build —
     // the fair mirror of jz's split (each compiler's best size vs best speed).
     bin: asSizeWasmPath,
     run: c => tryRun('as', c, () => {
-      execFileSync('asc', [c.as, '-O3', '--runtime', 'stub', '--noAssert', '-o', asWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
-      execFileSync('asc', [c.as, '-Osize', '--runtime', 'stub', '--noAssert', '-o', asSizeWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('asc', [c.as, ...LANE_FLAGS.as, '-o', asWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('asc', [c.as, ...LANE_FLAGS['as-size'], '-o', asSizeWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-as.mjs'), asWasmPath(c)]),
   },
   // ── Rivals compiled to wasm32-wasi, run in node's V8 — the honest apples-to-apples
@@ -1229,7 +1243,7 @@ const targets = {
     available: c => !!c.rs && has('rustc'),
     bin: rustWasmPath,
     run: c => tryRun('rust-wasm', c, () => {
-      execFileSync('rustc', ['--target', 'wasm32-wasip1', '-C', 'opt-level=3', '-C', 'target-feature=+simd128', '-o', rustWasmPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('rustc', [...LANE_FLAGS['rust-wasm'], '-o', rustWasmPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), rustWasmPath(c)]),
   },
   'go-wasm': {
@@ -1255,7 +1269,7 @@ const targets = {
       const zigGlobalCache = build('zig-global-cache')
       mkdirSync(zigCache, { recursive: true })
       mkdirSync(zigGlobalCache, { recursive: true })
-      execFileSync('zig', ['build-exe', '-target', 'wasm32-wasi', '-mcpu=generic+simd128', '-O', 'ReleaseFast', '-femit-bin=' + zigWasmPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('zig', ['build-exe', ...LANE_FLAGS['zig-wasm'], '-femit-bin=' + zigWasmPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), zigWasmPath(c)]),
   },
   'c-wasm': {
@@ -1263,8 +1277,19 @@ const targets = {
     available: c => !!c.c && has('zig'),   // zig cc bundles clang + wasi-libc (no emcc/wasi-sdk needed)
     bin: cWasmPath,
     run: c => tryRun('c-wasm', c, () => {
-      execFileSync('zig', ['cc', '-target', 'wasm32-wasi', '-msimd128', '-O3', '-ffp-contract=off', '-o', cWasmPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('zig', ['cc', ...LANE_FLAGS['c-wasm'], '-o', cWasmPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), cWasmPath(c)]),
+  },
+  // The C ports with -ffast-math: the float relaxation a rival grants itself (reassociated
+  // sums, contracted multiply-adds, no NaN or infinity assumed), held against jz's relaxed
+  // lane. A port whose output the relaxation changes reads DIFF and times nothing.
+  'c-wasm-fast': {
+    name: 'C → wasm, -ffast-math (V8)',
+    available: c => !!c.c && has('zig'),
+    bin: cWasmFastPath,
+    run: c => tryRun('c-wasm-fast', c, () => {
+      execFileSync('zig', ['cc', ...LANE_FLAGS['c-wasm-fast'], '-o', cWasmFastPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), cWasmFastPath(c)]),
   },
   'jz-wasmtime': {
     name: 'jz → wasmtime',
@@ -1386,7 +1411,7 @@ const targets = {
     available: c => !!c.go && has('tinygo'),
     bin: tinygoWasmPath,
     run: c => tryRun('tinygo', c, () => {
-      execFileSync('tinygo', ['build', '-target=wasip1', '-opt=2', '-no-debug', '-o', tinygoWasmPath(c), c.go], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('tinygo', ['build', ...LANE_FLAGS.tinygo, '-o', tinygoWasmPath(c), c.go], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), tinygoWasmPath(c)]),
   },
   // MoonBit — its own wasm-first language, compiled to the linear-memory `wasm`
@@ -1435,13 +1460,7 @@ const TARGET_CMDS = {
   tov: 'tov build <case>.tov -o <case>-tov (default -O3, checked integer overflow; C via clang -ffp-contract=off) → run binary',
   goose: 'goose build <case>.goose -o <case>-goose (release defaults: -O2 inlining, the emitted C built at -O2 by the C compiler goose finds) → run binary',
   bend: 'bend <case>.bend -o <case>-bend (release default: the emitted C built by clang -std=c11 -O3) → <case>-bend +RTS --threads 1 --gpu off -RTS (one core, no GPU)',
-  jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   'jz-base': 'the same builds by the checkout at JZ_BASE_ROOT, of its copy of the case (meta.base) → node (V8 wasm)',
-  as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
-  'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 -C target-feature=+simd128 <case>.rs → node (V8 wasm)',
-  'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
-  'zig-wasm': 'zig build-exe -target wasm32-wasi -mcpu=generic+simd128 -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
-  'c-wasm': 'zig cc -target wasm32-wasi -msimd128 -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi -O3 <case>.js → wasmtime --invoke main',
   'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → native postprocess → clang -O3 -mcpu/-march=native -flto -mllvm -min-jump-table-entries=13 (x86: -mllvm -x86-cmov-converter=false)',
   'jz-w2c2': 'jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off',
@@ -1451,8 +1470,9 @@ const TARGET_CMDS = {
   'qjs-wasi': 'qjs-wasi.wasm /case/<case>-flat.js (QuickJS-NG WASI build, the script preopened) → node (V8 wasm) · fenced interpreter reference',
   'componentize-qjs': 'componentize-qjs --wit bench.wit --js <case>-cqjs.js --sync (QuickJS + Wizer; entry exported as wasi:cli/run, console and clock over WASI) → wasmtime run · fenced interpreter reference',
   'componentize-js': 'jco componentize <case>-sm.js --wit bench.wit --disable http fetch-event (StarlingMonkey + Wizer; entry exported as wasi:cli/run) → wasmtime run · fenced interpreter reference',
-  tinygo: 'tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)',
   moonbit: 'moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)',
+  // the claim lanes: the strings of the flags their builds read (bench/claims.mjs)
+  ...LANE_CMDS,
 }
 
 // A partial refresh must not relabel untouched artifacts with whichever
@@ -1462,8 +1482,8 @@ const TARGET_VERSIONS = {
   jz: ['jz', 'watr', 'node'], 'jz-base': ['node'], 'jz-wasmtime': ['jz', 'watr', 'wasmtime'],
   'qjs-wasi': ['quickjs-ng', 'node'], 'componentize-qjs': ['componentize-qjs', 'wasmtime'],
   'componentize-js': ['componentize-js', 'wasmtime'], js2wasm: ['js2wasm', 'node'],
-  'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'],
-  'c-wasm': ['zig', 'node'], 'rust-wasm': ['rust', 'node'], 'go-wasm': ['go', 'node'], 'zig-wasm': ['zig', 'node'],
+  'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'], 'jz-exact': ['jz', 'watr', 'node'],
+  'c-wasm': ['zig', 'node'], 'c-wasm-fast': ['zig', 'node'], 'rust-wasm': ['rust', 'node'], 'go-wasm': ['go', 'node'], 'zig-wasm': ['zig', 'node'],
   wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['tinygo', 'node'],
   tslang: ['tslang', 'clang'], tov: ['tov', 'clang'],
 }
@@ -1780,8 +1800,12 @@ for (const cid of selectedCases) {
       console.log(`[paired] ${tid.padEnd(targetIdWidth)} rounds ${rs.map(r => r.medianUs).join(' ')} µs → median ${med.medianUs} µs  cs=${med.checksum}`)
       results.push(med)
     }
-    const base = avail[0]
-    for (const tid of avail.slice(1)) {
+    // Against the first lane, and the exact lane against every lane past it: the base of
+    // the exact wasm class is paired with the same rivals (bench/claims.mjs CLASS_BASE).
+    const pairs = avail.slice(1).map(tid => [avail[0], tid])
+    if (avail[0] !== 'jz-exact' && avail.includes('jz-exact'))
+      for (const tid of avail.slice(avail.indexOf('jz-exact') + 1)) pairs.push(['jz-exact', tid])
+    for (const [base, tid] of pairs) {
       if (failedIds.has(base) || failedIds.has(tid)) continue
       const ratios = rounds
         .filter(m => m.has(base) && m.has(tid))

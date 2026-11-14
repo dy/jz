@@ -1103,7 +1103,7 @@ exports.square(7) // 49</code></pre>
             ['speed', 'jz', [['as', 'AS', 'AssemblyScript → WASM'], ['c-wasm', 'C', 'C → WASM'], ['rust-wasm', 'Rust', 'Rust → WASM'], ['zig-wasm', 'Zig', 'Zig → WASM'], ['go-wasm', 'Go', 'Go → WASM'], ['moonbit', 'MoonBit', 'MoonBit → WASM']]],
             ['speed', 'jz', [['nat', 'C', 'native C (clang -O3)'], ['rust', 'Rust', 'native Rust'], ['zig', 'Zig', 'native Zig'], ['go', 'Go', 'native Go'], ['porf-native', 'Porf', 'Porffor (JS → native)'], ['perry', 'Perry', 'Perry (TS → native)'], ['numpy', 'NumPy', 'NumPy']]],
             ['memory', 'jz-w2c', [['porf-native', 'Porf', "Porffor's native binary; JZ built natively (wasm2c)"], ['nat', 'C', 'native C; JZ built natively (wasm2c)'], ['rust', 'Rust', 'native Rust; JZ built natively (wasm2c)'], ['zig', 'Zig', 'native Zig; JZ built natively (wasm2c)'], ['go', 'Go', 'native Go; JZ built natively (wasm2c)']]],
-            ['size', 'jz', [['as', 'AS', 'AssemblyScript -Osize'], ['moonbit', 'MoonBit', 'MoonBit → WASM']]],
+            ['size', 'jz', [['as', 'AS', 'AssemblyScript -Oz --converge'], ['moonbit', 'MoonBit', 'MoonBit → WASM']]],
           ]
           const HOW = { speed: 'above 1× is faster', memory: 'below 1× is less', size: 'below 1× is smaller' }
           const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches

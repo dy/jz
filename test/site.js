@@ -771,6 +771,7 @@ test('site: benchmark publication runs only from a complete sharded measurement'
   ok(plan.includes('node bench/shards.mjs plan --mode=$mode'), 'shards are planned from measured wall times')
   for (const pin of ['jsc', 'asc', 'node', 'deno', 'bun']) ok(plan.includes(`${pin}: \${{ steps.versions.outputs.${pin} }}`), `the plan pins ${pin} for every shard and rerun`)
   ok(bench.includes('npx --yes jsvu --os=linux64 "javascriptcore@$JSC"') && bench.includes('JSC_BIN=$HOME/.jsvu/bin/jsc-$JSC'), 'a shard runs the planned JavaScriptCore build')
+  ok(/float-lane smoke[\s\S]*?--targets=jz,jz-exact,c-wasm,c-wasm-fast[\s\S]*?"jz-exact"/.test(bench), 'the gate job runs the exact and fast lanes and checks the exact lane\'s answer')
 })
 
 test('site: a measurement run that lost a shard is rerun once, failed jobs only', () => {

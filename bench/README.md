@@ -68,6 +68,17 @@ JZ agree on each, where munsell's exact bits gave three checksums), and so are
 the three.js cases, whose rotations go through `Math.sin`, `cos` and `acos`
 (V8, Deno, bun, jsc and JZ agree on each).
 
+Floats are compared like against like. The `jz` lane is `optimize: 'speed'`, whose
+`relaxedFloat` lets a reduction add in lanes and accumulators, in another order than
+the loop's (README, "Float results at 'speed'"). The rivals keep the source's float
+order: clang with no fast-math and `-ffp-contract=off`, rustc, zig and asc with no
+float relaxation. So two lanes stand beside them: `jz-exact`, the same speed build
+with `relaxedFloat: false`, at JavaScript's float results, and `c-wasm-fast`, the C
+ports with `-ffast-math`. The claims gate holds "fastest wasm" twice and names each:
+`jz-exact` against the strict rivals, and `jz` against the best of those and
+`c-wasm-fast`. Every lane's flags are one definition, `LANE_FLAGS` in `claims.mjs`,
+which the builds read, `meta.invocations` records and `test/bench-claims.js` pins.
+
 The library cases have C and Rust ports, which the `nat`, `natgcc`, `c-wasm`, `rust`
 and `rust-wasm` lanes take: the nine color-space kernels, the four three.js and four
 pmndrs/math cases, @stdlib's exp, erf, pow, gamma and ddot, fftplan, provenance and
@@ -1033,8 +1044,8 @@ emit no debug sections. TinyGo's `-no-debug` keeps a name section, and Porffor,
 scriptc, Static Hermes (with its VM libraries), Goose, Bend and `jz-w2c` keep
 symbol tables.
 
-Note the preset trade: these speed tables build JZ at the default
-(`optimize: 2`, speed-leaning — loop unroll + SIMD lift), while the dedicated
+Note the preset trade: these speed tables build JZ at `optimize: 'speed'`
+(loop unroll, SIMD lift, relaxed floats), while the dedicated
 size comparison (`npm run bench:size`) builds with `optimize: 'size'` —
 typically ~2× smaller on the same kernel (biquad: 3.5 kB default vs 1.6 kB
 size-tuned). Pick the preset for what you ship; the two tables are not the
