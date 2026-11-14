@@ -5,16 +5,23 @@
 // rfft's (examples/rfft): `id *= 4` leaves the word for n >= 2^31 - 1, `i0 += id`
 // for n >= 3 * 2^29 - 1, the stage loops' `ix = (id << 1) - n2` for n >= 2^29, a
 // counter at 2^31; and the box's own edges, where the copy is left mid-loop.
-// Each loop carries a cap on its trips where Node itself would not end.
+// Each loop carries a cap on its trips where Node itself would not end. The box is a
+// tier above what the planner builds with no box, never in its place: where its guard
+// fails, the copy with no box runs, or the loop as the planner left it.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
-import { run, oracle } from './util.js'
-import { levels } from './_matrix.js'
+import { run, oracle, jz, compileInProcess } from './util.js'
+import { levels, belowOpt } from './_matrix.js'
 import { parse, walk, has, head } from '../scripts/wat-probe.mjs'
+import { ctx } from '../src/ctx.js'
+import { walkAst } from '../src/ast.js'
 
 const EDGES = [0, 1, 2, 7, 8, 8.5, -4, -0, NaN, 2 ** 26, 2 ** 28 - 1, 2 ** 28, 2 ** 29 - 1, 2 ** 29, 2 ** 29 + 1,
   805306368, 1073741823, 1073741824, 1610612734, 1610612735, 2 ** 31 - 2, 2 ** 31 - 1, 2 ** 31, 2 ** 32 - 1, 2 ** 32, 2 ** 53, 1e12, Infinity]
+// (a function's body as the planner leaves it, and a count of its nodes)
+const planned = (src, name) => { compileInProcess(src, { optimize: 'speed' }); return ctx.funcs.list.find(f => f.name === name)?.body }
+const count = (node, pred) => { let k = 0; walkAst(node, { enter: n => { if (pred(n)) k++ } }); return k }
 // (each level against a fresh instance of Node's: the programs keep their arrays between calls)
 const compare = (source, inputs, name = 'f') => {
   for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
@@ -171,4 +178,109 @@ test('boxed counters: rfft answers what Node answers, its index locals words of 
   walk(tree, n => { if (n[0] === 'loop' && has(n, head(/^f64\.store$/)) && has(n, head(/^i32\.(lt|ge)_s$/)) && !has(n, head(/^f64\.(lt|le|gt|ge)$|^f64\.convert_i32|trunc_sat_f64/))) words++ })
   // (4 of 39 before the box, the bit reversal's and init's; 24 of 61 with it, its copies' butterflies)
   ok(words >= 16, `butterfly loops in words: ${words}`)
+})
+
+test('boxed counters: a product of a name the box holds stable is a word of the copy', () => {
+  // `W` the loop reads and never writes: aliased and tested into the box once. The walk read it as
+  // the box's whole range, the literal [0, top]: under `y < H`, `y * W` came to `(H - 1) * top`, a
+  // test no height above 3 passes (top 2^30 - 1), and the copy never ran (penrose's `px[y * W + x]`); over the box
+  // alone, to `top * top`, past the word, and the index stayed a Number. The name reads as its own
+  // value now: `W * min(n - 1, H - 1)` the test, `imul(y, W)` the index. Expected values are Node's.
+  const RANGE = `let W = 0, H = 0, px
+export let resize = (w, h) => { W = w; H = h; px = new Float64Array(w * h); return px.length }
+export let f = (n, x) => {
+  let y = 0, id = 1, r = 0
+  while (y < n) { if (y < H) px[y * W + x] += 1; y = 2 * id - 1; id *= 2; if (++r > 60) break }
+  return [y, id, r, px[x], px[W + x], px[3 * W + x]]
+}`
+  const BOX = RANGE.replace('if (y < H) ', '')
+  const inputs = [[64, 64, 64, 3], [64, 64, 2, 0], [64, 64, 40, 63], [64, 64, 4096, 5], [64, 64, 0, 1], [64, 64, -3, 1], [64, 64, 7.5, 2],
+    [64, 64, NaN, 1], [64, 64, 2 ** 26, 3], [64, 64, 2 ** 30 + 1, 0], [64, 64, 9, 2 ** 30], [64, 64, 9, -1], [1, 1, 5, 0], [0, 4, 5, 0], [4, 1, 9, 2]]
+  for (const src of [RANGE, BOX]) for (const optimize of levels(0, 2, 'size', 'speed')) {
+    const actual = run(src, { optimize }), expected = oracle(src)
+    for (const [w, h, n, x] of inputs) is([actual.resize(w, h), actual.f(n, x)], [expected.resize(w, h), expected.f(n, x)], `${JSON.stringify(optimize)}: ${w}x${h}, ${n}, ${x}`)
+  }
+  if (belowOpt(2)) return
+  // (`coldTrap`: the loop as written throws; a 64 by 64 canvas runs the copy, a product past the word fails the guard)
+  const m = jz(RANGE, { optimize: { level: 3, coldTrap: true } }).exports, js = oracle(RANGE)
+  is([m.resize(64, 64), m.f(64, 3)], [js.resize(64, 64), js.f(64, 3)], 'under `y < H`, a 64-high canvas runs the copy')
+  is(m.f(40, 63), js.f(40, 63), 'and so at the last column')
+  const b = jz(BOX, { optimize: { level: 3, coldTrap: true } }).exports, bjs = oracle(BOX)
+  is([b.resize(64, 64), b.f(64, 3)], [bjs.resize(64, 64), bjs.f(64, 3)], 'over the box alone, a count of 64 runs the copy')
+  throws(() => b.f(2 ** 26, 3), '64 * (2^26 - 1) past the word fails the guard')
+  // (the index a word of the copy: its product an imul)
+  is(count(planned(BOX, 'f'), n => n[0] === '()' && n[1] === 'math.imul'), 1, 'the copy indexes by `imul(y, W) + x`')
+})
+
+test('boxed counters: an entry outside the box runs the copy the planner builds with no box', () => {
+  // penrose's line walk (examples/penrose/penrose.js drawLine): `x += sx`, a stride of either sign. The
+  // box holds `x` and `y` in [0, 2^k - 1], so a line stepping left or up, or starting left of the
+  // canvas, fails its guard; the box stood in place of the copy the planner builds with no box (its
+  // trips bounded by `guard < 8000`), and such a line ran as written. The box is a tier above that
+  // copy now: where its guard fails, the copy runs. Expected values are Node's.
+  const src = `let W = 0, H = 0, px
+export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); return px.length }
+let drawLine = (x0f, y0f, x1f, y1f, col) => {
+  let x = x0f | 0, y = y0f | 0, xe = x1f | 0, ye = y1f | 0
+  let dx = xe - x, dy = ye - y
+  let ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy
+  let sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1
+  let err = ax - ay, guard = 0
+  while (guard < 8000) {
+    if (x >= 0 && x < W && y >= 0 && y < H) px[y * W + x] = col
+    if (x === xe && y === ye) break
+    let e2 = err * 2
+    if (e2 > -ay) { err -= ay; x += sx }
+    if (e2 < ax) { err += ax; y += sy }
+    guard++
+  }
+}
+export let lines = (n, x0, y0, x1, y1) => {
+  let k = 0
+  while (k < n) { drawLine(x0 + (k & 7), y0 + (k & 3), x1 - (k & 7), y1 - (k & 3), k + 1); k++ }
+  let s = 0
+  for (let i = 0; i < px.length; i++) s = (s * 31 + px[i]) | 0
+  return s
+}`
+  const LINES = { 'right and down': [5, 4, 4, 60, 44], 'left and up': [5, 60, 44, 4, 4], 'right and up': [5, 4, 44, 60, 4],
+    'from left of the canvas': [5, -20, 10, 60, 30], 'past the bottom right': [5, 40, 30, 90, 70], 'a point': [2, 7, 7, 7, 7] }
+  for (const optimize of levels(0, 2, 'speed')) {
+    const actual = run(src, { optimize }), expected = oracle(src)
+    is(actual.resize(64, 48), expected.resize(64, 48))
+    for (const [name, a] of Object.entries(LINES)) is(actual.lines(...a), expected.lines(...a), `${JSON.stringify(optimize)}: ${name}`)
+  }
+  if (belowOpt(2)) return
+  // (`coldTrap`: the loop as written throws; every direction runs a copy, the box's or the other)
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports, js = oracle(src)
+  is(m.resize(64, 48), js.resize(64, 48))
+  for (const [name, a] of Object.entries(LINES)) is(m.lines(...a), js.lines(...a), `${name} runs a copy`)
+})
+
+test('boxed counters: where only the box builds a copy, the loop beside it stands as with no box', () => {
+  // The planner builds no copy of the outer loop (`ix` and `id` leave any width it proves), the
+  // box does. The loop as written beside it ran where the box's guard failed, cold, its inner loop
+  // as written too: slower there than with no box, where the loop runs as written with the inner
+  // copy in it. It stands so now: not cold, the inner copy in place. Expected values are Node's.
+  const src = `const x = new Float64Array(64), a = new Float64Array(16)
+export let f = (n, m) => {
+  let ix = 0, id = 1, r = 0
+  while (ix < n) {
+    let j = 0
+    while (j < m) { a[j] += x[ix]; j++ }
+    x[ix] += 1; ix = 2 * id - 1; id *= 2
+    if (++r > 40) break
+  }
+  return [ix, id, r, a[0], a[15], x[1], x[63]]
+}`
+  const inputs = [[64, 16], [64, 3.5], [2 ** 30 + 1, 16], [2 ** 31, 4], [5, -1], [NaN, 4], [-0, 2], [40, NaN], [1e12, 16]]
+  for (const optimize of levels(0, 2, 'size', 'speed')) {
+    const actual = run(src, { optimize }), expected = oracle(src)
+    for (const [n, m] of inputs) is(actual.f(n, m), expected.f(n, m), `${JSON.stringify(optimize)}: ${n}, ${m}`)
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'f')
+  // (the inner copy's own loop as written, where `m` is no int32, the one cold loop)
+  is(count(body, n => n[0] === 'while' && n.cold === true), 1, 'the outer loop as written is not cold')
+  // (the inner copy, bounded by `m` rounded, in the box's copy and in the loop as written beside it)
+  is(count(body, n => n[0] === 'while' && Array.isArray(n[1]) && typeof n[1][2] === 'string' && n[1][2].includes('bound')), 2, 'the inner copy stands in the loop as written')
 })

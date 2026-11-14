@@ -162,12 +162,24 @@
  * identity there), k the widest for which it does, inner loops included.
  * Where a head's test fails, the copy leaves for the loop as written at that
  * head, over the names it wrote back: a head is a state both forms share, and
- * the loop's test, pure, runs there once either way. Standing alone, a copy
- * that can leave has one cold loop: the loop as written past the guard, which
- * runs where the guard fails and resumes where the copy left (a `for` with an
+ * the loop's test, pure, runs there once either way. A name the loop reads and
+ * does not write is tested into the box once and read as its own value
+ * elsewhere: `y * W` under `y < H` is tested as `W * min(n - 1, H - 1)`, not as
+ * the box's top times a name, which no ordinary value passes.
+ * The box is a tier above what the planner builds with no box, never in its
+ * place. A loop with a box, or with an inner version that has one, is built
+ * twice, with no box and with the boxes. Where both build a copy, the box's
+ * guard selects its own and the other arm is the copy with no box, one cold
+ * loop below both: the loop as written past the guards, which runs where the
+ * other guard fails and resumes where the box's copy left (a `for` with an
  * init keeps a resumption of its own: the loop as written would run the init
- * again). A name of the box read as written is tested for -0 where a write of
- * it may be one: the proof reads the names of the box as no -0. A loop that runs
+ * again). Where only the box builds one, the loop past its guard stands as the
+ * planner with no box leaves it, not cold, its inner copies in place: where
+ * the box's guard fails, the loop runs as with no box. An enclosing loop reads
+ * an inner box the same two ways, and a head read in another form (a `for`
+ * over several counters, a negated test) with no box.
+ * A name of the box read as written is tested for -0 where a write of it may
+ * be one: the proof reads the names of the box as no -0. A loop that runs
  * user code takes no box, nor one whose integers the program holds within
  * 2^52 as written (`child = 2 * i + 1` under `child < n` over a length:
  * optimize/int-narrow.js carries those as they are).
@@ -698,7 +710,104 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     settleTrial()
   }
   const retried = new Set()
-  for (let k = 0; k < loops.length; k++) {
+  // Where a box adds to a loop the planner copies without one, it is a tier above that copy,
+  // never in its place. A loop with a box of its own, or with an inner version that has one, is
+  // built twice: once as the planner builds it with no box, each inner node that has one read as
+  // what stands below its box, then with the boxes. Where both build a version, the box's guard
+  // selects its copy and the other arm is the copy with no box, the loop as written below both
+  // (one cold loop: where the other copy's guard fails and where the box's copy leaves). Where
+  // only the boxes build one, it stands on the loop as written as the planner left it, its inner
+  // versions in place and nothing cold: where the box's guard fails, the loop runs as with no box.
+  // No input then runs a slower form than with no box, but for the box's tests (and from a head
+  // the box's copy leaves at, the loop as written); an enclosing loop, built twice the same way,
+  // falls to the copies with no box where an inner box's tests, lifted into its guard, fail.
+  const stash = new Map()        // loop → what its pass with no box built, or null
+  const boxPass = new Set()      // the loops whose next pass reads the boxes
+  let pending = null             // the pass under way: { k, loop, parent, idx, passB, tiered, swaps, needB, done }
+  let passB = true               // whether the pass under way reads the boxes
+  // (each inner node with a box as what stands below it, for a pass with no box: a tier as the copy
+  // with no box, its other arm the loop as written again; a version only the boxes made as its loop,
+  // which stands as the planner with no box left it; `boxes`, whether any inner node has a box)
+  const toBase = (loop) => {
+    const swaps = []
+    let boxes = false
+    walkAst(loop, { enter: (n, p, i) => {
+      if (n[0] === '=>') return false
+      const v = versions.get(n)
+      if (!v) return
+      if (v.box) boxes = true
+      if (v.box && p) {
+        const t = v.tier
+        if (t?.slot) t.slot[0][t.slot[1]] = t.real
+        swaps.push([p, i, n, t]); p[i] = t ? t.wrapped : v.loop
+      }
+      return false
+    } })
+    return { swaps, boxes }
+  }
+  const fromBase = (swaps) => { for (const [p, i, n, t] of swaps.reverse()) { p[i] = n; if (t?.slot) t.slot[0][t.slot[1]] = t.bail } }
+  // (every inner version in a loop as written its loop as written; one only the boxes made, its loop, read so within)
+  const writtenIn = (loop) => walkAst(loop, { enter: (n, p, i) => {
+    if (n[0] === '=>') return false
+    const v = versions.get(n)
+    if (!v) return
+    if (v.box && !v.tier && p) { p[i] = v.loop; writtenIn(v.loop) } else place(p, i, v.asWritten)
+    return false
+  } })
+  // (the loop as written the other arm: so, cold, with every loop in it)
+  const finalize = (loop) => {
+    writtenIn(loop)
+    walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (ALL_LOOPS.has(n[0])) { n.cold = true; const b = n[n[0] === 'for' ? 4 : n[0] === 'while' ? 2 : 1]; if (Array.isArray(b)) b.cold = true } } })
+  }
+  const commit = (r, parent, idx, loop) => {
+    parent[idx] = r.node
+    grown += nodeSize(r.node) - nodeSize(loop)
+    for (const [node, record] of r.records) versions.set(node, record)
+    for (const version of r.versions) for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
+    // (the copy's names are the body's locals now: an enclosing loop's copy reads them so)
+    for (const own of r.owns) for (const [n, m] of own) { locals.add(m); origin.set(m, origin.get(n) ?? n) }
+    for (const d of r.boundDecls) locals.add(d[1])
+    rewrote = true
+  }
+  // The box's guard selects its copy; the other arm is the copy with no box, the loop as written
+  // below both: where the box's copy leaves (its flag, set too where the other copy's guard fails),
+  // or, where the box's copy keeps a resumption of its own, the other copy's arm alone.
+  const combine = (b, a) => {
+    const decls = b.aliases.length ? [['let', ...b.aliases.map(x => ['=', x, [null, 0]])]] : []
+    let node, bail
+    if (b.merged) {
+      bail = ['{}', [';', ['=', b.bailFlag, [null, 1]]]]
+      if (a.slot) a.slot[0][a.slot[1]] = bail
+      node = ['{}', [';', ...decls, ['if', b.test, b.fast, a.node], ['if', b.bailFlag, b.asWritten]]]
+    } else {
+      bail = a.asWritten
+      node = ['{}', [';', ...decls, ['if', b.test, b.record.version, a.node]]]
+    }
+    const record = { ...b.record, box: true, tier: { wrapped: a.node, record: a.record, slot: a.slot, real: a.asWritten, bail } }
+    return { node, records: [[node, record], ...a.records], versions: [...a.versions, ...b.versions], owns: [...a.owns, ...b.owns], boundDecls: [...a.boundDecls, ...b.boundDecls] }
+  }
+  // (a pass that ended at no version: one with no box hands over to the box's, one with the box commits
+  // what the first built; the index to run next, or null)
+  const flush = () => {
+    const p = pending
+    pending = null
+    if (!p || p.done) return null
+    if (!p.passB) {
+      fromBase(p.swaps)
+      if (!p.needB) return null
+      stash.set(p.loop, null); boxPass.add(p.loop)
+      return p.k
+    }
+    boxPass.delete(p.loop)
+    const a = stash.get(p.loop)
+    stash.delete(p.loop)
+    if (a) { finalize(p.loop); commit(a, p.parent, p.idx, p.loop) }
+    return null
+  }
+  for (let k = 0; k <= loops.length; k++) {
+    const next = flush()
+    if (next != null) { k = next - 1; continue }
+    if (k === loops.length) break
     let [loop, parent, idx, enclosing, around] = loops[k]
     settle()
     if (grown > SOURCE_FULL && !kernelLoop(loop)) continue
@@ -717,6 +826,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // where its guard holds each side to a word, the rest as written.
     if (!retried.has(loops[k][0])) trial = negatedTest(loop)
     if (trial) loop[trial.at] = trial.test
+    // (the pass: with no box first, then the boxes', where either the loop or an inner node has one;
+    // a head read in another form is read once, with no box)
+    const tiered = !canon && !trial
+    passB = tiered && boxPass.has(loop)
+    const b = passB ? { swaps: [], boxes: false } : toBase(loop)
+    pending = { k, loop, parent, idx, passB, tiered, swaps: b.swaps, needB: tiered && b.boxes, done: false }
     let size = nodeSize(loop)
     walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; const v = versions.get(n); if (v) { size -= nodeSize(n) - nodeSize(v.asWritten); return false } } })
     if (size > MAX_SIZE) continue
@@ -1160,8 +1275,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // inner loops included. Where a head's test fails, the copy leaves for the
     // loop as written at that head, over the names it wrote back: a head is a
     // state both forms share, and the loop's test, pure, runs once there either way.
-    const box = (() => {
-      if (!func || counterBound || loop[0] !== 'while' || !Array.isArray(loop[1]) || !Array.isArray(parent) || (parent[0] !== ';' && parent[0] !== '{}')) return null
+    const boxFound = (() => {
+      if (!func || !pending.tiered || counterBound || loop[0] !== 'while' || !Array.isArray(loop[1]) || !Array.isArray(parent) || (parent[0] !== ';' && parent[0] !== '{}')) return null
       if (some(loop[1], n => n[0] != null && (!PURE_TEST.has(n[0]) || n[0] === '()' && n.length !== 2))) return null
       // (a loop that runs user code is its calls' time, and a copy of it doubles them: no box)
       if (quietNames() == null) return null
@@ -1304,6 +1419,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
       return { held, stable, ownWord, zeroTested, entries, writes, top, heads, entryTests, k: lo }
     })()
+    // (a pass with no box builds as the planner does without one, and hands over to the box's where one was found)
+    if (boxFound) pending.needB = true
+    const box = passB ? boxFound : null
     if (!counterBound && nested && !ownTrip && !box) continue
     // (a held name entering from no literal and no word, and a name of the box the copy aliases: an int32 its test shows)
     if (box) for (const n of [...box.held.filter(w => !box.entries.has(w)), ...box.stable.filter(s => !box.ownWord.has(s))]) if (!names.includes(n)) names.push(n)
@@ -1542,7 +1660,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // none (a test of it would hold for a width of one at most). Moved by a
     // literal past the extreme (`g - 1` under `if (g >= w) g = w - 1`, its floor
     // `min(w - 1, -2^31)`) it is none too: a test of it would hold for no value.
-    const open = (x, hi) => isLit(x) ? (hi ? x[1] >= I32_MAX : x[1] <= I32_MIN)
+    // The top of a box is such an end: `top * W` or `top + j` tested holds for no
+    // ordinary value, where the box's own proof answers for the names it holds.
+    const open = (x, hi) => isLit(x) ? (hi ? x[1] >= I32_MAX || !!box && x[1] >= box.top : x[1] <= I32_MIN)
       : Array.isArray(x) && x[0] === '()' && (x[1] === 'math.max' || x[1] === 'math.min') && ((x[1] === 'math.max') === hi ? open(x[2][1], hi) || open(x[2][2], hi) : open(x[2][1], hi) && open(x[2][2], hi))
     const opened = (a, b) => a == null || b == null || !isLit(a) && (open(b, true) || open(b, false)) || !isLit(b) && (open(a, true) || open(a, false))
     const past = (a, k) => k !== 0 && !isLit(a) && open(a, k > 0)
@@ -1631,8 +1751,6 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (loopWrites.has(e) || inner.has(e)) return null
         const r = intExprRange(e)
         if (r && Number.isFinite(r[0]) && Number.isFinite(r[1]) && !loopWrites.has(e)) return [lit(r[0]), lit(r[1])]
-        // (a name of the box: within it, as the guard tests)
-        if (box?.stable.includes(e)) return [lit(0), lit(box.top)]
         return isIntName(e) ? [e, e] : null
       }
       if (!Array.isArray(e)) return null
@@ -1793,7 +1911,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (a test an int32 answers already is left out: a word's end, the least of
     // ends above the range's floor, the most of ends below its ceiling)
     const span = (e) => {
-      if (typeof e === 'string') return e === counter ? [counterHull()?.[0]?.[1] ?? -Infinity, I32_MAX] : names.includes(e) || used.has(e) || words.has(e) || cursors.has(e) ? [I32_MIN, I32_MAX] : [-Infinity, Infinity]
+      // (a name of the box lies within it, as the guard tests: a test that range answers is left out)
+      if (typeof e === 'string') return e === counter ? [counterHull()?.[0]?.[1] ?? -Infinity, I32_MAX] : box?.stable.includes(e) ? [0, box.top]
+        : names.includes(e) || used.has(e) || words.has(e) || cursors.has(e) ? [I32_MIN, I32_MAX] : [-Infinity, Infinity]
       if (!Array.isArray(e)) return [-Infinity, Infinity]
       if (e[0] == null) return [e[1], e[1]]
       if (e[0] === '>>' || e[0] === '|') return [I32_MIN, I32_MAX]
@@ -2155,6 +2275,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     for (const n of loopWrites.keys()) env.set(n, null)
     // (a held name enters each round in its box)
     for (const w of box?.held ?? []) env.set(w, [lit(0), lit(box.top)])
+    // (and lies below what the loop's own test bounds it by: `i0 < N` leaves it at most N - 1)
+    if (box) refine(loop[1], true)
     if (typeof counter === 'string') env.set(counter, counterHull())
     for (const [c, r] of cursorRange) env.set(c, r)
     // (a version in the body, a loop in it: the prefix is impure from there, as `step` reads)
@@ -2227,6 +2349,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (an alias the inner test captures is declared around it: the copy declares
     // it around this loop instead, under the name the copy gives it)
     const innerTests = [], swapped = [], hoistedAliases = []
+    // (where each inner version stands as the pass reads it, to restore if the pass hands over)
+    const innerAt = []
+    walkAst(loop, { enter: (n, p, i) => { if (n[0] === '=>') return false; if (versions.has(n) && p) { innerAt.push([p, i, p[i]]); return false } } })
+    // (an inner box's tier taken in, and the slots of copies below boxes read as their loops for the copy)
+    let tookBox = false
+    const below = []
     walkAst(loop, { enter: (n, p, i) => {
       if (n[0] === '=>') return false
       const v = versions.get(n)
@@ -2252,17 +2380,20 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (decl.length === 1) list.splice(1, 1)
         for (let k = list.length - 1; k >= 1; k--) if (self(list[k])) list.splice(k, 1)
       }
+      if (v.box) tookBox = true
       if (ab) {
         // (an alias a dropped test captured is declared from its name's word: the
         // name is an int32 here, and the alias keeps that representation where
         // the name's own may be wider; the other aliases stay declared around)
+        // (where a test of a box stays, its other arm is the copy below the box, as the box's guard has it)
         const rest = ab.rest
         const kept = v.aliases.filter(a => !ab.subst.has(a))
-        const guarded = rest.length ? ['if', rest.reduce((a, b) => ['&&', a, b]), fast, v.asWritten] : fast
+        const other = v.tier ? (v.tier.slot && (v.tier.slot[0][v.tier.slot[1]] = v.tier.real, below.push(v.tier)), v.tier.wrapped) : v.asWritten
+        const guarded = rest.length ? ['if', rest.reduce((a, b) => ['&&', a, b]), fast, other] : fast
         const decls = [...kept.map(a => ['=', a, [null, 0]]), ...[...ab.subst].map(([a, n]) => ['=', a, ['|', n, [null, 0]]])]
         fast = decls.length ? ['{}', [';', ['let', ...decls], guarded]] : guarded
       }
-      place(p, i, fast); swapped.push([p, i, v.asWritten])
+      swapped.push([p, i, p[i]]); place(p, i, fast)
       return false
     } })
     // (the copy takes each derived integer and each such index as its word, every product in it an imul)
@@ -2288,6 +2419,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       strideDecls.push(['=', w, ['|', e, [null, 0]]]); n[2] = w
     }
     const copy = cloneWithSubst(loop, new Map(), own)
+    for (const t of below) t.slot[0][t.slot[1]] = t.bail
     // (by identity: a bail's statements may have moved it in its list)
     for (const [p, wrapped, st] of boxWraps) p[p.indexOf(wrapped)] = st
     // (the box's tests at each head, a held name the copy's word: the round leaves for the loop as written where one fails)
@@ -2313,16 +2445,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     }
     for (const [n, i, e] of wraps) n[i] = e
     for (const b of [...bails].sort((x, y) => x.at - y.at)) { b.list.splice(b.at, b.pre.length); for (const [n, i, , e] of b.swaps) n[i] = e }
-    for (const [p, i, n] of swapped) place(p, i, n)
+    for (const [p, i, n] of swapped) p[i] = n
+    // (a version only the boxes build stands on the loop as the planner with no box leaves it,
+    // nothing cold: each inner node with a box what stands below it, for good)
+    const solo = passB && !stash.get(loop)
     // (the loop as written is the other arm now: every inner version in it is
     // its loop as written too, the fast arm there would run as rarely)
-    walkAst(loop, { enter: (n, p, i) => {
-      if (n[0] === '=>') return false
-      const v = versions.get(n)
-      if (!v) return
-      place(p, i, v.asWritten)
-      return false
-    } })
+    if (solo) toBase(loop)
+    else writtenIn(loop)
     // the copy steps each cursor's word, and a while's counter's: the guard holds its
     // bound below the word's top by the loop's advance, so no step of it wraps
     if (cursors.size || (loop[0] === 'while' && counters.length)) {
@@ -2417,7 +2547,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (a counter enters as its literal; a cursor as its word, an int32 by the guard)
     // (the loop as written runs for the values the guard rejects: cold, with every loop in it;
     // a mark on the node and its body, which a clone carries: type/clone.js carrySite)
-    walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (ALL_LOOPS.has(n[0])) { n.cold = true; const b = n[n[0] === 'for' ? 4 : n[0] === 'while' ? 2 : 1]; if (Array.isArray(b)) b.cold = true } } })
+    const marked = []
+    if (!solo) walkAst(loop, { enter: (n) => {
+      if (n[0] === '=>') return false
+      if (!ALL_LOOPS.has(n[0])) return
+      if (!n.cold) { n.cold = true; marked.push(n) }
+      const b = n[n[0] === 'for' ? 4 : n[0] === 'while' ? 2 : 1]
+      if (Array.isArray(b) && !b.cold) { b.cold = true; marked.push(b) }
+    } })
     // (`optimize.coldTrap`: the loop as written throws its version's number instead of
     // running, a diagnostic that finds a guard failing on an input the copy was meant for)
     const trap = () => ['{}', [';', ['throw', [null, (ctx.transform.coldTraps = (ctx.transform.coldTraps ?? 0) + 1)]]]]
@@ -2450,17 +2587,34 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       : [['if', test, ['{}', [';', decl, ['=', bailFlag, [null, 0]], copy, ...back, ...(rest.length ? [['if', bailFlag, ['{}', [';', ...rest]]]] : [])]]], ['if', bailFlag, asWritten]]
     const aliases = [...names.map(n => own.get(n)), ...hoistedAliases, ...(bailFlag ? [bailFlag, ...(bailSave ? [bailSave] : [])] : [])]
     const wrapped = aliases.length ? ['{}', [';', ['let', ...aliases.map(a => ['=', a, [null, merged && a === bailFlag ? 1 : 0]])], ...guarded]] : guarded[0]
-    parent[idx] = wrapped
-    grown += nodeSize(wrapped) - nodeSize(loop)
     const found = new Set()
     if (test) walkAst(test, { enter: n => { if (n[0] === 'str') return false; for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && n[0] !== '()' && !aliases.includes(n[i])) found.add(n[i]) } })
     const undo = new Map(written.filter(n => !names.includes(n) && !counters.includes(n) && !cursors.has(n) && !numbers.includes(n) && !present.includes(n)).map(n => [own.get(n), n]))
-    versions.set(wrapped, { test, version, asWritten, loop, names: [...found], aliases, undo, trip: counterBound?.trip ?? null, advances: cursors, cursorHulls, conj })
-    for (const [n, values] of writesIn(version)) { const l = bodyWrites.get(n); if (l) l.push(...values); else bodyWrites.set(n, values) }
-    // (the copy's names are the body's locals now: an enclosing loop's copy reads them so)
-    for (const [n, m] of own) { locals.add(m); origin.set(m, origin.get(n) ?? n) }
-    for (const d of boundDecl) locals.add(d[1])
-    rewrote = true
+    const record = { test, version, asWritten, loop, names: [...found], aliases, undo, trip: counterBound?.trip ?? null, advances: cursors, cursorHulls, conj, box: !!box || tookBox }
+    // (the slot of the loop as written in this version: where a copy with a box above takes the other arm)
+    const otherAt = !test ? null : merged ? [guarded[1], 2] : [guarded[0], 3]
+    const built = { node: wrapped, records: [[wrapped, record]], versions: [version], owns: [own], boundDecls: [boundDecl], record, test, asWritten, slot: otherAt, aliases, merged, bailFlag, fast: merged ? guarded[0][2] : null }
+    pending.done = true
+    if (!passB && pending.needB) {
+      // (the pass with no box hands over to the boxes': the loop as it found it)
+      for (const n of marked) delete n.cold
+      for (const [p, i, v] of innerAt) p[i] = v
+      fromBase(pending.swaps)
+      stash.set(loop, built); boxPass.add(loop)
+      k--; continue
+    }
+    let final = built
+    if (passB) {
+      boxPass.delete(loop)
+      const a = stash.get(loop)
+      stash.delete(loop)
+      // (a version only the boxes made stands on the loop as the planner left it; one that adds no
+      // box is the other pass's again; one that needs no guard stands alone)
+      if (!a) record.box = true
+      else if (!record.box) final = a
+      else if (test) final = combine(built, a)
+    }
+    commit(final, parent, idx, loop)
   }
   settle()
   return rewrote
