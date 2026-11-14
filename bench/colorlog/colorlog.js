@@ -5,7 +5,7 @@
 // 1M px). The decode is Math.pow(2, runtime exponent) — a runtime-base exp2 (encode is
 // log2/log10). That runtime-base exp2/log2 is where jz's codegen trails V8's intrinsics,
 // same class as colorpq. Target: fast pow/exp2/log2 so log-format color conversion wins.
-import { checksumF64, medianUs, printResult } from '../_lib/benchlib.js'
+import { checksumF64Near, medianUs, printResult } from '../_lib/benchlib.js'
 
 const N_PIXELS = 1000000
 const N_RUNS = 21
@@ -35,6 +35,6 @@ const run = () => {
   for (let i = 0; i < N_WARMUP; i++) logc4ToXyz(src, dst, N_PIXELS)
   const samples = new Float64Array(N_RUNS)
   for (let i = 0; i < N_RUNS; i++) { const t0 = performance.now(); logc4ToXyz(src, dst, N_PIXELS); samples[i] = performance.now() - t0 }
-  printResult(medianUs(samples), checksumF64(dst), N_PIXELS, 1, N_RUNS)
+  printResult(medianUs(samples), checksumF64Near(dst, 16), N_PIXELS, 1, N_RUNS)
 }
 export let main = () => { run() }

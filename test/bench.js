@@ -214,12 +214,14 @@ const SPEED = {
 //   colorlog            `Math.pow(2, x)` takes jz's exp2, within 1 ulp of V8's
 //                       (the 2^(j/64) table kernel, module/math/trig-tables.js
 //                       EXP2_TAB: 0.52 ulp against a 200-bit reference, V8's
-//                       fdlibm about 1); the bench checksum is bitwise, so one
-//                       ulp is still a different sum.
+//                       fdlibm about 1).
+// Since 2026-11-14 the cases hash 16 significant bits of each value (benchlib
+// checksumF64Near(out, 16)), where jz's answer and every engine's agree: each pin
+// is the case's reference (bench/bench.mjs REFERENCE_CHECKSUMS).
 const LAB_SPEED = {
-  colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2 – 1 ulp' },
-  colorlch:  { v8: 'win', jz: 278287575,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; atan2 11 ulp; cbrt bit-exact' },
-  colorconv: { v8: 'tie', jz: 3731035495, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
+  colorlog:  { v8: 'win', jz: 3459716430, why: 'Math.pow(2, x) through jz exp2 – 1 ulp' },
+  colorlch:  { v8: 'win', jz: 58790493,   why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; atan2 11 ulp; cbrt bit-exact' },
+  colorconv: { v8: 'tie', jz: 3485184154, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared

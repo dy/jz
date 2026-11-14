@@ -8,7 +8,7 @@
 // pow with a runtime exponent (and the branch blocking vectorization) trails V8's
 // Math.pow here. Target: fast runtime-exponent pow + branchless signed-pow so the
 // PQ-heavy HDR conversions stop losing.
-import { checksumF64, medianUs, printResult } from '../_lib/benchlib.js'
+import { checksumF64Near, medianUs, printResult } from '../_lib/benchlib.js'
 
 const N_PIXELS = 1000000
 const N_RUNS = 21
@@ -49,6 +49,6 @@ const run = () => {
   for (let i = 0; i < N_WARMUP; i++) xyzToJzazbz(src, dst, N_PIXELS)
   const samples = new Float64Array(N_RUNS)
   for (let i = 0; i < N_RUNS; i++) { const t0 = performance.now(); xyzToJzazbz(src, dst, N_PIXELS); samples[i] = performance.now() - t0 }
-  printResult(medianUs(samples), checksumF64(dst), N_PIXELS, 1, N_RUNS)
+  printResult(medianUs(samples), checksumF64Near(dst, 16), N_PIXELS, 1, N_RUNS)
 }
 export let main = () => { run() }

@@ -1641,6 +1641,10 @@ const FMA_CHECKSUMS = {
 // until a reference refresh stores them.
 const REFERENCE_CHECKSUMS = {
   entity: 1275530752,
+  // the libm probes, hashed at 16 significant bits (benchlib checksumF64Near(out, 16)):
+  // node 25 (V8 14.1) and 22 (V8 12.4), deno 2.6 (V8 14.5), bun 1.3 (JSC) and jz at
+  // 'speed', at 'speed' with relaxedFloat off, the default level and 'size' agree on each (arm64, 2026-11-14)
+  deltae: 2299855818, colorconv: 3485184154, colorlch: 58790493, colorlog: 3459716430, colorpq: 3897623418,
   'stdlib-exp': 4129678277, 'stdlib-gamma': 2961059269, 'stdlib-erf': 2529385925, 'stdlib-pow': 1170594757,
   'stdlib-ddot': 187360325, 'stdlib-special': 2131273638,
   // its NaN results hashed as one encoding (the case's `checksum`): node 20, 22
@@ -1675,6 +1679,9 @@ const REFERENCE_CHECKSUMS = {
 // valid JS): one run per case, apart from the rows it scores. A failed run
 // leaves the rows unclassified, never scored against the stale bytes.
 const SOURCE_ORACLE = new Set(['jz'])
+// A case whose source changed its checksum: its pinned reference wins over the one an
+// earlier dataset stored under the old hash, until a reference run stores the new one.
+const REPINNED = new Set(['deltae', 'colorconv', 'colorlch', 'colorlog', 'colorpq'])
 const sourceOracle = c => {
   const r = runProc([process.execPath, join(LIB, 'run-v8.mjs'), c.js])
   if (r.error) console.log(`[oracle] ${c.id} FAIL: ${r.error}`)
@@ -1691,6 +1698,7 @@ for (const cid of selectedCases) {
   console.log(`\n# ${c.name} (${c.id})`)
   // A failed measurement cannot erase its oracle or make a later result its own reference.
   const refCs = SOURCE_ORACLE.has(cid) ? sourceOracle(c)
+    : REPINNED.has(cid) ? REFERENCE_CHECKSUMS[cid]
     : PREV?.cases?.[cid]?.ref ?? CANONICAL?.cases?.[cid]?.ref ?? REFERENCE_CHECKSUMS[cid] ?? null
   const results = []
   // Targets that were AVAILABLE (toolchain present + source exists) but failed to

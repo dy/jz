@@ -384,12 +384,12 @@ Every case enters every aggregate: the geomean chart, the page's geomeans and
 coverage, the aggregate table below and the landing's figures. That includes the
 compiler workloads (`watr`, `jessie`, the `jz` self-compile) and the colorjs
 intrinsic probes (`colorconv`, `colorlch`, `colorlog`, `colorpq`, `deltae`), which
-were once set apart as `lab` rows. A row counts where its checksum is accepted:
-the probes hash their exact transcendental bits, which differ by libm. In the CI
-dataset no lane matches their stored checksums; in the reference dataset JZ matches
-three of them and the JS engines the other two. They add few pairs to any ratio until
-they are checked at single precision as the color-space cases are (`checksumF64Near`)
-and their references re-pinned. The claims gate still passes over all eight when it
+were once set apart as `lab` rows. A row counts where its checksum is accepted.
+The probes hash 16 significant bits of each value (`checksumF64Near(out, 16)`): their
+transcendental results differ in the last bits by libm (V8 12.4 and 14.1 part on one
+value of colorpq's 3 million at single precision), and at 16 bits node 25 and 22,
+deno, bun and JZ at every level agree on all five (2026-11-14, `REFERENCE_CHECKSUMS`
+in bench.mjs). The claims gate passes over the three compiler workloads alone when it
 requires a correct JZ timing per case (`PARITY_EXEMPT` in `claims.mjs`).
 
 The bench page plays every case in the visitor's browser but the self-compile, whose
@@ -671,9 +671,9 @@ Eighteen cases have no port:
   `from_bytes`, verifies a serialized image into an array, per value; the
   other way is C of its own through `extern fn`. The last two are
   20,000-line namespace bundles besides.
-- The lab probes colorconv, colorlch, colorlog, colorpq and deltae check the
-  exact bits of transcendental results, which follow one engine family's math
-  library; no native lane has a port of them.
+- The lab probes colorconv, colorlch, colorlog, colorpq and deltae check
+  transcendental results at 16 significant bits; no native lane has a port of
+  them.
 - jessie, jz and watr (parsers and compilers bundled from npm packages) and
   webaudio (the whole web-audio-api library) are programs of thousands of
   lines, not kernels.
