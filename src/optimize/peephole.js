@@ -15,7 +15,7 @@ import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthy
 import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst, nodeEqual } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
-import { rewriteBy, WALK, HELPERS, LOADS } from './rules.js'
+import { rewriteBy, immediate, WALK, HELPERS, LOADS } from './rules.js'
 import { IR_FULL, irSize } from '../growth.js'
 const TWO_63 = 2 ** 63
 
@@ -91,68 +91,67 @@ export function boolConvertToSelect(fn) {
   rewrite(fn)
 }
 
-// The scalar addresses a pass after fusedRewrite reshapes (a word narrowed from an
-// i64, optimize/int-narrow.js narrowWrappedWords): the constant part of each index
-// moves into the memarg, as fusedRewrite's walk does — `(x + K) << S` is
-// `(x << S) + (K << S)` modulo 2^32, the constant lifts out of the sums, and the
-// access reads `offset=` it from the rest. The rest is then the same subtree for
-// every field of one record (`code[o]`, `code[o + 1]`), which value numbering shares.
-const ADDR_AT = (n) => typeof n[1] === 'string' && n[1].startsWith('offset=') ? 2 : typeof n[1] === 'string' && n[1].startsWith('align=') ? 2 : 1
+// The memarg fold, one for the three passes that make an address: fusedRewrite's walk,
+// the lane lift's v128 accesses (foldV128Memargs) and the addresses a word narrowed from
+// an i64 reshapes (refoldMemargs, optimize/int-narrow.js narrowWrappedWords). The constant
+// of an address moves into its access's offset: `(load (i32.add B K))` reads
+// `(load offset=K B)`. An i32.add wraps mod 2^32 where a memarg adds without wrapping, so
+// the two are the same where B + K does not wrap (the relation NO_WRAP, optimize/rules.js),
+// which jz holds by what an address is: an access addresses its object, B an offset inside
+// memory (a base, plus an index proven or checked inside the object) and K a displacement
+// below 2^31 within it. A constant at or past 2^31 is a word below zero, no displacement.
+// test/rules.js runs the fold on that domain; test/rules-population.js reads and writes
+// outside arrays at every level, where the checks keep the access from memory.
+// `lift` first moves the constants of the address's sums to its root (`(x + K) << S` is
+// `(x << S) + (K << S)` modulo 2^32) where the scaled and summed constant is the integer as
+// written, no sum that wrapped. The rest is then the same subtree for every field of one
+// record (`code[o]`, `code[o + 1]`), which value numbering shares.
+const word = (n) => Array.isArray(n) && n[0] === 'i32.const' && n.length === 2 ? immediate('i32.const', n[1]) : null
 const isConst = (n) => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number'
+const exact = (k) => k === (k | 0)
 const liftConst = (n) => {
   if (!Array.isArray(n)) return n
-  if (n[0] === 'i32.shl' && n.length === 3 && isConst(n[2]) && n[2][1] >= 0 && n[2][1] < 32) {
-    const a = liftConst(n[1])
-    if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 && isConst(a[2]))
-      return ['i32.add', ['i32.shl', a[1], n[2]], ['i32.const', (a[2][1] * 2 ** n[2][1]) | 0]]
+  const s = n[0] === 'i32.shl' && n.length === 3 ? word(n[2]) : null
+  if (s !== null && s >= 0 && s < 32) {
+    const a = liftConst(n[1]), k = Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 ? word(a[2]) : null
+    if (k !== null && exact(k * 2 ** s)) return ['i32.add', ['i32.shl', a[1], n[2]], ['i32.const', k * 2 ** s]]
     return a === n[1] ? n : ['i32.shl', a, n[2]]
   }
   if (n[0] === 'i32.add' && n.length === 3) {
     let a = liftConst(n[1]), b = liftConst(n[2])
-    if (isConst(a)) [a, b] = [b, a]
-    const ka = Array.isArray(a) && a[0] === 'i32.add' && isConst(a[2]) ? a[2][1] : 0
-    const kb = isConst(b) ? b[1] : Array.isArray(b) && b[0] === 'i32.add' && isConst(b[2]) ? b[2][1] : 0
-    if (!ka && !kb) return a === n[1] && b === n[2] ? n : ['i32.add', a, b]
-    const ra = ka ? a[1] : a, rb = isConst(b) ? null : kb ? b[1] : b
-    return ['i32.add', rb ? ['i32.add', ra, rb] : ra, ['i32.const', (ka + kb) | 0]]
+    if (word(a) !== null) [a, b] = [b, a]
+    const ka = Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 ? word(a[2]) ?? 0 : 0
+    const kb = word(b) ?? (Array.isArray(b) && b[0] === 'i32.add' && b.length === 3 ? word(b[2]) ?? 0 : 0)
+    if ((!ka && !kb) || !exact(ka + kb)) return a === n[1] && b === n[2] ? n : ['i32.add', a, b]
+    const ra = ka ? a[1] : a, rb = word(b) !== null ? null : kb ? b[1] : b
+    return ['i32.add', rb ? ['i32.add', ra, rb] : ra, ['i32.const', ka + kb]]
   }
   return n
 }
-export function refoldMemargs(node) {
-  walkAst(node, { exit: n => {
-    if (typeof n[0] !== 'string' || !MEMOP.test(n[0])) return
-    let at = ADDR_AT(n)
-    if (at === 2 && n[1].startsWith('align=')) return
-    const addr = liftConst(n[at])
-    n[at] = addr
-    if (!Array.isArray(addr) || addr[0] !== 'i32.add' || addr.length !== 3 || !isConst(addr[2]) || addr[2][1] <= 0) return
-    const offset = (at === 2 ? Number(n[1].slice(7)) : 0) + addr[2][1]
-    if (offset >= 0x100000000) return
-    if (at === 2) n[1] = `offset=${offset}`
-    else { n.splice(1, 0, `offset=${offset}`); at = 2 }
-    n[at] = addr[1]
-  } })
+/** Fold the constant of access `n`'s address into its offset, in place (`lift`: the constants of the address's sums first). */
+function foldMemarg(n, lift = false) {
+  let k = 1, offset = 0, align = null
+  for (; k < n.length && typeof n[k] === 'string'; k++) {
+    if (n[k].startsWith('offset=')) offset = Number(n[k].slice(7))
+    else if (n[k].startsWith('align=')) align = n[k]
+    else return   // (a memory index: left as it is)
+  }
+  if (k >= n.length) return
+  if (lift) n[k] = liftConst(n[k])
+  const addr = n[k]
+  if (!Array.isArray(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return
+  const kb = word(addr[2]), ka = kb === null ? word(addr[1]) : null, K = kb ?? ka
+  if (K === null || K < 0 || offset + K > 0xFFFFFFFF) return
+  const memarg = offset + K ? [`offset=${offset + K}`] : []
+  if (align) memarg.push(align)
+  n.splice(1, k, ...memarg, kb !== null ? addr[1] : addr[2])
 }
-
-// Fold `(v128.load/store (i32.add base K) …)` → `(… offset=K base …)`. Same logic as
-// walkRewrite's scalar foldMemargOffsets (MEMOP path), but for the v128 loads/stores the
-// lane vectorizer creates AFTER fusedRewrite has already run — so they'd otherwise keep a
-// per-iteration i32.add. Bottom-up, in place; an addr already in offset=/align= form is left.
+export function refoldMemargs(node) {
+  walkAst(node, { exit: n => { if (typeof n[0] === 'string' && MEMOP.test(n[0])) foldMemarg(n, true) } })
+}
+// The v128 accesses the lane lift makes after fusedRewrite's walk.
 export function foldV128Memargs(node) {
-  walkAst(node, { enter: n => {
-    const op = n[0]
-    if (op === 'v128.load' || op === 'v128.store') {
-      const m1 = n[1]
-      if (!(typeof m1 === 'string' && (m1.startsWith('offset=') || m1.startsWith('align='))) &&
-          Array.isArray(m1) && m1[0] === 'i32.add' && m1.length === 3) {
-        const a = m1[1], b = m1[2]
-        let base, offset
-        if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
-        else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
-        if (base != null) { if (offset === 0) n[1] = base; else { n[1] = `offset=${offset}`; n.splice(2, 0, base) } }
-      }
-    }
-  } })
+  walkAst(node, { exit: n => { if (n[0] === 'v128.load' || n[0] === 'v128.store') foldMemarg(n) } })
 }
 
 /** Speed-tier: inline `$__ptr_offset`'s own loop-free body (mask+tag test, then
@@ -1032,24 +1031,8 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
   if (op === 'i32.and' && node.length === 3) { const r = foldRangeChecks(node); if (r) return r }
   if (op === 'i32.or' && node.length === 3) { const r = foldRangeUnions(node); if (r) return r }
 
-  // foldMemargOffsets: (load/store (i32.add base const) ...) → (load/store offset=N base ...)
-  if (typeof op === 'string' && MEMOP.test(op)) {
-    const m1 = node[1]
-    if (!(typeof m1 === 'string' && (m1.startsWith('offset=') || m1.startsWith('align=')))) {
-      const addr = m1
-      if (Array.isArray(addr) && addr[0] === 'i32.add' && addr.length === 3) {
-        const a = addr[1], b = addr[2]
-        let base, offset
-        if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
-        else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
-        // offset 0 is the address itself: no memarg to carry, none for a recognizer to read past
-        if (base != null) {
-          if (offset === 0) node[1] = base
-          else { node[1] = `offset=${offset}`; node.splice(2, 0, base) }
-        }
-      }
-    }
-  }
+  // (load/store (i32.add base const) ...) → (load/store offset=N base ...): the memarg fold
+  if (typeof op === 'string' && MEMOP.test(op)) foldMemarg(node)
   if (get && (op === 'block' || op === 'loop' || op === 'then' || op === 'else')) {
     let start = 1
     while (start < node.length && (typeof node[start] === 'string' || (Array.isArray(node[start]) && node[start][0] === 'result'))) start++
