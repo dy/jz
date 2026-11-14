@@ -6,7 +6,8 @@
 // ci writes bench/results-ci.json. reference writes bench/results.json and redraws what
 // derives from it: bench/bench.svg (scripts/bench-svg.mjs, which refuses a dataset that
 // leaves a chart lane without evidence) and bench/README.md's tables
-// (scripts/bench-readme.mjs). Each attempt starts from the latest origin/main in a
+// (scripts/bench-readme.mjs). Either rewrites the figures README.md and the landing mark
+// (scripts/bench-readme.mjs, from the newer of the two datasets, as the landing reads). Each attempt starts from the latest origin/main in a
 // worktree of its own, so the caller's checkout is never touched and a concurrent
 // commit is built on, never textually merged. Outcomes, every one stated in the log
 // and the job summary:
@@ -17,14 +18,15 @@
 //                    cannot be drawn from the dataset
 //   push failed      exit 1 after 3 attempts
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MODES } from '../bench/shards.mjs'
 
+// [script, …the files it writes]; a file the checkout lacks is not staged
 const DERIVED = {
-  ci: [],
-  reference: [['scripts/bench-svg.mjs', 'bench/bench.svg'], ['scripts/bench-readme.mjs', 'bench/README.md']],
+  ci: [['scripts/bench-readme.mjs', 'README.md', 'index.html']],
+  reference: [['scripts/bench-svg.mjs', 'bench/bench.svg'], ['scripts/bench-readme.mjs', 'bench/README.md', 'README.md', 'index.html']],
 }
 const ATTEMPTS = 3
 
@@ -57,11 +59,11 @@ const attempt = n => {
   try {
     git(['worktree', 'add', '--quiet', '--detach', tree, 'origin/main'])
     copyFileSync(datasetPath, join(tree, file))
-    for (const [script, out] of DERIVED[mode]) {
+    for (const [script, ...outs] of DERIVED[mode]) {
       try { execFileSync(process.execPath, [join(tree, script)], { cwd: tree, stdio: 'inherit' }) }
-      catch { return [1, `${file} not published: ${script} could not draw ${out} from the dataset`, 'error'] }
+      catch { return [1, `${file} not published: ${script} could not draw ${outs.join(', ')} from the dataset`, 'error'] }
     }
-    const paths = [file, ...DERIVED[mode].map(([, out]) => out)]
+    const paths = [file, ...DERIVED[mode].flatMap(([, ...outs]) => outs).filter(out => existsSync(join(tree, out)))]
     git(['-C', tree, 'add', '--', ...paths])
     if (ok(['-C', tree, 'diff', '--cached', '--quiet'])) return [0, `${file} unchanged: main already holds this evidence of ${measured}`]
     git(['-C', tree, 'commit', '--quiet', '-m', `Refresh ${paths.join(', ')} from the sharded ${mode} run at ${measured} [skip ci]`])

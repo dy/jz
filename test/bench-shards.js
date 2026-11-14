@@ -204,6 +204,22 @@ test('shards: publishing the reference redraws the chart and README tables, and 
   } finally { f.done() }
 })
 
+test('shards: a publication rewrites the figures the prose marks, from the dataset the landing reads', () => {
+  const f = fixture()
+  try {
+    writeFileSync(join(f.work, 'README.md'), 'About <!-- fig:v8-speed -->9.99×<!-- /fig --> V8.\n')
+    writeFileSync(join(f.work, 'index.html'), '<b><!-- fig:as-size -->9.99×<!-- /fig --></b>\n')
+    f.commit('docs'); git(f.work, 'push', '--quiet', 'origin', 'main')
+    const head = git(f.work, 'rev-parse', 'HEAD')
+    const ci = { meta: { commit: head, date: '2026-11-14 12:00 UTC' }, cases: { a: { targets: { jz: { ...row(100), bytes: 80 }, v8: row(250), as: { ...row(300), bytes: 100 } } } } }
+    const r = f.publish('ci', ci)
+    is(r.status, 0, r.stdout + r.stderr)
+    is(f.onMain('README.md'), 'About <!-- fig:v8-speed -->2.50×<!-- /fig --> V8.\n', 'the README figure from the newer dataset')
+    is(f.onMain('index.html'), '<b><!-- fig:as-size -->0.80×<!-- /fig --></b>\n', 'and the landing\'s prefill')
+    ok(f.mainLog()[0].startsWith('Refresh bench/results-ci.json, README.md, index.html from the sharded ci run'), f.mainLog()[0])
+  } finally { f.done() }
+})
+
 test('shards: a push lost to a concurrent commit is rebuilt on the new main', () => {
   const f = fixture()
   try {

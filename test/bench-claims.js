@@ -21,7 +21,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
@@ -317,6 +317,16 @@ test('claims: the claim lanes build with the pinned flags', () => {
   for (const doc of ['CONTRIBUTING.md'])
     ok(readFileSync(join(ROOT, doc), 'utf8').includes('asc -Oz --converge'), `${doc} states the size lane's flags`)
   for (const [lane, cmd] of Object.entries(LANE_CMDS)) ok(typeof cmd === 'string' && cmd.length > 0, `${lane}: an invocation recorded`)
+})
+
+// The docs state only what the committed datasets show: bench/README.md's tables and every
+// figure README.md and the landing mark are written from them (scripts/bench-readme.mjs),
+// and a figure that differs fails here. A dataset under test that is not committed (the
+// publication gate's merge) leaves the docs to the publisher, which rewrites them with it.
+test('claims: the docs\' measured figures are the committed datasets\' (scripts/bench-readme.mjs --check)', () => {
+  if (process.env.JZ_BENCH_RESULTS) { ok(true, `${resultsPath} is not the committed dataset: the publisher rewrites the docs from it`); return }
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/bench-readme.mjs'), '--check'], { cwd: ROOT, encoding: 'utf8' })
+  ok(r.status === 0, `docs and datasets disagree:\n${r.stdout}${r.stderr}`)
 })
 
 test('claims: the evidence was measured by the pinned builds (meta.invocations)', () => {
