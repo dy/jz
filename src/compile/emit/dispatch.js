@@ -1684,6 +1684,9 @@ export function emitIdentitySafe(node) {
   if (!Array.isArray(node) || !hasAmbiguousBoolMerge(node)) return emit(node)
   return emitIdentitySafeArms(node)
 }
+// An arm of an identity-safe join as the join carries it: a Boolean as its atom
+// box, any other value as its f64.
+const joinArm = (arm, v) => resolveValType(arm, valTypeOf, lookupValType) === VAL.BOOL ? boolBoxIR(v) : asF64(numberCarrierIR(arm, v))
 export function emitIdentitySafeArms(node) {
   const [op] = node
   if (op === '(') return emitIdentitySafe(node[1])
@@ -1692,16 +1695,13 @@ export function emitIdentitySafeArms(node) {
   if (op === '?:') {
     const [, a, b, c] = node
     const ca = toBool(a)
-    if (isLit(ca)) { const v = litVal(ca), truthy = v !== 0 && v === v; markDropped(truthy ? c : b); return truthy ? emitIdentitySafe(b) : emitIdentitySafe(c) }
+    // (a constant condition: the arm taken, carried as the join carries either arm)
+    if (isLit(ca)) { const v = litVal(ca), truthy = v !== 0 && v === v, arm = truthy ? b : c; markDropped(truthy ? c : b); return joinArm(arm, emitIdentitySafe(arm)) }
     const cond = ca
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
-    const vb = withRefinements(thenRefs, b, () => emitIdentitySafe(b))
-    const vc = withRefinements(elseRefs, c, () => emitIdentitySafe(c))
-    const vtbM = resolveValType(b, valTypeOf, lookupValType)
-    const vtcM = resolveValType(c, valTypeOf, lookupValType)
-    const fb = vtbM === VAL.BOOL ? boolBoxIR(vb) : asF64(numberCarrierIR(b, vb))
-    const fc = vtcM === VAL.BOOL ? boolBoxIR(vc) : asF64(numberCarrierIR(c, vc))
+    const fb = joinArm(b, withRefinements(thenRefs, b, () => emitIdentitySafe(b)))
+    const fc = joinArm(c, withRefinements(elseRefs, c, () => emitIdentitySafe(c)))
     const ib = ['i64.reinterpret_f64', fb], ic = ['i64.reinterpret_f64', fc]
     const bits = selectOK(cond, fb, fc)
       ? ['select', ib, ic, cond]

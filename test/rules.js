@@ -18,3 +18,9 @@ test('rules: a Boolean added to -0 gives +0', () => {
   const src = 'export let f = (x, a, b) => { a = a | 0; b = b | 0; return x + (a < b) }'
   for (const optimize of CONFIGS) for (const args of [[-0, 1, 0], [-0, 0, 1], [0, 1, 0]]) agree(src, 'f', args, { optimize })
 })
+
+test('rules: a ternary of a Boolean and a Number under a constant condition, compared', () => {
+  // the unrolled counter makes `i % 2^32` a literal; the arm taken was compared by its bits unboxed
+  const src = 'export let f = (c) => { let r = 0; for (let i = 0; i < 3; i++) { r += (((i % 4294967296) ? (c !== i) : 0.5) !== 1) } return r }'
+  for (const optimize of CONFIGS) for (const c of [1, 2, NaN]) agree(src, 'f', [c], { optimize })
+})

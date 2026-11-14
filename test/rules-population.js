@@ -5,7 +5,10 @@
 //   either sign and any size, the result wrapped to 64 bits: README, "BigInt is 64-bit");
 // - a Boolean as an addend or a subtrahend of a Number, written as a comparison, a ternary of
 //   1 and 0 and a local every write of which is a comparison (the speed tier's select), the
-//   Number -0, +0, NaN, an infinity or a fraction.
+//   Number -0, +0, NaN, an infinity or a fraction;
+// - a ternary of a Boolean and a value of another kind under a condition the emitter reads as a
+//   constant (`(1 % 4294967296)`, a counter of an unrolled loop), compared strictly and loosely
+//   with 1, true, 0, false and 0.5, beside the same forms under a condition it does not.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
@@ -62,4 +65,17 @@ test('rules population: a Boolean as an addend of a Number', () => {
   const inputs = []
   for (const x of xs) for (const [a, b] of [[1, 0], [0, 1], [2, 2], [-1, 0]]) inputs.push([x, a, b])
   population('Boolean addend', program(fns), names(fns), inputs)
+})
+
+test('rules population: a ternary of a Boolean and another kind, its condition a constant', () => {
+  const conds = ['(1 % 4294967296)', '(0 % 7)', '(3 > 2)', '(2 - 2)', '!0', 'k']
+  const arms = [['(c !== k)', '0.5'], ['0.5', '(c < k)'], ['(c !== k)', 'c'], ['(c === 2)', '1'], ['"s"', '(c > 1)']]
+  const cmps = ['=== 1', '!== 1', '=== true', '== 1', '== true', '!== 0', '== 0', '=== false', '!== 0.5']
+  const fns = []
+  for (const cond of conds) for (const [p, q] of arms) for (const cmp of cmps)
+    fns.push(`(c, k) => (${cond} ? ${p} : ${q}) ${cmp}`)
+  // (the defect's own form: an unrolled loop's counter makes the condition a literal)
+  for (const cmp of cmps) fns.push(`(c, k) => { let r = 0; for (let i = 0; i < 3; i++) { r += ((i % 4294967296) ? (c !== i) : 0.5) ${cmp} } return r }`)
+  const inputs = [[1, 1], [2, 0], [0, 2], [NaN, 1], [1, 0], [-0, 0]]
+  population('constant ternary of mixed kinds', program(fns), names(fns), inputs)
 })
