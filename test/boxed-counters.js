@@ -124,6 +124,32 @@ export let f = (s, st, n) => {
 }`, [[0, 1, 40], [2147482990, 3, 2147483660], [0, 1001, 2 ** 31], [0, 2 ** 28, 2 ** 31 + 1], [5, 7, 4], [0, -1, 3], [0, 0, 9]])
 })
 
+test('boxed counters: a -0 among the names of the box is no word of it', () => {
+  // A name the copy reads as written (a local every write of which is a literal, a bit operation or
+  // a length) lies in the box by comparison where it is -0, and the proof reads a name of the box as
+  // no -0: `(i + 1) * z` was a word of the copy, +0, at levels 2 and over, where the product is -0
+  // (ECMA-262, Number::multiply: a product's sign is negative where the operands' signs differ, a
+  // zero's among them). Such a name is tested for -0 as an alias is. `1 / i` tells the zeros apart.
+  // Expected values are Node's.
+  const DECL = {
+    'a literal': 'const z = -0',
+    'a product of literals': 'const z = 0 * -1',
+    'a minimum of two zeros': 'const z = Math.min(0, -0)',
+    'one arm of a choice': 'const z = t > 1 ? -0 : 5',
+    'a local of a local': 'const z0 = -0, z = z0',
+    'a second write': 'let z = 3\n  z = -0',
+    'the parameter': 'const z = t',
+    'a module constant': '',
+  }
+  for (const [name, decl] of Object.entries(DECL)) compare(`${decl ? '' : 'const z = -0\n'}const x = new Float64Array(8)
+export let f = (n, s, t) => {
+  let i = s, c = 0
+  ${decl}
+  while (i < n) { if (++c > 44) break; x[i] = c; i = (i + 1) * z }
+  return [c, i, 1 / i, x[0], x[1]]
+}`, [[1, 0, 1], [8, 0, 2], [40, 3, 1], [2 ** 30, 5, 2], [0, 0, 1], [8, -1, 1], [8, -0, 3], [NaN, 0, 1], [8, 0, -0], [8, 1, 0], [8, 2, -1]])
+})
+
 test('boxed counters: rfft answers what Node answers, its index locals words of the copy', () => {
   const src = readFileSync(new URL('../examples/rfft/rfft.js', import.meta.url), 'utf8')
   for (const optimize of levels(2, 'speed')) {

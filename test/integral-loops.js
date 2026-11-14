@@ -980,9 +980,9 @@ test('integral loops: a module binding reset before every step of it is the loop
       return k
     }
     export let tail = () => typeof qt === 'number' ? qt : -1`
-  const js = oracle(src)
+  // (each level against a Node instance of its own: `qt` stays a number once a run has set it)
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize }).exports
+    const m = jz(src, { optimize }).exports, js = oracle(src)
     for (const [n, rounds] of [[5, 3], [5, 4], [5, 100], [1, 2], [8, 1], [4, 7.5]]) {
       const got = m.resize(n), want = js.resize(n)
       is([m.step(rounds), m.tail(), Array.from(got)], [js.step(rounds), js.tail(), Array.from(want)], `${n} ${rounds} at ${optimize}`)
@@ -1330,9 +1330,9 @@ test('integral loops: a self-call\'s argument reading its own parameter ends the
   const src = `let acc = new Float64Array(8)
     let walk = (n, x) => { let i = 0; while (i < n) { acc[i] += x; i++ } if (n > 1) walk(n - 1, x * 0.5) }
     export let run = (n) => { walk(n, 1.0); return acc[0] }`
-  const js = oracle(src)
+  // (each level against a Node instance of its own: `acc` keeps what a run added)
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize }).exports
+    const m = jz(src, { optimize }).exports, js = oracle(src)
     is(m.run(4), js.run(4), `at ${optimize}`)
   }
 })
@@ -1626,6 +1626,46 @@ test('integral loops: a sum of int32s past the word takes a copy that tests it a
   const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
   is(m.main(7, 0), js.main(7, 0), 'a row within the word runs the copy')
   throws(() => m.main(7, 1), 'a row at the word\'s top leaves the copy, and the trap names it')
+})
+
+test('integral loops: a `for` whose copy leaves at a sum runs its init once', () => {
+  // A copy that leaves a `while` for the loop as written, standing alone, leaves to the loop as
+  // written past its guard: one cold loop. A `for` with an init is no resumption of itself:
+  // `for (z += 5; …)` left at a cell of the word's top ran `z += 5` again, at levels 2 and over
+  // (ECMA-262, ForStatement: the init expression is evaluated once, before the first test).
+  // The row leaves the copy at the cell `at`. Expected values are Node's.
+  const row = (decl, head, tail, after) => `const LB = 16
+    export let f = (big, at, z0) => {
+      const prev = new Int32Array(LB + 1)
+      for (let k = 0; k <= LB; k++) prev[k] = big && k === at ? 2147483647 : k * 3
+      let diag = prev[0], h = 0
+      ${decl}
+      ${head}
+        const up = prev[j & 15]
+        let m = up + 1
+        const ins = diag + 1
+        if (ins < m) m = ins
+        diag = up
+        prev[(j & 15) + 1] = m
+      ${tail}
+      ${after}
+      for (let k = 0; k <= LB; k++) h = Math.imul(h ^ prev[k], 16777619)
+      return [h, diag]
+    }`
+  const SHAPES = {
+    'a compound init': ['let j = 1, z = z0 & 7', 'for (z += 5; j < 15; j++) {', 'z += 2 }', 'h = z + j'],
+    'an init of another name': ['let j = 1, z = 0', 'for (z = 7; j < 15; j++) {', 'z += 2 }', 'h = z + j'],
+    'an init of the counter, read after': ['let j = 0', 'for (j = z0 & 3; j < 15; j++) {', '}', 'h = j'],
+    'no init': ['let j = 1', 'for (; j < 15; j++) {', '}', 'h = j'],
+    'a while': ['let j = 1', 'while (j < 15) {', 'j = j + 1 }', 'h = j'],
+  }
+  for (const [name, shape] of Object.entries(SHAPES)) {
+    const src = row(...shape), js = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'speed')) {
+      const m = jz(src, { optimize }).exports
+      for (const args of [[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 2, 3], [1, 5, 1], [1, 9, 2], [1, 15, 0], [1, 16, 4]]) is(m.f(...args), js.f(...args), `${name}: f(${args}) at ${optimize}`)
+    }
+  }
 })
 
 test('integral loops: a step in an arm of an `if` advances a cursor from zero to the step, so mixed signs budget each way', () => {

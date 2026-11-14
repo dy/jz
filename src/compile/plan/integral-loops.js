@@ -1230,6 +1230,17 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       // The proof's copy: the held names and the stable ones the copy aliases under names of their
       // own, a test of both ends of each held name at each head, the word entries assigned before.
       const ownWord = new Set(stable.filter(asWord))
+      // (never -0 as written: a literal other than -0, a bit operation, a length, a choice among such, a
+      // local so written; `const z = -0`, `Math.min(0, -0)` and a parameter, which is what its calls pass,
+      // may be -0, and such a word of the box is tested for it)
+      const plusZero = (e, seen = new Set()) => typeof e === 'string'
+        ? locals.has(e) && !params.has(e) && (seen.has(e) || (seen.add(e), (bodyWrites.get(e) ?? NO_WRITES).length > 0 && bodyWrites.get(e).every(v => v != null && plusZero(v, seen))))
+        : Array.isArray(e) && (e[0] == null ? typeof e[1] === 'number' && !Object.is(e[1], -0)
+          : e[0] === '?:' && e.length === 4 ? plusZero(e[2], seen) && plusZero(e[3], seen)
+          : e[0] === '()' && e.length === 2 ? plusZero(e[1], seen)
+          : e[0] === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max') && e[2]?.[0] === ',' ? e[2].slice(1).every(a => plusZero(a, seen))
+          : BITWISE.has(e[0]) || e[0] === '.' && e[2] === 'length')
+      const zeroTested = new Set([...ownWord].filter(n => !plusZero(n)))
       const P = new Map([...held, ...stable.filter(n => !ownWord.has(n))].map(n => [n, `${n}${T}box`]))
       const clone = cloneWithSubst(loop, new Map(), P), from = clonedFrom(loop, clone), rounds = stmtsOf(clone[2])
       const pre = [...entries].filter(([, e]) => e.word).map(([w, e]) => ['=', P.get(w), cloneWithSubst(e.word, new Map(), P)])
@@ -1288,7 +1299,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           else if (!(at && (up ? at[1] <= top : at[0] >= 0))) entryTests.push(up ? ['<=', w, [null, top]] : ['>=', w, [null, 0]])
         }
       }
-      return { held, stable, ownWord, entries, writes, top, heads, entryTests, k: lo }
+      return { held, stable, ownWord, zeroTested, entries, writes, top, heads, entryTests, k: lo }
     })()
     if (!counterBound && nested && !ownTrip && !box) continue
     // (a held name entering from no literal and no word, and a name of the box the copy aliases: an int32 its test shows)
@@ -2382,7 +2393,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (an inner test comes after the aliases this one captures: it reads them by the copy's names)
     const typeNames = [...new Set([...counterBound?.terms ?? [], ...tripNames, ...quietGuards])]
     // (a name of the box within it: its word as written, or the alias its test captured; a held name's entry)
-    const boxTests = box ? [...box.stable.flatMap(n => { const x = box.ownWord.has(n) ? n : own.get(n); return [['>=', x, [null, 0]], ['<=', x, [null, box.top]]] }),
+    // (a word as written that may be -0 is within [0, top] by comparison, and the proof reads a name of
+    // the box as no -0, so `(i + 1) * z` a word where it is -0: the test an alias takes of its name)
+    const notMinusZero = (n) => ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]
+    const boxTests = box ? [...box.stable.flatMap(n => box.ownWord.has(n) ? [['>=', n, [null, 0]], ['<=', n, [null, box.top]], ...(box.zeroTested.has(n) ? [notMinusZero(n)] : [])]
+      : [['>=', own.get(n), [null, 0]], ['<=', own.get(n), [null, box.top]]]),
       ...box.entryTests.filter(([op, w]) => !(op === '>=' && moving.includes(w))).map(([op, w, k]) => [op, names.includes(w) ? own.get(w) : w, k])] : []
     const conj = {
       typeTests: typeNames.map(n => ({ n, test: numberGuard(n) })),
@@ -2425,7 +2440,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // A copy that can leave a while for the loop as written, standing alone, leaves to the loop as
     // written past its guard: one cold loop resumes it and runs where the guard fails (the flag set
     // until the copy starts). An enclosing copy that takes its fast arm takes it with its own resumption.
-    const merged = bailFlag && test && !bailSave && !ctx.transform.optimize?.coldTrap
+    // (a `for` with an init is no resumption of itself: the loop as written would run `z += 5` again)
+    const merged = bailFlag && test && !bailSave && (loop[0] === 'while' || loop[1] == null) && !ctx.transform.optimize?.coldTrap
     const rest = merged ? outer.filter(n => loopWrites.has(n) && !readAfter(n)).map(n => ['=', n, own.get(n)]) : null
     const guarded = !test ? [version] : !merged ? [['if', test, version, asWritten]]
       : [['if', test, ['{}', [';', decl, ['=', bailFlag, [null, 0]], copy, ...back, ...(rest.length ? [['if', bailFlag, ['{}', [';', ...rest]]]] : [])]]], ['if', bailFlag, asWritten]]
