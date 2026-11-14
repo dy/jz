@@ -783,36 +783,68 @@ export function promoteGlobals(fn, globalTypes, fx) {
     const lName = `$_pg${localIdx++}`
     replacements.set(gName, { lName, type })
   }
-  if (!replacements.size) return
-
-  // Inject local declarations for promoted globals
-  for (const [, { lName, type }] of replacements) {
-    fn.splice(bodyStart, 0, ['local', lName, type])
+  // The copy holds what the global holds: the header facts follow it (optimize/licm.js).
+  const facts = (g, l) => { for (const s of [fn.presentArrays, fn.stableHeaderNames, fn.viewNames, fn.presentTyped]) if (s?.has(g)) s.add(l) }
+  const swap = (n, names) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'global.get' && names.has(n[1])) { n[0] = 'local.get'; n[1] = names.get(n[1]); return }
+    for (let i = 1; i < n.length; i++) swap(n[i], names)
   }
-  // After all splices, bodyStart has shifted
-  const newBodyStart = bodyStart + replacements.size
-
-  // Insert local.set at the very start of the body (after the new locals)
-  let insertIdx = newBodyStart
-  for (const [gName, { lName }] of replacements) {
-    fn.splice(insertIdx, 0, ['local.set', lName, ['global.get', gName]])
-    insertIdx++
-    // The copy holds what the global holds: the header facts follow it (optimize/licm.js).
-    if (fn.presentArrays?.has(gName)) fn.presentArrays.add(lName)
-    if (fn.stableHeaderNames?.has(gName)) fn.stableHeaderNames.add(lName)
-    if (fn.viewNames?.has(gName)) fn.viewNames.add(lName)
-    if (fn.presentTyped?.has(gName)) fn.presentTyped.add(lName)
+  let at = bodyStart
+  if (replacements.size) {
+    // Inject local declarations for promoted globals, and their copies at the very start of the body
+    for (const [, { lName, type }] of replacements) fn.splice(bodyStart, 0, ['local', lName, type])
+    at = bodyStart + replacements.size
+    for (const [gName, { lName }] of replacements) { fn.splice(at++, 0, ['local.set', lName, ['global.get', gName]]); facts(gName, lName) }
+    const names = new Map([...replacements].map(([g, r]) => [g, r.lName]))
+    for (let i = at; i < fn.length; i++) swap(fn[i], names)
   }
-
-  // Replace all global.get with local.get (only for promoted globals)
-  const replace = node => {
-    if (node[0] === 'global.get' && typeof node[1] === 'string') {
-      const info = replacements.get(node[1])
-      if (info) { node[0] = 'local.get'; node[1] = info.lName }
-      return false
+  if (!fx) return
+  // A global the function as a whole keeps no copy of (a call may set it, or the function
+  // does outside a loop), a loop keeps, read as it is entered, where it sets it nowhere and
+  // calls nothing indirect, nothing that may set it and nothing that comes back having
+  // written memory (a copy kept across such a call is a spill a round, where the read after
+  // it is a load): the loops of a function that calls the host elsewhere (decode-wav's
+  // tables beside its `__ext` calls). Outer loops first; an inner loop tries what is left.
+  // A loop the emitter wrapped in a block of its own (`(block $brk … (loop …))`) is copied
+  // for ahead of that block, where it is read before anything a later pass lifts to the
+  // block's head (LICM's snaps of the copy itself, which would read it unset).
+  const decls = []
+  const inLoop = (loop) => {
+    const reads = new Set(), sets = new Set(), calls = new Set()
+    let indirect = false
+    const scan = (n) => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (op === 'global.get') { reads.add(n[1]); return }
+      if (op === 'global.set') sets.add(n[1])
+      else if (op === 'call' || op === 'return_call') calls.add(n[1])
+      else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref') indirect = true
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    for (let i = 1; i < loop.length; i++) scan(loop[i])
+    if (indirect || [...calls].some(c => fx.returns(c) && (fx.writes(c) || fx.header(c)))) return []
+    const pre = [], names = new Map()
+    for (const g of reads) {
+      if (replacements.has(g) || sets.has(g) || [...calls].some(c => fx.sets(c, g))) continue
+      const type = globalTypes?.get(g) || inferTypeFromContext(fn, g, bodyStart)
+      if (!type) continue
+      const l = `$_pg${localIdx++}`
+      decls.push(['local', l, type]); pre.push(['local.set', l, ['global.get', g]]); facts(g, l); names.set(g, l)
+    }
+    for (let i = 1; i < loop.length; i++) swap(loop[i], names)
+    return pre
+  }
+  const loops = (node, from) => {
+    for (let i = from; i < node.length; i++) {
+      const c = node[i]
+      if (!Array.isArray(c)) continue
+      if (c[0] === 'loop' || c[0] === 'block' && Array.isArray(c[c.length - 1]) && c[c.length - 1][0] === 'loop') { const pre = inLoop(c); node.splice(i, 0, ...pre); i += pre.length }
+      loops(c, 1)
     }
   }
-  for (let i = insertIdx; i < fn.length; i++) walkAst(fn[i], { enter: replace })
+  loops(fn, at)
+  fn.splice(bodyStart, 0, ...decls)
 }
 
 /**

@@ -72,7 +72,8 @@ test('ablation: hoistGlobalPtrOffset lifts the global NaN-box base decode out of
   // re/im are module globals; their pointer base is loop-invariant. Without the
   // hoist every element access re-runs `i64.reinterpret_f64(global.get)` per step.
   const src = `let re = new Float64Array(64); let im = new Float64Array(64); export let g = () => { for (let i = 0; i < 64; i++) re[i] = re[i] + im[i] }`
-  const off = { hoistGlobalPtrOffset: false, hoistLoopGlobalPtrOffset: false, hoistInvariantPtrOffset: false, hoistInvariantLoop: false, vectorizeLaneLocal: false }
+  // (promoteGlobals off too: a loop keeps a copy of the global itself where its function cannot)
+  const off = { hoistGlobalPtrOffset: false, hoistLoopGlobalPtrOffset: false, hoistInvariantPtrOffset: false, hoistInvariantLoop: false, vectorizeLaneLocal: false, promoteGlobals: false }
   ok(loopHas(parse(src, off), GLOBAL_DECODE), 'control: global base re-decoded inside loop with hoists OFF')
   ok(!loopHas(parse(src, 2), GLOBAL_DECODE), 'INVARIANT: global base decoded once at entry, never in loop, with pass ON')
 })
@@ -120,7 +121,7 @@ test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a
       if (mode) { let fn = ops[mode]; return fn ? fn(x) : cc }
       return acc + cc
     }`
-  ok(loopHas(parse(src, { hoistLoopGlobalPtrOffset: false }), STRING_BASE_DECODE),
+  ok(loopHas(parse(src, { hoistLoopGlobalPtrOffset: false, promoteGlobals: false }), STRING_BASE_DECODE),
     'control: string base re-decoded inside the scan loop with the per-loop pass OFF')
   ok(!loopHas(parse(src, 2), STRING_BASE_DECODE),
     'INVARIANT: string base decoded once at the loop preheader, never per-char, with pass ON')

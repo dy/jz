@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import parseWat from 'watr/parse'
-import { compile } from './util.js'
+import { compile, funcWat, jz } from './util.js'
 import { solveEffects, HELPERS, helper, HEADER_STORE_FREE, headerStore } from '../src/optimize/effects.js'
 import { forwardStores } from '../src/optimize/forward-store.js'
 import { reuseLoads } from '../src/optimize/reuse-loads.js'
@@ -198,4 +198,45 @@ test('effects: a store goes ahead of a pure call and of a global\'s write (early
   f.distinctParams = new Set(['$o'])
   earlyStores(f, solveEffects([f]))
   is(f.findIndex(n => Array.isArray(n) && n[0] === 'f64.store'), 5, 'the store stands first')
+})
+
+// A global its function as a whole keeps no copy of (the function calls the host, which may
+// call an export that sets it) a loop that calls nothing keeps, read as the loop is entered.
+test('effects: a loop keeps a copy of a global its function cannot (promoteGlobals)', () => {
+  const body = (call) => `import { cb } from 'host'
+let g = 1.5
+export let bump = () => { g = g + 1 }
+export let f = (n) => { cb(); let s = 0; for (let i = 0; i < n; i++) { ${call} s += g * i + g } return s }`
+  // the reads of g inside a loop
+  const inLoop = (src) => {
+    const text = funcWat(compile(src, { optimize: 2, wat: true, imports: { host: { cb: () => {} } } }), 'f')
+    let depth = 0, reads = 0
+    const loops = []
+    for (let i = 0; i < text.length; i++) {
+      if (text.startsWith('(loop', i)) loops.push(depth)
+      if (text[i] === '(') depth++
+      else if (text[i] === ')') { depth--; if (loops.length && depth === loops[loops.length - 1]) loops.pop() }
+      if (loops.length && text.startsWith('global.get $g)', i)) reads++
+    }
+    return reads
+  }
+  is(inLoop(body('')), 0, 'the loop reads its copy')
+  ok(inLoop(body('cb();')) > 0, 'a loop that calls the host reads the global')
+  // (cb bumps g: once ahead of the loop, 2.5 each round, 15; in the loop too, 3.5 4.5 5.5, 29)
+  for (const [call, want] of [['', 15], ['cb();', 29]]) {
+    const ex = {}, m = jz(body(call), { optimize: 2, imports: { host: { cb: () => ex.bump() } } }).exports
+    ex.bump = m.bump
+    is(m.f(3), want, `${call || 'no call'} in the loop`)
+  }
+  // (a loop the emitter wraps in a block of its own copies ahead of that block, where LICM's
+  // lifts of the copy read it set: the host replaces the array between the outer rounds)
+  const arr = `import { cb } from 'host'
+let g = [7, 6, 5]
+export let m = () => { g = [3, 4, 5] }
+export let f = (k) => { let s = 0; for (let i = 0; i < 2; i++) { cb(); s += g[0]; for (let j = 0; j < k + 1; j++) { s += g.length; s += g[1]; s += g[0] } }; return s }`
+  for (const optimize of [2, 'speed']) {
+    const ex = {}, m = jz(arr, { optimize, imports: { host: { cb: () => ex.m() } } }).exports
+    ex.m = m.m
+    is([m.f(1), m.f(0)], [46, 26], `an array the host replaces, at ${optimize}`)
+  }
 })
