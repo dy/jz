@@ -991,3 +991,26 @@ test('uint32: a bound, a start, a stride or an offset past 2^31 is no negative w
     }
   }
 })
+
+// `x >= LO && x <= HI` of a word local is one unsigned compare, `(x - LO) <=u (HI - LO)`
+// (compile/emit/logical.js, range-check fusion), its complement `x < LO || x > HI` the same
+// negated. The subtraction wraps in one word, so both ends must lie in the operand's own
+// domain: of a uint32 (`b >>> 0`) an end below zero read the word's bits as signed, and 2^31
+// fell inside `[-2^31, 2^31 - 2]`, 2^32 - 1 inside `[-5, 100]` (every level, since 2026-06).
+// An end past the domain holds for every value, so it stands as the domain's. Expected values
+// are Node's.
+test('uint32: a range test of a uint32 against an end below zero reads its unsigned value', () => {
+  const C = ['n >= -2147483648 && n <= 2147483646', "typeof n === 'number' && n >= -2147483648 && n <= 2147483646",
+    'n >= -5 && n <= 100', 'n <= 2147483646 && n >= -2147483648', 'n >= -2147483648 && n <= 2147483647', 'n >= -10 && n <= -3',
+    'n >= 0 && n <= 2147483646', 'n > -1 && n < 4294967296', 'n >= 3000000000 && n <= 4000000000', 'n >= 5 && n < 6000000000',
+    'n < -5 || n > 2147483646', 'n < -10 || n > -3', 'n < 0 || n > 100', 'n < 3000000000 || n > 4000000000', 'c > 0 && n >= -5 && n <= 10']
+  const N = [2147483648, 4294967295, 3500000000, 2147483647, 6, 5, 0, -1, -5, -2147483648, 100, 101]
+  for (const word of ['b >>> 0', 'b | 0']) for (const cond of C) {
+    const src = `export let f = (b, c) => { const n = ${word}; return ${cond} ? 1 : 0 }`
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const b of N) for (const c of [1, 0]) is(got.f(b, c), want.f(b, c), `${word}: ${cond} at (${b}, ${c}), ${optimize}`)
+    }
+  }
+})

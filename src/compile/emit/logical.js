@@ -118,8 +118,15 @@ function fuseRangeCheck(a, b) {
   if (lo > hi) return null
   const xv = emit(ba.x)
   if (xv.type !== 'i32') return null                   // f64 (fractional) would mis-fuse
-  return typed(['i32.le_u', ['i32.sub', xv, ['i32.const', lo]], ['i32.const', hi - lo]], 'i32')
+  const [l, h] = wordRange(xv, lo, hi)
+  if (l > h) return typed(['i32.const', 0], 'i32')
+  return typed(['i32.le_u', ['i32.sub', xv, ['i32.const', l | 0]], ['i32.const', (h - l) | 0]], 'i32')
 }
+// The subtraction wraps in one word, so both ends lie in the operand's own domain: a uint32's
+// [0, 2^32 - 1] (`b >>> 0`), an int32's otherwise. An end past it holds for every value of the
+// operand, and stands as the domain's own (`n >= -5` of a uint32 is `n >= 0`); as written, a
+// uint32 of 2^31 or more read as a negative word and fell inside `[-2^31, 2^31 - 2]`.
+const wordRange = (xv, lo, hi) => xv.unsigned ? [Math.max(lo, 0), Math.min(hi, 4294967295)] : [Math.max(lo, -2147483648), Math.min(hi, 2147483647)]
 
 // The complement: `x < LO || x > HI` (the two outside half-checks — one upper-bounded,
 // one lower-bounded, with a gap between) → `(x - LO) >u (HI - LO)`, where [LO, HI] is the
@@ -139,7 +146,9 @@ function fuseRangeCheckOr(a, b) {
   if (insideLo > insideHi) return null
   const xv = emit(ba.x)
   if (xv.type !== 'i32') return null
-  return typed(['i32.gt_u', ['i32.sub', xv, ['i32.const', insideLo]], ['i32.const', insideHi - insideLo]], 'i32')
+  const [l, h] = wordRange(xv, insideLo, insideHi)
+  if (l > h) return typed(['i32.const', 1], 'i32')
+  return typed(['i32.gt_u', ['i32.sub', xv, ['i32.const', l | 0]], ['i32.const', (h - l) | 0]], 'i32')
 }
 
 // Combine a chain-recursion "gate" AST node (the left remainder of a `&&`/`||` chain,
