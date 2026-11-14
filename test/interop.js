@@ -1181,6 +1181,46 @@ test('interop: numeric host imports preserve zero, NaN, infinities and hidden co
   is(jz('export let f = () => 7', {imports: {}}).exports.f(), 7, 'empty imports after numeric modules')
 })
 
+// A host function is JavaScript: it can call an export back, and the export can write a
+// global of the module or replace what it holds. What the caller kept of the global from
+// before the call (a copy in a local, a typed array's base) is then stale. Each program
+// runs in Node too, the import a function that calls the export, and jz answers the same.
+test('interop: a host import that calls an export back leaves no stale copy of a global', () => {
+  if (onWasi() || onKernel()) return
+  const cases = [
+    ['a number read, written by the export, read again', 'bump', [7], `
+      let g = 0
+      export let bump = () => { g = g + 1 }
+      export let f = (k) => { const a = g * k + g; cb(); const b = g * k + g; return a * 1000 + b }`],
+    ['a counter read each round of a loop', 'add', [4], `
+      let n = 0
+      export let add = () => { n += 5 }
+      export let f = (k) => { let s = 0; for (let i = 0; i < k; i++) { s += n; cb() } return s + n }`],
+    ['a typed array replaced inside a loop', 'reset', [], `
+      let x = new Float64Array(4)
+      export let reset = () => { x = new Float64Array(4); x[0] = 100 }
+      export let f = () => { let s = 0; for (let i = 0; i < 3; i++) { s += x[0] + x[1]; cb() } return s }`],
+    ['the import behind a function of the module', 'bump', [3], `
+      let g = 1
+      export let bump = () => { g = g * 2 }
+      let step = () => { cb() }
+      export let f = (k) => { let s = 0; for (let i = 0; i < k; i++) { s += g + g * i; step(); s += g } return s }`],
+    ['an object replaced', 'swap', [], `
+      let o = { a: 1, b: 2 }
+      export let swap = () => { o = { a: o.a + 10, b: 3 } }
+      export let f = () => { const p = o.a + o.b; cb(); const q = o.a + o.b; cb(); return p * 10000 + q * 100 + o.a + o.b }`],
+  ]
+  for (const [name, back, args, body] of cases) {
+    const want = new Function(`const cb = () => ${back}()\n${body.replace(/export /g, '')}\nreturn f`)()(...args)
+    for (const optimize of levels(false, 2, 'size', 'speed', 3)) {
+      const host = {}
+      const { exports } = jz(`import { cb } from 'host'\n${body}`, { optimize, imports: { host: { cb: () => host.exports[back]() } } })
+      host.exports = exports
+      is(exports.f(...args), want, `${name}, at ${optimize}`)
+    }
+  }
+})
+
 // The box codec moves bits through one 8-byte cell: every tag, aux and offset
 // comes back as built, a number's bits survive both ways, and a BigInt takes
 // its value mod 2^64 (a negative one sign-extended, as the i64 lane carries it).

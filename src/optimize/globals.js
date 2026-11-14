@@ -20,16 +20,18 @@ import { isMemWrite } from 'watr/optimize'
  * written only by `init` stays stable inside a function whose call graph never
  * reaches `init`.
  *
- * Unknown callees (imports — absent from the module's func list) write nothing:
- * wasm imports cannot touch module globals. `call_indirect`/`call_ref` targets
- * are unknown wasm functions — treat as writing every global any function
- * writes (the sound over-approximation). `later`: callees a pass still to run
- * puts in a function (name → names): a loop's compaction kernels
- * (optimize/loop-compact.js), which bump the epochs and empty the logs.
+ * A callee absent from `funcs` is a host import: a JS function, which may call
+ * an export back (README, "Host functions"), so it writes what any function
+ * writes, as an unknown wasm target does (`call_indirect`/`call_ref`): the
+ * sound over-approximation, and the answer collectReachableMemoryWrites gives
+ * for memory. `later`: callees a pass still to run puts in a function
+ * (name → names): a loop's compaction kernels (optimize/loop-compact.js),
+ * which bump the epochs and empty the logs.
  */
 export function collectReachableGlobalWrites(funcs, later = null) {
   const writes = new Map(), callees = new Map(), indirect = new Set(), all = new Set()
-  const EMPTY = new Set()
+  const EMPTY = new Set(), defined = new Set()
+  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') defined.add(fn[1])
   let w = null, c = null, fnName = null
   // One stable dispatcher instead of one closure + two eager Sets per function.
   const recordEffect = n => {
@@ -38,9 +40,10 @@ export function collectReachableGlobalWrites(funcs, later = null) {
       if (!w) w = new Set()
       w.add(n[1]); all.add(n[1])
     } else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
+      if (!defined.has(n[1])) { indirect.add(fnName); return }
       if (!c) c = new Set()
       c.add(n[1])
-    } else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') {
+    } else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect' || n[0] === 'return_call_ref') {
       indirect.add(fnName)
     }
   }
@@ -134,7 +137,10 @@ export function collectReachableGlobalWrites(funcs, later = null) {
   return {
     has(name, global) {
       const id = globalIds.get(global), fid = ids.get(name)
-      if (id == null || fid == null) return false
+      if (id == null) return false
+      // (no row: a function that writes and calls nothing, or a name outside `funcs`, the
+      // host's, which a pass asks of as a callee)
+      if (fid == null) return !defined.has(name)
       const row = componentBits[componentOf[fid]]
       return !!(row[id >>> 5] & (1 << (id & 31)))
     },
