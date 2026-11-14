@@ -71,7 +71,7 @@ Rules for every change here:
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
-| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Next, ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter). Then 6b the loop's facts from the emitter (briefed, `.work/phase-6b-loop-facts.md`), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" |
+| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter): built and green on the battery, rfft 1.04x, held unlanded on two timing defects ("Counter widths built"). Then 6b the loop's facts from the emitter (briefed, `.work/phase-6b-loop-facts.md`), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
 | 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | |
@@ -1181,6 +1181,126 @@ too, proved for one trip under a box at the head; the box test joins the loop
 condition; when it fails the copy leaves at a head and the loop as written takes over
 from that state. No relation, no trip count, and not rfft's alone.
 
+## Counter widths built: the battery green, the landing held on what it costs (2026-11-14)
+
+Not on main. Branch `fix-uext`, 2cfadf01a: 2e9c2ffe7, the extent-guard fix (33690d097,
+1267dc7a6, its section rides with that branch), the writer's two (Opus 5.5: 3d8d3cb1c a
+table rule, a product of two integers, one above zero and the other never -0, is never
+-0; 06d4ea856 the box, `compile/plan/integral-loops.js`, its header), the review's two
+(5cf9156fc, 2cfadf01a).
+
+**The box**: a `while` that writes integers by other than literal steps and indexes by
+them takes a copy holding those names as words while a box [0, 2^k - 1] holds them (k
+the widest of 15 to 30 the interval proof closes over one round with the box's tests at
+its head). Names the round only reads are in the box too, tested at entry. A head test
+that fails writes the names back and the loop as written resumes.
+
+**Found reading it, wrong answers, both fixed with a test that fails without the fix**:
+the one cold loop of a copy that can leave was the loop as written past its guard, and
+a `for (z += 5; …)` left at a sum ran its init twice; a stable name every write of
+which is a word passed the box's range test at -0 and the proof read it as no -0
+(`const z = -0; … i = (i + 1) * z` gave +0). Neither was in a release.
+
+**Run on 2cfadf01a**: populations against Node at six levels (boxpop 380 programs,
+3,683,106 checks; boxpop2 96, 2,128,896; boxprobe 48, 615,042; boxprobe2 25; boxprobe3
+92, 1,490,400; three resumption probes 30; cwpop 638, 3,216,870; uextpop 124, 695,640;
+6a's five): nothing wrong but one boxprobe program whose argument is a string (the host
+passes jz a number: the same 150 checks on the base at every level) and vecnarrow's two
+README programs. The battery: lint, audit; default 7,353, invariants 7,152, level 0
+7,136, level 3 7,150, wasi 7,225, one process 7,353, generated 70, integration 224, 76,
+76, 79, bootstrap full, test262 4,120 and 0 (run after the others from the corpus on
+disk: the machine had no IPv4 that night, GitHub has no IPv6, and the leg's clone
+failed). Bench bytes 0 of 105 by hash; the hosted compiler 36,744,067 to 36,862,622
+(+0.32%).
+
+**What it gains**: rfft 14.8 to 9.0 µs a frame, four alternating rounds (0.61 of
+before, 1.04x of V8; the gate 25 of 25, geomean 1.64x). The f64 counters of the census
+252 to 242 at speed: the box takes the counters updated by an f64 expression; a bound
+with no range (117) and a hull a step past the word (45) are literal-stepped counters it
+refuses by design. Pages timed alone, six alternating rounds: field-lines 0.93, nbody
+0.96, wireworld 0.97, ocean 0.98 of before.
+
+**What it costs, and why it is held.** Two defects of the box, both measured, neither
+a wrong answer:
+- A product with a stable name of the box never passes its guard. `hullOf` gives such a
+  name the box's hull, `[0, top]`, so `px[y * W + x]` tests `min(top, H - 1) * top`
+  against INT_MAX: false for every H past 3. The copy is unreachable and the loop runs
+  as written where the base ran its integer copy. penrose's `drawLine`: the page 2.4%
+  slower (a fixed plan, five alternating rounds: 4.41 to 4.44 ms on the base, 4.50 to
+  4.56). The same walk spliced into a caller's loop: 0.72 to 0.76 µs a line on the
+  base in each of four directions, 0.85 to 0.93 with the box; counters at the loop
+  heads show every line in the loop as written. The head tests are not the cost
+  (taken out of the WAT: no change).
+- An entry outside the box loses the copy the loop had. With the name's own value in
+  the product (a trial), the walk right and down gains 17% and the walks with a stride
+  of -1 or a start left of zero run 6 to 8% slower than the base: they fail the box's
+  entry and fall to the loop as written.
+Handed back to the writer (branch `box-fix`) with one invariant: on no input does a
+loop run slower than on the base by more than the entry tests. The box adds a tier; it
+does not replace one.
+
+**How pages are timed, learned here.** `examples/bench-pages.mjs` takes its plan (how
+many frames warm, how many a batch) from how fast the JS ran in that process, and
+times every page in one process. gauss-primes read 10% slower in four rounds of a
+ten-page run; its frame's code is the same but for local names, its pixels equal JS,
+and alone in its process it is equal (0.072 ms both). dithering runs at 3.0 or at 3.45
+ms by process, on both trees and on a fixed plan. So a page is timed alone, and on a
+fixed plan where its frames differ along its tour. The battery's examples leg read ulam
+6% slower in two runs against runs of hours before; four alternating rounds: 0.999.
+
+## CI of 557fbd525, read whole (2026-11-14)
+
+`pages`, `self-compile`, `test262`, `examples-perf` green; `test`: default, level 0,
+level 3, fuzz green; `claims` and `bench`'s Porffor evidence red as before (bench 319 of
+320). `test (wasi)`: the runner lost contact 113 minutes in (62 to 72 on the five pushes
+before), no log kept; the job run again passed in 58. Once, not reproduced. The examples
+gate inside `bench` on that x64 runner: lenia 0.84x, rfft 0.44x, ulam 1.09x.
+
+## The reference run: the rivals' current releases (2026-11-14)
+
+The owner asked for the reference run on the latest Porffor, Bend 2 and Rust. What the
+bench held against what is out: Porffor alpha 19 against alpha 23 (2026-11-10); Bend
+2.0.39 against 2.0.40; rustc whichever the runner image shipped, in no dataset, against
+1.100.0; AssemblyScript `~0.27` on CI (0.27.37) against 0.28.20, where the September
+reference on the M4 was measured with 0.28.19. Pinned to those (cd89b0b74), and the
+dataset now names rustc, zig, go and tinygo: a shard merge refuses where they differ,
+and a prep stamp carries them so an upgraded compiler rebuilds its lanes.
+
+A probe from the branch `bench-pins` (six cases with every port: alpha, crc32, sieve,
+nqueens, levenshtein, wordcount; run 43567712864, a Xeon 6975P-C): every bumped lane
+builds and answers. No wasm lane leads jz on the six (the nearest: zig-wasm 1.01x of
+jz's time on nqueens, c-wasm 1.03x on crc32 and sieve). On crc32 V8, bun and JSC take
+0.90 of jz's time (the handover's Intel and AMD forms). js2wasm (DIFF) and tslang (build fails)
+fail as in the dataset of 11-09. AssemblyScript 0.28.20's binaries are 2 to 3% smaller
+than 0.27.37's, rustc 1.100's wasm about 7% larger than the image's.
+
+The claims gate on the committed evidence fails 18 of 31: its jz rows are of
+2026-09-02 (1,585 compiler commits since), it lacks cases, was measured under swap; and
+beside that it shows size against AssemblyScript on 8 cases, jessie against JSC at
+1.83x under a 1.2x band, sdf and synth against JSC. The run says which are left. Its
+freshness test fails again at the first compiler commit after it: it is a release's
+gate, and `prepublishOnly` runs it.
+
+## 1.0.x: how it is cut, and what 1.0.2 answers wrong (2026-11-14)
+
+1.0.1 and 1.0.2 are not on main: each is a few commits off the tag before (eight in
+all off 1.0.0, 31b57232f), the fixes carried to main a day later. main is 493 commits
+past 1.0.0. 1.0.2 pins subscript 10.8.1 and watr 5.13.2; main has 10.8.3 (`do i++;
+while (…)` compiles, `from`, `as`, `of` are names) and 5.13.5 (coalesceLocals: `if (a
+|| i++ === 9) { r = -1 } else { r += i }` left 7 for 4 at level 1).
+
+Run on the tag at the public levels (a worktree with its own pinned dependencies):
+`((x >>> 0) / 3) | 0` at 2^31 is -715827882 at the default, size and speed; a clamped
+store of `a[i] & c[i]` stores 0 past 127 at the default and speed; `if (t = x === 3 ||
+x & 1)` takes the false arm and `(t = …) + 10` is NaN at all four. The extent guard's
+uint32: a read past the end in one form, the bound written inline (`i < (b >>> 0)`),
+3 programs of the 124 (28 on main before its fix); no store past the end. The
+integrator had told the owner "a read and a write out of bounds in 1.0.2" from the
+line's presence in the tag, not from a run: half of it was wrong.
+
+The four fixes port: five of six source patches apply as they are, the sixth is an
+export line. Not logged in to npm on this machine: the owner publishes.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -1210,6 +1330,18 @@ from that state. No relation, no trip count, and not rfft's alone.
   and rfft's cliff is one root with the vectorizer's largest emitter-fact refusal).
 - The landing battery times: the examples benchmark is a leg, compared against the
   base's run. A gate that fails nothing on CI is read by the integrator, not trusted.
+- A change of bytes is timed in alternating rounds against the base, a page alone in
+  its process (the integrator, 2026-11-14: one comparison against an earlier run read
+  6% that was nothing, and a ten-page run read 10% that was the process).
+- A copy the planner adds takes no input's copy away: on no input does a loop run
+  slower than before by more than the entry tests (the integrator, 2026-11-14, on the
+  box). The box is held until it meets that.
+- The reference run measures the rivals' current releases, each compiler named in the
+  dataset; a pin is proved by a probe from a branch before it reaches main (the owner
+  asked for the run, 2026-11-14).
+- 1.0.3 is cut as 1.0.1 and 1.0.2 were, off the tag before, with the fixes that
+  reproduce there (the integrator's reading of the owner's "do 1.0.3 release",
+  2026-11-14; the owner may say main instead). The owner publishes.
 
 ## Open questions
 

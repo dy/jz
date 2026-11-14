@@ -252,3 +252,24 @@ cdc3b0711 land-e                             the landing branch: the writer's ei
 d50ccbfbf worktree-agent-a874443978e8f17a0   the first vectorizer scout's tree, no commit of its own; its instrumentation was session scratch, its reports are `.work/maps/vectorize*.md`
 cdc3b0711 worktree-agent-af1e6a4d36ea469c7   the loop-facts scout's tree, no commit of its own; its instrumentation was session scratch, its reports are `.work/maps/loop-*.md`
 ```
+
+## Branches of 2026-11-14 (counter widths held, the pins, 1.0.3), tips as they stand
+
+```
+2cfadf01a fix-uext                           the counter-widths landing tree as the battery ran it: 2e9c2ffe7, the extent-guard fix (33690d097, 1267dc7a6), the writer's 3d8d3cb1c and 06d4ea856, the review's 5cf9156fc and 2cfadf01a. Held: see "Counter widths built" in the plan
+2cfadf01a box-fix                            fix-uext's tip, where the writer answers the two timing defects; the integrator's trial edit (`ownValue`, `product`) was uncommitted there when it was handed over
+f409da3ba worktree-agent-ac63941daac3c6ed9   the writer's two commits as first handed back (68ff8bad5, f409da3ba on 2e9c2ffe7); the branch has moved since, the writer works in it
+2e9c2ffe7 land-e                             main's code before the step: the base of every timing and population of it
+3d8d3cb1c (detached, worktree bis-table)     the table rule alone, cut to tell its effect from the box's: the line walk times as the base there
+cd89b0b74 bench-pins                         2e9c2ffe7 and the pins (Porffor alpha 23, Bend 2.0.40, rustc 1.100.0, AssemblyScript 0.28), pushed to origin for the probe (run 43567712864); these notes go on top
+6756402e0 ref-run                            the same pin commit on 2cfadf01a, superseded by bench-pins
+1c78b2d3d release-1.0.3 (worktree rel-103)   v1.0.2, with its own node_modules (subscript 10.8.1, watr 5.13.2): where 1.0.3 is ported
+557fbd525 worktree-agent-a9152ef4a00edbebc   the counter scout's tree, no commit of its own; its reports are `.work/maps/counter-*.md`
+```
+
+Scratch that is not in the repo and would be lost with the session directory: the
+populations (`boxpop`, `boxpop2`, `boxprobe` 1 to 3, `mergeprobe` 1 to 3, `cwpop`,
+`uextpop`, `udiv`, the four `vec*`), their harness, `popbattery.sh`, `battery.sh`, the
+timing scripts (`exbpair.sh`, `pagepair.sh`, `pagealone.sh`, `pagefixed.mjs`,
+`linekern.mjs`, `lkcount.mjs`), `relcheck.mjs`. They belong in the repo's generated
+suites and `scripts/`; not moved yet.
