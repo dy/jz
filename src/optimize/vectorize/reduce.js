@@ -1,6 +1,6 @@
-import { walkAst } from '../../ast.js'
-import { _offsetLocalStride, constNum, hasSideEffect, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
-import { isProfitable } from './cost-model.js'
+import { cloneNode, walkAst } from '../../ast.js'
+import { _offsetLocalStride, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
+import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
@@ -22,22 +22,17 @@ import { simdLoop, simdBound, stripOpen } from './scaffold.js'
 //   S = OP(S, horizontal_reduce(acc))
 //   <original scalar tail handles the remainder>
 //
-// Float adds are not strictly associative — vectorized reduction differs
-// from scalar reduction by ulps. Acceptable when bit-exact equality is not
-// required (which it isn't, by spec, in JS engines either).
+// Float adds and multiplies are not associative: a reduction in lanes rounds otherwise than
+// the loop, and JavaScript fixes the loop's order. So this tier takes a float sum or product
+// under `relaxedFloat` alone (README, "Float sums in lanes"; plainReduceEntry below); without
+// it the exact tier (tryReduceBitExact) lifts the work of each element and carries the
+// accumulation in the loop's own order.
 //
-// REDUCTION unification (.work/archive/vectorizer-generality-design.md §2 "REDUCTION (#5-6) → 1
-// general recognizer"): this is the reassociating (tree-reduce + horizontal-sum) fold-order
-// tier of the ONE reduction transform — a single scalar accumulator, `S = OP(S, EXPR(arr[i]))`.
-// `tryReduceBitExact` below is the other fold-order tier (scalar-order-preserving f64x2
-// pairing, multi-accumulator). `tryReduce`, at the bottom of this section, is the shared
-// dispatch entry: try this (reassociating) shape first — exactly today's `tryReduceVectorize
-// ?? tryMapReduceVectorize` order — falling to the bit-exact shape only when this one bails.
-// The two shapes' preconditions are structurally disjoint (single vs. multi accumulator,
-// one-or-two-statement canonical body vs. arbitrary straight-line multi-statement body) enough
-// that unifying their MATCH bodies (not just their dispatch slot) would risk a behavior change
-// under the byte-identical gate; kept as two internal matchers behind one recognizer entry,
-// selected by which fold order (`bitExact`) actually fires — see `tryReduce`.
+// Two lowerings of a reduction, each its own to the chooser (index.js): this one, which folds
+// lanes in another order than the loop (multiple accumulators, a horizontal sum at the end),
+// and `tryReduceBitExact` below, which keeps the loop's order, the work of each element in
+// lanes. Where the order is free (an integer's wrapping sum, a relaxed float's) both may lift
+// and the chooser takes the cheaper pass; where it is not, this one declines.
 
 // The tees of a statement that hold a pure load, inlined at the tee and at every read
 // of the local (a temp the load cache made for a lane read), the names noted in
@@ -78,7 +73,7 @@ const inlineLaneTees = (stmt, outsideReads, teed) => {
   return sub(stmt)
 }
 
-function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
+export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Same scaffold as tryVectorize, but no preamble: a reduction block is just the loop.
   if (!bl || bl.preamble.length) return null
   const { loopNode, incIdx, incVar } = bl
@@ -507,25 +502,48 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
 // outweighs the serial lane-accumulation. The original block is preserved as the ≤1
 // scalar remainder, continuing the accumulators. Returns {wrapper, newLocalDecls} or null.
 //
-// Other fold-order tier of the unified REDUCTION recognizer (see `tryReduceReassoc`'s doc
-// above and `tryReduce` below) — the `bitExact` branch.
-function tryReduceBitExact(bl, fnLocals, freshIdRef) {
-  // (its lanes' contributions accumulate in the loop's order, lane 0 first: one counting up)
-  if (!bl || bl.preamble.length || bl.dir === -1) return null
-  const { incVar, bound, boundLocal, body, siteAccess } = bl
+// The other lowering of a reduction (`tryReduceReassoc`'s doc above): the loop's own order.
+// The f64 ops whose f64x2 form computes each lane as the scalar op computes it, bit for bit
+// (wasm SIMD: lane-wise IEEE 754 arithmetic, the same min/max and roundings, no fused op).
+const EXACT_LANE_BIN = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 'f64.max'])
+const EXACT_LANE_UN = new Set(['f64.sqrt', 'f64.abs', 'f64.neg', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest'])
+// An f64 from the low two lanes of an i32x4 or an f32x4, exact as the scalar widening.
+const CONVERT_LOW = { 'f64.convert_i32_s': 'f64x2.convert_low_i32x4_s', 'f64.convert_i32_u': 'f64x2.convert_low_i32x4_u', 'f64.promote_f32': 'f64x2.promote_low_f32x4' }
+// An integer element in an i32x4's low lanes: the load of two (its bytes' log2 a stride) and the widening of each.
+const LOW_INT_LOAD = {
+  'i32.load': ['v128.load64_zero', 2],
+  'i32.load16_s': ['v128.load32_zero', 1, 'i32x4.extend_low_i16x8_s'],
+  'i32.load16_u': ['v128.load32_zero', 1, 'i32x4.extend_low_i16x8_u'],
+  'i32.load8_s': ['v128.load16_splat', 0, 'i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s'],
+  'i32.load8_u': ['v128.load16_splat', 0, 'i16x8.extend_low_i8x16_u', 'i32x4.extend_low_i16x8_u'],
+}
+const INT_LANE_BIN = { 'i32.add': 'i32x4.add', 'i32.sub': 'i32x4.sub', 'i32.mul': 'i32x4.mul', 'i32.and': 'v128.and', 'i32.or': 'v128.or', 'i32.xor': 'v128.xor' }
+const INT_LANE_SHIFT = { 'i32.shl': 'i32x4.shl', 'i32.shr_s': 'i32x4.shr_s', 'i32.shr_u': 'i32x4.shr_u' }
+export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
+  if (!bl || bl.preamble.length) return null
+  const { incVar, bound, boundLocal, body, siteAccess, writes } = bl
   if (!boundLocal && !isI32Const(bound)) return null
-  if (body.length < 2) return null
+  if (!body.length) return null
+  // (a loop counting down runs a strip's lanes from the last: its lanes' contributions are
+  // carried in the loop's order, the higher lane first, scaffold.js simdLoop)
+  const order = bl.dir === -1 ? [1, 0] : [0, 1]
+  // An index the body defines once from the counter (`const j = i`) is computed at the lanes'
+  // first pass and read by their addresses (addr-model.js indexDefs, affineIvCoeff).
+  const defs = indexDefs(body, fnLocals, bl.outsideReads), ivCoeff = affineIvCoeff(incVar, writes, defs)
+  const offTees = new Map(), addrTees = new Map()
 
   // Every body stmt must be `(local.set $x EXPR)`. An accumulator reads its own target
-  // through `f64.add` (`acc = acc + EXPR`); the rest are per-iteration lane locals. (One
-  // write per acc — duplicate writes would break the per-acc ordering.)
+  // through `f64.add` or `f64.mul` (`acc = acc + EXPR`, `acc = acc * EXPR`); the rest are
+  // per-iteration lane locals. (One write per acc — duplicate writes would break the per-acc
+  // ordering.) The statements are the loop's whatever their count: `s += a[i] * b[i]` and
+  // `const x = a[i] * b[i]; s = s + x` lift alike.
   for (const s of body) if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) return null
   const accSet = new Set()
-  for (const s of body) if (isArr(s[2]) && s[2][0] === 'f64.add' && isLocalGet(s[2][1], s[1])) accSet.add(s[1])
+  for (const s of body) if (isArr(s[2]) && (s[2][0] === 'f64.add' || s[2][0] === 'f64.mul') && isLocalGet(s[2][1], s[1])) accSet.add(s[1])
   if (!accSet.size) return null
   const writeCount = new Map()
   for (const s of body) writeCount.set(s[1], (writeCount.get(s[1]) || 0) + 1)
-  for (const a of accSet) { if (writeCount.get(a) !== 1 || fnLocals.get(a) !== 'f64') return null }
+  for (const a of accSet) { if (writeCount.get(a) !== 1 || fnLocals.get(a) !== 'f64' || defs.has(a)) return null }
 
   // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
   // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. BodyModel fact
@@ -534,8 +552,11 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   // equivalent to that plain query (.work/evidence.md §BodyModel).
 
   // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
-  // → its f64x2 temp, sub/mul/add/div → f64x2.OP, sqrt → f64x2.sqrt. Anything else bails.
-  const laneV = new Map()
+  // → its f64x2 temp (a tee of one, its temp's), and each op whose lanes round as the scalar
+  // op does (wasm SIMD: the f64x2 arithmetic, min, max and roundings are the scalar ops' per
+  // lane) → its f64x2 op. Anything else bails.
+  const laneV = new Map(), teed = new Set()
+  for (const s of body) walkAst(s, { enter: n => { if (n[0] === 'local.tee' && typeof n[1] === 'string') teed.add(n[1]) } })
   const newLocalDecls = []
   const fresh = () => { const n = `$__mr${freshIdRef.next++}`; newLocalDecls.push(['local', n, 'v128']); return n }
   let bad = false
@@ -544,33 +565,73 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
     const op = e[0]
     if (op === 'f64.const') return ['f64x2.splat', e]
     if (op === 'f64.load') {
-      const m = siteAccess.get(e)
+      // 16 bytes = 2 consecutive f64s; the f64x2 op reads them (a memarg kept)
+      const addr = e[e.length - 1]
+      const m = siteAccess.get(e) ?? (matchStrideAddr(addr, 8, writes, offTees, addrTees, ivCoeff) && { strideLog2: 3 })
       if (!m || m.strideLog2 !== 3) { bad = true; return null }
-      return ['v128.load', e[1]]   // 16 bytes = 2 consecutive f64s; the f64x2 op reads them
+      return ['v128.load', ...e.slice(1)]
     }
     if (op === 'local.get' && typeof e[1] === 'string') {
       if (e[1] === incVar || accSet.has(e[1])) { bad = true; return null }   // IV-as-data / acc-dependent contribution
       if (laneV.has(e[1])) return ['local.get', laneV.get(e[1])]
-      if (writeCount.has(e[1])) { bad = true; return null }   // a body local used BEFORE its set this iteration → loop-carried, not a fresh lane
+      // a body local read BEFORE its write this iteration → loop-carried, not a fresh lane
+      if (writeCount.has(e[1]) || teed.has(e[1])) { bad = true; return null }
       return ['f64x2.splat', e]   // genuine loop-invariant scalar (xi, …)
     }
-    if ((op === 'f64.add' || op === 'f64.sub' || op === 'f64.mul' || op === 'f64.div') && e.length === 3)
-      return [op.replace('f64.', 'f64x2.'), lift(e[1]), lift(e[2])]
-    if (op === 'f64.sqrt' && e.length === 2) return ['f64x2.sqrt', lift(e[1])]
+    // (an operand here is an f64, as wasm types it; the body writes no global, its statements all locals')
+    if (op === 'global.get') return ['f64x2.splat', e]
+    if (op === 'local.tee' && typeof e[1] === 'string' && e.length === 3) {
+      if (e[1] === incVar || accSet.has(e[1]) || defs.has(e[1])) { bad = true; return null }
+      const v = lift(e[2])
+      if (!laneV.has(e[1])) laneV.set(e[1], fresh())
+      return ['local.tee', laneV.get(e[1]), v]
+    }
+    if (EXACT_LANE_BIN.has(op) && e.length === 3) return [op.replace('f64.', 'f64x2.'), lift(e[1]), lift(e[2])]
+    if (EXACT_LANE_UN.has(op) && e.length === 2) return [op.replace('f64.', 'f64x2.'), lift(e[1])]
+    if (CONVERT_LOW[op] && e.length === 2) return [CONVERT_LOW[op], (op === 'f64.promote_f32' ? liftF32 : liftI)(e[1])]
     bad = true; return null
+  }
+  // An element of an integer or f32 array widened to an f64 (`s += ia[i] * ib[i]` over
+  // Int32Arrays): two elements' lanes, the low two of a v128 loaded from them, the integer
+  // ops lane-wise as the scalar ones wrap, then widened as the scalar op widens.
+  const element = (e, narrow) => {
+    const [load, log2, ...ext] = narrow
+    const m = siteAccess.get(e) ?? (matchStrideAddr(e[e.length - 1], 1 << log2, writes, offTees, addrTees, ivCoeff) && { strideLog2: log2 })
+    if (!m || m.strideLog2 !== log2) { bad = true; return null }
+    return ext.reduce((v, x) => [x, v], [load, ...e.slice(1)])
+  }
+  const liftI = (e) => {
+    if (bad || !isArr(e)) { bad = true; return null }
+    const op = e[0]
+    if (op === 'i32.const') return ['i32x4.splat', e]
+    if (LOW_INT_LOAD[op]) return element(e, LOW_INT_LOAD[op])
+    if (op === 'local.get' && typeof e[1] === 'string') {
+      if (e[1] === incVar || writeCount.has(e[1]) || teed.has(e[1]) || defs.has(e[1])) { bad = true; return null }
+      return ['i32x4.splat', e]
+    }
+    if (op === 'global.get') return ['i32x4.splat', e]
+    if (INT_LANE_BIN[op] && e.length === 3) return [INT_LANE_BIN[op], liftI(e[1]), liftI(e[2])]
+    // (a shift by a count every pass shares: the lanes' shift takes it, mod 32 as the scalar's)
+    if (INT_LANE_SHIFT[op] && e.length === 3 && isI32Const(e[2])) return [INT_LANE_SHIFT[op], liftI(e[1]), e[2]]
+    bad = true; return null
+  }
+  const liftF32 = (e) => {
+    if (!isArr(e) || e[0] !== 'f32.load') { bad = true; return null }
+    return element(e, ['v128.load64_zero', 2])
   }
 
   // Lifted body: setup lanes → f64x2 temps (in order, so the offset tee in the first load
   // is set before later loads read it); each accumulator → a temp + two in-order adds.
   const lifted = []
   for (const s of body) {
+    if (defs.has(s[1])) { lifted.push(cloneNode(s)); continue }
     if (accSet.has(s[1])) {
       const cV = fresh()
       const v = lift(s[2][2])
       if (bad) return null
+      const op = s[2][0]
       lifted.push(['local.set', cV, v],
-        ['local.set', s[1], ['f64.add', ['local.get', s[1]], ['f64x2.extract_lane', 0, ['local.get', cV]]]],
-        ['local.set', s[1], ['f64.add', ['local.get', s[1]], ['f64x2.extract_lane', 1, ['local.get', cV]]]])
+        ...order.map(k => ['local.set', s[1], [op, ['local.get', s[1]], ['f64x2.extract_lane', k, ['local.get', cV]]]]))
     } else {
       const tv = fresh()
       laneV.set(s[1], tv)
@@ -580,42 +641,30 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
     }
   }
   if (bad || !lifted.length) return null
+  // Two passes of the loop against one step of the lanes, each accumulator's two lanes taken
+  // out and carried in order: the lanes may do no more (cost-model.js, an extract counted).
+  // A plain sum is the case they lose: one load saved, two extracts paid.
+  if (liftWeight(lifted) > 2 * liftWeight(body)) return null
 
   // SIMD prefix over the even prefix [0, bound & ~1); the original block is the ≤1 scalar
   // remainder (continues j and the accumulators). IV advances by 2.
   const id = freshIdRef.next++
-  const simdBoundName = `$__mrb${id}`, simdBrk = `$__mrbrk${id}`, simdLoop = `$__mrl${id}`
+  const simdBoundName = `$__mrb${id}`
   const boundExpr = boundLocal ? ['local.get', boundLocal] : ['i32.const', constNum(bound)]
-  const simdBlock = ['block', simdBrk,
-    ['loop', simdLoop,
-      ['br_if', simdBrk, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
-      ...lifted,
-      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]],
-      ['br', simdLoop]]]
+  const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
+    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]]], bl.dir)
   // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
-  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, 2)]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, 2, 0, bl.dir)]
   const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls], reductions: accSet }
 }
 
-// ---- Unified REDUCTION recognizer (dispatch entry) --------------------------
-//
-// One recognizer, two fold-order tiers keyed on shape (design §2 "REDUCTION (#5-6) → 1
-// general recognizer"): try the reassociating single-accumulator shape first (`tryReduceReassoc`
-// — today's `tryReduceVectorize`), fall to the bit-exact multi-accumulator shape
-// (`tryReduceBitExact` — today's `tryMapReduceVectorize`) only when the first bails. Same
-// dispatch order as before the merge (`tryReduceVectorize(...) ?? tryMapReduceVectorize(...)`),
-// so this is a pure entry-point consolidation — behavior is unchanged by construction.
 // A single-statement reduction's entry: the plain operators, and a min/max whose
 // canon the dead-canon pass took (optimize/nan-canon.js) where only arithmetic
 // reads the accumulator; the merge then needs no canon of its own (canonC null).
 // A float sum or product in lanes adds in another order than the loop: relaxedFloat's alone.
 const REASSOCIATES = new Set(['f64.add', 'f64.mul', 'f32.add', 'f32.mul'])
 const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relaxF32 ? null : REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
-
-export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
-  return tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc) ?? tryReduceBitExact(bl, fnLocals, freshIdRef)
-}
 
 // ---- General base-layer REDUCTION recognizer (dispatch-chain terminal) ----------------
 //
@@ -626,7 +675,7 @@ export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
 //
 // Preconditions (design brief): single scalar accumulator, ONE recognized associative-
 // commutative op (`REDUCE_OP_LOOKUP`: i32/i64 add·mul·xor·and·or, f32/f64 add·mul — the SAME
-// table `tryReduce` itself gates on, so no new op is accepted, only a broader ADDRESS proof) —
+// table `tryReduceReassoc` itself gates on, so no new op is accepted, only a broader ADDRESS proof) —
 // or the int/float min-max canon shapes `tryReduceReassoc` already recognizes
 // (`matchIntMinMaxReduce`/`REDUCE_CANON`, reused verbatim, no new codegen). Body restricted to
 // exactly ONE statement (bare op / int-minmax) or TWO (the NaN-canon float-minmax temp+select
@@ -637,7 +686,7 @@ export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
 // already enforces. Bound must be loop-invariant (`boundLocal` or an `i32.const`) — same
 // convention every recognizer in this file uses.
 //
-// Deliberately OUT of scope (stays `tryReduce`'s territory — its address proof already succeeds
+// Deliberately OUT of scope (stays `tryReduceReassoc`'s territory — its address proof already succeeds
 // there whenever it applies; this pass only widens the ADDRESS proof, never adds new numeric
 // behavior): the narrow-widening sum/min-max variants (`widen`/`accI32`/`accF64`), the
 // conditional-store→select-assign rewrite, the CSE-collapsed 2-statement body, and the
@@ -649,11 +698,10 @@ export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
 // Codegen from "Synthesize SIMD prefix…" on is byte-identical to `tryReduceReassoc`'s own
 // horizontal-fold synth (copied, not refactored-shared — see the port-not-share note above),
 // with `widen`/`sawWidenF32` fixed at their "off" values since this recognizer never produces
-// those shapes (the accType gate below enforces it). Fold-order/bitExact convention: reassociates
-// exactly where `tryReduceReassoc` already reassociates (float add/mul — ULP-level reorder,
-// documented at `REDUCE_OPS`'s own header), value-exact everywhere `tryReduceReassoc` already is
-// (int add/mul/xor/and/or, min/max) — no new numeric divergence, same fold order, just reached
-// from a broader address proof.
+// those shapes (the accType gate below enforces it). Fold order: it reorders exactly where
+// `tryReduceReassoc` does (a float add or multiply under relaxedFloat alone, plainReduceEntry),
+// value-exact everywhere `tryReduceReassoc` already is (int add/mul/xor/and/or, min/max) — no
+// new numeric divergence, same fold order, just reached from a broader address proof.
 export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (!bl || bl.preamble.length) return null
   const { incVar, bound, boundLocal, body, writes } = bl
@@ -770,14 +818,9 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   // flag (self-compile divergence) bails rather than splicing a literal `null` operand.
   if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
-  // Cost model (Part 2 — shared header doc before tryGeneralMap). REDUCE has no
-  // store sites (`scanExpr` above forbids STORE_OPS entirely) — no alias-versioning hazard to
-  // guard, always `guardCount` 0 (matches layer 3's own "tryGeneralReduce doesn't need this
-  // layer" finding). The vector-side cost is the one accumulate step this pass's own codegen
-  // below emits per iteration-group: the reduce op itself (`reduceEntry.simd`, arith weight 1)
-  // applied to `liftedExpr`'s own already-lifted load/arith tree — a tiny synthetic wrapper node
-  // costs it without duplicating the codegen below.
-  if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes, 0))
+  // Cost model (cost-model.js): the vector side is the one accumulate step the codegen below
+  // emits per group, the reduce op (`reduceEntry.simd`) over `liftedExpr`.
+  if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, null, false)

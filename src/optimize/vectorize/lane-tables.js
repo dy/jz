@@ -129,10 +129,9 @@ export const INT_WIDEN_F32 = {
 // the op used to combine the SIMD result back into the accumulator at the
 // end) to its SIMD lane op, lane extractor, and identity element.
 //
-// Floats (add, mul) are not strictly associative — vectorized order produces
-// ulp-level differences from scalar order. Acceptable for typical use
-// (reductions over typed arrays of well-conditioned data); strict-equal
-// callers must keep the pass off.
+// Floats (add, mul) are not associative: a sum in lanes rounds otherwise than
+// the loop, whose order JavaScript fixes, so reduce.js takes them under
+// relaxedFloat alone (plainReduceEntry; README, "Float sums in lanes").
 //
 // Integer mul (`p *= a[i]`) IS associative+commutative mod 2³² / 2⁶⁴, so its
 // vectorization is value-exact. Identity is 1 (the multiplicative neutral).

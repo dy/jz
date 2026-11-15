@@ -105,6 +105,30 @@ export let f = (hiIn, loIn) => {
   }
 })
 
+test('loop forms: a reduction carried in its order, the work of each element in lanes', () => {
+  if (belowOpt(2)) return
+  // No relaxed floats: each pass's two lanes are taken out and carried in the loop's order, so
+  // the sum or product is the loop's bit for bit (test/spellings.js: every dot spelling at 2).
+  const exact = levels(2, { level: 'speed', relaxedFloat: false })
+  const F = (body) => prog('Float64Array', body)
+  lifts('dot', F('let s = 0; for (let i = 0; i < n; i++) s += a[i] * b[i]; return s'), exact)
+  lifts('dot counting down', F('let s = 0; for (let i = n - 1; i >= 0; i--) s += a[i] * b[i]; return s'), exact)
+  lifts('dot through an index temp', F('let s = 0; for (let i = 0; i < n; i++) { const j = i; s += a[j] * b[j] } return s'), exact)
+  lifts('two sums of one load', F('let s = 0, t = 0; for (let i = 0; i < n; i++) { s += a[i] * b[i]; t += a[i] * c[i] } return s - t'), exact)
+  lifts('sum of absolute differences', F('let s = 0; for (let i = 0; i < n; i++) s += Math.abs(a[i] - b[i]); return s'), exact)
+  lifts('sum of minima', F('let s = 0; for (let i = 0; i < n; i++) s += Math.min(a[i], b[i]); return s'), exact)
+  lifts('product of sums', F('let p = 1; for (let i = 0; i < n; i++) p *= (a[i] + c[i]) * 0.125 + 1; return p'), exact)
+  lifts('product of sums counting down', F('let p = 1; for (let i = n - 1; i >= 0; i--) p *= (a[i] + c[i]) * 0.125 + 1; return p'), exact)
+  // an integer or f32 element widened to the f64 the sum carries
+  for (const T of ['Int32Array', 'Int16Array', 'Float32Array'])
+    lifts(`${T} dot into an f64`, prog(T, 'let s = 0; for (let i = 0; i < n; i++) s += a[i] * c[i]; return s'), exact)
+  // a plain sum has no work of an element to lift: the lanes would add two extracts to save a load
+  for (const optimize of exact) {
+    const src = F('let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s')
+    ok(!SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `a plain sum stays scalar at ${JSON.stringify(optimize)}`)
+  }
+})
+
 test('loop forms: a lane local every pass writes, read after the loop (row 6)', () => {
   if (belowOpt(2)) return
   lifts('t read after', prog('Float64Array', 'let t = 0; for (let i = 0; i < n; i++) { t = a[i] * 2; b[i] = t + 1 } return t'))

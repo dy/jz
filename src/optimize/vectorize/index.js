@@ -63,10 +63,12 @@ import { tryPairIterations } from './pair-iterations.js'
 import { tryOuterStripRest } from './outer-strip.js'
 import { tryRampMap } from './ramp.js'
 import { tryPrefilter } from './prefilter.js'
-import { tryGeneralReduce, tryReduce } from './reduce.js'
+import { tryGeneralReduce, tryReduceBitExact, tryReduceReassoc } from './reduce.js'
 import { arrayPointers } from './alias.js'
 import { countsSigned, legal, localsHold } from './legality.js'
-import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks, stripScaffold } from './scaffold.js'
+import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks, stripScaffold, strips } from './scaffold.js'
+import { passCost } from './cost-model.js'
+import { irSize } from '../../growth.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
 import { tryToneMap } from './tone-map.js'
@@ -216,7 +218,6 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // inner-scaffold lifters (memcpy/map/reduce) consume the descriptor instead of
       // each re-matching. The outer-pixel + special-shape recognizers (outer-strip
       // family, ramp-map, channel-reduce) do their own matching on the raw node.
-      // Order is preserved exactly — it is load-bearing (first match wins).
       // allowInlinedLi: accept an inlined LICM preamble (`$__inl*___li*`) too — jz's
       // LICM hoists ToInt32/casts of loop-invariant params just before the loop (e.g.
       // `a[i] & m` with a runtime `m`), and after inlining the snap is renamed off the
@@ -253,14 +254,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // `bl` (inner scaffold) + `op` (outer scaffold) together are the loop's
       // plan; a recognizer whose scaffold is null skips without walking.
       const op = matchOuterPixelLoop(node, desc)
-      // Loose-envelope variant of the same scaffold (any non-loop content
-      // tolerated) — shared by blur-multi-pixel + channel-reduce, both LATE
-      // in the `??` chain below. Lazy + memoized: most blocks either aren't
-      // loop scaffolds at all or already match one of the earlier `bl`-based
-      // recognizers, so the chain short-circuits before ever reaching the
-      // two consumers — computing this third matcher pass upfront would be
-      // pure waste on that (common) path. `getBlLoose()` runs the actual
-      // `matchBlockLoop` at most once, on first read.
+      // Loose-envelope variant of the same scaffold (any non-loop content tolerated), for
+      // blur-multi-pixel and channel-reduce; matched once, on first read.
       let blLoose, blLooseComputed = false
       const getBlLoose = () => blLooseComputed ? blLoose
         : (blLooseComputed = true, blLoose = matchBlockLoop(node, { envelope: 'loose' }, desc))
@@ -279,48 +274,66 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // own scaffold takes its setup with it (below).
       const up = down ? null : bl
       const of = (x) => { if (x && bl && !canonical) x.scaffold = bl; return x }
-      let scalar = node
-      let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
-        ?? of(tryMemCopyFill(up, fnLocals, freshIdRef))
-        ?? of(tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals))
-        ?? of(tryReduce(bl, fnLocals, freshIdRef, multiAcc))
-        ?? of(tryStencil(node, fnLocals, freshIdRef, stencil, up))
-        ?? tryRampMap(node, fnLocals, freshIdRef, outsideReads)
-        ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
-        ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
-        ?? of(tryToneMap(up, fnLocals, freshIdRef, toneMap))
-        ?? of(tryGeneralMap(node, fnLocals, freshIdRef, getBlRun()))
-        ?? of(tryGeneralStencil(node, fnLocals, freshIdRef, stencil, up))
-        ?? of(tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc))
-        ?? of(tryGatherMap(up, fnLocals, freshIdRef, distinctParams))
-      // An output cursor beside the counter (`op += 2`) reads as a recurrence to
-      // every recognizer above. Rewritten over the exit counter (counter-run.js),
-      // the same loop is a map; the rewrite stays only with a lift that takes it.
-      if (!r) {
-        const canon = canonicalizeCounters(node, fnLocals, freshIdRef, desc)
-        const cbl = canon && matchBlockLoop(canon.node, { allowPreamble: true, allowInlinedLi: true })
-        if (cbl) {
-          for (const d of canon.decls) fnLocals.set(d[1], d[2])
-          cbl.outsideReads = outsideReads
-          const lifted = tryMemCopyFill(cbl, fnLocals, freshIdRef)
-            ?? tryVectorize(cbl, fnLocals, freshIdRef, pureFuncMap, constLocals)
-            ?? tryGeneralMap(canon.node, fnLocals, freshIdRef, cbl)
-            // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
-            ?? tryReduce(cbl, fnLocals, freshIdRef, multiAcc)
-            ?? tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)
-          if (lifted) { r = { ...lifted, wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }; scalar = canon.node }
-        }
+      // The one chooser. Every lowering is asked of the loop; each lift it makes passes the one
+      // legality (legality.js: what it leaves in the locals the loop writes, the order of the
+      // bytes its strips touch; bases nothing proves apart may be one array, and the strip
+      // opens past a test of it) and is costed by one measure read off its own code
+      // (cost-model.js passCost: the weighted ops of a pass of the loop). The cheapest is
+      // emitted; of two that cost the same, the smaller, and of two the same size the first
+      // asked: such lifts are one code under two names. An output cursor beside the counter
+      // (`op += 2`) reads as a recurrence to every lowering; rewritten over the exit counter
+      // (counter-run.js) the loop is offered to them again, its rewrite kept with a lift of it.
+      // A strip wider than every entry's trips (the emitter's `trips`, loop-model.js) never
+      // runs: such a lift is bytes for nothing (a remainder loop of at most four passes).
+      const lifts = [], trips = desc?.facts?.trips
+      const runs = (x) => { let ok = true; if (trips != null) walkAst(x.wrapper, { enter: n => { const at = strips.get(n); if (at && at.lanes > trips) ok = false } }); return ok }
+      const take = (name, x, over = node) => {
+        if (!x || !runs(x)) return
+        const y = legal(x, over, liveAfter, env)
+        if (!y) return
+        y.lowering = name
+        y.cost = passCost(y, over.find(c => isArr(c) && c[0] === 'loop'))
+        y.size = irSize(y.wrapper)
+        lifts.push(y)
       }
-      // No lift reaches the output but past the one legality (legality.js): what it leaves
-      // in the locals the loop writes, and the order of the bytes its strips touch. Bases
-      // nothing proves apart may be one array: the strip opens past a test of it.
-      r = legal(r, scalar, liveAfter, env)
+      take('tryDivergentEscapeVectorize', tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op))
+      take('tryMemCopyFill', of(tryMemCopyFill(up, fnLocals, freshIdRef)))
+      take('tryVectorize', of(tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)))
+      take('tryReduceReassoc', of(tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc)))
+      take('tryReduceBitExact', of(tryReduceBitExact(bl, fnLocals, freshIdRef)))
+      take('tryStencil', of(tryStencil(node, fnLocals, freshIdRef, stencil, up)))
+      take('tryRampMap', tryRampMap(node, fnLocals, freshIdRef, outsideReads))
+      take('tryChannelReduce', tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP))
+      take('tryOuterStripRest', tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op))
+      take('tryToneMap', of(tryToneMap(up, fnLocals, freshIdRef, toneMap)))
+      take('tryGeneralMap', of(tryGeneralMap(node, fnLocals, freshIdRef, getBlRun())))
+      take('tryGeneralStencil', of(tryGeneralStencil(node, fnLocals, freshIdRef, stencil, up)))
+      take('tryGeneralReduce', of(tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)))
+      take('tryGatherMap', of(tryGatherMap(up, fnLocals, freshIdRef, distinctParams)))
+      const canon = canonicalizeCounters(node, fnLocals, freshIdRef, desc)
+      const cbl = canon && matchBlockLoop(canon.node, { allowPreamble: true, allowInlinedLi: true })
+      if (cbl) {
+        for (const d of canon.decls) fnLocals.set(d[1], d[2])
+        cbl.outsideReads = outsideReads
+        const rewritten = (x) => x && { ...x, wrapper: ['block', ...canon.setup, x.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...x.newLocalDecls] }
+        take('retry:tryMemCopyFill', rewritten(tryMemCopyFill(cbl, fnLocals, freshIdRef)), canon.node)
+        take('retry:tryVectorize', rewritten(tryVectorize(cbl, fnLocals, freshIdRef, pureFuncMap, constLocals)), canon.node)
+        take('retry:tryGeneralMap', rewritten(tryGeneralMap(canon.node, fnLocals, freshIdRef, cbl)), canon.node)
+        // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
+        take('retry:tryReduceReassoc', rewritten(tryReduceReassoc(cbl, fnLocals, freshIdRef, multiAcc)), canon.node)
+        take('retry:tryReduceBitExact', rewritten(tryReduceBitExact(cbl, fnLocals, freshIdRef)), canon.node)
+        take('retry:tryGeneralReduce', rewritten(tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)), canon.node)
+      }
+      let r = null
+      for (const y of lifts) if (!r || y.cost < r.cost || (y.cost === r.cost && y.size < r.size)) r = y
       // Past that test, a splat no pass of a strip changes is computed where the strip opens.
       if (r) r.newLocalDecls = [...r.newLocalDecls, ...hoistStripSplats(r.wrapper, freshIdRef, outsideReads)]
       // The strips' end, where their scaffold set one (stripScaffold), ahead of them.
       if (r?.scaffold?.setup.length) r = { ...r, wrapper: ['block', ...r.scaffold.setup, r.wrapper], newLocalDecls: [...r.scaffold.decls, ...r.newLocalDecls] }
       // A guard whose first test the lanes can answer, over work too heavy to be common: it
-      // keeps the order of every access, and answers for its locals as a lift does.
+      // keeps the order of every access, and answers for its locals as a lift does. It and the
+      // pairing below lift no pass's work (the loop as written runs it): no cost of theirs
+      // compares with a lift's, and they are asked where no lowering lifts the loop.
       if (!r) { r = tryPrefilter(canonical, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
       const paired = r ? null : legal(tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations), node, liveAfter, env)
