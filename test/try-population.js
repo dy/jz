@@ -3,8 +3,11 @@
 // different kinds and uses `o` one way (stores through it, keeps it, returns it, reassigns
 // it, alone or under a test that proves something of it, calls it, captures it, hands it
 // on) in the protected body, the handler or the finalizer; `main` then reads both values
-// back. The same use with no try statement is the sixth position: where it differs too,
-// the defect is not the try statement's.
+// back. The same use with no try statement is the last position: where it differs too,
+// the defect is not the try statement's. The finalizer is a position twice: after a body
+// that cannot throw it is emitted in a row with the body, no handler made; after one that
+// throws it is emitted once for each way out, and the handler's copy runs where the
+// other did not.
 //
 // A prepared try is `['catch', body, param, handler]` and `['finally', inner, cleanup]`
 // (the parser's shape is another), and the summary's walk clears nothing at its head. Four
@@ -15,7 +18,7 @@
 //
 // Every program has its own `f`, `show` and state, 56 to a module: what a callee is told
 // of its arguments is the program's own, as in a module of one.
-// That is its cost: 3,696 programs with callees of their own, about twelve minutes of one
+// That is its cost: 4,312 programs with callees of their own, about eleven minutes of one
 // core at the three levels.
 import test from 'tst'
 import { is } from 'tst/assert.js'
@@ -49,6 +52,7 @@ const POSITIONS = [
   ['the body', (use) => `try { ${use} } catch (e) { r = -1 }`],
   ['the handler', (use) => `try { if (t) throw 1 } catch (e) { ${use} }`],
   ['the finalizer', (use) => `try { r = 1 } finally { ${use} }`],
+  ['the finalizer of a body that throws', (use) => `try { try { if (t) throw 1 } finally { ${use} } } catch (e) { r = 3 }`],
   ['a body with a finalizer', (use) => `try { ${use} } finally { r += 1 }`],
   ['a handler that throws on', (use) => `try { try { if (t) throw 1 } catch (e) { ${use}; throw e } } catch (e) { r = 2 }`],
   ['no try', (use) => `{ ${use} }`],
