@@ -10,9 +10,9 @@
  * tees once a load takes it. Where C fails the arm does not run (the read's other arm is
  * `undefined`). A load of A directly in C's arm (under the whole of C) leaves its word the
  * same way, for later loads under C (`grid[c] >= 4`, then `grid[c] >> 2`, then
- * `grid[c] -= …`), until a write, a loop, the end of a block a branch leaves to (which may
- * skip the load), or the end of an arm the store or the load's `if` sits in: past it the
- * arm may not have run.
+ * `grid[c] -= …`), until a write, a loop, the end of a block a branch or a handler's catch
+ * clause leaves to (which may skip the load), or the end of an arm the store or the load's
+ * `if` sits in: past it the arm may not have run.
  *
  * "The same" is by value: every pure expression is numbered as it is evaluated, a local
  * holding one carries its number, and a load's or a global read's number names the memory
@@ -52,11 +52,14 @@ const intConst = (n) => {
 }
 // a node's memarg strings (offset=, align=) and its operands
 const isLabel = (x) => typeof x === 'string' && x[0] === '$'
-// whether a branch inside `n` names `label`
+// whether a branch inside `n` names `label`: a `br`, or a `try_table`'s catch clause, which
+// leaves for the label from wherever its body throws (`(catch $tag $label)`, `(catch_all $label)`)
+const CATCH = new Set(['catch', 'catch_ref', 'catch_all', 'catch_all_ref'])
 const targets = (n, label) => {
   if (!isArr(n)) return false
   if ((n[0] === 'br' || n[0] === 'br_if') && n[1] === label) return true
   if (n[0] === 'br_table' && n.includes(label)) return true
+  if (CATCH.has(n[0]) && n[n.length - 1] === label) return true
   for (let i = 1; i < n.length; i++) if (targets(n[i], label)) return true
   return false
 }

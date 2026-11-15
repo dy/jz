@@ -269,6 +269,7 @@ const TESTS = [
   'boxed-counters-population',
   'rules-population',
   'try-population',
+  'finalizer-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
