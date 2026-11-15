@@ -622,6 +622,77 @@ test('jzify: folds esbuild CommonJS interop Object helper aliases', () => {
   is(_run(), 42)
 })
 
+// A bundle's Object reflection alias turns the fold on, and the fold took every
+// `(0, f)(…)` whose callee is a member or an index for an interop read it had
+// replaced (its copy of a callee is never the callee itself), then rebuilt the
+// call with an operand an argument: `['()', f, a, b]`, where a call's arguments
+// are one operand. Every reader took the first and dropped the rest, a call of
+// none became the grouping `(f)`, the function for its result, and the callee
+// lost the `(0, …)` that calls it with no receiver. esbuild writes every call
+// of a CommonJS import so, and its own `__commonJS` calls the module's function
+// with `(exports, module)`: `module` arrived undefined.
+test('jzify: a comma call in a bundle keeps its callee and every argument', () => {
+  // esbuild 0.28.2, `--bundle --format=esm`, of `import { add, id, k, mix } from './a.cjs'`
+  const bundle = `
+    var __create = Object.create;
+    var __defProp = Object.defineProperty;
+    var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+    var __getOwnPropNames = Object.getOwnPropertyNames;
+    var __getProtoOf = Object.getPrototypeOf;
+    var __hasOwnProp = Object.prototype.hasOwnProperty;
+    var __commonJS = (cb, mod) => function __require() {
+      try {
+        return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+      } catch (e) {
+        throw mod = 0, e;
+      }
+    };
+    var __copyProps = (to, from, except, desc) => {
+      if (from && typeof from === "object" || typeof from === "function") {
+        for (let key of __getOwnPropNames(from))
+          if (!__hasOwnProp.call(to, key) && key !== except)
+            __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+      }
+      return to;
+    };
+    var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+      isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+      mod
+    ));
+    var require_a = __commonJS({
+      "a.cjs"(exports, module) {
+        module.exports = { add: (a, b) => a + b, id: (x) => x, k: () => 42, mix: (a, b, c) => a * 100 + b * 10 + c };
+      }
+    });
+    var import_a = __toESM(require_a());
+    var main = () => (0, import_a.add)(1, 2) * 1e6 + (0, import_a.id)(3) * 1e5 + (0, import_a.k)() * 1e3 + (0, import_a.mix)(4, 5, 6);
+    export { main };`
+  // a callee that is no interop read: the call stays the comma call it was
+  const alias = `var __getOwnPropNames = Object.getOwnPropertyNames;\n`
+  const plain = {
+    member: `var o = { f(a, b) { return a * 10 + (b === undefined ? 500 : b) } }
+      export let main = () => (0, o.f)(1, 2)`,
+    'three arguments': `var o = { f(a, b, c) { return a * 100 + (b === undefined ? 5000 : b * 10) + (c === undefined ? 7000 : c) } }
+      export let main = () => (0, o.f)(1, 2, 3)`,
+    'no argument': `var o = { f() { return 42 } }
+      export let main = () => (0, o.f)()`,
+    index: `var o = { f(a, b) { return a * 10 + (b === undefined ? 500 : b) } }
+      export let main = () => { let k = 'f'; return (0, o[k])(1, 2) }`,
+    'a call in the key': `let run = (cb) => (0, cb[__getOwnPropNames(cb)[0]])(1, 2)
+      export let main = () => run({ f(a, b) { return a * 10 + (b === undefined ? 500 : b) } })`,
+    'no receiver': `var o = { v: 7, f: function (a, b) { return (this === undefined ? 1000 : 0) + a * 10 + b } }
+      export let main = () => (0, o.f)(1, 2)`,
+    nested: `var o = { f(a, b) { return a * 10 + (b === undefined ? 500 : b) } }
+      var g = (a, b) => a + b
+      export let main = () => (0, o.f)((0, g)(1, 0), (0, g)(1, 1))`,
+  }
+  const programs = { bundle, ...Object.fromEntries(Object.entries(plain).map(([name, src]) => [name, alias + src])) }
+  for (const [name, src] of Object.entries(programs)) {
+    const want = oracle(src).main()
+    for (const optimize of levels(0, 2, 3)) is(run(src, { jzify: true, optimize }).main(), want, `${name}, O${optimize}`)
+  }
+})
+
 test('jzify: the bundler-helper fold keeps a counted head\'s empty parts', () => {
   // A `for` head is the tuple `[';', init, test, step]`; a bundle's Object
   // reflection alias turns the fold on, and the fold read every `;` as a

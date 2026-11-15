@@ -111,6 +111,11 @@ export function foldStaticBundlerHelpers(ast) {
 
 const isArrow = node => Array.isArray(node) && node[0] === '=>'
 
+// A call as the parser shapes one: its arguments are one operand, a comma list of
+// several and null of none (ast.js setCallArgs). `['()', f]` alone is a grouping, and
+// every reader of a call takes its arguments from that operand.
+const callOf = (callee, args) => ['()', callee, args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]]
+
 const OBJECT_BUILTINS = new Set(['create', 'getPrototypeOf', 'getOwnPropertyNames', 'getOwnPropertyDescriptor', 'defineProperty'])
 
 // Canonical name of the Object reflection built-in `node` references, or null.
@@ -161,7 +166,7 @@ function rewriteBundlerAliasesNode(node, aliases, interopBindings) {
       }
       if (key === 'Object.getOwnPropertyNames' || key === 'Object.create') {
         if (key === 'Object.create' && isGetPrototypeOfCall(args[0], aliases)) return ['{}', null]
-        return ['()', key, ...args.map(rec)]
+        return callOf(key, args.map(rec))
       }
     }
     // `__hasOwnProp.call(o, k)` -> `o.hasOwnProperty(k)`.
@@ -170,7 +175,7 @@ function rewriteBundlerAliasesNode(node, aliases, interopBindings) {
       return ['()', ['.', rec(args[0]), 'hasOwnProperty'], rec(args[1])]
     // `(0, fn)(...)` comma-call resolving to an interop module read.
     const seqCall = commaZeroCall(callee, interopBindings)
-    if (seqCall) return ['()', seqCall, ...args.map(rec)]
+    if (seqCall) return callOf(seqCall, args.map(rec))
   }
 
   if (node[0] === '.' || node[0] === '?.') return [node[0], rec(node[1]), node[2]]
@@ -206,7 +211,8 @@ function commaZeroCall(callee, bindings) {
   const parts = callee[1].slice(1)
   if (parts.length !== 2 || !isZeroLiteral(parts[0])) return null
   const fn = replaceInteropReads(parts[1], bindings)
-  return fn === parts[1] ? null : fn
+  // (the replacement copies every node it walks: only a read it replaced makes the callee another)
+  return nodeEqual(fn, parts[1]) ? null : fn
 }
 
 // `defProp(obj, "key", descriptor)` -> `obj.key = value`; null drops `__esModule`.
