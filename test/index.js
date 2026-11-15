@@ -284,6 +284,7 @@ const TESTS = [
   'box-forms-population',
   'box-probe-population',
   'bound-tier-population',
+  'float-reduction-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
