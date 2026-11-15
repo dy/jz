@@ -73,6 +73,10 @@ export const simdLoop = (id, iv, bound, body, dir = 1) => {
 export const stripOpen = (iv, bound, dir = 1, w = 1) => dir > 0 ? ['i32.lt_s', ['local.get', iv], ['local.get', bound]]
   : ['i32.gt_s', ['i32.sub', ['local.get', iv], ['i32.const', w - 1]], ['local.get', bound]]
 
+/** The limit of the strip `at` (strips below) where none of it runs: the counter where the
+ *  strips count up, the highest word, which no lane base passes, where they count down. */
+export const shut = (at) => at.dir < 0 ? ['i32.const', 0x7fffffff] : ['local.get', at.iv]
+
 // Align the span from its actual entry, preserving empty signed ranges.
 // Rounding a bound near INT_MIN downward can wrap above the entry. An
 // over-reading load also requires its complete span before subtracting it.
@@ -84,18 +88,23 @@ export const stripBlock = (node, iv, bound, lanes) => (strips.set(node, { iv, bo
 export function simdBound(iv, bound, lanes, overread = 0, dir = 1) {
   const start = () => ['local.get', iv]
   if (dir < 0) {
-    // Counting down to the low end `bound`, inclusive: of the iterations left, iv − bound + 1
-    // from an entered loop (a u32 at any distance: 2^32 left wraps to none), a whole number
-    // of strips, which with an over-read of one leave the last iteration below them. The
-    // limit is the counter where the strips stop (the counter itself for none: where a
-    // legality test fails, alias.js gateStrips), given in the lane base's terms, W − 1 below
-    // (simdLoop), which wraps as the base does.
+    // Counting down to the low end `bound`, inclusive: a strip runs while its lane base, W − 1
+    // below the counter (simdLoop), is at the low end or above it (an iteration above it with
+    // an over-read of one), so the limit is one below that, a word the base's interval starts
+    // past (optimize/word-ranges.js: an address at the base folds its array, const-bases.js).
+    // The strips stop where the iterations left are fewer than W, in the loop's last ones. A
+    // base steps W below the last strip's: a low end within W of the lowest word wraps it,
+    // and a counter within W − 1 of it has no base, so no strip runs there (shut).
     if (overread > 1) throw new Error('simdBound: a strip counting down over-reads one iteration at most')
-    const left = overread ? ['i32.sub', start(), cloneNode(bound)] : ['i32.add', ['i32.sub', start(), cloneNode(bound)], ['i32.const', 1]]
-    const end = ['i32.sub', start(), ['i32.and', left, ['i32.const', -lanes]]]
-    const limit = ['select', end, start(), ['i32.ge_s', start(), cloneNode(bound)]]
+    const MIN = -0x80000000, never = shut({ dir })
+    const based = ['i32.ge_s', start(), ['i32.const', MIN + lanes - 1]]
+    let limit
+    if (isI32Const(bound) && typeof bound[1] === 'number')
+      limit = bound[1] + overread < MIN + lanes ? never : ['select', ['i32.const', bound[1] + overread - 1], never, based]
+    else limit = ['select', overread ? cloneNode(bound) : ['i32.sub', cloneNode(bound), ['i32.const', 1]], never,
+      ['i32.and', based, ['i32.ge_s', cloneNode(bound), ['i32.const', MIN + lanes - overread]]]]
     strips.set(limit, { iv, bound, lanes: lanes + overread, dir })
-    return ['i32.sub', limit, ['i32.const', lanes - 1]]
+    return limit
   }
   const span = () => ['i32.sub', cloneNode(bound), start()]
   const end = ['i32.add', start(), ['i32.and',
@@ -284,9 +293,6 @@ function linkHolds(desc, { plan, lowering }) {
   if (step && plan.dir != null && step.by != null && (Math.sign(step.by) !== plan.dir || Math.abs(step.by) !== plan.by)) fail('step')
 }
 
-// The statements a block holds ahead of its one loop, as the default envelope admits them:
-// pure `local.set`s (an invariant LICM or a peephole hoisted, `$__li*`, or any local under
-// `allowInlinedLi`), nothing after the loop. null where the block holds anything else.
 // A call a preamble may hold, cloned ahead of the strips and run again by the loop as written:
 // one the effects summary's table calls pure or a reader of header words (optimize/effects.js).
 const READS = { has: (name) => { const k = helperKind(name); return k === 'pure' || k === 'header' } }

@@ -2,7 +2,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { isLocalGet, laneAccess, readExit, readStep, stepsByOneVia } from './addr-model.js'
 import { gateStrips } from './alias.js'
 import { isArr } from './node-utils.js'
-import { strips } from './scaffold.js'
+import { shut, strips } from './scaffold.js'
 
 // ---- The one legality of a lift ----------------------------------------------
 //
@@ -59,7 +59,7 @@ export function countsSigned(r, node) {
       if (at.iv !== iv) continue
       if (!at.bound) { ok = false; continue }
       const both = ['i32.and', ['i32.ge_s', ['local.get', iv], ['i32.const', 0]], ['i32.ge_s', cloneNode(at.bound), ['i32.const', 0]]]
-      parent[i] = at.block ? ['if', both, ['then', c]] : ['select', c, ['local.get', iv], both]
+      parent[i] = at.block ? ['if', both, ['then', c]] : ['select', c, shut(at), both]
     }
   }
   open(r.wrapper)

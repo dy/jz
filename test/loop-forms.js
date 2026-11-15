@@ -74,6 +74,37 @@ test('loop forms: a loop counting down (row 3)', () => {
   lifts('Int32Array a maximum down', prog('Int32Array', 'let m = -100; for (let i = n - 1; i >= 0; i--) m = a[i] > m ? a[i] : m; return m'))
 })
 
+test('loop forms: the strips of a loop counting down stop at its low end', () => {
+  if (belowOpt(2)) return
+  // A strip runs while its lane base, the lowest iteration it holds, is at the low end or above
+  // it: to a constant end the test is against a constant, the base's interval known in the strip.
+  for (const optimize of levels(2, 3)) {
+    const w = fnOf(compile(prog('Float64Array', 'for (let i = n - 1; i >= 0; i--) b[i] = a[i] + 1; return 0'), { optimize, wat: true }), 'k')
+    ok(/\(br_if \$__simd_brk\d+\s+\(i32\.le_s \(local\.get \$[^\s)]+\) \(i32\.const -1\)\)/.test(w), `the lane base against the end, at ${optimize}`)
+  }
+  // One lane base per strip W below the last: a low end within W of -2^31 would wrap the next
+  // base past it, a counter within W - 1 of it has no base.
+  const MIN = -(2 ** 31)
+  const src = (T, body) => `const a = new ${T}(48), b = new ${T}(48)
+export let f = (hiIn, loIn) => {
+  const hi = hiIn | 0, lo = loIn | 0
+  for (let k = 0; k < 48; k++) { a[k] = (k * 37 % 23) - 11; b[k] = k % 7 }
+  let s = 0
+  ${body}
+  let h = 0; for (let k = 0; k < 48; k++) h = (h * 31 + a[k] * 3 + b[k]) % 1000003
+  return h + s
+}`
+  for (const T of TYPES) for (const body of ['for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo] * 2', 'for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo + 1] - a[i - lo]']) {
+    const p = src(T, body), want = oracle(p)
+    for (const optimize of levels(2, 3)) {
+      ok(SIMD.test(fnOf(compile(p, { optimize, wat: true }), 'f')), `${T} ${body}: lifted at ${optimize}`)
+      const got = jz(p, { optimize }).exports
+      for (const lo of [MIN, MIN + 1, MIN + 3, -2, 0]) for (const d of [-1, 0, 1, 2, 3, 4, 5, 15, 16, 17, 33])
+        is(got.f(lo + d, lo), want.f(lo + d, lo), `${T} ${body}: ${lo + d} down to ${lo} at ${optimize}`)
+    }
+  }
+})
+
 test('loop forms: a lane local every pass writes, read after the loop (row 6)', () => {
   if (belowOpt(2)) return
   lifts('t read after', prog('Float64Array', 'let t = 0; for (let i = 0; i < n; i++) { t = a[i] * 2; b[i] = t + 1 } return t'))

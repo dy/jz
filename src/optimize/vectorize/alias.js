@@ -2,7 +2,7 @@ import { cloneNode, nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
 import { constNum, hasSideEffect, isI32Const, isLocalGet, laneAccess, readStep } from './addr-model.js'
 import { normTee } from './idioms.js'
 import { isArr } from './node-utils.js'
-import { strips } from './scaffold.js'
+import { shut, strips } from './scaffold.js'
 
 // ---- Same-array dependences of a lane lift (the general map and stencil) ----
 //
@@ -370,7 +370,7 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       const test = open(at)
       if (!test) return false
       found = true
-      if (test !== true) parent[i] = at.block ? ['if', test, ['then', c]] : ['select', c, ['local.get', at.iv], test]
+      if (test !== true) parent[i] = at.block ? ['if', test, ['then', c]] : ['select', c, shut(at), test]
     }
     return true
   }
