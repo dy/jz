@@ -21,13 +21,22 @@ export let checksumF64 = (out) => {
 // For a case whose `**`, pow or hypot bits differ per engine (each engine's libm
 // rounds its last bits its own way): every value is hashed at single precision,
 // a relative tolerance of 2^-24, so engines a few ulp apart agree and a wrong
-// result does not. `bits` below 24 keeps that many of the significand's bits, for
-// the libm probes whose engines differ by more (the colour cases: V8 12.4 and 14.1
-// part on one value of colorpq's 3 million at 2^-24, on none at 2^-16).
-export let checksumF64Near = (out, bits = 24) => {
-  const f = new Float32Array(1), u = new Uint32Array(f.buffer), drop = 24 - bits
+// result does not.
+export let checksumF64Near = (out) => {
+  const f = new Float32Array(1), u = new Uint32Array(f.buffer)
   let h = 0x811c9dc5 | 0
-  for (let i = 0; i < out.length; i++) { f[0] = out[i]; h = Math.imul(h ^ ((u[0] >>> drop) | 0), 0x01000193) | 0 }
+  for (let i = 0; i < out.length; i++) { f[0] = out[i]; h = Math.imul(h ^ (u[0] | 0), 0x01000193) | 0 }
+  return h >>> 0
+}
+
+// The same at 16 significant bits (the single-precision value's low 8 bits dropped),
+// a relative tolerance of 2^-16, for the libm probes whose engines differ by more:
+// on the colour cases V8 12.4 and 14.1 part on one value of colorpq's 3 million at
+// single precision, on none at 16 bits.
+export let checksumF64Near16 = (out) => {
+  const f = new Float32Array(1), u = new Uint32Array(f.buffer)
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < out.length; i++) { f[0] = out[i]; h = Math.imul(h ^ ((u[0] >>> 8) | 0), 0x01000193) | 0 }
   return h >>> 0
 }
 

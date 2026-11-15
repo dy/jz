@@ -216,7 +216,7 @@ const SPEED = {
 //                       EXP2_TAB: 0.52 ulp against a 200-bit reference, V8's
 //                       fdlibm about 1).
 // Since 2026-11-14 the cases hash 16 significant bits of each value (benchlib
-// checksumF64Near(out, 16)), where jz's answer and every engine's agree: each pin
+// checksumF64Near16), where jz's answer and every engine's agree: each pin
 // is the case's reference (bench/bench.mjs REFERENCE_CHECKSUMS).
 const LAB_SPEED = {
   colorlog:  { v8: 'win', jz: 3459716430, why: 'Math.pow(2, x) through jz exp2 – 1 ulp' },

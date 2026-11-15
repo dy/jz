@@ -1661,7 +1661,7 @@ const FMA_CHECKSUMS = {
 // until a reference refresh stores them.
 const REFERENCE_CHECKSUMS = {
   entity: 1275530752,
-  // the libm probes, hashed at 16 significant bits (benchlib checksumF64Near(out, 16)):
+  // the libm probes, hashed at 16 significant bits (benchlib checksumF64Near16):
   // node 25 (V8 14.1) and 22 (V8 12.4), deno 2.6 (V8 14.5), bun 1.3 (JSC) and jz at
   // 'speed', at 'speed' with relaxedFloat off, the default level and 'size' agree on each (arm64, 2026-11-14)
   deltae: 2299855818, colorconv: 3485184154, colorlch: 58790493, colorlog: 3459716430, colorpq: 3897623418,

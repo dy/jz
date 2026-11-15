@@ -396,7 +396,7 @@ coverage, the aggregate table below and the landing's figures. That includes the
 compiler workloads (`watr`, `jessie`, the `jz` self-compile) and the colorjs
 intrinsic probes (`colorconv`, `colorlch`, `colorlog`, `colorpq`, `deltae`), which
 were once set apart as `lab` rows. A row counts where its checksum is accepted.
-The probes hash 16 significant bits of each value (`checksumF64Near(out, 16)`): their
+The probes hash 16 significant bits of each value (`checksumF64Near16`): their
 transcendental results differ in the last bits by libm (V8 12.4 and 14.1 part on one
 value of colorpq's 3 million at single precision), and at 16 bits node 25 and 22,
 deno, bun and JZ at every level agree on all five (2026-11-14, `REFERENCE_CHECKSUMS`

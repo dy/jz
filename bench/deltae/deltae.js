@@ -13,7 +13,7 @@
 //
 // Reports: median ms across N_RUNS, FNV-1a checksum over ΔE00 values (f64 bits).
 
-import { medianUs, checksumF64Near, printResult } from '../_lib/benchlib.js'
+import { medianUs, checksumF64Near16, printResult } from '../_lib/benchlib.js'
 
 const NPAIR = 150000
 const N_ITERS = 3
@@ -120,5 +120,5 @@ export let main = () => {
     runKernel(lab1, lab2, out)
     samples[i] = performance.now() - t0
   }
-  printResult(medianUs(samples), checksumF64Near(out, 16), NPAIR * N_ITERS, 1, N_RUNS)
+  printResult(medianUs(samples), checksumF64Near16(out), NPAIR * N_ITERS, 1, N_RUNS)
 }

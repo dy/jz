@@ -11,7 +11,7 @@
 //
 // Lowest common subset: const/let + arrows, Float64Array, Math.imul checksum.
 
-import { checksumF64Near, medianUs, printResult } from '../_lib/benchlib.js'
+import { checksumF64Near16, medianUs, printResult } from '../_lib/benchlib.js'
 
 const N_PIXELS = 1000000
 const N_RUNS = 21
@@ -59,7 +59,7 @@ const run = () => {
     samples[i] = performance.now() - t0
   }
 
-  printResult(medianUs(samples), checksumF64Near(dst, 16), N_PIXELS, 1, N_RUNS)
+  printResult(medianUs(samples), checksumF64Near16(dst), N_PIXELS, 1, N_RUNS)
 }
 
 export let main = () => {
