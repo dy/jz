@@ -242,8 +242,9 @@ export let f = (k) => { let s = 0; for (let i = 0; i < 2; i++) { cb(); s += g[0]
     ex.m = m.m
     is([m.f(1), m.f(0)], [46, 26], `an array the host replaces, at ${optimize}`)
   }
-  // (the function's threshold holds for a loop: a global read once, in a loop that follows
-  // a chain and mostly runs one round, gets no copy; read three times it gets one)
+  // (a copy is paid as the loop is entered and repaid a round: a global read once, in a loop
+  // that follows a chain and mostly runs one round, gets no copy; read three times, the
+  // function's threshold, it gets one; read once in a counted loop, whose rounds repay it, too)
   const chase = (reads) => ['func', '$f', ['param', '$o', 'i32'], ['result', 'i32'],
     ['block', '$done', ['loop', '$l',
       ...Array.from({ length: reads }, () => ['br_if', '$done', ['i32.gt_u', ['local.get', '$o'], ['global.get', '$end']]]),
@@ -252,4 +253,10 @@ export let f = (k) => { let s = 0; for (let i = 0; i < 2; i++) { cb(); s += g[0]
   const copies = (fn) => { promoteGlobals(fn, new Map([['$end', 'i32']]), solveEffects([fn])); return fn.filter(n => Array.isArray(n) && n[0] === 'local' && /^\$_pg/.test(n[1])).length }
   is(copies(chase(1)), 0, 'one read in a loop: no copy')
   is(copies(chase(3)), 1, 'three reads: a copy')
+  const counted = ['func', '$f', ['param', '$n', 'i32'], ['local', '$i', 'i32'], ['local', '$s', 'i32'], ['result', 'i32'],
+    ['block', '$brk', ['loop', '$l', ['br_if', '$brk', ['i32.eqz', ['i32.lt_s', ['local.get', '$i'], ['local.get', '$n']]]],
+      ['local.set', '$s', ['i32.add', ['local.get', '$s'], ['i32.load', ['i32.add', ['global.get', '$end'], ['local.get', '$i']]]]],
+      ['local.set', '$i', ['i32.add', ['local.get', '$i'], ['i32.const', 1]]], ['br', '$l']]],
+    ['local.get', '$s']]
+  is(copies(counted), 1, 'one read in a counted loop: a copy')
 })
