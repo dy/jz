@@ -4,7 +4,7 @@
 // The per-case tables and the aggregate geomean table drift easily: `npm run bench` rewrites
 // results.json but never the prose doc, so its numbers rot. This refreshes every standard
 // per-case table (median · ×v8 · size · parity) and the V8/AS rows of the aggregate table
-// IN PLACE — preserving each row's label, order, and the bold on the jz row. In the prose it
+// IN PLACE, preserving each row's label, order, and the bold on the jz row. In the prose it
 // rewrites only the figures marked `<!-- fig:KEY -->…<!-- /fig -->` (README.md, the landing
 // index.html: FIGURES below); --check also emits a best-effort prose-ratio drift warning for
 // the human/CI. test:claims runs --check: a marked figure the dataset does not give fails it.
@@ -171,7 +171,7 @@ for (const s of stale) console.error('  • ' + s)
 
 if (check) {
   console.log(changed ? '✗ bench/README.md tables are STALE vs results.json — run `npm run bench:readme`' : '✓ bench/README.md tables match results.json')
-  console.log(stale.length ? `✗ ${stale.length} figure(s) in the prose are STALE vs results.json — run \`npm run bench:readme\`` : `✓ the prose's figures match results.json (${FIG_DOCS.map(d => d.slice(ROOT.length + 1) || d).join(', ')})`)
+  console.log(stale.length ? `✗ ${stale.length} figure(s) in the prose are STALE vs results.json: run \`npm run bench:readme\`` : `✓ the prose's figures match results.json (${FIG_DOCS.map(d => d.slice(ROOT.length + 1) || d).join(', ')})`)
   process.exit(changed || stale.length ? 1 : 0)
 }
 writeFileSync(README, text)

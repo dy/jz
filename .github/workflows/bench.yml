@@ -455,7 +455,7 @@ jobs:
               if (!t || t.status === "fail") bad.push(`${id}/c-wasm-fast: ${t ? t.reason : "missing"}`);
             }
             if (bad.length) { console.error("float-lane smoke FAILED:\n" + bad.join("\n")); process.exit(1); }
-            console.log("float-lane smoke OK — jz and jz-exact answer the reference, c-wasm-fast builds and runs");
+            console.log("float-lane smoke OK: jz and jz-exact answer the reference, c-wasm-fast builds and runs");
           '
 
       # ── shard ──────────────────────────────────────────────────────────────

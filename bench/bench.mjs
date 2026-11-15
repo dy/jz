@@ -1227,7 +1227,7 @@ const targets = {
   as: {
     name: 'AssemblyScript (asc -O3)',
     available: c => !!c.as && has('asc'),
-    // Size column = asc -Oz --converge (AS's smallest, what its -Osize expands to); timing = the -O3 speed build —
+    // Size column = asc -Oz --converge (AS's smallest, what its -Osize expands to); timing = the -O3 speed build:
     // the fair mirror of jz's split (each compiler's best size vs best speed).
     bin: asSizeWasmPath,
     run: c => tryRun('as', c, () => {

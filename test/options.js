@@ -206,7 +206,7 @@ test('options: optimize object, alloc:false: instantiation and calls write no wo
   is(typed.f(new Float64Array([1, 2, 3])), 4, 'a host allocation claims the cell')
 })
 
-test('options: optimize object — its nine keys; a pass name or a typo refused', () => {
+test('options: optimize object, its nine keys; a pass name or a typo refused', () => {
   ok(compile(LOOP, { optimize: { level: 'size' } }).byteLength > 0, 'level:size')
   ok(compile(LOOP, { optimize: { level: 'speed', compact: false, rationalConst: false } }).byteLength > 0, 'compact and rationalConst')
   ok(compile(LOOP, { optimize: { level: 'speed', relaxedFloat: false } }).byteLength > 0, 'relaxedFloat')
