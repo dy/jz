@@ -273,3 +273,16 @@ populations (`boxpop`, `boxpop2`, `boxprobe` 1 to 3, `mergeprobe` 1 to 3, `cwpop
 timing scripts (`exbpair.sh`, `pagepair.sh`, `pagealone.sh`, `pagefixed.mjs`,
 `linekern.mjs`, `lkcount.mjs`), `relcheck.mjs`. They belong in the repo's generated
 suites and `scripts/`; not moved yet.
+
+## Branches of the counter-widths landing (2026-11-14), tips before deletion
+
+```
+afc2446f3 box-fix                            the landing tree: the uint32 extent guard, the table rule, the box, the review's fixes, the tier, its absorption, the cold mark set false; these notes go on top
+2e9c2ffe7 land-e                             main's code before the step: the base of every timing and population of it
+756d7282f worktree-agent-ac63941daac3c6ed9   the box writer's tree as last handed back (the tier and its absorption are cherry-picked from it)
+7c5e46f01 v1.0.3 (tag)                       the release line's six commits; its branch release-1.0.3 and bench-pins are deleted on origin
+```
+
+Writers at work as this lands, each in a worktree off afc2446f3: counters by a bound test
+in the planner, the loop's description (6b), the exact lane and `relaxedFloat` (9a), the
+checked peephole table (8), the effects summary (7a, off the import fix `import-writes`).

@@ -71,7 +71,7 @@ Rules for every change here:
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
-| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter): built and green on the battery, rfft 1.04x, held unlanded on two timing defects ("Counter widths built"). Then 6b the loop's facts from the emitter (briefed, `.work/phase-6b-loop-facts.md`), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" |
+| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter): landed as a tier above the planner's copy (b41b03528 to afc2446f3; "Counter widths landed"): rfft 1.06x, no input slower than before by more than the entry tests. Then 6b the loop's facts from the emitter (`.work/phase-6b-loop-facts.md`, with its writer), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
 | 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | |
@@ -1341,6 +1341,161 @@ line's presence in the tag, not from a run: half of it was wrong.
 The four fixes port: five of six source patches apply as they are, the sixth is an
 export line. Not logged in to npm on this machine: the owner publishes.
 
+## Counter widths landed: the box a tier above the planner's copy (2026-11-14)
+
+The two timing defects the landing was held on are fixed by the writer (d6a6f23c9, 44d6282b7)
+and re-measured by the integrator; one defect the battery found is fixed by the integrator
+(afc2446f3).
+
+**The roots.** D1: the walk read a name the box holds stable as the literal `[0, top]`. Under a
+refinement (`y < H`) the product `y * W` was tested as `(H - 1) * top <= 2^31 - 1`, which no
+height above 3 passes, so the copy never ran; over the box alone it was `top * top`, past the
+word, and the index stayed a Number. D2: the box stood in place of what the planner builds with
+no box, two ways. An entry outside the box (a stride of -1, a start below zero) failed the box's
+guard and ran as written where the planner had a copy; and where only the box built a copy, the
+loop beside it was marked cold (no vectorizing, no LICM, no recurrence) and lost its inner
+copies, where the base ran it hot with them.
+
+**What was built.** A stable name reads as its own value (`W * min(n - 1, H - 1)` is the test);
+the box's range serves only `span`, to drop the tests it already implies; the box's top counts
+as an open end; held names are refined by the loop's own test. A loop with a box, or with an
+inner one, is built twice: with no box (inner box nodes read as what stands below them), then
+with the boxes. Where both build a copy: `if (boxTest) boxCopy else copyWithNoBox`, one cold loop
+below both. Where only the box builds one: the loop past its guard stands as the planner with no
+box leaves it, not cold, its inner copies in place. A head read in another form (a canonical
+`for`, a negated test) is built with no box. Inside an enclosing box copy, an inner tier's copy
+with no box is absorbed like any inner version, its guard once per call.
+
+**Measured by the integrator** (base 2e9c2ffe7 against the writer's tip, alternating rounds, a
+process each):
+
+| what | result |
+|---|---|
+| line-walk kernel, 8 rounds (new/base): right-down, left-up, right-up, from left of canvas | 0.773, 1.009, 1.001, 0.969 |
+| penrose page, fixed plan 400/60/9, 5 rounds, medians ms | base 4.29 to 4.38, new 4.29 to 4.36 |
+| rfft | 14.8 to 9.0 us, 1.06x of V8 (was 0.64x) |
+| the other 24 examples | within 2%; geomean 1.66x of V8, 25 of 25 |
+| pages alone, 6 rounds (new/base) | penrose 1.003, wireworld 1.003, dithering 0.919, sand 1.013 (rounds 0.87 to 1.04), nbody 0.982, field-lines 0.922, lbm 0.993, ocean 0.963, gauss-primes 0.932 |
+
+The invariant holds: no direction and no page slower than the base beyond the entry tests.
+
+**What it costs.** No bench case moves (0 of 105, size and speed) and the 94 single-file bench
+cases compile in the same time (speed 146.8 s base, 145.7 to 146.2 s new, CPU). No example
+moves at `size`. Ten of 70 examples move at level 2 and speed:
+
+| example | level 2 | speed | compile at speed, CPU ms |
+|---|---|---|---|
+| rfft | 26083 to 41025 (+57%) | 31645 to 47596 (+50%) | 3190 to 6440 |
+| sand | 23435 to 30538 (+30%) | 28380 to 36255 (+28%) | 1500 to 2750 |
+| lbm | 34228 to 39167 (+14%) | 43880 to 49519 (+13%) | 2950 to 3620 |
+| wireworld | 81378 to 90454 (+11%) | 123699 to 139159 (+12.5%) | 30300 to 35100 |
+| gauss-primes | +4.1% | +3.7% | |
+| ocean | +3.1% | +2.4% | |
+| field-lines | +3.0% | +1.0% | |
+| penrose | +2.7% | +2.9% | 1310 to 1500-1840 |
+| dithering | +1.4% | +1.5% | |
+| nbody | -2.4% | -0.2% | |
+
+rfft's growth is all in `transform`, the kernel (7,876 to 17,344 lines of WAT): the box's copy
+beside the copy with no box and the loop as written. wireworld's and lbm's growth is setup code
+(`seed`, `busTaps`, `diagMesh`, `reseed`): the box does not weigh how often a loop runs. Each
+tiered loop is built twice, which is the compile time; the search for a box costs time where
+none results too (the mandelbrot example +23%, about 150 ms, its bytes unmoved; raytrace +4%).
+
+**Correctness.** The writer's three pins fail on the tree with the box alone (2cfadf01a's
+planner under the new test file): the product of a stable name, the entry outside the box, the
+loop beside a box-only copy. The population battery on the tree: the two known lines only
+(boxprobe "arguments of other kinds", vecnarrow's two programs). A population of the
+integrator's own for the tier (`SCRATCH/tierpop.mjs`: 88 programs, 6,507,648 checks against Node
+at six levels; line walks over widths where `y * W` leaves the word, entries outside the box,
+tiers inside counted loops, boxes and inlined calls, heads in other forms): no difference on
+the base or on the tree; the box and the tier change the bytes of 73 of the 88 against the
+base, the tier 61 of 88 against the box alone.
+
+**The battery** (44d6282b7; the bootstrap and one-process legs on afc2446f3): lint and audit
+clean; examples 25 of 25, geomean 1.65x; bench bytes 0 of 105; invariants 7,155; default
+7,356; level 0 7,139; level 3 7,153; wasi 7,228; generated 70; integration 224, 76, 76, 79;
+test262 4,120 pass and 0 fail; the self-compile, a hosted build of 36,972,556 bytes (36,744,067 on the base), its round trip, kernel parity, checkpoint, hosted suite and recursive compilation; one process 7,356.
+
+**Found by the battery: the compiler no longer compiled itself.** The tier's hand-over
+removed a loop's cold mark with `delete n.cold`, and prepare refuses `delete` on a static key
+(the compiler compiled by jz removes no field of a node), so the bootstrap build stopped at
+integral-loops.js. The writer's checks and the integrator's review ran no self-compile;
+the brief's verify list named `test:self` and the hand-back did not run it. The mark is set
+false instead (every reader tests it for true; no byte of the 70 examples or the bench
+corpus moves). The briefs of the writers after this one say to run `test:bootstrap -- --full`
+before handing back.
+
+**Open, listed.**
+- The box does not weigh how often a loop runs: setup code is boxed, and the tier doubles
+  what that costs in bytes and compile time for no frame time.
+- The search for a box costs compile time on loops where none results.
+- Hoisted inner tests repeat in guards (`typeof m === number` three times in one guard).
+- A closure body shared between a copy and its loop as written is versioned once per
+  occurrence; a box-only loop inside such a body could be boxed twice. The base has the same
+  exposure for its copies; not observed.
+- The examples gate on the x64 runners read rfft at 0.28x to 0.44x of V8 before the box; the
+  box's 1.64x there is not yet read.
+
+## The reference run, read (2026-11-14)
+
+Run 43583320878 on 3420027ce (the pins of cd89b0b74: Porffor alpha 23, Bend 2.0.40, rustc
+1.100.0, AssemblyScript 0.28.20), ten shards, 106 cases on four machine types (EPYC 9V74,
+EPYC 7763, Xeon Platinum 8573C, Xeon 6975P-C). The claims gate: 22 pass, 7 fail, 2 skip (18
+failed on the evidence of 2026-09-02). Nothing was published, as designed; the evidence is the
+run's `reference-3420027c…` artifact (`SCRATCH/ref1/evidence/`).
+
+Geomeans, a rival's time over jz's on the cases the lane runs (`SCRATCH/refsum.mjs`, the paired
+ratio where the pair was measured): the best wasm producer per case 1.36x (89 cases); V8 2.26x
+(jz ahead on 93 of 101); Deno 2.07x; Bun 1.77x; JSC 1.80x (85 of 101); `clang -O3` native 1.03x
+(jz ahead on 40 of 89); AssemblyScript 2.66x (57 of 57); Porffor 13.9x (96 of 96); Bend 3.36x
+(23 of 29: behind on tokenizer 1.08, crc32 1.11, radixsort 1.03, levenshtein 1.01, dict 1.17,
+arraynumeric 1.10).
+
+The reds, which are phase 9's work list and the optimizer's:
+- Wasm producers, past the band: stdlib-gamma 1.249x (clang), threescene 1.209x (rustc),
+  stdlib-pow 1.126x (rustc), gainclass 1.080x (clang), hwb 1.063x (rustc), quatmul 1.053x
+  (clang). Ties within the band, not leads: trace 1.005x, sosfilter 1.029x, worley 1.026x,
+  threegeom 1.018x.
+- V8 family: decode-dsd 1.327x (Deno), crc32 1.112x (V8; on the Xeon 6975P-C, the known split
+  by CPU).
+- Bun and JSC: decode-wav 2.264x, decode-dsd 1.521x, decode-alac 1.408x, decode-qoa 1.299x,
+  decode-tta 1.264x, resample 1.106x.
+- A named exception past its band: the self-compile case against JSC 1.669x, band 1.35x.
+- Passing now: size against AssemblyScript (56 of 57 smaller, geomean 0.804x; arraydowngrade
+  held at 4.93x of its band 5x), Porffor, freshness, coverage, webaudio's RSS (1.002x).
+- Not contested: deltae, colorconv, colorlch, colorlog, colorpq, whose stored checksum no lane
+  reproduces on the CI machines, V8 included. Not looked into (the phase 9 scout is asked).
+- Lanes that answer nothing: tslang (106 of 106 fail to build), js2wasm (92 wrong).
+
+## 1.0.3 released (2026-11-14)
+
+Cut off v1.0.2 as 1.0.1 and 1.0.2 were (tag v1.0.3 at 7c5e46f01, six commits; the branch is
+deleted, the tag holds them), published to npm and as a GitHub release by the integrator on
+the owner's word, `release.yml` attaching `jz.wasm`. Five fixes for wrong results, each run
+on the tags v1.0.0, v1.0.1 and v1.0.2 and wrong on all three:
+- An assignment yields what it stored (main's 21112c9aa): 73 of 84 programs wrong at every
+  level.
+- A captured variable that holds a Boolean beside a number keeps a cell of Numbers: found
+  porting the first (its test failed on the 1.0 line for a captured target). The cell was a
+  word where every write's integer level is 2, and a comparison counts as level 2, so the
+  store truncated the Boolean's box: `let t = 7; const g = () => t; t = x === 3` read false
+  at x = 3. 151 of 312 programs wrong. main answers them since 9bafbb6a6 (2d), which had no
+  test of it; the release's test is mirrored to main with this landing.
+- A byte or 16-bit lane compares only what fits it (dc4858fbc): five clamped programs of
+  1,000 at levels 2, 3 and speed. The 1.0 line lifts a store under a condition by a
+  comparison of its own, which takes the same test there.
+- A uint32 divides as unsigned (cdc3b0711): 31 of 135 programs, 30 at levels 2 and over and
+  the element's remainder by a runtime divisor at all six.
+- A uint32 bound in a loop's extent guard (33690d097's fix): 3 of 124 programs at levels 2,
+  3 and speed, the bound in the loop's test, a read past the array's end; no store.
+No bench case (90) and no example (69) changes bytes between v1.0.2 and v1.0.3. The release
+line's CI on the branch: the four test legs, fuzz, self-compile, test262, the bench gate and
+examples-perf green; claims red there as on v1.0.2 (17 of 31), so the package was published
+with `--ignore-scripts` after `build:web` by hand (410 files, as 1.0.2). The dependency
+updates since 1.0.2 are not in it: on the 1.0 line they fix one thing visible at the public
+levels, a compile error on `do i++; while (i < n)`.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -1381,7 +1536,16 @@ export line. Not logged in to npm on this machine: the owner publishes.
   asked for the run, 2026-11-14).
 - 1.0.3 is cut as 1.0.1 and 1.0.2 were, off the tag before, with the fixes that
   reproduce there (the integrator's reading of the owner's "do 1.0.3 release",
-  2026-11-14; the owner may say main instead). The owner publishes.
+  2026-11-14). Published by the integrator on the owner's word the same day.
+- The phases run side by side (the owner, 2026-11-14: "don't hoard branches, we need to
+  get all phases work done sooner"): a scout maps each phase while the one before it is
+  built, writers work in their own trees on files no other writer holds, and the
+  integrator reviews each hand-back with populations of its own and one battery.
+- A writer runs the self-compile before handing back (`test:bootstrap -- --full`): the
+  box's hand-over held a `delete` of a static key that only the battery's bootstrap leg
+  found.
+- No patch release ahead of the architecture (the owner, 2026-11-14): what the phases
+  find wrong in 1.0.3 is fixed on main and ships with the release that carries them.
 
 ## Open questions
 

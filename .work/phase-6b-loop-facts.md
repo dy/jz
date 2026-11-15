@@ -12,9 +12,10 @@ counted loop described by facts, not a WAT shape matched back out of the emitter
 output. The third step (6c: recognizers as lowerings chosen by cost, the chain and the
 private re-derivations retired) is not this one; do not start it.
 
-A step lands before this one: counter widths ("The examples gate: rfft below V8 since
-October"), which proves words many of the counters this brief's first row counts as
-f64. The figures below are from before it; the brief is revised on what it leaves.
+A step landed before this one: counter widths ("Counter widths landed": a box over the
+names a loop reads, tested once at the head, and an integer copy of the loop under it).
+It leaves 242 loops at `speed` with a counter still an f64 where the vectorizer runs;
+the figures below are from before it.
 
 `SCRATCH` below is
 `/private/tmp/claude-501/-Users-div-projects-jz/36e8fd26-a3d4-48ec-97bb-7106b08fda8d/scratchpad`.
