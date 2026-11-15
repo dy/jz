@@ -118,14 +118,24 @@ function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.curren
  *  CONTAINS the try runs its finally (the branch leaves the try body); a try that
  *  contains the whole loop stays live (control never leaves it) and must not run —
  *  each entry records ctx.func.stack.length at try entry, so a frame at index i
- *  scopes to entries with depth > i. `return` exits every frame (minDepth 0). */
+ *  scopes to entries with depth > i. `return` exits every frame (minDepth 0).
+ *  A copy runs where the exit is, inside the `try_table` of its own statement and of
+ *  every `catch` within it the exit leaves; a throw from it belongs to none of their
+ *  handlers but to those around the statement. An entry with an `escape` (a statement
+ *  whose body has a handler, a cleanup that may throw) takes the copy's throw past them
+ *  by a catch clause of its own to that block, around the statement, which throws it
+ *  again there. */
 export function emitFinalizers(minDepth = 0) {
   const stack = ctx.func.finallyStack || []
   if (stack.length === 0) return []
   const saved = stack.slice()
   const out = []
-  for (let i = saved.length - 1; i >= 0 && saved[i].depth >= minDepth; i--)
-    out.push(...withFinallyStack(saved.slice(0, i), () => emitVoid(saved[i].cleanup)))
+  for (let i = saved.length - 1; i >= 0 && saved[i].depth >= minDepth; i--) {
+    const entry = saved[i], copy = withFinallyStack(saved.slice(0, i), () => emitVoid(entry.cleanup))
+    if (!entry.escape) { out.push(...copy); continue }
+    entry.escaped = true
+    out.push(['try_table', ['catch', '$__jz_err', entry.escape], ...copy])
+  }
   return out
 }
 export const spreadOp = {
@@ -292,14 +302,17 @@ export const statementOps = {
     const id = freshId(ctx)
     const errLocal = temp('err')
     const parentStack = ctx.func.finallyStack || []
-    const activeStack = parentStack.concat([{ cleanup, depth: ctx.func.stack.length }])
+    // (a copy a `return`, `break` or `continue` of the body runs, emitFinalizers, throws past
+    // this statement's handler and those within it, to `escape`)
+    const entry = { cleanup, depth: ctx.func.stack.length, escape: canThrow(cleanup) ? `$fin_esc${id}` : null, escaped: false }
+    const activeStack = parentStack.concat([entry])
 
     const bodyIR = withTryState(true, () => withFinallyStack(activeStack, () => emitVoid(body)))
     const normalCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
     const throwCleanup = withFinallyStack(parentStack, () => emitVoid(cleanup))
     const base = baseHeld()
 
-    return ['block', `$fin_done${id}`,
+    const statement = ['block', `$fin_done${id}`,
       ...base.save,
       ['block', `$fin_catch${id}`, ['result', 'f64'],
         ['try_table', ['catch', '$__jz_err', `$fin_catch${id}`],
@@ -321,6 +334,13 @@ export const statementOps = {
       ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
       ...flagCaught(),
       ...throwCleanup,
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${errLocal}`]]],
+      ['throw', '$__jz_err', ['local.get', `$${errLocal}`]]]
+    if (!entry.escaped) return statement
+    // a copy's throw, out of the statement: thrown again where the statement ends abruptly
+    return ['block', `$fin_out${id}`,
+      ['block', entry.escape, ['result', 'f64'], statement, ['br', `$fin_out${id}`]],
+      ['local.set', `$${errLocal}`],
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${errLocal}`]]],
       ['throw', '$__jz_err', ['local.get', `$${errLocal}`]]]
   },
