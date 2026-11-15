@@ -275,6 +275,7 @@ const TESTS = [
   'bound-wrap-population',
   'uint-division-population',
   'counter-widths-population',
+  'vector-alias-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
