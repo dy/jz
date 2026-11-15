@@ -283,6 +283,7 @@ const TESTS = [
   'box-population',
   'box-forms-population',
   'box-probe-population',
+  'bound-tier-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
