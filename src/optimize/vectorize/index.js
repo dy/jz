@@ -66,7 +66,7 @@ import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduce } from './reduce.js'
 import { arrayPointers } from './alias.js'
 import { countsSigned, legal, localsHold } from './legality.js'
-import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks } from './scaffold.js'
+import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks, stripScaffold } from './scaffold.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
 import { tryToneMap } from './tone-map.js'
@@ -226,13 +226,16 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // The loop's one description (scaffold.js describeLoop): its counter, step and exit
       // test, from the emitter's lowering link where it has one (ir/control.js), checked
       // against the WAT under JZ_DEBUG_INVARIANTS. Every scaffold below is a view of it: the
-      // canonical one (`i < bound`, a step of one up) and its envelope variants.
+      // canonical one (`i < bound`, a step of one up), its envelope variants, and where that
+      // refuses the loop, the strips' own (stripScaffold: a test `<=` or shifted, a loop
+      // counting down), whose end a `setup` sets ahead of the lift.
       const desc = describeLoop(node, links?.get(node))
       const canonical = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true }, desc)
       // (a canonical loop's test reads the emitter's own counter: checked across the battery)
       if (DBG_INVARIANTS && canonical && desc.own != null && desc.own !== canonical.incVar)
         throw new Error(`loop ${node[1]} counter diverges from WAT: link ${desc.own}, WAT ${canonical.incVar}`)
-      const bl = canonical
+      const bl = canonical ?? stripScaffold(desc, { allowPreamble: true, allowInlinedLi: true }, freshIdRef)
+      const down = bl?.dir === -1
       // A lane-local the function reads outside this loop (`last = a[i]`
       // returned after it) is live out: the lift's v128 shadow never lands in
       // the scalar local, and the scalar tail runs only past the lanes. Every
@@ -268,20 +271,28 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         if (run) run.outsideReads = outsideReads
         return run ?? bl
       }
+      // A loop counting down reaches only the recognizers whose strips run it with the shared
+      // control (scaffold.js simdLoop, simdBound: the strip lifted at its lowest iteration):
+      // the map, the reductions and the general map. The others build their own strip control,
+      // run an epilogue in the loop's order, or answer for an order of their own (the bulk
+      // copy's overlap test), and are offered `up`, null for it. A lift made of the strips'
+      // own scaffold takes its setup with it (below).
+      const up = down ? null : bl
+      const of = (x) => { if (x && bl && !canonical) x.scaffold = bl; return x }
       let scalar = node
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
-        ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
-        ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
-        ?? tryReduce(bl, fnLocals, freshIdRef, multiAcc)
-        ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
+        ?? of(tryMemCopyFill(up, fnLocals, freshIdRef))
+        ?? of(tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals))
+        ?? of(tryReduce(bl, fnLocals, freshIdRef, multiAcc))
+        ?? of(tryStencil(node, fnLocals, freshIdRef, stencil, up))
         ?? tryRampMap(node, fnLocals, freshIdRef, outsideReads)
         ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
         ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
-        ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
-        ?? tryGeneralMap(node, fnLocals, freshIdRef, getBlRun(), { aliasVersion })
-        ?? tryGeneralStencil(node, fnLocals, freshIdRef, stencil, bl, { aliasVersion })
-        ?? tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)
-        ?? tryGatherMap(bl, fnLocals, freshIdRef, distinctParams)
+        ?? of(tryToneMap(up, fnLocals, freshIdRef, toneMap))
+        ?? of(tryGeneralMap(node, fnLocals, freshIdRef, getBlRun(), { aliasVersion }))
+        ?? of(tryGeneralStencil(node, fnLocals, freshIdRef, stencil, up, { aliasVersion }))
+        ?? of(tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc))
+        ?? of(tryGatherMap(up, fnLocals, freshIdRef, distinctParams))
       // An output cursor beside the counter (`op += 2`) reads as a recurrence to
       // every recognizer above. Rewritten over the exit counter (counter-run.js),
       // the same loop is a map; the rewrite stays only with a lift that takes it.
@@ -306,6 +317,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       r = legal(r, scalar, liveAfter, env)
       // Past that test, a splat no pass of a strip changes is computed where the strip opens.
       if (r) r.newLocalDecls = [...r.newLocalDecls, ...hoistStripSplats(r.wrapper, freshIdRef, outsideReads)]
+      // The strips' end, where their scaffold set one (stripScaffold), ahead of them.
+      if (r?.scaffold?.setup.length) r = { ...r, wrapper: ['block', ...r.scaffold.setup, r.wrapper], newLocalDecls: [...r.scaffold.decls, ...r.newLocalDecls] }
       // A guard whose first test the lanes can answer, over work too heavy to be common: it
       // keeps the order of every access, and answers for its locals as a lift does.
       if (!r) { r = tryPrefilter(canonical, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }

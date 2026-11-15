@@ -52,12 +52,26 @@ import { SAFE_OFFSET_CALLS } from '../licm.js'
 // block (value producer) is kept — including the `(block $brk (loop …))` SIMD scaffold itself.
 
 /** The counted SIMD loop every recognizer emits (see index.js): exit once `iv` reaches the
- *  `bound` local, run `body` (which advances `iv`), repeat. Labels are keyed by `id`. */
-export const simdLoop = (id, iv, bound, body) => ['block', `$__simd_brk${id}`,
-  ['loop', `$__simd_loop${id}`,
-    ['br_if', `$__simd_brk${id}`, ['i32.eqz', ['i32.lt_s', ['local.get', iv], ['local.get', bound]]]],
-    ...body,
-    ['br', `$__simd_loop${id}`]]]
+ *  `bound` local, run `body` (which advances `iv`), repeat. Labels are keyed by `id`.
+ *  `dir` −1, a loop counting down: `body` is the strip lifted at its lowest iteration and
+ *  ends in the step `iv += W` a strip of W iterations takes up. The strips run from `iv`
+ *  down, each over the iterations b … b + W − 1 in address order: `iv` holds b, the lane
+ *  base, from W − 1 below the counter on entry to W − 1 below where the loop as written
+ *  resumes, stepping down by W while above `bound`, the limit simdBound gives in its terms. */
+export const simdLoop = (id, iv, bound, body, dir = 1) => {
+  const exit = (cmp) => ['br_if', `$__simd_brk${id}`, ['i32.eqz', [cmp, ['local.get', iv], ['local.get', bound]]]]
+  if (dir > 0) return ['block', `$__simd_brk${id}`, ['loop', `$__simd_loop${id}`, exit('i32.lt_s'), ...body, ['br', `$__simd_loop${id}`]]]
+  const last = body[body.length - 1], w = readStep(last)?.by
+  if (!(w > 1) || last[2][0] !== 'i32.add') throw new Error('simdLoop: a strip counting down ends in its own step up')
+  const by = (op, k) => ['local.set', iv, [op, ['local.get', iv], ['i32.const', k]]]
+  return ['block', by('i32.sub', w - 1),
+    ['block', `$__simd_brk${id}`, ['loop', `$__simd_loop${id}`, exit('i32.gt_s'), ...body.slice(0, -1), by('i32.sub', w), ['br', `$__simd_loop${id}`]]],
+    by('i32.add', w - 1)]
+}
+
+/** Whether a strip of `w` iterations from `iv` toward the limit `bound` (simdBound) runs. */
+export const stripOpen = (iv, bound, dir = 1, w = 1) => dir > 0 ? ['i32.lt_s', ['local.get', iv], ['local.get', bound]]
+  : ['i32.gt_s', ['i32.sub', ['local.get', iv], ['i32.const', w - 1]], ['local.get', bound]]
 
 // Align the span from its actual entry, preserving empty signed ranges.
 // Rounding a bound near INT_MIN downward can wrap above the entry. An
@@ -67,8 +81,22 @@ export const strips = new WeakMap()
 /** A lift's strip built as a statement beside its kept scalar loop, of `lanes` iterations of
  *  `iv` under `bound` (null past an integer counter): `gateStrips` wraps it whole. */
 export const stripBlock = (node, iv, bound, lanes) => (strips.set(node, { iv, bound, lanes, block: true }), node)
-export function simdBound(iv, bound, lanes, overread = 0) {
+export function simdBound(iv, bound, lanes, overread = 0, dir = 1) {
   const start = () => ['local.get', iv]
+  if (dir < 0) {
+    // Counting down to the low end `bound`, inclusive: of the iterations left, iv − bound + 1
+    // from an entered loop (a u32 at any distance: 2^32 left wraps to none), a whole number
+    // of strips, which with an over-read of one leave the last iteration below them. The
+    // limit is the counter where the strips stop (the counter itself for none: where a
+    // legality test fails, alias.js gateStrips), given in the lane base's terms, W − 1 below
+    // (simdLoop), which wraps as the base does.
+    if (overread > 1) throw new Error('simdBound: a strip counting down over-reads one iteration at most')
+    const left = overread ? ['i32.sub', start(), cloneNode(bound)] : ['i32.add', ['i32.sub', start(), cloneNode(bound)], ['i32.const', 1]]
+    const end = ['i32.sub', start(), ['i32.and', left, ['i32.const', -lanes]]]
+    const limit = ['select', end, start(), ['i32.ge_s', start(), cloneNode(bound)]]
+    strips.set(limit, { iv, bound, lanes: lanes + overread, dir })
+    return ['i32.sub', limit, ['i32.const', lanes - 1]]
+  }
   const span = () => ['i32.sub', cloneNode(bound), start()]
   const end = ['i32.add', start(), ['i32.and',
     overread ? ['i32.sub', span(), ['i32.const', overread]] : span(), ['i32.const', -lanes]]]
@@ -187,7 +215,7 @@ function bodyFacts(body, ind) {
 // ---- The one description of a counted loop ---------------------------------------
 //
 // Built once for each `(block (loop))` the vectorizer visits (index.js) and handed to every
-// recognizer's scaffold (matchBlockLoop's envelopes) and to the legality:
+// recognizer's scaffold (matchBlockLoop's envelopes, stripScaffold) and to the legality:
 //   counter   the local the head test reads, which is the emitter's own counter (its
 //             lowering link, ir/control.js, renamed with the block's locals) on every loop
 //             the canonical scaffold takes, checked under JZ_DEBUG_INVARIANTS (index.js)
@@ -374,4 +402,68 @@ export function matchBlockLoop(blockNode, opts = {}, desc = describeLoop(blockNo
   const boundLocal = isLocalGet(bound) && typeof bound[1] === 'string' ? bound[1] : null
   const body = loopNode.slice(3, incIdx)
   return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exit, exitInfo, bound, boundLocal, body, preamble, ...bodyFacts(body, incVar) }
+}
+
+// ---- The strips of a counted loop the canonical scaffold refuses -----------------
+
+const I32_MIN = -0x80000000, I32_MAX = 0x7fffffff
+
+/**
+ * The scaffold the strips of a counted loop read where the canonical one above refuses its
+ * test or its direction, or null. The loop is the description's: an i32 counter stepped by
+ * one at the back edge, tested signed at the head against a bound that is a constant or a
+ * local, under the default envelope:
+ *   - up, its test `<=` or shifted (`i + K < n`): the strips run below E, where the test
+ *     reads as `i < E` (E = n − K, + 1 for `<=`);
+ *   - down (`dir` −1), its test `>=` or `>`: the strips run from the counter down to the low
+ *     end L, inclusive, where the test reads as `i >= L` (L = n − K, + 1 for `>`).
+ * E or L leaves the word only where no strip may run past it (E above the word: none runs to
+ * it; L below: none reaches it), so it is clamped into the word there, and `exact` says
+ * whether it is the loop's own exit (no clamp, by a constant bound or the emitter's range of
+ * the bound). A shift that may take the counter past the word on a strip (`i − 1 < n` near
+ * −2^31, `i + 1 >= n` near 2^31) needs the emitter's range of the counter at the test to show
+ * it cannot; `i + K < n` up from a positive K cannot (the strips stay below n − K).
+ * E or L, when not the bound itself, is set ahead of the strips into a local of its own
+ * (`setup`, `decls`); the loop as written runs whatever the strips leave.
+ */
+export function stripScaffold(desc, opts, freshIdRef) {
+  if (!desc?.exit || !desc.step) return null
+  const { blockNode, blockLabel, loopNode, loopLabel, endIdx, exit, step, counter, facts } = desc
+  const incIdx = endIdx - 1
+  // (the way the counter runs, the emitter's where the loop is linked: its one step, the last)
+  const dir = desc.dir
+  if (exit.type !== 'i32' || !exit.signed || exit.counter !== counter || step.idx !== incIdx || step.type !== 'i32' || (dir !== 1 && dir !== -1) || step.by !== dir) return null
+  const { rel, shift, bound } = exit
+  if (dir > 0 ? !(rel === '<=' || (rel === '<' && shift)) : !(rel === '>=' || rel === '>')) return null
+  if (!isI32Const(bound) && !(isLocalGet(bound) && typeof bound[1] === 'string')) return null
+  // (the end is read once, ahead of the strips: a bound the loop writes moves under them)
+  if (isLocalGet(bound)) { const w = new Set(); collectWrites(loopNode, w); if (w.has(bound[1])) return null }
+  const preamble = preambleOf(desc, opts)
+  if (!preamble) return null
+  const t = facts?.test
+  if (shift && !(t && t.lo + shift >= I32_MIN && t.hi + shift <= I32_MAX) && !(dir > 0 && shift > 0)) return null
+  // the end as the test reads it: bound − k
+  const k = shift - (rel === '<=' || rel === '>' ? 1 : 0)
+  const setup = [], decls = []
+  let end, exact
+  if (isI32Const(bound)) {
+    const v = constNum(bound) - k
+    exact = v >= I32_MIN && v <= I32_MAX
+    end = ['i32.const', Math.min(I32_MAX, Math.max(I32_MIN, v))]
+  } else if (!k) { end = bound; exact = true }
+  else {
+    const r = facts?.boundRange
+    exact = !!r && r[0] - k >= I32_MIN && r[1] - k <= I32_MAX
+    const name = `$__vend${freshIdRef.next++}`
+    const v = ['i32.sub', cloneNode(bound), ['i32.const', k]]
+    setup.push(['local.set', name, exact ? v
+      : k > 0 ? ['select', v, ['i32.const', I32_MIN], ['i32.ge_s', cloneNode(bound), ['i32.const', I32_MIN + k]]]
+      : ['select', v, ['i32.const', I32_MAX], ['i32.le_s', cloneNode(bound), ['i32.const', I32_MAX + k]]]])
+    decls.push(['local', name, 'i32'])
+    end = ['local.get', name]
+  }
+  const boundLocal = isLocalGet(end) ? end[1] : null
+  const body = loopNode.slice(3, incIdx)
+  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar: counter, exit, exitInfo: { ind: counter, bound: end },
+    bound: end, boundLocal, body, preamble, dir, setup, decls, exact, ...bodyFacts(body, counter) }
 }

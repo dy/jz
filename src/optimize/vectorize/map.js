@@ -45,6 +45,19 @@ function splatScalar(name, scalarType, laneType) {
   return null
 }
 
+// A lane-local every pass writes at the body's top level, before any read (laneAccess
+// 'write'), and nothing in the pass writes again under a condition: what the loop leaves in
+// it is the last pass's value. A strip leaving that pass to the loop as written (an
+// over-read of one, scaffold.js simdBound) lands it there.
+const writtenEachPass = (body, name) => {
+  let top = 0, all = 0
+  for (const s of body) {
+    if (isArr(s) && s[0] === 'local.set' && s[1] === name) top++
+    walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) all++ } })
+  }
+  return top > 0 && top === all
+}
+
 // The f64 locals every truncation of the body reads within i32 range: the flow
 // of the body's own clamps and bounded arithmetic (optimize/flow-range.js)
 // decides at each read, and a local counts when all its truncated reads agree.
@@ -241,6 +254,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
 
   const localKind = new Map()  // name → 'lane' | 'invariant' | 'addr'
   const flagLandings = new Map()  // lane-local → its constant, landed after the vector loop
+  const tailLandings = new Set()  // lane-locals the loop as written lands, running the last pass
   // Plan-level referenced-names census (bl.referenced) — every locally-touched name.
   const referenced = blReferenced
 
@@ -249,12 +263,14 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     if (writes.has(name)) {
       const access = laneAccess(body, name, bl.outsideReads)
       if (access === 'read') return null  // loop-carried (reduction or stencil)
-      // A live-out lane-local never lands from its shadow — except a constant
-      // flag (constantFlagStore), landed after the loop.
+      // A live-out lane-local never lands from its shadow: a constant flag
+      // (constantFlagStore) lands after the loop, one every pass writes lands in the
+      // last pass, which the strips leave to the loop as written (writtenEachPass).
       if (access === 'liveout') {
         const flag = constantFlagStore(body, name)
-        if (!flag || !splatScalar(name, fnLocals.get(name), laneType)) return null
-        flagLandings.set(name, flag)
+        if (flag && splatScalar(name, fnLocals.get(name), laneType)) flagLandings.set(name, flag)
+        else if (writtenEachPass(body, name)) tailLandings.add(name)
+        else return null
       }
       // Discriminate lane-data vs address-tee. Address tees hold i32 addresses,
       // not vector data. We classify by checking the local's declared type.
@@ -404,14 +420,14 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     ? ['local.get', boundLocal]
     : bound  // i32.const N
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
-    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
+    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]], bl.dir)
 
   // Bound setup: align the SPAN, not the bound — simdBound = iv + ((bound − iv)
   // & ~(lanes−1)). `bound & mask` assumed a 0 entry: a loop entering at k=1
   // (symmetric fills start past the DC bin) would run its last vector step at
   // k = bound−1 and overrun one lane past the bound. iv holds the entry value
   // here (the setup precedes the SIMD block).
-  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes)]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes, tailLandings.size ? 1 : 0, bl.dir)]
 
   // A flag's lane shadow starts as the scalar's splat (its lift keeps lanes the
   // condition spares); after the loop the scalar takes the constant when any
@@ -443,7 +459,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     ...extraLocals,
   ]
 
-  return { wrapper, newLocalDecls, landed: new Set(flagLandings.keys()) }
+  return { wrapper, newLocalDecls, landed: new Set([...flagLandings.keys(), ...tailLandings]) }
 }
 
 // The integer operators of an index computed from the counter (counterGather).
@@ -627,10 +643,10 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   const simdBoundName = `$__simd_bound${id}`
   const info = LANE_INFO[laneType], lanes = info.lanes
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
-  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes)]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes, 0, bl.dir)]
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
     ...ivs.map(({ name, step }) => ['local.set', name, ['i32.add', ['local.get', name], laneStep(step, lanes)]]),
-    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
+    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]], bl.dir)
   // Runtime alias versioning (see header doc): with `guards`, the SIMD strip runs only
   // behind the hoisted disjointness check. The kept scalar loop is the fallback as it is the
   // tail: a skipped strip leaves the counters at their entry values, so it runs every iteration.

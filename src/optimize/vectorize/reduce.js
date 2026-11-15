@@ -5,7 +5,7 @@ import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from
 import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
-import { simdLoop, simdBound } from './scaffold.js'
+import { simdLoop, simdBound, stripOpen } from './scaffold.js'
 
 // ---- Reduction recognizer -------------------------------------------------
 //
@@ -417,7 +417,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   const loopBody = []
   for (let k = 0; k < NACC; k++) loopBody.push(['local.set', accK(k), [reduceEntry.simd, ['local.get', accK(k)], accOperandFor(k)]])
   loopBody.push(['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes * NACC]]])
-  const simdBlock = simdLoop(id, incVar, simdBoundName, loopBody)
+  const simdBlock = simdLoop(id, incVar, simdBoundName, loopBody, bl.dir)
   // Combine the N accumulators into acc 0 (lane-wise) before the horizontal fold.
   const combineAccs = []
   for (let k = 1; k < NACC; k++) combineAccs.push(['local.set', simdAccName, [reduceEntry.simd, ['local.get', simdAccName], ['local.get', accK(k)]]])
@@ -476,7 +476,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   // a lane-aligned start this yields the same iteration set as masking; the
   // scalar tail (original `i<bound` guard) cleans up regardless.
   // A full N·lanes-wide step (all N accumulators) must stay in range.
-  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes * NACC)]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes * NACC, 0, bl.dir)]
 
   // Narrow-widened entries seed the vector acc with a LANE-domain neutral (e.g.
   // 0 for u8-max) — only neutral once real lanes fold in. Guard the whole SIMD
@@ -484,7 +484,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   // toward the identity. Full-width entries use absolute neutrals; unguarded.
   // (The guarded path is always NACC=1 — accI32/accF64 are non-plain reductions.)
   const core = reduceEntry.accI32 || reduceEntry.accF64
-    ? [['if', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]],
+    ? [['if', stripOpen(incVar, simdBoundName, bl.dir, lanes * NACC),
         ['then', ...initAcc, simdBlock, ...combineAccs, ...mergeStmts]]]
     : [...initAcc, simdBlock, ...combineAccs, ...mergeStmts]
   const wrapper = ['block', boundSetup, ...core, bl.blockNode]
@@ -510,7 +510,8 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
 // Other fold-order tier of the unified REDUCTION recognizer (see `tryReduceReassoc`'s doc
 // above and `tryReduce` below) — the `bitExact` branch.
 function tryReduceBitExact(bl, fnLocals, freshIdRef) {
-  if (!bl || bl.preamble.length) return null
+  // (its lanes' contributions accumulate in the loop's order, lane 0 first: one counting up)
+  if (!bl || bl.preamble.length || bl.dir === -1) return null
   const { incVar, bound, boundLocal, body, siteAccess } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (body.length < 2) return null

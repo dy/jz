@@ -5433,7 +5433,14 @@ the back edge, read by the one exit reader and the one step reader (`readExit`, 
 `addr-model.js`) no recognizer re-derives. The counter, its step's direction and the test's
 relation are the emitter's where the loop has a lowering link, checked against the WAT under
 `JZ_DEBUG_INVARIANTS`; the bound is the WAT's operand, which the passes between rewrite in
-place.
+place. Where the canonical scaffold (`i < bound`, a step of one up) refuses a counted loop
+the strips' own takes it (`stripScaffold`): a test `<=` or shifted (`i + K < n`) reads as
+`i < E`, E set ahead of the strips and clamped into the word where no strip may run past it;
+a loop counting down runs its strips from the counter to its low end, each strip lifted at
+its lowest iteration with its lanes in address order (`simdLoop`, `simdBound` with `dir`
+−1), offered only to the recognizers whose strips use that shared control. The loop as
+written runs whatever the strips leave: a lane local every pass writes and the continuation
+reads is landed by leaving the last pass to it (an over-read of one).
 
 No wrapper reaches the output but past one legality, the same for every recognizer
 (`src/optimize/vectorize/legality.js`), a function of the scalar loop and of how many
@@ -5456,7 +5463,9 @@ width, an unsigned byte product), an address the lift keeps reads no value only 
 and an outer strip's two pixels share an inner loop only where its bound, its start and its
 splatted loads are no pixel's own (`pixelShared`, `outer-scaffold.js`).
 `test/vector-legality.js` pins a program for each class a lift got wrong;
-`test/vector-dependence.js`, in the generated suite, sweeps dependence-shaped loops.
+`test/vector-dependence.js`, in the generated suite, sweeps dependence-shaped loops, those
+counting down and those with a shifted or inclusive test among them; `test/loop-forms.js`
+pins each form the strips' scaffold lifts.
 
 Typed extent guards may give their fast arm fresh signed-word locals for
 stable integral entries (a parameter the loop never writes as a local),

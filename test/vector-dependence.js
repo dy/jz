@@ -67,6 +67,29 @@ add('ramp beside a conditional store', ALL, N, () => 'for (let i = 0; i < n; i++
 // a local read after the loop
 add('a lane local read after', ALL, N, op => 'let d = 0; for (let i = 0; i < n; i++) { d = a[i]' + op + '; b[i] = d } ret = d')
 add('a reduction and its lane local read after', ['f64', 'f32', 'i32'], N, () => 'let s = 0, d = 0; for (let i = 0; i < n; i++) { d = a[i] * 2; s = s + d * d } ret = s + d')
+// A loop counting down, one strip of its lanes the iterations i − W + 1 … i: two sites of one
+// base at distances around a strip, the load first and the store first, and two bases; a
+// shift in place either way; a ramp, a store under a condition, a reduction, a lane local
+// read after. The bound an integer in reach (`n & 127`), so the counter is a word.
+for (const [k0, k1] of [[0, 1], [1, 0], [0, 2], [2, 0], [0, 3], [0, 4], [4, 0], [0, 8], [8, 0], [0, 16], [16, 0]]) {
+  const most = N - Math.max(k0, k1)
+  add(`down: a[i + ${k1}] = a[i + ${k0}]`, ALL, most, op => `const m = n & 127; for (let i = m - 1; i >= 0; i--) a[i + ${k1}] = a[i + ${k0}]${op}`)
+  add(`down: store a[i + ${k0}] then load a[i + ${k1}]`, ALL, most, () => `const m = n & 127; for (let i = m - 1; i >= 0; i--) { a[i + ${k0}] = i; b[i] = a[i + ${k1}] }`)
+  add(`down: b[i + ${k1}] = a[i + ${k0}]`, ALL, most, op => `const m = n & 127; for (let i = m - 1; i >= 0; i--) b[i + ${k1}] = a[i + ${k0}]${op}`)
+}
+add('down to a low end, strict', ALL, N - 1, op => 'const m = n & 127, lo = (n & 7) - 1; for (let i = m; i > lo; i--) b[i] = a[i]' + op)
+add('down: a ramp', ALL, N, () => 'const m = n & 127; for (let i = m - 1; i >= 0; i--) b[i] = i & 63')
+add('down: a conditional store', ALL, N - 1, op => 'const m = n & 127; for (let i = m - 1; i >= 0; i--) if (a[i] > 3) a[i + 1] = a[i]' + op)
+add('down: a reduction', ALL, N, () => 'const m = n & 127; let s = 0; for (let i = m - 1; i >= 0; i--) s += a[i] * b[i]; ret = s')
+add('down: a lane local read after', ALL, N, op => 'const m = n & 127; let d = 0; for (let i = m - 1; i >= 0; i--) { d = a[i]' + op + '; b[i] = d } ret = d + m')
+// A test shifted or inclusive: `i + K < m`, `i <= m`, the end a strip reads from its bound.
+for (const K of [1, 2, 3]) {
+  add(`shifted: b[i] = a[i + ${K}] + a[i], i + ${K} < m`, ALL, N, () => `const m = n & 127; for (let i = 0; i + ${K} < m; i++) b[i] = a[i + ${K}] + a[i]`)
+  add(`shifted in place: a[i] = a[i + ${K}], i + ${K} < m`, ALL, N, op => `const m = n & 127; for (let i = 0; i + ${K} < m; i++) a[i] = a[i + ${K}]${op}`)
+}
+add('inclusive: b[i] = a[i], i <= m', ALL, N, op => 'const m = (n & 127) - 1; for (let i = 0; i <= m; i++) b[i] = a[i]' + op)
+add('inclusive in place: a[i + 1] = a[i], i <= m', ALL, N - 1, op => 'const m = (n & 127) - 2; for (let i = 0; i <= m; i++) a[i + 1] = a[i]' + op)
+add('inclusive: a lane local read after', ALL, N, op => 'const m = (n & 127) - 1; let d = 0; for (let i = 0; i <= m; i++) { d = a[i]' + op + '; b[i] = d } ret = d')
 // a counter stepped twice
 add('a counter stepped twice', ALL, N, op => 'for (let i = 0; i < n; i++) { b[i] = a[i]' + op + '; i++ }')
 add('a ramp stepped twice', ALL, N, () => 'for (let i = 0; i < n; i++) { b[i] = i & 63; i++ }')

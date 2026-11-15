@@ -262,6 +262,7 @@ const TESTS = [
   'slp',
   'cond-vectorize',
   'vector-legality',
+  'loop-forms',
   'vector-dependence',
   'boxed-counters-population',
   'rules-population',

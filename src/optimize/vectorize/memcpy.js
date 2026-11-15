@@ -75,7 +75,9 @@ const MEMOP_STORES = {
  *    moved window is exactly the byte range the scalar iterations touch.
  */
 export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
-  if (!bl || bl.preamble.length) return null   // no-preamble policy (was allowPreamble:false)
+  // (the copy replaces the loop where its window is apart: the bound it reads is the loop's
+  // own exit, not a strips' end short of it, scaffold.js stripScaffold `exact`)
+  if (!bl || bl.preamble.length || bl.exact === false) return null   // no-preamble policy (was allowPreamble:false)
   const { loopNode, incVar, bound } = bl
   // Shape: [loop, $l, boundExit, (set,)? store, inc, br] — 1- or 2-statement body.
   if (loopNode.length !== 6 && loopNode.length !== 7) return null
