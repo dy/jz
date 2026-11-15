@@ -335,6 +335,24 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 //            202101/7587 -> 201461/7507; wasi: buf 24683/2830 -> 24673/2820, slice
 //            166684/28960 -> 166604/28880, condref 147364/7587 -> 147284/7507; the other
 //            categories as they were.
+//   one effects summary (optimize/effects.js, 2026-11-14): by function, over the 40 seeds,
+//            against 5dff9fc29. A loop keeps a copy of a global the function as a whole can
+//            keep none of (promoteGlobals), set as the loop is entered: the set is two ops in
+//            the loop around it and the loop's own read a local, `$__g_floor` in `__gc_mark`
+//            and `$__durable_fwd_buf` in `__hash_set_local`, +2 each a program that links
+//            them: buf +20 (5 seeds), condref +160, slice +144. LICM lifts a value's tag test
+//            out of a loop whose calls the summary shows write nothing it reads: condref
+//            f$exp -6 in 11 programs (-66), slice f$exp -424 and its Float32Array variant -384.
+//            buf 31533 -> 31553, condref 202101 -> 202195 (entered 7587 -> 7521), slice
+//            230812 -> 230188 (entered 30656 -> 30224; 5dff9fc29 counted 230852, past its
+//            baseline). On wasi, which links no `__gc_mark`: buf 24683 -> 24693, condref
+//            147364 -> 147378, slice 166684 -> 165884 (f$exp -480), the entered counts as on
+//            the JS host. The copies run once a round of the loop around them, where the read
+//            ran once a round of their own: the count charges what the run saves.
+//   the two together (the integration of 2026-11-15, both baselines written from the one
+//            tree, each category the sum of the two changes above): JS host buf 31473/2820,
+//            slice 229548/30144, condref 201555/7441; wasi buf 24683/2820, slice
+//            165804/28448, condref 147298/7441.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
