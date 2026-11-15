@@ -287,6 +287,7 @@ const TESTS = [
   'float-reduction-population',
   'lane-convert-population',
   'view-order-population',
+  'handler-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
