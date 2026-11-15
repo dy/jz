@@ -992,6 +992,35 @@ test('uint32: a bound, a start, a stride or an offset past 2^31 is no negative w
   }
 })
 
+// A bound that is an expression of words is a Number: `B0 + B1` is 2^31 at B0 = B1 = 2^30. The
+// same guard read it through ToInt32, -2^31, which is under every length, so the unchecked arm
+// ran a loop the bound does not end and read past the array (levels 2 and over; each name of
+// the bound is held to 2^30, which leaves room for no sum of two). The bound is the value the
+// emitter types it: a Number is tested as one. Expected values are Node's.
+test('a loop bound that is a sum of words past 2^31 is no negative word in the extent guard', () => {
+  const E30 = 2 ** 30, cap = 'if (++c > 44) break'
+  const BOUND = {
+    'B0 + B1': [[E30, E30], [E30 - 1, E30], [2147483647, 1], [5, 4], [-E30, -E30 - 1]],
+    'B0 - B1': [[E30, -E30], [2147483647, -1], [9, 2], [0, -2147483648]],
+    'B0 + B1 + B0': [[E30, 1], [715827883, 715827883], [3, 2]],
+    'B0 * B1': [[65536, 32768], [46341, 46341], [3, 3]],
+  }
+  const BODY = ['if (x[i] === undefined) u++; else sum += x[i]', 'if (i < x.length) x[i] = x[i] + 1; u += x[i] === undefined ? 1 : 0']
+  for (const [bound, args] of Object.entries(BOUND)) for (const test of ['<', '<=']) for (const step of ['i++', 'i += 2']) for (const body of BODY) {
+    const src = `export let f = (b, t, s) => {
+      const x = new Float64Array(16); for (let k = 0; k < 16; k++) x[k] = k + 1
+      const B0 = b | 0, B1 = t | 0; let c = 0, u = 0, sum = 0
+      for (let i = s; i ${test} ${bound}; ${step}) { ${cap}; ${body} }
+      return c * 1000000 + u * 1000 + sum
+    }`
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+      const got = jz(src, { optimize }).exports
+      for (const [b, t] of args) for (const s of [0, 3, 14]) is(got.f(b, t, s), want.f(b, t, s), `i ${test} ${bound}, ${step}, at (${b}, ${t}, ${s}), ${optimize}`)
+    }
+  }
+})
+
 // `x >= LO && x <= HI` of a word local is one unsigned compare, `(x - LO) <=u (HI - LO)`
 // (compile/emit/logical.js, range-check fusion), its complement `x < LO || x > HI` the same
 // negated. The subtraction wraps in one word, so both ends must lie in the operand's own

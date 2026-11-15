@@ -1076,9 +1076,13 @@ export const controlFlowOps = {
           // here, and the bound (one past it, a strict test) its least, `minIv`.
           const maxIv = tempI64('tvq'), minIv = vs.down ? tempI64('tvq') : null
           const boundEnd = vs.down ? minIv : maxIv
-          if (vs.bKind === 'f64') {
+          // (a bound the emitter types a Number is one whatever the level calls it: `B0 + B1`
+          // of two words is 2^31 at B0 = B1 = 2^30, and ToInt32 of it, -2^31, passed the guard
+          // for a loop that then read past its array with no check)
+          const boundIR = vs.bKind === 'f64' ? null : emit(vs.bound)
+          if (!boundIR || boundIR.type !== 'i32') {
             const bF = temp('tvf')
-            result.push(['local.set', `$${bF}`, asF64(emit(vs.bound))])
+            result.push(['local.set', `$${bF}`, asF64(boundIR || emit(vs.bound))])
             conjs.push(['f64.le', ['f64.abs', ['local.get', `$${bF}`]], ['f64.const', 2147483648]])
             // (the integer next to B inside the test: `< B` ceil − 1, `<= B` floor, `> B` floor + 1, `>= B` ceil)
             const round = vs.incl === !vs.down ? 'f64.floor' : 'f64.ceil'
@@ -1089,7 +1093,7 @@ export const controlFlowOps = {
           } else {
             const adj = vs.incl ? 0 : vs.down ? 1 : -1
             result.push(['local.set', `$${boundEnd}`,
-              adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
+              adj ? ['i64.add', ext(boundIR), i64c(adj)] : ext(boundIR)])
           }
           if (vs.down) result.push(['local.set', `$${maxIv}`, vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)])
           // The fast bound's arithmetic also needs a closed hull for each
