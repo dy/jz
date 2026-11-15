@@ -21,11 +21,12 @@ export let k = () => { const n = a.length - 3; ${body} }
 export let check = () => { let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + a[i] * 3 + b[i]) % 1000003; return h }`
 const lifts = (name, src, at = levels(2, 3)) => {
   for (const optimize of at) {
-    ok(SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${name}: lifted at ${optimize}`)
+    const at = typeof optimize === 'object' ? JSON.stringify(optimize) : optimize
+    ok(SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${name}: lifted at ${at}`)
     const want = oracle(src), got = jz(src, { optimize }).exports
     want.init(); got.init()
-    is(got.k(), want.k(), `${name}: k at ${optimize}`)
-    is(got.check(), want.check(), `${name}: memory at ${optimize}`)
+    is(got.k(), want.k(), `${name}: k at ${at}`)
+    is(got.check(), want.check(), `${name}: memory at ${at}`)
   }
 }
 const stays = (name, src) => {
@@ -68,7 +69,8 @@ test('loop forms: a loop counting down (row 3)', () => {
   lifts('Float64Array a[i] = a[i + 2] * 2 down', prog('Float64Array', 'for (let i = n - 3; i >= 0; i--) a[i] = a[i + 2] * 2; return 0'))
   lifts('Int32Array a[i] = a[i + 4] * 2 down', prog('Int32Array', 'for (let i = n - 5; i >= 0; i--) a[i] = a[i + 4] * 2; return 0'))
   stays('Int32Array a[i] = a[i + 2] * 2 down', prog('Int32Array', 'for (let i = n - 3; i >= 0; i--) a[i] = a[i + 2] * 2; return 0'))
-  lifts('Float64Array a sum down', prog('Float64Array', 'let s = 0; for (let i = n - 1; i >= 0; i--) s += a[i] * c[i]; return s'))
+  // (a float sum adds in lanes where the floats are relaxed: at 'speed', or by the option)
+  lifts('Float64Array a sum down', prog('Float64Array', 'let s = 0; for (let i = n - 1; i >= 0; i--) s += a[i] * c[i]; return s'), levels({ level: 2, relaxedFloat: true }, 3))
   lifts('Int32Array a maximum down', prog('Int32Array', 'let m = -100; for (let i = n - 1; i >= 0; i--) m = a[i] > m ? a[i] : m; return m'))
 })
 
