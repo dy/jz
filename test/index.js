@@ -272,6 +272,7 @@ const TESTS = [
   'finalizer-population',
   'reentry-population',
   'uint-loops-population',
+  'bound-wrap-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
