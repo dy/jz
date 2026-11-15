@@ -85,6 +85,20 @@ test('rules population: a ternary of a Boolean and another kind, its condition a
   population('constant ternary of mixed kinds', program(fns), names(fns), inputs)
 })
 
+// The phase 8 scout's three reaches as it wrote them (the forms above hold each class): two shifts
+// with a count outside 0..31, -0 plus a false comparison, a comparison of a mixed ternary whose
+// condition an unrolled counter makes a literal.
+test('rules population: the phase 8 scout\'s reaches', () => {
+  const REACHES = [
+    ['shift by a count outside 0..31, twice', `export let f = (x) => { x = x | 0; return ((x << -1) << 1) | 0 }`, [[1], [3], [-1]]],
+    ['shift twice, the other order', `export let f = (x) => { x = x | 0; return ((x << 1) << -1) | 0 }`, [[1], [3]]],
+    ['shift by 33 then 1', `export let f = (x) => { x = x | 0; return ((x << 33) << 1) | 0 }`, [[1], [5]]],
+    ['-0 plus a false comparison', `export let f = (x, a, b) => { a = a | 0; b = b | 0; return x + (a < b) }`, [[-0, 1, 0], [-0, 0, 1], [2, 1, 0]]],
+    ['a comparison of a mixed ternary', `export let f = (c) => { let r = 0; for (let i = 0; i < 3; i++) { r += (((i % 4294967296) ? (c !== i) : 0.5) !== 1) } return r }`, [[1], [0]]],
+  ]
+  for (const [label, src, inputs] of REACHES) population(label, src, ['f'], inputs)
+})
+
 test('rules population: reads and writes of arrays past either end', () => {
   const kinds = ['Int32Array', 'Float64Array', 'Uint8Array', 'Uint16Array', 'Int8Array', 'Float32Array']
   const at = ['i + 1', 'i - 1', 'i * 4 + 3', '(i + 4) | 0', 'i - 536870912 + 1', '(i << 2) + 8', 'i + 2147483647']
