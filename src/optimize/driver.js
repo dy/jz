@@ -33,12 +33,11 @@ import { narrowInts, narrowWrappedWords } from './int-narrow.js'
 import { specializeLoops } from './specialize.js'
 import { combineGuards } from './guards.js'
 import { wideAccumulator } from './wide-accumulator.js'
-import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
+import { devirtSchemaReads, devirtConstFnArrayCalls } from './devirt.js'
 
 // Each step's pass, `(fn, cfg, facts, st)`: `st` is what a step hands the steps after it in this function.
 // (a list of pairs, as every stage's: pass-table.js `stage`)
 export const RUN = [
-  ['foldStaticArrReads', (fn, cfg, facts) => foldStaticConstArrayReads(fn, facts)],
   ['holdWordNumbers', (fn) => holdWordNumbers(fn)],
   ['promoteCells', (fn) => promoteCells(fn)],
   ['nanCanon', (fn) => stripDeadCanons(fn)],

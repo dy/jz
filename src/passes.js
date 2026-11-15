@@ -157,7 +157,6 @@ export const PASS_NAMES = [
   'narrowFloat32',            // `fround` of an operator over `fround`s runs in single precision (optimize/float32.js)
   // WAT-pipeline passes previously gated only by `undefined !== false` inside
   // optimizeFunc (found by the registry-coverage gate on its first run):
-  'foldStaticArrReads',       // const-index reads of static-data arrays → immediates
   'nanCanon',                 // a Number's canonical-NaN step only arithmetic reads is its value (optimize/nan-canon.js)
   'blurMultiPixel',           // stencil vectorizer's multi-pixel mode
   'stencil',                  // stencil vectorizer (bit-exact pure win; listed for the O0 contract)

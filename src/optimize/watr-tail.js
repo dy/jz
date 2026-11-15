@@ -17,7 +17,7 @@ import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { constWords, hexHalf } from '../static-data.js'
 import {
-  SIMD_PINNED, LANE_PINS, solveEffects, hoistGlobalPtrOffset,
+  SIMD_PINNED, LANE_PINS, solveEffects,
 } from './index.js'
 import { mathKernel } from './effects.js'
 import { guardToInt32 } from './to-int32.js'
@@ -668,12 +668,6 @@ export const TAIL = [
   ['coalesceLocals', (t) => { t.m = t.time('watCleanup', () => coalesceLocals(t.m)) }],
   ['localReuse', (t) => { t.time('watCleanup', () => localReuse(t.m)) }],
   ['poolConstants', (t) => { t.m = t.time('watCleanup', () => poolConstants(t.m)) }],
-  ['postGlobalPtr', (t, cfg, x) => {
-    if (x.stableGlobals?.size) {
-      const fx = t.effects(x)
-      for (const node of t.m) if (Array.isArray(node) && node[0] === 'func') hoistGlobalPtrOffset(node, x.stableGlobals, fx)
-    }
-  }],
   ['guardToInt32', (t, cfg) => { t.time('guardToInt32', () => guardToInt32(t.m, cfg.wordTruncation === 'add')) }],
   // (again, over what the optimizer's propagation and the truncation's lowering brought together:
   // a word converted to a Number and rounded back is the word; a flag of literals, read as the
@@ -735,9 +729,9 @@ const TAIL_STEPS = stage('tail', TAIL)
  */
 export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
-  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, callsNothing = null, noSimd = false, userFuncs = null,
+  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, callsNothing = null, noSimd = false, userFuncs = null,
 } = {}) {
-  const x = { funcCount, boundaryPins, targetProfile, lazyDataSpans, staticDataSpan, dataRecords, stableGlobals, callsNothing, noSimd }
+  const x = { funcCount, boundaryPins, targetProfile, lazyDataSpans, staticDataSpan, dataRecords, callsNothing, noSimd }
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => !!userFuncs?.has(name.slice(1)) || name.endsWith('$exp') && !!userFuncs?.has(name.slice(1, -4))

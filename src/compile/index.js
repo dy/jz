@@ -71,7 +71,6 @@ import { link } from '../link/index.js'
 import { summarize, K, hasTag, tagOf, tagsOf, paramOf, UNKNOWN } from '../summary/index.js'
 import { bitOf, NULL_BITS, ANY } from '../summary/kind.js'
 import { unboundedPresent } from '../summary/contract.js'
-import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers, synthesizeClassExports, hostClassTable } from './emit/class-dispatch.js'
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
 import { synthesizeAccessorCall } from './emit/accessor-call.js'
@@ -130,7 +129,6 @@ export function tailFacts() {
     lazyDataSpans: ctx.runtime.lazySpans,
     staticDataSpan: ctx.runtime.staticPrefixSpan,
     dataRecords: ctx.memory.shared ? null : ctx.runtime.dataRecords,
-    stableGlobals: stablePtrGlobalNames(ctx.scope.globalValTypes),
     callsNothing: ctx.module.callsNothing,
     fixedMemory: fixedMemoryFacts(),
     noSimd: !!ctx.transform.noSimd,

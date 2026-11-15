@@ -1760,8 +1760,9 @@ export let f = (bad) => {
 })
 
 test('static const array reads: base/len fold is strip-safe and mutation-gated', () => {
-  // foldStaticConstArrayReads bakes base/len only under the never-resized /
-  // never-aliased program facts, and derives the base from the global (assemble's
+  // A static array's base/len fold (optimize/devirt.js, deleted once it changed no
+  // unit) baked them only under the never-resized / never-aliased program facts, and
+  // derived the base from the global (assemble's
   // static-prefix-strip rebases pointers AFTER the fold — a baked absolute went
   // stale once, trapping OOB on nested tables).
   // 1) big string pool → nonzero prefix strip; folded read must still be correct

@@ -1531,33 +1531,14 @@ export default (ctx) => {
       // A static const array's literal length bounds an index whose integer hull
       // stays under it (`[2, 4, 2, 9][t >> 17 & 3]`, a literal prepare hoisted to a
       // const): never resized nor aliased, its length is the literal's for good.
-      // Tag reads whose receiver folded to a compile-time constant box: when the
-      // decl registers the same bits as a STATIC array (ctx.scope.staticArrs) and
-      // the program never resizes/aliases the name, optimize's
-      // foldStaticConstArrayReads collapses base+len to literals (the decl's
-      // data-segment offset isn't known until module init emits, so emit can
-      // only tag — same phasing as the constFnArrays devirt).
-      const saTag = (node) => {
-        if (typeof arr !== 'string') return node
-        // Identity proof, either form: the receiver resolved to a DIRECT read of the
-        // module global `arr` (global names are unique — same name the decl registers),
-        // or it already folded to a constant box whose bits the decl records. A local
-        // shadowing `arr` emits a local.get receiver — neither form matches, no tag.
-        if (Array.isArray(ptrExpr) && ptrExpr[0] === 'global.get' && ptrExpr[1] === `$${arr}`) node.saArr = arr
-        else {
-          const bits = extractF64Bits(ptrExpr)
-          if (bits !== null) { node.saArr = arr; node.saBits = bits }
-        }
-        return node
-      }
       if (idxProvenInBounds) {
         // base local must be i32. Flat tee form so downstream peepholes can fold
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        const rd = typed(saTag(value(markElem(ctx.abi.array.ops.load(
+        const rd = typed(value(markElem(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
-          vi), arr))), 'f64')
+          vi), arr)), 'f64')
         // The local holding the key, for a call through the element: a table
         // whose elements never change dispatches on it (optimize/devirt.js).
         if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
@@ -1594,12 +1575,12 @@ export default (ctx) => {
         // a loop that writes no header hoists each as an invariant of its own
         // (optimize/licm.js), where a temp shared between them would keep the
         // length load inside; watr's value numbering merges what stays.
-        const rd = typed(saTag(['if', ['result', 'f64'],
+        const rd = typed(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
           ['then', value(markElem(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]), arr))],
-          ['else', throwing ? throwTypeErrorIR() : undefExpr()]]), 'f64')
+          ['else', throwing ? throwTypeErrorIR() : undefExpr()]], 'f64')
         if (throwing && dense) rd.presentRead = true
         rd.elemKey = `$${idxI32}`
         // Same number|undefined contract as the typed checked read — but ONLY

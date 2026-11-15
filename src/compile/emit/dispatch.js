@@ -1141,7 +1141,7 @@ export function emitDecl(...inits) {
       if (val.fnElements && ctx.scope.closureTableLatticeCandidates?.has(name))
         resolveClosureTableParamLattice(name, val.fnElements)
       // Const binding of a STATIC array literal: record base/len (+ the box bits as
-      // identity) for optimize's foldStaticConstArrayReads. Same const-only logic.
+      // identity), the static table optimize/devirt.js dispatches over. Same const-only logic.
       if (val.staticOff != null && ctx.scope.consts?.has(name))
         (ctx.scope.staticArrs ||= new Map()).set(name,
           { off: val.staticOff, len: val.staticLen, bits: extractF64Bits(val) })

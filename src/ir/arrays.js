@@ -185,10 +185,9 @@ export function staticArrayPtr(slots) {
   pushStaticSlots(slots)
   dataRecord(headerOff, dataLen(), false)
   const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
-  // Compile-time identity for the static base/len read fold (see the saArr tag in
-  // the '[]' handler + optimize's foldStaticConstArrayReads): a const global bound
-  // to this literal reads elements with literal base/len instead of the
-  // __ptr_offset call + header load.
+  // Compile-time identity of the literal's static data: a const global bound to it
+  // is registered with its base and length (compile/emit/dispatch.js), which the
+  // array readers take as literals instead of the __ptr_offset call + header load.
   ptr.staticOff = headerOff + 16
   ptr.staticLen = len
   return ptr

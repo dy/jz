@@ -1,14 +1,12 @@
 /**
- * Devirtualization family: three passes that exploit compile-time-known
+ * Devirtualization family: two passes that exploit compile-time-known
  * dispatch tables/schemas — `devirtSchemaReads` (br_table over an OBJECT's
- * registered schema list for `o.x` megamorphic reads), `foldStaticConstArrayReads`
- * (const base/len for a STATIC array literal's element reads), and
+ * registered schema list for `o.x` megamorphic reads) and
  * `devirtConstFnArrayCalls` (br_table over a module-const array of capture-free
  * arrows for `constOps[idx](args)` dispatch). Distinct passes, no shared code,
  * but the same technique and cross-referenced facts (ctx.scope.staticArrs,
  * ctx.types.arrResized/nameEscapes — see devirtConstFnArrayCalls's `narrow`
- * gate, which reuses foldStaticConstArrayReads' exact never-resized/never-
- * aliased proof).
+ * gate, a never-resized, never-aliased table).
  *
  * @module optimize/devirt
  */
@@ -427,97 +425,6 @@ export function devirtSchemaReads(fn, { schemas = null, schemasByProp = null, fi
   }
 }
 
-/** Fold the base/len ceremony of `constArr[i]` element reads whose receiver is a
- *  STATIC array literal bound to a const global (module/array.js tags `.saArr` /
- *  `.saBits` on the read IR; the decl registers ctx.scope.staticArrs, `staticArrs`). The
- *  data-segment offset and length are compile-time constants, so the per-read
- *  `__ptr_offset` call + header len load collapse to literals — decisive in
- *  loops containing calls, where a callee may write memory and watr's LICM must
- *  keep the loads in place (the devirt'd operator-table dispatch loop is the
- *  canonical victim). Facts gate: any indexed write, resizing method call, or
- *  bare value use of the name anywhere in the program (ctx.types.arrResized /
- *  nameEscapes, collectProgramFacts) keeps the generic form — an alias or a
- *  grow could relocate the payload (header forwarding) or change len, and a
- *  folded base would read stale memory. */
-export function foldStaticConstArrayReads(fn, { staticArrs: sa = null, arrResized: resized = null, nameEscapes: escapes = null } = {}) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  if (!sa || !sa.size) return
-  // Facts must EXIST to fold — an absent fact set means the program was never
-  // walked for resize/escape, not that the name is safe.
-  if (!resized || !escapes) return
-  const rewrite = (node) => {
-    const st = sa.get(node.saArr)
-    if (!st) return
-    // A bits-form tag (receiver folded to a const box at emit) must match the decl's
-    // recorded bits; a name-form tag (receiver read `global.get $name` directly) IS
-    // the identity — global names are unique.
-    if (node.saBits != null && st.bits !== node.saBits) return
-    if (resized.has(node.saArr) || escapes.has(node.saArr)) return
-    // The base derives from the GLOBAL, not a baked constant: assemble's
-    // static-prefix-strip rebases every static pointer AFTER this pass runs, so a
-    // baked absolute offset goes stale (caught by the module-const table tests).
-    // `global.get` is the strip-safe anchor — the global's init is rebased in
-    // place, jz never folds immutable global reads, and watr (which runs after
-    // the strip) propagates the rebased init into a final constant memarg. The
-    // win stands regardless: the `__ptr_offset` CALL (whose forwarding follow the
-    // never-resized proof makes dead) and the len header load both drop.
-    const baseIR = () => ['i32.wrap_i64', ['i64.reinterpret_f64', ['global.get', `$${node.saArr}`]]]
-    const isBaseIR = (n) => Array.isArray(n) && n[0] === 'i32.wrap_i64' &&
-      Array.isArray(n[1]) && n[1][0] === 'i64.reinterpret_f64' &&
-      Array.isArray(n[1][1]) && n[1][1][0] === 'global.get' && n[1][1][1] === `$${node.saArr}`
-    // 1) base tee → global-derived base: (local.tee $b (call $__ptr_offset …)) → baseIR,
-    //    or the speed tier's inline forwarding hop (ir/pointers.js fwdOffsetIR): a
-    //    block that sets the base local from the box, tests the forwarding mark and
-    //    re-reads it through $__ptr_offset_fwd, then yields the local – a never-resized
-    //    static array never forwards, so the whole hop is the base.
-    let baseLocal = null
-    // The hop itself, not a block that merely contains its parts: its first
-    // statement sets the base local from the box, its value reads that local
-    // back, and it calls $__ptr_offset_fwd between. An index computed in a
-    // block that reads the array's length holds the same base and call.
-    const hopLocal = (blk) => {
-      const body = blk.slice(Array.isArray(blk[1]) && blk[1][0] === 'result' ? 2 : 1)
-      const set = body[0], get = body[body.length - 1]
-      if (body.length < 2 || !Array.isArray(set) || (set[0] !== 'local.tee' && set[0] !== 'local.set') || !isBaseIR(set[2])) return null
-      if (!Array.isArray(get) || get[0] !== 'local.get' || get[1] !== set[1]) return null
-      let fwd = false
-      walkAst(blk, { enter: m => { if (m[0] === 'call' && m[1] === '$__ptr_offset_fwd') fwd = true } })
-      return fwd ? set[1] : null
-    }
-    const subBase = (n, parent, idx) => {
-      if (!parent) return
-      if (n[0] === 'local.tee' && Array.isArray(n[2]) && n[2][0] === 'call' && n[2][1] === '$__ptr_offset') {
-        baseLocal = n[1]
-        parent[idx] = baseIR()
-        return false
-      }
-      const blk = n[0] === 'block' ? n : n[0] === 'local.tee' && Array.isArray(n[2]) && n[2][0] === 'block' ? n[2] : null
-      const local = blk ? hopLocal(blk) : null
-      if (local) {
-        baseLocal = n[0] === 'local.tee' ? n[1] : local
-        parent[idx] = baseIR()
-        return false
-      }
-    }
-    walkAst(node, { enter: subBase })
-    if (!baseLocal) return
-    // 2) len header load over the folded base → literal len (position-independent);
-    //    remaining base reads → box-derived base
-    const subLen = (n, parent, idx) => {
-      if (!parent) return
-      if (n[0] === 'i32.load' && Array.isArray(n[1]) && n[1][0] === 'i32.sub' &&
-          isBaseIR(n[1][1]) &&
-          Array.isArray(n[1][2]) && n[1][2][0] === 'i32.const' && +n[1][2][1] === 8) {
-        parent[idx] = ['i32.const', st.len]
-        return false
-      }
-      if (n[0] === 'local.get' && n[1] === baseLocal) { parent[idx] = baseIR(); return false }
-    }
-    walkAst(node, { enter: subLen })
-  }
-  walkAst(fn, { enter: n => { if (Array.isArray(n) && n.saArr != null) rewrite(n) } })
-}
-
 // A closure body compiled for the generic f64-boxed calling convention checks
 // each parameter against the "argument omitted" sentinel (an f64.const the
 // calling convention reserves — never a value f64.convert_i32_s can produce)
@@ -594,7 +501,7 @@ const foldImpossibleConvertGuards = (n) => {
  *  callability test's miss arm, the TypeError a call of undefined throws. The
  *  test and the generic call leave the dispatch.
  *  Facts: the tables and their arrows (`constFnArrays`), the arrows' bodies
- *  (`dvArmFns`, optimize-module.js) and foldStaticConstArrayReads' three. */
+ *  (`dvArmFns`, optimize-module.js), the static tables and their resize and escape facts. */
 export function devirtConstFnArrayCalls(fn, { constFnArrays: cfa = null, dvArmFns = null, staticArrs = null, arrResized = null, nameEscapes = null } = {}, cfg = null) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   if (!cfa || !cfa.size) return
@@ -667,7 +574,7 @@ export function devirtConstFnArrayCalls(fn, { constFnArrays: cfa = null, dvArmFn
     const bodies = dvArmFns
     const nodeCount = (n) => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
     // i32 block-narrow: when the receiver is a facts-qualified STATIC table (the
-    // same never-resized/never-aliased gate as foldStaticConstArrayReads — its
+    // never-resized, never-aliased gate of a static table: its
     // elements are exactly the original arrows, forever) and EVERY candidate body
     // exits through `f64.convert_i32_s` (a ToInt32'd result), the dispatch value
     // is int-valued on every path: arms br the raw i32 (their convert stripped),

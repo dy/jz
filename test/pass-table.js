@@ -36,7 +36,7 @@ test('pass table: a step out of its order fails the check', () => {
   ok(faults(moved('narrowInts', at('specializeLoops')), `takes 'copies' before 'specializeLoops' makes it`).length, 'the copies before they exist')
   ok(faults(moved('loopRewinds', at('quietCopies')), `takes 'quietLoops'`).length, 'the quiet loops before they are asked')
   // first and last of a stage
-  ok(faults(moved('foldStaticArrReads', at('nanCanon')), `'foldStaticArrReads' runs first`).length, 'a pass ahead of the marks\' reader')
+  ok(faults(moved('holdWordNumbers', at('nanCanon')), `'holdWordNumbers' runs first`).length, 'a pass ahead of the marks\' reader')
   ok(faults(moved('hoistVectorConsts', at('splitFuncs')), `'hoistVectorConsts' runs last`).length, 'a pass after the last tail step')
   // a mark dropped before its reader
   const table = PASSES.map(e => e.id === 'nanCanon' ? { ...e, drops: ['dvProp'] } : e)

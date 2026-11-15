@@ -76,10 +76,9 @@ export const PASSES = [
   P('dvArmFns', 'module', '', { takes: 'constFnArrays', makes: 'dvArmFns', why: 'a function pass cannot see its siblings' }),
   P('optimizeFuncs', 'module', '', { makes: 'effects', why: 'each function by the func entries below, what each call does known' }),
   // -- each function --------------------------------------------------------------------------------------
-  P('foldStaticArrReads', 'func', 'foldStaticArrReads', { first: true, takes: 'staticArrs arrResized nameEscapes', reads: 'saArr saBits', why: 'by the marks, which a pass that rebuilds a subtree drops' }),
-  P('holdWordNumbers', 'func', 'fusedRewrite', { after: [['foldStaticArrReads', 'beside it, by the mark as well']], reads: 'wordOf', why: 'a word local only float code reads holds its number', drops: 'irange' }),
+  P('holdWordNumbers', 'func', 'fusedRewrite', { first: true, reads: 'wordOf', why: 'a word local only float code reads holds its number', drops: 'irange' }),
   P('promoteCells', 'func', 'promoteCells', {
-    first: true, after: [['foldStaticArrReads', 'by the marks, first'], ['holdWordNumbers', 'the same']], why: 'before every pass that reads locals: a cell no closure took is one of them' }),
+    first: true, after: [['holdWordNumbers', 'by the marks, first']], why: 'before every pass that reads locals: a cell no closure took is one of them' }),
   P('nanCanon', 'func', 'nanCanon', { why: 'before the lifts read the sums: a canon only arithmetic reads is its value' }),
   P('hoistPtrType', 'func', 'hoistPtrType', { why: 'its locals the fused walk sees in their final form' }),
   P('hoistInvariantPtrOffset', 'func', 'hoistInvariantPtrOffset', { takes: 'effects' }),
@@ -114,7 +113,7 @@ export const PASSES = [
   P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
   P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
   P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),
-  P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', { takes: 'freshTypedGlobals effects', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey dvProp wordOf saArr checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
+  P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', { takes: 'freshTypedGlobals effects', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey dvProp wordOf checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
   P('hoistInvariantLoop.scratch', 'func', '+splitScratch hoistInvariantLoop', {
     after: [['splitLoopPrivateScratch', 'its moved invariants ride the LICM once more']], takes: 'freshTypedGlobals effects', reads: 'boundsOwner', lost: 'boundsOwner' }),
   P('devirtFnArrays', 'func', 'devirtFnArrays', {
@@ -189,7 +188,6 @@ export const PASSES = [
   P('coalesceLocals', 'tail', '!watr coalesceLocals', { why: 'large recursive functions need compact frames even without the fixpoint' }),
   P('localReuse', 'tail', '!watr coalesceLocals|propagateLocals'),
   P('poolConstants', 'tail', '!watr hoistConstantPool'),
-  P('postGlobalPtr', 'tail', 'hoistGlobalPtrOffset', { after: [['watOptimize', 'watr\'s inliner can merge stable-pointee decodes into one caller']], takes: 'stableGlobals callsNothing' }),
   P('guardToInt32', 'tail', '+guardedToInt32', { after: [['watOptimize', 'on what the optimizer left']] }),
   P('foldWrappedWords.late', 'tail', '', { after: [['guardToInt32', 'over what the propagation and the truncation\'s lowering brought together']] }),
   P('narrowFlagLocals', 'tail', '', { after: [['watOptimize', 'a flag of literals, read as the optimizer leaves it']] }),

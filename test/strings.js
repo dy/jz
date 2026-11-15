@@ -1401,9 +1401,9 @@ test('static array fold: mutation before the fold site ends the fact', () => {
   is(m4.t(), '=ab=')
 })
 
-// The base fold (optimize/devirt.js foldStaticConstArrayReads) replaces the
-// inline forwarding hop by the array's base. It took any block holding a base
-// tee and a forwarding call for the hop: an index computed in a block over the
+// A static array's base fold (optimize/devirt.js, deleted once it changed no unit)
+// replaced the inline forwarding hop by the array's base. It took any block holding
+// a base tee and a forwarding call for the hop: an index computed in a block over the
 // array's own length (a key test around `i % words.length`) became the base.
 test('static array fold: an index that reads the array stays the index', () => {
   const src = `const words = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
