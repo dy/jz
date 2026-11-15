@@ -4,7 +4,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { dollar } from '../../ir.js'
 import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, readExit, readStep, stepsByOneVia } from './addr-model.js'
 import { isArr } from './node-utils.js'
-import { SAFE_OFFSET_CALLS } from '../licm.js'
+import { helperKind } from '../effects.js'
 
 // ---- Recognize a (block (loop)) pair --------------------------------------
 
@@ -287,6 +287,13 @@ function linkHolds(desc, { plan, lowering }) {
 // The statements a block holds ahead of its one loop, as the default envelope admits them:
 // pure `local.set`s (an invariant LICM or a peephole hoisted, `$__li*`, or any local under
 // `allowInlinedLi`), nothing after the loop. null where the block holds anything else.
+// A call a preamble may hold, cloned ahead of the strips and run again by the loop as written:
+// one the effects summary's table calls pure or a reader of header words (optimize/effects.js).
+const READS = { has: (name) => { const k = helperKind(name); return k === 'pure' || k === 'header' } }
+
+// The statements a block holds ahead of its one loop, as the default envelope admits them:
+// pure `local.set`s (an invariant LICM or a peephole hoisted, `$__li*`, or any local under
+// `allowInlinedLi`), nothing after the loop. null where the block holds anything else.
 function preambleOf(desc, opts) {
   const { blockNode, loopNode } = desc
   const preamble = []
@@ -304,7 +311,7 @@ function preambleOf(desc, opts) {
     // safe to clone ahead of the SIMD — covers $__inl*__li* (schrodinger) AND $_pg0-style
     // peephole-hoisted bounds (slime). The hasSideEffect guard rejects impure setups.
     const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? true : c[1].startsWith('$__li'))
-    if (!opts.allowPreamble || past || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], SAFE_OFFSET_CALLS)) return null
+    if (!opts.allowPreamble || past || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], READS)) return null
     preamble.push(c)
   }
   return preamble
