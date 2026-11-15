@@ -203,14 +203,20 @@ export function vectorizeLaneLocal(fn, opts = {}) {
     return live
   }
 
-  // Walk body recursively. Process inner-most matches first (post-order)
-  // so we don't try to vectorize an outer loop whose inner is the lane-local one.
+  // Walk body recursively, inner loops first (post-order). A loop's lift waits until every
+  // loop around it has been asked: a lowering of an enclosing loop (an outer strip over
+  // pixels, an escape loop's pixels) reads its inner loop as written and takes the inner
+  // loop's work into its own lanes, so its lift is taken over the lifts inside it; where none
+  // lifts, they are. Returns the lifts of the subtree, applied once the walk is done.
   function walk(parent, idx, chain = []) {
     const node = parent[idx]
-    if (!isArr(node)) return
+    if (!isArr(node)) return NONE
     const here = [...chain, [parent, idx]]
+    let inner = NONE
     for (let i = 0; i < node.length; i++) {
-      if (isArr(node[i])) walk(node, i, here)
+      if (!isArr(node[i])) continue
+      const p = walk(node, i, here)
+      if (p.length) inner = inner.length ? inner.concat(p) : p
     }
     // (a cold loop runs for the values a guard rejected, compile/emit/control-flow.js: no lift)
     if (node[0] === 'block' && !node.some(c => isArr(c) && c[0] === 'loop' && c.cold === true)) {
@@ -339,10 +345,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // A guard whose first test the lanes can answer, over work too heavy to be common: it
       // keeps the order of every access, and answers for its locals as a lift does. It and the
       // pairing below lift no pass's work (the loop as written runs it): no cost of theirs
-      // compares with a lift's, and they are asked where no lowering lifts the loop.
-      if (!r) { r = tryPrefilter(canonical, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }
+      // compares with a lift's, and they are asked where no lowering lifts the loop or a
+      // loop inside it.
+      if (!r && !inner.length) { r = tryPrefilter(canonical, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
-      const paired = r ? null : legal(tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations), node, liveAfter, env)
+      const paired = r || inner.length ? null : legal(tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations), node, liveAfter, env)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
@@ -355,14 +362,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       }
       if (r) simdFired = true   // one of the real SIMD recognizers above matched
       if (paired) r = paired
-      if (r) {
-        // Mark the consumed subtree: the wrapper REUSES these nodes (scalar tail, and the
-        // lane splats alias the original load nodes), so a deferred strength-reduce must
-        // never rewrite inside them — it would mutate the lifted lanes through the alias.
-        walkAst(node, { enter: n => { srConsumed.add(n) } })
-        parent[idx] = r.wrapper
-        newLocalDeclsAll.push(...r.newLocalDecls)
-      } else if (canonical) {
+      if (r) return [[parent, idx, node, r]]
+      if (canonical) {
         // Scalar IV strength-reduction is a non-SIMD fallback — DEFERRED to after the
         // whole walk. Applied eagerly here (post-order = innermost first) it rewrites an
         // inner reduction loop into its wrapper before the ENCLOSING loop's outer
@@ -372,15 +373,25 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         deferredSR.push([node, parent, idx, canonical])
       }
     }
+    return inner
   }
-  const deferredSR = [], srConsumed = new Set()
+  const NONE = [], deferredSR = [], srConsumed = new Set()
   vecState.whyNotActive = whyNot
   vecState.fn = fn
   vecState.onceRead = null
   vecState.relaxF32 = relaxedFloat
   vecState.relaxedSimd = relaxedSimd
   vecState.crPow = crPow
-  for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
+  const taken = []
+  for (let i = bodyStart; i < fn.length; i++) for (const t of walk(fn, i)) taken.push(t)
+  for (const [parent, idx, node, r] of taken) {
+    // Mark the consumed subtree: the wrapper REUSES these nodes (scalar tail, and the
+    // lane splats alias the original load nodes), so a deferred strength-reduce must
+    // never rewrite inside them — it would mutate the lifted lanes through the alias.
+    walkAst(node, { enter: n => { srConsumed.add(n) } })
+    parent[idx] = r.wrapper
+    newLocalDeclsAll.push(...r.newLocalDecls)
+  }
   vecState.whyNotActive = false
   vecState.fn = null
   vecState.onceRead = null
@@ -398,8 +409,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
 
   if (newLocalDeclsAll.length) {
     // Sibling loops (and the straight-line dot pass) can each lift the SAME source
-    // local to an identically-named `$name__v` v128 scratch. Post-order vectorizes
-    // innermost-first and an outer loop bails once its inner became a wrapper block,
+    // local to an identically-named `$name__v` v128 scratch. A loop's lift is taken over
+    // the lifts inside it, never beside them (the walk above),
     // so no two NESTED loops ever share a lift — every collision is between
     // SEQUENTIAL loops, where one shared scratch is correct (each writes its lanes
     // before reading). Declaring a local twice is invalid wasm ("duplicate local"),
