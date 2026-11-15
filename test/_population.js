@@ -3,7 +3,9 @@
 // `pre`, called before `f` with the same arguments, and `g`, read after it; each argument list
 // of `args` is one call of the three. The programs share a module, each with its own names (the
 // population's `own`: every top-level binding a program declares), so a configuration costs one
-// compile; Node evaluates the same module, as jz instantiates it once a configuration.
+// compile; Node evaluates the same module, as jz instantiates it once a configuration. Where the
+// README documents a divergence a program meets, its `node` is the source Node runs in its
+// place: the program as the README reads it.
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
 
@@ -30,7 +32,8 @@ export function population(label, progs, { configs, own = [], chunk = Infinity }
   for (let c0 = 0; c0 < progs.length; c0 += chunk) {
     const part = progs.slice(c0, c0 + chunk)
     const src = part.map((p, j) => p.src.replace(names, `$1_${j}`)).join('\n')
-    const want = oracle(src), expected = part.map((p, j) => p.args.map(a => call(want, j, a)))
+    const want = oracle(part.map((p, j) => (p.node ?? p.src).replace(names, `$1_${j}`)).join('\n'))
+    const expected = part.map((p, j) => p.args.map(a => call(want, j, a)))
     for (const optimize of configs) {
       const got = jz(src, { optimize }).exports
       part.forEach((p, j) => p.args.forEach((a, i) => {
