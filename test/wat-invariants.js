@@ -157,10 +157,13 @@ test('ablation: promoteGlobals snapshots a repeatedly-read global to one functio
 test('promoteGlobals: a runtime shim ends no copy of a global, a function the user imports does', () => {
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   const body = (call) => `let g = 5.5; export let set = (v) => { g = v }; export let f = () => { const r = ${call}; return g + g + g + g + g + r }`
-  ok(count(parse(body('Math.random()'), 2), gGet) <= 1, 'the seed import: g read once')
+  // (f's reads, `$f` or its export wrapper `$f$exp`: the start function may read g too, into the
+  // reset's snapshot of the globals)
+  const inF = (tree) => { const fs = []; walk(tree, n => { if (n[0] === 'func' && (n[1] === '$f' || String(n[1]).startsWith('$f$'))) fs.push(n) }); ok(fs.length, 'f is in the module'); return ['f', ...fs] }
+  ok(count(inF(parse(body('Math.random()'), 2)), gGet) <= 1, 'the seed import: g read once')
   if (onWasi() || onKernel()) return
   const user = parseWat(compile(`import { cb } from 'host'; ${body('cb()')}`, { optimize: 2, wat: true, imports: { host: { cb: () => 0 } } }))
-  ok(count(user, gGet) >= 5, 'a user import: each of the five reads past it is the global')
+  ok(count(inF(user), gGet) >= 5, 'a user import: each of the five reads past it is the global')
 })
 
 test('ablation: promoteCells holds in a local a cell no closure took', () => {
