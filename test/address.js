@@ -7,8 +7,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { addressOf, linear, keyOf, mayAlias, markCount, carry, headerStore } from '../src/optimize/address.js'
 import { forwardStores } from '../src/optimize/forward-store.js'
-import { reuseLoads } from '../src/optimize/reuse-loads.js'
-import { hoistAddrBase } from '../src/optimize/cse-address.js'
+import { numberValues, LOAD_AT, SUBSCRIPT } from '../src/optimize/numbering.js'
+const reuseLoads = (fn, fx) => numberValues(fn, LOAD_AT, fx)
+const hoistAddrBase = (fn) => numberValues(fn, SUBSCRIPT)
 import { rewriteBy, LOADS } from '../src/optimize/rules.js'
 
 const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]

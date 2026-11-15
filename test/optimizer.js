@@ -29,7 +29,8 @@ import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '..
 import { selectArms } from '../src/optimize/select-arms.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { passFacts } from '../src/wat/assemble/optimize-module.js'
-import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
+import { numberValues, SUBSCRIPT, TAG } from '../src/optimize/numbering.js'
+const hoistAddrBase = (fn) => numberValues(fn, SUBSCRIPT), hoistPtrType = (fn) => numberValues(fn, TAG)
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { maskOperands } from '../src/optimize/mask-operands.js'

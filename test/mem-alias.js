@@ -1,5 +1,5 @@
 // What memory an access reaches (src/ir/mem-alias.js) and the passes that ask: a store
-// forgets only what it may overwrite (src/optimize/forward-store.js, reuse-loads.js).
+// forgets only what it may overwrite (src/optimize/forward-store.js, numbering.js).
 // The emitter marks an element access with its array's allocation cell and a field
 // access with its slot and the receiver's layouts; arrays of two cells, an array and
 // an object, and two fields at two slots or of two layouts never share bytes. Every
@@ -10,7 +10,8 @@ import { belowOpt, levels } from './_matrix.js'
 import { agree, funcWat, oracle, run, wat } from './util.js'
 import { marksMeet as mayAlias } from '../src/optimize/address.js'
 import { forwardStores } from '../src/optimize/forward-store.js'
-import { reuseLoads } from '../src/optimize/reuse-loads.js'
+import { numberValues, LOAD_AT } from '../src/optimize/numbering.js'
+const reuseLoads = (fn, fx) => numberValues(fn, LOAD_AT, fx)
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'

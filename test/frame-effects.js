@@ -1141,7 +1141,7 @@ test('arena rewind on the tape: a check no frame reads goes, what it kept stayin
     ['func', '$__ptr_type', ['param', '$p', 'i64'], ['result', 'i32'], ['i32.wrap_i64', ['i64.shr_u', ['local.get', '$p'], ['i64.const', 47]]]],
     ['func', '$g', ['param', '$x', 'f64'], ['result', 'f64'], ['local', '$\uE000esch0', 'f64'], ['local', '$\uE000esch1', 'i32'], ['local', '$pt', 'i32'],
       ...site('$\uE000esch0', '$\uE000esch1'),
-      // a test that sets a local later code reads, as optimize/cse-address.js shares a receiver's type
+      // a test that sets a local later code reads, as optimize/numbering.js shares a receiver's type
       ['if', ['i32.ne', ['local.tee', '$pt', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', '$x']]]], ['i32.const', 3]], ['then', ['global.set', '$__esc', ['i32.const', 0]]]],
       ['drop', ['local.get', '$pt']],
       tail],

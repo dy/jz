@@ -239,7 +239,7 @@ const TESTS = [
   'inline-pure-leaf',
   'inline-dispatch',
   'lean-dict',
-  'int-narrow', 'reuse-loads',
+  'int-narrow', 'numbering',
   'specialize', 'guards', 'inline-args', 'inline-hoist', 'inline-cycles', 'growth', 'push', 'forward-hops',
   'store-int32',
   'present-number',

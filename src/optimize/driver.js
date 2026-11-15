@@ -17,12 +17,11 @@ import { forwardStores } from './forward-store.js'
 import { sinkStores } from './sink-stores.js'
 import { earlyStores } from './early-stores.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
-import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
+import { numberValues, narrowByteLoads, TAG, OFFSET, SUBSCRIPT, LOAD_AT } from './numbering.js'
 import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs, foldLoadCasts, holdWordNumbers,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
-import { reuseLoads, narrowByteLoads } from './reuse-loads.js'
 import { promoteGlobals } from './globals.js'
 import { promoteCells } from './cells.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
@@ -43,9 +42,9 @@ export const RUN = [
   ['holdWordNumbers', (fn) => holdWordNumbers(fn)],
   ['promoteCells', (fn) => promoteCells(fn)],
   ['nanCanon', (fn) => stripDeadCanons(fn)],
-  ['hoistPtrType', (fn) => hoistPtrType(fn)],
+  ['hoistPtrType', (fn) => numberValues(fn, TAG)],
   ['hoistInvariantPtrOffset', (fn, cfg, facts) => hoistInvariantPtrOffset(fn, facts.effects)],
-  ['hoistPtrOffset', (fn, cfg, facts) => hoistPtrOffset(fn, facts.effects)],
+  ['hoistPtrOffset', (fn, cfg, facts) => numberValues(fn, OFFSET, facts.effects)],
   ['narrowLoopBound', (fn) => narrowLoopBound(fn)],
   // Unified LICM (replaces hoistInvariantToInt32 / PtrOffsetLoop / CellLoads), at both maturity points (idempotent).
   ['hoistInvariantLoop', (fn, cfg, facts) => hoistInvariantLoop(fn, facts)],
@@ -55,7 +54,7 @@ export const RUN = [
   }],
   ['shiftRemainder', (fn) => foldShiftRemainder(fn)],
   ['boolConvertToSelect', (fn) => boolConvertToSelect(fn)],
-  ['hoistAddrBase', (fn) => hoistAddrBase(fn)],
+  ['hoistAddrBase', (fn) => numberValues(fn, SUBSCRIPT)],
   ['hoistInvariantLoop.late', (fn, cfg, facts) => hoistInvariantLoop(fn, facts)],
   ['cseScalarLoad', (fn, cfg, facts) => cseScalarLoad(fn, facts.effects)],
   // a chained kernel's out-parameter results stay in the locals that staged them, and the stores the chain overwrites go
@@ -136,7 +135,7 @@ export const RUN = [
   // A load only its bits are read of is the load of the integer type.
   ['foldLoadCasts', (fn) => foldLoadCasts(fn)],
   // A load an earlier one read, nothing stored between; then a part of a word read alone, the narrow load of it.
-  ['reuseLoads', (fn, cfg, facts) => reuseLoads(fn, facts.effects)],
+  ['reuseLoads', (fn, cfg, facts) => numberValues(fn, LOAD_AT, facts.effects)],
   ['narrowByteLoads', (fn) => narrowByteLoads(fn)],
   // One a dominating test settled goes.
   ['settledTests', (fn) => dropSettledTests(fn)],
