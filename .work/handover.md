@@ -286,3 +286,29 @@ afc2446f3 box-fix                            the landing tree: the uint32 extent
 Writers at work as this lands, each in a worktree off afc2446f3: counters by a bound test
 in the planner, the loop's description (6b), the exact lane and `relaxedFloat` (9a), the
 checked peephole table (8), the effects summary (7a, off the import fix `import-writes`).
+
+## Branches of the five-hand-backs landing (2026-11-15), tips before deletion
+
+```
+acd02157e integrate                          the landing tree: main (e588b3b33) and 40 commits: the counter writer's two fixes, phase 8, 6b, 9a, the import fix, 7a and the review's four; these notes go on top
+238aedd6e worktree-agent-a4519a2dc39ff972e   the counter writer's tree. Its tip is the tier that tests a counter's bound, not landed ("Counters by a bound test" in the plan); its a047f51d0 and ada395f86 are landed as fe734da8c and 260de4584
+e2f689420 worktree-agent-ad228c2e8db2ec3e7   the phase 8 writer's tree, landed whole (eight commits, each patch-equal to one of the landing's)
+261ced79d import-writes                      the import fix as first cut (c835d2aac, 5dff9fc29 and two briefs), landed and then subsumed by the effects summary
+```
+
+At work or held as this lands, each in a worktree off acd02157e:
+
+```
+21673f8d7 worktree-agent-af3f6d07ee6e728c6   6c's writer (the tip when this was written)
+d9b70dc24 worktree-agent-a0535e0f76860e45e   7b's and 7c's writer (the tip when this was written)
+9102a64c5 worktree-agent-a71b879e01b0977a5   9b handed back: the held-out lane, to land next with the five fixes its fixture led to
+a48e8b6fe worktree-agent-ad38f46bbe9197c87   phase 4's memo, held by the owner's decision
+```
+
+Scratch of this landing, not in the repo, beside what is listed above: the populations
+`reentrypop` (a host function that calls back), `boundwrap` (a bound that is a sum),
+`tierpop`, `p7check`, `p7more`, `p8check`, `memfuzz` and `memfuzz2` (the phase 7 scout's
+aliasing fuzz), the writers' `pop` (9a), `pcbpop`, `boxlenpop` and `entrypop`; the
+review's harness `intreview.sh`; the timing scripts `alltimes.sh` (every bench case,
+two trees), `stepbis.sh` (a case built at each of several commits), `wasmalt.sh` and
+`fixedalt.sh` (a page on a fixed plan, two trees).
