@@ -289,11 +289,14 @@ function tryUnrollScalarChain(stmt, cm) {
   if (!carried.size) return null
 
   // A scalar the body only steps by a constant (`ix += 1`, the strided kernels'
-  // cursor) is a counter beside the loop's own, an affine address the lane
-  // vectorizer rewrites over the counter (optimize/vectorize/counter-run.js):
-  // no chain runs through it.
-  const stepOf = (n, name) => n[1] === name && ((n[0] === '+=' || n[0] === '-=') ? loopLitVal(n[2]) != null
-    : n[0] === '=' ? isArr(n[2]) && (n[2][0] === '+' || n[2][0] === '-') && n[2][1] === name && loopLitVal(n[2][2]) != null : false)
+  // cursor; `++k`, every unit step as src/normalize.js writes it; `k = (k + 1) | 0`,
+  // the step of a word an integer copy made, plan/integral-loops.js) is a counter
+  // beside the loop's own, an affine address the lane vectorizer rewrites over the
+  // counter (optimize/vectorize/counter-run.js): no chain runs through it.
+  const sum = (v, name) => isArr(v) && (v[0] === '+' || v[0] === '-') && v[1] === name && loopLitVal(v[2]) != null
+  const stepOf = (n, name) => n[1] === name && ((n[0] === '++' || n[0] === '--') ? n.length === 2
+    : (n[0] === '+=' || n[0] === '-=') ? loopLitVal(n[2]) != null
+    : n[0] === '=' ? sum(n[2], name) || isArr(n[2]) && n[2][0] === '|' && litN(n[2][2], 0) && sum(n[2][1], name) : false)
   const stepped = new Set()
   for (const s of carried) {
     let steps = 0, writes = 0

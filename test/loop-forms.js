@@ -1,8 +1,8 @@
 // Counted loops in the forms the canonical scaffold refuses, lifted through the one description
 // of a loop (src/optimize/vectorize/scaffold.js describeLoop, stripScaffold) and the one
 // legality: a test shifted by a constant (`i + 1 < n`), an inclusive test (`i <= n`), a loop
-// counting down (`i >= 0`, `i > lo`), and a lane local every pass writes, read after the
-// loop. Each lifts at the levels this leg owns and answers what Node
+// counting down (`i >= 0`, `i > lo`), a lane local every pass writes, read after the loop, and
+// two counters at 'speed'. Each lifts at the levels this leg owns and answers what Node
 // answers, in its result and in the arrays it writes; the forms the scout's census found
 // refused (.work/maps/loop-refused.md) are named by their row. Beside them, a true dependence
 // that no lift may take.
@@ -77,6 +77,11 @@ test('loop forms: a lane local every pass writes, read after the loop (row 6)', 
   lifts('t read after', prog('Float64Array', 'let t = 0; for (let i = 0; i < n; i++) { t = a[i] * 2; b[i] = t + 1 } return t'))
   lifts('t read after, counting down', prog('Float64Array', 'let t = 0; for (let i = n - 1; i >= 0; i--) { t = a[i] * 2; b[i] = t + 1 } return t'))
   lifts('t read after, i <= n', prog('Float64Array', 'let t = 0; for (let i = 0; i <= n; i++) { t = a[i] - 1; b[i] = t } return t + n'))
+})
+
+test('loop forms: two counters at speed (row 12)', () => {
+  if (belowOpt(3)) return
+  lifts('i++, k++', prog('Float64Array', 'let s = 0; for (let i = 0, k = 0; i < n; i++, k++) s += a[i] * c[k]; return s'), levels(3))
 })
 
 test('loop forms: a true dependence stays scalar (row 7b)', () => {

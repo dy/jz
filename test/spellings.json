@@ -34,7 +34,6 @@
   "kernel/dot/while i-=-1/2": {"ops":4},
   "kernel/dot/step via const one/2": {"ops":4},
   "kernel/dot/index via temp j/2": {"ops":4},
-  "kernel/dot/two counters i,k/speed": {"simd":"lost"},
   "kernel/dot/do-while/2": {"ops":4},
   "kernel/dot/while(true) break/2": {"ops":4},
   "kernel/dot/bound a.length/2": {"ops":4},
