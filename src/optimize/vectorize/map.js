@@ -284,6 +284,43 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     }
   }
 
+  // Each rewrite below moves a lane local's definition to its one use, later in the body. The
+  // scalar loop evaluates the definition where it stands, so the move holds only where the
+  // definition commutes with everything between them and with the use's operands: no store, no
+  // call where it loads (a load moved past a store reads what the scalar loop's load had not: the
+  // swap `t = d[i]; d[i] = s[i]; s[i] = t` over two views of one buffer), no call and no global's
+  // write where it reads a global, no write of a local it reads, and no read or write of one it
+  // sets (a tee of an address a statement between reads). A definition that writes or calls
+  // itself stays where it is.
+  const movesTo = (list, def, use) => {
+    const d = list.indexOf(def), u = list.indexOf(use)
+    if (d < 0 || u <= d) return false
+    const reads = new Set(), sets = new Set()
+    let loads = false, globals = false, effect = false
+    walkAst(def[2], { enter: n => {
+      const op = n[0]
+      if (op === 'local.get') reads.add(n[1])
+      else if (op === 'local.tee' || op === 'local.set') sets.add(n[1])
+      else if (op === 'global.get') globals = true
+      else if (LOAD_OPS[op] || op.startsWith('v128.load') || op === 'memory.size') loads = true
+      else if (STORE_OPS[op] || op.startsWith('v128.store') || op.startsWith('memory.') || op.startsWith('call') || op === 'global.set') effect = true
+    } })
+    if (effect) return false
+    let ok = true
+    const scan = (n) => walkAst(n, { enter: c => {
+      if (!ok) return false
+      const op = c[0]
+      if (STORE_OPS[op] || op.startsWith('v128.store') || (op.startsWith('memory.') && op !== 'memory.size')) ok = !loads
+      else if (op.startsWith('call')) ok = !loads && !globals
+      else if (op === 'global.set') ok = !globals
+      else if ((op === 'local.set' || op === 'local.tee') && (reads.has(c[1]) || sets.has(c[1]))) ok = false
+      else if (op === 'local.get' && sets.has(c[1])) ok = false
+    } })
+    for (let i = d + 1; i < u && ok; i++) scan(list[i])
+    for (let i = 1; i < use.length && ok; i++) scan(use[i])
+    return ok
+  }
+
   // A ToInt32 (`|0`) narrowing conversion is commonly CSE'd into its own lane-local just before
   // the store (`set $t (…trunc_sat…); store addr (local.get $t)`), hiding it from the
   // narrowing-store path (liftStmt would then lift the i32 wrap in the f64 lane and bail). When
@@ -300,7 +337,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
       if (isArr(s) && STORE_OPS[s[0]] && s.length === 3 && STORE_OPS[s[0]] !== laneType &&
           isLocalGet(s[2]) && localKind.get(s[2][1]) === 'lane' && getCount.get(s[2][1]) === 1) {
         const def = body.find(x => isArr(x) && x[0] === 'local.set' && x[1] === s[2][1] && x.length === 3)
-        if (def && peelNarrowConv(def[2], STORE_OPS[s[0]])) { dropped.add(def); return [s[0], s[1], def[2]] }
+        if (def && peelNarrowConv(def[2], STORE_OPS[s[0]]) && movesTo(body, def, s)) { dropped.add(def); return [s[0], s[1], def[2]] }
       }
       return s
     })
@@ -345,7 +382,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
       for (const nm of names) {
         if (localKind.get(nm) !== 'lane') continue
         const def = setDefs.get(nm)
-        if (!def || !isAddSubOfConverts(def[2])) continue
+        if (!def || !isAddSubOfConverts(def[2]) || !movesTo(body2, def, s)) continue
         let inStore = 0
         walkAst(val, { enter: n => { if (n[0] === 'local.get' && n[1] === nm) inStore++ } })
         if (inStore !== getCount3.get(nm)) continue   // read outside this store too — not safe to drop
@@ -370,20 +407,20 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     const countGets2 = n => { if (n[0] === 'local.get' && typeof n[1] === 'string') getCount2.set(n[1], (getCount2.get(n[1]) || 0) + 1) }
     for (const s of body2) walkAst(s, { enter: countGets2 })
     const dropDefs = new Set()
-    const inlineSign = (n) => {
+    const inlineSign = (n, stmt) => {
       if (!isArr(n)) return n
       if (n[0] === 'f64.convert_i32_s' && n.length === 2 && isArr(n[1]) && n[1][0] === 'local.get' &&
           typeof n[1][1] === 'string' && getCount2.get(n[1][1]) === 1) {
         const nm = n[1][1]
         const def = body2.find(x => isArr(x) && x[0] === 'local.set' && x[1] === nm && x.length === 3)
-        if (def && isArr(def[2]) && def[2][0] === 'select' && def[2].length === 4 && isI32Const(def[2][1]) && isI32Const(def[2][2])) {
+        if (def && isArr(def[2]) && def[2][0] === 'select' && def[2].length === 4 && isI32Const(def[2][1]) && isI32Const(def[2][2]) && movesTo(body2, def, stmt)) {
           dropDefs.add(def)
           return ['f64.convert_i32_s', def[2]]
         }
       }
-      return n.map((c, i) => i === 0 ? c : inlineSign(c))
+      return n.map((c, i) => i === 0 ? c : inlineSign(c, stmt))
     }
-    const inlined2 = body2.map(inlineSign)
+    const inlined2 = body2.map(s => inlineSign(s, s))
     // Two-pass: inlineSign allocates a fresh array for every node it visits (even unchanged
     // ones), so filtering `inlined2` by `dropDefs.has(...)` would fail on reference identity —
     // `dropDefs` holds references into the PRE-map `body2`, so the drop-filter must run against
