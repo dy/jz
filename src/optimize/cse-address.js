@@ -5,7 +5,7 @@
  *
  * @module optimize/cse-address
  */
-import { findBodyStart, nextLocalId, buildRefcount } from '../ir.js'
+import { findBodyStart, nextLocalId, buildRefcount, leftLabels } from '../ir.js'
 import { HEADER_STORE_FREE, NO_MODULE } from './effects.js'
 
 /**
@@ -81,7 +81,8 @@ export function hoistPtrOffset(fn, fx = NO_MODULE) {
 // An instruction that never completes: it traps or leaves the function, or ends
 // in one that does (a block nothing branches out of, a value dropped).
 const LEAVE_OPS = new Set(['unreachable', 'return', 'return_call', 'return_call_indirect', 'return_call_ref', 'throw', 'rethrow'])
-const branches = (n) => Array.isArray(n) && (n[0] === 'br' || n[0] === 'br_if' || n[0] === 'br_table' || n.some(branches))
+// (a handler's catch clause leaves for its label too, src/ir/control.js)
+const branches = (n) => leftLabels(n).size > 0
 const never = (n) => Array.isArray(n) && (LEAVE_OPS.has(n[0]) ||
   n[0] === 'drop' && n.length === 2 && never(n[1]) ||
   n[0] === 'block' && never(n[n.length - 1]) && !branches(n))

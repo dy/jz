@@ -24,6 +24,7 @@
  */
 import { isMemWrite } from 'watr/optimize'
 import { DBG_INVARIANTS } from '../debug.js'
+import { leftLabels } from '../ir.js'
 import { globalBaseAliases, memGlobal } from './globals.js'
 
 const isArr = Array.isArray
@@ -324,4 +325,5 @@ export const lazyEffects = (solve) => {
  *  as the host (a pass run on a function alone, by a test). */
 export const NO_MODULE = solveEffects([])
 
-const branches = (n) => isArr(n) && (n[0] === 'br' || n[0] === 'br_if' || n[0] === 'br_table' || n.some(branches))
+// (a handler's catch clause leaves for its label too, src/ir/control.js)
+const branches = (n) => leftLabels(n).size > 0

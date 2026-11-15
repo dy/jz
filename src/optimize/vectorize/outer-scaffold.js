@@ -1,4 +1,5 @@
 import { walkAst } from '../../ast.js'
+import { leavesTo } from '../../ir.js'
 import { constNum, hasImpureCall, isI32Const, isLocalGet, readStep } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { describeLoop, matchBlockLoop, runOf } from './scaffold.js'
@@ -80,16 +81,6 @@ export function epilogueIsSafe(epilogue, loopNode, laneMap, pivType) {
 const pixelStep = (s) => s.by === 1 && (s.op === 'i32.add' || s.op === 'f64.add')
 /** A statement stepping a counter of either type up by one → { name, type }, else null. */
 export const unitStep = (stmt) => { const s = readStep(stmt); return s && pixelStep(s) ? { name: s.name, type: s.type } : null }
-// Whether `n` holds a branch naming `label` (its own nested blocks aside: a
-// label the body declares is the body's own).
-const branchesTo = (n, label) => {
-  let hit = false
-  walkAst(n, { enter: x => {
-    if (hit) return false
-    if ((x[0] === 'br' || x[0] === 'br_if') && x[1] === label || x[0] === 'br_table' && x.includes(label)) hit = true
-  } })
-  return hit
-}
 
 /**
  * Match the OUTER per-pixel loop scaffold shared by tryDivergentEscapeVectorize
@@ -131,7 +122,7 @@ export function matchOuterPixelLoop(blockNode, desc = describeLoop(blockNode)) {
   // A body that leaves its loop early (a `break`: an overflow bail, a found
   // pixel) is not per-pixel work: every consumer copies the body ahead of the
   // block its exit names, and the scalar tail cannot know what the copy skipped.
-  if (obody.some(s => branchesTo(s, oLabel) || branchesTo(s, bl.loopLabel))) return null
+  if (obody.some(s => leavesTo(s, oLabel) || leavesTo(s, bl.loopLabel))) return null
   // Inner block-loop census — every outer-pixel consumer re-derived this scan
   // (exactly-one / none / at-least-one gates); one authoritative list here.
   const innerIdxs = []

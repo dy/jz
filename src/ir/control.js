@@ -104,6 +104,40 @@ export function findBodyStart(fn) {
   return fn.length
 }
 
+// What leaves for a label. A branch names its labels: `br`, `br_if` and the `br_on_*` forms
+// their first operand, `br_table` each label it lists. A `try_table`'s catch clause is a branch
+// too, to the label that is its last operand (`(catch $tag $l)`, `(catch_all $l)`), taken from
+// every point of the body that may throw: what holds where it lands is what held before the
+// body, and what the body or anything after a throw in it computed holds there on no path.
+const BRANCH_OPS = new Set(['br', 'br_if', 'br_on_null', 'br_on_non_null', 'br_on_cast', 'br_on_cast_fail'])
+// (a name, or a depth: watr's form of a branch it has not named)
+const isLabel = (x) => typeof x === 'number' || typeof x === 'string' && (x[0] === '$' || x[0] >= '0' && x[0] <= '9')
+// Where a node names the label it leaves for: the operand's index, -1 for every operand
+// (`br_table`), 0 for none. (A legacy `try`'s `(catch $tag …code)` ends in code, not a label.)
+const labelAt = (n) => BRANCH_OPS.has(n[0]) ? 1 : n[0] === 'br_table' ? -1
+  : (n[0] === 'catch' || n[0] === 'catch_ref') && n.length === 3 ? 2
+  : (n[0] === 'catch_all' || n[0] === 'catch_all_ref') && n.length === 2 ? 1 : 0
+/** Whether a branch inside `node`, or a catch clause, leaves for the label `name`. */
+export function leavesTo(node, name) {
+  if (!Array.isArray(node)) return false
+  const k = labelAt(node)
+  if (k > 0 && node[k] === name) return true
+  for (let i = 1; i < node.length; i++) if (k < 0 && node[i] === name || leavesTo(node[i], name)) return true
+  return false
+}
+/** The labels a branch inside `node`, or a catch clause, leaves for (empty: nothing inside
+ *  leaves but by falling through, returning or throwing past every handler). */
+export function leftLabels(node, out = new Set()) {
+  if (!Array.isArray(node)) return out
+  const k = labelAt(node)
+  if (k > 0 && isLabel(node[k])) out.add(node[k])
+  for (let i = 1; i < node.length; i++) {
+    if (k < 0 && isLabel(node[i])) out.add(node[i])
+    leftLabels(node[i], out)
+  }
+  return out
+}
+
 /** The locals a `(func …)` writes, a static parameter's entry write aside: its
  *  first statement setting it, the address every call passes (compile/emit-func.js). */
 export function writtenLocals(fn) {

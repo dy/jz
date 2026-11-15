@@ -33,6 +33,7 @@
  * @module optimize/forward-checked
  */
 import { constText } from '../ast.js'
+import { leavesTo } from '../ir.js'
 
 const isArr = Array.isArray
 // what changes a value a load named
@@ -52,17 +53,6 @@ const intConst = (n) => {
 }
 // a node's memarg strings (offset=, align=) and its operands
 const isLabel = (x) => typeof x === 'string' && x[0] === '$'
-// whether a branch inside `n` names `label`: a `br`, or a `try_table`'s catch clause, which
-// leaves for the label from wherever its body throws (`(catch $tag $label)`, `(catch_all $label)`)
-const CATCH = new Set(['catch', 'catch_ref', 'catch_all', 'catch_all_ref'])
-const targets = (n, label) => {
-  if (!isArr(n)) return false
-  if ((n[0] === 'br' || n[0] === 'br_if') && n[1] === label) return true
-  if (n[0] === 'br_table' && n.includes(label)) return true
-  if (CATCH.has(n[0]) && n[n.length - 1] === label) return true
-  for (let i = 1; i < n.length; i++) if (targets(n[i], label)) return true
-  return false
-}
 // `(i32.add BASE (i32.shl IDX (i32.const 2)))`: a 4-byte element's address (a header's is BASE − 8)
 const elementAddr = (a) => isArr(a) && a[0] === 'i32.add' && a.length === 3 && isArr(a[2]) && a[2][0] === 'i32.shl' && a[2].length === 3 &&
   isArr(a[2][2]) && a[2][2][0] === 'i32.const' && Number(a[2][2][1]) === 2
@@ -242,7 +232,7 @@ function forwardIn(fn, callsOut, setsGlobal) {
       depth++
       for (let j = i; j < n.length; j++) n[j] = stmt(n[j])
       depth--
-      if (isLabel(n[1]) && targets(n, n[1])) {
+      if (isLabel(n[1]) && leavesTo(n, n[1])) {
         for (const k of [...loads.keys()]) if (!before.has(k)) loads.delete(k)
         forget(n)
       }

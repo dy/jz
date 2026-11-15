@@ -10,11 +10,11 @@
 // store into an array of another cell, or into another field, leaves it), no bulk or
 // atomic memory operation and no call but one whose result is a function of its operands (optimize/effects.js:
 // the math runtime, a string's readers), and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
-// branch leaves) keeps only what holds on both. The later load's address is the local
+// branch or a handler's catch clause leaves, src/ir/control.js leavesTo) keeps only what holds on both. The later load's address is the local
 // itself: dropping it drops nothing that runs. A load inside a conditional arm the first
 // load is outside of stays: it runs only on that path, and its arm, a local read, would
 // become a select (a predictable branch is cheaper than the select's dependence).
-import { nextLocalId, findBodyStart } from '../ir.js'
+import { nextLocalId, findBodyStart, leavesTo } from '../ir.js'
 import { mayAlias } from '../ir/mem-alias.js'
 import { NO_MODULE } from './effects.js'
 
@@ -41,14 +41,6 @@ export function reuseLoads(fn, fx = NO_MODULE) {
   // available loads: key → { local, node, parent, idx, temp }
   const meet = (a, b) => { const m = new Map(); for (const [k, v] of a) if (b.get(k) === v) m.set(k, v); return m }
   const kill = (state, local) => { for (const [k, v] of state) if (v.local === local) state.delete(k) }
-  // labels a branch inside `n` targets
-  const targets = (n, out = new Set()) => {
-    if (!isArr(n)) return out
-    if (n[0] === 'br' || n[0] === 'br_if') out.add(n[1])
-    else if (n[0] === 'br_table') for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string') out.add(n[i])
-    for (let i = 1; i < n.length; i++) targets(n[i], out)
-    return out
-  }
   // Walk `n` (the child at parent[idx]) in evaluation order; returns the state after it.
   const walk = (n, parent, idx, state, depth = 0) => {
     if (!isArr(n)) return state
@@ -56,8 +48,8 @@ export function reuseLoads(fn, fx = NO_MODULE) {
     if (op === 'block' || op === 'loop') {
       let s = op === 'loop' ? new Map() : state
       for (let i = 1; i < n.length; i++) s = walk(n[i], n, i, s, depth)
-      // a block a branch leaves joins that branch's path: nothing is known after it
-      return op === 'block' && typeof n[1] === 'string' && targets(n).has(n[1]) ? new Map() : s
+      // a block a branch or a handler's catch clause leaves joins that path: nothing is known after it
+      return op === 'block' && typeof n[1] === 'string' && leavesTo(n, n[1]) ? new Map() : s
     }
     if (op === 'if') {
       let i = 1, s = state
@@ -72,7 +64,7 @@ export function reuseLoads(fn, fx = NO_MODULE) {
         if (arm[0] === 'then') thenS = a; else elseS = a
       }
       const out = meet(thenS ?? s, elseS ?? s)
-      return typeof n[1] === 'string' && targets(n).has(n[1]) ? new Map() : out
+      return typeof n[1] === 'string' && leavesTo(n, n[1]) ? new Map() : out
     }
     if (op === 'try' || op === 'try_table' || op === 'catch' || op === 'catch_all' || op === 'delegate') {
       for (let i = 1; i < n.length; i++) walk(n[i], n, i, new Map(), depth + 1)

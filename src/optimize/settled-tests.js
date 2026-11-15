@@ -7,8 +7,11 @@
 // The walk follows evaluation order and carries the settled tests and what
 // each local holds, so a guard on a capture (`$ai = $doc`) is the guard on the
 // binding. A fact holds where it dominates: down into arms and loops that
-// leave its locals alone, and past an `if` or a block only by every way out.
+// leave its locals alone, and past an `if` or a block only by every way out, a
+// handler's catch clause among them (src/ir/control.js leavesTo): a block it
+// leaves to is entered from wherever its body throws.
 import { constText } from '../ast.js'
+import { leavesTo } from '../ir.js'
 
 const isArr = Array.isArray
 const PURE = /^(?:i32|i64|f64)\.(?:const|eq|ne|eqz|and|or|lt_[su]|le_[su]|gt_[su]|ge_[su]|lt|le|gt|ge|wrap_i64|reinterpret_[fi]\d\d)$/
@@ -23,17 +26,11 @@ const writesOf = (n, out = new Set()) => {
   for (let i = 1; i < n.length; i++) writesOf(n[i], out)
   return out
 }
-const branchesTo = (n, label) => {
-  if (!isArr(n)) return false
-  if ((n[0] === 'br' || n[0] === 'br_if') && n[1] === label || n[0] === 'br_table' && n.includes(label)) return true
-  for (let i = 1; i < n.length; i++) if (branchesTo(n[i], label)) return true
-  return false
-}
 // Control never runs past the arm's or the block's last statement.
 const leaves = n => {
   if (!isArr(n)) return false
   if (ENDS.has(n[0])) return true
-  if (n[0] === 'block' && typeof n[1] === 'string' && branchesTo(n, n[1])) return false
+  if (n[0] === 'block' && typeof n[1] === 'string' && leavesTo(n, n[1])) return false
   return (n[0] === 'drop' || n[0] === 'block' || n[0] === 'then' || n[0] === 'else') && leaves(n[n.length - 1])
 }
 
@@ -122,7 +119,7 @@ function walk(n, s) {
     else for (let i = 1; i < n.length; i++) walk(n[i], copy(s))
     return
   }
-  if (op === 'block' && typeof n[1] === 'string' && branchesTo(n, n[1])) {
+  if (op === 'block' && typeof n[1] === 'string' && leavesTo(n, n[1])) {
     const entry = copy(s)
     walkAll(n, 1, s)
     for (const name of writesOf(n)) killName(entry, name)
