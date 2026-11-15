@@ -14,8 +14,8 @@
  *     arrays share base and element width (`new T(buf)` reinterprets in place); a view
  *     (`subarray`, `new T(buf, off)`) may start mid-buffer, and another element type
  *     (`new Uint8Array(f.buffer)`) splits the bytes differently, so index reasoning fails there.
- *   Any other store invalidates. Reassigning `arr` / any var in `idx`, an impure call, or a
- *   loop or abrupt exit also flushes. A conditional retains only prior entries
+ *   Any other store invalidates. Reassigning `arr` / any var in `idx`, an impure call, a
+ *   loop, an abrupt exit or a try statement also flushes. A conditional retains only prior entries
  *   that both arms leave intact. So `re[a]` (intervening stores to `re`/`im`, both owned
  *   Float64Arrays, at index `b = a+half ≠ a`) is CSE'd, while `im[a]` (the `re[a]` store is at the
  *   same index `a`) correctly is NOT.
@@ -79,8 +79,11 @@ const idxVars = (e, out) => {
   else if (isArr(e)) for (let i = 1; i < e.length; i++) idxVars(e[i], out)
 }
 
+// (a try statement among them, `['catch', body, name, handler]` and `['finally', inner, cleanup]`:
+// its handler and its finalizer run from wherever the body throws, past a read the body made
+// or before it, so nothing read inside holds after it, and its parts are lists of their own)
 const CONTROL = new Set(['for', 'while', 'if', 'loop', 'block', '=>', '&&', '||', '??', '?:', '?.()', '?.[]',
-  'br', 'br_if', 'br_table', 'return', 'continue', 'break', 'throw', 'unreachable'])
+  'br', 'br_if', 'br_table', 'return', 'continue', 'break', 'throw', 'unreachable', 'try', 'catch', 'finally'])
 const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 const stableBinding = b => b && !b[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)
