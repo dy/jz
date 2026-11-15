@@ -606,6 +606,9 @@ test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
   is(count(/f64x2\.mul/g), 4, 'the rotation lanes')
   // the one legality's test (alias.js apart): a and b are 8 * half bytes apart, 0 or 16 (2 lanes) or more
   is(count(/i32\.ge_u\s+\(i32\.add\s+\(i32\.shl \(local\.get \$\w+\) \(i32\.const 3\)\)\s+\(i32\.const 15\)\s*\)\s+\(i32\.const 31\)/g), 1, 'one hoisted |8 * half| >= 16 test covers every a/b pair')
+  // where it fails (the first stage, its pairs one element apart) the strip loop is skipped whole
+  const apart = w.search(/\(i32\.or\s+\(i32\.eqz\s+\(i32\.shl \(local\.get \$\w+\) \(i32\.const 3\)\)\s*\)\s+\(i32\.ge_u/)
+  ok(apart > 0 && /\(if\s*$/.test(w.slice(0, apart)), 'the strip runs behind the test, not entered for no pass')
 })
 
 test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-exact', () => {

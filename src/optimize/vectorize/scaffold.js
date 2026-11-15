@@ -60,14 +60,18 @@ import { helperKind } from '../effects.js'
  *  resumes, stepping down by W while above `bound`, the limit simdBound gives in its terms. */
 export const simdLoop = (id, iv, bound, body, dir = 1) => {
   const exit = (cmp) => ['br_if', `$__simd_brk${id}`, ['i32.eqz', [cmp, ['local.get', iv], ['local.get', bound]]]]
-  if (dir > 0) return ['block', `$__simd_brk${id}`, ['loop', `$__simd_loop${id}`, exit('i32.lt_s'), ...body, ['br', `$__simd_loop${id}`]]]
+  if (dir > 0) return stripLoop(['block', `$__simd_brk${id}`, ['loop', `$__simd_loop${id}`, exit('i32.lt_s'), ...body, ['br', `$__simd_loop${id}`]]], bound)
   const last = body[body.length - 1], w = readStep(last)?.by
   if (!(w > 1) || last[2][0] !== 'i32.add') throw new Error('simdLoop: a strip counting down ends in its own step up')
   const by = (op, k) => ['local.set', iv, [op, ['local.get', iv], ['i32.const', k]]]
-  return ['block', by('i32.sub', w - 1),
+  return stripLoop(['block', by('i32.sub', w - 1),
     ['block', `$__simd_brk${id}`, ['loop', `$__simd_loop${id}`, exit('i32.gt_s'), ...body.slice(0, -1), by('i32.sub', w), ['br', `$__simd_loop${id}`]]],
-    by('i32.add', w - 1)]
+    by('i32.add', w - 1)], bound)
 }
+// (each strip loop remembers the limit local it runs to: where a test closes the strip, the
+// loop is skipped whole, alias.js gateStrips, rather than entered for no pass)
+export const stripLoops = new WeakMap()
+const stripLoop = (node, bound) => (stripLoops.set(node, bound), node)
 
 /** Whether a strip of `w` iterations from `iv` toward the limit `bound` (simdBound) runs. */
 export const stripOpen = (iv, bound, dir = 1, w = 1) => dir > 0 ? ['i32.lt_s', ['local.get', iv], ['local.get', bound]]

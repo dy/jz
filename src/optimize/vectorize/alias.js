@@ -2,7 +2,7 @@ import { cloneNode, nodeKey, walkAst } from '../../ast.js'
 import { constNum, hasSideEffect, isI32Const, isLocalGet, laneAccess, readStep } from './addr-model.js'
 import { normTee } from './idioms.js'
 import { isArr } from './node-utils.js'
-import { shut, strips } from './scaffold.js'
+import { shut, stripLoops, strips } from './scaffold.js'
 
 // ---- Distances between two sites ----
 //
@@ -322,6 +322,9 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
     }
     return test ?? true
   }
+  // A strip's limit set into a local its strip loop runs to (scaffold.js simdLoop) is closed by
+  // skipping that loop where the test fails; any other, by the limit where no pass runs.
+  const limits = []
   const gate = (parent) => {
     for (let i = 1; i < parent.length; i++) {
       const c = parent[i]
@@ -331,10 +334,20 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       const test = open(at)
       if (!test) return false
       found = true
-      if (test !== true) parent[i] = at.block ? ['if', test, ['then', c]] : ['select', c, shut(at), test]
+      if (test === true) continue
+      if (at.block) parent[i] = ['if', test, ['then', c]]
+      else if (parent[0] === 'local.set' && i === 2 && typeof parent[1] === 'string') limits.push([parent, i, test, at])
+      else parent[i] = ['select', c, shut(at), test]
     }
     return true
   }
   let found = false
-  return gate(wrapper) && (found || r.ordered) ? r : null
+  if (!gate(wrapper)) return null
+  for (const [parent, i, test, at] of limits) {
+    let loop = null
+    walkAst(wrapper, { enter: (n, p, k) => { if (!loop && stripLoops.get(n) === parent[1] && p) loop = [p, k] } })
+    if (loop) loop[0][loop[1]] = ['if', test, ['then', loop[0][loop[1]]]]
+    else parent[i] = ['select', parent[i], shut(at), test]
+  }
+  return found || r.ordered ? r : null
 }
