@@ -129,6 +129,27 @@ test('loop forms: a reduction carried in its order, the work of each element in 
   }
 })
 
+test('loop forms: a copy or a fill counting down moves its bytes at once', () => {
+  if (belowOpt(2)) return
+  // memory.copy is memmove, which a loop counting down is wherever its source does not start
+  // inside its destination's window: the overlap test keeps the loop for that case
+  for (const T of TYPES) for (const [name, body] of [
+    ['copy', 'for (let i = n - 1; i >= 0; i--) b[i] = a[i]; return 0'],
+    ['copy to a low end past 0', 'for (let i = n; i > 3; i--) b[i] = a[i]; return 0'],
+    ['fill', 'for (let i = n - 1; i >= 2; i--) b[i] = 0; return 0'],
+    ['copy, the counter read after', 'let i = n - 1; while (i >= 0) { b[i] = a[i]; i-- } return i'],
+  ]) {
+    const src = prog(T, body), want = oracle(src)
+    for (const optimize of levels(2, 3)) {
+      ok(/memory\.(copy|fill)/.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${T} ${name}: a bulk move at ${optimize}`)
+      const got = jz(src, { optimize }).exports
+      want.init(); got.init()
+      is(got.k(), want.k(), `${T} ${name}: k at ${optimize}`)
+      is(got.check(), want.check(), `${T} ${name}: memory at ${optimize}`)
+    }
+  }
+})
+
 test('loop forms: a lane local every pass writes, read after the loop (row 6)', () => {
   if (belowOpt(2)) return
   lifts('t read after', prog('Float64Array', 'let t = 0; for (let i = 0; i < n; i++) { t = a[i] * 2; b[i] = t + 1 } return t'))

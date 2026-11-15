@@ -267,10 +267,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         return run ?? bl
       }
       // A loop counting down reaches only the recognizers whose strips run it with the shared
-      // control (scaffold.js simdLoop, simdBound: the strip lifted at its lowest iteration):
-      // the map, the reductions and the general map. The others build their own strip control,
-      // run an epilogue in the loop's order, or answer for an order of their own (the bulk
-      // copy's overlap test), and are offered `up`, null for it. A lift made of the strips'
+      // control (scaffold.js simdLoop, simdBound: the strip lifted at its lowest iteration),
+      // the map, the reductions and the general map, and the bulk copy, whose overlap test
+      // answers for either order. The others build their own strip control or run an epilogue
+      // in the loop's order, and are offered `up`, null for it. A lift made of the strips'
       // own scaffold takes its setup with it (below).
       const up = down ? null : bl
       const of = (x) => { if (x && bl && !canonical) x.scaffold = bl; return x }
@@ -297,7 +297,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         lifts.push(y)
       }
       take('tryDivergentEscapeVectorize', tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op))
-      take('tryMemCopyFill', of(tryMemCopyFill(up, fnLocals, freshIdRef)))
+      take('tryMemCopyFill', of(tryMemCopyFill(bl, fnLocals, freshIdRef)))
       take('tryVectorize', of(tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)))
       take('tryReduceReassoc', of(tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc)))
       take('tryReduceBitExact', of(tryReduceBitExact(bl, fnLocals, freshIdRef)))

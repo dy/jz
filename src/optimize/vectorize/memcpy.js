@@ -53,6 +53,8 @@ const MEMOP_STORES = {
  *   for (i < N) a[i] = 0      →  memory.fill 0    (any element width)
  *   for (i < N) u8[i] = C     →  memory.fill C    (byte stores only)
  *
+ * and the same loops counting down to a low end L, inclusive (`i >= L; i--`).
+ *
  * V8 lowers memory.copy/fill to memmove/memset — typically several times the
  * throughput of even a SIMD lane loop, and a handful of bytes instead of one.
  * Runs BEFORE the lane vectorizer so these loops never pay the lift.
@@ -65,12 +67,15 @@ const MEMOP_STORES = {
  *    destination starts strictly inside the source window (dst reads bytes an
  *    earlier iteration already overwrote), so that case keeps the original
  *    loop behind a two-compare runtime guard — every other layout (disjoint,
- *    dst ≤ src, same array) is bit-identical.
+ *    dst ≤ src, same array) is bit-identical. A loop counting down differs from
+ *    it where the source starts strictly inside the destination's window (an
+ *    insertion's shift up, `a[j] = a[j - 1]` down, is memmove; a shift down is not).
  *  - FILL with 0 is width-agnostic (all-zero bytes; −0.0 is excluded — its
  *    sign bit is not zero). Non-zero fills only for byte stores with a
  *    loop-invariant constant ∈ [0,255].
  *  - The induction variable ends at `bound` exactly as the loop would leave
- *    it; a zero-trip range (i ≥ bound) leaves everything untouched.
+ *    it (one below the low end counting down); a zero-trip range (i ≥ bound,
+ *    i < L) leaves everything untouched.
  *  - In-bounds for the same reason the lane vectorizer's wide loads are: the
  *    moved window is exactly the byte range the scalar iterations touch.
  */
@@ -157,6 +162,9 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
   const newLocalDecls = [['local', lenB, 'i32'], ['local', dstA, 'i32']]
   const shl = (x) => entry.k === 0 ? x : ['i32.shl', x, ['i32.const', entry.k]]
   const boundC = () => cloneNode(bound)
+  // (counting down, the window's lowest element is the low end's and its last moved the same)
+  const down = bl.dir === -1
+  const first = () => down ? boundC() : ['local.get', incVar]
   // The window's first byte at IV = 0. The memarg joins the i32 sum: the scalar
   // accesses are in bounds (a raw store or load the emitter left unguarded was
   // proven so), so base + offset stays below the memory's size and never wraps.
@@ -164,13 +172,13 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
     .reduce((a, b) => ['i32.add', a, b], ['i32.const', 0])
   const at = (m, off) => ['i32.add', startOf(m), off]
   const setup = [
-    ['local.set', lenB, shl(['i32.sub', boundC(), ['local.get', incVar]])],
-    ['local.set', dstA, at(dstM, shl(['local.get', incVar]))],
+    ['local.set', lenB, shl(down ? ['i32.add', ['i32.sub', ['local.get', incVar], boundC()], ['i32.const', 1]] : ['i32.sub', boundC(), ['local.get', incVar]])],
+    ['local.set', dstA, at(dstM, shl(first()))],
   ]
   // Exact loop-exit state: i ends at bound; a matched offset tee holds the
   // LAST iteration's offset; the value temp holds the last element moved.
-  const finish = [['local.set', incVar, boundC()]]
-  const lastOff = () => shl(['i32.sub', boundC(), ['i32.const', 1]])
+  const finish = [['local.set', incVar, down ? ['i32.sub', boundC(), ['i32.const', 1]] : boundC()]]
+  const lastOff = () => shl(down ? boundC() : ['i32.sub', boundC(), ['i32.const', 1]])
   for (const name of offsetTees.keys()) finish.push(['local.set', name, lastOff()])
   for (const [name, base] of addrTees) finish.push(['local.set', name, ['i32.add', cloneNode(base), lastOff()]])
   if (tempName != null && srcM) finish.push(['local.set', tempName, [valNode[0], at(srcM, lastOff())]])
@@ -182,12 +190,14 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
   } else {
     const srcA = `$__mc${id}_src`
     newLocalDecls.push(['local', srcA, 'i32'])
-    setup.push(['local.set', srcA, at(srcM, shl(['local.get', incVar]))])
-    // Forward-loop ≡ memmove unless dst starts strictly inside (src, src+len).
+    setup.push(['local.set', srcA, at(srcM, shl(first()))])
+    // Forward-loop ≡ memmove unless dst starts strictly inside (src, src+len); the loop
+    // counting down unless src starts strictly inside (dst, dst+len).
+    const [p, q] = down ? [srcA, dstA] : [dstA, srcA]
     action = [['if',
       ['i32.or',
-        ['i32.le_u', ['local.get', dstA], ['local.get', srcA]],
-        ['i32.ge_u', ['local.get', dstA], ['i32.add', ['local.get', srcA], ['local.get', lenB]]]],
+        ['i32.le_u', ['local.get', p], ['local.get', q]],
+        ['i32.ge_u', ['local.get', p], ['i32.add', ['local.get', q], ['local.get', lenB]]]],
       ['then',
         ['memory.copy', ['local.get', dstA], ['local.get', srcA], ['local.get', lenB]],
         ...finish],
@@ -195,8 +205,8 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
   }
 
   // (a loop that leaves on `i <u bound` runs nothing from a negative i: neither does the copy)
-  const entered = ['i32.lt_s', ['local.get', incVar], boundC()]
-  const unsigned = bl.exit.op === 'i32.lt_u'
+  const entered = down ? ['i32.ge_s', ['local.get', incVar], boundC()] : ['i32.lt_s', ['local.get', incVar], boundC()]
+  const unsigned = !down && bl.exit.op === 'i32.lt_u'
   const wrapper = ['block',
     ['if', unsigned ? ['i32.and', ['i32.ge_s', ['local.get', incVar], ['i32.const', 0]], entered] : entered,
       ['then', ...setup, ...action]]]
