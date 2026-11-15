@@ -1208,7 +1208,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // conditional operator (an arm may not run) and none in a closure.
     const hoistableStep = (st, c) => {
       const n = Array.isArray(st) && st[0] === 'postfix' ? st[1] : st
-      if (!Array.isArray(n) || n[0] === ';' || n[0] === '{}' || n[0] === 'if' || n[0] === 'label' || ALL_LOOPS.has(n[0]) || LEAVES.has(n[0]) || n[0] === 'switch' || n[0] === 'try') return false
+      if (!Array.isArray(n) || n[0] === ';' || n[0] === '{}' || n[0] === 'if' || n[0] === 'label' || ALL_LOOPS.has(n[0]) || LEAVES.has(n[0]) || n[0] === 'switch' || TRY.has(n[0])) return false
       let refs = 0, steps = 0, ok = true
       const walk = (m, cond) => {
         if (!Array.isArray(m)) return
@@ -2531,7 +2531,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           if (!Array.isArray(st)) continue
           const r = stepped(st)
           if (r) { n[i] = r; continue }
-          if (st[0] === ';' || st[0] === '{}' || st[0] === 'if' || ALL_LOOPS.has(st[0]) || LEAVES.has(st[0]) || st[0] === 'label') continue
+          // (a try statement too: its handler and finalizer run from wherever the body throws, and
+          // read what the body wrote by then, so a step in it stays where it is, in its own list)
+          if (st[0] === ';' || st[0] === '{}' || st[0] === 'if' || ALL_LOOPS.has(st[0]) || LEAVES.has(st[0]) || st[0] === 'label' || TRY.has(st[0])) continue
           const after = hoisted(st)
           if (!after) continue
           if (slots) n[i] = ['{}', [';', st, after]]
