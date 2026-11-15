@@ -2,7 +2,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { _offsetLocalStride, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
-import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
+import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop, simdBound, stripOpen } from './scaffold.js'
@@ -508,7 +508,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
 const EXACT_LANE_BIN = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 'f64.max'])
 const EXACT_LANE_UN = new Set(['f64.sqrt', 'f64.abs', 'f64.neg', 'f64.ceil', 'f64.floor', 'f64.trunc', 'f64.nearest'])
 // An f64 from the low two lanes of an i32x4 or an f32x4, exact as the scalar widening.
-const CONVERT_LOW = { 'f64.convert_i32_s': 'f64x2.convert_low_i32x4_s', 'f64.convert_i32_u': 'f64x2.convert_low_i32x4_u', 'f64.promote_f32': 'f64x2.promote_low_f32x4' }
+const CONVERT_LOW = { ...CONVERT_LANES.f64, 'f64.promote_f32': 'f64x2.promote_low_f32x4' }
 // An integer element in an i32x4's low lanes: the load of two (its bytes' log2 a stride) and the widening of each.
 const LOW_INT_LOAD = {
   'i32.load': ['v128.load64_zero', 2],

@@ -451,6 +451,8 @@ export function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && isArr(n[1])) ld = n[1]
     else if (isArr(n) && (n[0] === 'i32.load8_s' || n[0] === 'i32.load8_u')) ld = n
     if (!ld || (ld[0] !== 'i32.load8_s' && ld[0] !== 'i32.load8_u')) return null
+    // (an unsigned conversion of a sign-extended byte reads it as 2^32 less its magnitude: no byte lane)
+    if (n[0] === 'f64.convert_i32_u' && ld[0] === 'i32.load8_s') return null
     const addr = (typeof ld[1] === 'string' && ld[1].startsWith('offset=')) ? ld[2] : ld[1]
     return { load: ld, addr, signed: ld[0] === 'i32.load8_s' }
   }

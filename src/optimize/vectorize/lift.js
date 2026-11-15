@@ -4,7 +4,7 @@ import { constNum, hasBranchOrReturn, hasSideEffect, isI32Const, isLocalGet, mat
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
 import { inlinePureCallExpr } from './inline-pure.js'
-import { INT_WIDEN_F32, LANE_COMPARE, LANE_INFO, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
+import { CONVERT_LANES, INT_WIDEN_F32, LANE_COMPARE, LANE_INFO, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
 // Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
@@ -684,7 +684,7 @@ export function liftExprV(expr, ctx) {
   }
   if (ctx.laneType === 'f64' && (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u')
       && isArr(expr[1]) && INT_WIDEN_F32[expr[1][0]]) {
-    return [op === 'f64.convert_i32_u' ? 'f64x2.convert_low_i32x4_u' : 'f64x2.convert_low_i32x4_s', intPairLanes(expr[1])]
+    return [CONVERT_LANES.f64[op], intPairLanes(expr[1])]
   }
 
   // f32-lane: jz computes Float32Array arithmetic in f64, wrapping the f32 load in
@@ -704,7 +704,7 @@ export function liftExprV(expr, ctx) {
       const addr = typeof ld[1] === 'string' && ld[1].startsWith('offset=') ? [w.load, ld[1], ld[2]] : [w.load, ld[1]]
       let v = addr
       for (const step of w.steps) v = [step, v]
-      return [w.cvt === 'u' ? 'f32x4.convert_i32x4_u' : 'f32x4.convert_i32x4_s', v]
+      return [CONVERT_LANES.f32[op], v]
     }
     if (op === 'f64.const') {
       if (!vecState.relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedFloat (f32 round of the constant)')

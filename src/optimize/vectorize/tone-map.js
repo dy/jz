@@ -1,6 +1,6 @@
 import { cloneNode, walkAst, nodeEqual } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet } from './addr-model.js'
-import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
+import { CONVERT_LANES, LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { liftCtx, liftFail, vecState } from './lift.js'
 import { isArr, f64PosInf } from './node-utils.js'
 import { simdBound } from './scaffold.js'
@@ -266,7 +266,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
           (inner[0] === 'local.get' && localKind.get(inner[1]) === 'invariant')))
         return ['f64x2.splat', expr]   // loop-invariant convert: scalar-then-splat, bit-exact
       const a = liftV(inner); if (ctx.fail) return null
-      return [op === 'f64.convert_i32_s' ? 'f64x2.convert_low_i32x4_s' : 'f64x2.convert_low_i32x4_u', a]
+      return [CONVERT_LANES.f64[op], a]
     }
     if (op === 'f64.promote_f32' && isArr(expr[1]) && expr[1][0] === 'f32.load' && expr[1].length === 2)
       return ['f64x2.promote_low_f32x4', ['v128.load64_zero', expr[1][1]]]

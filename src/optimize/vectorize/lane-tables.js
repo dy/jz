@@ -113,15 +113,25 @@ export const LANE_PURE = {
 // Integer-load → f32x4 widening, for `out[i] = intArr[i] (* k)` (Int16Array →
 // Float32Array decode/normalize, the canonical audio/image map). jz emits the
 // scalar as `f64.convert_i32_{s,u}(<intload>(addr))`; lift to: load `lanes` ints,
-// widen to i32x4, then f32x4.convert. `steps` are applied innermost-first.
+// widen to i32x4 (`steps`, applied innermost-first, extend as the load does), then
+// convert as the scalar converts (CONVERT_LANES).
 // `lossy`: i32→f32 rounds (the scalar converts via exact f64 then demotes — double
 // rounding differs by ≤1 ulp), so it needs relaxedFloat; i8/i16 are exact in f32.
 export const INT_WIDEN_F32 = {
-  'i32.load':     { load: 'v128.load',        steps: [],                                                  cvt: 's', lossy: true },
-  'i32.load16_s': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_s'],                        cvt: 's', lossy: false },
-  'i32.load16_u': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_u'],                        cvt: 'u', lossy: false },
-  'i32.load8_s':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s'], cvt: 's', lossy: false },
-  'i32.load8_u':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_u', 'i32x4.extend_low_i16x8_u'], cvt: 'u', lossy: false },
+  'i32.load':     { load: 'v128.load',        steps: [],                                                  lossy: true },
+  'i32.load16_s': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_s'],                        lossy: false },
+  'i32.load16_u': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_u'],                        lossy: false },
+  'i32.load8_s':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s'], lossy: false },
+  'i32.load8_u':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_u', 'i32x4.extend_low_i16x8_u'], lossy: false },
+}
+
+// An integer's lanes converted to a float, as the scalar's conversion reads its i32: signed by
+// `f64.convert_i32_s`, unsigned by `f64.convert_i32_u`, whatever the element. The element decides
+// only how it widens to an i32 (the load's own extension above): a Uint32Array element loads as
+// the same `i32.load` an Int32Array's does, its value 0 to 2^32 - 1 the `_u` conversion's alone.
+export const CONVERT_LANES = {
+  f32: { 'f64.convert_i32_s': 'f32x4.convert_i32x4_s', 'f64.convert_i32_u': 'f32x4.convert_i32x4_u' },
+  f64: { 'f64.convert_i32_s': 'f64x2.convert_low_i32x4_s', 'f64.convert_i32_u': 'f64x2.convert_low_i32x4_u' },
 }
 
 // Horizontal reductions: associative+commutative ops applied to one
