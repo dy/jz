@@ -5,9 +5,9 @@
 // results.json but never the prose doc, so its numbers rot. This refreshes every standard
 // per-case table (median · ×v8 · size · parity) and the V8/AS rows of the aggregate table
 // IN PLACE, preserving each row's label, order, and the bold on the jz row. In the prose it
-// rewrites only the figures marked `<!-- fig:KEY -->…<!-- /fig -->` (README.md, the landing
-// index.html: FIGURES below); --check also emits a best-effort prose-ratio drift warning for
-// the human/CI. test:claims runs --check: a marked figure the dataset does not give fails it.
+// rewrites only the figures marked `<!-- fig:KEY -->…<!-- /fig -->` (bench/README.md, README.md,
+// the landing index.html: FIGURES below); --check also emits a best-effort prose-ratio drift
+// warning for the human/CI. test:claims runs --check: a marked figure the dataset does not give fails it.
 //
 //   node scripts/bench-readme.mjs           # rewrite bench/README.md and the marked figures in place
 //   node scripts/bench-readme.mjs --check   # report drift, exit 1 if any (no write)
@@ -141,7 +141,33 @@ const x2 = v => v > 0 ? `${v.toFixed(2)}×` : '–'
 const xi = v => v > 0 ? `${Math.round(v)}×` : '–'
 const asBytes = Object.values(d.cases).filter(c => correctBenchmarkRow(c.targets?.jz) && correctBenchmarkRow(c.targets?.as) && c.targets.jz.bytes > 0 && c.targets.as.bytes > 0)
   .map(c => c.targets.jz.bytes / c.targets.as.bytes)
+// Facts the docs state that are no measurement: the cases the gate holds pending (its
+// PENDING_CASES, read from its source: the docs name the gate's file as holding them), the
+// release gate's file (package.json's test:claims), and the rivals' releases the dataset measured.
+const listed = ids => ids.length > 1 ? `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}` : ids.join('')
+const pendingCases = () => {
+  const m = readFileSync(join(ROOT, 'test/bench-claims.js'), 'utf8').match(/\nconst PENDING_CASES = new Set\(\[([^\]]*)\]\)/)
+  if (!m) throw Error('test/bench-claims.js: no `const PENDING_CASES = new Set([…])` to read the pending cases from')
+  return listed([...m[1].matchAll(/'([\w-]+)'/g)].map(x => x[1]))
+}
+const claimsGate = () => {
+  const m = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts['test:claims']?.match(/^node (\S+)$/)
+  if (!m) throw Error('package.json: test:claims is not `node <file>`')
+  return `\`${m[1]}\``
+}
+const porfforRelease = () => {
+  const m = d.meta?.versions?.porffor?.match(/^alpha (\d+) \(([0-9a-f]{7,}) (\d{4}-\d{2}-\d{2})\)$/)
+  return m ? `alpha ${m[1]} (\`${m[2]}\`, ${m[3]})` : '–'
+}
+const bendRelease = () => {
+  const v = d.meta?.versions?.bend?.match(/^bend (\d+\.\d+\.\d+)\b/)?.[1]
+  return v ? `[v${v} release](https://github.com/bendlang/bend/releases/tag/v${v})` : '–'
+}
 const FIGURES = {
+  'pending-cases': pendingCases,
+  'claims-gate': claimsGate,
+  'porffor-release': porfforRelease,
+  'bend-release': bendRelease,
   'v8-speed': () => x2(figure(d, 'speed', 'v8')),
   'as-speed': () => x2(figure(d, 'speed', 'as')),
   'nat-speed': () => x2(figure(d, 'speed', 'nat')),
@@ -156,17 +182,17 @@ const FIGURES = {
 const FIG_DOCS = (process.env.JZ_FIG_DOCS ?? (process.env.JZ_BENCH_README ? '' : 'README.md,index.html')).split(',').filter(Boolean)
   .map(f => f.startsWith('/') ? f : join(ROOT, f)).filter(f => existsSync(f))
 const FIG = /<!-- fig:([\w-]+) -->([\s\S]*?)<!-- \/fig -->/g
-const stale = [], figText = new Map()
-for (const doc of FIG_DOCS) {
-  const src = readFileSync(doc, 'utf8')
-  const out = src.replace(FIG, (all, key, was) => {
-    if (!FIGURES[key]) { stale.push(`${doc}: unknown figure '${key}'`); return all }
-    const now = FIGURES[key]()
-    if (now !== was) stale.push(`${doc}: ${key} reads ${was}, the dataset gives ${now}`)
-    return `<!-- fig:${key} -->${now}<!-- /fig -->`
-  })
-  figText.set(doc, out)
-}
+const docs = new Map([[README, text], ...FIG_DOCS.map(doc => [doc, readFileSync(doc, 'utf8')])])
+const stale = []
+const refigure = (doc, src) => src.replace(FIG, (all, key, was) => {
+  if (!FIGURES[key]) { stale.push(`${doc}: unknown figure '${key}'`); return all }
+  const now = FIGURES[key]()
+  if (now !== was) stale.push(`${doc}: ${key} reads ${was}, the dataset gives ${now}`)
+  return `<!-- fig:${key} -->${now}<!-- /fig -->`
+})
+// this README's own figures beside its tables, then the other docs'
+text = refigure(README, text)
+const figText = new Map(FIG_DOCS.map(doc => [doc, refigure(doc, docs.get(doc))]))
 for (const s of stale) console.error('  • ' + s)
 
 if (check) {
