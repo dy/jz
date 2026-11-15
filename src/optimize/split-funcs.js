@@ -745,6 +745,9 @@ function splitFunc(fn, ctx) {
     for (let i = body; i < fn.length; i++) gather(fn[i], false)
     lists.sort((a, b) => b[2] - a[2])
     for (const [list, start] of lists) {
+      // (a list inside a run moved before it left with it: a run moved from it lands in that
+      // piece, where the locals a handler-crossing call adds to this function are none)
+      if (gone.has(list)) continue
       let end = list.length
       while (left > fnTo && end > start) {
         let from = end, s = 0
