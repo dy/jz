@@ -809,6 +809,11 @@ export function promoteGlobals(fn, globalTypes, fx) {
   // A loop the emitter wrapped in a block of its own (`(block $brk … (loop …))`) is copied
   // for ahead of that block, where it is read before anything a later pass lifts to the
   // block's head (LICM's snaps of the copy itself, which would read it unset).
+  // The function's own threshold holds for a loop: a global the function reads under three
+  // times was never worth a copy and is not worth one a loop. A copy in every loop that read
+  // a global put one in `__ptr_offset_fwd`, whose loop follows a forward and runs one round:
+  // the same reads, a local more, and three.js's animation case 7% slower (V8's time; the
+  // helper is called from every array access).
   const decls = []
   const inLoop = (loop) => {
     const reads = new Set(), sets = new Set(), calls = new Set()
@@ -826,7 +831,7 @@ export function promoteGlobals(fn, globalTypes, fx) {
     if (indirect || [...calls].some(c => fx.returns(c) && (fx.writes(c) || fx.header(c)))) return []
     const pre = [], names = new Map()
     for (const g of reads) {
-      if (replacements.has(g) || sets.has(g) || [...calls].some(c => fx.sets(c, g))) continue
+      if (replacements.has(g) || (getCounts.get(g) || 0) < 3 || sets.has(g) || [...calls].some(c => fx.sets(c, g))) continue
       const type = globalTypes?.get(g) || inferTypeFromContext(fn, g, bodyStart)
       if (!type) continue
       const l = `$_pg${localIdx++}`

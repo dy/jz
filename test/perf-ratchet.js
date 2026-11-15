@@ -352,7 +352,11 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 //   the two together (the integration of 2026-11-15, both baselines written from the one
 //            tree, each category the sum of the two changes above): JS host buf 31473/2820,
 //            slice 229548/30144, condref 201555/7441; wasi buf 24683/2820, slice
-//            165804/28448, condref 147298/7441.
+//            165804/28448, condref 147298/7441. Then a loop's copy of a global held to the
+//            function's own threshold of three reads (optimize/globals.js promoteGlobals: a
+//            copy in every loop cost three.js's animation case 7%), which takes back part of
+//            the copies counted above on the JS host: buf 31463, slice 229468, condref
+//            201475, the entered counts and wasi as they were.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}

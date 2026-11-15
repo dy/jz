@@ -14,6 +14,7 @@ import { forwardStores } from '../src/optimize/forward-store.js'
 import { reuseLoads } from '../src/optimize/reuse-loads.js'
 import { forwardCheckedElements } from '../src/optimize/forward-checked.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
+import { promoteGlobals } from '../src/optimize/globals.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const count = (n, op) => !Array.isArray(n) ? 0 : (n[0] === op ? 1 : 0) + n.reduce((s, c) => s + count(c, op), 0)
@@ -239,4 +240,14 @@ export let f = (k) => { let s = 0; for (let i = 0; i < 2; i++) { cb(); s += g[0]
     ex.m = m.m
     is([m.f(1), m.f(0)], [46, 26], `an array the host replaces, at ${optimize}`)
   }
+  // (the function's threshold holds for a loop: a global read once, in a loop that follows
+  // a chain and mostly runs one round, gets no copy; read three times it gets one)
+  const chase = (reads) => ['func', '$f', ['param', '$o', 'i32'], ['result', 'i32'],
+    ['block', '$done', ['loop', '$l',
+      ...Array.from({ length: reads }, () => ['br_if', '$done', ['i32.gt_u', ['local.get', '$o'], ['global.get', '$end']]]),
+      ['br_if', '$l', ['local.tee', '$o', ['i32.load', ['local.get', '$o']]]]]],
+    ['local.get', '$o']]
+  const copies = (fn) => { promoteGlobals(fn, new Map([['$end', 'i32']]), solveEffects([fn])); return fn.filter(n => Array.isArray(n) && n[0] === 'local' && /^\$_pg/.test(n[1])).length }
+  is(copies(chase(1)), 0, 'one read in a loop: no copy')
+  is(copies(chase(3)), 1, 'three reads: a copy')
 })
