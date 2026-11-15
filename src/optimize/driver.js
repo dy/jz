@@ -141,6 +141,7 @@ export const RUN = [
   ['inlinePtrOffsetFast', (fn) => inlinePtrOffsetFastPass(fn)],
 ]
 const STEPS = stage('func', RUN)
+const DROPS_MEM = STEPS.map(e => e.drops.includes('mem'))
 
 /**
  * Run all per-function IR optimizations on a single function node, as the
@@ -176,9 +177,10 @@ export function optimizeFunc(fn, cfg, facts = {}) {
       cfg.inlinePtrOffsetFast === false) return
   const st = {}
   for (let i = 0; i < STEPS.length; i++) if (on(STEPS[i], cfg)) {
-    const was = DBG_INVARIANTS && markCount(fn)
+    const was = DBG_INVARIANTS && !DROPS_MEM[i] && markCount(fn)
     RUN[i][1](fn, cfg, facts, st)
-    // (an access that had a region keeps it: a step that rebuilt one without its mark fails here)
+    // (an access that had a region keeps it: a step that rebuilt one without its mark fails here,
+    // unless its entry in the table says it drops the mark)
     if (was) { const now = markCount(fn); if (was.marked - now.marked > Math.max(0, was.accesses - now.accesses)) throw new Error(`[ir verify] ${RUN[i][0]} dropped the memory marks of ${was.marked - now.marked} accesses in ${fn[1]}`) }
   }
   // An optimizer pass that emits a malformed local — the class that otherwise dies

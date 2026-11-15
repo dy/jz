@@ -109,7 +109,7 @@ export const PASSES = [
   P('unswitchTypedParamLoop', 'func', '+vectorizeLaneLocal unswitchTypedParamLoop', { takes: 'f16' }),
   P('vectorizeLaneLocal', 'func', '+vectorizeLaneLocal', {
     after: [['nanCanon', 'the lifts read the sums, a canon only arithmetic reads gone'], ['pureFuncMap', 'its inline candidates']],
-    takes: 'pureFuncMap loweringLinks typedView warn', reads: 'loweringLinks cold', makes: 'vectorized', drops: 'loweringLinks irange' }),
+    takes: 'pureFuncMap loweringLinks typedView warn', reads: 'loweringLinks cold', makes: 'vectorized', drops: 'loweringLinks irange mem' }),
   P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
   P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
   P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),
@@ -129,11 +129,11 @@ export const PASSES = [
   P('narrowWrappedWords', 'func', 'intNarrow wrappedWords', { after: [['narrowInts', 'a wide integer read only for its low word']], makes: 'wrapped', drops: 'loweringLinks cold' }),
   P('refoldMemargs', 'func', 'intNarrow wrappedWords', { after: [['narrowWrappedWords', 'the addresses it narrowed']], takes: 'wrapped' }),
   P('combineGuards', 'func', 'intNarrow combineGuards', { after: [['narrowInts', 'over the integers: the guards of the copies']], takes: 'copies', reads: 'irange presentNumRead', lost: 'irange presentNumRead' }),
-  P('wideAccumulator', 'func', '+wideAccumulator', { after: [['narrowInts', 'stronger signed-word proofs run first']], drops: 'irange iterRelease' }),
+  P('wideAccumulator', 'func', '+wideAccumulator', { after: [['narrowInts', 'stronger signed-word proofs run first']], drops: 'irange iterRelease mem' }),
   P('narrowFloat32', 'func', 'narrowFloat32', { after: [['vectorizeLaneLocal', 'after the lane lift'], ['devirtFnArrays', 'and the devirtualizations, whose marks its copied nodes keep'], ['devirtSchemaReads', 'the same'], ['narrowInts', 'single-precision locals after the integer registers']], reads: 'irange presentNumRead', drops: 'loweringLinks presentNumRead', lost: 'irange presentNumRead' }),
   P('recursionUnroll', 'func', '+recursionUnroll', { after: [['narrowInts', 'its size gate reads the body as it will be emitted']] }),
   P('foldLoadCasts', 'func', 'fusedRewrite', { after: [['specializeLoops', 'the copies read hit elements bare']], drops: 'schemaSid' }),
-  P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], takes: 'effects', reads: 'mem', drops: 'unsigned presentNumRead wrapSafe cellI32' }),
+  P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], takes: 'effects', reads: 'mem', lost: 'mem', drops: 'unsigned presentNumRead wrapSafe cellI32' }),
   P('narrowByteLoads', 'func', '+reuseLoads', { after: [['reuseLoads', 'a part of a word read alone, the narrow load of it']] }),
   P('settledTests', 'func', 'settledTests', { after: [['combineGuards', 'over the guards every pass above left'], ['specializeLoops', 'the same']] }),
   P('inlinePtrOffsetFast', 'func', '+inlinePtrOffsetFast', {
