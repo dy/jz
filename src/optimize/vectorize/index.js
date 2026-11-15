@@ -48,7 +48,7 @@
 import { DBG_INVARIANTS } from '../../debug.js'
 import { findBodyStart, writtenLocals } from '../../ir.js'
 import { walkAst } from '../../ast.js'
-import { tryChannelReduce } from './blur-channel.js'
+import { channelScan, tryBlurMultiPixel, tryChannelReduce1px } from './blur-channel.js'
 import { canonicalizeCounters } from './counter-run.js'
 import { tryDivergentEscapeVectorize } from './divergent-escape.js'
 import { hoistReductionInvariantsIn, slpPairsIn } from './dot-slp.js'
@@ -60,7 +60,8 @@ import { tryMemCopyFill } from './memcpy.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 import { matchOuterPixelLoop } from './outer-scaffold.js'
 import { tryPairIterations } from './pair-iterations.js'
-import { tryOuterStripRest } from './outer-strip.js'
+import { tryConvColumn, tryIteratedReduce, tryOuterStrip } from './outer-strip.js'
+import { tryPerPixelColor } from './per-pixel-color.js'
 import { tryRampMap } from './ramp.js'
 import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduceBitExact, tryReduceReassoc } from './reduce.js'
@@ -303,8 +304,13 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       take('tryReduceBitExact', of(tryReduceBitExact(bl, fnLocals, freshIdRef)))
       take('tryStencil', of(tryStencil(node, fnLocals, freshIdRef, stencil, up)))
       take('tryRampMap', tryRampMap(node, fnLocals, freshIdRef, outsideReads))
-      take('tryChannelReduce', tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP))
-      take('tryOuterStripRest', tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op))
+      const loose = getBlLoose(), channels = channelScan(loose)
+      if (channels && blurMP) take('tryBlurMultiPixel', tryBlurMultiPixel(node, fnLocals, freshIdRef, loose, channels))
+      if (channels) take('tryChannelReduce1px', tryChannelReduce1px(node, fnLocals, freshIdRef, loose, channels))
+      take('tryPerPixelColor', tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op))
+      take('tryOuterStrip', tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op))
+      take('tryIteratedReduce', tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip, op))
+      take('tryConvColumn', tryConvColumn(node, fnLocals, freshIdRef, outerStrip, op))
       take('tryToneMap', of(tryToneMap(up, fnLocals, freshIdRef, toneMap)))
       take('tryGeneralMap', of(tryGeneralMap(node, fnLocals, freshIdRef, getBlRun())))
       take('tryGeneralStencil', of(tryGeneralStencil(node, fnLocals, freshIdRef, stencil, up)))

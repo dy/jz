@@ -63,11 +63,11 @@ function matchChannelGroup(body) {
 }
 
 // Class-A hoist (.work/evidence.md §BodyModel §1a/§5 slice 3): the init+inner-loop-locate scan
-// tryBlurMultiPixel and tryChannelReduce each ran over their pixel-loop body — locate four
+// tryBlurMultiPixel and tryChannelReduce1px each ran over their pixel-loop body — locate four
 // consecutive `acc_c = 0` inits, then the `(block (loop))` immediately after them, then the
 // channel-accumulation group inside it via matchChannelGroup, then verify the summed
 // accumulators are exactly the four zero-inited ones. Functionally identical between the two
-// callers (tryChannelReduce's z-push carried one extra `typeof s[1] === 'string'` guard that's
+// callers (tryChannelReduce1px's z-push carried one extra `typeof s[1] === 'string'` guard that's
 // always true for a `local.set`'s name slot — dead, not a behavior difference; the shared version
 // below keeps it, matching the codebase's prevailing name-narrowing convention). Returns
 // `{ initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp }` or `null`.
@@ -123,17 +123,14 @@ function matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd) {
 // read 4 CONSECUTIVE source pixels — one 16-byte v128.load whose lanes map DIRECTLY
 // to the 4 accumulators (no shuffle). Sums (≤ win·255 < 2^16) accumulate in two
 // i16x8 vectors; the divide+store reuses the scalar store templates per pixel.
-// Validated bit-exact + 4.34× vs scalar. Bails (→ tryChannelReduce 1-pixel lift)
+// Validated bit-exact + 4.34× vs scalar. Declines (the 1-pixel lowering lifts what it may)
 // unless the body is exactly: clamp-free `xi=x+k; p=(row+xi)<<2; acc_c += u8[base+c]`
 // over a unit-stride x, then a 4-byte RGBA store `dst[ab1+c] = f(acc_c)`. r≥127 →
 // i16 overflow → bail. Leaves a scalar remainder loop for the ≤3 trailing pixels.
-// 4px/step tier of the unified CHANNEL-REDUCE recognizer (see `tryChannelReduce` below,
-// the dispatch entry). Takes the ALREADY-COMPUTED `scan` (matchChannelReducePixelLoop),
-// shared with the 1px/step tier (`tryChannelReduce1px`) so the dispatch entry runs the
-// scan exactly once instead of each tier separately re-deriving it on a blur-tier bail
-// (design §2 "CHANNEL-REDUCE … nearly free" merge).
+// The 4px/step lowering of a channel reduction, over the scan (channelScan below) the
+// 1px/step one reads too: the chooser scans a loop once and asks both (index.js).
 
-function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
+export function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // Loose-envelope scaffold, matched once at the dispatch (LoopPlan); its exit and step
   // read by the shared readers (addr-model.js): the exit's label any, `i32.lt_s` only.
   const { loopNode, endIdx } = bl
@@ -277,7 +274,7 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   for (let j = 0; j < 4; j++) {
     const vec = j < 2 ? accLo : accHi, base = (j % 2) * 4
     // lane base+c summed source byte at offset c → grp.accs[c] (the accumulator
-    // tied to read-offset c), NOT accInits[c] (zero-init order); see tryChannelReduce.
+    // tied to read-offset c), NOT accInits[c] (zero-init order); see tryChannelReduce1px.
     for (let c = 0; c < 4; c++) epilogue.push(['local.set', grp.accs[c], ['i16x8.extract_lane_u', String(base + c), ['local.get', vec]]])
     for (let c = 0; c < 4; c++) epilogue.push(['i32.store8', `offset=${j * 4 + c}`, ['local.get', ab1], storeVals[c]])
   }
@@ -319,14 +316,12 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   return { wrapper, newLocalDecls }
 }
 
-// 1px/step tier of the unified CHANNEL-REDUCE recognizer (see `tryChannelReduce` below,
-// the dispatch entry) — the fallback of `tryBlurMultiPixel`'s 4px/step tier. Takes the
-// ALREADY-COMPUTED `scan` (matchChannelReducePixelLoop), shared with the 4px tier.
+// The 1px/step lowering of a channel reduction, over the scan the 4px one reads (channelScan).
 // Loose envelope: LICM may hoist an invariant edge-clamp bound ahead of the loop when
 // this pixel loop nests in an outer row loop; preserved verbatim by the wrapper rebuild.
 // Unlike tryBlurMultiPixel this never validates the exit/inc shape — it trusts
 // `bodyStart..bodyEnd` as the body outright. Loose scaffold from the dispatch.
-function tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan) {
+export function tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan) {
   const { loopNode } = bl
   const { initIdx, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp } = scan
 
@@ -370,26 +365,10 @@ function tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan) {
   return { wrapper, newLocalDecls, ordered: true }
 }
 
-// ---- Unified CHANNEL-REDUCE recognizer (dispatch entry) ---------------------
-//
-// One recognizer, two codegen tiers (design §2 "CHANNEL-REDUCE (#13-14) → 1 general
-// recognizer … nearly free" — tryBlurMultiPixel's own doc already called itself "the
-// fast tier of tryChannelReduce", bailing to it on any deviation). The ONE shared
-// structural scan (matchChannelReducePixelLoop) runs ONCE here instead of each tier
-// separately re-deriving it on a blur-tier bail (today's redundant double-scan when
-// blurMP's own later guards — clamp-free interior, tap-loop shape, RGBA store match —
-// fail after the scan already succeeded). Same dispatch order as before the merge
-// (`(blurMP ? tryBlurMultiPixel(...) : null) ?? tryChannelReduce(...)`), so behavior
-// is unchanged by construction — pure entry-point + shared-scan consolidation.
-export function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl, blurMP) {
+// The pixel loop both channel tiers read (matchChannelReducePixelLoop), scanned once a loop.
+export function channelScan(bl) {
   if (!bl) return null
   const { loopNode, endIdx } = bl
   const bodyStart = 3, bodyEnd = endIdx - 1   // [exit] at 2, [inc?][br] at the end
-  const scan = matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)
-  if (!scan) return null
-  if (blurMP) {
-    const r = tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan)
-    if (r) return r
-  }
-  return tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan)
+  return matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd)
 }

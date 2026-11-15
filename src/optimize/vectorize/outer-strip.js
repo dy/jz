@@ -3,7 +3,6 @@ import { collectWrites, hasSideEffect, isI32Const, isLocalGet, matchIncN } from 
 import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 import { CMP_LANE, buildPivotCoeff, bumpPixelIV, epilogueIsSafe, pixelShared, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
-import { tryPerPixelColor } from './per-pixel-color.js'
 import { matchBlockLoop, stripBlock } from './scaffold.js'
 
 // ---- Outer-loop strip-mine over an inner reduction (tryOuterStrip, experimental) ----
@@ -21,7 +20,7 @@ import { matchBlockLoop, stripBlock } from './scaffold.js'
 // fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
 // only the f64 body lifts. Bases that may be one array are tested at the strip (alias.js gateStrips).
 // Gated behind cfg.outerStrip until proven across the corpus.
-function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
+export function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
   if (!outer) return null
   const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
@@ -231,7 +230,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
 // (the helpers never trap). Gated behind cfg.outerStrip; only fires when an inner loop
 // carries a transcendental (the latency-bound work SIMD actually accelerates — cheap-arithmetic
 // pixel loops are left to the scalar JIT, which already pipelines independent iterations).
-function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
+export function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
   if (!outer) return null
   const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
@@ -423,7 +422,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
 // BIT-EXACT: integer arithmetic reorders nothing — each lane's i32 sum equals the scalar f64's exact
 // integer, and ToInt32(acc)>>SHIFT == lane>>SHIFT. Gated behind cfg.outerStrip. ~5×
 // over the scalar reduction (the serial f64 add-chain is latency-bound; 8 columns hide it).
-function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
+export function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
   if (!outer) return null
   const { oLabel, loopNode, preamble, pixelIVs, pxVar, widthBound, pivType, obody, oExit, innerIdxs } = outer
@@ -552,38 +551,5 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 8)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
   return { wrapper, newLocalDecls, inductions: pixelIVs.map(p => p.name), inOrder: epilogue }
-}
-
-// ---- Unified OUTER-STRIP recognizer (dispatch entry) -------------------------
-//
-// Design §2 "OUTER-STRIP (#8-12, 5 recognizers, 11 reach) → 2 general recognizers": all 5
-// already share the outer-pixel scaffold (matchOuterPixelLoop / `op` — bumpPixelIV,
-// epilogueIsSafe, PPC_CALL2, LANE_PURE.f64/CMP_LANE); only "what happens inside the outer
-// body" is bespoke per function. The design's proposed 2-way split is semantic (masked-
-// divergent {tryDivergentEscapeVectorize, tryIteratedReduce} vs. straight-line/reduction
-// {tryPerPixelColor, tryOuterStrip, tryConvColumn}) — but that grouping does NOT match the
-// current dispatch chain's total order (divergent-escape, per-pixel-color, outer-strip,
-// iterated-reduce, conv-column): tryIteratedReduce sits BETWEEN tryOuterStrip and
-// tryConvColumn, interleaved with the "straight-line" group, not adjacent to
-// tryDivergentEscapeVectorize. Ledger decision (.work/evidence.md): grouping by the
-// design's semantic split was tried first and FAILED the byte-identity gate —
-// examples/interference (tryOuterStrip's sole specimen) started matching
-// tryIteratedReduce instead once iterated-reduce moved earlier (both produce the identical
-// f64x2 lockstep lift, differing only in local-name prefix — `$__os*` vs `$__ir*` — a pure
-// recognizer-identity swap, WAT-diffed to confirm: same line count, same op sequence, 82
-// changed lines all naming-only). Landed the SAFE alternative instead: `tryDivergentEscapeVectorize`
-// stays a standalone dispatch call at its original position (unchanged — cheapest, zero
-// reordering risk, it was already first), and the remaining 4 — tryPerPixelColor,
-// tryOuterStrip, tryIteratedReduce, tryConvColumn — merge into ONE recognizer
-// (`tryOuterStripRest`) in their EXACT original relative order, so total dispatch order is
-// byte-for-byte unchanged. This is 5 recognizers → 2 dispatch entries (the design's own
-// stated unit, §1: "recognizer = dispatch-chain entry"), just not split along the design's
-// semantic axis — coverage-preserving by construction (order-identical), not by re-derived
-// preconditions. Gate: 130/130 byte-identical, incl. examples/interference unchanged.
-export function tryOuterStripRest(blockNode, fnLocals, freshIdRef, pureFuncMap, outerStrip, outer) {
-  return tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer)
-    ?? tryOuterStrip(blockNode, fnLocals, freshIdRef, outerStrip, outer)
-    ?? tryIteratedReduce(blockNode, fnLocals, freshIdRef, outerStrip, outer)
-    ?? tryConvColumn(blockNode, fnLocals, freshIdRef, outerStrip, outer)
 }
 

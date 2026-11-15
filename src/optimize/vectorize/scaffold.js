@@ -38,7 +38,7 @@ import { helperKind } from '../effects.js'
  *
  * Four opt-ins below cover recognizers whose acceptance genuinely differs; see each for
  * its exact contract: `opts.multiInc` (tryRampMap), `opts.ivRun` (tryGeneralMap), `opts.envelope: 'loose'`
- * (tryBlurMultiPixel/tryChannelReduce), `opts.envelope: 'pixelIV'` (matchOuterPixelLoop).
+ * (tryBlurMultiPixel/tryChannelReduce1px), `opts.envelope: 'pixelIV'` (matchOuterPixelLoop).
  */
 // A transparent block — no label (first child isn't a `$label` string) and no result — is
 // pure statement grouping: wasm locals are function-scoped, and an unlabeled resultless block
@@ -350,7 +350,7 @@ export function matchBlockLoop(blockNode, opts = {}, desc = describeLoop(blockNo
     return { blockNode, blockLabel, loopNode, loopLabel, endIdx, preamble }
   }
 
-  // envelope: 'loose' (tryBlurMultiPixel/tryChannelReduce) tolerates ANY non-loop content
+  // envelope: 'loose' (tryBlurMultiPixel/tryChannelReduce1px) tolerates ANY non-loop content
   // anywhere — before or after the loop — with no validation at all.
   if (opts.envelope === 'loose') return { blockNode, blockLabel, loopNode, loopLabel, endIdx }
 
