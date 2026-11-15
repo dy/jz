@@ -278,6 +278,7 @@ const TESTS = [
   'vector-alias-population',
   'vector-order-population',
   'vector-narrow-population',
+  'alias-fuzz-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
