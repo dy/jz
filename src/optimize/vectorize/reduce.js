@@ -641,9 +641,9 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
         ...order.map(k => ['local.set', s[1], [op, ['local.get', s[1]], ['f64x2.extract_lane', k, ['local.get', cV]]]]))
     } else {
       const tv = fresh()
-      laneV.set(s[1], tv)
       const v = lift(s[2])
       if (bad) return null
+      laneV.set(s[1], tv)
       lifted.push(['local.set', tv, v])
     }
   }
