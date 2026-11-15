@@ -412,3 +412,24 @@ test('split bindings: an array that may be missing is read as written, in one lo
   const loops = (optimize) => (funcWat(wat(docs, { optimize }), 'f').match(/\(loop\b/g) || []).length
   for (const level of levels(2, 'size')) is(loops(level), loops({ level, splitBindings: false }), `O${level}: no loop is copied for a row that may be missing`)
 })
+
+// A list keeps an empty statement where an earlier pass folded one away: a
+// conditional whose test the argument's kind decides, in a function spliced into
+// its caller (`if (typeof v === 'object') v.x = 'str'` called with a closure). The
+// split read the statement's operator without asking whether there was one, and
+// the compile stopped on an internal error at levels 2 and over.
+test('split bindings: a statement folded away is an empty statement of the list', () => {
+  const programs = {
+    'a closure where an object is tested for': `let sink = (v) => { if (typeof v === 'object') v.x = 'str' }
+      export let f = () => { sink((a) => a + 1); return 0 }`,
+    'a number and a closure through a caller': `let sink = (v) => { if (v !== null && typeof v === 'object' && !Array.isArray(v)) v.x = 'str' }
+      let pass = (o) => { sink(o); return 0 }
+      export let f = () => { let a = 7, b = (a) => a + 1; return pass(a) + pass(b) }`,
+    'a string and a number': `let sink = (v) => { if (typeof v === 'object') v.x = 'str' }
+      export let f = () => { let a = 's', b = 7; sink(a); sink(b); return typeof a + typeof b }`,
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const want = oracle(src).f()
+    for (const optimize of levels(0, 2, 3)) is(run(src, { optimize }).f(), want, `${name}, O${optimize}`)
+  }
+})

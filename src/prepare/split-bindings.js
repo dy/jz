@@ -162,7 +162,7 @@ export function splitReassigned(fn, nested = false) {
         const v = versionRest(out ?? list, k, names, null, name => mine(name, declared, out ?? list, k))
         if (v) { out = v; break }
       }
-      if (s[0] !== 'if' || !view) continue
+      if (!Array.isArray(s) || s[0] !== 'if' || !view) continue   // (a statement folded away is an empty one)
       // the join is declared apart only where it is narrower than the binding's own kind
       const assigned = assignedIn(s), joined = []
       for (const name of assigned) if (!captured.has(name) && mine(name, declared, out ?? list, k) && !joined.includes(name) && narrower(exitKind(s, name), view.kindOf(rootOf(name)))) joined.push(name)
