@@ -1,0 +1,7 @@
+// Fixture program whose output is wrong under jz on purpose: `(-Infinity) ** 0.5` is
+// Infinity in JavaScript and NaN in jz when this was written, so the sum prints otherwise.
+const n = +process.argv[2]
+const values = [4, 9, -Infinity, 16]
+let sum = 0
+for (let r = 0; r < n; r++) for (let i = 0; i < values.length; i++) sum += values[i] ** 0.5 / n
+console.log(sum)

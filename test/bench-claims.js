@@ -20,15 +20,17 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
-import { baseOf, CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, claimOf, CONTESTED_FLOOR, contenders, exceptionsOf, FAST_RIVALS, JIT_RIVALS, LANE_CMDS, LANE_FLAGS, PARITY_EXEMPT, unmetOf, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { baseOf, CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, claimOf, CONTESTED_FLOOR, contenders, exceptionsOf, FAST_RIVALS, JIT_RIVALS, LANE_CMDS, LANE_FLAGS, PARITY_EXEMPT, SOURCE_SCOPE, unmetOf, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { appendEntries, chainProblems, contactProblems, entryProblems, heldoutFigures, LANES, MANIFEST, RECORD, registrationProblem, registrationProblems, rowOf } from '../bench/heldout/lane.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
@@ -75,7 +77,7 @@ const SIZE_GEOMEAN_MAX = 1.05
 // change emitted code — and layout.js). Kept as an explicit list because the
 // repo also holds non-codegen trees (tests/site/bench evidence); the watr
 // version is additionally cross-checked against the snapshot's meta below.
-const SOURCE_SCOPE = ['src', 'module', 'jzify', 'index.js', 'interop.js', 'wasi.js', 'layout.js', 'layout-kinds.js', 'err-codes.js', 'package.json', 'package-lock.json']
+// The list is bench/claims.mjs SOURCE_SCOPE, which the held-out lane shares.
 
 const resultsPath = process.env.JZ_BENCH_RESULTS || join(ROOT, 'bench/results.json')
 const res = JSON.parse(readFileSync(resultsPath, 'utf8'))
@@ -770,4 +772,233 @@ test(`claims: size — jz geomean bytes vs AssemblyScript stays within the ${SIZ
   const geomean = Math.exp(ratios.reduce((a, r) => a + Math.log(r), 0) / ratios.length)
   console.log(`  size geomean jz/as: ${geomean.toFixed(3)}× (${smaller}/${ratios.length} cases smaller)`)
   ok(geomean <= SIZE_GEOMEAN_MAX, `size geomean jz/as ${geomean.toFixed(3)}× exceeds the ${SIZE_GEOMEAN_MAX}× par band`)
+})
+
+// ── The held-out lane (bench/heldout/manifest.json, bench/heldout/lane.mjs): programs jz was
+// never tuned on, measured once on first contact by .github/workflows/heldout.yml, the only
+// writer of the record (bench/heldout.json). With no record the lane is unmeasured. Its
+// fixture (bench/heldout/fixture: programs in the sets' shapes, written for these tests)
+// stands in for the sets, which are never read here.
+const HELDOUT = JSON.parse(readFileSync(join(ROOT, MANIFEST), 'utf8'))
+const FIXTURE = 'bench/heldout/fixture/manifest.json'
+const FIXTURE_MANIFEST = JSON.parse(readFileSync(join(ROOT, FIXTURE), 'utf8'))
+const programCount = m => m.sets.reduce((n, s) => n + s.programs.length, 0)
+
+test('heldout: the record holds, or the lane is unmeasured', () => {
+  const path = join(ROOT, RECORD)
+  if (!existsSync(path)) { ok(true, `the held-out lane is unmeasured: no ${RECORD} yet`); return }
+  const { entries } = JSON.parse(readFileSync(path, 'utf8'))
+  const problems = [...chainProblems(entries), ...contactProblems(entries), ...entryProblems(entries, HELDOUT), ...registrationProblems(entries)]
+  ok(problems.length === 0, `${RECORD} does not hold (${problems.length}):\n${problems.slice(0, 12).join('\n')}`)
+  console.log(`  held-out: ${entries.length} entries, ${entries.filter(e => e.contact === 'first').length} first contacts of ${programCount(HELDOUT)} programs`)
+})
+
+test('heldout: the manifest pins every program of each set, how it is run and how it is checked', () => {
+  const ids = new Set()
+  for (const set of HELDOUT.sets) {
+    ok(/^[\w.-]+\/[\w.-]+$/.test(set.repo) && /^[0-9a-f]{40}$/.test(set.commit), `${set.id}: an upstream repository at a full commit`)
+    ok(set.licence?.path && /^[0-9a-f]{40}$/.test(set.licence.blob) && set.licence.states, `${set.id}: its licence as its own file states it`)
+    ok(set.programs.length > 0, `${set.id}: its programs`)
+    for (const p of set.programs) {
+      ok(!ids.has(p.id) && p.id.startsWith(`${set.id}-`), `${p.id}: one id, its set's`)
+      ids.add(p.id)
+      ok(/^[0-9a-f]{40}$/.test(p.blob) && p.path, `${p.id}: pinned by its blob id`)
+      ok(set.interface === 'awfy' ? Number.isInteger(p.inner)
+        : set.interface === 'clbg' ? p.arg != null && set.checks.some(c => c.path === p.check?.path) : false, `${p.id}: how it is run and checked`)
+    }
+  }
+  const about = HELDOUT.about.join(' ')
+  ok(about.includes('needs new programs registered for it'), 'the header says a release that quotes the lane needs new programs')
+  ok(about.includes('What no test can hold, the owner keeps'), 'and names the rule no test can hold')
+})
+
+const heldoutCli = (...args) => spawnSync(process.execPath, [join(ROOT, 'scripts/heldout.mjs'), ...args],
+  { cwd: ROOT, encoding: 'utf8', timeout: 300_000, env: { ...process.env, GITHUB_STEP_SUMMARY: '' } })
+
+test('heldout: drivers made from each set\'s interface pass V8\'s check, and a file not as pinned is refused (the fixture)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-heldout-'))
+  try {
+    const M = `--manifest=${FIXTURE}`, R = `--record=${join(dir, 'record.json')}`
+    const made = (src, cases) => {
+      for (const r of [heldoutCli('fetch', join(dir, src), M, R), heldoutCli('generate', join(dir, src), join(dir, cases), M)]) is(r.status, 0, r.stderr)
+      return JSON.parse(readFileSync(join(dir, cases, 'index.json'), 'utf8'))
+    }
+    const index = made('src', 'cases')
+    is(index.programs.filter(p => p.driver).length, programCount(FIXTURE_MANIFEST), 'a driver for every program')
+    const check = heldoutCli('check', join(dir, 'cases'), join(dir, 'src'), M)
+    is(check.status, 0, `V8 runs every driver and passes each set's check:\n${check.stdout}${check.stderr}`)
+    is(made('src2', 'cases2').programs.map(p => p.driver).join(), index.programs.map(p => p.driver).join(), 'the same pinned files make the same drivers wherever they are made')
+    const driver = readFileSync(join(dir, 'cases/fx-clbg-bitmap/fx-clbg-bitmap.js'), 'utf8')
+    ok(/\nimport \{[^}]+\} from '\.\.\/_lib\/benchlib\.js'\n/.test(driver) && /\nexport \{ run as main \}\n$/.test(driver), 'a driver is a case as bench.mjs takes one')
+    const m = JSON.parse(readFileSync(join(ROOT, FIXTURE), 'utf8'))
+    m.sets[0].programs[0].blob = '0'.repeat(40)
+    writeFileSync(join(dir, 'other.json'), JSON.stringify(m))
+    const other = heldoutCli('fetch', join(dir, 'src3'), `--manifest=${join(dir, 'other.json')}`, R)
+    ok(other.status !== 0 && other.stderr.includes('the manifest pins'), 'a file other than its pinned blob is refused')
+    writeFileSync(join(dir, 'record.json'), JSON.stringify({ entries: [{ source: { repo: `local:${m.sets[0].local}`, path: m.sets[0].programs[0].path, sha256: 'f'.repeat(64) }, files: {} }] }))
+    const changed = heldoutCli('fetch', join(dir, 'src4'), M, R)
+    ok(changed.status !== 0 && changed.stderr.includes('the record first stored'), 'a file other than the sha256 the record first stored is refused')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// The fixture's run, its rows as bench.mjs wrote them on an Apple M4 Max (jz, jz-exact and
+// V8 measured, paired; porf-native and jsc stand-in failures of their own kinds): the
+// AWFY-shaped programs do not compile under jz (esbuild's CommonJS wrapper, `summary: no
+// fixpoint`), nor does cores (Node's own modules), roots is wrong under jz, harmonic and
+// bitmap run.
+const FIXTURE_RUN = (() => {
+  const fail = (reason, stage) => ({ status: 'fail', reason, ...(stage && { stage }) })
+  const noFixpoint = fail('summary: no fixpoint\n    at solve (src/summary/solve.js)', 'build')
+  const noModule = fail('Unknown module \'node:module\': not a built-in and not registered', 'build')
+  return {
+    'fx-clbg-cores': { jz: noModule, 'jz-exact': noModule, v8: { medianUs: 90, parity: 'ok' } },
+    'fx-awfy-squares': { jz: noFixpoint, 'jz-exact': noFixpoint, v8: { medianUs: 36, parity: 'ok' } },
+    'fx-awfy-evaluated': { jz: noFixpoint, 'jz-exact': noFixpoint, v8: { medianUs: 2, parity: 'ok' } },
+    'fx-clbg-harmonic': { jz: { medianUs: 350, parity: 'ok' }, 'jz-exact': { medianUs: 353, parity: 'ok' }, v8: { medianUs: 368, parity: 'ok' }, 'porf-native': fail('timeout after 300s', 'timeout') },
+    'fx-clbg-bitmap': { jz: { medianUs: 332, parity: 'ok' }, 'jz-exact': { medianUs: 350, parity: 'ok' }, v8: { medianUs: 212, parity: 'ok' }, jsc: fail('exit 3: Exception: TypeError: undefined is not a function') },
+    'fx-clbg-roots': { jz: { medianUs: 11, parity: 'DIFF' }, 'jz-exact': { medianUs: 11, parity: 'DIFF' }, v8: { medianUs: 23, parity: 'ok' } },
+  }
+})()
+const fixtureEntries = () => FIXTURE_MANIFEST.sets.flatMap(set => set.programs.map(p => ({
+  program: p.id, set: set.id,
+  source: { repo: `local:${set.local}`, commit: null, path: p.path, blob: p.blob, sha256: 'e'.repeat(64) },
+  files: {}, driver: 'd'.repeat(64), compiler: 'c'.repeat(40), registered: 'c'.repeat(40), contact: 'first',
+  run: { id: 'fixture', url: null, date: '2026-11-15 05:00 UTC', machine: { platform: 'darwin', arch: 'arm64', cpu: 'Apple M4 Max' }, versions: { node: 'v24.11.1' } },
+  oracle: { checksum: 1, check: 'ok' },
+  rows: Object.fromEntries(LANES.map(lane => [lane, rowOf(FIXTURE_RUN[p.id][lane], true)])),
+})))
+
+test('heldout: every lane\'s failure is a row of its kind (the fixture\'s run)', () => {
+  const rows = Object.fromEntries(fixtureEntries().map(e => [e.program, e.rows]))
+  is(rows['fx-awfy-evaluated'].jz.result, 'compile', 'a build that fails: does not compile')
+  is(rows['fx-awfy-evaluated'].jz.message, 'summary: no fixpoint', 'with the message\'s first line')
+  is(rows['fx-clbg-roots'].jz.result, 'wrong', 'a result the oracle does not give: wrong')
+  is(rows['fx-clbg-harmonic']['porf-native'].result, 'timeout', 'a run past the limit: timeout')
+  is(rows['fx-clbg-bitmap'].jsc.result, 'trap', 'a run that fails: traps')
+  is(rows['fx-clbg-bitmap'].deno.result, 'absent', 'a lane that did not run: a row that says so')
+  is(rows['fx-clbg-cores'].jz.message, 'Unknown module \'node:module\': not a built-in and not registered', 'a program that needs Node\'s modules does not compile under jz')
+  is(rows['fx-clbg-harmonic'].jz.result, 'ok')
+  is(rowOf({ medianUs: 5, parity: 'ok' }, false).result, 'unverified', 'a result is not known right where V8 fails the set\'s own check')
+  is(rowOf({ medianUs: 5, parity: 'unclassified' }, true).result, 'unverified', 'nor where V8 gave no oracle')
+})
+
+test('heldout: the record\'s chain, contacts and entries hold, and each way of breaking them fails (the fixture)', () => {
+  const good = appendEntries([], fixtureEntries()), e = fixtureEntries()
+  is([...chainProblems(good), ...contactProblems(good), ...entryProblems(good, FIXTURE_MANIFEST)].join('\n'), '', 'the fixture\'s record holds')
+  const edited = good.map((x, i) => i === 2 ? { ...x, rows: { ...x.rows, jz: { result: 'ok', medianUs: 1 } } } : x)
+  ok(chainProblems(edited).some(p => p.startsWith('entry 3')), 'an entry edited after it was stored breaks the chain')
+  ok(chainProblems(good.slice(1)).length > 0, 'and so does one removed')
+  ok(contactProblems(appendEntries(good, [e[4]])).some(p => p.includes('a second first contact of fx-clbg-roots')), 'a program measured again is no second first contact')
+  is(contactProblems(appendEntries(good, [{ ...e[4], contact: 'tuned' }])).length, 0, 'it is stored beside the first, marked tuned')
+  ok(contactProblems(appendEntries([], [{ ...e[0], contact: 'tuned' }])).length > 0, 'and tuned with no first contact before it fails')
+  ok(entryProblems(appendEntries([], [{ ...e[2], rows: { jz: { result: 'ok' } } }]), FIXTURE_MANIFEST).some(p => p.includes('deno has no row')), 'every lane has a row')
+  ok(entryProblems(appendEntries([], [{ ...e[1], rows: { ...e[1].rows, jz: { result: 'compile' } } }]), FIXTURE_MANIFEST).some(p => p.includes('says nothing of why')), 'a failure says why')
+  ok(entryProblems(appendEntries([], [{ ...e[0], source: { ...e[0].source, blob: '0'.repeat(40) } }]), FIXTURE_MANIFEST).some(p => p.includes('the manifest pins')), 'an entry measured the program the manifest pins')
+})
+
+test('heldout: the record job appends each run to main\'s record, chained, and leaves the checkout alone (a bare origin)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-heldout-publish-'))
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@example.com', GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@example.com', GITHUB_STEP_SUMMARY: '' }
+  const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  try {
+    const origin = join(dir, 'origin.git'), work = join(dir, 'work')
+    git(dir, 'init', '--quiet', '--bare', '-b', 'main', origin)
+    git(dir, 'clone', '--quiet', origin, work)
+    const add = (files, message) => {
+      for (const f of files) { mkdirSync(dirname(join(work, f)), { recursive: true }); if (f !== 'package.json') copyFileSync(join(ROOT, f), join(work, f)) }
+      git(work, 'add', '--', ...files)
+      git(work, 'commit', '--quiet', '-m', message)
+      return git(work, 'rev-parse', 'HEAD')
+    }
+    writeFileSync(join(work, 'package.json'), '{"type":"module"}')
+    add(['package.json', 'scripts/heldout.mjs', 'bench/heldout/lane.mjs', 'bench/claims.mjs', 'assets/headline.js', 'bench/_lib/benchlib.js'], 'the scripts')
+    const registered = add([FIXTURE], 'register the fixture')
+    git(work, 'push', '--quiet', 'origin', 'main')
+    // one run's evidence, as the measuring job uploads it
+    const cases = join(dir, 'run/cases'), bench = join(dir, 'run/bench.json')
+    mkdirSync(cases, { recursive: true })
+    const programs = FIXTURE_MANIFEST.sets.flatMap(set => set.programs.map(p => ({ id: p.id, set: set.id, interface: set.interface, path: p.path, blob: p.blob,
+      sha256: 'e'.repeat(64), source: { repo: `local:${set.local}`, commit: null }, files: {}, driver: 'd'.repeat(64) })))
+    writeFileSync(join(cases, 'index.json'), JSON.stringify({ manifest: FIXTURE, esbuild: '0.28.2', programs }))
+    writeFileSync(join(cases, 'check.json'), JSON.stringify(Object.fromEntries(programs.map(p => [p.id, 'ok']))))
+    writeFileSync(bench, JSON.stringify({ meta: { commit: registered.slice(0, 9), date: '2026-11-15 05:00 UTC', host: { platform: 'linux', arch: 'x64', cpu: 'fixture' }, versions: { node: 'v24.11.1', jz: '1.0.3' } },
+      cases: Object.fromEntries(programs.map(p => [p.id, { ref: 1, targets: FIXTURE_RUN[p.id] }])) }))
+    const publish = () => spawnSync(process.execPath, [join(work, 'scripts/heldout.mjs'), 'record', cases, bench, `--manifest=${FIXTURE}`, '--publish'], { cwd: work, encoding: 'utf8', env })
+    const onMain = () => JSON.parse(execFileSync('git', ['--git-dir', origin, 'show', 'main:bench/heldout.json'], { encoding: 'utf8' })).entries
+    const r = publish()
+    is(r.status, 0, r.stdout + r.stderr)
+    const first = onMain()
+    is(first.length, programCount(FIXTURE_MANIFEST), 'an entry a program')
+    ok(first.every(e => e.contact === 'first' && e.registered === registered && e.compiler === registered), 'each a first contact of the compiler it was registered under')
+    is(chainProblems(first).join('\n'), '', 'chained')
+    ok(!existsSync(join(work, 'bench/heldout.json')) && git(work, 'rev-parse', 'HEAD') === registered, 'the checkout stays as it was')
+    const again = publish()
+    is(again.status, 0, again.stdout + again.stderr)
+    const both = onMain()
+    ok(both.length === 2 * first.length && both.slice(first.length).every(e => e.contact === 'tuned'), 'a program run again is stored beside its first contact, as tuned')
+    is([...chainProblems(both), ...contactProblems(both)].join('\n'), '', 'and the record holds')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('heldout: a first contact measures the compiler its program was registered under (git)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-heldout-git-'))
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd: dir, encoding: 'utf8' }).trim()
+  const commit = (files, message) => {
+    for (const [f, s] of Object.entries(files)) { mkdirSync(dirname(join(dir, f)), { recursive: true }); writeFileSync(join(dir, f), s) }
+    git('add', '--', ...Object.keys(files))
+    git('commit', '-q', '-m', message)
+    return git('rev-parse', 'HEAD')
+  }
+  try {
+    git('init', '-q')
+    const manifest = date => `{"sets":[{"programs":[\n{"id":"fx-p","registered":"${date}"}\n]}]}\n`
+    const c0 = commit({ 'src/a.js': '1\n' }, 'the compiler')
+    const c1 = commit({ [MANIFEST]: manifest('d1') }, 'register fx-p')
+    const c2 = commit({ 'README.md': 'docs\n' }, 'docs')
+    const c3 = commit({ 'src/a.js': '2\n' }, 'a compiler change')
+    const c4 = commit({ [MANIFEST]: manifest('d2') }, 'register fx-p again')
+    const c5 = commit({ [MANIFEST]: manifest('d3'), 'src/a.js': '3\n' }, 'register fx-p beside a compiler change')
+    const at = c => registrationProblem('fx-p', c, { cwd: dir })
+    ok(at(c0).problem?.includes('does not register it'), 'a contact before its registration is refused')
+    is(at(c1).problem, null, 'one at its registration is not')
+    is(at(c2).registered, c1, 'its registration is the last commit that changed its line')
+    is(at(c2).problem, null, 'and one after it, with no compiler change, is not')
+    ok(at(c3).problem?.includes('compiler source changed'), 'one after a compiler change is refused')
+    is(at(c4).registered, c4, 'a registration again moves it')
+    is(at(c4).problem, null, 'and the contact after it stands')
+    ok(at(c5).problem?.includes('changes compiler source'), 'a registration that changes the compiler is refused')
+    const first = (compiler, registered) => ({ program: 'fx-p', contact: 'first', compiler, registered })
+    is(registrationProblems([first(c2, c1)], { cwd: dir }).length, 0, 'the gate holds a first contact of its registration\'s compiler')
+    is(registrationProblems([first(c3, c1)], { cwd: dir }).length, 1, 'and fails one of a compiler changed since')
+    is(registrationProblems([first(c2, c0)], { cwd: dir }).length, 1, 'and one that records another registration than git gives')
+    is(registrationProblems([{ ...first(c3, c1), contact: 'tuned' }], { cwd: dir }).length, 0, 'a tuned measurement claims no first contact')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('heldout: the lane\'s figures count every program of a set, failures in the denominator (the fixture)', () => {
+  const entries = appendEntries([], fixtureEntries())
+  const fig = heldoutFigures({ entries }, FIXTURE_MANIFEST)
+  is(fig['heldout-fx-awfy-runs'], '0 of 2', 'neither AWFY-shaped program compiles under jz')
+  is(fig['heldout-fx-clbg-runs'], '2 of 4', 'roots is wrong under jz and cores does not compile: counted, not left out')
+  is(fig['heldout-runs'], '2 of 6', 'every set together')
+  ok(/^\d+\.\d\d× over 2 of 4$/.test(fig['heldout-fx-clbg-v8']), `V8's time over jz's, over the programs both run right, of every program: ${fig['heldout-fx-clbg-v8']}`)
+  is(heldoutFigures({ entries: entries.slice(1) }, FIXTURE_MANIFEST)['heldout-runs'], 'unmeasured (5 of 6 run)', 'a set not run whole is unmeasured')
+  is(heldoutFigures({ entries: [] }, FIXTURE_MANIFEST)['heldout-runs'], 'unmeasured', 'and with no record, the lane')
+  const tuned = appendEntries(entries, [{ ...fixtureEntries()[0], contact: 'tuned', rows: fixtureEntries()[2].rows }])
+  is(heldoutFigures({ entries: tuned }, FIXTURE_MANIFEST)['heldout-runs'], '2 of 6', 'a tuned measurement moves no figure')
+  // a doc's figure for the lane is the record's (scripts/bench-readme.mjs --check)
+  const dir = mkdtempSync(join(tmpdir(), 'jz-heldout-fig-'))
+  try {
+    const record = join(dir, 'heldout.json'), doc = join(dir, 'README.md')
+    writeFileSync(record, JSON.stringify({ entries }))
+    const docs = text => {
+      writeFileSync(doc, text)
+      return spawnSync(process.execPath, [join(ROOT, 'scripts/bench-readme.mjs'), '--check'], { cwd: ROOT, encoding: 'utf8',
+        env: { ...process.env, JZ_BENCH_README: doc, JZ_FIG_DOCS: '', JZ_HELDOUT_RECORD: record, JZ_HELDOUT_MANIFEST: join(ROOT, FIXTURE) } })
+    }
+    const right = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 4<!-- /fig --> of them.\n')
+    is(right.status, 0, `the record's figure stands:\n${right.stdout}${right.stderr}`)
+    const dropped = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 3<!-- /fig --> of them.\n')
+    ok(dropped.status === 1 && dropped.stderr.includes('heldout-fx-clbg-runs reads 2 of 3'), 'a figure that leaves a failure out of its denominator fails')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

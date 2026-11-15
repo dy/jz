@@ -116,4 +116,6 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts
+      # the held-out lane's tests bundle its fixture's drivers
+      - run: npm rebuild esbuild
       - run: node test/bench-claims.js

@@ -15,6 +15,11 @@ export const JIT_RIVALS = [...V8_FAMILY_RIVALS, ...JSC_FAMILY_RIVALS]
 /** A ratio inside the band is a tie, never a lead. */
 export const WASM_BAND_TOL = 1.05
 
+/** The compiler's source: every input of what jz emits (test/bench-claims.js says why each
+ *  is listed). Evidence is stale past a commit that changes one, and a held-out program's
+ *  first contact measures none changed since its registration (bench/heldout/lane.mjs). */
+export const SOURCE_SCOPE = ['src', 'module', 'jzify', 'index.js', 'interop.js', 'wasi.js', 'layout.js', 'layout-kinds.js', 'err-codes.js', 'package.json', 'package-lock.json']
+
 /** The flags each claim lane is built with: one definition for the harness's builds,
  *  the dataset's record of them (meta.invocations, LANE_CMDS) and the test that pins
  *  them (test/bench-claims.js). jz is timed at 'speed', where its float rewrites may

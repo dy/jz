@@ -1,0 +1,63 @@
+{
+  "about": [
+    "The held-out lane (.work/phase-9b-heldout.md): programs jz was never tuned on, named here before they are run, measured once on first contact, every program counted and a failure a row.",
+    "Written from GitHub metadata alone (names, blob ids, sizes, commits; each licence by GitHub's license API): no program of a set is fetched to a developer's machine or read there, and each driver is written from its set's documented interface. The workflow (.github/workflows/heldout.yml) fetches the pinned files, checks each against its blob id, and is the only writer of the record (bench/heldout.json).",
+    "A program's registration is the last commit that changed its line here, a commit that changes no compiler source. Its first contact measures a compiler with no change to compiler source since (test/bench-claims.js computes it from git; a contact run refuses otherwise). A program registered before the compiler's last change is registered again by a commit of its own that changes its registered date, and only while no one has run it with jz.",
+    "A program leaves the held-out set the commit after its first contact is stored: a later measurement is stored beside it, marked tuned, never in its place. A release that quotes the lane needs new programs registered for it and measured once.",
+    "What no test can hold, the owner keeps: that no one read a program of a set, or ran it with jz, before it was registered here."
+  ],
+  "sets": [
+    {
+      "id": "awfy",
+      "name": "Are We Fast Yet",
+      "repo": "smarr/are-we-fast-yet",
+      "commit": "74306fec151070fd07157cefeacf19e7e0bcdc89",
+      "interface": "awfy",
+      "licence": {"path":"LICENSE.md","blob":"8d95f9ffbb33d3907561cbfb3e842a5a55881677","githubDetects":"NOASSERTION","states":"The benchmarks come from different sources under different licences: Richards and DeltaBlue derive from Mario Wolczko's Smalltalk sources, under the terms at the address it gives; the programs from the Computer Language Benchmarks Game are under its Revised BSD licence (Copyright 2008-2012 Isaac Gouy). It names no licence for the others and does not name MIT.","read":"by the GitHub license API"},
+      "about": "Every JavaScript program of benchmarks/JavaScript, CommonJS modules bundled with benchmark.js and som.js by esbuild. A program exports newInstance(), whose Benchmark answers innerBenchmarkLoop(innerIterations) true when verifyResult accepts every result (benchmark.js, harness.js). The driver makes one instance, times one innerBenchmarkLoop(inner) a round and hashes every round's answer: the program's own check, in every lane. inner is the innerIterations rebench.conf runs each program at, as recalled, not read here: the dry run prints rebench.conf's lines that name each program beside it.",
+      "support": [{"path":"benchmarks/JavaScript/benchmark.js","blob":"697b93b3727153a990a0d55690d5fdf9ba64c3b6","size":1613},{"path":"benchmarks/JavaScript/som.js","blob":"68d9d4b1acd9d25cb6eea8e3c2eaa67b4780a22b","size":11010}],
+      "config": {"path":"rebench.conf","blob":"58430388c9bd7bac96e9237b8e114e2465139989","size":6269},
+      "notPrograms": [{"path":"benchmarks/JavaScript/harness.js","blob":"1c5fe90205348abd62d87712b1fcfabeee95dcce","why":"the suite's own runner and build, not a benchmark"},{"path":"benchmarks/JavaScript/run.js","blob":"40f8603e9332d5b55fa54cc58f6b5acce4c1e3b8","why":"the suite's own runner and build, not a benchmark"},{"path":"benchmarks/JavaScript/webpack.config.js","blob":"72fda0c294b59922007b1c66efe0558a306495f3","why":"the suite's own runner and build, not a benchmark"}],
+      "programs": [
+        {"id":"awfy-bounce","path":"benchmarks/JavaScript/bounce.js","blob":"e55b97326b2af17437cd1b7df7d07363c1a86d29","size":2608,"inner":1500,"registered":"2026-11-15"},
+        {"id":"awfy-cd","path":"benchmarks/JavaScript/cd.js","blob":"d90f4ec908f68849370470dfd0b5936dcae4b4e7","size":22263,"inner":250,"registered":"2026-11-15"},
+        {"id":"awfy-deltablue","path":"benchmarks/JavaScript/deltablue.js","blob":"ebfae157a46d7860da56e86d91da1d0b8e1ffd0b","size":15005,"inner":12000,"registered":"2026-11-15"},
+        {"id":"awfy-havlak","path":"benchmarks/JavaScript/havlak.js","blob":"ac636f5ab6acfad6c371eec8f5fd3e2a2946202b","size":16913,"inner":1500,"registered":"2026-11-15"},
+        {"id":"awfy-json","path":"benchmarks/JavaScript/json.js","blob":"fe90de6c41327c96e3d17f472042ce9263a5b89f","size":38072,"inner":100,"registered":"2026-11-15"},
+        {"id":"awfy-list","path":"benchmarks/JavaScript/list.js","blob":"47f5dd5fcc9d92f04a6d5688e0cc2fd160ac7621","size":2333,"inner":1500,"registered":"2026-11-15"},
+        {"id":"awfy-mandelbrot","path":"benchmarks/JavaScript/mandelbrot.js","blob":"40ebd4bb0eb7a7c48164a9ede10e2e4a817a4b93","size":3982,"inner":500,"registered":"2026-11-15"},
+        {"id":"awfy-nbody","path":"benchmarks/JavaScript/nbody.js","blob":"c61b5c33c3a7584da8f00d8a9dc8e32a4c4b082f","size":4565,"inner":250000,"registered":"2026-11-15"},
+        {"id":"awfy-permute","path":"benchmarks/JavaScript/permute.js","blob":"7c349b0d3b17e0fb788d7211d74fd0c98fc7b60d","size":1937,"inner":1000,"registered":"2026-11-15"},
+        {"id":"awfy-queens","path":"benchmarks/JavaScript/queens.js","blob":"67fd53bf4c29e4a5e99123d5e0faf45615a68b73","size":2513,"inner":1000,"registered":"2026-11-15"},
+        {"id":"awfy-richards","path":"benchmarks/JavaScript/richards.js","blob":"9ad2bfba0deec8086313c26a4b890ff6add31b2c","size":10923,"inner":100,"registered":"2026-11-15"},
+        {"id":"awfy-sieve","path":"benchmarks/JavaScript/sieve.js","blob":"73a30aed4a2715b68bcc211c843ca0a9e6ff1014","size":1808,"inner":3000,"registered":"2026-11-15"},
+        {"id":"awfy-storage","path":"benchmarks/JavaScript/storage.js","blob":"18bd970f2d105407fbf798b991a730d13ee75ee5","size":1915,"inner":1000,"registered":"2026-11-15"},
+        {"id":"awfy-towers","path":"benchmarks/JavaScript/towers.js","blob":"ad5911cfdc16d531b245f9c4f59239fdd1de045f","size":2776,"inner":600,"registered":"2026-11-15"}
+      ]
+    },
+    {
+      "id": "clbg",
+      "name": "The Computer Language Benchmarks Game, Node.js programs of nbody, spectralnorm, fannkuchredux and mandelbrot",
+      "repo": "Byron/benchmarksgame-cvs-mirror",
+      "commit": "0077cab4253be9762f35b46bde22b331b3e9c2b4",
+      "interface": "clbg",
+      "licence": {"path":"LICENSE","blob":"d3f43ba66c10bb141378bf46fa638ac6aafa3992","githubDetects":"NOASSERTION","perProblem":"bench/<problem>/LICENSE, blob 7659c6a105582d6e1b4e8d8d51b2249f21cec187","states":"Revised BSD licence, Copyright 2008-2017 Isaac Gouy (LICENSE,v 1.6 2017/01/25).","read":"by the GitHub license API"},
+      "about": "Every .node program of the four problems that read no input, in the Benchmarks Game's CVS repository as mirrored on GitHub (the game's own repository is not on GitHub). A program reads its size from process.argv[2] and prints its answer with console.log or process.stdout.write. The driver runs its source as the body of a function, against that host injected by esbuild (bench/heldout/shim.js), times one whole run a round at arg, and hashes every character or byte the run printed. arg is chosen for 20 to 200 ms a round in V8 from the problems' published sizes, not measured here. The set's own check is its <n>_out file, the output at n.",
+      "checks": [{"path":"bench/nbody/1000_out","blob":"1731557ce19f86112c5a71d266c4f5d3b4e86a19","size":26},{"path":"bench/spectralnorm/100_out","blob":"b5a77ffe16417bb2248835a3efb2e845bb9e638f","size":12},{"path":"bench/fannkuchredux/7_out","blob":"2f77272e15fe97d6ad63c2467a404591c6a2772e","size":24},{"path":"bench/mandelbrot/200_out","blob":"2f7bbbc6b0a127b8883712eda12c04a786055753","size":5011}],
+      "notPrograms": [{"path":"bench/nbody/nbody.javascript","blob":"f807527f28efee00d4eb2d6ea3fa56e93736ef39","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/nbody/nbody.javascript-2.javascript","blob":"b0bec05f5b72b1914a2cebae836a09f3c1fe6460","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/spectralnorm/spectralnorm.javascript","blob":"4bc1b53c31f94849428ebb0d1046e6b1c89b74fb","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/spectralnorm/spectralnorm.javascript-2.javascript","blob":"b979edbc74cc9f50ea3a3472d2acaf3447cfff01","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/spectralnorm/spectralnorm.javascript-3.javascript","blob":"8a0219d8b31800c9f2f179501a354f9c2d873af4","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/spectralnorm/spectralnorm.javascript-5.javascript","blob":"0ca63f437e19fbf67d91fa507255df288d8edf85","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/fannkuchredux/fannkuchredux.javascript","blob":"7ee7c7b99fcd975a9b0474c75e2584f6159a242f","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/fannkuchredux/fannkuchredux.javascript-2.javascript","blob":"6baec2e93c4741e33528d94d8f1a91f5451a3b6a","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/fannkuchredux/fannkuchredux.javascript-3.javascript","blob":"80d0e68b02afcadeb8785b1ff0e1c8324d1360f3","why":"written for the d8 shell (its print and arguments), not for Node.js"},{"path":"bench/mandelbrot/mandelbrot.javascript-2.javascript","blob":"5a793c8ac6fa820c85aa99a5bb6f06b4901a47ff","why":"written for the d8 shell (its print and arguments), not for Node.js"}],
+      "programs": [
+        {"id":"clbg-nbody","path":"bench/nbody/nbody.node","blob":"3c63001f8498a8be22cf93308084d3289b839f25","size":4042,"arg":500000,"check":{"arg":1000,"path":"bench/nbody/1000_out"},"registered":"2026-11-15"},
+        {"id":"clbg-nbody-node-2","path":"bench/nbody/nbody.node-2.node","blob":"82ec5edf4e334989d705be4b183165e6b98d2530","size":6462,"arg":500000,"check":{"arg":1000,"path":"bench/nbody/1000_out"},"registered":"2026-11-15"},
+        {"id":"clbg-nbody-node-4","path":"bench/nbody/nbody.node-4.node","blob":"e0388efd727a7e31aee63bc37f47685079e719fb","size":3794,"arg":500000,"check":{"arg":1000,"path":"bench/nbody/1000_out"},"registered":"2026-11-15"},
+        {"id":"clbg-nbody-node-5","path":"bench/nbody/nbody.node-5.node","blob":"2e852643ea8ffc8901d1c9633c6e2269d54db856","size":3416,"arg":500000,"check":{"arg":1000,"path":"bench/nbody/1000_out"},"registered":"2026-11-15"},
+        {"id":"clbg-spectralnorm","path":"bench/spectralnorm/spectralnorm.node","blob":"bd211aa8fac20ccc84cebd70377de8510dd2bd6f","size":913,"arg":1000,"check":{"arg":100,"path":"bench/spectralnorm/100_out"},"registered":"2026-11-15"},
+        {"id":"clbg-spectralnorm-node-2","path":"bench/spectralnorm/spectralnorm.node-2.node","blob":"3ce1416c2da72c13389d9cec18c613f3d6e8cfe8","size":964,"arg":1000,"check":{"arg":100,"path":"bench/spectralnorm/100_out"},"registered":"2026-11-15"},
+        {"id":"clbg-spectralnorm-node-3","path":"bench/spectralnorm/spectralnorm.node-3.node","blob":"ac4c69ec4562529bfcf2df5784911f8409b66bf3","size":1121,"arg":1000,"check":{"arg":100,"path":"bench/spectralnorm/100_out"},"registered":"2026-11-15"},
+        {"id":"clbg-spectralnorm-node-5","path":"bench/spectralnorm/spectralnorm.node-5.node","blob":"dbba2ba4f0aef4f94340fdfe463c85f547743411","size":1243,"arg":1000,"check":{"arg":100,"path":"bench/spectralnorm/100_out"},"registered":"2026-11-15"},
+        {"id":"clbg-fannkuchredux","path":"bench/fannkuchredux/fannkuchredux.node","blob":"352cc1d91097bb4d9c19dee46da20f118b632360","size":1719,"arg":10,"check":{"arg":7,"path":"bench/fannkuchredux/7_out"},"registered":"2026-11-15"},
+        {"id":"clbg-fannkuchredux-node-4","path":"bench/fannkuchredux/fannkuchredux.node-4.node","blob":"4982ac1f45696f63eedb4052844bdae8b2836dad","size":1731,"arg":10,"check":{"arg":7,"path":"bench/fannkuchredux/7_out"},"registered":"2026-11-15"},
+        {"id":"clbg-mandelbrot","path":"bench/mandelbrot/mandelbrot.node","blob":"5164d3fa0e0df73f77ff7b1c375562473c650d5f","size":2356,"arg":2000,"check":{"arg":200,"path":"bench/mandelbrot/200_out"},"registered":"2026-11-15"}
+      ]
+    }
+  ]
+}

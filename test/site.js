@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { runInNewContext } from 'node:vm'
+import { LANES } from '../bench/heldout/lane.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/build-site.mjs'), ...args], { encoding: 'utf8' })
@@ -772,6 +773,28 @@ test('site: benchmark publication runs only from a complete sharded measurement'
   for (const pin of ['jsc', 'asc', 'node', 'deno', 'bun']) ok(plan.includes(`${pin}: \${{ steps.versions.outputs.${pin} }}`), `the plan pins ${pin} for every shard and rerun`)
   ok(bench.includes('npx --yes jsvu --os=linux64 "javascriptcore@$JSC"') && bench.includes('JSC_BIN=$HOME/.jsvu/bin/jsc-$JSC'), 'a shard runs the planned JavaScriptCore build')
   ok(/float-lane smoke[\s\S]*?--targets=jz,jz-exact,c-wasm,c-wasm-fast[\s\S]*?"jz-exact"/.test(bench), 'the gate job runs the exact and fast lanes and checks the exact lane\'s answer')
+})
+
+// The held-out lane's behavior is tested in test/bench-claims.js; this pins how
+// heldout.yml wires it: by hand only, V8 alone in a dry run, a contact on main alone,
+// and the record written by its own job through the tested script.
+test('site: the held-out lane runs by hand, V8 alone when dry, and records a contact on main', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/heldout.yml'), 'utf8')
+  const on = workflow.slice(workflow.indexOf('\non:\n'), workflow.indexOf('\nconcurrency:\n'))
+  ok(on.includes('  workflow_dispatch:\n') && !/\n  (push|pull_request|schedule|workflow_run):/.test(on), 'dispatched by hand only')
+  ok(/options: \[dry, contact\]\n        default: dry/.test(on), 'dry unless asked')
+  const run = workflow.slice(workflow.indexOf('\n  run:\n'), workflow.indexOf('\n  record:\n'))
+  const record = workflow.slice(workflow.indexOf('\n  record:\n'))
+  ok(!/git (push|commit)|--publish/.test(run) && /permissions:\n      contents: read/.test(run), 'the measuring job writes nothing to the repository')
+  const lanes = run.split('\n      - ').filter(step => /bench\/bench\.mjs|porf|jsvu|setup-deno|setup-bun/.test(step))
+  ok(lanes.length === 5 && lanes.every(step => step.includes("if: inputs.mode == 'contact'")), 'a dry run installs no lane and builds no jz: V8 alone runs the drivers')
+  ok(run.includes('node scripts/heldout.mjs check "$RUNNER_TEMP/heldout/cases"'), 'V8 runs every driver and the set\'s own check')
+  ok(run.includes('node scripts/heldout.mjs registered "$RUNNER_TEMP/heldout/cases"'), 'a contact refuses a program registered under another compiler')
+  ok(run.includes(`node bench/bench.mjs --targets=${LANES.join(',')} --paired=6`), 'and measures the record\'s lanes (bench/heldout/lane.mjs LANES), jz at speed and exact beside every engine, in paired rounds')
+  ok(run.includes('JZ_BENCH_ORACLE: source'), 'against V8\'s result of the unmodified source')
+  ok(workflow.includes('[ "$MODE" = contact ] && [ "$GITHUB_REF" != refs/heads/main ]'), 'a contact runs on main alone')
+  ok(record.includes("inputs.mode == 'contact'") && /permissions:\n      contents: write\n      actions: read/.test(record), 'the record job alone may write, for a contact')
+  ok(record.includes('node scripts/heldout.mjs record "$run/cases" "$run/bench.json" --publish'), 'through the tested script')
 })
 
 test('site: a measurement run that lost a shard is rerun once, failed jobs only', () => {

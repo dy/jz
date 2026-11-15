@@ -1,0 +1,8 @@
+/* Fixture program in the Benchmarks Game's shape (ours) that needs Node's own modules,
+   as a program that spreads its work over the machine's cores does: require('os'). */
+const os = require('os');
+const n = +process.argv[2];
+const cores = os.cpus().length > 0 ? 1 : 0;
+let s = 0;
+for (let i = 0; i < n; i++) s += i % 7;
+console.log(cores + ' ' + s);

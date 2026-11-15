@@ -6,8 +6,9 @@
 // per-case table (median · ×v8 · size · parity) and the V8/AS rows of the aggregate table
 // IN PLACE, preserving each row's label, order, and the bold on the jz row. In the prose it
 // rewrites only the figures marked `<!-- fig:KEY -->…<!-- /fig -->` (bench/README.md, README.md,
-// the landing index.html: FIGURES below); --check also emits a best-effort prose-ratio drift
-// warning for the human/CI. test:claims runs --check: a marked figure the dataset does not give fails it.
+// the landing index.html: FIGURES below, the held-out lane's from bench/heldout.json); --check
+// also emits a best-effort prose-ratio drift warning for the human/CI. test:claims runs --check:
+// a marked figure the dataset does not give fails it.
 //
 //   node scripts/bench-readme.mjs           # rewrite bench/README.md and the marked figures in place
 //   node scripts/bench-readme.mjs --check   # report drift, exit 1 if any (no write)
@@ -183,6 +184,14 @@ const FIG_DOCS = (process.env.JZ_FIG_DOCS ?? (process.env.JZ_BENCH_README ? '' :
   .map(f => f.startsWith('/') ? f : join(ROOT, f)).filter(f => existsSync(f))
 const FIG = /<!-- fig:([\w-]+) -->([\s\S]*?)<!-- \/fig -->/g
 const docs = new Map([[README, text], ...FIG_DOCS.map(doc => [doc, readFileSync(doc, 'utf8')])])
+// The held-out lane's figures (bench/heldout/lane.mjs: first contacts alone, every program of a
+// set counted), read from its record and manifest when a doc marks one.
+if ([...docs.values()].some(src => [...src.matchAll(FIG)].some(m => m[1].startsWith('heldout')))) {
+  const { heldoutFigures, MANIFEST, readJson, RECORD } = await import('../bench/heldout/lane.mjs')
+  const fig = heldoutFigures(readJson(process.env.JZ_HELDOUT_RECORD || join(ROOT, RECORD), { entries: [] }),
+    JSON.parse(readFileSync(process.env.JZ_HELDOUT_MANIFEST || join(ROOT, MANIFEST), 'utf8')))
+  for (const [k, v] of Object.entries(fig)) FIGURES[k] = () => v
+}
 const stale = []
 const refigure = (doc, src) => src.replace(FIG, (all, key, was) => {
   if (!FIGURES[key]) { stale.push(`${doc}: unknown figure '${key}'`); return all }

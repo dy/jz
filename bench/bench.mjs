@@ -24,6 +24,9 @@ const ROOT = join(BENCH_DIR, '..')
 const LIB = join(BENCH_DIR, '_lib')
 const BUILD = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench')
 const WEB_DIR = process.env.JZ_BENCH_WEB_DIR || join(BENCH_DIR, 'web')
+// The cases measured: bench/<id>/<id>.js, or another directory of that shape (the
+// held-out lane's generated drivers, scripts/heldout.mjs, beside a copy of _lib/benchlib.js).
+const CASES_DIR = process.env.JZ_BENCH_CASES_DIR ? resolve(process.env.JZ_BENCH_CASES_DIR) : BENCH_DIR
 // jz-w2c finds wasm2c, its runtime and headers, and SIMDe (wasm2c lowers v128
 // through <simde/wasm/simd128.h>) as scripts/native/compile.mjs does: WABT_DIR,
 // WABT_W2C_DIR, WABT_INCLUDE_DIR, SIMDE_DIR, else PATH and install prefixes.
@@ -432,10 +435,10 @@ const jscBuild = () => {
 const build = (...p) => join(BUILD, ...p)
 const caseBuild = c => build(c.id)
 
-const discoverCases = () => readdirSync(BENCH_DIR, { withFileTypes: true })
-  .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(BENCH_DIR, d.name, `${d.name}.js`)))
+const discoverCases = () => readdirSync(CASES_DIR, { withFileTypes: true })
+  .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(CASES_DIR, d.name, `${d.name}.js`)))
   .map(d => {
-    const dir = join(BENCH_DIR, d.name)
+    const dir = join(CASES_DIR, d.name)
     return {
       id: d.name,
       name: CASE_NAMES[d.name] || d.name,
@@ -1698,7 +1701,10 @@ const REFERENCE_CHECKSUMS = {
 // oracle is the compiler's source run as JS on this harness's Node (valid jz is
 // valid JS): one run per case, apart from the rows it scores. A failed run
 // leaves the rows unclassified, never scored against the stale bytes.
+// JZ_BENCH_ORACLE=source makes it every case's: the held-out lane's programs, which
+// no stored checksum may answer for before they are first run.
 const SOURCE_ORACLE = new Set(['jz'])
+const ALL_SOURCE_ORACLE = process.env.JZ_BENCH_ORACLE === 'source'
 // A case whose source changed its checksum: its pinned reference wins over the one an
 // earlier dataset stored under the old hash, until a reference run stores the new one.
 const REPINNED = new Set(['deltae', 'colorconv', 'colorlch', 'colorlog', 'colorpq'])
@@ -1717,17 +1723,21 @@ for (const cid of selectedCases) {
   const wallMs = () => Math.round(performance.now() - caseStart)
   console.log(`\n# ${c.name} (${c.id})`)
   // A failed measurement cannot erase its oracle or make a later result its own reference.
-  const refCs = SOURCE_ORACLE.has(cid) ? sourceOracle(c)
+  const refCs = ALL_SOURCE_ORACLE || SOURCE_ORACLE.has(cid) ? sourceOracle(c)
     : REPINNED.has(cid) ? REFERENCE_CHECKSUMS[cid]
     : PREV?.cases?.[cid]?.ref ?? CANONICAL?.cases?.[cid]?.ref ?? REFERENCE_CHECKSUMS[cid] ?? null
   const results = []
   // Targets that were AVAILABLE (toolchain present + source exists) but failed to
   // compile or run — the honest "did not compile" signal. Distinct from a skip
   // (toolchain absent / no source for this case), which is simply not measured.
+  // A failure's stage, where the run says it: 'build' (the lane's compile of the case
+  // failed) or 'timeout'; any other failure is the run's own (an exit, a trap).
   const failures = []
-  const recordFailure = (id, reason) => {
-    if (!failures.some(f => f.id === id)) failures.push({ id, reason })
+  const recordFailure = (id, reason, r) => {
+    const stage = r?.buildFailed ? 'build' : r?.timedOut ? 'timeout' : null
+    if (!failures.some(f => f.id === id)) failures.push({ id, reason, ...(stage && { stage }) })
   }
+  const failureRow = f => [f.id, { status: 'fail', reason: f.reason, ...(f.stage && { stage: f.stage }) }]
   let pairedInfo = null   // per-pair {ratios, median} when --paired (persisted into cases[id].paired)
   const lanes = caseTargets(c)
   if (CONTENDERS) console.log(`[contenders] ${lanes.join(' ')}`)
@@ -1749,7 +1759,7 @@ for (const cid of selectedCases) {
       const r = targets[tid].run(c)
       if (r.error) {
         // a build that failed or a run past the limit will not recover in a counted round
-        if (r.buildFailed || r.timedOut) recordFailure(tid, r.error)
+        if (r.buildFailed || r.timedOut) recordFailure(tid, r.error, r)
         console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}${r.buildFailed || r.timedOut ? '' : '; retrying in counted rounds'}`)
       }
     }
@@ -1763,7 +1773,7 @@ for (const cid of selectedCases) {
         // error and continue the other lanes instead of repeating long builds.
         if (failures.some(f => f.id === tid)) continue
         const r = targets[tid].run(c)
-        if (r.error) { recordFailure(tid, r.error); continue }
+        if (r.error) { recordFailure(tid, r.error, r); continue }
         if (!positiveTiming(r)) { recordFailure(tid, `counted run returned invalid median_us=${r.medianUs}`); continue }
         const a = acc.get(tid)
         if (a) a.push(r); else acc.set(tid, [r])
@@ -1825,7 +1835,7 @@ for (const cid of selectedCases) {
     }
     process.stdout.write(`[run]  ${tid.padEnd(targetIdWidth)} ${t.name} … `)
     const r = t.run(c)
-    if (r.error) { console.log(`FAIL: ${r.error}`); recordFailure(tid, r.error); continue }
+    if (r.error) { console.log(`FAIL: ${r.error}`); recordFailure(tid, r.error, r); continue }
     console.log(`${r.medianUs} µs  cs=${r.checksum}`)
     results.push(r)
   }
@@ -1837,7 +1847,7 @@ for (const cid of selectedCases) {
   if (!results.length) {
     if (JSON_PATH && failures.length) jsonOut.cases[c.id] = {
       name: c.name, ref: refCs,
-      targets: Object.fromEntries(failures.map(f => [f.id, { status: 'fail', reason: f.reason }])),
+      targets: Object.fromEntries(failures.map(failureRow)),
       wallMs: wallMs(),
     }
     continue
@@ -1902,7 +1912,7 @@ for (const cid of selectedCases) {
         }]),
         // Attempted-but-failed targets carry their reason (no medianUs) so the page
         // can render coverage honestly instead of silently dropping the row.
-        ...failures.map(f => [f.id, { status: 'fail', reason: f.reason }]),
+        ...failures.map(failureRow),
       ]),
       // --paired: order-symmetric per-round ratios + median (the release
       // verdict form — consumers gate on these, never cross-run absolutes).

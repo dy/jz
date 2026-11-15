@@ -538,6 +538,8 @@ jobs:
         with:
           node-version: ${{ needs.plan.outputs.node }}
       - run: npm ci --ignore-scripts
+      # the claims gate's held-out tests bundle the lane's fixture
+      - run: npm rebuild esbuild
       # Through the run's API rather than this attempt's own store: after
       # `gh run rerun --failed`, the shards of the first attempt are still the run's.
       - uses: actions/download-artifact@v4

@@ -1,0 +1,11 @@
+/* Fixture program in the Benchmarks Game's shape (ours) that writes bytes: a
+   P4-style header, then a bit row per line of a checkerboard of the given size. */
+
+const n = +process.argv[2];
+process.stdout.write('P4\n' + n + ' ' + n + '\n');
+const row = new Uint8Array((n + 7) >> 3);
+for (let y = 0; y < n; y++) {
+  row.fill(0);
+  for (let x = 0; x < n; x++) if (((x >> 2) + (y >> 2)) & 1) row[x >> 3] |= 0x80 >> (x & 7);
+  process.stdout.write(row);
+}

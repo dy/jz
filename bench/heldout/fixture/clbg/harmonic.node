@@ -1,0 +1,12 @@
+/* Fixture program in the Benchmarks Game's shape (ours): the size from the
+   command line, the answer printed. A partial harmonic sum to nine places. */
+
+function harmonic(n) {
+  let s = 0;
+  for (let i = 1; i <= n; i++) s += 1 / i;
+  return s;
+}
+
+const n = +process.argv[2];
+console.log(harmonic(n).toFixed(9));
+console.log(harmonic(n >> 1).toFixed(9));

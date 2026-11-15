@@ -1,0 +1,31 @@
+{
+  "about": ["The held-out lane's fixture (scripts/heldout.mjs --manifest=bench/heldout/fixture/manifest.json): programs in the sets' shapes, written for the tests, that drive the fetch, the drivers, the record and the gate where no set may be read. Not a held-out set."],
+  "sets": [
+    {
+      "id": "fx-awfy",
+      "name": "the fixture in Are We Fast Yet's shape",
+      "local": "bench/heldout/fixture/awfy",
+      "interface": "awfy",
+      "about": "Two programs written for the tests to the documented interface: squares verifies in every engine, evaluated builds code at run time (Function), which jz does not compile.",
+      "support": [{"path":"benchmark.js","blob":"80d1b4c3454f1d9422409297649a04f94574b5af","size":681},{"path":"som.js","blob":"48b4c1741da3f9ce9bea1c79c0697b01117603bb","size":730}],
+      "programs": [
+        {"id":"fx-awfy-squares","path":"squares.js","blob":"5139b9f45239fb411413d501fef57e9a96b28344","size":494,"inner":3,"registered":"2026-11-15"},
+        {"id":"fx-awfy-evaluated","path":"evaluated.js","blob":"e1a80a09c5b593330d51c8d5c40fff246a8f7004","size":402,"inner":3,"registered":"2026-11-15"}
+      ]
+    },
+    {
+      "id": "fx-clbg",
+      "name": "the fixture in the Benchmarks Game's shape",
+      "local": "bench/heldout/fixture/clbg",
+      "interface": "clbg",
+      "about": "Four programs written for the tests: harmonic prints with console.log, bitmap writes a PBM image's bytes with process.stdout.write, roots prints a sum that is wrong under jz ((-Infinity) ** 0.5 is NaN there, Infinity in JavaScript), cores requires Node's os module; each <n>_out is the program's output under node at n.",
+      "checks": [{"path":"100_out","blob":"7a1aa75ece8edb644f663ab093b6c57426ea3298","size":24},{"path":"16_out","blob":"eb78de0c51bb82c5e367e3cb3fbf98507ef7e4f1","size":41},{"path":"10_out","blob":"3c62151db76baeeb488b10313071a0f0162b342d","size":9},{"path":"12_out","blob":"32f7b3bb1b5c3b26051d12c9c66f637df52410aa","size":5}],
+      "programs": [
+        {"id":"fx-clbg-harmonic","path":"harmonic.node","blob":"98d1a66f5931a6a89df2a07edcb3c3a1a7acc114","size":357,"arg":400000,"check":{"arg":100,"path":"100_out"},"registered":"2026-11-15"},
+        {"id":"fx-clbg-bitmap","path":"bitmap.node","blob":"a9485872ee885ddddbe755af4eb1a35d33e3985b","size":453,"arg":512,"check":{"arg":16,"path":"16_out"},"registered":"2026-11-15"},
+        {"id":"fx-clbg-roots","path":"roots.node","blob":"efa2404c4fdb057a9d29f2293c0e184c68b4c6d0","size":367,"arg":1000,"check":{"arg":10,"path":"10_out"},"registered":"2026-11-15"},
+        {"id":"fx-clbg-cores","path":"cores.node","blob":"bc21c9f748768bbea952a2dc1789ae53a01cfd33","size":354,"arg":100000,"check":{"arg":12,"path":"12_out"},"registered":"2026-11-15"}
+      ]
+    }
+  ]
+}
