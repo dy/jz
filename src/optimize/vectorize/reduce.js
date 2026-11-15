@@ -2,7 +2,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { _offsetLocalStride, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
-import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
+import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop, simdBound, stripOpen } from './scaffold.js'
@@ -519,6 +519,12 @@ const LOW_INT_LOAD = {
 }
 const INT_LANE_BIN = { 'i32.add': 'i32x4.add', 'i32.sub': 'i32x4.sub', 'i32.mul': 'i32x4.mul', 'i32.and': 'v128.and', 'i32.or': 'v128.or', 'i32.xor': 'v128.xor' }
 const INT_LANE_SHIFT = { 'i32.shl': 'i32x4.shl', 'i32.shr_s': 'i32x4.shr_s', 'i32.shr_u': 'i32x4.shr_u' }
+// The mirrors (lane-tables.js PPC_CALL2) that run both lanes through the scalar kernel's own
+// operations in one evaluation (module/math/simd.js), bit for bit with the scalar call; the
+// others take each lane out and call the scalar kernel, no work saved. A call weighs what an
+// evaluation of the kernel does, against the ops the weights count: tens of them.
+const TWO_WIDE = new Set(['$math.sin2', '$math.cos2', '$math.pow2', '$math.pow_b_v', '$math.pow_fold_v', '$math.log_v', '$math.exp_v', '$math.exp2_v'])
+const CALL_WEIGHT = 20
 export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   if (!bl || bl.preamble.length) return null
   const { incVar, bound, boundLocal, body, siteAccess, writes } = bl
@@ -559,11 +565,12 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   for (const s of body) walkAst(s, { enter: n => { if (n[0] === 'local.tee' && typeof n[1] === 'string') teed.add(n[1]) } })
   const newLocalDecls = []
   const fresh = () => { const n = `$__mr${freshIdRef.next++}`; newLocalDecls.push(['local', n, 'v128']); return n }
-  let bad = false
+  let bad = false, calls = 0
   const lift = (e) => {
     if (bad || !isArr(e)) { bad = true; return null }
     const op = e[0]
     if (op === 'f64.const') return ['f64x2.splat', e]
+    if (op === 'call' && TWO_WIDE.has(PPC_CALL2[e[1]])) { calls++; return ['call', PPC_CALL2[e[1]], ...e.slice(2).map(lift)] }
     if (op === 'f64.load') {
       // 16 bytes = 2 consecutive f64s; the f64x2 op reads them (a memarg kept)
       const addr = e[e.length - 1]
@@ -642,9 +649,10 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   }
   if (bad || !lifted.length) return null
   // Two passes of the loop against one step of the lanes, each accumulator's two lanes taken
-  // out and carried in order: the lanes may do no more (cost-model.js, an extract counted).
-  // A plain sum is the case they lose: one load saved, two extracts paid.
-  if (liftWeight(lifted) > 2 * liftWeight(body)) return null
+  // out and carried in order: the lanes may do no more weighted work (cost-model.js), a
+  // kernel's evaluation one for two passes. A plain sum is the case they lose: one load
+  // saved, a read of the lanes and of the accumulator for each pass paid.
+  if (liftWeight(lifted) + calls * CALL_WEIGHT > 2 * (liftWeight(body) + calls * CALL_WEIGHT)) return null
 
   // SIMD prefix over the even prefix [0, bound & ~1); the original block is the ≤1 scalar
   // remainder (continues j and the accumulators). IV advances by 2.

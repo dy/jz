@@ -122,7 +122,26 @@ test('loop forms: a reduction carried in its order, the work of each element in 
   // an integer or f32 element widened to the f64 the sum carries
   for (const T of ['Int32Array', 'Int16Array', 'Float32Array'])
     lifts(`${T} dot into an f64`, prog(T, 'let s = 0; for (let i = 0; i < n; i++) s += a[i] * c[i]; return s'), exact)
-  // a plain sum has no work of an element to lift: the lanes would add two extracts to save a load
+  // a math call whose mirror runs both lanes through the scalar kernel's own operations, one
+  // evaluation for two: the answer is that kernel's, jz's math runtime (Node's own Math need
+  // not match it to the last bit, so the reference is the build with no optimization)
+  for (const [name, body] of [
+    ['sum of logs', 'let s = 0; for (let i = 0; i < n; i++) s += Math.log(c[i] + 5); return s'],
+    ['sum of exps', 'let s = 0; for (let i = 0; i < n; i++) s += Math.exp(a[i] * 0.25); return s'],
+    ['sines times an element', 'let s = 0; for (let i = 0; i < n; i++) s += Math.sin(a[i]) * b[i]; return s'],
+    ['sum of powers', 'let s = 0; for (let i = 0; i < n; i++) s += Math.pow(c[i] + 5, 1.5); return s'],
+  ]) {
+    const src = F(body), want = jz(src, { optimize: false }).exports
+    want.init()
+    for (const optimize of exact) {
+      const at = JSON.stringify(optimize)
+      ok(SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${name}: lifted at ${at}`)
+      const got = jz(src, { optimize }).exports
+      got.init()
+      is(got.k(), want.k(), `${name}: k at ${at}`)
+    }
+  }
+  // a plain sum has no work of an element to lift: the lanes would add a read of them and of the sum a pass to save a load
   for (const optimize of exact) {
     const src = F('let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s')
     ok(!SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `a plain sum stays scalar at ${JSON.stringify(optimize)}`)
