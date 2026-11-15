@@ -17,7 +17,7 @@ import { findBodyStart, writtenLocals, buildRefcount, nextLocalId } from '../ir.
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
 import { NO_MODULE } from './effects.js'
-import { HEADER_STORE_FREE } from './address.js'
+import { HEADER_STORE_FREE, carry } from './address.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
@@ -751,7 +751,8 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
     const rewriteGets = (n) => {
       if (!Array.isArray(n)) return n
       if (n[0] === 'local.get' && curOf.has(n[1])) return ['local.get', curOf.get(n[1])]
-      return n.map((c, i) => i === 0 ? c : rewriteGets(c))
+      // (a load or a store rebuilt keeps the emitter's mark: optimize/address.js carry)
+      return carry(n, n.map((c, i) => i === 0 ? c : rewriteGets(c)))
     }
     const hoisted = []
     const kept = loop.slice(0, 2)  // 'loop' + label

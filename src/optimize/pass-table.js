@@ -90,7 +90,7 @@ export const PASSES = [
     takes: 'freshTypedGlobals effects', reads: 'boundsOwner', why: 'the raw ToInt32, offset and arithmetic shapes, before the fused walk', drops: 'schemaSid irange provenWord' }),
   P('fusedRewrite', 'func', 'fusedRewrite', {
     after: [['hoistPtrType', 'its locals in their final form'], ['hoistInvariantLoop', 'the raw shapes it folds are hoisted first']],
-    takes: 'hasBigint loweringLinks', reads: 'loweringLinks', drops: 'schemaSid irange unsigned mem' }),
+    takes: 'hasBigint loweringLinks', reads: 'loweringLinks', drops: 'schemaSid irange unsigned' }),
   P('unswitchStringRepLoop', 'func', '+unswitchStringRepLoop', { takes: 'funcCount', drops: 'irange' }),
   P('shiftRemainder', 'func', 'shiftRemainder', { after: [['fusedRewrite', 'the quotient and its scaling are in their i32 form']], drops: 'irange' }),
   P('boolConvertToSelect', 'func', '+boolConvertToSelect'),
@@ -98,11 +98,11 @@ export const PASSES = [
   P('hoistInvariantLoop.late', 'func', 'hoistInvariantLoop', {
     after: [['hoistAddrBase', 'the cell loads it stages'], ['fusedRewrite', 'idempotent, at the second maturity point']],
     takes: 'freshTypedGlobals effects', reads: 'boundsOwner' }),
-  P('cseScalarLoad', 'func', 'cseScalarLoad', { takes: 'effects', drops: 'mem' }),
+  P('cseScalarLoad', 'func', 'cseScalarLoad', { takes: 'effects' }),
   P('forwardStores', 'func', 'forwardStores', {
     after: [['hoistAddrBase', 'after the address hoists: a chained kernel\'s out-parameter results stay in the locals that staged them'], ['hoistPtrOffset', 'the same']],
-    takes: 'effects', reads: 'mem', drops: 'irange presentNumRead mem', lost: 'mem' }),
-  P('sinkStores', 'func', '+sinkStores', { after: [['forwardStores', 'on what forwarding left']], takes: 'effects', reads: 'mem', lost: 'mem' }),
+    takes: 'effects', reads: 'mem', drops: 'irange presentNumRead' }),
+  P('sinkStores', 'func', '+sinkStores', { after: [['forwardStores', 'on what forwarding left']], takes: 'effects', reads: 'mem' }),
   P('earlyStores', 'func', '+earlyStores', { after: [['forwardStores', 'on the stores forwarding kept']], takes: 'effects' }),
   P('promoteGlobals', 'func', 'promoteGlobals', {
     after: [['hoistGlobalPtrOffset', 'the global pointer hoists read global.get, which this hides'], ['hoistLoopGlobalPtrOffset', 'the same']],
@@ -114,7 +114,7 @@ export const PASSES = [
   P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
   P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
   P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),
-  P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', { takes: 'freshTypedGlobals effects', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey mem dvProp wordOf saArr checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
+  P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', { takes: 'freshTypedGlobals effects', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey dvProp wordOf saArr checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
   P('hoistInvariantLoop.scratch', 'func', '+splitScratch hoistInvariantLoop', {
     after: [['splitLoopPrivateScratch', 'its moved invariants ride the LICM once more']], takes: 'freshTypedGlobals effects', reads: 'boundsOwner', lost: 'boundsOwner' }),
   P('devirtFnArrays', 'func', 'devirtFnArrays', {
@@ -133,8 +133,8 @@ export const PASSES = [
   P('wideAccumulator', 'func', '+wideAccumulator', { after: [['narrowInts', 'stronger signed-word proofs run first']], drops: 'irange iterRelease' }),
   P('narrowFloat32', 'func', 'narrowFloat32', { after: [['vectorizeLaneLocal', 'after the lane lift'], ['devirtFnArrays', 'and the devirtualizations, whose marks its copied nodes keep'], ['devirtSchemaReads', 'the same'], ['narrowInts', 'single-precision locals after the integer registers']], reads: 'irange presentNumRead', drops: 'loweringLinks presentNumRead', lost: 'irange presentNumRead' }),
   P('recursionUnroll', 'func', '+recursionUnroll', { after: [['narrowInts', 'its size gate reads the body as it will be emitted']] }),
-  P('foldLoadCasts', 'func', 'fusedRewrite', { after: [['specializeLoops', 'the copies read hit elements bare']], drops: 'schemaSid mem' }),
-  P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], takes: 'effects', reads: 'mem', drops: 'unsigned presentNumRead wrapSafe mem cellI32', lost: 'mem' }),
+  P('foldLoadCasts', 'func', 'fusedRewrite', { after: [['specializeLoops', 'the copies read hit elements bare']], drops: 'schemaSid' }),
+  P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], takes: 'effects', reads: 'mem', drops: 'unsigned presentNumRead wrapSafe cellI32' }),
   P('narrowByteLoads', 'func', '+reuseLoads', { after: [['reuseLoads', 'a part of a word read alone, the narrow load of it']] }),
   P('settledTests', 'func', 'settledTests', { after: [['combineGuards', 'over the guards every pass above left'], ['specializeLoops', 'the same']] }),
   P('inlinePtrOffsetFast', 'func', '+inlinePtrOffsetFast', {
