@@ -5465,7 +5465,8 @@ splatted loads are no pixel's own (`pixelShared`, `outer-scaffold.js`).
 `test/vector-legality.js` pins a program for each class a lift got wrong;
 `test/vector-dependence.js`, in the generated suite, sweeps dependence-shaped loops, those
 counting down and those with a shifted or inclusive test among them; `test/loop-forms.js`
-pins each form the strips' scaffold lifts.
+pins each form the strips' scaffold lifts; `test/vector-coverage.js`, beside the spelling
+gate, holds which loops of the alias battery a lift takes as a table that only grows.
 
 Typed extent guards may give their fast arm fresh signed-word locals for
 stable integral entries (a parameter the loop never writes as a local),
