@@ -334,7 +334,6 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
         take('retry:tryReduceReassoc', rewritten(tryReduceReassoc(cbl, fnLocals, freshIdRef, multiAcc)), canon.node)
         take('retry:tryReduceBitExact', rewritten(tryReduceBitExact(cbl, fnLocals, freshIdRef)), canon.node)
-        take('retry:tryGeneralReduce', rewritten(tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)), canon.node)
       }
       let r = null
       for (const y of lifts) if (!r || y.cost < r.cost || (y.cost === r.cost && y.size < r.size)) r = y
