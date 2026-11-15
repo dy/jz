@@ -604,7 +604,8 @@ test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
   is(count(/f64x2\.replace_lane/g), 2, 'the two twiddle reads gather through k (k, k + step)')
   is(count(/v128\.store/g), 4, 're/im at a and b store as pairs')
   is(count(/f64x2\.mul/g), 4, 'the rotation lanes')
-  is(count(/i32\.ge_s \(local\.get \$\w+\) \(i32\.const 2\)/g), 1, 'one hoisted |half| >= 2 check covers every a/b pair')
+  // the one legality's test (alias.js apart): a and b are 8 * half bytes apart, 0 or 16 (2 lanes) or more
+  is(count(/i32\.ge_u\s+\(i32\.add\s+\(i32\.shl \(local\.get \$\w+\) \(i32\.const 3\)\)\s+\(i32\.const 15\)\s*\)\s+\(i32\.const 31\)/g), 1, 'one hoisted |8 * half| >= 16 test covers every a/b pair')
 })
 
 test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-exact', () => {
@@ -4710,7 +4711,8 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset vector
     is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer`)
   const w = wat(src, SIMD_OPT)
   ok(/i32x4\.add/.test(w), 'the recurrence lifts to i32x4.add')
-  ok(/i32\.ge_s \(local\.get \$[^\s)]+\) \(i32\.const 4\)/.test(w), 'under the distance guard (off >= 4 lanes)')
+  // the one legality's test (alias.js apart): the bytes apart, 4 * off, are 0 or 16 (4 lanes) or more
+  ok(/i32\.ge_u\s+\(i32\.add \(local\.get \$[^\s)]+\) \(i32\.const 15\)\)\s+\(i32\.const 31\)/.test(w),'under the distance guard (|4 * off| >= 16 bytes)')
   ok(/i32\.store[\s\S]*i32x4\.add|i32x4\.add[\s\S]*i32\.store/.test(w), 'the scalar loop stays beside it')
 })
 

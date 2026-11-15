@@ -12,9 +12,8 @@ import { shut, strips } from './scaffold.js'
 // for all its iterations before the next site, so two iterations of one strip may not
 // touch the same bytes in an order the strip reverses (alias.js gateStrips, every pair
 // of sites with a store, one base or two). A lift that runs some statements lane by lane
-// in the loop's order says which (`inOrder`, an outer strip's epilogue), and one that
-// versions its own one-base distances says so (`versioned`, the general map and stencil
-// behind alias.js aliasGuards). Locals: every local the loop writes is one of these,
+// in the loop's order says which (`inOrder`, an outer strip's epilogue). Locals: every local
+// the loop writes is one of these,
 // against what the lift says of it on its result:
 //   - an induction: a strip's counter, or one the lift names (`inductions`), written
 //     once an iteration, at the loop's top level, as `x = x + step` with a constant or

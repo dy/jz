@@ -1,6 +1,5 @@
 import { nodeEqual as exprEq, nodeKey, cloneNode, walkAst } from '../../ast.js'
-import { constNum, laneAccess, isI32Const, isLocalGet, matchStrideAddr, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
-import { aliasGuards } from './alias.js'
+import { constNum, laneAccess, isI32Const, isLocalGet, matchStrideAddr, hasNestedLoopOrCall } from './addr-model.js'
 import { isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
@@ -346,10 +345,9 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
 // extension. Codegen is tryStencil's: the absolute cap `simdCap − (lanes−1)` (stencils can
 // enter at a non-zero IV and read behind it) plus the toroidal left-column peel, wrapped in
 // the versioning `if` when alias guards exist.
-export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
+export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl) {
   if (!enabled) return null
   if (!bl) return null
-  const { aliasVersion = true } = opts
   const { incVar, bound, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced } = bl
   if (blHasGlobalSet) return null
 
@@ -400,13 +398,8 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   for (const s of body) if (!scan(s, null, -1)) return null
   if (!laneType || !sites.some(s => s.kind === 'store') || !sites.some(s => s.kind === 'load')) return null
 
-  // ---- In-place / loop-carried gate (alias.js), as tryGeneralMap's: a constant element
-  // distance decides now, an invariant one versions the loop behind hoisted checks. Index
-  // temporaries (`c = rc + x`) stand for their definitions, so a site through one and a site
-  // spelled inline compare by value. ----
-  const guards = aliasGuards(sites, stride, LANE_INFO[laneType].lanes,
-    { defs: indexDefs(body, fnLocals, bl.outsideReads), varying: new Set(writes).add(incVar), version: aliasVersion })
-  if (!guards) return null
+  // (in place, the order of the bytes two sites of one array touch is the one legality's:
+  // a constant distance decided by the order a strip runs them in, any other behind a test)
 
   // ---- Local classification (generalized: tryGeneralMap's address/lane disambiguation,
   // adapted to this pass's own broader matchAddr/ivCoeff — an i32-typed local is 'addr' when
@@ -448,12 +441,11 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   }
   if (!lifted.length) return null
   // Cost model (Part 2 — see the shared header doc before tryGeneralMap). Same
-  // check, same reused arrays; `guards.length` is the guard-clause count when versioned.
-  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, guards.length))
+  // check, same reused arrays.
+  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
-  // ---- Codegen: tryStencil's own proven neighbourhood-gather wrapper, verbatim, plus
-  // layer-3's versioning wrap when `guards` is non-empty (see header doc). ----
+  // ---- Codegen: tryStencil's own proven neighbourhood-gather wrapper, verbatim. ----
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
   const info = LANE_INFO[laneType], lanes = info.lanes
@@ -466,12 +458,7 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
     ? [['if', ['i32.lt_s', ['local.get', incVar], cloneNode(bound)],
         ['then', ...body.map(cloneNode), cloneNode(bl.loopNode[bl.incIdx])]]]
     : []
-  // A failed alias guard skips the peel and the strip; the kept scalar loop then runs every iteration.
-  const simdPath = guards.length
-    ? [['if', guards.reduce((a, g) => ['i32.and', a, g]), ['then', ...peelStmts, boundSetup, simdBlock]]]
-    : [...peelStmts, boundSetup, simdBlock]
-  const wrapper = ['block', ...preamble.map(cloneNode), ...simdPath, bl.blockNode]
+  const wrapper = ['block', ...preamble.map(cloneNode), ...peelStmts, boundSetup, simdBlock, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
-  // (its one-base distances are its own guards)
-  return { wrapper, newLocalDecls, versioned: true }
+  return { wrapper, newLocalDecls }
 }

@@ -86,7 +86,7 @@ import { tryToneMap } from './tone-map.js'
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFloat = false, relaxedSimd = false, blurMP = true, whyNot = false,
     stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
-    aliasVersion = true, pairIterations = false, links = null, typedView = false, warn = null } = opts
+    pairIterations = false, links = null, typedView = false, warn = null } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -289,8 +289,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
         ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
         ?? of(tryToneMap(up, fnLocals, freshIdRef, toneMap))
-        ?? of(tryGeneralMap(node, fnLocals, freshIdRef, getBlRun(), { aliasVersion }))
-        ?? of(tryGeneralStencil(node, fnLocals, freshIdRef, stencil, up, { aliasVersion }))
+        ?? of(tryGeneralMap(node, fnLocals, freshIdRef, getBlRun()))
+        ?? of(tryGeneralStencil(node, fnLocals, freshIdRef, stencil, up))
         ?? of(tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc))
         ?? of(tryGatherMap(up, fnLocals, freshIdRef, distinctParams))
       // An output cursor beside the counter (`op += 2`) reads as a recurrence to
@@ -304,7 +304,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           cbl.outsideReads = outsideReads
           const lifted = tryMemCopyFill(cbl, fnLocals, freshIdRef)
             ?? tryVectorize(cbl, fnLocals, freshIdRef, pureFuncMap, constLocals)
-            ?? tryGeneralMap(canon.node, fnLocals, freshIdRef, cbl, { aliasVersion })
+            ?? tryGeneralMap(canon.node, fnLocals, freshIdRef, cbl)
             // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
             ?? tryReduce(cbl, fnLocals, freshIdRef, multiAcc)
             ?? tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)

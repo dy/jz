@@ -1,19 +1,15 @@
-import { cloneNode, nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
+import { cloneNode, nodeKey, walkAst } from '../../ast.js'
 import { constNum, hasSideEffect, isI32Const, isLocalGet, laneAccess, readStep } from './addr-model.js'
 import { normTee } from './idioms.js'
 import { isArr } from './node-utils.js'
 import { shut, strips } from './scaffold.js'
 
-// ---- Same-array dependences of a lane lift (the general map and stencil) ----
+// ---- Distances between two sites ----
 //
-// A vector step runs `lanes` iterations at once, so a store and any other access to its base
-// must touch elements at least `lanes` apart, or the same element: otherwise a lane reads what
-// the scalar loop would not have written yet, or overwrites what it would still read. Every
-// index here is affine in the counter at coefficient 1, so the distance between two sites is
-// one number for the whole loop: the difference of their linear forms, where the counter
-// cancels. A constant distance decides now (the same element or `lanes` apart is fine; closer
-// is a windowed recurrence, and the loop declines); an invariant one becomes a check hoisted
-// before the loop, `D ≤ −lanes || D ≥ lanes`, one per distinct distance.
+// Every index here is affine in the counters, so the distance between two sites is one form
+// for the whole loop: the difference of their linear forms, where a counter cancels. A
+// constant distance is decided by the order a strip runs the two sites in; any other is
+// tested where the strip opens (gateStrips below).
 
 /** The i32 index `n` as a constant plus integer multiples of opaque terms (a local, a global,
  *  or a subexpression the form does not decompose), terms keyed by structure. An index
@@ -62,40 +58,6 @@ const distanceExpr = ({ k, terms }) => {
     e = e ? ['i32.add', e, t] : t
   }
   return k ? ['i32.add', e, ['i32.const', k]] : e
-}
-
-/**
- * The hoisted checks that make a lane lift of these sites safe: [] when none is needed, null
- * when the lift must decline. `sites` are `{ kind, base, idx, memBytes }` (a `gather` reads a
- * base no store touches, and pairs with nothing); `defs` resolves index temporaries; `varying`
- * holds every local the loop writes, which a hoisted check cannot read.
- */
-export function aliasGuards(sites, stride, lanes, { defs = null, varying, version = true }) {
-  const guards = new Map()
-  for (const st of sites) {
-    if (st.kind !== 'store') continue
-    for (const s of sites) {
-      if (s === st || s.kind === 'gather' || !exprEq(normTee(s.base), normTee(st.base))) continue
-      if ((st.memBytes - s.memBytes) % stride !== 0) return null
-      const d = distance(s.idx, st.idx, defs)
-      d.k = (d.k + (s.memBytes - st.memBytes) / stride) | 0
-      if (!d.terms.length) {
-        if (d.k !== 0 && Math.abs(d.k) < lanes) return null
-        continue
-      }
-      if (!version) return null
-      let reads = false
-      for (const t of d.terms) walkAst(t.node, { enter: c => { if (c[0] === 'local.get' && varying.has(c[1])) reads = true } })
-      if (reads) return null
-      const key = nodeKey([d.k, d.terms.map(t => [t.key, t.coeff])])
-      if (guards.has(key)) continue
-      const D = distanceExpr(d)
-      guards.set(key, ['i32.or',
-        ['i32.le_s', D, ['i32.const', -lanes]],
-        ['i32.ge_s', cloneNode(D), ['i32.const', lanes]]])
-    }
-  }
-  return [...guards.values()]
 }
 
 // ---- Two bases that may be one array ----
@@ -294,14 +256,13 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       const d = distance(s.addr, st.addr, copies)
       // One base as the recognizers read bases. A constant distance is the strip's order to
       // keep (`meets`, decided where the strip's lanes are known); any other distance is the
-      // test below, unless the lift versions such distances itself (`r.versioned`).
+      // test below.
       if (s.raw && s.raw === st.raw) {
         if (inOrder.has(s.node) && inOrder.has(st.node)) continue
         if (!d.terms.length) {
           if (!s.store || s.order < st.order) meets.push(s.order < st.order ? { a: s, b: st, D: -d.k | 0 } : { a: st, b: s, D: d.k })
           continue
         }
-        if (r.versioned) continue
       }
       if (!d.terms.length && !d.k) continue
       if (separate(d)) continue

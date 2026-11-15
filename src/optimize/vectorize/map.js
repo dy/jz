@@ -1,6 +1,5 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
 import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
-import { aliasGuards } from './alias.js'
 import { clearFlowRanges, tagFlowRanges } from '../flow-range.js'
 import { f64Range } from '../../ir.js'
 import { isProfitable } from './cost-model.js'
@@ -465,9 +464,18 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
 // The integer operators of an index computed from the counter (counterGather).
 const INDEX_OPS = new Set(['i32.add', 'i32.sub', 'i32.mul', 'i32.shl', 'i32.shr_s', 'i32.shr_u', 'i32.and', 'i32.or', 'i32.xor'])
 
-export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
+// The general map: an elementwise loop whose addresses are affine in the counter at
+// coefficient one (an affine solver, `affineIvCoeff`, not a list of shapes), over any lane
+// type. An index temporary (`const a = i + j, b = a + half`) stands for its definition
+// (addr-model.js indexDefs), and a loop ending in a run of counter steps (`j++, k += step`,
+// scaffold.js ivRun) takes its secondary counters too: an index affine in one gathers, lane L
+// reading the element at k + L·step (lift.js gatherLanes), the strip advancing it by
+// lanes·step. A store and another access of one array keep their order by the one legality
+// (legality.js): a constant distance the strip's order keeps, an invariant one behind the
+// test where the strip opens (`a[i] = a[i - k] + b[i]` for a runtime `k`). It lifts where the
+// cost model says a step of the lanes does less than the passes it replaces (isProfitable).
+export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
   if (!bl) return null
-  const { aliasVersion = true } = opts
   const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced, ivs = [] } = bl
   if (blHasGlobalSet) return null
   if (!boundLocal && !isI32Const(bound)) return null
@@ -570,11 +578,8 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   // A gathered lane reads memory no store of the body reaches: its base is never stored.
   for (const g of sites) if (g.kind === 'gather' && sites.some(s => s.kind === 'store' && exprEq(normTee(s.base), normTee(g.base)))) return null
 
-  // Same-array dependence gate (alias.js): a constant element distance decides now, an
-  // invariant one versions the loop behind hoisted checks (the header doc's "RUNTIME ALIAS
-  // VERSIONING" note).
-  const guards = aliasGuards(sites, stride, LANE_INFO[laneType].lanes, { defs, varying: ivWrites, version: aliasVersion })
-  if (!guards) return null
+  // (the order of the bytes two sites of one array touch is the one legality's: a constant
+  // distance decided by the order a strip runs them in, any other behind a test, legality.js)
 
   // A scalar local whose every write is address/offset-shaped (an addrTees/offTees entry, or
   // matches the SAME address grammar directly) is index arithmetic, not lane data — kept scalar
@@ -634,9 +639,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (!lifted.length) return null
   // Cost model (Part 2 — see the header doc right before tryGeneralMap): decline
   // when the vector step costs at least as much per lane as the scalar iteration it replaces.
-  // `guards` (computed above) is non-empty only for the versioned path; its own `.length` is
-  // the guard-clause count the wrapper below actually ANDs together, so it's the right count here.
-  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, guards.length))
+  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   const id = freshIdRef.next++
@@ -647,14 +650,8 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
     ...ivs.map(({ name, step }) => ['local.set', name, ['i32.add', ['local.get', name], laneStep(step, lanes)]]),
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]], bl.dir)
-  // Runtime alias versioning (see header doc): with `guards`, the SIMD strip runs only
-  // behind the hoisted disjointness check. The kept scalar loop is the fallback as it is the
-  // tail: a skipped strip leaves the counters at their entry values, so it runs every iteration.
-  const simdPath = guards.length
-    ? [['if', guards.reduce((a, g) => ['i32.and', a, g]), ['then', boundSetup, simdBlock]]]
-    : [boundSetup, simdBlock]
-  const wrapper = ['block', ...preamble.map(cloneNode), ...simdPath, bl.blockNode]
+  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
-  // (its secondary counters step by their lanes; its one-base distances are its own guards)
-  return { wrapper, newLocalDecls, inductions: ivs.map(iv => iv.name), versioned: true }
+  // (its secondary counters step by their lanes)
+  return { wrapper, newLocalDecls, inductions: ivs.map(iv => iv.name) }
 }
