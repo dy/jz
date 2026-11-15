@@ -1,6 +1,6 @@
 /**
  * What memory a load or a store reaches, as the emitter knew it where it made the
- * access, and whether two accesses may reach the same bytes.
+ * access.
  *
  * The emitter marks the instruction node (`node.mem`) where the program summary
  * names what the access touches:
@@ -19,8 +19,8 @@
  * the runtime's own memory. A pass that rebuilds a marked node drops its mark,
  * which is the unmarked answer.
  *
- * The optimizer's memory passes ask `mayAlias` before a store forgets what a load
- * read or a store left (optimize/forward-store.js, optimize/reuse-loads.js).
+ * Whether two accesses may reach the same bytes is optimize/address.js's (`marksMeet`
+ * over two marks, `mayAlias` over two accesses), which every memory pass asks.
  *
  * @module ir/mem-alias
  */
@@ -52,17 +52,5 @@ export const markField = (node, obj, slot) => {
   if (!sids?.length || sids.some(s => s == null || inlined(s))) return node
   node.mem = 'f' + slot + ':' + [...sids].sort((a, b) => a - b).join(',')
   return node
-}
-
-const layoutsOf = (m) => m.slice(m.indexOf(':') + 1).split(',')
-
-/** Whether accesses marked `a` and `b` (a node's `mem`, or undefined) may reach the same bytes. */
-export const mayAlias = (a, b) => {
-  if (a == null || b == null) return true
-  if (a[0] !== b[0]) return false
-  if (a[0] === 'e') return a === b
-  if (a.slice(0, a.indexOf(':')) !== b.slice(0, b.indexOf(':'))) return false
-  const lb = new Set(layoutsOf(b))
-  return layoutsOf(a).some(s => lb.has(s))
 }
 

@@ -5,32 +5,38 @@
 // read. The first load keeps its value in a local and the second reads the local.
 //
 // Two loads read the same value when they are the same instruction (width, sign and
-// offset) at an address in the same local, and between them the walk, in the order the
-// code runs, passes no store that may reach the bytes the load read (src/ir/mem-alias.js: a
-// store into an array of another cell, or into another field, leaves it), no bulk or
-// atomic memory operation and no call but one whose result is a function of its operands (optimize/effects.js:
-// the math runtime, a string's readers), and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
+// offset) at an address in the same local, or in a copy of it (`$a2 = $a`, while neither
+// is written again), and between them the walk, in the order the code runs, passes no
+// store that may reach the bytes the load read (optimize/address.js mayAlias: a store of
+// any width on the load's own sum reaches only the bytes it overlaps, a store into an array
+// of another cell or into another field none), no bulk or atomic memory operation and no
+// call but one whose result is a function of its operands (optimize/effects.js: the math
+// runtime, a string's readers), and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
 // branch or a handler's catch clause leaves, src/ir/control.js leavesTo) keeps only what holds on both. The later load's address is the local
 // itself: dropping it drops nothing that runs. A load inside a conditional arm the first
 // load is outside of stays: it runs only on that path, and its arm, a local read, would
 // become a select (a predictable branch is cheaper than the select's dependence).
 import { nextLocalId, findBodyStart, leavesTo } from '../ir.js'
-import { mayAlias } from '../ir/mem-alias.js'
+import { addressOf, memop, mayAlias } from './address.js'
 import { NO_MODULE } from './effects.js'
 
 const isArr = Array.isArray
 const LOAD = /^(i32|i64|f32|f64)\.load(8_[su]|16_[su]|32_[su])?$/
 // what may change memory, or run code that does
 const CLOBBER = /^(call|call_indirect|call_ref|return_call|return_call_indirect|return_call_ref|memory\.(copy|fill|init|grow)|.*\.atomic\..*|.*\.store(8|16|32)?|v128\.store.*)$/
-const STORE = /^[fi](32|64)\.store$/
+const STORE = /^(i32|i64|f32|f64|v128)\.store(8|16|32)?$/
+// (a local's copy in the walk's state: `=$x` → the local it copies)
+const copyOf = (state, name) => state.get('=' + name)?.root ?? name
+// an address read as a sum (optimize/address.js), a local through its copy, a tee as its local after it
+const look = (state) => (n) => n[0] === 'local.get' && state.has('=' + n[1]) ? 'l:' + copyOf(state, n[1]) : undefined
+const accOf = (n, state) => addressOf(n, look(state), a => isArr(a) && a[0] === 'local.tee' ? ['local.get', a[1]] : a)
 
-/** The key of a load at `local + offset`, its address local, or null. */
-const keyOf = (n) => {
-  let i = 1, off = 0
-  for (; typeof n[i] === 'string'; i++) if (n[i].startsWith('offset=')) off += Number(n[i].slice(7))
-  const a = n[i]
-  if (n.length !== i + 1 || !isArr(a) || (a[0] !== 'local.get' && a[0] !== 'local.tee') || typeof a[1] !== 'string') return null
-  return { key: n[0] + ' ' + off + ' ' + a[1], local: a[1], pure: a[0] === 'local.get' }
+/** The key of a load at `local + offset` (the local through its copy), its address local, or null. */
+const keyOf = (n, state) => {
+  const m = memop(n), a = m && m.addr
+  if (!m || n.length !== m.ai + 1 || !isArr(a) || (a[0] !== 'local.get' && a[0] !== 'local.tee') || typeof a[1] !== 'string') return null
+  const local = copyOf(state, a[1])
+  return { key: n[0] + ' ' + m.off + ' ' + local, local, pure: a[0] === 'local.get' }
 }
 
 export function reuseLoads(fn, fx = NO_MODULE) {
@@ -40,7 +46,7 @@ export function reuseLoads(fn, fx = NO_MODULE) {
   let next = null
   // available loads: key → { local, node, parent, idx, temp }
   const meet = (a, b) => { const m = new Map(); for (const [k, v] of a) if (b.get(k) === v) m.set(k, v); return m }
-  const kill = (state, local) => { for (const [k, v] of state) if (v.local === local) state.delete(k) }
+  const kill = (state, local) => { for (const [k, v] of state) if (v.local === local || v.root === local || k === '=' + local) state.delete(k) }
   // Walk `n` (the child at parent[idx]) in evaluation order; returns the state after it.
   const walk = (n, parent, idx, state, depth = 0) => {
     if (!isArr(n)) return state
@@ -71,14 +77,20 @@ export function reuseLoads(fn, fx = NO_MODULE) {
       return new Map()
     }
     for (let i = 1; i < n.length; i++) state = walk(n[i], n, i, state, depth)
-    if (op === 'local.set' || op === 'local.tee') { kill(state, n[1]); return state }
-    // a marked store forgets the loads it may overwrite, an unmarked one every load
-    if (typeof op === 'string' && STORE.test(op) && n.mem != null) { for (const [k, v] of state) if (mayAlias(n.mem, v.node.mem)) state.delete(k); return state }
+    if (op === 'local.set' || op === 'local.tee') {
+      kill(state, n[1])
+      // (a copy of a local: its loads are the other's, while neither is written again)
+      const v = n[2]
+      if (isArr(v) && v[0] === 'local.get' && typeof v[1] === 'string' && v[1] !== n[1]) state.set('=' + n[1], { root: copyOf(state, v[1]) })
+      return state
+    }
+    // a store forgets the loads whose bytes it may reach
+    if (typeof op === 'string' && STORE.test(op)) { const acc = accOf(n, state); for (const [k, v] of state) if (v.acc && mayAlias(acc, v.acc)) state.delete(k); return state }
     // (a call that writes nothing ends the loads too: a block's forward hop reads its word by the
     // hop's shape (optimize/forward-hops.js), which a reused word would hide: arraydowngrade ran 4.4x slower)
     if (typeof op === 'string' && CLOBBER.test(op) && !((op === 'call' || op === 'return_call') && fx.kind(n[1]) === 'pure')) return new Map()
     if (typeof op === 'string' && LOAD.test(op)) {
-      const k = keyOf(n)
+      const k = keyOf(n, state)
       if (!k || shared.has(n) || shared.has(parent)) return state
       const seen = state.get(k.key)
       if (seen && k.pure && seen.depth >= depth) {
@@ -91,7 +103,7 @@ export function reuseLoads(fn, fx = NO_MODULE) {
         parent[idx] = ['local.get', seen.temp]
         return state
       }
-      if (!seen || seen.depth > depth) state.set(k.key, { local: k.local, node: n, parent, idx, temp: null, depth })
+      if (!seen || seen.depth > depth) state.set(k.key, { local: k.local, node: n, parent, idx, temp: null, depth, acc: accOf(n, state) })
     }
     return state
   }

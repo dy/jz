@@ -189,6 +189,7 @@ const TESTS = [
   'fn-alias',
   'forward-store',
   'mem-alias',
+  'address',
   'static-scratch',
   'static-locals',
   'iteration-release',

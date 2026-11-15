@@ -7,6 +7,7 @@
  * @module optimize/driver
  */
 import { DBG_INVARIANTS } from '../debug.js'
+import { markCount } from './address.js'
 import { verifyFn } from '../ir.js'
 import { stage, on } from './pass-table.js'
 import { recursionUnroll } from './recurse.js'
@@ -176,7 +177,12 @@ export function optimizeFunc(fn, cfg, facts = {}) {
       cfg.vectorizeLaneLocal === false &&
       cfg.inlinePtrOffsetFast === false) return
   const st = {}
-  for (let i = 0; i < STEPS.length; i++) if (on(STEPS[i], cfg)) RUN[i][1](fn, cfg, facts, st)
+  for (let i = 0; i < STEPS.length; i++) if (on(STEPS[i], cfg)) {
+    const was = DBG_INVARIANTS && markCount(fn)
+    RUN[i][1](fn, cfg, facts, st)
+    // (an access that had a region keeps it: a step that rebuilt one without its mark fails here)
+    if (was) { const now = markCount(fn); if (was.marked - now.marked > Math.max(0, was.accesses - now.accesses)) throw new Error(`[ir verify] ${RUN[i][0]} dropped the memory marks of ${was.marked - now.marked} accesses in ${fn[1]}`) }
+  }
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
   // here, pinned to the function and the bad name.

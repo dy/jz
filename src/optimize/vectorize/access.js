@@ -5,33 +5,13 @@
 import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { isArr } from './node-utils.js'
 import { helperKind } from '../effects.js'
+import { memop, constOf } from '../address.js'
 
-// Decompose a load/store node, normalizing the optional `offset=K` attribute jz
-// folds adjacent accesses into: `(op addr …)` → off 0, `(op offset=K addr …)` → K.
-export const memAccess = (n) => {
-  if (typeof n[1] === 'string' && n[1].startsWith('offset=')) return { off: +n[1].slice(7), addr: n[2], val: n[3] }
-  return { off: 0, addr: n[1], val: n[2] }
-}
-// A constant i32 subtree's value, folding the arithmetic jz leaves in a constant index
-// (`(i32.shl (i32.const 3) (i32.const 3))`); NaN when it is not constant.
-export const constOf = (n) => {
-  if (!isArr(n)) return NaN
-  if (n[0] === 'i32.const') return Number(n[1])
-  if (n.length !== 3) return NaN
-  const a = constOf(n[1]), b = constOf(n[2])
-  if (Number.isNaN(a) || Number.isNaN(b)) return NaN
-  switch (n[0]) {
-    case 'i32.add': return (a + b) | 0
-    case 'i32.sub': return (a - b) | 0
-    case 'i32.mul': return Math.imul(a, b)
-    case 'i32.shl': return a << (b & 31)
-  }
-  return NaN
-}
-// An access as `base ⊕ off`: the memarg plus every constant the address adds. `base`
-// is the remaining address subtree, kept as emitted (its tee included) for reuse.
+// An access as `base ⊕ off`: the memarg (optimize/address.js memop) plus every constant the
+// address adds. `base` is the remaining address subtree, kept as emitted (its tee included)
+// for reuse; optimize/address.js reads the same address as one canonical sum.
 export const accessOf = (n) => {
-  const m = memAccess(n)
+  const m = memop(n)
   let base = m.addr, off = m.off
   while (isArr(base) && base[0] === 'i32.add' && base.length === 3) {
     const k = constOf(base[2]), j = constOf(base[1])
@@ -41,6 +21,7 @@ export const accessOf = (n) => {
   }
   return { base, off, addr: m.addr, val: m.val }
 }
+export { constOf }
 export const memarg = (op, off, base, ...rest) => off ? [op, `offset=${off}`, base, ...rest] : [op, base, ...rest]
 export const clone = n => isArr(n) ? n.map(clone) : n
 

@@ -40,7 +40,7 @@
  * @module optimize/carry-stores
  */
 import { nextLocalId, findBodyStart } from '../ir.js'
-import { nodeEqual } from '../ast.js'
+import { accessAt, addressOf, linear, memop, mayAlias } from './address.js'
 import { NO_MODULE } from './effects.js'
 
 const isArr = Array.isArray
@@ -67,22 +67,6 @@ const writesCall = (m, fx) => typeof m[0] === 'string' && (m[0] === 'call' || m[
 const calls = (n, fx) => some(n, m => writesCall(m, fx))
 const memOp = (n) => some(n, m => typeof m[0] === 'string' && (m[0].indexOf('.store') > 0 || m[0].startsWith('memory.') || m[0].indexOf('.atomic') > 0))
 
-/** An access `(op offset=o … ADDR …)`: { op, off, addr, rest } with the immediates read, or null. */
-const access = (n) => {
-  if (!isArr(n)) return null
-  let i = 1, off = 0
-  for (; typeof n[i] === 'string'; i++) {
-    if (n[i].startsWith('offset=')) off += Number(n[i].slice(7))
-    else if (!n[i].startsWith('align=')) return null
-  }
-  return { op: n[0], off, at: i, addr: n[i] }
-}
-/** The address an access names: A itself, A through `local.tee`, or a local `alias` holds. */
-const addrOf = (a, alias) => {
-  if (isArr(a) && a[0] === 'local.tee' && a.length === 3) return a[2]
-  if (isArr(a) && a[0] === 'local.get' && alias.has(a[1])) return alias.get(a[1])
-  return a
-}
 
 /** Carry the value of `loop` (child `pos` of `parent`) that its rounds store last and read first. */
 function carryLoop(fn, loop, parent, pos, fx) {
@@ -98,25 +82,25 @@ function carryLoop(fn, loop, parent, pos, fx) {
   for (let j = loop.length - 2; j >= 2; j--) {
     const st = loop[j]
     if (!isArr(st) || !STORE_OF[st[0]]) continue
-    const s = access(st)
-    if (!s || st.length !== s.at + 2) continue
+    const s = memop(st)
+    if (!s || st.length !== s.ai + 2) continue
     const tee = isArr(s.addr) && s.addr[0] === 'local.tee' && s.addr.length === 3 ? s.addr[1] : null
     const A = tee ? s.addr[2] : s.addr
     if (!pure(A)) continue
+    // the slot as one sum (optimize/address.js); a later access may name it through the tee's local
+    const S = accessAt(s, linear(A), st.mem)
     const names = localsOf(A, new Set())
     if (tee && names.has(tee)) continue
     const ld = STORE_OF[st[0]], w = WIDTH[ld]
     // what follows the store, to the latch
     const after = loop.slice(j + 1)
-    const alias = new Map(tee ? [[tee, A]] : [])
+    const look = (n) => n[0] === 'local.get' && n[1] === tee ? { e: A, look: null } : undefined
     if (after.some(n => writesAny(n, names) || calls(n, fx) || tee && writesAny(n, new Set([tee])))) continue
     const misses = (n) => !some(n, m => {
       if (typeof m[0] !== 'string') return false
       if (m[0].startsWith('memory.') || m[0].indexOf('.atomic') > 0) return true
       if (m[0].indexOf('.store') < 0) return false
-      const o = access(m), ow = STORE_W[m[0]]
-      if (!o || !ow || !nodeEqual(addrOf(o.addr, alias), A)) return true
-      return o.off < s.off + w && s.off < o.off + ow
+      return !STORE_W[m[0]] || mayAlias(S, addressOf(m, look))
     })
     if (!after.every(misses)) continue
     // the load: before the round writes memory, calls, or writes A's locals, with no branch before it
@@ -134,9 +118,10 @@ function carryLoop(fn, loop, parent, pos, fx) {
           const at = e[0] === 'local.tee' || e[0] === 'local.set' ? 2 : 1
           for (let k = at; k < e.length; k++) look(e[k])
           if (found || stop) return
+          // (the slot's own load, of an address that sets no local: it is read ahead of the loop)
           if (LOADS.has(e[0]) && e[0] === ld) {
-            const a = access(e)
-            if (a && a.off === s.off && e.length === a.at + 1 && nodeEqual(a.addr, A)) { found = e; tests = conds.slice(); return }
+            const a = addressOf(e)
+            if (e.length === a.ai + 1 && a.key != null && a.key === S.key && a.at === S.at && !some(a.addr, m => m[0] === 'local.tee' || m[0] === 'local.set')) { found = e; tests = conds.slice(); return }
           }
           if (e[0] === 'br_if') { stop = true; return }
           if (e[0] === 'local.set' || e[0] === 'local.tee') { if (names.has(e[1])) { stop = true; return } written.add(e[1]) }

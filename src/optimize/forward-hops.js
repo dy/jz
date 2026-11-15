@@ -53,6 +53,7 @@
 import { walkAst, nodeEqual } from '../ast.js'
 import { findBodyStart, nextLocalId } from '../ir.js'
 import { LAYOUT } from '../../layout.js'
+import { linear } from './address.js'
 
 const isArr = Array.isArray
 const FWD = '$__ptr_offset_fwd'
@@ -123,31 +124,21 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
     return out
   }
 
-  // The receiver behind a box, an offset and a forward word, through the
-  // copies `env` holds: the box local, or null.
-  const boxRoot = (e, env, d) => {
-    if (d > 16 || !isArr(e)) return null
-    if (e.length === 2 && (e[0] === 'i64.reinterpret_f64' || e[0] === 'f64.reinterpret_i64')) return boxRoot(e[1], env, d + 1)
-    if (e.length === 2 && e[0] === 'global.get' && typeof e[1] === 'string') return globalTypes?.get(e[1].slice(1)) === 'f64' ? '@' + e[1] : null
-    if (!isGet(e)) return null
-    const v = env.get(e[1])
-    return v ? boxRoot(v, env, d + 1) : BOX.has(types.get(e[1])) ? e[1] : null
+  // The receiver whose pointer `e` reads, `k` bytes from it (0: the pointer, -4: its forward
+  // word), as one sum (optimize/address.js) through the copies `env` holds: the box local,
+  // `@$g` for a box global, or null.
+  const lookIn = (env) => { const look = (n) => isGet(n) && env.get(n[1]) ? { e: env.get(n[1]), look } : undefined; return look }
+  const rootAt = (e, env, k) => {
+    const lin = linear(e, lookIn(env))
+    if (!lin || lin.k !== k || lin.terms.size !== 1) return null
+    const [key, t] = [...lin.terms][0]
+    if (t.scale !== 1 || !key.startsWith('p:') && !key.startsWith('q:')) return null
+    const r = key.slice(2)
+    return r.startsWith('l:') ? (BOX.has(types.get(r.slice(2))) ? r.slice(2) : null)
+      : r.startsWith('g:') && globalTypes?.get(r.slice(3)) === 'f64' ? '@' + r.slice(2) : null
   }
-  const offsetRoot = (e, env, d) => {
-    if (d > 16 || !isArr(e)) return null
-    if (e.length === 2 && e[0] === 'i32.wrap_i64') {
-      const b = e[1]
-      return boxRoot(isArr(b) && b.length === 3 && b[0] === 'i64.and' && isMask(b[2]) ? b[1] : b, env, d + 1)
-    }
-    const v = isGet(e) ? env.get(e[1]) : null
-    return v ? offsetRoot(v, env, d + 1) : null
-  }
-  const wordRoot = (e, env, d) => {
-    if (d > 16 || !isArr(e)) return null
-    if (e.length === 3 && e[0] === 'i32.sub' && isConst(e[2], 'i32.const', 4)) return offsetRoot(e[1], env, d + 1)
-    const v = isGet(e) ? env.get(e[1]) : null
-    return v ? wordRoot(v, env, d + 1) : null
-  }
+  const offsetRoot = (e, env) => rootAt(e, env, 0)
+  const wordRoot = (e, env) => rootAt(e, env, -4)
   // The word test of a hop, `(i32.eq (i32.load A) (i32.const -1))`: A, or null.
   const testOf = (c) => {
     if (!isArr(c) || c.length !== 3 || c[0] !== 'i32.eq' || !isConst(c[2], 'i32.const', -1)) return null
@@ -165,8 +156,8 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
       const a = testOf(n[2]), then = n[3], els = n[4]
       if (!a || !isArr(then) || then.length !== 2 || then[0] !== 'then' || !isArr(els) || els.length !== 2 || els[0] !== 'else') return null
       if (!isFwdOf(then[1], els[1])) return null
-      const root = offsetRoot(els[1], env, 0)
-      return root && wordRoot(a, env, 0) === root ? { root, into: null } : null
+      const root = offsetRoot(els[1], env)
+      return root && wordRoot(a, env) === root ? { root, into: null } : null
     }
     if (n.length !== 3) return null
     const a = testOf(n[1]), then = n[2]
@@ -177,8 +168,8 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
     const o = set[1]
     if (!isFwdOf(set[2], ['local.get', o])) return null
     const t = a[1]
-    const root = isArr(t) && t.length === 3 && t[0] === 'local.tee' && t[1] === o ? offsetRoot(t[2], env, 0)
-      : isConst(t, 'local.get', o) ? offsetRoot(t, env, 0) : null
+    const root = isArr(t) && t.length === 3 && t[0] === 'local.tee' && t[1] === o ? offsetRoot(t[2], env)
+      : isConst(t, 'local.get', o) ? offsetRoot(t, env) : null
     return root ? { root, into: o } : null
   }
 

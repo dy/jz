@@ -25,17 +25,16 @@
  *
  * Statements cross only where nothing observes the order: no branch, call,
  * trap or global write, none of the locals one reads written by the other,
- * and memory accesses that provably miss each other: the same base written the
- * same way with disjoint bytes, or bases rooted at parameters the plan proves
- * distinct buffers (`distinctParams`). A store goes just ahead of the topmost
+ * and memory accesses that provably miss each other (optimize/address.js
+ * mayAlias): one sum with disjoint bytes, or bases rooted at parameters the plan
+ * proves distinct buffers (`distinctParams`). A store goes just ahead of the topmost
  * statement it may cross that holds a chain of at least LATENCY cycles of work.
  *
  * @module optimize/early-stores
  */
 import { findBodyStart } from '../ir.js'
-import { constOf } from './vectorize/access.js'
-import { nodeEqual } from '../ast.js'
 import { NO_MODULE } from './effects.js'
+import { addressOf, mayAlias } from './address.js'
 
 const isArr = Array.isArray
 const STORE = /^(?:i32|i64|f32|f64)\.store(?:8|16|32)?$/
@@ -47,24 +46,6 @@ const SLOW = /^f(?:32|64)\.(?:div|sqrt)$/
 // the cycles of the deepest chain a statement must hold for a store to cross it
 const LATENCY = 8
 // the bytes an access touches: its packed width, else its type's
-const BYTES = (op) => { const m = /(?:load|store)(8|16|32)/.exec(op); return m ? Number(m[1]) / 8 : op[1] === '3' ? 4 : 8 }
-
-const isImm = (c) => typeof c === 'string' && (c.startsWith('offset=') || c.startsWith('align='))
-/** A memop's address as `addr ⊕ off`: the memarg and every constant the address adds, with the bytes it touches. */
-const accessOf = (n) => {
-  let i = 1, off = 0
-  while (i < n.length && isImm(n[i])) { if (n[i].startsWith('offset=')) off = Number(n[i].slice(7)); i++ }
-  let addr = n[STORE.test(n[0]) ? n.length - 2 : n.length - 1]
-  while (isArr(addr) && addr[0] === 'i32.add' && addr.length === 3) {
-    const b = constOf(addr[2]), a = constOf(addr[1])
-    if (!Number.isNaN(b)) { off += b; addr = addr[1] }
-    else if (!Number.isNaN(a)) { off += a; addr = addr[2] }
-    else break
-  }
-  const whole = constOf(addr)
-  if (!Number.isNaN(whole)) { off += whole; addr = ['i32.const', 0] }
-  return { addr, off, bytes: BYTES(n[0]) }
-}
 const walk = (n, f) => { if (!isArr(n)) return; f(n); for (let i = 1; i < n.length; i++) walk(n[i], f) }
 const writes = (c) => (c[0] === 'local.set' || c[0] === 'local.tee') && typeof c[1] === 'string'
 /** Whether a node's operation is one no statement may cross: control, a call, a trap, a global or memory-wide write. */
@@ -92,52 +73,32 @@ const depth = (n) => {
 }
 
 /**
- * Where an address is rooted, read at statement `at` of `list`: a parameter in
- * `distinct` it offsets, 'num' for arithmetic of no parameter, or null.
+ * The locals of an address read at statement `at` of `list` (optimize/address.js `look`):
+ * a local the statement itself writes cannot be said; one an earlier statement of the
+ * list writes, unconditionally, is what that write holds there; one none writes is a
+ * parameter `distinct` names, as its root, or stands as itself.
  */
-const rootOf = (n, list, at, from, distinct, depthLeft = 8) => {
-  if (!isArr(n) || depthLeft < 0) return null
-  const op = n[0]
-  if (op === 'i32.const') return 'num'
-  if (op === 'local.tee') return rootOf(n[2], list, at, from, distinct, depthLeft - 1)
-  if (op === 'local.get') {
-    const x = n[1]
-    // the nearest write before `at`, unconditional in its statement
-    for (let k = at - 1; k >= from; k--) {
-      let def = null, other = false
-      walk(list[k], (c) => {
-        if (writes(c) && c[1] === x) { if (def) other = true; def = c }
-        else if (c[0] === 'if' || c[0] === 'block' || c[0] === 'loop') other = true
-      })
-      if (!def) continue
-      return other ? null : rootOf(def[2], list, k, from, distinct, depthLeft - 1)
-    }
-    return distinct.has(x) ? x : null
+const lookAt = (ctx, at) => (n) => {
+  if (n[0] !== 'local.get') return undefined
+  const x = n[1]
+  let mine = false
+  walk(ctx.list[at], (c) => { if (writes(c) && c[1] === x) mine = true })
+  if (mine) return null
+  for (let k = at - 1; k >= ctx.from; k--) {
+    let def = null, other = false
+    walk(ctx.list[k], (c) => {
+      if (writes(c) && c[1] === x) { if (def) other = true; def = c }
+      else if (c[0] === 'if' || c[0] === 'block' || c[0] === 'loop') other = true
+    })
+    if (!def) continue
+    return other ? null : { e: def[2], look: lookAt(ctx, k), token: `l:${x}@${k}` }
   }
-  if (op === 'i32.add' && n.length === 3) {
-    const a = rootOf(n[1], list, at, from, distinct, depthLeft - 1), b = rootOf(n[2], list, at, from, distinct, depthLeft - 1)
-    return a === 'num' ? b : b === 'num' ? a : null
-  }
-  // an index's arithmetic: no buffer is shifted, multiplied or masked into an address
-  if ((op === 'i32.shl' || op === 'i32.mul' || op === 'i32.and') && n.length === 3)
-    return isArr(n[2]) && n[2][0] === 'i32.const' ? 'num' : null
-  return null
+  return ctx.distinct.has(x) ? 'r:' + x : undefined
 }
-
-/**
- * Whether two accesses, `a` read at statement `at` and `b` at `bt`, miss each
- * other: roots at distinct parameters, or one address written alike, its
- * locals unwritten in `written` (what the statements between write), over
- * disjoint bytes.
- */
-const misses = (a, at, b, bt, ctx, written) => {
-  const ra = rootOf(a.addr, ctx.list, at, ctx.from, ctx.distinct), rb = rootOf(b.addr, ctx.list, bt, ctx.from, ctx.distinct)
-  if (ra && rb && ra !== 'num' && rb !== 'num' && ra !== rb) return true
-  if (!nodeEqual(a.addr, b.addr)) return false
-  let touched = false
-  walk(a.addr, (c) => { if (c[0] === 'local.get' && written.has(c[1])) touched = true })
-  return !touched && (a.off + a.bytes <= b.off || b.off + b.bytes <= a.off)
-}
+/** An access at statement `at`, as one sum. */
+const accAt = (n, at, ctx) => addressOf(n, lookAt(ctx, at))
+/** Whether two accesses miss each other: one sum over disjoint bytes, or roots the plan proves apart. */
+const misses = (a, b, ctx) => !mayAlias(a, b, ctx.roots)
 
 /** Arithmetic of locals and constants: nothing it does could not move with it. */
 const pure = (n) => {
@@ -157,12 +118,11 @@ const sink = (ctx) => {
     if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3 || typeof s[1] !== 'string' || counts.get(s[1]) !== 1) continue
     const load = s[2]
     if (!isArr(load) || !LOAD.test(load[0])) continue
-    const x = s[1], mine = accessOf(load), deps = new Set(), globals = new Set()
+    const x = s[1], mine = accAt(load, i, ctx), deps = new Set(), globals = new Set()
     let plain = true
     walk(mine.addr, (c) => { if (fixed(c[0]) || writes(c) || LOAD.test(c[0])) plain = false; else if (c[0] === 'local.get') deps.add(c[1]); else if (c[0] === 'global.get') globals.add(c[1]) })
     if (!plain) continue
     // the statement reading x, past statements that leave the load's value alone
-    const written = new Set()
     let at = -1
     for (let k = i + 1; k < list.length && at < 0; k++) {
       const p = list[k]
@@ -179,9 +139,8 @@ const sink = (ctx) => {
         break
       }
       if (!ok) break
-      for (const c of stores) if (!misses(mine, i, accessOf(c), k, ctx, written)) ok = false
+      for (const c of stores) if (!misses(mine, accAt(c, k, ctx), ctx)) ok = false
       if (!ok) break
-      walk(p, (c) => { if (writes(c)) written.add(c[1]) })
     }
     if (at < 0) continue
     walk(list[at], (c) => { for (let j = 1; j < c.length; j++) if (isArr(c[j]) && c[j][0] === 'local.get' && c[j][1] === x) c[j] = load })
@@ -210,12 +169,11 @@ const raise = (ctx) => {
     const reads = new Set(), globals = new Set()
     walk(s, (c) => { if (fixed(c[0]) || writes(c)) plain = false; else if (c[0] === 'local.get') reads.add(c[1]); else if (c[0] === 'global.get') globals.add(c[1]) })
     if (!plain) continue
-    const mine = accessOf(s), myLoads = []
-    walk(s[s.length - 1], (c) => { if (LOAD.test(c[0])) myLoads.push(accessOf(c)) })
+    const mine = accAt(s, j, ctx), myLoads = []
+    walk(s[s.length - 1], (c) => { if (LOAD.test(c[0])) myLoads.push(accAt(c, j, ctx)) })
     // it goes just ahead of the topmost long computation it may cross: a statement
     // holding LATENCY cycles of work; past cheaper ones there is nothing to gain
     let t = j
-    const written = new Set()
     for (let k = j - 1; k >= from; k--) {
       const p = list[k]
       if (!isArr(p) || typeof p[0] !== 'string') break
@@ -226,17 +184,13 @@ const raise = (ctx) => {
         else if (LOAD.test(c[0]) || STORE.test(c[0])) accesses.push(c)
       })
       if (!ok) break
-      // its writes, between this statement and the store, change what a base names
-      const w = new Set(written)
-      walk(p, (c) => { if (writes(c)) w.add(c[1]) })
       for (const c of accesses) {
-        const a = accessOf(c)
-        if (!misses(mine, j, a, k, ctx, w)) { ok = false; break }
+        const a = accAt(c, k, ctx)
+        if (!misses(mine, a, ctx)) { ok = false; break }
         // a store it crosses must miss the loads the store makes
-        if (STORE.test(c[0]) && myLoads.some(l => !misses(l, j, a, k, ctx, w))) { ok = false; break }
+        if (STORE.test(c[0]) && myLoads.some(l => !misses(l, a, ctx))) { ok = false; break }
       }
       if (!ok) break
-      for (const x of w) written.add(x)
       if (depth(p) >= LATENCY) t = k
     }
     if (t === j) continue
@@ -263,8 +217,9 @@ export function earlyStores(fn, fx = NO_MODULE) {
     while (k < n.length && (!isArr(n[k]) || n[k][0] === 'result' || n[k][0] === 'param' || n[k][0] === 'type')) k++
     lists.push([n, k])
   })
+  const roots = new Set([...distinct].map(x => 'r:' + x))
   for (const [list, from] of lists) {
-    const ctx = { list, from, distinct, counts, fx }
+    const ctx = { list, from, distinct, roots, counts, fx }
     sink(ctx)
     raise(ctx)
   }

@@ -26,28 +26,12 @@ import { isMemWrite } from 'watr/optimize'
 import { DBG_INVARIANTS } from '../debug.js'
 import { leftLabels } from '../ir.js'
 import { globalBaseAliases, memGlobal } from './globals.js'
+import { HEADER_STORE_FREE, headerStore } from './address.js'
 
 const isArr = Array.isArray
 const INDIRECT = new Set(['call_indirect', 'call_ref', 'return_call_indirect', 'return_call_ref'])
 const THROWS = new Set(['throw', 'rethrow', 'throw_ref'])
 const LEAVES = new Set(['return', 'return_call', 'return_call_indirect', 'return_call_ref'])
-
-/** The stores of an element's payload: jz writes every array and typed header word with
- *  `i32.store` (under JZ_DEBUG_INVARIANTS every solve checks each wide store it reads,
- *  `headerStore`), and a payload store lands inside its own allocation (the bounds a store
- *  is emitted under), so these never change a header. */
-export const HEADER_STORE_FREE = new Set(['f64.store', 'f32.store', 'i64.store', 'v128.store'])
-/** Whether store `n` may write a header word: the bytes it writes, below the pointer its
- *  address steps back from, reach the length at -8 or the forward word at -4. (The allocator
- *  writes a header ahead of the pointer it returns with word stores, `__alloc_hdr`.) */
-export const headerStore = (n) => {
-  let i = 1, off = 0
-  while (typeof n[i] === 'string') { if (n[i].startsWith('offset=')) off += Number(n[i].slice(7)); i++ }
-  const a = n[i], width = n[0].startsWith('v128') ? 16 : n[0].startsWith('f32') ? 4 : 8
-  const k = isArr(a) && a.length === 3 && isArr(a[2]) && a[2][0] === 'i32.const' ? Number(a[2][1]) : null
-  const at = k == null ? null : a[0] === 'i32.sub' ? off - k : a[0] === 'i32.add' && k < 0 ? off + k : null
-  return at != null && at < 0 && at + width > -8
-}
 
 /**
  * The runtime helpers whose body does not show what calling them does, by name (a name

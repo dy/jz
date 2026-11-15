@@ -11,6 +11,7 @@ import { LAYOUT } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
+import { linear, memop, keyOf } from './address.js'
 import { hasIROp } from './ir-scan.js'
 
 /**
@@ -199,47 +200,30 @@ const typedGlobalByteLengths = (globalTypedLen, globalTypedElem) => {
   return out
 }
 
-const irI32Const = n => {
-  if (!Array.isArray(n)) return null
-  if (n[0] === 'i32.const' && Number.isInteger(n[1])) return n[1]
-  if (n.length !== 3) return null
-  const a = irI32Const(n[1]), b = irI32Const(n[2])
-  if (a == null || b == null) return null
-  if (n[0] === 'i32.add') return (a + b) | 0
-  if (n[0] === 'i32.sub') return (a - b) | 0
-  if (n[0] === 'i32.mul') return Math.imul(a, b)
-  if (n[0] === 'i32.shl') return a << b
-  return null
+// The typed global a sum points into (optimize/address.js): its one box pointer, a global's
+// (`hoistGlobalPtrOffset`'s snapshot, `i32.wrap_i64` of the box's bits), at the sum's
+// constant where that is all the sum adds, or at an offset no one knows.
+const globalOf = (lin) => {
+  if (!lin) return null
+  let g = null
+  for (const [key, t] of lin.terms) if (key.startsWith('p:g:')) { if (g || t.scale !== 1) return null; g = key.slice(4) }
+  return g && { global: g, offset: lin.terms.size === 1 ? lin.k : null }
+}
+// (a local an alias names reads as its global's pointer and its offset, or an index no one knows)
+const aliasLook = (aliases) => (n) => {
+  const rec = n[0] === 'local.get' && aliases.get(n[1])
+  if (!rec) return undefined
+  const terms = new Map([['p:g:' + rec.global, { scale: 1, node: n }]])
+  if (rec.offset == null) terms.set('n:?' + n[1], { scale: 1, node: n })
+  return { sum: { k: rec.offset ?? 0, terms } }
 }
 export const globalBaseAliases = fn => {
   const aliases = new Map(), assigns = [], poisoned = new Set()
   walkAst(fn, { enter: n => {
     if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigns.push([n[1], n[2]])
   } })
-  const resolve = rhs => {
-    // Snapshot shape emitted by hoistGlobalPtrOffset:
-    // i32.wrap_i64(i64.and(i64.reinterpret_f64(global.get $G), MASK))
-    const g = Array.isArray(rhs) && rhs[0] === 'i32.wrap_i64' &&
-      Array.isArray(rhs[1]) && rhs[1][0] === 'i64.and' &&
-      Array.isArray(rhs[1][1]) && rhs[1][1][0] === 'i64.reinterpret_f64' &&
-      Array.isArray(rhs[1][1][1]) && rhs[1][1][1][0] === 'global.get'
-      ? rhs[1][1][1][1] : null
-    if (typeof g === 'string') return { global: g, offset: 0 }
-    if (Array.isArray(rhs) && rhs[0] === 'local.get') return aliases.get(rhs[1]) || null
-    if (Array.isArray(rhs) && rhs[0] === 'i32.add') {
-      const a = rhs[1], b = rhs[2], ac = irI32Const(a), bc = irI32Const(b)
-      if (bc != null) {
-        const base = resolve(a); return base && { global: base.global, offset: base.offset == null ? null : base.offset + bc }
-      }
-      if (ac != null) {
-        const base = resolve(b); return base && { global: base.global, offset: base.offset == null ? null : base.offset + ac }
-      }
-      const ra = resolve(a), rb = resolve(b)
-      if (ra && !rb) return { global: ra.global, offset: null }
-      if (rb && !ra) return { global: rb.global, offset: null }
-    }
-    return null
-  }
+  const look = aliasLook(aliases)
+  const resolve = rhs => globalOf(linear(rhs, look))
   // All writes to an address alias must resolve to the same global+offset.
   // Conflicting or non-address writes poison it rather than retaining the first.
   for (let changed = true; changed;) {
@@ -259,36 +243,17 @@ export const globalBaseAliases = fn => {
   return aliases
 }
 
-const memAddress = n => {
-  let i = 1, offset = 0
-  while (typeof n[i] === 'string' && (n[i].startsWith('offset=') || n[i].startsWith('align='))) {
-    if (n[i].startsWith('offset=')) offset += Number(n[i].slice(7)) || 0
-    i++
-  }
-  let addr = n[i]
-  // Address-base CSE often materializes a constant address with a tee on its
-  // first load, followed by local.get uses. Preserve the embedded offset.
-  if (Array.isArray(addr) && addr[0] === 'local.tee' && addr.length === 3) addr = addr[2]
-  if (Array.isArray(addr) && addr[0] === 'i32.add') {
-    const a = addr[1], b = addr[2], ac = irI32Const(a), bc = irI32Const(b)
-    if (bc != null) { addr = a; offset += bc }
-    else if (ac != null) { addr = b; offset += ac }
-  }
-  return { addr, offset }
-}
 const plainLoadOp = op => typeof op === 'string' &&
   /^(?:v128|f32|f64|i32|i64)\.load(?:8|16|32)?(?:_[su])?$/.test(op)
+// The typed global an access reads or writes through, at its byte offset where that is exact;
+// a global named under an operation of no add (an index masked, shifted) is the global's, at
+// no exact offset.
 export const memGlobal = (n, aliases) => {
-  const { addr, offset } = memAddress(n)
-  if (Array.isArray(addr) && addr[0] === 'local.get' && aliases.has(addr[1])) {
-    const rec = aliases.get(addr[1])
-    return { global: rec.global, offset: rec.offset == null ? offset : rec.offset + offset, exact: rec.offset != null }
-  }
-  const found = new Set()
-  walkAst(addr, { enter: x => {
-    if (x[0] === 'local.get' && aliases.has(x[1])) { found.add(aliases.get(x[1]).global); return false }
-  } })
-  return { global: found.size === 1 ? [...found][0] : null, offset, exact: false }
+  const m = memop(n), lin = m && linear(m.addr, aliasLook(aliases))
+  const rec = globalOf(lin)
+  if (rec) return { global: rec.global, offset: (rec.offset ?? lin.k) + m.off, exact: rec.offset != null }
+  const found = new Set(lin ? [...keyOf(lin).matchAll(/p:g:(\$[^\s)+#*]+)/g)].map(x => x[1]) : [])
+  return { global: found.size === 1 ? [...found][0] : null, offset: m ? m.off : 0, exact: false }
 }
 
 // Facts: the module's fixed typed-array globals, their lengths and kinds (`globalTypedLen`,

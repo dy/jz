@@ -16,7 +16,8 @@ import { LAYOUT, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { findBodyStart, writtenLocals, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
-import { HEADER_STORE_FREE, NO_MODULE } from './effects.js'
+import { NO_MODULE } from './effects.js'
+import { HEADER_STORE_FREE } from './address.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot

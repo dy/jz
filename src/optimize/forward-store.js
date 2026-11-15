@@ -14,23 +14,27 @@
 // past it (quat.invert's early return of zeros, which quat.multiply then reads back).
 // Whatever could touch memory or leave the straight line forgets what is known: a
 // call that may write memory (optimize/effects.js), a branch, a nested block or loop; a
-// store through another base (two names can be one array or object) forgets the value,
-// but leaves an earlier store dead where the list overwrites it unread. A global's write,
+// store of any width forgets each value whose bytes it may reach (optimize/address.js
+// mayAlias: on one sum, by bytes; two names can be one array or object), but leaves an
+// earlier store dead where the list overwrites it unread. A global's write,
 // or a call's, is no memory: it forgets a slot whose address reads that global. A call
 // that may read the slot or may throw keeps a store made before it (memory outlives the
 // activation: a caller's catch reads what the store left). A local rewritten between a
 // store and a load gives its addresses a new identity, so the two no longer match; a
 // rewrite of a forwarded value's local forgets that value.
-import { walkAst, nodeKey } from '../ast.js'
+import { walkAst } from '../ast.js'
 import { findBodyStart } from '../ir.js'
 import { NO_MODULE } from './effects.js'
 import { accessOf, deadTees, hasOp, inertFor, localGetCounts, resolveAddr, CONTROL_OPS, clone } from './vectorize/access.js'
 import { normalizeTransparentBlocks } from './vectorize/scaffold.js'
 import { isArr } from './vectorize/node-utils.js'
-import { mayAlias } from '../ir/mem-alias.js'
+import { addressOf, mayAlias } from './address.js'
 
 const NONE = new Set()
 const CALLS = new Set(['call', 'call_indirect', 'call_ref'])
+const STORE = /^(i32|i64|f32|f64|v128)\.store(8|16|32)?$/
+// (a slot: the sum's terms and the bytes' start)
+const slotOf = (a) => a.key == null ? null : `${a.key}|${a.at}`
 const isLeaf = v => isArr(v) && (v[0] === 'local.get' && typeof v[1] === 'string' || v[0] === 'f64.const')
 
 export function forwardStores(fn, fx = NO_MODULE) {
@@ -131,10 +135,11 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
   const w = { defs: new Map(), writes: NONE, root: copies && (name => copies.root(name, path)) }
   const entries = new Map(), pending = new Map()
   const dead = []
-  const keyOf = (base, at, win = w) => { const r = resolveAddr(base, win, at); return r && nodeKey(r) }
+  // An access at statement `at`: its address as the window resolves it, one sum (optimize/address.js).
+  const accAt = (n, at, win = w) => addressOf(n, null, a => resolveAddr(a, win, at))
   // A global the statement sets (`g`, or any a call may): every slot whose address reads it
   // (its key names it), as the store left it or not.
-  const setGlobal = (g) => { for (const m of [entries, pending]) for (const k of [...m.keys()]) if (k.includes(g ?? 'global.get')) m.delete(k) }
+  const setGlobal = (g) => { for (const m of [entries, pending]) for (const k of [...m.keys()]) if (k.includes(g ? 'g:' + g : 'g:')) m.delete(k) }
   // What a statement that writes no memory a load reads ends: its global writes the slots
   // they address; a call that may read the slot, or throw, the stores left pending.
   const callsOut = (s) => walkAst(s, { enter: n => {
@@ -146,29 +151,26 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
     }
   } })
   const written = (name, maps) => { for (const m of maps) for (const [k, e] of m) if (e.value && e.value[0] === 'local.get' && e.value[1] === name) m.delete(k) }
-  // A load that reads memory: its own slot, and any slot of another name it may reach
-  // (src/ir/mem-alias.js); a slot of its own base at another offset is other bytes.
-  const read = (key, off, mem) => {
-    for (const [k, p] of pending) if (key ? k === `${key}|${off}` || !k.startsWith(key + '|') && mayAlias(mem, p.mem) : mayAlias(mem, p.mem)) pending.delete(k)
-  }
+  // A load that reads memory: every pending store whose bytes it may reach.
+  const read = (acc) => { for (const [k, p] of pending) if (mayAlias(acc, p.acc)) pending.delete(k) }
   // The loads of `s` at statement `at`: a tracked slot's value (forwarded where `known`
   // has it and `forward` asks), else a read
   const loads = (s, at, win, known, forward) => walkAst(s, { enter: (n, parent, idx) => {
     if (n === s || !isArr(n) || typeof n[0] !== 'string') return
     if (n[0] === 'f64.load') {
-      const a = accessOf(n), key = keyOf(a.base, at, win)
-      const e = key && known.get(`${key}|${a.off}`)
+      const a = accAt(n, at, win), slot = slotOf(a)
+      const e = slot && known.get(slot)
       if (forward && e && e.join) join(e)
       if (forward && e && e.value) parent[idx] = clone(e.value)
-      else read(key, a.off, n.mem)
+      else read(a)
       return false
     }
-    if (n[0].includes('.load')) read(null, 0, n.mem)
+    if (n[0].includes('.load')) read(accAt(n, at, win))
   } })
-  // A store through another name forgets what it may overwrite: every slot, where the
-  // emitter left no mark on either access; none of an array of another cell or of an
-  // object's other field.
-  const overwrite = (known, key, mem) => { for (const [k, e] of [...known]) if ((!key || !k.startsWith(key + '|')) && mayAlias(mem, e.mem)) known.delete(k) }
+  // A store forgets every other slot whose bytes it may reach: on its own sum the slots it
+  // overlaps, through another name every slot, but where the emitter's marks or the header
+  // words tell the two apart (optimize/address.js mayAlias).
+  const overwrite = (known, acc) => { const slot = slotOf(acc); for (const [k, e] of [...known]) if (k !== slot && mayAlias(acc, e.acc)) known.delete(k) }
   for (let i = from; i < list.length; i++) {
     const s = list[i]
     if (!isArr(s)) continue
@@ -183,7 +185,7 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
       written(n[1], [entries])
       if (n !== s) w.defs.set(n[1], { e: n[0] === 'local.tee' && whole ? n[2] : null, at: i })
     } })
-    const isStore = s[0] === 'f64.store'
+    const isStore = STORE.test(s[0])
     const access = isStore ? accessOf(s) : null
     const parts = isStore ? [access.addr, access.val] : [s]
     if (!parts.every(p => inertFor(p, NONE, false, fx))) { if (set) w.defs.set(set, { e: null, at: i }); entries.clear(); pending.clear(); continue }
@@ -193,18 +195,18 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
     if (set) w.defs.set(set, { e: s[2], at: i })
     if (set && whole && isArr(s[2]) && s[2][0] === 'f64.load') {
       // A load into a local: a later load of the slot reads the local.
-      const a = accessOf(s[2]), key = keyOf(a.base, i)
-      if (key && !entries.has(`${key}|${a.off}`)) entries.set(`${key}|${a.off}`, { value: ['local.get', set], at: i, mem: s[2].mem })
+      const a = accAt(s[2], i), slot = slotOf(a)
+      if (slot && !entries.has(slot)) entries.set(slot, { value: ['local.get', set], at: i, acc: a })
       continue
     }
     if (!isStore) continue
-    const key = keyOf(access.base, i)
-    overwrite(entries, key, s.mem)
-    if (!key) continue
-    const slot = `${key}|${access.off}`
+    const acc = accAt(s, i), slot = slotOf(acc)
+    overwrite(entries, acc)
+    // (a store of another width than a slot's forgets what it overlaps, and is no slot of its own)
+    if (!slot || s[0] !== 'f64.store') { if (slot) entries.delete(slot); continue }
     if (pending.has(slot)) dead.push(pending.get(slot).at)
-    entries.set(slot, { value: isLeaf(access.val) ? access.val : null, at: i, mem: s.mem })
-    pending.set(slot, { at: i, mem: s.mem })
+    entries.set(slot, { value: isLeaf(access.val) ? access.val : null, at: i, acc })
+    pending.set(slot, { at: i, acc })
   }
 
   // An `if` whose arms only set locals and store f64s, of operands that call and branch
@@ -239,10 +241,10 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
         } })
         loads(t, at, win, known, false)
         if (t[0] === 'local.set') { win.defs.set(t[1], { e: t[2], at }); continue }
-        const acc = accessOf(t), key = keyOf(acc.base, at, win)
-        overwrite(known, key, t.mem)
-        for (const [sl, e] of [...stored]) if ((!key || !sl.startsWith(key + '|')) && mayAlias(t.mem, e.mem)) stored.delete(sl)
-        if (key) stored.set(`${key}|${acc.off}`, { value: isLeaf(acc.val) ? acc.val : null, node: t, mem: t.mem, arm: a })
+        const acc = accAt(t, at, win), slot = slotOf(acc)
+        overwrite(known, acc)
+        for (const [sl, e] of [...stored]) if (sl !== slot && mayAlias(acc, e.acc)) stored.delete(sl)
+        if (slot) stored.set(slot, { value: isLeaf(accessOf(t).val) ? accessOf(t).val : null, node: t, acc, arm: a })
       }
       after.push({ known, stored })
     }
@@ -253,7 +255,7 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
     for (const name of sets) { written(name, [entries]); w.defs.set(name, { e: null, at: i }) }
     for (const [sl, a] of x.stored) {
       const b = y.stored.get(sl)
-      if (b && a.value && b.value && fresh) entries.set(sl, { value: null, join: [a, b], at: i, mem: a.mem })
+      if (b && a.value && b.value && fresh) entries.set(sl, { value: null, join: [a, b], at: i, acc: a.acc })
     }
     return true
   }

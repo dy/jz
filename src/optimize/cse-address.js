@@ -6,7 +6,8 @@
  * @module optimize/cse-address
  */
 import { findBodyStart, nextLocalId, buildRefcount, leftLabels } from '../ir.js'
-import { HEADER_STORE_FREE, NO_MODULE } from './effects.js'
+import { NO_MODULE } from './effects.js'
+import { HEADER_STORE_FREE, keyOf, linear, memop } from './address.js'
 
 /**
  * CSE repeated `(call $__ptr_type X)` on same X across stable regions.
@@ -133,6 +134,9 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
   let exits = 0
   const refs = buildRefcount(fn)
   let shared = 0
+  // the loops the walk is in, each with the locals it writes once asked
+  const loops = []
+  const steps = (atom) => { const l = loops[loops.length - 1]; return !!l && atom.startsWith('l:') && (l.writes ??= writesIn(l.node)).has(atom.slice(2)) }
 
   const closeForLocal = (name) => {
     for (const k of [...open.keys()]) if (keyDeps.get(k)?.includes(name)) open.delete(k)
@@ -158,7 +162,9 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
     if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return' ||
         op === 'throw' || op === 'rethrow' || op === 'try_table') exits++
 
-    const m = matchSite(node, parent, pi, root)
+    const m = matchSite(node, parent, pi, root, steps)
+    // (a value no local holds: neither it nor a part of it is a site)
+    if (m === GATHERED) return
     if (m) {
       if (shared) return
       let region = open.get(m.key)
@@ -223,7 +229,9 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType, barrier }) {
     if (op === 'loop' || op === 'try' || op === 'try_table' ||
         (typeof op === 'string' && op.startsWith('catch'))) {
       clearAll()
+      if (op === 'loop') loops.push({ node, writes: null })
       for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      if (op === 'loop') loops.pop()
       clearAll()
       return
     }
@@ -299,28 +307,33 @@ function constLocals(fn) {
   return out
 }
 
-// Serialize a pure-i32 subscript to a stable key, accumulating its local deps.
-// Returns null if any leaf isn't a local.get / i32.const / pure-i32 op (a load,
-// call, or global.get could change between sites — not CSE-safe by local tracking).
-function pureI32AddrKey(node, deps) {
+// The locals a pure-i32 subscript reads, or null where a leaf is no local.get, i32.const or
+// pure-i32 op (a load, a call or a global.get could change between sites: no local tracks it).
+function pureI32Deps(node, deps) {
   if (!Array.isArray(node)) return null
   const op = node[0]
-  if (op === 'local.get' && typeof node[1] === 'string') { deps.add(node[1]); return `$${node[1]}` }
-  if (op === 'i32.const' && typeof node[1] === 'number') return `#${node[1]}`
+  if (op === 'local.get' && typeof node[1] === 'string') { deps.add(node[1]); return deps }
+  if (op === 'i32.const' && typeof node[1] === 'number') return deps
   if (!PURE_I32_ADDR_OPS.has(op)) return null
-  let key = op + '('
-  for (let i = 1; i < node.length; i++) {
-    const sub = pureI32AddrKey(node[i], deps)
-    if (sub == null) return null
-    key += sub + ','
-  }
-  return key + ')'
+  for (let i = 1; i < node.length; i++) if (!pureI32Deps(node[i], deps)) return null
+  return deps
+}
+
+// A load's address that steps further than the bytes it reads each round of its loop, a field of
+// a record, is held by no local, nor a part of it: the lane lift gathers the load, each lane its
+// own address (vectorize/map.js), and a local holds one lane's.
+const GATHERED = { gathered: true }
+const writesIn = (n, out = new Set()) => {
+  if (!Array.isArray(n)) return out
+  if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') out.add(n[1])
+  for (let i = 1; i < n.length; i++) writesIn(n[i], out)
+  return out
 }
 
 export function hoistAddrBase(fn) {
   const consts = constLocals(fn)
   return regionTrackCSE(fn, {
-    matchSite(node) {
+    matchSite(node, parent, pi, root, steps) {
       if (node[0] !== 'i32.add' || node.length !== 3) return null
       const a = node[1], b = node[2]
       // Two orderings: (add (get A) (shl IDX (const K))) or (add (shl …) (get A))
@@ -341,14 +354,17 @@ export function hoistAddrBase(fn) {
       // idx may be a plain `local.get` (the original biquad case) or any compound
       // pure-i32 subscript (stencil neighbour `arr[idx+W-1]`); both CSE the same way.
       const deps = new Set([baseGet[1]])
-      const idxKey = pureI32AddrKey(idx, deps)
-      if (idxKey == null) return null
+      const lin = pureI32Deps(idx, deps) && linear(node)
+      if (!lin) return null
       // A constant index (an unrolled loop's) makes the address the base plus a
       // constant, which the memargs take once watr folds it: a hoisted base would
       // hold the sum in a register, and the access defining it would stay a
       // statement of its own, ahead of the use it would otherwise be read in.
       if ([...deps].every(d => d === baseGet[1] || consts.has(d))) return null
-      return { key: `${baseGet[1]}|${idxKey}|${shamt ? shamt[1] : 0}`, deps: [...deps] }
+      const m = memop(parent)
+      if (m?.addr === node && !m.store && [...lin.terms].some(([k, t]) => Math.abs(t.scale) > m.bytes && steps(k))) return GATHERED
+      // (the address as one sum, optimize/address.js: one key whatever the order of its adds)
+      return { key: keyOf(lin), deps: [...deps] }
     },
     localPrefix: 'ab',
     localType: 'i32',

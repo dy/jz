@@ -35,11 +35,11 @@
  *
  * @module optimize/sink-stores
  */
-import { walkAst, nodeKey } from '../ast.js'
+import { walkAst } from '../ast.js'
 import { findBodyStart } from '../ir.js'
 import { accessOf, hasOp, localGetCounts, resolveAddr, clone, CONTROL_OPS } from './vectorize/access.js'
 import { isArr } from './vectorize/node-utils.js'
-import { mayAlias } from '../ir/mem-alias.js'
+import { accessAt, carry, linear, memop, mayAlias, overlaps } from './address.js'
 import { copyRoots } from './forward-store.js'
 import { NO_MODULE } from './effects.js'
 
@@ -106,21 +106,20 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
       win.defs.set(n[1], { e: whole && (n === s || n[0] === 'local.tee') ? n[2] : null, at })
     } })
   }
-  // an address the round does not move: of locals and globals no statement of the loop writes
-  const keyOf = (base, win, at) => {
-    const r = resolveAddr(base, win, at)
-    if (!r) return null
-    let fixed = true
-    walkAst(r, { enter: n => { if (n[0] === 'local.get' && (n[1].includes('@') || writes.has(n[1]))) fixed = false } })
-    return fixed ? nodeKey(r) : null
+  // An access whose address the round does not move, of locals and globals no statement of the
+  // loop writes, as one sum (optimize/address.js); `base` its resolved subtree, `off` the memarg's
+  // with the constants it adds, which the sunk store is written back to.
+  const accOf = (n, win, at) => {
+    const a = accessOf(n), r = resolveAddr(a.base, win, at)
+    let fixed = !!r
+    if (r) walkAst(r, { enter: x => { if (x[0] === 'local.get' && (x[1].includes('@') || writes.has(x[1]))) fixed = false } })
+    const acc = accessAt({ ...memop(n), off: a.off }, fixed ? linear(r) : null, n.mem)
+    return { ...acc, base: fixed ? r : null, off: a.off }
   }
-  const stores = []     // { slot, key, off, mem, at, node, list, arm, base }: the candidates
-  const others = []     // { key, off, f64, mem }: every other access
+  const stores = []     // { slot, acc, at, node, list, arm }: the candidates
+  const others = []     // every other access
   const throws = []     // { at, list, node }: each guard's call, in the list it stands in
-  const access = (n, win, at) => {
-    const a = accessOf(n)
-    others.push({ key: keyOf(a.base, win, at), off: a.off, f64: n[0] === 'f64.load' || n[0] === 'f64.store', mem: n.mem })
-  }
+  const access = (n, win, at) => { others.push(accOf(n, win, at)) }
   const scan = (s, win, at, top) => walkAst(s, { enter: (n, parent, idx) => {
     if (!isArr(n) || typeof n[0] !== 'string') return
     if (isThrow(n)) throws.push({ at, list: parent, node: n })
@@ -144,10 +143,10 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
         for (let m = 1; m < a.length; m++) {
           const t = a[m], at = j + m / (a.length + 1)
           if (t[0] === 'local.set') { scan(t, win, at, null); define(win, t, at); continue }
-          const acc = accessOf(t), key = keyOf(acc.base, win, at)
+          const acc = accOf(t, win, at)
           scan(t, win, at, t)
-          if (key && !hasOp(acc.addr, new Set(['local.tee']))) stores.push({ slot: `${key}|${acc.off}`, key, off: acc.off, mem: t.mem, at: j, node: t, list: a, arm: a, base: JSON.parse(key) })
-          else access(t, win, at)
+          if (acc.key != null && !hasOp(t[t.length - 2], new Set(['local.tee']))) stores.push({ slot: `${acc.key}|${acc.at}`, acc, at: j, node: t, list: a, arm: a })
+          else others.push(acc)
         }
       }
       define(w, s, j)
@@ -155,10 +154,10 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
     }
     define(w, s, j)
     if (s[0] === 'f64.store') {
-      const acc = accessOf(s), key = keyOf(acc.base, w, j)
+      const acc = accOf(s, w, j)
       scan(s, w, j, s)
-      if (key && !hasOp(acc.addr, new Set(['local.tee', 'call']))) { stores.push({ slot: `${key}|${acc.off}`, key, off: acc.off, mem: s.mem, at: j, node: s, list: loop, arm: null, base: JSON.parse(key) }); continue }
-      access(s, w, j)
+      if (acc.key != null && !hasOp(s[s.length - 2], new Set(['local.tee', 'call']))) { stores.push({ slot: `${acc.key}|${acc.at}`, acc, at: j, node: s, list: loop, arm: null }); continue }
+      others.push(acc)
       continue
     }
     scan(s, w, j, null)
@@ -167,7 +166,6 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
   // every round stores the slot: a statement does, or both arms of one `if`
   const every = new Map()   // slot → its stores
   for (const st of stores) { if (!every.has(st.slot)) every.set(st.slot, []); every.get(st.slot).push(st) }
-  const overlaps = (o, c) => o.key === c.key ? !(o.f64 && Math.abs(o.off - c.off) >= 8) : mayAlias(o.mem, c.mem)
   const slots = []
   for (const [slot, sts] of every) {
     const top = sts.some(s => !s.arm)
@@ -175,11 +173,11 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
     for (const s of sts) if (s.arm) { if (!arms.has(s.at)) arms.set(s.at, new Set()); arms.get(s.at).add(s.arm) }
     const both = [...arms.values()].some(set => set.size === 2)
     const c = sts[0]
-    if (!top && !both) { for (const s of sts) others.push({ key: s.key, off: s.off, f64: true, mem: s.mem }); continue }
-    slots.push({ slot, key: c.key, off: c.off, mem: c.mem, base: c.base, sts, first: Math.min(...sts.map(s => s.at)), last: Math.max(...sts.map(s => s.at)) })
+    if (!top && !both) { for (const s of sts) others.push(s.acc); continue }
+    slots.push({ slot, acc: c.acc, key: c.acc.key, off: c.acc.off, base: c.acc.base, sts, first: Math.min(...sts.map(s => s.at)), last: Math.max(...sts.map(s => s.at)) })
   }
-  // (of one name, the slots are eight bytes apart: one f64 each)
-  const kept = slots.filter(c => !others.some(o => overlaps(o, c)) && !slots.some(d => d !== c && d.key === c.key && Math.abs(d.off - c.off) < 8))
+  // (a slot no other access reaches, and none of its own sum overlaps)
+  const kept = slots.filter(c => !others.some(o => mayAlias(o, c.acc)) && !slots.some(d => d !== c && overlaps(d.acc, c.acc)))
   if (!kept.length) return null
   // names that may be one array store in one order each round; every guard comes first
   const groups = new Map()
@@ -187,7 +185,7 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
   const span = g => [Math.min(...g.map(c => c.first)), Math.max(...g.map(c => c.last))]
   const gs = [...groups.values()].sort((a, b) => span(a)[0] - span(b)[0])
   for (let x = 0; x < gs.length; x++) for (let y = x + 1; y < gs.length; y++)
-    if (gs[x].some(c => gs[y].some(d => mayAlias(c.mem, d.mem))) && span(gs[x])[1] >= span(gs[y])[0]) return null
+    if (gs[x].some(c => gs[y].some(d => mayAlias(c.acc, d.acc))) && span(gs[x])[1] >= span(gs[y])[0]) return null
   const firstStore = Math.min(...kept.map(c => c.first))
   if (throws.some(t => t.at >= firstStore || !isArr(t.list) || !['then', 'else', 'block'].includes(t.list[0]))) return null
   const lastThrow = throws.length ? Math.max(...throws.map(t => t.at)) : 1
@@ -230,7 +228,7 @@ function sinkLoop(fn, block, path, copies, fresh, fx) {
   const order = gs.flatMap(g => g.filter(c => kept.includes(c)).sort((a, b) => a.last - b.last || a.off - b.off))
   const flush = () => order.map(c => {
     const v = sunk.has(c.slot) ? clone(sunk.get(c.slot).e) : ['local.get', local.get(c.slot)]
-    return c.off ? ['f64.store', `offset=${c.off}`, clone(c.base), v] : ['f64.store', clone(c.base), v]
+    return carry(c.sts[0].node, c.off ? ['f64.store', `offset=${c.off}`, clone(c.base), v] : ['f64.store', clone(c.base), v])
   })
   for (const t of throws) t.list.splice(t.list.indexOf(t.node), 0, ['if', ['local.get', ran], ['then', ...flush()]])
   loop.splice(loop.length - 1, 0, ['local.set', ran, ['i32.const', 1]])

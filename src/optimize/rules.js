@@ -151,9 +151,20 @@ export function rewriteBy(rules, n) {
   if (!rows) return null
   for (const r of rows) {
     V.length = 0
-    if (match(r[2], n, V) && (r[4] === null || r[4](...V))) return build(r[3], V, r[5])
+    if (match(r[2], n, V) && (r[4] === null || r[4](...V))) return marked(n, build(r[3], V, r[5]))
   }
   return null
+}
+// A load a row makes of a load it matched, at the matched one's address (a word of a slot, the
+// other type's load of its bytes), reads the region the emitter marked on the matched one
+// (src/ir/mem-alias.js): the mark goes with it.
+const marked = (n, out) => {
+  if (!Array.isArray(out) || typeof out[0] !== 'string' || !out[0].includes('.load') || out.mem != null) return out
+  const addr = out[out.length - 1]
+  const find = (x) => { if (!Array.isArray(x)) return null; if (x !== out && x.mem != null && x[x.length - 1] === addr) return x; for (let i = 1; i < x.length; i++) { const f = find(x[i]); if (f) return f } return null }
+  const from = find(n)
+  if (from) out.mem = from.mem
+  return out
 }
 
 // ── the rows ──────────────────────────────────────────────────────────────

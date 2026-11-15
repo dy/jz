@@ -24,6 +24,7 @@
  */
 
 import { wordRanges } from './word-ranges.js'
+import { memop } from './address.js'
 
 const isArr = Array.isArray
 // an access whose first operand is its address (a load, a store, a v128 load or store): no lane operand, no atomics
@@ -57,12 +58,9 @@ function foldFunc(fn) {
   const fold = (n) => {
     for (let i = 1; i < n.length; i++) if (isArr(n[i])) fold(n[i])
     if (!ACCESS.has(n[0])) return
-    let k = 1, offset = 0
-    for (; k < n.length && typeof n[k] === 'string'; k++) {
-      if (n[k].startsWith('offset=')) offset = Number(n[k].slice(7))
-      else if (!n[k].startsWith('align=')) return   // a memory index: leave the access as it is
-    }
-    const addr = n[k]
+    const { ai: k, off: offset, addr } = memop(n)
+    // (a memory index: leave the access as it is)
+    if (n.slice(1, k).some(s => typeof s !== 'string' || !/^(offset|align)=/.test(s))) return
     if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return
     const ba = baseOf(addr[1]), bb = ba == null ? baseOf(addr[2]) : null
     const base = ba ?? bb
