@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { isI32Const, isLocalGet, laneAccess, stepsByOneVia } from './addr-model.js'
+import { isLocalGet, laneAccess, readExit, readStep, stepsByOneVia } from './addr-model.js'
 import { gateStrips } from './alias.js'
 import { isArr } from './node-utils.js'
 import { strips } from './scaffold.js'
@@ -46,9 +46,9 @@ export function legal(r, node, liveAfter, env) {
  *  with no bound to test. */
 export function countsSigned(r, node) {
   const loop = node.find(c => isArr(c) && c[0] === 'loop')
-  const exit = loop ? loop[2] : null, test = isArr(exit) && exit[0] === 'br_if' && isArr(exit[2]) && exit[2][0] === 'i32.eqz' ? exit[2][1] : null
-  if (!isArr(test) || test[0] !== 'i32.lt_u' || !isLocalGet(test[1])) return true
-  const iv = test[1][1]
+  const exit = loop ? readExit(loop[2], null) : null
+  if (!exit || exit.op !== 'i32.lt_u' || exit.shift) return true
+  const iv = exit.counter
   let ok = true
   const open = (parent) => {
     for (let i = 1; i < parent.length; i++) {
@@ -71,15 +71,15 @@ export function localsHold(r, node, liveAfter) {
   if (r.ordered) return true
   const loop = node.find(c => isArr(c) && c[0] === 'loop')
   if (!loop) return true
-  const counted = new Set(r.inductions || [])
-  walkAst(r.wrapper, { enter: n => { const at = strips.get(n); if (at) counted.add(at.iv) } })
+  const counted = new Set(r.inductions || []), way = new Map()
+  walkAst(r.wrapper, { enter: n => { const at = strips.get(n); if (at) { counted.add(at.iv); way.set(at.iv, at.dir ?? 1) } } })
   const writes = new Map()
   walkAst(loop, { enter: n => {
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.set(n[1], (writes.get(n[1]) || 0) + 1)
   } })
   const body = loop.slice(2)
   for (const [name, count] of writes) {
-    if (counted.has(name)) { if (count !== 1 || !body.some(s => stepOf(s, name, loop, writes))) return false; continue }
+    if (counted.has(name)) { if (count !== 1 || !body.some(s => stepOf(s, name, loop, writes, way.get(name)))) return false; continue }
     const kind = laneAccess(body, name, liveAfter)
     if (kind === 'write') continue
     if (kind === 'read' && (r.reductions?.has(name) || r.landed?.has(name))) continue
@@ -89,16 +89,14 @@ export function localsHold(r, node, liveAfter) {
   return true
 }
 
-/** Whether statement `s` is the one step of `name`: `x = x + step` (an i32 constant or a
- *  local the loop does not write; an f64 constant for a Number counter), or `x = t` where
- *  the loop's one write of `t` is `x + 1` (a step CSE folded into a body tee). */
-function stepOf(s, name, loop, writes) {
+/** Whether statement `s` is the one step of `name`: `x = x ± step` (an i32 constant or a
+ *  local the loop does not write, added; an f64 constant for a Number counter), or `x = t`
+ *  where the loop's one write of `t` is `x + 1` (a step CSE folded into a body tee). A strip's
+ *  own counter (`dir`, the way its strips run it) steps by a constant that way. */
+function stepOf(s, name, loop, writes, dir) {
   if (!isArr(s) || s[0] !== 'local.set' || s[1] !== name || s.length !== 3 || !isArr(s[2])) return false
+  const st = readStep(s)
+  if (st) return st.by != null ? !dir || Math.sign(st.by) === dir : !dir && st.op === 'i32.add' && !writes.has(st.amount[1])
   const v = s[2]
-  if (v.length === 3 && isLocalGet(v[1], name)) {
-    if (v[0] === 'i32.add') return isI32Const(v[2]) || (isLocalGet(v[2]) && !writes.has(v[2][1]))
-    if (v[0] === 'f64.add') return isArr(v[2]) && v[2][0] === 'f64.const'
-    return false
-  }
-  return isLocalGet(v) && writes.get(v[1]) === 1 && stepsByOneVia(loop.slice(2), name, v[1])
+  return (!dir || dir > 0) && isLocalGet(v) && writes.get(v[1]) === 1 && stepsByOneVia(loop.slice(2), name, v[1])
 }

@@ -3,7 +3,7 @@ import { hasSideEffect, isLocalGet } from './addr-model.js'
 import { LANE_PURE } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 import { stripBlock } from './scaffold.js'
-import { CMP_LANE, bumpPixelIV, matchNumericInc1, readsVar, writesName } from './outer-scaffold.js'
+import { CMP_LANE, bumpPixelIV, readsVar, unitStep, writesName } from './outer-scaffold.js'
 
 export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   // Outer per-pixel scaffold (+ LICM preamble feeding both SIMD path and tail) —
@@ -33,7 +33,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
   // in EITHER order (mandelbrot/ship: limit at top; example-mandelbrot: escape at top). ----
   const iEnd = innerLoop.length - 1
   if (!(isArr(innerLoop[iEnd]) && innerLoop[iEnd][0] === 'br' && innerLoop[iEnd][1] === ilLabel)) return null
-  const iterator = matchNumericInc1(innerLoop[iEnd - 1])
+  const iterator = unitStep(innerLoop[iEnd - 1])
   if (!iterator || fnLocals.get(iterator.name) !== iterator.type) return null
   const { name: itVar, type: itType } = iterator
   // Number counters retain Number updates/extraction. Other assignments would

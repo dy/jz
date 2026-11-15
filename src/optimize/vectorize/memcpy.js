@@ -194,7 +194,7 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
 
   // (a loop that leaves on `i <u bound` runs nothing from a negative i: neither does the copy)
   const entered = ['i32.lt_s', ['local.get', incVar], boundC()]
-  const unsigned = loopNode[2][2][1][0] === 'i32.lt_u'
+  const unsigned = bl.exit.op === 'i32.lt_u'
   const wrapper = ['block',
     ['if', unsigned ? ['i32.and', ['i32.ge_s', ['local.get', incVar], ['i32.const', 0]], entered] : entered,
       ['then', ...setup, ...action]]]

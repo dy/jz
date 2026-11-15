@@ -1,7 +1,7 @@
 import { walkAst } from '../../ast.js'
-import { constNum, hasImpureCall, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, hasImpureCall, isI32Const, isLocalGet, readStep } from './addr-model.js'
 import { isArr } from './node-utils.js'
-import { matchBlockLoop } from './scaffold.js'
+import { describeLoop, matchBlockLoop, runOf } from './scaffold.js'
 
 /**
  * Divergent escape-time vectorizer — 2-wide f64x2, bit-exact with scalar f64.
@@ -75,15 +75,11 @@ export function epilogueIsSafe(epilogue, loopNode, laneMap, pivType) {
   return { epiWritten, reads }
 }
 // Pixel induction variables may be i32 (const-bound loops) or f64 (param-bound loops,
-// e.g. `for (x=0; x<width; ++x)` with f64 `width`). Match `v += 1` and `v < bound` for both.
-export const matchNumericInc1 = (stmt) => {
-  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
-  const x = stmt[1], v = stmt[2]
-  if (!isArr(v) || v.length !== 3 || !isLocalGet(v[1], x)) return null
-  if (v[0] === 'i32.add' && constNum(v[2]) === 1) return { name: x, type: 'i32' }
-  if (v[0] === 'f64.add' && isArr(v[2]) && v[2][0] === 'f64.const' && Number(v[2][1]) === 1) return { name: x, type: 'f64' }
-  return null
-}
+// e.g. `for (x=0; x<width; ++x)` with f64 `width`): the loop's steps `v += 1` of either
+// (scaffold.js describeLoop), its exit `v < bound` of either.
+const pixelStep = (s) => s.by === 1 && (s.op === 'i32.add' || s.op === 'f64.add')
+/** A statement stepping a counter of either type up by one → { name, type }, else null. */
+export const unitStep = (stmt) => { const s = readStep(stmt); return s && pixelStep(s) ? { name: s.name, type: s.type } : null }
 // Whether `n` holds a branch naming `label` (its own nested blocks aside: a
 // label the body declares is the body's own).
 const branchesTo = (n, label) => {
@@ -93,16 +89,6 @@ const branchesTo = (n, label) => {
     if ((x[0] === 'br' || x[0] === 'br_if') && x[1] === label || x[0] === 'br_table' && x.includes(label)) hit = true
   } })
   return hit
-}
-const matchPixelExit = (stmt, label) => {
-  if (!isArr(stmt) || stmt[0] !== 'br_if' || stmt[1] !== label) return null
-  const cond = stmt[2]
-  if (!isArr(cond) || cond[0] !== 'i32.eqz') return null
-  const cmp = cond[1]
-  if (!isArr(cmp) || !isLocalGet(cmp[1])) return null
-  if (cmp[0] === 'i32.lt_s' || cmp[0] === 'i32.lt_u') return { ind: cmp[1][1], bound: cmp[2], cmpOp: cmp[0], type: 'i32' }
-  if (cmp[0] === 'f64.lt') return { ind: cmp[1][1], bound: cmp[2], cmpOp: cmp[0], type: 'f64' }
-  return null
 }
 
 /**
@@ -123,19 +109,16 @@ const matchPixelExit = (stmt, label) => {
  * The bound is re-evaluated for the SIMD guard, so it must be invariant + pure:
  *   a constant, or a local/global the loop nest never writes (`writesName`).
  */
-export function matchOuterPixelLoop(blockNode) {
-  const bl = matchBlockLoop(blockNode, { envelope: 'pixelIV' })
+export function matchOuterPixelLoop(blockNode, desc = describeLoop(blockNode)) {
+  const bl = matchBlockLoop(blockNode, { envelope: 'pixelIV' }, desc)
   if (!bl) return null
   const { blockLabel: oLabel, loopNode, preamble, endIdx: oEnd } = bl
-  const pixelIVs = []   // [{ name, type }]
-  let pivStart = oEnd
-  for (let i = oEnd - 1; i >= 3; i--) {
-    const m = matchNumericInc1(loopNode[i])
-    if (!m) break
-    pixelIVs.unshift(m); pivStart = i
-  }
-  if (!pixelIVs.length) return null
-  const oExit = matchPixelExit(loopNode[2], oLabel)
+  const run = runOf(desc, pixelStep)
+  if (!run.length) return null
+  const pixelIVs = run.map(s => ({ name: s.name, type: s.type }))   // [{ name, type }]
+  const pivStart = run[0].idx
+  const e = desc.exit
+  const oExit = e && e.rel === '<' && !e.shift ? { ind: e.counter, bound: e.bound, cmpOp: e.op, type: e.type } : null
   const pxIV = oExit && pixelIVs.find(p => p.name === oExit.ind && p.type === oExit.type)
   if (!pxIV) return null
   const widthBound = oExit.bound

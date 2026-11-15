@@ -574,7 +574,7 @@ function boundedFloatLocal(name, writes, owners, params, links, range = null) {
     const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
     const info = owners.get(w), loop = info?.node, block = info?.parent?.node
     const facts = block && links?.get(block)?.plan
-    if (!facts?.hull) {
+    if (facts?.trips == null) {
       // Repeated finite additions eventually stop changing an f64. Choose
       // endpoints beyond the step's rounding threshold, then verify the
       // complete all-writes enclosure below. This bounds magnitude only;
@@ -591,7 +591,7 @@ function boundedFloatLocal(name, writes, owners, params, links, range = null) {
     if (valueWrites !== 1) return null
     const start = initial(name, info)
     if (start == null) return null
-    const count = Math.floor((facts.hull.hi - facts.hull.lo) / facts.step) + 1
+    const count = facts.trips
     const down = count * Math.min(0, Math.floor(delta)), up = count * Math.max(0, Math.ceil(delta))
     if (!Number.isSafeInteger(down) || !Number.isSafeInteger(up)) return null
     const low = Math.floor(start) + down

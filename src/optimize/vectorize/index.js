@@ -46,9 +46,8 @@
 
 
 import { DBG_INVARIANTS } from '../../debug.js'
-import { findBodyStart, writtenLocals, dollar } from '../../ir.js'
+import { findBodyStart, writtenLocals } from '../../ir.js'
 import { walkAst } from '../../ast.js'
-import { constNum, isI32Const } from './addr-model.js'
 import { tryChannelReduce } from './blur-channel.js'
 import { canonicalizeCounters } from './counter-run.js'
 import { tryDivergentEscapeVectorize } from './divergent-escape.js'
@@ -67,29 +66,10 @@ import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduce } from './reduce.js'
 import { arrayPointers } from './alias.js'
 import { countsSigned, legal, localsHold } from './legality.js'
-import { canonicalizeIfBr, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks } from './scaffold.js'
+import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks } from './scaffold.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
 import { tryToneMap } from './tone-map.js'
-
-// ---- Lowering link shadow-assert ---------------------------------------------
-//
-// JZ_DEBUG_INVARIANTS-gated: `node` is the raw WAT block node the dispatch just matched `bl`
-// against; its lowering link (src/ir/control.js) carries the facts the 'for' emitter proved
-// about this loop as a `{ plan, lowering }` pair: `plan` the frozen loopFacts record,
-// `lowering` the WAT names of its counter and guard. A miss is the expected outcome once ANY rewrite has replaced the
-// block array between emission and here (pre-trio spec 2: fail-open) — proves nothing, asserts
-// nothing. A HIT that disagrees is a genuine finding: the two derivations describe the SAME loop
-// and must name the same induction variable / the same constant bound where both resolve one.
-function assertLoopPlanAgrees(node, bl, links) {
-  const link = links?.get(node)
-  if (!link) return
-  const { plan, lowering } = link
-  if (lowering.ivName != null && dollar(lowering.ivName) !== bl.incVar)
-    throw new Error(`loop ${node[1]} IV diverges from WAT: HIR ivName=${lowering.ivName} (${dollar(lowering.ivName)}), WAT incVar=${bl.incVar}`)
-  if (plan.boundConst != null && isI32Const(bl.bound) && constNum(bl.bound) !== plan.boundConst)
-    throw new Error(`loop ${node[1]} bound diverges from WAT: HIR boundConst=${plan.boundConst}, WAT bound=${constNum(bl.bound)}`)
-}
 
 // ---- Pass entry ------------------------------------------------------------
 
@@ -243,26 +223,16 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // bare `$__li*` form. The preamble is pure & loop-invariant by construction
       // (hasSideEffect-guarded) and cloned ahead of the SIMD block, so this only widens
       // which loops the recognizers see, never changes a lifted result.
-      const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
-      // HIR provenance link shadow-assert (.work/evidence.md §BodyModel slice 4) — see
-      // assertLoopPlanAgrees's own doc. `bl`-scoped only (the IV/bound facts it exists to
-      // cross-check); a null `bl` has nothing to compare. Runs BEFORE the consultation below
-      // so it still checks the fresh WAT derivation, unmodified by the override.
-      if (DBG_INVARIANTS && bl) assertLoopPlanAgrees(node, bl, links)
-      // FIRST REAL CONSUMPTION (.work/evidence.md §BodyModel): the shadow-assert above runs
-      // across the full battery with zero divergences, so wherever the link resolves an IV
-      // name, it is PROVEN to equal `bl.incVar`'s WAT-derived one. Roles invert: the plan
-      // becomes the primary source for the name every bl-based
-      // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduce/
-      // tryStencil/tryToneMap/tryStrengthReduceIV — all share
-      // this one `bl`), and the scaffold's WAT walk above becomes the fail-open FALLBACK (link
-      // miss keeps its structurally-derived name) plus, under JZ_DEBUG_INVARIANTS, the shadow
-      // (assertLoopPlanAgrees, run just above, already fills that role — nothing left to add).
-      // Bound/hull are NOT flipped here: assertLoopPlanAgrees only proves `plan.boundConst`
-      // against `bl.bound` in the branch where `bl.bound` is ALREADY an `i32.const` node — i.e.
-      // exactly the case where the WAT derivation is already the concrete number in one read: a
-      // non-const (boundLocal) bound is never compared, so consulting the plan there would be
-      // unproven. Narrowed to the proven subset (banked finding, .work/evidence.md §BodyModel).
+      // The loop's one description (scaffold.js describeLoop): its counter, step and exit
+      // test, from the emitter's lowering link where it has one (ir/control.js), checked
+      // against the WAT under JZ_DEBUG_INVARIANTS. Every scaffold below is a view of it: the
+      // canonical one (`i < bound`, a step of one up) and its envelope variants.
+      const desc = describeLoop(node, links?.get(node))
+      const canonical = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true }, desc)
+      // (a canonical loop's test reads the emitter's own counter: checked across the battery)
+      if (DBG_INVARIANTS && canonical && desc.own != null && desc.own !== canonical.incVar)
+        throw new Error(`loop ${node[1]} counter diverges from WAT: link ${desc.own}, WAT ${canonical.incVar}`)
+      const bl = canonical
       // A lane-local the function reads outside this loop (`last = a[i]`
       // returned after it) is live out: the lift's v128 shadow never lands in
       // the scalar local, and the scalar tail runs only past the lanes. Every
@@ -273,17 +243,13 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       let live = null, exact = null
       const outsideReads = { has: (name) => (live ??= liveOutOf(here, false)).has(name) }
       const liveAfter = { has: (name) => (exact ??= liveOutOf(here, true)).has(name) }
-      if (bl) {
-        const link = links?.get(node)
-        if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)
-        bl.outsideReads = outsideReads
-      }
+      if (bl) bl.outsideReads = outsideReads
       // LoopPlan classification (stage-3 slice 1): the OUTER-pixel scaffold is
       // matched ONCE here — the five outer-family recognizers consume this
       // descriptor (with its inner-loop census) instead of each re-matching.
       // `bl` (inner scaffold) + `op` (outer scaffold) together are the loop's
       // plan; a recognizer whose scaffold is null skips without walking.
-      const op = matchOuterPixelLoop(node)
+      const op = matchOuterPixelLoop(node, desc)
       // Loose-envelope variant of the same scaffold (any non-loop content
       // tolerated) — shared by blur-multi-pixel + channel-reduce, both LATE
       // in the `??` chain below. Lazy + memoized: most blocks either aren't
@@ -294,11 +260,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // `matchBlockLoop` at most once, on first read.
       let blLoose, blLooseComputed = false
       const getBlLoose = () => blLooseComputed ? blLoose
-        : (blLooseComputed = true, blLoose = matchBlockLoop(node, { envelope: 'loose' }))
+        : (blLooseComputed = true, blLoose = matchBlockLoop(node, { envelope: 'loose' }, desc))
       // The counter-run variant (secondary counters `k += step` beside the exit one), for
       // the general map, which gathers through them; the plain scaffold when it declines.
       const getBlRun = () => {
-        const run = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true, ivRun: true })
+        const run = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true, ivRun: true }, desc)
         if (run) run.outsideReads = outsideReads
         return run ?? bl
       }
@@ -320,7 +286,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // every recognizer above. Rewritten over the exit counter (counter-run.js),
       // the same loop is a map; the rewrite stays only with a lift that takes it.
       if (!r) {
-        const canon = canonicalizeCounters(node, fnLocals, freshIdRef)
+        const canon = canonicalizeCounters(node, fnLocals, freshIdRef, desc)
         const cbl = canon && matchBlockLoop(canon.node, { allowPreamble: true, allowInlinedLi: true })
         if (cbl) {
           for (const d of canon.decls) fnLocals.set(d[1], d[2])
@@ -342,14 +308,14 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       if (r) r.newLocalDecls = [...r.newLocalDecls, ...hoistStripSplats(r.wrapper, freshIdRef, outsideReads)]
       // A guard whose first test the lanes can answer, over work too heavy to be common: it
       // keeps the order of every access, and answers for its locals as a lift does.
-      if (!r) { r = tryPrefilter(bl, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }
+      if (!r) { r = tryPrefilter(canonical, fnLocals, freshIdRef); if (r && !(localsHold(r, node, liveAfter) && countsSigned(r, node))) r = null }
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
       const paired = r ? null : legal(tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations), node, liveAfter, env)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
       // Reuses `op` (already matched above) instead of re-running matchOuterPixelLoop.
-      if (!r && vecState.whyNotActive && (bl || op)) {
+      if (!r && vecState.whyNotActive && (canonical || op)) {
         whyNotN++
         warn?.('simd-why-not',
           `${fnName.replace(/^\$/, '')}: loop #${whyNotN} not vectorized — ${vecState.whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
@@ -364,14 +330,14 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         walkAst(node, { enter: n => { srConsumed.add(n) } })
         parent[idx] = r.wrapper
         newLocalDeclsAll.push(...r.newLocalDecls)
-      } else if (bl) {
+      } else if (canonical) {
         // Scalar IV strength-reduction is a non-SIMD fallback — DEFERRED to after the
         // whole walk. Applied eagerly here (post-order = innermost first) it rewrites an
         // inner reduction loop into its wrapper before the ENCLOSING loop's outer
         // recognizers (outer-strip / iterated-reduce / conv-column / tone-map) ever run,
         // and they bail on the non-canonical inner shape — metaballs' pixel loop lost its
         // whole f64x2 outer-strip to an eager strength-reduce of the blob loop.
-        deferredSR.push([node, parent, idx, bl])
+        deferredSR.push([node, parent, idx, canonical])
       }
     }
   }

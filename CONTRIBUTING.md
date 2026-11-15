@@ -1727,10 +1727,14 @@ coercion can write them without a write node in the current body.
 Loop facts have one producer: the `for` emitter derives them once per loop it
 emits (`loopFacts`, `src/compile/loop-model.js`), under the refinements that loop
 is emitted in: the counter's hull and step, each secondary counter's range
-(`k += s` beside `j++` holds k₀ + t·s below the trip bound), the guard's bound.
+(`k += s` beside `j++` holds k₀ + t·s below the trip bound), the guard's bound,
+the test's relation as written and the counter's shift in it (`i + 1 < n`), the
+way the counter's one step moves it and by how much, the bound's range and the
+trips one entry runs.
 They refine the body, the typed-bounds versioner scans under them, and the
 loop's lowering link (`src/ir/control.js`) hands them to the optimizer, where the
-fractional-recurrence bound reads the trip count. A pass that keeps a loop's node
+fractional-recurrence bound reads the trip count and the lane vectorizer builds its
+one description of the loop from them. A pass that keeps a loop's node
 keeps its facts; one that changes what an iteration does must drop the link.
 Loop proofs iterate the head state: each pass applies the test before the
 body, so a test's own reads never borrow its refinement, and the exit state is
@@ -5421,6 +5425,15 @@ The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/vectorize.js`](src/o
 lifts typed-array loops to WASM-SIMD. Recognizers are tried in order in its dispatch; each consumes the
 shared `matchBlockLoop` descriptor and returns a wrapper or `null` — a `null` is fail-safe (the loop
 stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
+
+Every scaffold a recognizer reads is a view of one description of the loop, built once a
+loop (`describeLoop`, `vectorize/scaffold.js`): its counter, the exit test as written (the
+relation, its signedness, the counter's constant shift, the bound operand) and the steps at
+the back edge, read by the one exit reader and the one step reader (`readExit`, `readStep`,
+`addr-model.js`) no recognizer re-derives. The counter, its step's direction and the test's
+relation are the emitter's where the loop has a lowering link, checked against the WAT under
+`JZ_DEBUG_INVARIANTS`; the bound is the WAT's operand, which the passes between rewrite in
+place.
 
 No wrapper reaches the output but past one legality, the same for every recognizer
 (`src/optimize/vectorize/legality.js`), a function of the scalar loop and of how many

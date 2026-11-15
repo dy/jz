@@ -12,7 +12,7 @@ import { simdLoop, simdBound } from './scaffold.js'
 export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
   if (!bl || !distinct?.size || bl.hasGlobalSet) return null
   const { body, incVar, bound, boundLocal, writes, outsideReads } = bl
-  if (bl.exitInfo && bl.loopNode[2][2][1][0] !== 'i32.lt_s') return null
+  if (bl.exitInfo && bl.exit.op !== 'i32.lt_s') return null
   if (!boundLocal && !isI32Const(bound) || boundLocal && writes.has(boundLocal)) return null
   const storeAt = body.findIndex(s => s[0] === 'f64.store' && s.length === 3)
   if (storeAt < 0) return null

@@ -14,19 +14,78 @@ export function constNum(node) {
   return typeof v === 'number' ? v : (typeof v === 'string' ? parseInt(v, 10) : null)
 }
 
+// ---- A counted loop's step and exit test, as the emitter writes them ----------
+//
+// The one reading of both for every recognizer and the legality: a recognizer asks which
+// forms it lifts of what these return, never matches a step or a test for itself.
+
+/**
+ * A step of a counter: `(local.set $X (T.add (local.get $X) AMOUNT))` or `T.sub`, T i32
+ * (AMOUNT an `i32.const` or a `local.get`) or f64 (an `f64.const`: a Number counter's step,
+ * `x += 1.0`). Returns { name, by, amount, type, op }: `by` the constant step, signed (a
+ * `sub` steps by −C), null for a local amount; `op` the add or sub as written. Else null.
+ * The emitter writes `++i` so, and every source step of one reaches it as `++i`
+ * (src/normalize.js).
+ */
+export function readStep(stmt) {
+  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+  const x = stmt[1], v = stmt[2]
+  if (!isArr(v) || v.length !== 3 || !isLocalGet(v[1], x)) return null
+  const amount = v[2]
+  if (v[0] === 'i32.add' || v[0] === 'i32.sub') {
+    const c = constNum(amount)
+    if (c == null && !isLocalGet(amount)) return null
+    return { name: x, by: c == null ? null : v[0] === 'i32.add' ? c : -c | 0, amount, type: 'i32', op: v[0] }
+  }
+  if ((v[0] === 'f64.add' || v[0] === 'f64.sub') && isArr(amount) && amount[0] === 'f64.const' && amount[1] != null) {
+    const c = Number(amount[1])
+    return Number.isFinite(c) ? { name: x, by: v[0] === 'f64.add' ? c : -c, amount, type: 'f64', op: v[0] } : null
+  }
+  return null
+}
+
+// A comparison as a relation of its left operand to its right: `<`, `<=`, `>`, `>=`, with
+// its signedness (f64 compares the values themselves).
+const RELATIONS = {
+  'i32.lt_s': ['<', true], 'i32.lt_u': ['<', false], 'i32.le_s': ['<=', true], 'i32.le_u': ['<=', false],
+  'i32.gt_s': ['>', true], 'i32.gt_u': ['>', false], 'i32.ge_s': ['>=', true], 'i32.ge_u': ['>=', false],
+  'f64.lt': ['<', true], 'f64.le': ['<=', true], 'f64.gt': ['>', true], 'f64.ge': ['>=', true],
+}
+
+/**
+ * A loop's exit test as the emitter writes it at the head: `(br_if $LABEL (i32.eqz CMP))`,
+ * CMP a comparison of the counter, shifted by a constant or not (`i + K`, `i - K`), against
+ * a bound. `label` null takes any label. Returns { counter, op, rel, signed, type, shift,
+ * bound } (the loop runs while `counter + shift REL bound`) or null.
+ */
+export function readExit(stmt, label) {
+  if (!isArr(stmt) || stmt[0] !== 'br_if' || (label != null && stmt[1] !== label)) return null
+  const cond = stmt[2]
+  if (!isArr(cond) || cond[0] !== 'i32.eqz') return null
+  const cmp = cond[1]
+  const r = isArr(cmp) && cmp.length === 3 ? RELATIONS[cmp[0]] : null
+  if (!r) return null
+  const type = cmp[0].slice(0, 3), lhs = cmp[1]
+  let counter = null, shift = 0
+  if (isLocalGet(lhs)) counter = lhs[1]
+  else if (isArr(lhs) && lhs.length === 3 && (lhs[0] === `${type}.add` || lhs[0] === `${type}.sub`)) {
+    // (a shift of 0 is no shift: identities fold before any recognizer reads the test)
+    const k = (n) => { const v = type === 'i32' ? constNum(n) : isArr(n) && n[0] === 'f64.const' && n[1] != null ? Number(n[1]) : null; return Number.isInteger(v) && v !== 0 ? v : null }
+    if (isLocalGet(lhs[1]) && k(lhs[2]) != null) { counter = lhs[1][1]; shift = lhs[0].endsWith('add') ? k(lhs[2]) : -k(lhs[2]) }
+    else if (lhs[0].endsWith('add') && isLocalGet(lhs[2]) && k(lhs[1]) != null) { counter = lhs[2][1]; shift = k(lhs[1]) }
+  }
+  if (counter == null) return null
+  return { counter, op: cmp[0], rel: r[0], signed: r[1], type, shift, bound: cmp[2] }
+}
+
 /**
  * Match increment shape `(local.set $X (i32.add (local.get $X) (i32.const C)))`,
  * the counter's step (C = 1) and the strided-pointer bumps (`p += stride`) the
- * ramp-map recognizer must scale. Returns { name, c } or null. The emitter writes
- * `++i` so, and every source step of one reaches it as `++i` (src/normalize.js).
+ * ramp-map recognizer must scale. Returns { name, c } or null.
  */
 export function matchIncN(stmt) {
-  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
-  const x = stmt[1], v = stmt[2]
-  if (!isArr(v) || v[0] !== 'i32.add' || v.length !== 3) return null
-  if (!isLocalGet(v[1], x)) return null
-  const c = constNum(v[2])
-  return c == null ? null : { name: x, c }
+  const s = readStep(stmt)
+  return s && s.op === 'i32.add' && s.by != null ? { name: s.name, c: s.by } : null
 }
 
 /** Whether `body` writes `copy` once an iteration, and only as `iv + 1`: the step of a
@@ -53,13 +112,8 @@ export function stepsByOneVia(body, iv, copy) {
  * Returns { ind, bound } or null.
  */
 export function matchExitBrIf(stmt, label) {
-  if (!isArr(stmt) || stmt[0] !== 'br_if' || stmt[1] !== label) return null
-  const cond = stmt[2]
-  if (!isArr(cond) || cond[0] !== 'i32.eqz') return null
-  const cmp = cond[1]
-  if (!isArr(cmp) || (cmp[0] !== 'i32.lt_s' && cmp[0] !== 'i32.lt_u')) return null
-  if (!isLocalGet(cmp[1])) return null
-  return { ind: cmp[1][1], bound: cmp[2] }
+  const e = readExit(stmt, label)
+  return e && e.type === 'i32' && e.rel === '<' && !e.shift && label != null ? { ind: e.counter, bound: e.bound } : null
 }
 
 /**

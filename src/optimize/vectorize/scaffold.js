@@ -1,7 +1,8 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
 import { cloneNode, walkAst } from '../../ast.js'
-import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchIncN, stepsByOneVia } from './addr-model.js'
+import { dollar } from '../../ir.js'
+import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, readExit, readStep, stepsByOneVia } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { SAFE_OFFSET_CALLS } from '../licm.js'
 
@@ -183,87 +184,154 @@ function bodyFacts(body, ind) {
   return { writes, referenced, hasGlobalSet: body.some(hasGlobalSet), hasImpureCall: body.some(hasImpureCall), ...bm }
 }
 
-export function matchBlockLoop(blockNode, opts = {}) {
+// ---- The one description of a counted loop ---------------------------------------
+//
+// Built once for each `(block (loop))` the vectorizer visits (index.js) and handed to every
+// recognizer's scaffold (matchBlockLoop's envelopes) and to the legality:
+//   counter   the local the head test reads, which is the emitter's own counter (its
+//             lowering link, ir/control.js, renamed with the block's locals) on every loop
+//             the canonical scaffold takes, checked under JZ_DEBUG_INVARIANTS (index.js)
+//   exit      that test as written (addr-model.js readExit): the relation, its signedness and
+//             type, the counter's constant shift and the bound operand
+//   steps     the run of steps before the back edge (readStep), the counter's own among them
+//   dir, by   the counter's step: +1 up or −1 down, and its magnitude; the emitter's where
+//             the link holds them, else the step's
+//   facts     what the emitter proved of the loop (compile/loop-model.js loopFacts): the
+//             counter's hull and its range at the test, the bound's range, the trips of an entry
+// What keeps an emitter fact true to here: no pass between the emitter and the vectorizer
+// rebuilds a loop's block (one that would leaves the new block unlinked: ir/control.js); the
+// counter's name is renamed with the block's locals (emit/control-flow.js
+// renameScalarBindings); the passes rewrite operands in place (a bound snapped into a local,
+// a forwarded load, a hoisted operand), never a step's or a test's operator. An operand they
+// rewrite may be the test's left side where the loop never writes it (LICM hoists it), and
+// the emitter itself writes a nullable counter's test over its numeric shadow: the test then
+// reads another local than the emitter's counter, and the link describes no value the test
+// reads. So the bound operand is read here, from the WAT, the rest is the emitter's where
+// the test reads its counter, checked against the WAT under JZ_DEBUG_INVARIANTS (linkHolds),
+// and nothing of the link where it does not.
+export function describeLoop(blockNode, link = null) {
   if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+  const blockLabel = typeof blockNode[1] === 'string' && blockNode[1].startsWith('$') ? blockNode[1] : null
+  let loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (isArr(c) && c[0] === 'loop') { if (loopNode) return null; loopNode = c }
+  }
+  if (!loopNode || !blockLabel) return null
+  const le = matchLoopBrEnd(loopNode)
+  if (!le) return null
+  const exit = readExit(loopNode[2], blockLabel)
+  const steps = []
+  for (let i = le.endIdx - 1; i >= 3; i--) {
+    const s = readStep(loopNode[i])
+    if (!s) break
+    steps.unshift({ ...s, idx: i })
+  }
+  // The link describes this test where the test reads the emitter's counter. It may read
+  // another local: a nullable counter's numeric shadow, which the emitter itself reads in
+  // its place (compile/num-shadow.js), or a left side the loop never writes, which LICM
+  // hoisted (no counter: nothing steps it). The description then takes nothing of the link.
+  const own = link && link.lowering.ivName != null ? dollar(link.lowering.ivName) : null
+  const plan = own != null && exit?.counter === own ? link.plan : null
+  const counter = exit ? exit.counter : own
+  let step = null
+  for (const s of steps) if (s.name === counter) step = s
+  const desc = {
+    blockNode, blockLabel, loopNode, loopLabel: le.loopLabel, endIdx: le.endIdx, exit, steps, counter, step,
+    dir: plan?.dir ?? (step?.by ? Math.sign(step.by) : null), by: plan?.by ?? (step?.by ? Math.abs(step.by) : null),
+    facts: plan, own,
+  }
+  if (DBG_INVARIANTS && plan) linkHolds(desc, link)
+  return desc
+}
 
-  // envelope: 'pixelIV' — matchOuterPixelLoop's scaffold (see its own header doc); exit-guard
-  // and increment stay matchOuterPixelLoop's own residual.
+// The emitter's facts of a loop against its WAT, where both read its counter: a
+// disagreement is a fact the passes between them did not keep (describeLoop's header), a
+// defect, never a loop to lift.
+function linkHolds(desc, { plan, lowering }) {
+  const { exit, step, loopNode } = desc
+  const fail = (what) => { throw new Error(`loop ${loopNode[1]} ${what} diverges from WAT: link ${lowering.ivName} ${plan.cmp} shift ${plan.shift} step ${plan.dir}·${plan.by} bound ${plan.boundConst}, WAT ${exit ? `${exit.counter} ${exit.rel} shift ${exit.shift}` : 'no test'}, step ${step ? `${step.name} by ${step.by}` : 'none'}`) }
+  if (exit && plan.cmp != null && (exit.rel !== plan.cmp || exit.shift !== plan.shift)) fail('exit test')
+  if (exit && plan.boundConst != null && isI32Const(exit.bound) && constNum(exit.bound) !== plan.boundConst) fail('bound')
+  if (step && plan.dir != null && step.by != null && (Math.sign(step.by) !== plan.dir || Math.abs(step.by) !== plan.by)) fail('step')
+}
+
+// The statements a block holds ahead of its one loop, as the default envelope admits them:
+// pure `local.set`s (an invariant LICM or a peephole hoisted, `$__li*`, or any local under
+// `allowInlinedLi`), nothing after the loop. null where the block holds anything else.
+function preambleOf(desc, opts) {
+  const { blockNode, loopNode } = desc
+  const preamble = []
+  let past = false
+  for (let i = 2; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (c === loopNode) { past = true; continue }
+    if (!isArr(c)) continue
+    // A LICM-hoisted invariant is `$__liN`; INLINING renames it (e.g. `$__inl7___li0`). Default
+    // accepts only un-inlined `$__li*` (keeps the existing recognizers byte-identical);
+    // `allowInlinedLi` (gated callers only) also accepts the `__liN` marker anywhere — both are
+    // pure & loop-invariant by construction (belt-and-suspenders: hasSideEffect guard).
+    // Under allowInlinedLi a block preamble is loop-invariant by construction (jz hoists only
+    // invariants before the loop; IV-dependent work lives in the body), so any PURE local.set is
+    // safe to clone ahead of the SIMD — covers $__inl*__li* (schrodinger) AND $_pg0-style
+    // peephole-hoisted bounds (slime). The hasSideEffect guard rejects impure setups.
+    const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? true : c[1].startsWith('$__li'))
+    if (!opts.allowPreamble || past || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], SAFE_OFFSET_CALLS)) return null
+    preamble.push(c)
+  }
+  return preamble
+}
+
+// The longest run of `steps` ending at the back edge whose every step `ok` takes.
+export const runOf = (desc, ok) => {
+  const { steps, endIdx } = desc
+  let k = steps.length
+  while (k > 0 && steps[k - 1].idx === endIdx - (steps.length - k) - 1 && ok(steps[k - 1])) k--
+  return steps.slice(k)
+}
+
+export function matchBlockLoop(blockNode, opts = {}, desc = describeLoop(blockNode)) {
+  if (!desc) return null
+  const { blockLabel, loopNode, loopLabel, endIdx, exit } = desc
+
+  // envelope: 'pixelIV' — matchOuterPixelLoop's scaffold (see its own header doc): any
+  // `local.set` ahead of the loop, nothing else in the block; the pixel counters' steps and
+  // the exit test are its own view of the description.
   if (opts.envelope === 'pixelIV') {
-    if (!(typeof blockNode[1] === 'string' && blockNode[1].startsWith('$'))) return null
-    const blockLabel = blockNode[1]
-    let loopNode = null
     const preamble = []
     for (let i = 2; i < blockNode.length; i++) {
       const c = blockNode[i]
       if (!isArr(c)) return null
-      if (c[0] === 'loop') { if (loopNode) return null; loopNode = c }
-      else if (loopNode) return null              // statement after the loop → bail
-      else if (c[0] !== 'local.set') return null  // preamble must be pure local.set
-      else preamble.push(c)
+      if (c === loopNode) { if (i !== blockNode.length - 1) return null; continue }
+      if (c[0] !== 'local.set') return null
+      preamble.push(c)
     }
-    if (!loopNode) return null
-    const le = matchLoopBrEnd(loopNode)
-    if (!le) return null
-    return { blockNode, blockLabel, loopNode, loopLabel: le.loopLabel, endIdx: le.endIdx, preamble }
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, preamble }
   }
 
   // envelope: 'loose' (tryBlurMultiPixel/tryChannelReduce) tolerates ANY non-loop content
-  // anywhere — before or after the loop — with no validation at all; woven into the same
-  // scan as the default/allowPreamble envelope below rather than duplicating it.
-  const loose = opts.envelope === 'loose'
-  const allowPreamble = loose || !!opts.allowPreamble
-  let blockLabel = null, loopNode = null
-  const preamble = []
-  for (let i = 1; i < blockNode.length; i++) {
-    const c = blockNode[i]
-    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
-    if (isArr(c) && c[0] === 'loop') {
-      if (loopNode) return null  // multiple loops
-      loopNode = c
-    } else if (isArr(c)) {
-      if (loose) continue
-      // `loopNode` truthy ⇒ this content is AFTER the loop ⇒ bail (even for a $__li set).
-      // A LICM-hoisted invariant is `$__liN`; INLINING renames it (e.g. `$__inl7___li0`). Default
-      // accepts only un-inlined `$__li*` (keeps the existing recognizers byte-identical);
-      // `allowInlinedLi` (gated callers only) also accepts the `__liN` marker anywhere — both are
-      // pure & loop-invariant by construction (belt-and-suspenders: hasSideEffect guard).
-      // Under allowInlinedLi a block preamble is loop-invariant by construction (jz hoists only
-      // invariants before the loop; IV-dependent work lives in the body), so any PURE local.set is
-      // safe to clone ahead of the SIMD — covers $__inl*__li* (schrodinger) AND $_pg0-style
-      // peephole-hoisted bounds (slime). The hasSideEffect guard rejects impure setups.
-      const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? true : c[1].startsWith('$__li'))
-      if (!allowPreamble || loopNode || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], SAFE_OFFSET_CALLS)) return null
-      preamble.push(c)
-    }
-  }
-  if (!loopNode || !blockLabel) return null
+  // anywhere — before or after the loop — with no validation at all.
+  if (opts.envelope === 'loose') return { blockNode, blockLabel, loopNode, loopLabel, endIdx }
 
-  const le = matchLoopBrEnd(loopNode)
-  if (!le) return null
-  const { loopLabel, endIdx } = le
-  if (loose) return { blockNode, blockLabel, loopNode, loopLabel, endIdx }
+  const preamble = preambleOf(desc, opts)
+  if (!preamble) return null
+  // the exit test the canonical scaffold reads: `i < bound`, the counter unshifted, an i32
+  const exitInfo = exit && exit.type === 'i32' && exit.rel === '<' && !exit.shift ? { ind: exit.counter, bound: exit.bound } : null
 
-  // multiInc (tryRampMap) — trailing RUN of `x += C` (matchIncN); the exit IV must be in
-  // the run stepping by exactly 1. Other constraints on the run are tryRampMap's residual.
+  // multiInc (tryRampMap) — trailing RUN of `x += C`; the exit IV must be in the run
+  // stepping by exactly 1. Other constraints on the run are tryRampMap's residual.
   if (opts.multiInc) {
-    const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
     if (!exitInfo) return null
-    const increments = []
-    let bodyEnd = endIdx - 1
-    while (bodyEnd >= 2) {
-      const inc = matchIncN(loopNode[bodyEnd])
-      if (!inc) break
-      increments.unshift(inc)
-      bodyEnd--
-    }
-    if (!increments.length) return null
-    const ivInc = increments.find(x => x.name === exitInfo.ind)
-    if (!ivInc || ivInc.c !== 1) return null
+    const run = runOf(desc, s => s.op === 'i32.add' && s.by != null)
+    if (!run.length) return null
+    const ivInc = run.find(x => x.name === exitInfo.ind)
+    if (!ivInc || ivInc.by !== 1) return null
     const incVar = exitInfo.ind
     const bound = exitInfo.bound
-    const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
-    const body = loopNode.slice(3, bodyEnd + 1)
-    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments, ...bodyFacts(body, incVar) }
+    const boundLocal = isLocalGet(bound) && typeof bound[1] === 'string' ? bound[1] : null
+    const body = loopNode.slice(3, run[0].idx)
+    const increments = run.map(s => ({ name: s.name, c: s.by }))
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exit, exitInfo, bound, boundLocal, body, preamble, increments, ...bodyFacts(body, incVar) }
   }
 
   // ivRun (tryGeneralMap): the loop ends in a run of counter steps, `j++, k += step`:
@@ -272,35 +340,27 @@ export function matchBlockLoop(blockNode, opts = {}) {
   // the run, and `writes` counts them, so a recognizer that ignores `ivs` never reads one
   // as loop-invariant.
   if (opts.ivRun) {
-    const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
     if (!exitInfo) return null
-    let runStart = endIdx
-    const run = []
-    while (runStart - 1 >= 3) {
-      const st = loopNode[runStart - 1]
-      if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3 || !isArr(st[2]) || st[2][0] !== 'i32.add' ||
-          !isLocalGet(st[2][1], st[1]) || !(isI32Const(st[2][2]) || isLocalGet(st[2][2]))) break
-      run.unshift({ name: st[1], step: st[2][2] })
-      runStart--
-    }
+    const run = runOf(desc, s => s.op === 'i32.add')
+    const runStart = run.length ? run[0].idx : endIdx
     const incVar = exitInfo.ind
-    const exit = run.filter(x => x.name === incVar)
-    if (exit.length !== 1 || constNum(exit[0].step) !== 1 || new Set(run.map(x => x.name)).size !== run.length) return null
+    const exitSteps = run.filter(x => x.name === incVar)
+    if (exitSteps.length !== 1 || exitSteps[0].by !== 1 || new Set(run.map(x => x.name)).size !== run.length) return null
     const body = loopNode.slice(3, runStart)
     const facts = bodyFacts(body, incVar)
-    const ivs = run.filter(x => x.name !== incVar)
+    const ivs = run.filter(x => x.name !== incVar).map(x => ({ name: x.name, step: x.amount }))
     for (const { name, step } of ivs) {
       if (isLocalGet(step) && (facts.writes.has(step[1]) || run.some(x => x.name === step[1]))) return null
       facts.writes.add(name)
     }
     const bound = exitInfo.bound
     const boundLocal = isLocalGet(bound) && typeof bound[1] === 'string' ? bound[1] : null
-    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx: runStart, incVar, exitInfo, bound, boundLocal, body, preamble, ivs, ...facts }
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx: runStart, incVar, exit, exitInfo, bound, boundLocal, body, preamble, ivs, ...facts }
   }
 
   const incIdx = endIdx - 1
-  const inc1 = matchIncN(loopNode[incIdx])
-  let incVar = inc1?.c === 1 ? inc1.name : null
+  const last = desc.steps.length && desc.steps[desc.steps.length - 1].idx === incIdx ? desc.steps[desc.steps.length - 1] : null
+  let incVar = last && last.op === 'i32.add' && last.by === 1 ? last.name : null
   // CSE'd increment (gated): O3 may fold `x+1` into a body tee (the `xe = x+1` wrap) and write the
   // increment as `x = $t` reusing it. Recover the IV when `$t` is `(tee/set $t (i32.add x 1))` in body.
   if (!incVar && opts.allowInlinedLi) {
@@ -308,12 +368,10 @@ export function matchBlockLoop(blockNode, opts = {}) {
     if (isArr(inc) && inc[0] === 'local.set' && inc.length === 3 && isLocalGet(inc[2]) && stepsByOneVia(loopNode.slice(3, incIdx), inc[1], inc[2][1])) incVar = inc[1]
   }
   if (!incVar) return null
-
-  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
-  if (!exitInfo || exitInfo.ind !== incVar) return null
+  if (!exitInfo || exitInfo.ind !== incVar || incVar !== desc.counter) return null
 
   const bound = exitInfo.bound
-  const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
+  const boundLocal = isLocalGet(bound) && typeof bound[1] === 'string' ? bound[1] : null
   const body = loopNode.slice(3, incIdx)
-  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exitInfo, bound, boundLocal, body, preamble, ...bodyFacts(body, incVar) }
+  return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar, exit, exitInfo, bound, boundLocal, body, preamble, ...bodyFacts(body, incVar) }
 }

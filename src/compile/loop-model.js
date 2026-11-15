@@ -12,7 +12,7 @@
 import { MUTATE_OPS, walkAst, isReassigned } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
-import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr } from '../static.js'
+import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr, nameShift } from '../static.js'
 
 // Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
 // a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
@@ -142,21 +142,55 @@ export function rewriteBlocks(body, tryStmt) {
 //   guard, guardRange, boundConst: the name a `<`/`<=` guard bounds, its bound's range, and
 //     that bound when the range is one point. The first write to the name ends the fact,
 //     so it needs no counter discipline.
+//   cmp, shift, boundRange: the guard's relation as written (`<`, `<=`, `>`, `>=`), the
+//     constant its counter is shifted by (`i + 1 < n` is 1), and its bound's range, with `iv`.
+//   dir, by: the way the counter's one step moves it (+1 up, −1 down) and by how much, a
+//     positive integer: the loop's step (`++i`, `i -= 2`), or a `while`'s last statement
+//     where the body writes the counter nowhere else. Null where no such step moves it.
+//   trips: the most passes one entry runs, from the hull, where it has one.
 export function loopFacts(init, cond, step, body) {
   const iv = guardCounterName(cond)
   const range = iv && !isReassigned(body, iv) ? forCounterRange(init, cond, step, iv, undefined, body) : null
   const guard = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
   const guardRange = guard ? intExprRange(cond[2]) : null
+  const moved = iv ? counterMove(step, body, iv) : null
+  const trips = range ? Math.floor((range[1] - range[0]) / range.step) + 1 : null
   return Object.freeze({
     iv,
     hull: range ? Object.freeze({ lo: range[0], hi: range[1] }) : null,
     test: range && Number.isFinite(range.test[0]) && Number.isFinite(range.test[1]) ? Object.freeze({ lo: range.test[0], hi: range.test[1] }) : null,
     step: range ? range.step : null,
-    counters: range ? Object.freeze(secondaryCounters(init, step, body, iv, Math.floor((range[1] - range[0]) / range.step) + 1)) : [],
+    counters: range ? Object.freeze(secondaryCounters(init, step, body, iv, trips)) : [],
     guard,
     guardRange,
     boundConst: guardRange && guardRange[0] === guardRange[1] ? guardRange[0] : null,
+    cmp: iv ? cond[0] : null,
+    shift: iv ? nameShift(cond[1], iv) : null,
+    boundRange: guard ? guardRange : iv ? intExprRange(cond[2]) : null,
+    dir: moved ? moved.sign : null,
+    by: moved ? moved.by : null,
+    trips,
   })
+}
+
+// The one step moving `iv` each pass: the loop's own (`++i`, `i += 2`, `i -= K`), or
+// where it has none, a `while` body's last statement when nothing else there writes it →
+// { sign, by } with `by` a positive integer, else null.
+function counterMove(step, body, iv) {
+  const of = (s) => {
+    const m = counterStep(s)
+    if (!m || m.name !== iv) return null
+    const by = typeof m.by === 'number' ? m.by : constIntExpr(m.by)
+    return Number.isInteger(by) && by > 0 ? { sign: m.sign, by } : null
+  }
+  if (step != null) {
+    const steps = Array.isArray(step) && step[0] === ',' ? step.slice(1) : [step]
+    const moves = steps.filter(s => isReassigned(s, iv))
+    return moves.length === 1 && !isReassigned(body, iv) ? of(moves[0]) : null
+  }
+  if (!Array.isArray(body) || body[0] !== ';' || body.length < 2) return null
+  const last = body[body.length - 1], m = of(last)
+  return m && !isReassigned([';', ...body.slice(1, -1)], iv) ? m : null
 }
 
 /** The refinements a loop's facts give its body: each counter's range there. */

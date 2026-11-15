@@ -1,5 +1,5 @@
 import { walkAst } from '../../ast.js'
-import { constNum, hasSideEffect, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, hasSideEffect, isI32Const, isLocalGet, readExit, readStep } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { buildPivotCoeff, readsVar, writesName } from './outer-scaffold.js'
 import { strips } from './scaffold.js'
@@ -134,45 +134,40 @@ function matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd) {
 // (design §2 "CHANNEL-REDUCE … nearly free" merge).
 
 function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
-  // Loose-envelope scaffold, matched once at the dispatch (LoopPlan). The exit
-  // guard below accepts NO label check and lt_s only (not lt_u), a strictly
-  // narrower shape than matchExitBrIf, so it stays this recognizer's own
-  // residual rather than folding into the shared scaffold.
+  // Loose-envelope scaffold, matched once at the dispatch (LoopPlan); its exit and step
+  // read by the shared readers (addr-model.js): the exit's label any, `i32.lt_s` only.
   const { loopNode, endIdx } = bl
   // exit guard: br_if $brk (i32.eqz (i32.lt_s x BOUND))
-  const exit = loopNode[2]
-  if (!(isArr(exit) && exit[0] === 'br_if' && isArr(exit[2]) && exit[2][0] === 'i32.eqz'
-    && isArr(exit[2][1]) && exit[2][1][0] === 'i32.lt_s' && isLocalGet(exit[2][1][1]))) return null
-  const pivot = exit[2][1][1][1]          // pixel IV $x
-  const bound = exit[2][1][2]              // interior bound (expr)
+  const exit = readExit(loopNode[2], null)
+  if (!exit || exit.op !== 'i32.lt_s' || exit.shift) return null
+  const pivot = exit.counter              // pixel IV $x
+  const bound = exit.bound                // interior bound (expr)
   const bodyEnd = endIdx - 1
   // increment must be `x = x + 1`
-  const inc = loopNode[bodyEnd]
-  if (!(isArr(inc) && inc[0] === 'local.set' && inc[1] === pivot && isArr(inc[2]) && inc[2][0] === 'i32.add'
-    && isLocalGet(inc[2][1], pivot) && isI32Const(inc[2][2]) && constNum(inc[2][2]) === 1)) return null
+  const inc = readStep(loopNode[bodyEnd])
+  if (!inc || inc.name !== pivot || inc.op !== 'i32.add' || inc.by !== 1) return null
 
   const { initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp } = scan
   // CLAMP-FREE: nothing before the channel group may be an `if` (the edge clamp).
   for (let i = 0; i < grp.idx; i++) if (isArr(innerBody[i]) && innerBody[i][0] === 'if') return null
   // The tap loop must be the i32 form `k <= r`; extract the radius r (reused in the
   // runtime overflow guard below). f64-typed tap loops (f64 dims) bail to scalar.
-  const ic = innerLoop[2]
-  if (!(isArr(ic) && ic[0] === 'br_if' && isArr(ic[2]) && ic[2][0] === 'i32.eqz'
-    && isArr(ic[2][1]) && ic[2][1][0] === 'i32.le_s' && isLocalGet(ic[2][1][1]))) return null
-  const rBound = ic[2][1][2]
+  const ic = readExit(innerLoop[2], null)
+  if (!ic || ic.op !== 'i32.le_s' || ic.shift) return null
+  const rBound = ic.bound
   if (!(isLocalGet(rBound) || isI32Const(rBound))) return null
   // The i16 guard below (r < 128) holds a window of 2r + 1 taps the same for every pixel of
   // a group: the tap counter runs from −r, steps by one and nothing else writes it, and r is
   // no value the pixel loop writes (`k <= x` gives each pixel its own trip count).
-  const tap = ic[2][1][1][1]
+  const tap = ic.counter
   if (isLocalGet(rBound) && writesName(loopNode, rBound[1])) return null
   const minusR = (v) => isI32Const(rBound) ? isI32Const(v) && constNum(v) === -constNum(rBound)
     : isArr(v) && v[0] === 'i32.sub' && isI32Const(v[1]) && constNum(v[1]) === 0 && isLocalGet(v[2], rBound[1])
   const tapSets = []
   walkAst(loopNode, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === tap) tapSets.push(n) } })
   const tapStep = innerLoop[ilEnd - 1], tapInit = loopNode.slice(scan.initIdx + 4, scan.innerIdx).find(s => isArr(s) && s[0] === 'local.set' && s[1] === tap)
-  if (tapSets.length !== 2 || !tapInit || !minusR(tapInit[2]) || !(isArr(tapStep) && tapStep[0] === 'local.set' && tapStep[1] === tap &&
-      isArr(tapStep[2]) && tapStep[2][0] === 'i32.add' && isLocalGet(tapStep[2][1], tap) && isI32Const(tapStep[2][2]) && constNum(tapStep[2][2]) === 1)) return null
+  const tapBy = readStep(tapStep)
+  if (tapSets.length !== 2 || !tapInit || !minusR(tapInit[2]) || !tapBy || tapBy.name !== tap || tapBy.op !== 'i32.add' || tapBy.by !== 1) return null
 
   // the RGBA store: 4 i32.store8 at `ab1 + c`, ab1 tee'd in the first. jz's raw pre-watr
   // emission of `dst[o]=(sr/win)|0` materializes the divide into its own single-use temp

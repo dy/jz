@@ -1,5 +1,5 @@
 import { cloneNode, walkAst, nodeKey } from '../../ast.js'
-import { constNum, hasBranchOrReturn, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, hasBranchOrReturn, isI32Const, isLocalGet, readStep } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { matchBlockLoop } from './scaffold.js'
 
@@ -52,8 +52,8 @@ function cursorAddr(addr, op, writes) {
  * exit counter: { node, setup, landing, decls }, or null when there is none to
  * rewrite. `setup` runs before the block, `landing` after it.
  */
-export function canonicalizeCounters(node, fnLocals, freshIdRef) {
-  const run = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true, ivRun: true })
+export function canonicalizeCounters(node, fnLocals, freshIdRef, desc) {
+  const run = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true, ivRun: true }, desc)
   if (!run || !run.ivs.length) return null
   const { incVar, body, ivs, writes } = run
   if (body.some(hasBranchOrReturn)) return null
@@ -101,7 +101,8 @@ export function canonicalizeCounters(node, fnLocals, freshIdRef) {
     // The step leaves the loop.
     for (let j = loop.length - 1; j >= 3; j--) {
       const st = loop[j]
-      if (isArr(st) && st[0] === 'local.set' && st[1] === op && isArr(st[2]) && st[2][0] === 'i32.add' && isLocalGet(st[2][1], op)) { loop.splice(j, 1); break }
+      const by = readStep(st)
+      if (by && by.name === op && by.op === 'i32.add') { loop.splice(j, 1); break }
     }
     const bases = new Map()   // address shape → its base local
     const visit = n => {

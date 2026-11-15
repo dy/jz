@@ -1,5 +1,5 @@
 import { cloneNode, nodeEqual as exprEq, nodeKey, walkAst } from '../../ast.js'
-import { constNum, hasSideEffect, isI32Const, isLocalGet, laneAccess } from './addr-model.js'
+import { constNum, hasSideEffect, isI32Const, isLocalGet, laneAccess, readStep } from './addr-model.js'
 import { normTee } from './idioms.js'
 import { isArr } from './node-utils.js'
 import { strips } from './scaffold.js'
@@ -155,9 +155,9 @@ function addressFacts(node, loop, fnLocals) {
   walkAst(loop, { enter: n => { if (isWrite(n)) count.set(n[1], (count.get(n[1]) || 0) + 1) } })
   walkAst(loop, { enter: n => {
     if (!isWrite(n) || count.get(n[1]) !== 1 || fnLocals.get(n[1]) !== 'i32') return
-    const v = n[2], by = isArr(v) && v[0] === 'i32.add' && isLocalGet(v[1], n[1]) && v[2]
-    if (by && (isI32Const(by) || (isLocalGet(by) && !count.has(by[1])))) steps.set(n[1], by)
-    else if (laneAccess(body, n[1]) === 'write') defs.set(n[1], v)
+    const st = readStep(['local.set', n[1], n[2]])
+    if (st && st.type === 'i32' && (st.by != null ? true : st.op === 'i32.add' && !count.has(st.amount[1]))) steps.set(n[1], st.by != null ? ['i32.const', st.by] : st.amount)
+    else if (laneAccess(body, n[1]) === 'write') defs.set(n[1], n[2])
   } })
   const copies = new Map(defs)
   for (const c of node) {
@@ -332,7 +332,7 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
   }
   // The test a strip of `lanes` from `iv` to `bound` needs, `true` for none, null for none that
   // holds.
-  const open = ({ iv, lanes, bound }) => {
+  const open = ({ iv, lanes, bound, dir = 1 }) => {
     // A strip runs each site for all its iterations before the next site, `a` before `b`:
     // `b` of iteration j − k touching what `a` of j touches, for 0 < k < lanes, is the
     // order the scalar loop runs them reversed (a later step's load before an earlier
@@ -355,7 +355,8 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
         continue
       }
       if (!bound) return null
-      const tail = ['i32.sub', cloneNode(bound), ['local.get', iv]]
+      // (a strip counting down runs from iv to its low end, `bound` inclusive)
+      const tail = dir < 0 ? ['i32.add', ['i32.sub', ['local.get', iv], cloneNode(bound)], ['i32.const', 1]] : ['i32.sub', cloneNode(bound), ['local.get', iv]]
       and(['i32.or', below(s, st, tail), below(st, s, tail)])
     }
     return test ?? true
