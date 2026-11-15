@@ -69,13 +69,14 @@ Rules for every change here:
 | 1 | Normalize loops on the AST (flipped tests, step spellings, `while (true)` with a leading break, guarded `do…while`; `do…while` first-class instead of flagged) | corpus styles in the gate have no gap beyond the default's; form lists in `loop-model.js`/`static.js` shrink to the one form | landed: `src/normalize.js`, gate 243 -> 84 gaps, no corpus style with a gap the default lacks. 1b landed (0b3f3b09e, 69fdca41f; `.work/phase-1b-normalize.md`): normalize runs again once the summary knows kinds (a local of kind Number that only its declarer writes), so a counter declared from a parameter takes the canonical step and test (`for (let i = k; n > i; i = 1 + i)` is the WAT of `for (let i = k; i < n; ++i)` at level 2 and at speed, where it did not vectorize), the readers' spelled-out steps are deleted, and `do…while` reaches normalize as a node and is lowered there alone (`while (c) B` where the test holds on entry, else a flag loop). The gate did not move, 76 gaps of 470: its counters are declared from literals, and the gaps are distances from the best spelling (fgather 28, map 22, ring 14, dot 12: causes in the 1b report, most inferred). The landing tree: core 7,286, level 0 7,069, level 3 7,083, wasi 7,158, generated 68, self-compile 89; the earlier phases' batteries equal; bench bytes equal at size, +216 at speed (stdlib-ddot: `i += M` reads as the literal step, which `main` already compiled larger); compile CPU time equal within the spread. Left: `do…while` first-class (a bottom-tested form loses the countdown range `stampCountdowns` reads off the right arm of `F \|\| c`, and the vectorizer's scaffold takes top-tested loops only); about 20 loop sets under `src/compile` and `src/type` that still name `'do'` though no stage past normalize sees one; the step matchers under `src/type` (canonical-bounds, loop-versioning, bounded-counters, interval-proof, loop-unroll), with 2d |
 | 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a landed: the table is `src/summary/num-range.js` (`{lo, hi, int, nz, nan, gap}`, no rule reads a name), every `%` rule but two reads it (left: integral-loops' symbolic hull, the summary's `keepHull`), ring `% M` equals the mask spelling (2/27), `mixed` back to 2264/1060. `src/` +49 lines net. 2b landed: the proof's environment holds table values and is the reader behind every local's lifetime range, a sum's trip bound and the widening's word test; `stampBodyRanges`, `fractionalLoopRange`, `outerDeclInits` and the widening's own `held`/`boundOf` are deleted (`src/` 59 lines fewer over the phase); the proof's bitwise, shift and mask rules are the table's. Ring "step first" 35 -> 4 at level 2 and 37 -> 29 at speed (canonical 2 and 27), dot and map `for i<=N-1` and `i!==N` vectorize, 76 gaps of 470, `mixed` 2250/1046; proof time -23% over the 94 single-file bench cases (3.8% of compile), total within noise on a loaded machine. Still scans: a countdown in an arm of `\|\|`/`&&` (`stampCountdowns`: the proof refines neither arm), and the emitter's own `intExprRange`/`forCounterRange` and `extractRefinements` (it asks about nodes the proof never walked: plan rewrites, inlined copies, version twins). 2c landed: a local's storage is one decision over the proof's lifetime value (`analyze/body-facts.js` `widenLocalTypes`: a word where every number it holds is one, or where it holds integers and every read re-applies ToInt32), a module global's the same over the whole program (`plan/scope.js` `inferModuleIntGlobals`: the proof per flow under the hypothesis that the candidates still standing are words; the fraction classifier, the integer default and the `int-global-truncation` warning are deleted), carriers enter the proof as values (a word parameter's, a call's, a sized property's, a code unit's), and the widening's hypothesis loop and integer levels are gone; `src/` 209 lines fewer, `mixed` 2234/1045, bench bytes -802 at size and -9,313 at speed (the landing tree: core 7,285, level 0 7,068, level 3 7,082, wasi 7,157, generated 68, self-compile 89; the earlier phases' batteries equal but 3c's review battery, 2 diffs -> 0). 2d landed (9bafbb6a6, eaf0ffabb, 1ee4305aa; `.work/phase-2d-int-certain.md`): `type/int-certain.js` is deleted and every reader of integrality (a local's, a parameter's, a cell's, a module global's, a schema slot's) reads the proof. The table holds an integer wherever finite as one fact (`whole`); a binding other flows write holds the meet of its writes in every flow, each walked under the hypothesis that it holds its rung (type/interval-proof.js `bindingFlows`, `flowNumbers`); a module global every write of which is an integer reads as one. `src/` and `module/` 102 lines fewer; two regressions in time (pcmconvert 1.2×, aos 2.16×) found by timing the cases whose bytes moved and fixed in the landing ("2d landed" below). Open cells: ring "step first" keeps the copy `q = p` (2 ops; needs the update sunk below `q`'s reads, a scheduling change), `reverse i--` is refused by the vectorizer's exit-shape check (optimize/vectorize/addr-model.js, phase 6), `offset idx i-1` keeps 4 and 2 ops, not analyzed |
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
-| 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU |
+| 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU Dropped 2026-11-15 on the owner's word ("if useless then drop"): its base stands before phase 5, which took `ctx` out of every pass the memo recorded through, so it would be written again, for 1.25x to 1.36x on warm one-liners. The branch is deleted, its tip in the handover; the two costs it measured (`word-ranges.js`, watr's `optimize.js`) are where compile time is to be had. |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
 | 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter): landed as a tier above the planner's copy (b41b03528 to afc2446f3; "Counter widths landed"): rfft 1.06x, no input slower than before by more than the entry tests. Then 6b the loop's facts from the emitter (`.work/phase-6b-loop-facts.md`, with its writer), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" 6b landed (1195ad0ed, 5a6fffa78, f1df9cc00, dcee6f67f): a counted loop is read once (`vectorize/scaffold.js` `describeLoop`), shifted, inclusive and descending tests lift through one scaffold, and which loops of the alias battery lift is a table that only grows (`test/vector-coverage.json`, 321 -> 357 of 840). 6c, a lift as a lowering chosen by cost, is with its writer (`.work/phase-6c-lowerings.md`). |
 | 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | 7a landed (778a2225e to 9b05247da, the review's acd02157e; `.work/phase-7-values.md`, the scout's map `.work/maps/value-passes.md`): one effects summary answers what a call does (`src/optimize/effects.js`), six closures and nine hand lists deleted. 7b and 7c, one address form, one set of regions and one numbering, are with their writer (`.work/phase-7b-values.md`). |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | landed (d0976a1ed to 094d0e159): `src/optimize/rules.js`, 32 rows, each with its relation, checked by `test/rules.js` on every row's own values and on a population; one `foldMemarg` for the three passes that folded an address's constant apart. |
-| 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | 9a landed (50f7854d3 to 53a139b82): every float rewrite that rounds otherwise than JavaScript is one option, `optimize.relaxedFloat`, on at `'speed'` alone; the lanes `jz-exact` and `c-wasm-fast`; README's and the landing's measured figures written from the dataset. 9b, the held-out lane, is handed back and lands next (`.work/phase-9b-heldout.md`). |
+| 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | 9a landed (50f7854d3 to 53a139b82): every float rewrite that rounds otherwise than JavaScript is one option, `optimize.relaxedFloat`, on at `'speed'` alone; the lanes `jz-exact` and `c-wasm-fast`; README's and the landing's measured figures written from the dataset. 9b landed (4f74e5006, 13f00eb3d; `.work/phase-9b-heldout.md`): the held-out lane, 25 programs registered and none fetched, its record a chain the workflow alone appends to. The contact run waits for the last compiler phase. |
 | 10 | CONTRIBUTING.md cut to a guide; shape-pin tests retired with the recognizers they pin | under 30 KB; pins replaced by gate cells | |
+| 11 | Meet the claims: every sentence of AGENTS.md and README the reference run contradicts (`.work/claims-for-the-owner.md`) | a reference run passes the claims gate: each gap closed, or an exception earned by measurement as AGENTS.md says | after phase 10 (the owner, 2026-11-15); the sentences stay as written until then |
 
 ## Found on the way (2026-11-09)
 
@@ -1782,6 +1783,170 @@ longer beside them; the two furthest after V8's drift, alone, four rounds: rayma
 - Reading `valueOf` through a parameter gives NaN (7a's probe; not looked into).
 - The hosted compiler grew with each of the four (906 bytes, 88 KB, 1 KB, 64 KB).
 
+## A bundle with a CommonJS module, and what its probes found (2026-11-15)
+
+Found by the 9b writer on its own fixture, written to Are We Fast Yet's interface, before
+any program of the held-out sets was fetched: every driver esbuild bundles from a
+CommonJS program stopped the compile with `summary: no fixpoint`. Run down, it is five
+defects, each in every release that has its code. Two stop a bundle; the population
+written to check the first (`trypop`: a parameter of two kinds used ten ways in five
+try forms, 2,800 programs, each beside a twin with no try) found two more, and probes
+of a proof beside the assignment, written while the first of those was run down, the
+fifth.
+
+**A parameter used inside a try statement read as only tested** (since 0a68216f2,
+2026-09-16: v1.0.0 to v1.0.3). The summary joins the arguments of a parameter that is
+only tested, compared or asked its `typeof` without losing what a join loses
+(`passiveParamsOf`). Its scan read a try statement in the parser's layout, `['catch',
+param, handler]`; a prepared one is `['catch', body, param, handler]`. So it walked the
+handler's name and nothing else: a parameter stored through, kept, returned or assigned
+in the protected body or the handler was one only tested.
+
+- Wrong answers: an object passed where a value of another kind is too kept its fields'
+  kinds past a store through the parameter (`f(a); f(7)` with `try { o.x = 'str' }`
+  inside `f`: `typeof a.x` read as `number`). At level 0 beside a number or a string;
+  at every level beside a typed array.
+- No fixpoint: a captured parameter assigned in a handler (`catch (e) { throw mod = 0,
+  e }`, esbuild 0.28's `__commonJS`) joined without its cell on the call, quietly, and
+  with it on the assignment, a round each, until the solve stopped at its bound of
+  10,000 rounds. No bundle with a CommonJS module compiled.
+
+The fix removes the case: the walk's own rule reads every operand of a node as a use,
+and the handler's name, a string among them, stops being a candidate (3e43a1e19).
+
+**A comma call rebuilt with an operand an argument** (since 6d43d2d9a, 2026-05-23: v0.6.0
+to v1.0.3). An alias of an Object builtin at the top of a module (`var __getOwnPropNames
+= Object.getOwnPropertyNames`: every bundle with a CommonJS module) turns the
+bundler-helper fold on. The fold took each `(0, f)(…)` whose callee is a member or an
+index for an interop read it had replaced: it compared its copy of the callee with the
+callee by identity, and the copy is always another array. It then rebuilt the call as
+`['()', f, a, b]`, where a call's arguments are one operand, so every reader took the
+first argument and dropped the rest; a call of no argument became the grouping `(f)`,
+the function in place of its result; and the callee lost the `(0, …)` that calls it
+with no receiver. esbuild writes every call of a CommonJS import so, and `__commonJS`
+calls the module's function with `(exports, module)`: `module.exports = …` threw on an
+undefined `module`. The one test of the fold had a module that writes `exports.answer`
+and a read of it, no call. The callee is compared by structure now, and a call the
+fold builds has the parser's shape (4fa0fb34a). A call whose callee is an interop read
+still becomes a method call on the module (`(0, import_a.add)(1, 2)` to
+`require_a().add(1, 2)`): a function of the module that reads `this` sees the module
+where JavaScript gives it undefined. Listed, not changed.
+
+esbuild 0.28.2's bundle of `import { add, id, k, mix } from './a.cjs'` with calls of
+none, one, two and three arguments answers what Node answers at levels 0, 2 and `speed`;
+it is the test (`test/features.js`), with seven comma calls whose callee is no interop
+read.
+
+**A parameter assigned under an `if`, on a path the walk does not follow, read as what
+its callers pass.** The walk reads a parameter as its callers' kinds until its first
+reassignment (`pre`). A conditional that assigns it restores the entry state between
+its arms and ends the region at its join, but only on a path the straight-line state
+follows; a loop clears its names at the head, and a try statement's body, handler and
+finalizer and a labelled block with a break clear nothing. There the join left the
+parameter not yet reassigned, and every read after it, a call's argument among them,
+was of the callers' kinds alone: `try { if (typeof o === 'number') o = { x: o } } catch
+(e) {} show(o)` never told `show` of an object, its `typeof v === 'object'` arm was
+folded away, and the answer was `object[object Object]` for `obj7`, at every level.
+The idiom is a parameter made uniform inside a try (`if (typeof input === 'string')
+input = JSON.parse(input)`). The join now ends the region whether or not the path is
+followed (8fc82cf25).
+
+**A test's arm restoring a mask past an assignment.** A name is read within the tags
+its tests prove (`refined`); a test saves the mask the name had, to restore where its
+arm ends. An arm that assigns the name ended the proof and the arm's end restored the
+mask of before: after `if (o == null) return; if (typeof o === 'number') o = null` the
+reads were not nullish again, and a callee's `v === null` was folded away (wrong at
+level 0; with the defect above, at every level inside a try). An assignment now clears
+the masks the tests around it saved (the same commit). Both changes only widen what a
+read may be.
+
+**An empty statement in the binding split.** A conditional whose test the argument's
+kind decides is folded away in a function spliced into its caller (`let sink = (v) =>
+{ if (typeof v === 'object') v.x = 'str' }` called with a closure, a number or a
+string); the list keeps an empty statement, and `split` (prepare/split-bindings.js)
+read its operator without asking whether there was one: an internal error at levels 2
+and over. Every other reader of the list in that file asks first; this one does now
+(2bab745c7).
+
+Each test fails with its fix taken out (the bundle's with either half of the second;
+`a try body under a guard that leaves` with either of the third and fourth).
+`trypop` on the fixed tree (2bab745c7): none of its 2,800 programs differs from Node at
+the three levels. On main, a quarter of it (700): 25 differ where the twin with no try
+agrees, 16 of them at level 2 or `speed` too, and 10 stop on the internal error with a
+try or without.
+
+**Bytes and time.** One bench case of 105 moves, jessie: 101 bytes more at `size` (76,072
+to 76,173) and 65 at `speed` (193,286 to 193,351), in one function of its 274, with no
+loop: a value the walk no longer takes for an array is tested for its tag before an
+element of it is read. No example of 70 moves. Sixty alternating rounds, a process each,
+at load 30: jessie 0.999 of the base by the least and 0.992 by the median; watr, the same
+bytes on both trees and timed beside it as the control, 1.000 and 0.970. Eight rounds did
+not resolve it (the control read 1.113 by the least): on a loaded machine the least of
+sixty is what a timing is read by.
+
+The population itself, moved into the generated suite as `test/try-population.js` (the
+landing after this one), fails with the first, third and fifth fixes taken out and passed
+with the fourth out, as the scratch one does: it gained a use that holds a proof across
+the assignment, and fails with each of the four now.
+
+**Not changed, listed.** `analyzeFreshTypedGlobals` (plan/literals.js) reads the try
+node the way the first defect did: at `catch` it takes every name of the protected body
+out of the module arrays known to own their buffer, and leaves the handler's name in.
+The first costs precision (an array named in a try body is no longer known distinct
+from the others, so LICM keeps its reads in the loop); for the second, three probes of
+a handler's name that hides a module array, stored through beside a read of another,
+answer what Node answers at the three levels. The fixture's program that builds code at
+run time (`new Function`) compiles and throws when run, where the README lists it as
+not supported: its row is a trap, not the refusal the fixture's comment expects.
+
+## The held-out lane (9b), as landed (2026-11-15)
+
+`bench/heldout/manifest.json` names 25 programs jz was never tuned on, before any was
+fetched: Are We Fast Yet's 14 JavaScript programs (smarr/are-we-fast-yet at 74306fec)
+and the Benchmarks Game's 11 Node.js programs of nbody, spectralnorm, fannkuchredux and
+mandelbrot (Byron/benchmarksgame-cvs-mirror at 0077cab4). Nothing of either set is in
+the repo: `scripts/heldout.mjs` fetches a program at its commit, checks its blob,
+generates a driver to the set's interface and runs it; the fixture
+(`bench/heldout/fixture/`) is six programs written here to the two interfaces, for
+the harness alone.
+
+What holds the lane (`bench/heldout/lane.mjs`, tested in `test/bench-claims.js`):
+
+- A program's registration is the last commit that changed its line of the manifest. A
+  contact run is refused where compiler source (`SOURCE_SCOPE`, bench/claims.mjs)
+  changed after it: what is measured is a compiler written before the program was
+  named.
+- The record (`bench/heldout.json`) is a chain: each entry carries the sha256 of the one
+  before it, the program's blob, its driver's hash, the compiler's commit and the run.
+  The workflow appends to it and nothing else does; a second measurement of a program
+  is an entry marked `tuned`, never a replacement.
+- Every program is counted. A compile failure, a trap, a wrong answer and a timeout are
+  rows (`RESULTS`), and V8's result of the unmodified source is the oracle.
+- `.github/workflows/heldout.yml` runs on dispatch alone: `mode=dry` runs V8 only and
+  writes nothing; `mode=contact` runs on main only, and its record job is the one job
+  with write access.
+
+What no test can hold is in the manifest's own words: that no one read a program of a
+set, or ran it with jz, before it was registered.
+
+The review: the workflow, the lane module and the diffs to `bench/bench.mjs`,
+`bench/claims.mjs`, `bench.yml` and `test.yml` read whole. `node test/bench-claims.js`
+has 48 tests where it had 40; the 8 new pass, and the failing ones are the same 21 by
+name on both trees (the stale dataset, see `.work/claims-for-the-owner.md`). The
+fixture through the whole pipeline on the fixed tree: `squares` (a CommonJS program
+through esbuild's bundle) answers right where it stopped the compile before the five
+fixes above; `harmonic` and `bitmap` right; `roots` wrong (the documented
+`(-Infinity) ** 0.5`); `cores` a compile failure (`node:module`); `evaluated` a trap
+(`new Function`), where its comment expects a refusal.
+
+Not run: the contact. It is run once, so it waits for the last compiler phase: every
+src commit after a program's registration refuses it, and the commit before it is one
+of its own that registers the programs again (each `"registered"` date), dispatched
+before the next src commit. `mode=dry` is run after this landing, to check the harness
+on the real sets with V8 alone.
+
+The landing's battery: on 2bab745c7, one leg at a time: `lint:imports` and `audit:files` clean; bench bytes by hash 0 of 105 moved; the examples 1.65× V8 by geomean, jz ahead on 25 of 25 (blackhole read 3% slower in the first run and epicycles 5.6% in the second, each byte for byte main's wasm at level 2, size and speed: the machine's, three writers' suites beside the run); the invariants leg (level 3, the facts guard on) 7,280; core 7,481; `test:bootstrap -- --full`, its five parts, the hosted build 37,146,722 bytes against main's 37,145,851; level 0 7,264; level 3 7,278; wasi 7,353; generated 144; the integration suite 226 (1 skipped), 76, 76 and 79 at the default, level 0, level 3 and wasi; test262 4,120 and 0 failing; the core suite in one process 7,481. All passing. Eleven hours, the hosted suite 108 minutes of it.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -1841,6 +2006,19 @@ longer beside them; the two furthest after V8's drift, alone, four rounds: rayma
   nothing faster. Its commit is named in the handover.
 - A writer whose step has a successor carries on in its own context and tree, told of
   each landing so it rebases (the integrator, 2026-11-15): 6c, 7b and 7c, 9b.
+- Float results (the owner, 2026-11-15): "some deviation within 100ulp is allowed if that
+  saves perf or size times. But do the most meaningful way." Applied per relaxation, with
+  numbers, once 6c has landed its exact lowerings: a rewrite that rounds otherwise than
+  JavaScript is on at the default level where it saves a multiple over the best exact
+  lowering of the same loop and its results stay within the bound on the float
+  population; every other one stays at `'speed'`. A reordered sum has no bound in ulp of
+  its result (under cancellation its bound is n·2^-52 of the terms' total magnitude, as
+  README says): what the default promises is written from what is measured. Until then
+  the default level is exact, and nothing is released from it.
+- The claims stay as written and are to be met (the owner, 2026-11-15: "we're going to
+  need to work on meeting these claims when we land all phases"): phase 11.
+- Phase 4's memo is dropped (the owner, 2026-11-15: "if useless then drop"; the
+  integrator's reading, in its row).
 
 ## Open questions
 

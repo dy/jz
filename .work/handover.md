@@ -312,3 +312,38 @@ aliasing fuzz), the writers' `pop` (9a), `pcbpop`, `boxlenpop` and `entrypop`; t
 review's harness `intreview.sh`; the timing scripts `alltimes.sh` (every bench case,
 two trees), `stepbis.sh` (a case built at each of several commits), `wasmalt.sh` and
 `fixedalt.sh` (a page on a fixed plan, two trees).
+
+## Branches of the landing of the five fixes and the held-out lane (2026-11-15), tips before deletion
+
+```
+9102a64c5 worktree-agent-a71b879e01b0977a5   9b's writer's tree: 3fc396ba1 and 9102a64c5, landed as 4f74e5006 and 13f00eb3d
+9b938315a (no branch, a scratch worktree)    the integrator's four fixes on acd02157e (4af3c66de, bf974bdae, 57ab7a8ae, 9b938315a), landed as 3e43a1e19, 4fa0fb34a, 8fc82cf25, 2bab745c7
+```
+
+At work or held as this lands:
+
+```
+9a6971aa5 populations                         the integrator's: the try population, the finalizer population, forward-checked.js's catch clause (on 2bab745c7)
+e52d23ad5 worktree-agent-a29e352754b8f20da   the populations' ports (sixteen commits to 11f24c1ef, accepted), then at work on a hang it found: a host function that calls an export back, levels 2, 3 and speed
+4524efb83 worktree-agent-a2790de10cf3d3dfc   the exception edge's writer (`.work/exception-edges.md` on that branch): six wrong answers of one class, at work
+ccc68ef24 worktree-agent-af3f6d07ee6e728c6   6c's writer: its twelve commits (to e17a85616) reviewed, at work on two wrong answers of the vectorizer older than them
+5d7b0c6fe land-6c                             the review tree of 6c: `populations` and the twelve commits
+f5fac8880 worktree-agent-a0535e0f76860e45e   7b's and 7c's writer: handed back, fireflies 4.1% and dwa 2.5% slower by the least of sixty, unsettled
+238aedd6e worktree-agent-a4519a2dc39ff972e   the tier that tests a counter's bound: not landed, the owner has not ruled
+```
+
+watr 5.13.7 (pushed 2026-11-15, the npm release the owner's) fixes `outline`, which shared
+one helper between two expressions whose locals repeat at other positions (`size`); jz's
+pin is 5.13.5 until it is published.
+
+Deleted with nothing landed, on the owner's word (2026-11-15):
+
+```
+a48e8b6fe worktree-agent-ad38f46bbe9197c87   phase 4's memo (on ba71f66a6: `src/optimize/memo.js`, 490 lines, and `test/memo.js`); `.work/phase-4-compile-time.md` and the plan's row hold what it measured
+```
+
+Scratch of this landing, not in the repo: the population `trypop` (a parameter of two
+kinds used ten ways in five try forms, 2,800 programs, each beside a twin with no try;
+on its way into the generated suite as `test/try-population.js`, branch `populations`),
+the probe of the binding split's crash, and esbuild's bundle of a CommonJS import (the
+test in `test/features.js` carries its text).
