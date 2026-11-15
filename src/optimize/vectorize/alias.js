@@ -302,11 +302,13 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       if (a.step == null || a.step !== b.step) return null
       for (let k = 1; k < lanes; k++) { const x = D - a.step * k; if (x > -b.width && x < a.width) return null }
     }
-    let test = null
+    let test = null, own = false
     const and = t => { test = test ? ['i32.and', test, t] : t }
     for (const [p, q] of unequal.values()) and(['i32.ne', ['local.get', p], ['local.get', q]])
     for (const { d, s, st } of pairs.values()) {
       if (s.motion == null || st.motion == null) return null
+      // (two sites of one array: their distance is the program's, which may fail the test as it runs)
+      if (s.raw && s.raw === st.raw) own = true
       if (s.step === st.step && s.width === st.width && s.width <= Math.abs(s.step)) {
         const S = Math.abs(s.step)
         if (d.terms.length) { and(apart(d, S * lanes)); continue }
@@ -320,10 +322,13 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       const tail = dir < 0 ? ['i32.add', ['i32.sub', ['local.get', iv], cloneNode(bound)], ['i32.const', 1]] : ['i32.sub', cloneNode(bound), ['local.get', iv]]
       and(['i32.or', below(s, st, tail), below(st, s, tail)])
     }
-    return test ?? true
+    return test ? { test, own } : true
   }
-  // A strip's limit set into a local its strip loop runs to (scaffold.js simdLoop) is closed by
-  // skipping that loop where the test fails; any other, by the limit where no pass runs.
+  // A strip whose test reads two sites of one array, a distance the program sets and may fail
+  // as it runs (the first stage of a butterfly, its pairs one element apart), skips its strip
+  // loop whole where the test fails (scaffold.js simdLoop: the loop of the limit's local); a
+  // test of two arrays, which fails only where a caller hands the same one twice, closes the
+  // strip by its limit, no branch taken where it holds.
   const limits = []
   const gate = (parent) => {
     for (let i = 1; i < parent.length; i++) {
@@ -331,12 +336,13 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       if (!isArr(c)) continue
       const at = strips.get(c)
       if (!at) { if (!gate(c)) return false; continue }
-      const test = open(at)
-      if (!test) return false
+      const o = open(at)
+      if (!o) return false
       found = true
-      if (test === true) continue
+      if (o === true) continue
+      const { test } = o
       if (at.block) parent[i] = ['if', test, ['then', c]]
-      else if (parent[0] === 'local.set' && i === 2 && typeof parent[1] === 'string') limits.push([parent, i, test, at])
+      else if (o.own && parent[0] === 'local.set' && i === 2 && typeof parent[1] === 'string') limits.push([parent, i, test, at])
       else parent[i] = ['select', c, shut(at), test]
     }
     return true

@@ -611,6 +611,23 @@ test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
   ok(apart > 0 && /\(if\s*$/.test(w.slice(0, apart)), 'the strip runs behind the test, not entered for no pass')
 })
 
+test('SIMD gate - a test of two arrays closes the strip by its limit, no branch where it holds', () => {
+  // two parameters the caller may make one array: the strip runs past a test of their bytes
+  // apart, which fails only where it does, so the strip's limit takes it (the butterfly's test
+  // of one array's own distance, above, skips its loop)
+  const src = `export let scale = (d, s, n, g) => { for (let i = 0; i < n; i++) d[i] = s[i] * g; return d[0] }
+  export let main = (nIn) => {
+    const a = new Float64Array(64), b = new Float64Array(64)
+    for (let i = 0; i < 64; i++) a[i] = i * 0.5 + 1
+    return scale(b, a, nIn | 0, 3) + scale(a, a.subarray(1), (nIn | 0) - 1, 0.5)
+  }`
+  for (const n of [0, 1, 2, 3, 7, 8, 33]) is(runVec(src, SIMD_OPT).main(n), runVec(src, NOVEC).main(n), `n=${n} as scalar`)
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.store/.test(w), 'the map lifts')
+  const apart = w.search(/\(i32\.or\s+\(i32\.eqz\s+\(i32\.sub/)
+  ok(apart > 0 && !/\(if\s*$/.test(w.slice(0, apart)), 'the test is the limit\'s condition, not a branch around the loop')
+})
+
 test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-exact', () => {
   // The fftplan shape: twiddles at ti + j (no second counter). Only the index temporaries
   // stand between it and the general map.
