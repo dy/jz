@@ -3,7 +3,7 @@ import { positiveInteger } from '../scripts/test-tasks.mjs'
 // A file has one owner. The full gate runs every owner; the core matrix never
 // starts a bootstrap build or a generated population sweep implicitly.
 const bootstrap = new Set(['self-compile', 'self-checkpoint', 'kernel-parity', 'kernel-oracle'])
-const generated = new Set(['fuzz', 'wat-invariants', 'perf-ratchet', 'spellings', 'vector-coverage', 'vector-dependence', 'boxed-counters-population', 'rules-population', 'try-population', 'finalizer-population', 'reentry-population', 'uint-loops-population', 'bound-wrap-population', 'uint-division-population', 'counter-widths-population', 'vector-alias-population', 'vector-order-population', 'vector-narrow-population', 'alias-fuzz-population', 'box-tier-population', 'box-population'])
+const generated = new Set(['fuzz', 'wat-invariants', 'perf-ratchet', 'spellings', 'vector-coverage', 'vector-dependence', 'boxed-counters-population', 'rules-population', 'try-population', 'finalizer-population', 'reentry-population', 'uint-loops-population', 'bound-wrap-population', 'uint-division-population', 'counter-widths-population', 'vector-alias-population', 'vector-order-population', 'vector-narrow-population', 'alias-fuzz-population', 'box-tier-population', 'box-population', 'box-forms-population'])
 const integration = new Set([
   'pmath', 'watr', 'examples', 'refactor-oracle', 'reachability-mutants',
   'web-smoke', 'site', 'guide', 'headline', 'cli', 'bench-build',

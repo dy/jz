@@ -281,6 +281,7 @@ const TESTS = [
   'alias-fuzz-population',
   'box-tier-population',
   'box-population',
+  'box-forms-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
