@@ -273,6 +273,7 @@ const TESTS = [
   'reentry-population',
   'uint-loops-population',
   'bound-wrap-population',
+  'uint-division-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
