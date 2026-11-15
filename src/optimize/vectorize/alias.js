@@ -302,16 +302,19 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       if (a.step == null || a.step !== b.step) return null
       for (let k = 1; k < lanes; k++) { const x = D - a.step * k; if (x > -b.width && x < a.width) return null }
     }
-    let test = null, own = false
-    const and = t => { test = test ? ['i32.and', test, t] : t }
+    // (two sites of one array: their distance is the program's, which may fail the test as it
+    // runs, `own`; any other pair's test, `test`)
+    // (a test two pairs share, as the pairs of one distance do, is made once)
+    let test = null, own = null
+    const made = new Set(), once = t => !made.has(nodeKey(t)) && made.add(nodeKey(t))
+    const and = t => { if (once(t)) test = test ? ['i32.and', test, t] : t }
     for (const [p, q] of unequal.values()) and(['i32.ne', ['local.get', p], ['local.get', q]])
     for (const { d, s, st } of pairs.values()) {
       if (s.motion == null || st.motion == null) return null
-      // (two sites of one array: their distance is the program's, which may fail the test as it runs)
-      if (s.raw && s.raw === st.raw) own = true
+      const one = s.raw && s.raw === st.raw
       if (s.step === st.step && s.width === st.width && s.width <= Math.abs(s.step)) {
         const S = Math.abs(s.step)
-        if (d.terms.length) { and(apart(d, S * lanes)); continue }
+        if (d.terms.length) { const t = apart(d, S * lanes); if (!one) and(t); else if (once(t)) own = own ? ['i32.and', own, t] : t; continue }
         // a fixed distance: the elements of other iterations, interleaved or not
         const r = ((d.k % S) + S) % S
         if (r ? r < s.width || S - r < s.width : Math.abs(d.k) < S * lanes) return null
@@ -322,13 +325,14 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       const tail = dir < 0 ? ['i32.add', ['i32.sub', ['local.get', iv], cloneNode(bound)], ['i32.const', 1]] : ['i32.sub', cloneNode(bound), ['local.get', iv]]
       and(['i32.or', below(s, st, tail), below(st, s, tail)])
     }
-    return test ? { test, own } : true
+    return test || own ? { test, own } : true
   }
-  // A strip whose test reads two sites of one array, a distance the program sets and may fail
-  // as it runs (the first stage of a butterfly, its pairs one element apart), skips its strip
-  // loop whole where the test fails (scaffold.js simdLoop: the loop of the limit's local); a
-  // test of two arrays, which fails only where a caller hands the same one twice, closes the
-  // strip by its limit, no branch taken where it holds.
+  // A test of two sites of one array, a distance the program sets and may fail as it runs (the
+  // first stage of a butterfly, its pairs one element apart), skips the strip whole where it
+  // fails: the strip loop of the limit's local (scaffold.js simdLoop), and the limit's setting
+  // where it stands just ahead of it. A test of two arrays, which fails only where a caller
+  // hands the same one twice, is the limit's condition, no branch taken where it holds.
+  const both = (a, b) => a && b ? ['i32.and', a, b] : a || b
   const limits = []
   const gate = (parent) => {
     for (let i = 1; i < parent.length; i++) {
@@ -340,20 +344,22 @@ export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
       if (!o) return false
       found = true
       if (o === true) continue
-      const { test } = o
-      if (at.block) parent[i] = ['if', test, ['then', c]]
-      else if (o.own && parent[0] === 'local.set' && i === 2 && typeof parent[1] === 'string') limits.push([parent, i, test, at])
-      else parent[i] = ['select', c, shut(at), test]
+      if (at.block) parent[i] = ['if', both(o.own, o.test), ['then', c]]
+      else if (o.own && parent[0] === 'local.set' && i === 2 && typeof parent[1] === 'string') limits.push([parent, i, o, at])
+      else parent[i] = ['select', c, shut(at), both(o.own, o.test)]
     }
     return true
   }
   let found = false
   if (!gate(wrapper)) return null
-  for (const [parent, i, test, at] of limits) {
+  for (const [set, i, { own, test }, at] of limits) {
     let loop = null
-    walkAst(wrapper, { enter: (n, p, k) => { if (!loop && stripLoops.get(n) === parent[1] && p) loop = [p, k] } })
-    if (loop) loop[0][loop[1]] = ['if', test, ['then', loop[0][loop[1]]]]
-    else parent[i] = ['select', parent[i], shut(at), test]
+    walkAst(wrapper, { enter: (n, p, k) => { if (!loop && stripLoops.get(n) === set[1] && p) loop = [p, k] } })
+    if (!loop) { set[i] = ['select', set[i], shut(at), both(own, test)]; continue }
+    if (test) set[i] = ['select', set[i], shut(at), test]
+    const [list, k] = loop
+    const from = list[k - 1] === set ? k - 1 : k
+    list.splice(from, k - from + 1, ['if', own, ['then', ...list.slice(from, k + 1)]])
   }
   return found || r.ordered ? r : null
 }

@@ -628,6 +628,26 @@ test('SIMD gate - a test of two arrays closes the strip by its limit, no branch 
   ok(apart > 0 && !/\(if\s*$/.test(w.slice(0, apart)), 'the test is the limit\'s condition, not a branch around the loop')
 })
 
+test('SIMD gate - one array\'s distance branches around the strip, two arrays\' tests are its limit\'s', () => {
+  // re[j] and re[j + half] are one array `half` apart, which the first stage fails at every
+  // entry; re against im, two parameters, fails only where a caller hands one array twice
+  const src = `export let bf = (re, im, half) => {
+    for (let j = 0; j < half; j++) { const t = re[j + half] * 0.5; re[j + half] = re[j] - t; re[j] = re[j] + t; im[j] = im[j] * 2 + re[j] }
+    return re[0] + im[0]
+  }
+  export let main = (h) => {
+    const re = new Float64Array(64), im = new Float64Array(64)
+    for (let i = 0; i < 64; i++) { re[i] = i * 0.25 - 3; im[i] = 1 - i * 0.125 }
+    let s = 0
+    for (let half = 1; half <= 16; half *= 2) s += bf(re, im, half) + bf(re, re.subarray(h | 0), half)
+    return s
+  }`
+  for (const h of [0, 1, 2, 3, 5, 16]) is(runVec(src, SIMD_OPT).main(h), runVec(src, NOVEC).main(h), `h=${h} as scalar`)
+  const w = wat(src, SIMD_OPT)
+  ok(/\(if\s+\(i32\.or\s+\(i32\.eqz\s+\(i32\.shl[^]{0,1500}?\(then\s+\(local\.set \$\S+\s+\(select\s+\(select/.test(w),
+    'the distance is the branch, the limit set inside it under the two arrays\' test')
+})
+
 test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-exact', () => {
   // The fftplan shape: twiddles at ti + j (no second counter). Only the index temporaries
   // stand between it and the general map.
