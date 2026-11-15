@@ -1880,7 +1880,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         case 'let': case 'const':
           for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') candidates.delete(d); else if (Array.isArray(d) && d[0] === '=') candidates.delete(d[1]); if (Array.isArray(d) && d[0] === '=') walk(d[2], false); else walk(d, false) }
           return
-        case 'catch': candidates.delete(n[1]); walk(n[2], false); return
         case '{}':
           if (isLiteral(n)) { for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p === 'string') { candidates.delete(p) } else if (p[0] === ':') walk(p[2], false); else walk(p, false) } return }
           for (let i = 1; i < n.length; i++) walk(n[i], false)

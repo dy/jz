@@ -1940,3 +1940,44 @@ test('summary: a method on a host value leaves typed arrays\' named properties a
   const want = oracle(named).f()
   for (const optimize of levels(0, 2, 3)) is(jz(named, { optimize }).exports.f(), want, `named, O${optimize}`)
 })
+
+// A parameter only tested joins its arguments without losing what a join loses
+// (summary/index.js passiveParamsOf). The scan read a try statement in the
+// parser's layout, `['catch', param, handler]`, where a prepared one is
+// `['catch', body, param, handler]`: it walked neither the protected body nor
+// the handler, so a parameter stored through, kept or returned there was one
+// only tested. An object passed where a number is too kept its fields' kinds
+// past the store (level 0 answered with the kind the literal had), and a
+// captured parameter assigned in a handler, esbuild's CommonJS wrapper, joined
+// without its cell on the call and with it on the assignment, a round each, so
+// the solve ended on its bound of rounds.
+test('summary: a parameter used inside a try statement is no parameter only tested', () => {
+  const stored = `{ let a = { x: 1 }; f(a, 1); f(7, 1); return typeof a.x === 'string' ? 1 : 0 }`
+  const programs = {
+    'stored through in the body': `let f = (o) => { try { if (typeof o !== 'number') o.x = 'str' } catch (e) {} }
+      export let main = () => ${stored}`,
+    'stored through in the handler': `let f = (o, t) => { try { if (t) throw 1 } catch (e) { if (typeof o !== 'number') o.x = 'str' } }
+      export let main = () => ${stored}`,
+    'kept in the body': `let hold = null
+      let f = (o) => { try { if (typeof o !== 'number') hold = o } catch (e) {} }
+      export let main = () => { let a = { x: 1 }; f(a); f(7); hold.x = 'str'; return typeof a.x === 'string' ? 1 : 0 }`,
+    'kept in the handler': `let hold = null
+      let f = (o, t) => { try { if (t) throw 1 } catch (e) { if (typeof o !== 'number') hold = o } }
+      export let main = () => { let a = { x: 1 }; f(a, 1); f(7, 1); hold.x = 'str'; return typeof a.x === 'string' ? 1 : 0 }`,
+    'returned from the body': `let f = (o) => { try { return o } catch (e) { return 0 } }
+      export let main = () => { let a = { x: 1 }, r = f(a); f(7); r.x = 'str'; return typeof a.x === 'string' ? 1 : 0 }`,
+    'returned from the handler': `let f = (o, t) => { try { if (t) throw 1; return 0 } catch (e) { return o } }
+      export let main = () => { let a = { x: 1 }, r = f(a, 1); f(7, 1); r.x = 'str'; return typeof a.x === 'string' ? 1 : 0 }`,
+    'two shapes and a number': `let f = (o, v) => { try { o.x = v } catch (e) {} }
+      export let main = () => { let a = { x: 1 }, b = { y: 2, x: 3 }; f(a, 'p'); f(b, 4); f(9, 1); return (typeof a.x === 'string' ? 1 : 0) + b.x }`,
+    'the handler\'s own name hides the parameter': `let f = (e, t) => { try { if (t) throw { x: 'str' } } catch (e) { return typeof e.x === 'string' ? 1 : 0 } return typeof e === 'number' ? 2 : e.x }
+      export let main = () => f({ x: 5 }, 1) * 100 + f({ x: 5 }, 0) * 10 + f(7, 0)`,
+    'a captured one assigned in the handler': `var lazy = (cb, mod) => function () { try { return mod || (mod = cb(), mod) } catch (e) { throw mod = 0, e } }
+      var get = lazy(() => ({ x: 1 }))
+      export let main = () => get().x + get().x`,
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const want = oracle(src).main()
+    for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `${name}, O${optimize}`)
+  }
+})
