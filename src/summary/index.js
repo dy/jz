@@ -4002,7 +4002,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const assignName = (name, v) => {
     const key = keyOf(name)
     if (key !== null) {
-      pre.delete(key); refined.delete(key); lengthAliases.delete(key)
+      pre.delete(key); endProofs(key); lengthAliases.delete(key)
       // A straight-line assignment is the value the reads after it see; one on a path is not.
       if (followed(key)) post.set(key, v); else { post.delete(key); loopNote(key, v) }
       raise(kinds, key, v)
@@ -5038,7 +5038,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const loopAssigns = (n) => {
     for (const name of assignedIn(n)) {
       const key = keyOf(name)
-      if (key !== null) { pre.delete(key); refined.delete(key); post.delete(key) }
+      if (key !== null) { pre.delete(key); endProofs(key); post.delete(key) }
     }
   }
   // Refinement: the tags a path proves a name's kind within. A condition proves
@@ -5062,6 +5062,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (typeof key === 'string') pathDepth++
     refined.set(key, (prior ?? (TAGS | UNKNOWN)) & mask)
   }
+  // An assignment ends every proof of the name, those of the tests around it too: the
+  // mask a test saved, to restore where its arm ends, is of the value the name held
+  // before (`if (o == null) return; if (typeof o === 'number') o = null`: the second
+  // test's arm ends by restoring "not nullish").
+  const endProofs = (key) => { refined.delete(key); for (let i = 0; i < rtop; i++) if (rKeys[i] === key) rPriors[i] = undefined }
   const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (typeof key === 'string') pathDepth--; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
   // A mask's tags keep those of the kind; its own parameter, where it has one
   // (a typed array's element kind a class test proves), fills an unknown one:
@@ -5394,8 +5399,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       cands.length = 0
       if (a >= 0) addCands(exitStack[a + i])
       if (b >= 0) addCands(exitStack[b + i])
-      if (!cands.length || !followed(key)) { post.delete(key); continue }
+      // an arm assigns the key: no read past the conditional precedes its first
+      // reassignment, on a path the straight-line state follows or on one it does not
+      // (a try statement's, a labelled block's, which nothing clears at its head)
       pre.delete(key)
+      if (!cands.length || !followed(key)) { post.delete(key); continue }
       if (cands.length === 1) { post.set(key, cands[0]); continue }
       if (cands.length > POST_CANDIDATES) { let k = cands[0]; for (let j = 1; j < cands.length; j++) k = merge(k, cands[j], true); post.set(key, k); continue }
       if (!sameCands(post.get(key))) post.set(key, cands.slice())

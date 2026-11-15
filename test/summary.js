@@ -1981,3 +1981,51 @@ test('summary: a parameter used inside a try statement is no parameter only test
     for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `${name}, O${optimize}`)
   }
 })
+
+// The walk reads a parameter as what its callers pass until its first reassignment,
+// and a name within the tags its tests prove (summary/index.js `pre`, `refined`). Two
+// ends of those regions were missed where an `if` assigns the name. On a path the
+// straight-line state does not follow (a try statement's body, handler or finalizer,
+// a labelled block with a break) the conditional's join left the parameter "not yet
+// reassigned": every read after it, a call's argument among them, was of the callers'
+// kinds alone (`try { if (typeof o === 'number') o = { x: o } } catch (e) {} show(o)`:
+// `show` never took an object, and its `typeof v === 'object'` arm was folded away).
+// And a test's arm, ending, restored the mask the name had before the test, though the
+// arm had assigned it (`if (o == null) return; if (typeof o === 'number') o = null`:
+// "not nullish" came back for the reads after, and `show`'s `v === null` was folded).
+test('summary: an assignment under an `if` ends the parameter\'s incoming kind and the proofs around it', () => {
+  const show = `let show = (v) => v === null ? 'null' : v === undefined ? 'undef' : typeof v === 'function' ? 'fn' : typeof v === 'object' ? 'obj' + v.x : typeof v + v`
+  const set = `if (typeof o === 'number') o = { x: o }`
+  const bodies = {
+    'a try body, read after': `try { ${set} } catch (e) { } return show(o)`,
+    'a try body, read in it': `try { ${set}; return show(o) } catch (e) { return 'c' }`,
+    'a try body, read in the handler': `try { ${set}; if (t) throw 1; return 'n' } catch (e) { return show(o) }`,
+    'a handler, read after': `try { if (t) throw 1 } catch (e) { ${set} } return show(o)`,
+    'a handler, read in it': `try { if (t) throw 1; return 'n' } catch (e) { ${set}; return show(o) }`,
+    'a finalizer, read after': `try { } finally { ${set} } return show(o)`,
+    'a try body, read in the finalizer': `let r = 'n'; try { ${set} } finally { r = show(o) } return r`,
+    'a try in a try': `try { try { ${set} } finally { t = 0 } } catch (e) { } return show(o)`,
+    'a labelled block, read in it': `blk: { ${set}; if (t > 5) break blk; return show(o) } return 'b'`,
+    'a labelled block, read after': `blk: { ${set}; if (t > 5) break blk } return show(o)`,
+    'a loop, read after': `for (let i = 0; i < 1; i++) { ${set} } return show(o)`,
+    'both arms in a try': `try { if (t) o = { x: 1 }; else o = 'e' } catch (e) { } return show(o)`,
+    'an else in a try': `try { if (typeof o === 'number') o = { x: o }; else o = 3 } catch (e) { } return show(o)`,
+    'under a guard that leaves, in a try': `if (typeof o !== 'number') return 'x'; try { ${set} } catch (e) { } return show(o)`,
+    'under a guard that leaves, in a labelled block': `if (typeof o !== 'number') return 'x'; blk: { ${set}; if (t > 5) break blk; return show(o) } return 'b'`,
+    'in an arm of the same test, in a try': `if (typeof o === 'number') { try { ${set} } catch (e) { } return show(o) } return 'x'`,
+    'null under a guard against null': `if (o == null) return 'n'; if (typeof o === 'number') o = null; return show(o)`,
+    'null under a guard against null, in a try': `if (o == null) return 'n'; try { if (typeof o === 'number') o = null } catch (e) { } return show(o)`,
+    'zero under a guard against falsy': `if (!o) return 'f'; if (typeof o === 'number') o = 0; return show(o) + (o ? 'T' : 'F')`,
+  }
+  const mains = [`f(7, 1) + '|' + f((a) => a + 1, 1)`, `f(7, 1) + '|' + f('s', 1)`, `f(7, 1) + '|' + f(null, 1)`]
+  for (const [name, body] of Object.entries(bodies)) for (const main of mains) {
+    const src = `${show}\nlet f = (o, t) => { ${body} }\nexport let main = () => ${main}`
+    const want = oracle(src).main()
+    for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `${name}: ${main}, O${optimize}`)
+  }
+  // what the callee is told, whatever the level inlines
+  summarize(`${show}\nexport let f = (o, t) => { try { ${set} } catch (e) { } return show(o) }\nexport let main = () => f(7, 1) + f((a) => a + 1, 1)`)
+  ok(hasTag(kindOf('show', 'v'), K.OBJECT), 'the object a try body assigns reaches the call after it')
+  summarize(`${show}\nexport let f = (o) => { if (o == null) return 'n'; if (typeof o === 'number') o = null; return show(o) }\nexport let main = () => f(7) + f('s')`)
+  ok(hasTag(kindOf('show', 'v'), K.NULLISH), 'the null an arm assigns reaches the call past a guard against null')
+})
