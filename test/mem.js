@@ -4,6 +4,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate, codecOf } from '../interop.js'
 import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
+import { bounded } from './_bounded.js'
 import { readFileSync } from 'node:fs'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
@@ -1758,6 +1759,43 @@ test('reset: an object made at start reads as it started, whatever a call stored
       m.churn(30)   // what the reset freed is taken again
       is(m.read(), start, `${what}: round ${round} reads as the module started at O${optimize}`)
     }
+  }
+})
+
+// A call's first store of a round into an array made as the module started saves the array
+// for the reset in a record the round's log holds (module/core/durable-log.js
+// `__durable_arr_snap`). An in-place store of a number has no escape site, so nothing told a
+// frame that restores the heap about the record: `w2`'s frame (the concatenation reads the
+// flag) gave it back at its return, `w3`'s object took its memory, and the walk of the log as
+// `w3`'s frame returned (module/core/reach.js `__survive`) followed what the object wrote there
+// and never ended, at levels 2, 3 and speed, in 1.0.3 too. The reset read the same record: with
+// `fill`'s array in its memory, `memory.reset()` trapped. Run in a worker stopped at a limit.
+test('reset: the record of an array a call first stores a number into is the round\'s, whatever frame stored it', () => {
+  if (!onWasi()) {
+    const healed = `let b = [2, 3, 5]
+let s = 'bc'
+export let w2 = () => { b[0] = b[0] + 2; s = s + 'x'; return 1 }
+let keep = null
+export let fill = () => { keep = [11, 12, 13, 14, 15, 16, 17, 18]; return keep.length }
+export let read = () => b[0] * 100 + b[1] * 10 + b[2]`
+    for (const optimize of levels(0, 2, 3, 'speed')) {
+      const out = bounded({ src: healed, optimize, runs: [[['w2', []], ['fill', []], ['@reset', []], ['read', []]]] }, 60000)
+      is(out.hung ? 'no answer' : out.results[0].join(' '), '1 8 reset 235', `w2(), fill(), memory.reset(), read() at ${optimize}`)
+    }
+  }
+  const src = `let a = [7, 1, 5]
+export let w1 = () => { a[0] = a[0] + 1; return 1 }
+let b = [2, 3, 5]
+let s = 'bc'
+export let w2 = () => { b[0] = b[0] + 2; s = s + 'x'; return 1 }
+let c = [4, 8, 4]
+let o = { a: 4, b: 4 }
+export let w3 = () => { c[0] = c[0] + 6; o = { a: 1, b: o.b + 1 }; return c[0] + c[1] + o.a + o.b }`
+  const want = oracle(src), calls = [['w1', []], ['w2', []], ['w3', []], ['w3', []]]
+  const expected = calls.map(([n]) => String(want[n]()))
+  for (const optimize of levels(0, 2, 3, 'speed')) {
+    const out = bounded({ src, optimize, runs: [calls] }, 60000)
+    is(out.hung ? `no answer at ${calls[out.hung[1]][0]}()` : out.results[0].join(' '), expected.join(' '), `w1(), w2(), w3(), w3() at ${optimize}`)
   }
 })
 

@@ -4852,7 +4852,16 @@ that may (a recursion written as tail calls) stays, the function keeping its
 heap. Allocation counts through callees. The durable-heap logs
 record only mutations of containers made before the reset mark, each a store
 the census counts: its site lowers the flag to the durable receiver, so no
-frame restores over a logging path. An object's tagged field is logged once
+frame restores over a logging path. Not every logging store is counted: an
+in-place store of a number into a durable array is no escape, and its first
+of a round saves the array (`__durable_arr_snap`), so its inline snapshot
+(module/collection/durable.js `durableArrSnapNode`) lowers the flag to the
+array as the record is made. A frame that restored over the record left the
+log naming freed memory: the next walk of the log (`__survive` as an
+outermost frame that ran an escape returns) followed what a later
+allocation wrote there without end, and `memory.reset()` read it back and
+trapped. The kernels' stores (push, fill, splice and the rest) stand at
+census sites and were right. An object's tagged field is logged once
 per round (`__durable_obj_snap`) when it first receives a value that names
 memory of that round (`__is_eph_bits`). Static writes, computed keys and
 `Object.assign` use the same field log. Its record shares the array log and

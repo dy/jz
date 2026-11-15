@@ -153,9 +153,12 @@ const NO_NAMES = new Set()
 // counts (compile/analyze/frame-effects.js), whose site lowers the flag to
 // the durable receiver, older than every frame, before a value that may hold
 // a heap pointer goes in, or after the store when it allocated, as the log's
-// first touch does. No frame restores over a logging path. An object's
-// snapshot lowers the flag itself where it allocates (module/core/
-// durable-log.js): a kernel's arm calls it for a store no site stands at.
+// first touch does. No frame restores over a logging path: an in-place store
+// of a number into a durable array is no escape the census counts, and its
+// snapshot (module/collection/durable.js durableArrSnapNode) lowers the flag to
+// the array at its own site, after the record is made. An object's snapshot
+// lowers the flag itself where it allocates (module/core/durable-log.js): a
+// kernel's arm calls it for a store no site stands at.
 const CENSUS_GUARDED = /^\$__durable_(?!(obj|cell)_snap$)/
 // A captured cell's record (module/core/durable-log.js `__durable_cell_snap`)
 // lowers the flag where it allocates, and what it allocates is the round's,

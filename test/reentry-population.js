@@ -11,14 +11,138 @@
 // a module global, the closure's result read after. The programs share a module, each with its
 // own names: what an import may write is every global of the module, the same for one program
 // as for twelve.
+//
+// Beside them a generated population (the scratch reentrypop): one to four globals of seven
+// kinds (numbers, Float64Array, Int32Array, an array, an object, a string), one to three exports
+// that write or replace them, one or two imports each calling one export; `f(k)` reads the
+// globals around the imports' calls, straight, in loops, under a test, behind a function of the
+// module and beside a shim of the runtime's own (`Math.random()`, `Date.now()`: they call
+// nothing back). 400 programs from each of three seeds, each called with 0 to 3. A seed's
+// programs share one module and, for each argument, one instance, called in order: what one
+// program's calls leave in the heap the next one's meet. That form, which no program alone can
+// reach, found a hang at levels 2, 3 and speed in 1.0.3 too: a call's first in-place store of a
+// number into an array made as the module started logged the round's undo record in its own
+// frame and the frame gave it back at its return, so the log named freed memory and a later
+// frame's walk of it (module/core/reach.js `__survive`) never ended (the snapshot,
+// module/collection/durable.js durableArrSnapNode, now lowers the escape flag to the array as the
+// record is made). Each seed runs in a worker the test stops at a limit, so a hang is a failed
+// assertion (test/_bounded.js).
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
 import { compile } from './util.js'
+import { bounded } from './_bounded.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const show = v => Object.is(v, -0) ? '-0' : String(v)
 const call = (fn, ...a) => { try { return show(fn(...a)) } catch (e) { return `throws: ${String(e.message).split('\n')[0]}` } }
+
+// ---- the generated programs (xorshift32, so a seed gives the same 400 programs on every run)
+const generate = (seed, count) => {
+  let state = seed >>> 0 || 1
+  const rnd = () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296 }
+  const pick = (a) => a[Math.floor(rnd() * a.length)]
+  const int = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1))
+  const KINDS = ['num', 'num', 'f64', 'i32', 'arr', 'obj', 'str']
+  const decl = (k, n) => k === 'num' ? `let ${n} = ${pick([0, 1, 3, 0.5, -2])}`
+    : k === 'f64' ? `let ${n} = new Float64Array([${int(1, 9)}, ${int(1, 9)}.5, ${int(1, 9)}, ${int(1, 9)}])`
+    : k === 'i32' ? `let ${n} = new Int32Array([${int(1, 9)}, ${int(1, 9)}, ${int(1, 9)}, ${int(1, 9)}])`
+    : k === 'arr' ? `let ${n} = [${int(1, 9)}, ${int(1, 9)}, ${int(1, 9)}]`
+    : k === 'obj' ? `let ${n} = { a: ${int(1, 9)}, b: ${int(1, 9)} }`
+    : `let ${n} = '${pick(['a', 'bc', 'def'])}'`
+  const write = (k, n) => {
+    const c = int(1, 7)
+    return k === 'num' ? pick([`${n} = ${n} + ${c}`, `${n} = ${n} * 2 + 1`, `${n} += ${c}.5`])
+      : k === 'f64' ? pick([`${n} = new Float64Array(4); ${n}[0] = ${c}`, `${n}[1] = ${n}[1] + ${c}`, `${n} = new Float64Array([${c}, ${c}, ${c}, ${c}, ${c}])`])
+      : k === 'i32' ? pick([`${n} = new Int32Array(4); ${n}[2] = ${c}`, `${n}[0] = ${n}[0] + ${c}`, `${n} = new Int32Array([${c}, 2, 3, 4, 5, 6])`])
+      : k === 'arr' ? pick([`${n} = [${c}, ${c + 1}, ${c + 2}]`, `${n}.push(${c})`, `${n}[0] = ${n}[0] + ${c}`])
+      : k === 'obj' ? pick([`${n} = { a: ${c}, b: ${n}.b + 1 }`, `${n}.a = ${n}.a + ${c}`, `${n} = { a: ${n}.b, b: ${n}.a }`])
+      : pick([`${n} = ${n} + 'x'`, `${n} = 'q${c}'`])
+  }
+  const read = (k, n) => k === 'num' ? pick([n, `${n} * 2`, `(${n} | 0)`])
+    : k === 'f64' || k === 'i32' ? pick([`${n}[0]`, `${n}[1]`, `${n}[${int(0, 3)}]`, `${n}.length`, `${n}[0] + ${n}[1]`])
+    : k === 'arr' ? pick([`${n}[0]`, `${n}.length`, `${n}[${int(0, 2)}]`, `${n}[0] + ${n}[1]`])
+    : k === 'obj' ? pick([`${n}.a`, `${n}.b`, `${n}.a + ${n}.b`])
+    : pick([`${n}.length`, `${n}.charCodeAt(0)`])
+  const one = () => {
+    const gs = []
+    for (let i = 0, n = int(1, 4); i < n; i++) gs.push([pick(KINDS), `g${i}`])
+    const muts = []
+    for (let i = 0, n = int(1, 3); i < n; i++) {
+      const body = []
+      for (let j = 0, m = int(1, 2); j < m; j++) { const [k, name] = pick(gs); body.push(write(k, name)) }
+      muts.push(`export let m${i} = () => { ${body.join('; ')}; return ${int(0, 3)} }`)
+    }
+    const ncb = int(1, 2), cbOf = []          // which export each import calls
+    for (let i = 0; i < ncb; i++) cbOf.push(int(0, muts.length - 1))
+    const helper = rnd() < 0.5 ? `let h = () => { ${rnd() < 0.5 ? `cb${int(0, ncb - 1)}()` : `m${int(0, muts.length - 1)}()`} }` : null
+    const stmt = (depth) => {
+      const r = rnd()
+      const [k, name] = pick(gs)
+      if (r < 0.38) return `s += ${read(k, name)}`
+      // (a shim of the runtime's own between the reads: it calls nothing back)
+      if (r < 0.42) return pick([`s += (Math.random() < 2 ? 1 : 0)`, `s += (Date.now() > 0 ? 2 : 0)`])
+      if (r < 0.6) return `cb${int(0, ncb - 1)}()`
+      if (r < 0.68) return `s += cb${int(0, ncb - 1)}()`
+      if (r < 0.74 && helper) return `h()`
+      if (r < 0.9 && depth < 2) {
+        const body = []
+        for (let i = 0, n = int(2, 4); i < n; i++) body.push(stmt(depth + 1))
+        return `for (let i${depth} = 0; i${depth} < ${pick(['k', '3', '2', 'k + 1'])}; i${depth}++) { ${body.join('; ')} }`
+      }
+      if (depth < 2) return `if (${pick(['s > 5', 'k > 1', '(s | 0) % 2 === 0'])}) { ${stmt(depth + 1)}; ${stmt(depth + 1)} }`
+      return `s += ${read(k, name)}`
+    }
+    const body = []
+    for (let i = 0, n = int(3, 7); i < n; i++) body.push(stmt(0))
+    const text = [...gs.map(([k, n]) => decl(k, n)), ...muts, helper, `export let f = (k) => { let s = 0; ${body.join('; ')}; return s }`].filter(Boolean).join('\n')
+    return { text, cbOf }
+  }
+  return Array.from({ length: count }, one)
+}
+
+// (levels 0, 1, 3 and size agree too, 2026-11-15. The generated programs run at 2 and speed:
+// with the import fix taken out levels 0 and 1 answer as Node over all 1,200 and level 2 does
+// not; with the snapshot's taken out level 2 never returns. A seed's module is 400 programs, and
+// the two levels of the three seeds took 251 s at load 20 to 31: the cost is the compile.)
+const GENERATED = [2, 'speed']
+const ARGS = [0, 1, 2, 3]
+// A seed's compile and its four instances, in the worker, at most this long (a hang fails here).
+const LIMIT = 240000
+// A program's own names, numbered: its globals, exports, helper, `f` and imports.
+const OWN = /\b(g\d|m\d|h|f|cb\d)\b/g
+
+// A seed's programs as one module: Node evaluates it afresh for each argument, as jz
+// instantiates it afresh, and calls every program in order; a program Node throws on is left
+// out, as the scratch population did. One assertion a differing call, one a hang.
+const population = (label, progs) => {
+  const part = progs.map(({ text, cbOf }, j) => ({ j, text, src: text.replace(OWN, `$1_${j}`), cbs: cbOf.map((m, i) => [`cb${i}_${j}`, `m${m}_${j}`]) }))
+  const cbs = part.flatMap(q => q.cbs)
+  const body = part.map(q => q.src).join('\n')
+  const node = () => new Function(`${cbs.map(([cb, m]) => `const ${cb} = () => ${m}()`).join('\n')}\n${body.replace(/export /g, '')}\nreturn { ${part.map(q => `f_${q.j}`).join(', ')} }`)()
+  const want = ARGS.map(a => { const m = node(); return part.map(q => { try { return show(m[`f_${q.j}`](a)) } catch { return null } }) })
+  const live = part.filter(q => want.every(w => w[q.j] !== null))
+  const src = `import { ${cbs.map(([cb]) => cb).join(', ')} } from 'host'\n${body}`
+  const runs = ARGS.map(a => live.map(q => [`f_${q.j}`, [a]]))
+  let checks = 0, calls = 0
+  for (const optimize of GENERATED) {
+    const out = bounded({ src, optimize, calls: cbs, runs }, LIMIT)
+    if (out.hung) {
+      const q = live[out.hung[1]]
+      is('no answer', 'an answer', `${label}: no answer in ${LIMIT / 1000} s at ${JSON.stringify(optimize)}, at f(${ARGS[out.hung[0]]}) of program ${q.j}, every program before it called on the same instance\n${q.text}`)
+    }
+    calls += out.calls
+    out.results.forEach((row, ai) => row.forEach((got, i) => {
+      const q = live[i], w = want[ai][q.j]
+      checks++
+      if (got !== w) is(got, w, `${label}, program ${q.j}: f(${ARGS[ai]}) at ${JSON.stringify(optimize)}\n${q.text}\n  imports call ${q.cbs.map(([, m]) => m.replace(/_\d+$/, ''))}`)
+    }))
+  }
+  is(true, true, `${label}: ${live.length} programs (${part.length - live.length} Node throws on), ${checks} checks, ${calls} calls back`)
+}
+
+for (const seed of [1, 2, 3])
+  test(`reentry population: seed ${seed}, 400 generated programs on one instance an argument, ${GENERATED.length} configurations`, () => population(`seed ${seed}`, generate(seed, 400)))
 
 // The phase 7 scout's reaches: [name, the program, the export its import `cb` calls (none: the
 // control, the export called directly), f's arguments].

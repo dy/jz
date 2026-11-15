@@ -215,7 +215,8 @@ export default (ctx) => {
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     __durable_fwd_log: ['__alloc'],
     __durable_fwd_heal: [],
-    __durable_arr_snap: ['__alloc'],
+    // (the inline site lowers the flag after the call: module/collection/durable.js durableArrSnapNode)
+    __durable_arr_snap: () => ['__alloc', ...(ctx.scope.globals.has('__esc') ? ['__esc_at'] : [])],
     __durable_obj_snap: () => ['__alloc', ...(ctx.scope.globals.has('__esc') ? ['__esc_at'] : [])],
     __durable_cell_snap: ['__durable_obj_snap'],
     __durable_arr_heal: () => ctx.core.includes.has('__durable_obj_snap') ? ['__is_eph_bits'] : [],

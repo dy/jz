@@ -207,14 +207,20 @@ export const rawSnapBitNode = (bits) => ['i32.and', ['i32.wrap_i64', ['i64.shr_u
 // few instructions, so here the bit test is inline: a store in a loop pays a
 // byte load and a branch, and the call runs once per array per round.
 // `bits`, the array's pointer as an i64 expression, read only where the call runs.
+// The record is the round's: the escape flag goes down to the array as it is made, since an
+// in-place store of a number is no escape the frame census counts, and a frame that restored
+// the heap over the record left the log naming freed memory (optimize/arena-rewind.js
+// CENSUS_GUARDED; the next walk of the log, module/core/reach.js `__survive`, never ended).
 export const durableArrSnapNode = (base, bits = null) => {
   if (!hasDurableReset()) return ['nop']
   const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']
   const unsaved = ['i32.or', ['i32.eqz', seen],
     ['i32.eqz', ['i32.and', ['i32.load8_u', ['i32.add', seen, seenCellNode(b)]],
       ['i32.shl', ['i32.const', 1], ['i32.and', ['i32.shr_u', b, ['i32.const', 3]], ['i32.const', 7]]]]]]
+  const snap = ['call', '$__durable_arr_snap', bits && numericArraysOn() ? ['i32.or', ['local.get', `$${base}`], rawSnapBitNode(bits)] : b]
+  const lower = ctx.scope.globals.has('__esc') ? [['call', '$__esc_at', b]] : []
   return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
-    ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', bits && numericArraysOn() ? ['i32.or', ['local.get', `$${base}`], rawSnapBitNode(bits)] : b]]]]]
+    ['then', ['if', unsaved, ['then', snap, ...lower]]]]
 }
 
 // The cell of the durable bitmap that holds an address's bit: the address
