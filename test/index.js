@@ -268,6 +268,7 @@ const TESTS = [
   'vector-dependence',
   'boxed-counters-population',
   'rules-population',
+  'try-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
