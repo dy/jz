@@ -139,21 +139,17 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
   is(run(src).f(), 12)
 })
 
-// audit-#11 item 7 sub-4 / audit-#15 item 8 (fixed): under JZ_TEST_TARGET=jz.wasm
-// this threw `Bad int 9.067910317e-315` from watr's own integer encoder — decoded
-// bits (0x000000006d657469, low 32 = ASCII "item") proved a BigInt CARRIER (raw
-// i64 bits reinterpreted as f64, never converted) was landing in an `(i32.const
-// …)` WAT position. Root: module/json.js's `expectText` SWAR key-match codegen
-// packed each ≤4-byte text chunk through `Number(BigInt(...))`, routed through the
-// self-compiled kernel's own ToNumber(BigInt) — gated on a whole-program
-// `ctx.features.bigint` flag baked once at first module-inclusion
-// (src/prepare/index.js), which self-compiling's module-inclusion ORDER can bake
-// false before it ever sees this same file's later BigInt use, leaving
-// ToNumber(BigInt) on its unguarded/raw-carrier arm. Fixed by never constructing a
-// BigInt for the ≤4-byte chunks in the first place (`leNum`, plain i32 bitwise
-// pack — safe since expectText is ASCII-only, so bit 31 of a 4-byte pack is never
-// set); only the genuine 8-byte/64-bit chunk still uses BigInt, feeding i64Hex (a
-// hex-STRING formatter, never routed through Number()/ToNumber).
+// Root: module/json.js's `expectText` SWAR key-match codegen packed each ≤4-byte
+// text chunk through `Number(BigInt(...))`, routed through the self-compiled
+// kernel's own ToNumber(BigInt) — gated on a whole-program `ctx.features.bigint`
+// flag baked once at first module-inclusion (src/prepare/index.js), which
+// self-compiling's module-inclusion ORDER can bake false before it ever sees this
+// same file's later BigInt use, leaving ToNumber(BigInt) on its
+// unguarded/raw-carrier arm. Fixed by never constructing a BigInt for the ≤4-byte
+// chunks in the first place (`leNum`, plain i32 bitwise pack — safe since
+// expectText is ASCII-only, so bit 31 of a 4-byte pack is never set); only the
+// genuine 8-byte/64-bit chunk still uses BigInt, feeding i64Hex (a hex-STRING
+// formatter, never routed through Number()/ToNumber).
 test('JSON.parse: stable let source uses shaped runtime parser', () => {
   const src = `
     let SRC = '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}'

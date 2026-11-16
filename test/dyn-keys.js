@@ -2605,7 +2605,9 @@ test('host BigInt arithmetic evidence selects a tagged export parameter', () => 
 
 test('phase-c C4b (2): tagged (evidenced) BigInt param accepts plain bigint via the box path and computes correctly', () => {
   // The one REACHABLE evidenced state — jz:hostabi's `tag` array (formerly
-  // jz:bigintbox's whole content). That's an EGRESS concern — this task
+  // jz:bigintbox's whole content). Result asserted via comparison, not a raw
+  // returned bigint: a Number/BigInt-MIXED ternary RESULT has its own
+  // pre-existing, UNRELATED egress gap. That's an EGRESS concern — this task
   // redesigns INGRESS only — so the pin below keeps the mixed value fully
   // wasm-internal and crosses only an unambiguous boolean, sidestepping it.
   const { exports: e } = jz(`

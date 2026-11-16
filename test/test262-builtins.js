@@ -747,27 +747,7 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/JSON/stringify/replacer-function-result-undefined.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/replacer-function-tojson.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/value-bigint-replacer.js', '[REJECT] runtime JSON.stringify replacers are unsupported'],
-  // With boxing restored as the default consequence (an unprovable BigInt flow
-  // boxes, not refuses, unless JZ_BIGINT_STRICT=1), these compile again exactly
-  // as they did pre-Slice-1 — removed, not converted, restoring the pre-Slice-1
-  // baseline (852/0, not Slice 1's 851/0). Per-line probes confirmed the file's
-  // OWN question (does jz wrongly INVOKE a non-callable toJSON property?) is
-  // answered correctly — jz never invokes ANY toJSON hook at all (SEPARATELY
-  // confirmed, still true, still unfixed: a genuinely CALLABLE toJSON is
-  // silently ignored, `JSON.stringify({toJSON:()=>42})` gives "{}" not "42" — a
-  // real gap, but not what THIS file tests, and no test262 file currently pinned
-  // below needs it either), so "not invoked" is spec-correct here regardless of
-  // the reason. fix/wrong-values-2 left the file failing on an UNRELATED bug its
-  // own probes surfaced: line 25's `JSON.stringify({toJSON: /re/})` (a RegExp
-  // VALUE, not a toJSON question) serialized as "{\"toJSON\":0}" instead of
-  // "{\"toJSON\":{}}". fix/wrong-values-3: root-caused and fixed.
-  // module/regex.js's own doc ("Regex literals become compile-time WASM
-  // functions") names the actual cause — a regex VALUE (ctx.core.emit['//']) is
-  // a bare i32 compile-time table index, boxed to f64 the same as any real
-  // number, so once it reaches __json_val's runtime tag dispatch
-  // (module/json.js) it is bit-identical to the NUMBER 0/1/2/… (the literal's
-  // table index) and gets misrendered as that raw index — no runtime tag can
-  // recover "this was a regex" after that degradation.
+  // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
   // GetMethod, ES 7.3.11: a non-callable method value is treated as absent, not

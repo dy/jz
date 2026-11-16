@@ -3970,12 +3970,13 @@ test('SIMD multi-pixel - vertical box blur (outer-loop peel + 4-pixel SIMD)', ()
 
 test('SIMD channel order - permuted RGBA channels stay positionally correct', () => {
   // Both channel-SIMD lifts (1-pixel and 4-pixel) map v128 lane c to the accumulator that
-  // summed SOURCE byte-offset c. They coincide for an identity-order blur, so a
-  // permutation-insensitive SUM checksum can't see a mis-map. This program permutes which
-  // channel each accumulator reads/stores and checks a POSITION-SENSITIVE rolling hash, so
-  // a lane mis-map diverges. Oracle = the unoptimized (no-SIMD) compile. rp[off] =
-  // accumulator (0..3) fed by source offset `off`; sp[m] = accumulator stored at output
-  // offset m. acc names a0..a3.
+  // summed SOURCE byte-offset c. The recognizer ties that to read-offset order, but the
+  // lane→accumulator extract must use that same order — not the zero-init order. They
+  // coincide for an identity-order blur, so a permutation-insensitive SUM checksum can't
+  // see a mis-map. This program permutes which channel each accumulator reads/stores and
+  // checks a POSITION-SENSITIVE rolling hash, so a lane mis-map diverges. Oracle = the
+  // unoptimized (no-SIMD) compile. rp[off] = accumulator (0..3) fed by source offset `off`;
+  // sp[m] = accumulator stored at output offset m. acc names a0..a3.
   const rd = (acc, off) => `${acc}+=src[${off === 0 ? 'p' : 'p+' + off}]`
   const wr = (off, acc) => `dst[${off === 0 ? 'o' : 'o+' + off}]=(${acc}/win)|0`
   const blur = (w, r, rp, sp) => `export let main = () => {
@@ -4006,9 +4007,11 @@ test('SIMD channel order - permuted RGBA channels stay positionally correct', ()
 
 test('SIMD multi-pixel - soundness guards bail on non-canonical blurs', () => {
   // The 4-pixel lift reads 16 source bytes (4 pixels) with ONE v128.load and reuses the
-  // scalar store template per pixel. These shapes violate one or the other; B must bail
-  // (→ 1-pixel chan-reduce) and stay bit-exact. Position-sensitive rolling hash so any
-  // lane mis-map shows. Oracle = no-SIMD compile.
+  // scalar store template per pixel. That is sound ONLY when (a) consecutive output
+  // pixels read CONSECUTIVE source pixels — the source address advances exactly 4 bytes
+  // per pivot step — and (b) the store value does not depend on the pivot. These shapes
+  // violate one or the other; B must bail (→ 1-pixel chan-reduce) and stay bit-exact.
+  // Position-sensitive rolling hash so any lane mis-map shows. Oracle = no-SIMD compile.
   const ON = { optimize: 'speed' }, NO = { optimize: { vectorizeLaneLocal: false } }
   const wrap = (w, body) => `export let main = () => {
     const W=${w}|0, H=8|0, R=4|0, N=W*H*4, src=new Uint8Array(N*4), dst=new Uint8Array(N)

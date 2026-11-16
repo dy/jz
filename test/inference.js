@@ -1067,12 +1067,14 @@ test('plain-array index with bounded literal terms stays pure i32', () => {
   is(count(fn,/f64\.convert_i32_s/g),dynGetCalls,'only the computed property key widens')
 })
 
-// It's safe here ONLY because the whole expression is masked with `&255` right
-// after — a proven ToInt32 root where wraparound is harmless
-// (ToInt32(ToInt32(x)&255) === ToInt32(x)&255 regardless of overflow). Loses
-// the guarded f64.mul + Infinity-canon `select` round-trip that cost the
-// bytebeat kernel ~1.4× vs V8/AS on x86 (it wins on ARM either way, so only
-// this pin or an x86 bench catches the regression).
+// A `& m`-masked operand is provably ≤ m, but `t` itself is an unbounded loop
+// counter — so `t * (…&63)` is NOT a standalone-safe i32 product. It's safe
+// here ONLY because the whole expression is masked with `&255` right after — a
+// proven ToInt32 root where wraparound is harmless (ToInt32(ToInt32(x)&255) ===
+// ToInt32(x)&255 regardless of overflow). Loses the guarded f64.mul +
+// Infinity-canon `select` round-trip that cost the bytebeat kernel ~1.4× vs
+// V8/AS on x86 (it wins on ARM either way, so only this pin or an x86 bench
+// catches the regression).
 test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
   if (belowOpt(2)) return  // the counter's guarded integer copy rests on the interval fixpoints, a level-2 pass (optimize/config.js)
   const wat = compile(

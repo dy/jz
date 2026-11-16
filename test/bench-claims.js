@@ -161,10 +161,13 @@ test('claims: reference evidence is fresh (no compiler commits past any JZ row)'
   ok(snapWatr === nowWatr, `reference dataset compiled with watr ${snapWatr}, installed is ${nowWatr} — re-run the reference bench`)
 })
 
-// That's only honest evidence if a `--verify-anchors` run in the same
-// session certified the untouched rival rows still hold at today's machine
-// state (meta.anchors.pass). A partial dataset with no passing anchor check
-// is unverified drift risk, not proof.
+// PARTIAL evidence must be anchor-verified: `bench/bench.mjs --merge` can
+// leave the dataset mixing vintages — freshly re-measured jz rows alongside
+// untouched rival rows from an earlier commit. That's only honest evidence
+// if a `--verify-anchors` run in the same session certified the untouched
+// rival rows still hold at today's machine state (meta.anchors.pass). A
+// partial dataset with no passing anchor check is unverified drift risk, not
+// proof.
 test('claims: partial (mixed-vintage) evidence requires a passing anchors check (meta.partial ⇒ meta.anchors.pass)', () => {
   if (!res.meta?.partial) { ok(true, 'not a partial refresh (meta.partial unset) — anchors not required'); return }
   ok(res.meta?.anchors?.pass === true,

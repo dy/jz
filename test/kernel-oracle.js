@@ -437,19 +437,10 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
   }
 })
 
-// FLIPPED from KNOWN-FAIL (2026-08-10, §31): a carrier-built KERNEL
-// (JZ_CARRIER_BOX=1, self-compiled — dist/jz.wasm compiled from scripts/
-// self.js by the NATIVE compiler under the same flag) used to miscompile ANY
-// heap string literal used as a console.log argument — traced by §17 to
-// mkPtrIR/packPtrBits (src/ir.js) constant-folding a NaN-boxed pointer via
-// layout.js's `ptrBits`, whose `LAYOUT.NAN_PREFIX_BITS` read starves for
-// `slotBigintProvenBySid` under the self-compiled build's whole-program
-// `pointsTo==='ALL'` blanket (§17 finding 1, kernel-parity's `dict` row —
-// STILL open, §18/§21/§22/§23 all walled on closing it safely). Re-verified
-// directly (§31): heap string ('bare-fired', ≥7 chars) and SSO string
-// ('short', ≤6 chars) BOTH print their correct, undecorated value on the
-// kernel leg, at every optimize level (0/1/2/3), deterministically, across
-// repeated fresh-process runs — not a fluke of one run.
+// Re-verified directly (§31): heap string ('bare-fired', ≥7 chars) and SSO
+// string ('short', ≤6 chars) BOTH print their correct, undecorated value on
+// the kernel leg, at every optimize level (0/1/2/3), deterministically,
+// across repeated fresh-process runs — not a fluke of one run.
 test('kernel oracle: console.log string constants — AGREE (closed incidentally by §24 CONSERVATIVE PAIRING, .work/archive/carrier-representation-design.md §16→§17→§31)', async () => {
   if (onWasi()) return
   const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string

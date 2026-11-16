@@ -444,20 +444,15 @@ test('carrier: PTR.BIGINT (5) is disjoint from every other pointer tag', () => {
 })
 
 test('carrier: a ternary of two non-nullish BigInt arms keeps its value through a spliced call under JZ_CARRIER_BOX', () => {
-  // Found live compiling watr/src/optimize.js's own `_i64Canon` (`neg ?
-  // -BigInt(mag) : BigInt(mag)`, non-simple so jz's own inliner
-  // (compile/plan/inline.js) binds it to a fresh temp DECL when splicing
-  // `_i64Hex16`'s call — that decl is exactly the shape this test pins) under
-  // JZ_CARRIER_BOX=1 at O3: `fold()` returned 5.826595490514274e+252 instead
-  // of 2.000000000000001. Off-flag (CARRIER_BOX is a compile-time env-read
-  // const) this shape is a no-op, so the assertion is meaningful specifically
-  // under JZ_CARRIER_BOX=1 and merely non-regressing (never crashes) otherwise
-  // — the failure mode observed here was OFTEN a trap (`memory access out of
-  // bounds`), not just a wrong value, so running this compiled+called
-  // unconditionally (regardless of which flag state the test process itself
-  // was started under) still catches a crash-class regression either way. A
-  // WASI export named `run` is the reserved void command entry; use a normal
-  // export so this carrier assertion remains meaningful on that leg.
+  // Off-flag (CARRIER_BOX is a compile-time env-read const) this shape is a
+  // no-op, so the assertion is meaningful specifically under JZ_CARRIER_BOX=1
+  // and merely non-regressing (never crashes) otherwise — the failure mode
+  // observed here was OFTEN a trap (`memory access out of bounds`), not just a
+  // wrong value, so running this compiled+called unconditionally (regardless
+  // of which flag state the test process itself was started under) still
+  // catches a crash-class regression either way. A WASI export named `run` is
+  // the reserved void command entry; use a normal export so this carrier
+  // assertion remains meaningful on that leg.
   const src = `
     const hex16 = (v) => v.toString(16)
     const canon = (mag, neg) => hex16(neg ? -BigInt(mag) : BigInt(mag))

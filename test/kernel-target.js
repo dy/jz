@@ -172,13 +172,8 @@ export const compileViaKernel = (code, opts = {}) => {
   }
   // The wasm parses + lowers internally; `strict` skips jzify (rejecting full-JS
   // syntax) to match the native compiler's accept/reject behavior. The optimize
-  // config travels the same optJSON channel as the wat/warnings legs — the
-  // BYTES leg mirrors native's optimize default (level 2). It was pinned to the
-  // kernel's historical optimize:false while the in-kernel L2 divergences were
-  // triaged; the ratchet hit ZERO (full suite green at JZ_TEST_OPTIMIZE=2
-  // through dist/jz.wasm — i64 VALUE CONTRACT, untyped-receiver number
-  // methods, static-literal aliasing, both-worlds i64 folders), so the kernel
-  // now runs its own optimizer by default, same as native.
+  // config travels the same optJSON channel as the wat/warnings legs — the BYTES
+  // leg mirrors native's optimize default (level 2).
   const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts), buildJSONFor(self, opts))
   const bin = self.memory.read(out)
   // COPY out of the instance: memory.read returns a zero-copy VIEW into the wasm
