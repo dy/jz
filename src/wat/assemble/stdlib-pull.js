@@ -656,6 +656,13 @@ export function pullStdlib(sec) {
     const pages = Math.max(ctx.memory.pages || 1, dataPages)
     const max = ctx.memory.max || 0   // 0 = no maximum (unbounded growth)
     if (max && pages > max) err(`Static data needs ${pages} initial pages, exceeding memory.maximum (${max})`)
+    // The forwarding chase's bound (layout.js followForwardingWat) holds the memory's size
+    // from instantiation, as __memgrow keeps it after: seeded 0, it followed no forward
+    // before the module's first allocation grew the memory, and an array of the static data
+    // a shift had forwarded read its forward as its header (two shifts at the top level
+    // read the length as an address; a queue drained there never ended).
+    const end64 = ctx.scope.globals.get('__heap_end64')
+    if (end64) end64.init = pages * 65536
     // Truly-shared memory (opts.sharedMemory) declares the `shared` memtype —
     // the spec requires an explicit max there (default: the wasm32 page ceiling).
     // Plain imported memory (opts.importMemory / a Memory-valued opts.memory)

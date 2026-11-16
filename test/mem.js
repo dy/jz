@@ -1098,6 +1098,24 @@ test('followForwardingWat/ptrOffsetFwdWat bound check is i64 (not i32.shl(memory
   ok(/i64\.extend_i32_u/.test(wat), 'offset is widened to i64 before the bound compare')
 })
 
+// The same bound from instantiation: seeded 0, it followed no forward before the module's
+// first allocation grew the memory, so a queue of the static data drained at the top level
+// read its forward as its header after the first shift and never ended (1.0.3 too). The
+// memory's initial size seeds it (wat/assemble/stdlib-pull.js); a worker bounds the start.
+test('a queue drained as the module starts ends, its forwards followed before any allocation', () => {
+  for (const optimize of levels(false, 2, 3)) {
+    const src = `const q = [1, 2, 3, 4, 5]
+      let s = 0
+      while (q.length > 2) s += q.shift()
+      const b = [2, 3, 5, 7]
+      b.shift(); b.shift(); b.push(9)
+      export let f = () => s * 1000 + q[0] * 10 + q.length
+      export let g = () => b[0] * 1000 + b[2] * 10 + b.length`
+    const out = bounded({ src, optimize, runs: [[['f', []], ['g', []]]] }, 30000)
+    is(out.hung ? 'no answer in 30 s' : out.results[0].join(' '), '6042 5093', `the queue and the array shifted twice then grown, at ${JSON.stringify(optimize)}`)
+  }
+})
+
 
 test('host allocator: odd-sized mixed allocations never overlap', () => {
   const mem = jz.memory(), saved = []

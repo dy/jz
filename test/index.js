@@ -290,6 +290,7 @@ const TESTS = [
   'view-order-population',
   'handler-population',
   'reset-population',
+  'start-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',

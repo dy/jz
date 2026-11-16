@@ -938,6 +938,8 @@ export default (ctx) => {
   // cap=-1 sentinel of an abandoned block is never re-chased and gets misread as a real
   // capacity). __memgrow updates this alongside __heap_end so every hot dereference site
   // pays one $__heap_end64 global read instead of recomputing i64.shl(memory.size,16).
+  // Stale-low is not safe here: it starts at the memory's initial size, set where the
+  // memory is declared (wat/assemble/stdlib-pull.js), not at __heap_end's 0.
   declGlobal('__heap_end64', 'i64', 0)
 
   // Shared memory keeps the heap pointer in linear memory (memory[HEAP.PTR_ADDR]):
