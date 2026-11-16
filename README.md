@@ -440,7 +440,7 @@ optimized (`--no-liftoff`), one runner timed it at 996 µs against JSC's 1866 µ
 
 Nothing ships that the program does not reach: a heap-free numeric module has
 no memory, allocator or startup, and an empty program is an empty module.
-Size-optimized JZ is about a fifth smaller than AssemblyScript (geomean <!-- fig:as-size-geomean -->0.79×<!-- /fig -->
+Size-optimized JZ is about a fifth smaller than AssemblyScript (geomean <!-- fig:as-size-geomean -->0.80×<!-- /fig -->
 over the <!-- fig:as-size-cases -->57<!-- /fig --> cases both compile) while keeping JavaScript's bounds checks.
 
 </details>
