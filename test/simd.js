@@ -4986,6 +4986,19 @@ test('SIMD two names for one array - the copies of a settled global, and what se
     'true,false,true,false,false,false,false', 'set by start alone, immutable; never one set later, the host\'s, an import, or exported')
 })
 
+test('SIMD two names for one array - a settled global is no constant in the function that sets it', () => {
+  const start = parseWat('(func $__start (local $c i32) (local.set $c (global.get $G)) (global.set $G (i32.const 16)) (drop (local.get $c)))')
+  const plain = parseWat('(func $__start (local $c i32) (local.set $c (global.get $G)) (drop (local.get $c)))')
+  const other = parseWat('(func $f (local $c i32) (local.set $c (global.get $G)) (drop (local.get $c)))')
+  const globals = new Map([['G', { mut: true }]])
+  const settledIn = (funcs) => { const effects = solveEffects(funcs); return (g) => settledGlobal(g, { effects, globals, exports: {} }) }
+  const settled = settledIn([start, other])
+  ok(settled('$G'), 'set by start alone: settled once start has run')
+  is(globalCopies(start, settled).size, 0, 'start\'s copy taken before its own set is none')
+  is(globalCopies(plain, settledIn([plain])).get('$c')?.[1], '$G', 'a start that never sets it copies it')
+  is(globalCopies(other, settled).get('$c')?.[1], '$G', 'another function copies a global only start writes')
+})
+
 test('SIMD map over a plain array of Numbers - the hop hoisted ahead of the loop runs ahead of the strip too, bit-exact', () => {
   // (a pushed array of Numbers is raw: the hop to its elements, a read-only call, is the loop's
   // preamble, and the in-bounds store addresses its element from the hop)

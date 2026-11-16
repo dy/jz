@@ -166,21 +166,24 @@ export function arrayPointers(fn) {
 const POINTER_CALLS = new Set(['$__ptr_offset', '$__ptr_offset_fwd', '$__alloc_hdr', '$__alloc_hdr_n'])
 
 /** The locals every write of which copies one global no code writes after start (`settled`,
- *  optimize/globals.js settledGlobal), each to that `global.get`: the local holds the global's
- *  value wherever it is read, so a reader of an address reads the global through it. A test of
+ *  optimize/globals.js settledGlobal) that `fn` itself never sets, each to that `global.get`:
+ *  the local holds the global's value wherever it is read, so a reader of an address reads the
+ *  global through it. A function that sets the global (the start function, the one that may set
+ *  a settled one) may copy it before its own set and read the copy after, a stale one. A test of
  *  two such bases (gateStrips) then reads the globals, which are constants where the assembly
  *  declares them with theirs (wat/assemble/start-fn.js hoistConstGlobalInits); a copy of one is
  *  a local the optimizer keeps where its address is no small literal. */
 export function globalCopies(fn, settled) {
-  const of = new Map(), out = new Map()
+  const of = new Map(), sets = new Set(), out = new Map()
   if (!settled) return out
   walkAst(fn, { enter: n => {
     if (n[0] === 'param' && typeof n[1] === 'string') of.set(n[1], null)
+    if (n[0] === 'global.set' && typeof n[1] === 'string') sets.add(n[1])
     if ((n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string') return
     const v = n[2], g = n.length === 3 && isArr(v) && v[0] === 'global.get' && typeof v[1] === 'string' ? v[1] : null
     of.set(n[1], !of.has(n[1]) || of.get(n[1]) === g ? g : null)
   } })
-  for (const [local, g] of of) if (g && settled(g)) out.set(local, ['global.get', g])
+  for (const [local, g] of of) if (g && !sets.has(g) && settled(g)) out.set(local, ['global.get', g])
   return out
 }
 

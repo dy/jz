@@ -55,7 +55,10 @@ export const stablePtrGlobalNames = (globalValTypes) => {
  *  immutable, or the module's code sets it in no function but the start function (`effects`,
  *  optimize/effects.js setAfterStart) and the host reaches it by no export (an exported mutable
  *  global is the host's to set between calls) and no import. Of the compile's facts: `globals`
- *  (ctx.scope.globals) and `exports` (ctx.funcs.exports, a binding's name or the one it names). */
+ *  (ctx.scope.globals) and `exports` (ctx.funcs.exports, a binding's name or the one it names).
+ *  It holds once start has run, so not inside the function that sets the global: a reader asks
+ *  there too that the function itself sets it nowhere (vectorize/alias.js globalCopies; an
+ *  immutable global no function sets). */
 export const settledGlobal = (g, { effects, globals, exports }) => {
   const name = g.slice(1), rec = globals?.get(name)
   if (!rec) return false
