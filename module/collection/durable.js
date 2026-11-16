@@ -20,7 +20,7 @@
 
 import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, LAYOUT } from '../../src/ctx.js'
-import { i64Hex, nanPrefixHex, nanPrefixMaskHex } from '../../layout.js'
+import { i64Hex } from '../../layout.js'
 
 // The post-init high-water mark (see module/core.js's __heap_reset) as a WAT operand —
 // everything at/above it is EPHEMERAL (this compile's own arena, wiped by `_clear`);
@@ -261,12 +261,15 @@ export const seenCellNode = (b) =>
 // address bitmap is shared with array snapshots; an odd record address
 // distinguishes a field from an array header. Callers pass an already
 // evaluated value so getters and RHS effects run once.
-const TAG_AUX = i64Hex((BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT)) | (BigInt(LAYOUT.AUX_MASK) << BigInt(LAYOUT.AUX_SHIFT)))
 /** Whether the i64 bits `b` name no number: a box whose tag or aux is set (a
- *  numeric NaN is a box of neither, src/ir/sentinels.js numberNanIR). */
-export const noNumberWat = (b) => `(i32.and (i64.eq (i64.and ${b} (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()})) (i64.ne (i64.and ${b} (i64.const ${TAG_AUX})) (i64.const 0)))`
-const noNumberNode = (b) => ['i32.and', ['i64.eq', ['i64.and', b, ['i64.const', nanPrefixMaskHex()]], ['i64.const', nanPrefixHex()]],
-  ['i64.ne', ['i64.and', b, ['i64.const', TAG_AUX]], ['i64.const', 0]]]
+ *  numeric NaN is a box of neither, src/ir/sentinels.js numberNanIR). The tag
+ *  and the aux fill the bits between the offset and the prefix (layout.js), and
+ *  a box's sign bit is clear, so that is one signed compare: above a numeric
+ *  NaN's box with every offset bit set. A number reads at or below it (a NaN
+ *  with its sign set, a negative value, below zero). */
+const NUMBER_TOP = i64Hex(LAYOUT.NAN_PREFIX_BITS | BigInt(LAYOUT.OFFSET_MASK))
+export const noNumberWat = (b) => `(i64.gt_s ${b} (i64.const ${NUMBER_TOP}))`
+const noNumberNode = (b) => ['i64.gt_s', b, ['i64.const', NUMBER_TOP]]
 export const durableObjSnapIR = (base, val, slot) => {
   if (!hasDurableReset()) return ''
   return `
