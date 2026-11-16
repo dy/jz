@@ -8,7 +8,7 @@
 // it threw.
 //
 // Guards that class at each of its readers, each program failing with its fix taken out:
-// optimize/reuse-loads.js (the handler's copy of a finalizer took the normal copy's load),
+// optimize/numbering.js `reuseLoads` (the handler's copy of a finalizer took the normal copy's load),
 // optimize/settled-tests.js (a test the normal copy failed was dropped from the handler's),
 // compile/cse-load.js (a read after the throw was cached for the finalizer), optimize/liveness.js
 // through loop-compact.js (a list only the handler reads was no root of a compaction),
