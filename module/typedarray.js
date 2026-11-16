@@ -1,3 +1,11 @@
+// Clamping requires the original signed magnitude; a Uint32 word with its high bit set cannot use
+// the signed-word clamp.
+//
+// A one-argument `new Uint8Array(x)` reads as `new Uint8Array(x, 0)` there (prepare/entry.js), so a
+// typed array over a resizable buffer is always a view, never the buffer's own header, whose
+// properties word the mark holds. The decode pass, the loop versioning of a nest that calls
+// anything and the descriptor-word motion of LICM are off, since a call may resize a view's buffer.
+
 import { OPTF } from '../src/ctx.js'
 import print from 'watr/print'
 /**

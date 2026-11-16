@@ -11,6 +11,10 @@
  * hash already stored in each entry; entry offsets and iteration are identical
  * in both layouts.
  *
+ * Hash words reserve unsigned values 0/1 for empty/deleted slots. Runtime, literal, interning and
+ * host-codec producers must agree, including negative i32 bit patterns. Changes to this contract
+ * require rebuilding Wasm with matching interop.
+ *
  * @module collection
  */
 

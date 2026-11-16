@@ -42,6 +42,28 @@
  * Nothing moves below the floor, and a walk that finds no room for its
  * scratch, or a memory the engine cannot grow, leaves the heap as it was.
  *
+ * Once the host holds a view of the module's memory (`__viewed`, set as `mem.read` decodes one),
+ * the walk finds that room in the memory as it stands and never grows it, since a grow detaches
+ * every view: a render loop's pixel buffer, returned once and painted every frame, stays attached
+ * however often the state beside it is walked.
+ *
+ * The log is weak: once the walk has marked, `__gc_walk` lists each logged stub below the floor
+ * that still holds a stub forwarding where logged (a rewind may have reused the address) and whose
+ * chain ends in a block the walk reached, for its forward to be rewritten (KIND_STUB); one whose
+ * chain ends in a block nothing reached names garbage and is left, where keeping it would hold
+ * every container that grew and died until the call returned (a parser's run at 196 MB instead of
+ * 128). A chain that ends below the floor stays logged, reached or not: a frame outside the site
+ * may hold its block (the grown array a caller's local was rebound to) and another its stub, and a
+ * later walk from a lower floor, reaching the block through roots this one did not have, moves it
+ * and must rewrite the stub. Kept whole, the log filled with the dead across a call's compactions:
+ * a loop growing fresh temporaries left it full in a few windows, its next growth of an older
+ * container went unlogged, and the loop declined every walk after (a 200,000-round loop at 204 MB,
+ * now 4.3 MB).
+ *
+ * A walk reaches the memory below the floor as well: an old container may name a new value, and
+ * nothing records the store (no write barrier), so the roots' reach is walked whole, below the
+ * floor kept in place.
+ *
  * @module core/compact
  */
 import { numericArraysOn } from '../../src/compile/numeric-arrays.js'

@@ -6,6 +6,9 @@
  * Uses integer-based digit extraction to avoid float drift.
  * Static string table at address 0 for NaN, Infinity, etc.
  *
+ * Number formatters own one private digit buffer and call no user code while filling it. Shared
+ * heaps keep the copy, since another instance may allocate concurrently.
+ *
  * @module number
  */
 

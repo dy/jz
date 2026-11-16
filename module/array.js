@@ -5,6 +5,16 @@
  * Layout: [-8:len(i32)][-4:cap(i32)][elem0:f64, elem1:f64, ...]
  * offset points to elem0 (past header). len/cap mutable. Aliases see changes.
  *
+ * On owned heaps without a user ToPrimitive hook, built-in conversions publish no allocations, so
+ * the result can replace the temporary region. Shared heaps and user conversions retain their
+ * allocations. A future built-in that publishes a heap pointer must preserve this region-lifetime
+ * proof.
+ *
+ * An index store at or past the length (`out[n++] = v`) calls `__arr_set_idx_ptr`, which grows only
+ * where the index is past the live block's room: an append into room stores and bumps the length
+ * there, at every tier, with no inline arm at each store site (stdlib bundles hold thousands of
+ * index stores that rarely append).
+ *
  * @module array
  */
 

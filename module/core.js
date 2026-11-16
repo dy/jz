@@ -1,3 +1,13 @@
+// Unsigned word values must saturate as positive positions, never unwrap to a negative signed word.
+//
+// A hot runtime helper answers its common case in a head small enough for V8's inliner and leaves
+// the rest to a tail, as `__rem` leaves its long division to `__rem_div` (`module/core.js`): V8
+// inlines a wasm callee of at most 500 bytes, ranked by call count, within a budget that grows with
+// the caller (about a tenth of a large caller's size), so a helper of several hundred bytes, or a
+// chain of them, stays a call in a hot loop. Each tail is the helper's whole old body, pinned out
+// of line (`optimize/watr-tail.js` `OUT_OF_LINE`) against watr's single-caller inliner; the size
+// tier (`leanRuntime`) links that body alone under the helper's name.
+
 import { numericArraysOn } from '../src/compile/numeric-arrays.js'
 import { OPTF } from '../src/ctx.js'
 import print from 'watr/print'

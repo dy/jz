@@ -9,6 +9,17 @@
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
  * Compile looks up ctx.core.emit['math.sin'] and calls it.
  *
+ * A version that took y·log(x) in one double where |y·log x| is small (within about 2|y·log x| + 1
+ * ulp) measured 1.45 times the kernel's speed, short of the 2 that a hundred ulp would have to buy,
+ * so the kernel stays whole.
+ *
+ * jz's Math is not V8's bit for bit: it keeps within 50 ulp of it, for 9% more time on the
+ * floatbeat corpus than the fast kernels it replaced, where porting V8's fdlibm exactly (branch
+ * `audiojs-math`) took 75% more. The constant folder mirrors both rounds and leaves an argument
+ * Payne–Hanek reduces for run time (the compiler compiled by itself has 64-bit BigInt, which cannot
+ * mirror the 192-bit product). Runtime evaluation and constant folding share the same constants and
+ * operation order; the domain and edge sweep pins their error against V8 to one ulp.
+ *
  * @module math
  */
 

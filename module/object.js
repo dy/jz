@@ -4,6 +4,13 @@
  * Type=6 (OBJECT): schemaId in aux, properties as sequential f64 in memory.
  * Schema = compile-time known property names. Access by index via ptr module.
  *
+ * Getter deletion/reinsertion and target setters can change later reads; a cached slot/value is not
+ * a presence proof.
+ *
+ * Copies read indexed values only within the indexed-value buffer, then use named property lookup.
+ * This preserves metadata on compiler IR arrays copied with `Object.assign([], node)` under both
+ * compiler hosts.
+ *
  * @module object
  */
 

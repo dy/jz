@@ -15,6 +15,12 @@
  * module imports, so this stays a one-directional leaf-module chain:
  * durable.js ← upsert.js ← collection.js.
  *
+ * One shared lowering recognizes both `d[k] = f(d[k])` and `m.set(k, f(m.get(k)))`, proving safety
+ * and counting reads in one walk. Map methods must retain their builtin identities; Map keys keep
+ * their boxed identity, while dictionary keys must normalize without user code. Operands must be
+ * primitive and value operations non-throwing: other property reads, implicit user coercions and
+ * BigInt operations can observe early insertion or invalidate a held slot.
+ *
  * @module collection/upsert
  */
 

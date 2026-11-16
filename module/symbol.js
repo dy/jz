@@ -24,6 +24,8 @@
  * for a description computed at run time (jzify routes `Symbol(x)` there), or
  * one of a Symbol the host made, which the host answers (`__ext_sym_desc`).
  *
+ * Arena reset restores source globals but never reissues an identity.
+ *
  * @module symbol
  */
 

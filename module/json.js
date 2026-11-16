@@ -1,3 +1,6 @@
+// Cache allocation clears its entries explicitly: arena reset reuses memory and the bump allocator
+// does not promise zero-filled storage.
+
 import { stringBytes } from '../src/string-data.js'
 /**
  * JSON module — JSON.stringify and JSON.parse.

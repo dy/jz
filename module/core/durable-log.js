@@ -16,6 +16,12 @@
  * `__region_*` references in this file's own body, zero `__durable_*`
  * references in region-arena.js's.
  *
+ * The durable-heap logs record only mutations of containers made before the reset mark, each a
+ * store the census counts: its site lowers the flag to the durable receiver, so no frame restores
+ * over a logging path. A frame that restored over the record left the log naming freed memory: the
+ * next walk of the log (`__survive` as an outermost frame that ran an escape returns) followed what
+ * a later allocation wrote there without end, and `memory.reset()` read it back and trapped.
+ *
  * @module core/durable-log
  */
 import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
