@@ -109,7 +109,7 @@ A WAT pass is an entry of `src/optimize/pass-table.js`: its stage, the steps it 
 
 ## Adding a rewrite rule
 
-A local rewrite of WAT is a row of `src/optimize/rules.js`, `[name, relation, match, out, when]`; its header defines the holes and the relations. `test/rules.js` assembles both trees of every row and runs them over grids of constants and arguments, compared by the row's relation. A rule that needs a fact from outside the tree, flow, fresh locals or effects stays code beside the table, states its relation in the same terms, and `test/rules.js` runs its own function on patterns the same way.
+A local rewrite of WAT is a row of `src/optimize/rules.js`, `[name, relation, match, out, when]`; its header defines the holes and the relations. `test/rules.js` assembles both trees of every row and runs them over grids of constants and arguments, compared by the row's relation. A rule that needs a fact from outside the tree, a chain of any length, flow, fresh locals or effects stays code beside the table, states its relation in the same terms, and `test/rules.js` runs its own function on patterns the same way.
 
 ## Adding an auto-vectorizer recognizer
 
