@@ -19,7 +19,7 @@
  */
 
 import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, walk, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
-import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
+import { inBoundsArrIdx, typedIdxProven, wholeKey, idxKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
 import { arrCellWat, arrCellHelper, HEAP_EXHAUSTED_THROW } from './core.js'
@@ -1258,7 +1258,7 @@ export default (ctx) => {
     // an index proven inside the length (type/canonical-bounds.js inBoundsArrIdx) reads the cell alone
     // (or one the summary holds inside the length, summary/query.js presentArrayRead)
     const summaryPresent = node != null && ctx.summary?.at(ctx.func.current)?.presentArrayRead?.(node) === true
-    const inBounds = summaryPresent || typeof arr === 'string' && typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+    const inBounds = summaryPresent || typeof arr === 'string' && inBoundsArrIdx(ctx).has(idxKey(arr, idx))
     // a cell the summary holds free of holes (no construction of a count left unfilled, no store past the count) reads without the tomb test
     const elemKind = typeof arr === 'string' ? ctx.summary?.at(ctx.func.current)?.elemKindOf(arr) : null
     const holeFree = elemKind != null && elemKind !== 0 && !hasTag(elemKind, K.ABSENT)

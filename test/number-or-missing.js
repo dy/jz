@@ -80,9 +80,12 @@ export function g(n) {
   if (belowOpt(2)) return
   const fn = parseWat(wat(words, { optimize: 'speed' })).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f$exp')
   let canon = 0
+  // (a value's self-test choosing between words is a bound's conversion to an
+  // i64 counter, a NaN to its floor: no element's canon)
+  const word = a => Array.isArray(a) && (/^i64\./.test(a[0]) || a[0] === 'if' && JSON.stringify(a[1]) === '["result","i64"]')
   const walk = n => {
     if (!Array.isArray(n)) return
-    if (n[0] === 'select' && Array.isArray(n[3]) && (n[3][0] === 'f64.eq' && JSON.stringify(n[3][1]) === JSON.stringify(n[3][2]) ||
+    if (n[0] === 'select' && Array.isArray(n[3]) && (n[3][0] === 'f64.eq' && JSON.stringify(n[3][1]) === JSON.stringify(n[3][2]) && !word(n[1]) && !word(n[2]) ||
       n[3][0] === 'i64.eq' && /7FF8000200000000/i.test(JSON.stringify(n[3])))) canon++
     n.forEach(walk)
   }

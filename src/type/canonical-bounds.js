@@ -16,7 +16,7 @@
  */
 import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS, nodeKey, nodeEqual } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { intLiteralValue, constIntExpr, intExprRange, counterInit } from '../static.js'
+import { intLiteralValue, constIntExpr, intExprRange, counterInit, affineIn } from '../static.js'
 import { NUMBER, STRING } from '../summary/kind.js'
 import { runsAccessor, runsConversion, primitiveKind } from '../evaluation-effects.js'
 import { frameNode } from '../function.js'
@@ -92,14 +92,46 @@ export const lengthRecv = (expr) => lengthRecvs(expr)[0] ?? null
  *  nested mins alike. A min is at most each of its arguments, so the bound
  *  proof carries to every one: the shape plan/loops.js plants for the in-bounds
  *  main loop of a split scan, `Math.min(B, a.length, b.length)`. */
-export function lengthRecvs(expr, out = []) {
+export const lengthRecvs = (expr) => lengthForms(expr).filter(f => f.c === 1 && f.d === 0).map(f => f.recv)
+
+/** What an integer counter below the bound `expr`, at zero or above, holds an
+ *  index below: `{ recv, c, d }`, `c·i + d < recv.length` for every such `i`
+ *  (so `c'·i + d'` too for `1 ≤ c' ≤ c`, `0 ≤ d' ≤ d`). `recv.length` is
+ *  `{ recv, 1, 0 }`, `recv.length - d` is `{ recv, 1, d }`, `Math.ceil((recv.length
+ *  - d) / c)` is `{ recv, c, d }` (`i < ⌈(len − d)/c⌉` is `c·i + d < len` for an
+ *  integer `i`); a min holds each of its arguments' forms, a max those each of
+ *  its arguments holds, a constant at most zero holding every one (the split
+ *  scan's bound of a Number, `Math.max(Math.min(⌈B⌉, …), 0) | 0`, plan/loops.js). */
+export function lengthForms(expr, out = []) {
   // (an assignment's value is its right side: the char scan's bound hands it on, plan/loops.js)
   while (Array.isArray(expr) && expr[0] === '=' && expr.length === 3 && typeof expr[1] === 'string') expr = expr[2]
   if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
-  if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length' && typeof expr[1] === 'string') out.push(expr[1])
-  else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') {
-    const argsNode = expr[2]
-    for (const a of Array.isArray(argsNode) && argsNode[0] === ',' ? argsNode.slice(1) : [argsNode]) lengthRecvs(a, out)
+  const lenOf = (e) => Array.isArray(e) && e[0] === '.' && e[2] === 'length' && typeof e[1] === 'string' ? e[1] : null
+  // `recv.length - d`, d ≥ 0: [recv, d]
+  const shifted = (e) => {
+    if (lenOf(e) != null) return [lenOf(e), 0]
+    const d = Array.isArray(e) && e[0] === '-' && e.length === 3 ? constIntExpr(e[2]) : null
+    return d != null && d >= 0 && lenOf(e[1]) != null ? [lenOf(e[1]), d] : null
+  }
+  const args = (e) => { const a = e[2]; return Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a] }
+  const s = shifted(expr)
+  if (s) out.push({ recv: s[0], c: 1, d: s[1] })
+  else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.ceil' && expr.length === 3 &&
+      Array.isArray(expr[2]) && expr[2][0] === '/' && expr[2].length === 3) {
+    const t = shifted(expr[2][1]), c = constIntExpr(expr[2][2])
+    if (t && c != null && c >= 1) out.push({ recv: t[0], c, d: t[1] })
+  }
+  else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') for (const a of args(expr)) lengthForms(a, out)
+  else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.max') {
+    let common = null
+    for (const a of args(expr)) {
+      const c = constIntExpr(a)
+      if (c != null && c <= 0) continue
+      const fs = lengthForms(a)
+      common = common == null ? fs : common.filter(f => fs.some(g => g.recv === f.recv && g.c === f.c && g.d === f.d))
+      if (!common.length) return out
+    }
+    if (common) out.push(...common)
   }
   return out
 }
@@ -182,17 +214,33 @@ export function inBoundsCharCodeAt(ctx) {
   return set
 }
 
-/** Collect proven-in-bounds `recv[idxVar]` accesses within a canonical induction
- *  loop. Stores `"recv\x00idxVar"` keys — `\x00` isn't a valid identifier char so
- *  the pair is unambiguous. Stops at `=>` (a closure may run after the loop, when
+/** Collect proven-in-bounds `recv[idx]` accesses within a canonical induction
+ *  loop whose counter `idxVar`, at zero or above, holds `c·i + d` below the
+ *  length (`form`, lengthForms): the counter itself, and `c'·i + d'` for
+ *  `0 ≤ c' ≤ c`, `0 ≤ d' ≤ d`, through the body's constants (`const o = i * 6;
+ *  out[o + 5]`, the names the loop declares, one each). Stores `idxKey` keys
+ *  (`"recv\x00idxVar"` for a name: `\x00` isn't a valid identifier char so the
+ *  pair is unambiguous). Stops at `=>` (a closure may run after the loop, when
  *  `idxVar` has reached `recv.length`). */
-function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
+function collectBoundedArrIdx(node, form, idxVar, set, nodes) {
+  const { recv, c, d } = form
+  let consts = null
+  if (c !== 1 || d !== 0) {
+    consts = new Map()
+    walkAst(node, { enter: n => {
+      if (n[0] === '=>') return false
+      if (n[0] === 'const') for (let k = 1; k < n.length; k++) { const x = n[k]; if (Array.isArray(x) && x[0] === '=' && typeof x[1] === 'string') consts.set(x[1], x[2]) }
+    } })
+  }
   walkAst(node, { enter: n => {
     if (n[0] === '=>') return false
-    if (n[0] === '[]' && n.length === 3 && n[1] === recv && n[2] === idxVar) {
-      set?.add(recv + '\x00' + idxVar)
-      nodes?.add(n)
+    if (n[0] !== '[]' || n.length !== 3 || n[1] !== recv) return
+    if (n[2] !== idxVar) {
+      const f = consts && affineIn(n[2], idxVar, consts, 0)
+      if (!f || f[0] < 0 || f[0] > c || f[1] < 0 || f[1] > d) return
     }
+    set?.add(idxKey(recv, n[2]))
+    nodes?.add(n)
   } })
 }
 
@@ -259,7 +307,7 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
-    let idx = null, recvs = [], boundVar = null
+    let idx = null, forms = [], boundVar = null
     if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
       const decls = new Map()
       collectDecls(init, decls)
@@ -268,18 +316,18 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
       if (start == null || start < 0) idx = null
       let bound = cond[2]
       if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
-      recvs = bound === undefined && boundVar != null ? [...(known.get(boundVar) ?? [])] : lengthRecvs(bound)
+      forms = bound === undefined && boundVar != null ? [...(known.get(boundVar) ?? [])] : lengthForms(bound)
     }
-    const recv = recvs.length > 0
-    recvs = recvs.filter(r => r !== idx && !isReassigned(body, r))
-    if (idx && recvs.length && isUnitIncrement(step, idx)
+    const recv = forms.length > 0
+    forms = forms.filter(f => f.recv !== idx && !isReassigned(body, f.recv))
+    if (idx && forms.length && isUnitIncrement(step, idx)
         && !isReassigned(body, idx)
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx)) {
-      const bindings = [...recvs, idx, boundVar], callees = new Map()
+      const bindings = [...new Set(forms.map(f => f.recv)), idx, boundVar], callees = new Map()
       if (preservesLoopBounds(body, view, bindings, callees) && preservesLoopBounds(cond, view, bindings, callees) &&
           (boundVar == null || preservesLoopHead(init, view, bindings, callees, idx, boundVar)))
-        for (const r of recvs) collectBoundedArrIdx(body, r, idx, set, nodes)
+        for (const f of forms) collectBoundedArrIdx(body, f, idx, set, nodes)
     }
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
     // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
@@ -327,8 +375,8 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
       scanBoundedArrIdx(s, set, litSet, nodes, view, at)
       if (at.size && !preservesLoopBounds(s, view, knownNames(at))) at = NO_KNOWN
       if (Array.isArray(s) && s[0] === 'const') for (let j = 1; j < s.length; j++) {
-        const d = s[j], recvs = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? lengthRecvs(d[2]) : []
-        if (recvs.length) { if (at === known || at === NO_KNOWN) at = new Map(at); at.set(d[1], recvs) }
+        const d = s[j], forms = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? lengthForms(d[2]) : []
+        if (forms.length) { if (at === known || at === NO_KNOWN) at = new Map(at); at.set(d[1], forms) }
       }
     }
     return
@@ -339,9 +387,9 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
 }
 // A bound a `const` declared before a loop holds below its receivers' lengths
 // (`const n = Math.min(a.length, b.length)`, a split scan's bound, plan/loops.js):
-// name → receivers, while nothing since shrank a receiver or rebound a name.
+// name → the receivers' forms (lengthForms), while nothing since shrank a receiver or rebound a name.
 const NO_KNOWN = new Map()
-const knownNames = (known) => { const out = []; for (const [name, recvs] of known) out.push(name, ...recvs); return out }
+const knownNames = (known) => { const out = []; for (const [name, forms] of known) out.push(name, ...forms.map(f => f.recv)); return out }
 
 /** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven
  *  in-bounds. Memoised per body (separate slot from the charCodeAt proof; AdHocMemo

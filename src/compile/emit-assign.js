@@ -37,7 +37,7 @@ import {
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue, flatStoredValue } from '../bridge.js'
 import { REP_EDGE_REJECT, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
-import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
+import { typedIdxProven, inBoundsArrIdx, wholeKey, idxKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset, madeByCall } from '../../module/collection/durable.js'
 import { demandHostReceiver } from './func-exports.js'
@@ -596,7 +596,8 @@ function emitElementStore(arr, idx, val, node) {
   const indexRange = intExprRange(idx)
   // Canonical array loops prove an element key even on tiers that skip the
   // interval solve. An ordinary array's wasm32 cells also bound it below i32.
-  const boundedArray = typeof arr === 'string' && typeof idx === 'string' && valTypeOf(arr) === VAL.ARRAY && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+  // (a key of the counter, `out[o + 2]` under `const o = i * 6`, by its node: idxKey)
+  const boundedArray = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY && inBoundsArrIdx(ctx).has(idxKey(arr, idx))
   const whole = isPresentNumber(ctx, idx) && wholeKey(idx)
   const indexOnly = whole && (boundedArray || indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff)
   // An array index past 2^31 too, below 2^32 - 1 (storeArrayPayload 'wide')
