@@ -37,9 +37,9 @@ export const NULL_NAN = atomNanHex(1)
 
 export const UNDEF_NAN = atomNanHex(2)
 
-/** Absent boxed-array cell and zombie-entry key sentinel for durable-slot heal
- *  (__durable_slot_heal, module/core.js): occupancy checks and enumeration skip
- *  it. Unforgeable: ATOM tag with a saturated aux+offset no
+/** Absent boxed-array cell and zombie-entry key sentinel (a dictionary's
+ *  entry the reset's slot heal took, before the reset saved a table whole):
+ *  occupancy checks and enumeration skip it. Unforgeable: ATOM tag with a saturated aux+offset no
  *  boxing path ever produces (real atom ids are tiny). Every equality family is
  *  deref-free on it: i64.eq mismatches, __str_eq's SSO guard rejects its aux bits,
  *  __same_value_zero's atom arm is bit-equality. */

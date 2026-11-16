@@ -26,7 +26,7 @@
  */
 import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, declGlobal, PTR, LAYOUT } from '../../src/ctx.js'
-import { UNDEF_NAN, TOMB_NAN } from '../../src/ir.js'
+import { UNDEF_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, arrBaseWat } from '../../layout.js'
 import { seenCellWat, noNumberWat } from '../collection/durable.js'
 
@@ -63,9 +63,8 @@ export const registerDurableLog = () => {
   // Healing "restored" the header to a length it never had — the corpus
   // repro (`site.push(...)` × 150 across one `_clear()`) read back `154`,
   // not `150`: the 4 leaked pre-grow pushes plus the 150 real ones. Scanning
-  // pending entries for a dup is the same bounded-and-rare cost class as
-  // __durable_slot_relog/__durable_slot_cancel's scans below — this log is
-  // 0 entries in the overwhelmingly common program.
+  // pending entries for a dup is bounded and rare — this log is 0 entries in
+  // the overwhelmingly common program.
   ctx.core.stdlib['__durable_fwd_log'] = `(func $__durable_fwd_log (param $off i32) (param $len i32) (param $cap i32)
     (local $base i32) (local $n i32) (local $i i32) (local $sb i32)
     (local.set $n (global.get $__durable_fwd_n))
@@ -117,9 +116,8 @@ export const registerDurableLog = () => {
   // reads len/cap FRESH off the header (still the true pre-round values at
   // that point, whichever site got there first) and copies the `len*8` live
   // bytes beside them. `__durable_arr_heal` (wired into `__clear` post-hoc,
-  // like the other three heals) restores the header words AND the cells —
-  // exact byte-for-byte recovery, not durableSlotLogIR's "value unrecoverable,
-  // undefined is honest" fallback: arrays need the true prior value back to
+  // like the relocation heal) restores the header words AND the cells —
+  // exact byte-for-byte recovery: arrays need the true prior value back to
   // satisfy the splice repro (`a.splice(1,2)` must give the SAME answer every
   // round, not just the same LENGTH).
   //
@@ -287,23 +285,9 @@ export const registerDurableLog = () => {
     (global.set $__durable_arr_seen (i32.const 0))
     (global.set $__durable_tbl_last (i32.const 0)))`
 
-  // Durable SLOT log — the value-write sibling of the relocation log above. A
-  // collection whose storage is DURABLE (init-created dict, off < __heap_reset)
-  // can receive an EPHEMERAL boxed value at runtime (a memo caching this round's
-  // parsed node, a registry entry) — the slot then dangles across \`_clear\` and
-  // the next round reads reused-arena garbage through it (the corpus-wide warm
-  // trap: a durable literal-text→node dict handing round-1 node arrays into
-  // round-2's tree). Writers call \`__durable_slot_log(addr)\` when storing an
-  // ephemeral value into a durable slot (see collection.js durableSlotLogIR);
-  // \`__durable_slot_heal\` (wired into \`__clear\` post-hoc, like the fwd heal)
-  // overwrites every logged slot with \`undefined\` — the pointed-at data dies
-  // with the arena, so entry-death is the only sound semantics. Same lazy-buffer
-  // + doubling design as the fwd log: the buffer starts at 1024 distinct
-  // pending heals (`__durable_slot_cap`) and doubles as a round fills it.
-  // Overwrites are idempotent and cancelled records are reused.
-  declGlobal('__durable_slot_buf', 'i32')
-  declGlobal('__durable_slot_n', 'i32')
-  declGlobal('__durable_slot_cap', 'i32')
+  // Whether the bits `b` name the round's memory: a boxed heap pointer (no
+  // inline string) at or past the reset mark. The field heal asks it of a
+  // saved value, a captured cell's save of the value it stores.
   ctx.core.stdlib['__is_eph_bits'] = `(func $__is_eph_bits (param $b i64) (result i32)
     (local $t i32)
     ;; boxed heap pointer: quiet-NaN prefix, heap-kind tag, non-SSO, offset past the durable watermark
@@ -317,146 +301,4 @@ export const registerDurableLog = () => {
                  (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
       (then (return (i32.const 0))))
     (i32.ge_u (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF))) (global.get $__heap_reset)))`
-  ctx.core.stdlib['__durable_slot_log'] = `(func $__durable_slot_log (param $addr i32) (param $tbl i32)
-    (local $n i32) (local $base i32) (local $i i32) (local $slot i32) (local $a i32)
-    (if (i32.eqz (global.get $__durable_slot_buf))
-      (then
-        (global.set $__durable_slot_buf (call $__alloc (i32.const 8192)))
-        (global.set $__durable_slot_cap (i32.const 1024))))
-    (local.set $n (global.get $__durable_slot_n))
-    ;; One pending heal per slot. Repeated writes need no second record;
-    ;; deleted entries leave reusable holes, not a lifetime write counter.
-    (local.set $slot (local.get $n))
-    (local.set $i (local.get $n))
-    (block $done (loop $scan
-      (br_if $done (i32.eqz (local.get $i)))
-      (local.set $i (i32.sub (local.get $i) (i32.const 1)))
-      (local.set $a (i32.load (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3)))))
-      (if (i32.eq (local.get $a) (local.get $addr)) (then (return)))
-      (if (i32.eqz (local.get $a)) (then (local.set $slot (local.get $i))))
-      (br $scan)))
-    ;; full: the records move to a buffer twice the size
-    (if (i32.ge_u (local.get $slot) (global.get $__durable_slot_cap))
-      (then
-        (local.set $base (call $__alloc (i32.shl (global.get $__durable_slot_cap) (i32.const 4))))
-        (memory.copy (local.get $base) (global.get $__durable_slot_buf) (i32.shl (local.get $n) (i32.const 3)))
-        (global.set $__durable_slot_buf (local.get $base))
-        (global.set $__durable_slot_cap (i32.shl (global.get $__durable_slot_cap) (i32.const 1)))))
-    (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $slot) (i32.const 3))))
-    (i32.store (local.get $base) (local.get $addr))
-    (i32.store offset=4 (local.get $base) (local.get $tbl))
-    (if (i32.eq (local.get $slot) (local.get $n))
-      (then (global.set $__durable_slot_n (i32.add (local.get $n) (i32.const 1))))))`
-  // A durable-slot log entry names a PHYSICAL address (the entry slot, or a value
-  // word inside it) captured at LOG time. That address goes stale if the SAME
-  // table's genDelete backward-shifts a LATER key across it before this round's
-  // _clear() ever runs — delete relocates live bytes (memory.copy) but has no way
-  // to know a log entry points into what it's about to move. A stale address then
-  // makes __durable_slot_heal zombie/decrement whatever NOW occupies the old spot
-  // (collateral damage to an unrelated entry) while the entry that should have
-  // died survives, unTOMB'd, with a real hash word — __coll_order finds it as a
-  // live, garbage-keyed phantom (native repro: durable Map, one same-round insert,
-  // then delete enough OTHER keys to backward-shift the inserted entry's slot,
-  // then _clear() — .size correctly hits 0 but .keys() still yields one entry).
-  // Fix at the move site, not the heal: genDelete calls this for every entry it
-  // relocates, sliding any logged address that fell inside the entry's old byte
-  // range by the same delta the memory.copy just applied — the log stays accurate
-  // through however many shifts happen before heal runs. Cheap in the (dominant)
-  // no-pending-log case: $__durable_slot_n is 0 whenever no durable table received
-  // a fresh insert this round, and the caller checks that BEFORE calling in (see
-  // genDelete) so this function's own scan never runs on the hot delete path.
-  ctx.core.stdlib['__durable_slot_relog'] = `(func $__durable_slot_relog (param $old i32) (param $new i32) (param $size i32)
-    (local $i i32) (local $n i32) (local $base i32) (local $a i32) (local $bare i32)
-    (local.set $n (global.get $__durable_slot_n))
-    (block $done (loop $l
-      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
-      (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
-      (local.set $a (i32.load (local.get $base)))
-      (local.set $bare (i32.and (local.get $a) (i32.const -2)))
-      (if (i32.and (i32.ge_u (local.get $bare) (local.get $old))
-                   (i32.lt_u (local.get $bare) (i32.add (local.get $old) (local.get $size))))
-        (then (i32.store (local.get $base)
-          (i32.or (i32.add (local.get $new) (i32.sub (local.get $bare) (local.get $old)))
-                  (i32.and (local.get $a) (i32.const 1))))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l))))`
-  // Sibling of __durable_slot_relog above, for the OTHER thing that can happen to
-  // a logged address before heal runs: the entry (or the durable slot a value was
-  // logged against) gets genuinely `.delete()`d THIS SAME round, before _clear().
-  // genDelete already decremented the table's real length for that delete — a
-  // stale log entry left pointing at the (now zeroed, or since reused by a LATER
-  // insert's probe) address would make __durable_slot_heal decrement AGAIN
-  // (double-decrement: native repro — durable Map, insert a key this round, then
-  // `.delete()` that same key before `_clear()`, size correctly nets to 0, but the
-  // stale log still fires at clear and drives it to -1) and/or zombie or
-  // value-clear whatever unrelated LIVE entry has since taken that address (a
-  // second native repro: two keys durably inserted into the SAME table this
-  // round, delete only the first — if that delete's backward-shift moves the
-  // SECOND key into the first's old slot, the first key's own still-pending log
-  // now points at the second key's relocated data; uncancelled, it zombies and
-  // double-decrements the second key too, though nothing ever asked to remove
-  // it). Called from genDelete with the MATCHED entry's OWN address (collection.js
-  // durableSlotCancelIR's comment has the full call-site reasoning — it is NOT
-  // simply "wherever the shift loop's final vacated slot lands"). Cancels by
-  // zeroing the log record's own addr word — 0 is never a real logged
-  // address, every log target is a heap offset well above the reserved
-  // low-memory region — any pending log whose address fell inside that entry's
-  // byte range, so __durable_slot_heal below skips it entirely.
-  ctx.core.stdlib['__durable_slot_cancel'] = `(func $__durable_slot_cancel (param $addr i32) (param $size i32)
-    (local $i i32) (local $n i32) (local $base i32) (local $a i32) (local $bare i32)
-    (local.set $n (global.get $__durable_slot_n))
-    (block $done (loop $l
-      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
-      (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
-      (local.set $a (i32.load (local.get $base)))
-      (local.set $bare (i32.and (local.get $a) (i32.const -2)))
-      (if (i32.and (i32.ge_u (local.get $bare) (local.get $addr))
-                   (i32.lt_u (local.get $bare) (i32.add (local.get $addr) (local.get $size))))
-        (then (i32.store (local.get $base) (i32.const 0))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l))))`
-  ctx.core.stdlib['__durable_slot_heal'] = `(func $__durable_slot_heal
-    (local $i i32) (local $n i32) (local $a i32) (local $base i32) (local $tbl i32)
-    (local.set $n (global.get $__durable_slot_n))
-    (block $done (loop $l
-      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
-      (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
-      (local.set $a (i32.load (local.get $base)))
-      (local.set $tbl (i32.load offset=4 (local.get $base)))
-      ;; addr 0 marks a CANCELLED entry (__durable_slot_cancel, above) — a delete
-      ;; this round removed the logged target before heal ever ran; skip it.
-      (if (local.get $a) (then
-      (if (i32.and (local.get $a) (i32.const 1))
-        ;; bit0: ENTRY heal — this round INSERTED the entry into durable storage; a
-        ;; fresh instance would not have it. Zombie it (key TOMB — probes pass over,
-        ;; __coll_order skips) and decrement the table len so len-sized iteration
-        ;; and .size agree. Runs AFTER __durable_fwd_heal, so a grown-then-healed
-        ;; table's len is already its restored pre-grow value.
-        ;;
-        ;; Key-only: do NOT also clear a "value" word at $a+16. genUpsert shares
-        ;; this log between SET (16-byte entries: hash@0, key@8 — no value field)
-        ;; and MAP/HASH (24-byte: hash@0, key@8, value@16) — a SET's $a+16 is the
-        ;; NEXT entry's hash word (or past the table's own end, for the last slot),
-        ;; so writing there corrupted a neighbor's occupancy bit, planting a
-        ;; phantom "live" entry __coll_order would then find (native repro: a
-        ;; durable Set + one same-round insert + _clear() left .size correct
-        ;; but .keys() one element too many, decoding the stray UNDEF_NAN write).
-        ;; The value word is provably dead weight for MAP/HASH too — every
-        ;; consumer (genLookup's probe, genUpsert's zombie-rescan, __coll_order's
-        ;; gather) treats key===TOMB_NAN as skip-unconditionally and never reads
-        ;; the paired value, so clearing it served no reachable purpose there
-        ;; either. TOMB-ing the key alone is sufficient and stride-safe.
-        (then
-          (local.set $a (i32.and (local.get $a) (i32.const -2)))
-          (i64.store (i32.add (local.get $a) (i32.const 8)) (i64.const ${TOMB_NAN}))
-          (i32.store (i32.sub (local.get $tbl) (i32.const 8))
-            (i32.sub (i32.load (i32.sub (local.get $tbl) (i32.const 8))) (i32.const 1))))
-        ;; plain: VALUE heal — the entry pre-existed durably; its old value is
-        ;; unrecoverable, undefined is the honest read.
-        (else (i64.store (local.get $a) (i64.const ${UNDEF_NAN}))))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l)))
-    (global.set $__durable_slot_n (i32.const 0))
-    (global.set $__durable_slot_buf (i32.const 0))
-    (global.set $__durable_slot_cap (i32.const 0)))`
 }

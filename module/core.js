@@ -232,10 +232,6 @@ export default (ctx) => {
     __durable_tbl_snap: ['__durable_words_snap'],
     __durable_words_snap: ['__alloc'],
     __durable_arr_heal: () => ctx.core.includes.has('__durable_obj_snap') ? ['__is_eph_bits'] : [],
-    __durable_slot_log: ['__alloc'],
-    __durable_slot_relog: [],
-    __durable_slot_cancel: [],
-    __durable_slot_heal: [],
     __is_eph_bits: [],
     __heap_mark: [],
     __heap_large: [],
@@ -1277,8 +1273,7 @@ export default (ctx) => {
       (global.get $__heap))`
     ctx.core.stdlib['__durable_state'] = `(func $__durable_state (result i64)
       (i64.or (i64.extend_i32_u (global.get $__durable_arr_log))
-        (i64.or (i64.shl (i64.extend_i32_u (global.get $__durable_fwd_n)) (i64.const 32))
-          (i64.shl (i64.extend_i32_u (global.get $__durable_slot_n)) (i64.const 44)))))`
+        (i64.shl (i64.extend_i32_u (global.get $__durable_fwd_n)) (i64.const 32))))`
     ctx.core.stdlib['__park_enter'] = `(func $__park_enter (result i32)
       (local $esave i32)
       (local.set $esave (global.get $__esc))

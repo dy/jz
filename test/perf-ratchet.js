@@ -49,8 +49,7 @@ const measure = (categories = Object.keys(CATEGORIES)) => {
 }
 
 // The counts are the running host's, one baseline each: a wasi module links no
-// compaction kernel and no reset slot log (`__compact`, `__gc_*`,
-// `__durable_slot_*`) and its loops carry no compaction site (slice seed 8's
+// compaction kernel (`__compact`, `__gc_*`) and its loops carry no compaction site (slice seed 8's
 // `f$exp`: 5 sites and 2 end gates on the JS host, none on wasi), so buf, slice
 // and condref count fewer loop ops there. `--update` rewrites the running host's
 // entry alone.

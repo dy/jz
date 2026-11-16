@@ -290,15 +290,6 @@ export default (ctx) => {
   // never registers __durable_fwd_log/__durable_fwd_heal) never requests a name nothing
   // delivers.
   const needsDurableFwdLog = hasDurableReset
-  // durableSlotLogIR's call pair, gated identically (see its comment): every helper
-  // that stores a VALUE into a collection slot may log a durable-slot write.
-  const slotLogDeps = () => needsDurableFwdLog() ? ['__durable_slot_log', '__is_eph_bits'] : []
-  // genDelete's backward-shift calls durableSlotRelogIR/durableSlotCancelIR
-  // unconditionally in its template (gated only at runtime by
-  // $__durable_slot_n) — same explicit-edge reasoning as slotLogDeps:
-  // self-compile's auto-scan would otherwise drop these helpers and every
-  // kernel-compiled `.delete()` would trap.
-  const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
   // A Set's or a Map's table, saved whole for the reset at its round's first write (collection/ordered.js)
   const tblSnapDeps = () => needsDurableFwdLog() ? ['__durable_tbl_snap'] : []
   // the holder's stub a growth retargets, whose words the relocation log keeps (collection/ordered.js genOrdUpsert)
@@ -341,10 +332,6 @@ export default (ctx) => {
     // way (the "Unknown func $__clamp_idx" shape documented in
     // test/self-compile-includes.js) — that test would fail (and the kernel would trap)
     // without these edges.
-    // slotLogDeps: hasVal=false skips the VALUE slot-log, but the ENTRY-insert
-    // log (durableEntryLogIR) still calls $__durable_slot_log — without the
-    // explicit edge the kernel leg drops the helper (auto-scan divergence, the
-    // self-compile-includes class) and every `new Set(...)` fails to compile there.
     __set_add: () => ordUpsertDeps(),
     __set_has: () => [...probeDeps(), ...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'])],
     __set_delete: () => ordDeleteDeps(),
@@ -389,7 +376,7 @@ export default (ctx) => {
     __set_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd', ...tblSnapDeps()],
     __map_put_at: () => ['__map_set', '__ptr_offset_fwd'],
     __slot_heal: ['__ptr_offset_fwd'],
-    __set_put_at: () => ['__set_add', '__ptr_offset_fwd', ...slotLogDeps()],
+    __set_put_at: () => ['__set_add', '__ptr_offset_fwd'],
     __ord_rebuild: ['__alloc_hdr_n', '__ord_live', '__ord_index'],
     __ord_copy: ['__ord_rebuild', '__alloc_hdr_n'],
     __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check', '__ord_cap'],
@@ -400,7 +387,6 @@ export default (ctx) => {
     __hash_slot_eph: ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_offset_fwd'],
     __hash_slot_eph_fixed: ['__str_hash', '__key_eq'],
     __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
-    __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
@@ -423,7 +409,7 @@ export default (ctx) => {
     ],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
-    __dyn_set_own: () => [...viewDeps('__view_set'), ...(hasDurableReset() && ctx.types.anyDelete ? ['__durable_words_snap'] : []), ...(recordsOn() ? ['__rec_slot', '__rec_put', '__rec_hash'] : []), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
+    __dyn_set_own: () => [...viewDeps('__view_set'), ...(hasDurableReset() && ctx.types.anyDelete ? ['__durable_words_snap'] : []), ...(recordsOn() ? ['__rec_slot', '__rec_put', '__rec_hash'] : []), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
     __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...tblSnapDeps()],
@@ -1811,15 +1797,6 @@ export default (ctx) => {
     (if (local.get $slot) (then (i32.store offset=4 (local.get $slot) (i32.const ${HIDDEN_PROPERTY_SEQ})))))`
   ctx.core.stdlib['__hash_slot_eph'] = () => genEphemeralSlotUpsert('__hash_slot_eph', MAP_ENTRY)
   ctx.core.stdlib['__hash_slot_eph_fixed'] = genEphemeralFixedSlot('__hash_slot_eph_fixed', MAP_ENTRY)
-  // The RMW fusion's value update — the store plus the durable-heal protocol
-  // (mirrors durableSlotLogIR exactly; kept in the kernel so heal logic has one home).
-  ctx.core.stdlib['__slot_write'] = () => hasDurableReset()
-    ? `(func $__slot_write (param $a i32) (param $v i64)
-    (i64.store (local.get $a) (local.get $v))
-    (if (i32.and (i32.lt_u (local.get $a) ${heapResetWat()}) (call $__is_eph_bits (local.get $v)))
-      (then (call $__durable_slot_log (local.get $a) (i32.const 0)))))`
-    : `(func $__slot_write (param $a i32) (param $v i64)
-    (i64.store (local.get $a) (local.get $v)))`
   // Tombstones an entry in a HASH (string keys). Returns 1 if found+deleted, 0 otherwise.
   // Used as the bucket-level primitive for __dyn_del.
   // (thunked: the reset's save reads whether the module has a reset mark, known once it links)

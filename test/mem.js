@@ -710,8 +710,8 @@ test('_clear() restores runtime-written module globals to their post-init snapsh
 test('_clear() heals ephemeral values written into DURABLE collection slots', () => {
   // The durable-interior sibling of the global sweep above: the dict itself is
   // init-created (const binding — the sweep rightly skips it), but a round-1 memo
-  // write stores a round-arena array INTO its durable slot. Without the slot heal
-  // (__durable_slot_log/__durable_slot_heal), round 2's cache hit returns the
+  // write stores a round-arena array INTO its durable slot. Without the table's
+  // save (__durable_tbl_snap, healed at the reset), round 2's cache hit returns the
   // stale handle and reads churned garbage — the corpus-wide warm trap (a durable
   // literal-text→node dict handing round-1 arrays into round-2's tree).
   const { exports, memory } = jz(`

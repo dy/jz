@@ -441,7 +441,7 @@ export function pullStdlib(sec) {
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__symbol_id',
-          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__durable_fwd_cap', '__durable_slot_cap',
+          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__durable_fwd_cap',
           '__durable_arr_seen', '__durable_arr_log', '__durable_tbl_last', '__gsnap_base', '__esc', '__base', '__esc_low', '__esc_held', '__rootn', '__rootl'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
@@ -509,7 +509,7 @@ export function pullStdlib(sec) {
           // __heap_reset's DECLARED init is HEAP.START (the static-data-end address —
           // correct for the no-__start case, where it never gets overwritten and IS the
           // true rewind point). But every durable-vs-ephemeral guard (durableFwdLogIR/
-          // durableLenLogIR/durableSlotLogIR/durableEntryLogIR — collection.js) reads
+          // durableLenLogIR and the saves — collection/durable.js) reads
           // $__heap_reset's CURRENT value, and while __start is STILL RUNNING (before the
           // `capture` instruction just injected above), that current value is still the
           // stale HEAP.START — which sits ABOVE the low reserved/static-data region a
@@ -564,8 +564,8 @@ export function pullStdlib(sec) {
         // The table and its membership filter return to what `__start` left
         // (the snapshot sweep above): a property a function was given at
         // init has no header to live in, so the table built there is its
-        // home, below the watermark; what a round inserts into it is logged
-        // and healed like any durable hash's entries.
+        // home, below the watermark; a round saves it whole before its first
+        // write, as any durable dictionary.
         if (ctx.scope.globals.has('__dyn_get_cache_off')) caches.push(`(global.set $__dyn_get_cache_off (i32.const ${DYN_CACHE_EMPTY}))`)
         if (ctx.scope.globals.has('__dyn_get_cache_props')) caches.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
         // A compaction moves the objects whose properties the table keeps by
@@ -575,7 +575,6 @@ export function pullStdlib(sec) {
           if (typeof move === 'function') move = move()
           ctx.core.stdlib['__gc_move'] = move.replace(';; rekey:dyn', '(call $__gc_rekey_dyn)')
           inc('__gc_rekey_dyn', '__gc_rehash', '__gc_box', '__gc_room', '__gc_fwd_raw', '__gc_was', '__map_hash')
-          if (ctx.core.includes.has('__durable_slot_log')) inc('__durable_slot_relog', '__durable_slot_cancel')
         }
       }
       // for-in enum cache (core.js __hash_keys_ro / object.js ro-enumeration):
@@ -609,22 +608,10 @@ export function pullStdlib(sec) {
         inc('__durable_fwd_heal')
         resets.push(`(call $__durable_fwd_heal)`)
       }
-      // Durable SLOT heal (core.js __durable_slot_log/__durable_slot_heal — the
-      // entry/value sibling of the relocation heal above): every logged durable
-      // dictionary slot written this round is healed (inserted entries zombied +
-      // len decremented, overwritten values read undefined) before the arena
-      // rewinds. Ordered AFTER the fwd heal: a grown-then-healed table's len must
-      // already be its restored pre-grow value when the zombie decrements land.
-      // Same explicit-include pattern (its ONLY call site is this injected text).
-      if (ctx.core.includes.has('__durable_slot_log')) {
-        inc('__durable_slot_heal')
-        resets.push(`(call $__durable_slot_heal)`)
-      }
       // Durable ARRAY, TABLE and FIELD heal (module/collection/durable.js's
       // durableArrSnapIR/durableArrSnapNode/durableTblSnapIR, core/durable-log.js's
       // records and __durable_arr_heal), last: a record holds its words as the
-      // round found them, so it wins over a slot the value write of a fused update
-      // logged inside a Map's table too (`__slot_write`, which a dictionary shares).
+      // round found them, so it wins over a header the relocation heal restored.
       // Same explicit-include reasoning as __durable_fwd_heal above.
       if (ctx.core.includes.has('__durable_arr_snap') || ctx.core.includes.has('__durable_obj_snap') || ctx.core.includes.has('__durable_words_snap')) {
         inc('__durable_arr_heal')

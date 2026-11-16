@@ -136,10 +136,9 @@ export const durableLenLogIR = (base) => {
 // restores the right LENGTH but round 2 still reads round 1's leftover bytes at
 // every surviving index (.work/evidence.md's own repro: `a.splice(1,2)` on
 // `[1,2,3,4,5]` gave `3` both rounds — length healed — but the SURVIVING elements
-// differed round to round). A dictionary's (HASH's) entries are individually
-// addressed and durableEntryLogIR/durableSlotLogIR log each one (a Set's and a
-// Map's table is saved whole, durableTblSnapIR); an array's N element cells have no such per-slot identity to hang a
-// per-write log off without paying an idempotent-scan on EVERY store — ruinous for
+// differed round to round). A table (a Set's, a Map's, a dictionary's) is saved
+// whole at its round's first write (durableTblSnapIR); an array's N element cells
+// have no per-slot identity to hang a per-write log off without paying an idempotent-scan on EVERY store — ruinous for
 // .sort()/.reverse() (O(n) or O(n log n) swaps, each a separate write) and no
 // cheaper than the alternative below for the bulk ops (.fill/.splice/.copyWithin)
 // that dominate the broken-op list.
@@ -153,10 +152,8 @@ export const durableLenLogIR = (base) => {
 // its base, core/durable-log.js) into a record, ONE bounded copy per touched
 // durable array per round, not one log call per element write. `_clear()`'s
 // `__durable_arr_heal` (core/durable-log.js) copies the record back: exact
-// byte-for-byte data recovery (unlike durableSlotLogIR's collection-value heal,
-// which only guarantees "not a dangling pointer" and gives up the true prior value
-// as unrecoverable; arrays need the true value back, not just a safe substitute, to
-// satisfy the splice repro's "reads back wrong DATA" complaint). Reading CURRENT
+// byte-for-byte data recovery: arrays need the true value back, not a safe
+// substitute, to satisfy the splice repro's "reads back wrong DATA" complaint. Reading CURRENT
 // len at the call site is only safe because it's captured at the round's true FIRST
 // touch (idempotency, same reasoning as durableLenLogIR) — every LATER call this
 // round, however it got there, is protected by an ALREADY-correct snapshot.
@@ -312,88 +309,4 @@ export const durableTblSnapIR = (off, bytes) => {
     (if (i32.lt_u (local.get $${off}) ${heapResetWat()})
       (then (if (i32.ne (local.get $${off}) (global.get $__durable_tbl_last))
         (then (call $__durable_tbl_snap (local.get $${off}) ${bytes})))))`
-}
-
-// Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a
-// DURABLE collection slot dangles across `_clear` (the corpus-wide warm trap — a
-// durable memo dict handing round-1 node arrays into round-2's tree). Log the slot
-// so `__durable_slot_heal` (wired into `__clear`) overwrites it with `undefined` —
-// the pointed-at data dies with the arena, so entry-death is the only sound
-// semantics. `slotLocal`+`byteOff` name the value slot; `valLocal` holds the boxed
-// bits (i64). Same shared-memory gate as durableFwdLogIR (no watermark, no sweep).
-export const durableSlotLogIR = (slotLocal, byteOff, valLocal) => {
-  if (!hasDurableReset()) return ''
-  const addr = byteOff ? `(i32.add (local.get $${slotLocal}) (i32.const ${byteOff}))` : `(local.get $${slotLocal})`
-  return `
-    (if (i32.and (i32.lt_u ${addr} ${heapResetWat()}) (call $__is_eph_bits (local.get $${valLocal})))
-      (then (call $__durable_slot_log ${addr} (i32.const 0))))`
-}
-
-// ENTRY-insert variant: a NEW entry inserted into DURABLE table storage is
-// round state regardless of what the key/value are — a fresh instance would not
-// have the entry at all, and an ephemeral KEY can't even be value-healed (probes
-// and enumeration would hash/compare the dangling box; measured: warm round 2
-// hashed 15.5 MB of garbage-length "strings" where round 1 hashed 415 KB — the
-// whole 2× warm-vs-fresh gap). Log the ENTRY base with bit0 set plus the table
-// storage base; the heal turns the entry into a zombie — key ← TOMB_NAN
-// (unforgeable, deref-free in every eq family) — and decrements the table len,
-// that probes pass over and __coll_order/len-sized iterations skip. The slot
-// stays occupied until the table grows (zombies never resurrect: nothing
-// eq-matches TOMB_NAN). Entry addresses are 8-aligned → bit0 is free. See
-// durableSlotRelogIR below for why the logged address must stay accurate if a
-// LATER delete this same round moves this entry before the log is healed.
-export const durableEntryLogIR = (slotLocal, offLocal) => {
-  if (!hasDurableReset()) return ''
-  return `
-    (if (i32.lt_u (local.get $${slotLocal}) ${heapResetWat()})
-      (then (call $__durable_slot_log (i32.or (local.get $${slotLocal}) (i32.const 1)) (local.get $${offLocal}))))`
-}
-
-// genDelete's backward-shift relocates a live entry's bytes (memory.copy) to
-// close the gap left by the removed key. Any durable-slot log recorded earlier
-// THIS round (durableEntryLogIR above, or durableSlotLogIR — a value write into
-// a durable slot) may have captured a physical address inside the entry range
-// being moved; left un-adjusted, that log then points at whatever the shift left
-// behind (a different entry, or nothing), so __durable_slot_heal zombies/decrements
-// the WRONG data at _clear() while the entry that should have died survives with
-// a live hash word — __coll_order finds it as a garbage-keyed phantom. Slides any
-// logged address inside [oldLocal, oldLocal+entrySize) by the same delta the copy
-// just applied, keeping the log accurate through however many shifts happen before
-// heal runs. Gated on $__durable_slot_n != 0 (read, not just the compile-time
-// __heap_reset gate) so an ordinary (non-durable, or durable-but-nothing-logged-
-// yet) delete — the overwhelmingly common case — pays one global read and a
-// forward branch, never the call.
-export const durableSlotRelogIR = (oldLocal, newLocal, entrySize) => {
-  if (!hasDurableReset()) return ''
-  return `
-    (if (global.get $__durable_slot_n)
-      (then (call $__durable_slot_relog (local.get $${oldLocal}) (local.get $${newLocal}) (i32.const ${entrySize}))))`
-}
-
-// The OTHER thing that can happen to a logged address before it's healed: the
-// entry (or the durable slot a value was logged against) is genuinely deleted
-// THIS SAME round, before _clear() ever runs. genDelete already decremented the
-// table's real length for that delete — a stale log left pointing at the
-// (zeroed, or later reused) address would make __durable_slot_heal decrement
-// AGAIN and/or corrupt whatever unrelated entry has since taken the address.
-// Call with the MATCHED entry's own address ($slot, captured once before the
-// backward-shift walk even starts) — not the loop's final vacated position
-// ($i once the walk ends). Those are the same address only when the walk needs
-// no shift; when it does, some OTHER live entry gets physically copied INTO
-// $slot to close the gap (and durableSlotRelogIR, called at each shift hop,
-// correctly moves THAT entry's own pending log along with it) — so by the time
-// the walk ends, $slot holds someone else's now-relocated data and $i is the
-// genuinely empty tail, while the KEY actually being removed was $slot all
-// along. Cancelling at the wrong (post-shift $i) address left the removed
-// key's own log live: __durable_slot_heal then zombied and double-decremented
-// whatever entry the shift had relocated INTO $slot — a real, live, unrelated
-// entry silently deleted (native repro: 2 durable inserts into the same table
-// this round, delete only the FIRST — if deleting it backward-shifts the
-// SECOND into its slot, that second entry vanishes at the next _clear() even
-// though nothing ever asked for it to be removed).
-export const durableSlotCancelIR = (addrLocal, entrySize) => {
-  if (!hasDurableReset()) return ''
-  return `
-    (if (global.get $__durable_slot_n)
-      (then (call $__durable_slot_cancel (local.get $${addrLocal}) (i32.const ${entrySize}))))`
 }

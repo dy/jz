@@ -637,9 +637,9 @@ test('compact: a props table built at init heals at a reset after compactions re
   }
 })
 
-// A Map and a Set built at init lie below the reset mark; the entries a round
-// adds to them are logged by their slots' addresses for the reset to drop
-// (core/durable-log.js `__durable_slot_log`).
+// A Map and a Set built at init lie below the reset mark; a round saves each
+// whole before its first write, and the reset puts the saved words back
+// (core/durable-log.js `__durable_tbl_snap`).
 test('compact: collections built at init and keyed by objects heal at a reset after compactions rehashed them', () => {
   if (onWasi() || !counted()) return
   const src = (every, until) => `const byKey = new Map(), seen = new Set()
