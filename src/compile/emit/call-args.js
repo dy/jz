@@ -17,7 +17,7 @@ import {
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
+import { durableArrSnapNode, hasDurableReset, madeByCall } from '../../../module/collection/durable.js'
 import { representationProgramHasBigint } from '../representation-plan.js'
 import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
@@ -424,7 +424,7 @@ function emitArraySpreadMutation(objArg, parsed, method) {
   ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
   let arrayBase = start ? viewBase(sa, { start }) : null
   if (method === 'unshift') {
-    if (hasDurableReset()) inc('__durable_arr_snap')
+    if (hasDurableReset() && !madeByCall(objArg)) inc('__durable_arr_snap')
     // The tail move preserves an aliased array's argument values. Read that
     // moved range instead of allocating a temporary copy for self-prepend.
     const from = tempI32('prependSource')
@@ -432,7 +432,7 @@ function emitArraySpreadMutation(objArg, parsed, method) {
     ir.push(['local.set', `$${from}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]],
       ['if', ['i32.eq', arrayBase, ['local.get', `$${base}`]],
         ['then', ['local.set', `$${from}`, ['i32.add', arrayBase, ['i32.shl', count, ['i32.const', 3]]]]]])
-    ir.push(durableArrSnapNode(base, ['i64.reinterpret_f64', ['local.get', `$${sa}`]]),
+    ir.push(durableArrSnapNode(base, ['i64.reinterpret_f64', ['local.get', `$${sa}`]], objArg),
       ['memory.copy',
         ['i32.add', ['local.get', `$${base}`], ['i32.shl', count, ['i32.const', 3]]],
         ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${ol}`], ['i32.const', 3]]])

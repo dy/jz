@@ -206,6 +206,14 @@ export const durableArrSnapBaseIR = (base, off, ptr) => {
 const rawSnapBitWat = (bits) => `(i32.and (i32.wrap_i64 (i64.shr_u ${bits} (i64.const 31))) (i32.const 2))`
 export const rawSnapBitNode = (bits) => ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits, ['i64.const', 31]]], ['i32.const', 2]]
 
+// A binding whose every value is a literal the running call made (the frame census's
+// freshObjects, compile/analyze/frame-effects.js): only the start writes the reset mark,
+// 0 as it begins, so what a call makes is never below it while that call stores into it,
+// and a store through such a name needs no record and no test. A generator's or an async
+// function's binding that crosses a yield or an await is a field of its frame's record
+// (jzify/generators.js), no name a store goes through. `recv`, the receiver as written.
+export const madeByCall = (recv) => typeof recv === 'string' && ctx.func.freshObjects?.has(recv) === true
+
 // IR-node (array-tree) twin of durableArrSnapIR, for the two array mutators built as
 // raw IR arrays instead of WAT-template strings (.reverse/.sort — emitArrayReverseInPlace/
 // emitArraySortInPlace, module/array.js — a callback comparator can't be spliced into a
@@ -223,8 +231,8 @@ export const rawSnapBitNode = (bits) => ['i32.and', ['i32.wrap_i64', ['i64.shr_u
 // in-place store of a number is no escape the frame census counts, and a frame that restored
 // the heap over the record left the log naming freed memory (optimize/arena-rewind.js
 // CENSUS_GUARDED; the next walk of the log, module/core/reach.js `__survive`, never ended).
-export const durableArrSnapNode = (base, bits = null) => {
-  if (!hasDurableReset()) return ['nop']
+export const durableArrSnapNode = (base, bits = null, recv = null) => {
+  if (!hasDurableReset() || madeByCall(recv)) return ['nop']
   const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']
   const unsaved = ['i32.or', ['i32.eqz', seen],
     ['i32.eqz', ['i32.and', ['i32.load8_u', ['i32.add', seen, seenCellNode(b)]],

@@ -32,7 +32,7 @@ import { structInline } from '../src/abi/index.js'
 import { stubLogIR } from './core/stub-log.js'
 import { ctx, inc, err, strictCode, warnDeopt, holds, exprText, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
-import { hasDurableReset, heapResetWat, durableArrSnapBaseIR } from './collection/durable.js'
+import { hasDurableReset, heapResetWat, durableArrSnapBaseIR, madeByCall } from './collection/durable.js'
 import { isRecordWat, orRecordWat } from './collection/record.js'
 import { recordsOn } from '../src/compile/array-records.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -1983,7 +1983,7 @@ export default (ctx) => {
     // is the function's own, and a binding the loop around saved ahead of it
     // needs no test (control-flow.js durableLoopArrays).
     const held = typeof arr === 'string' ? ctx.func.refinements?.get(arr) : null
-    if (hasDurableReset() && !reserved && !held?.saved) {
+    if (hasDurableReset() && !reserved && !held?.saved && !madeByCall(arr)) {
       inc('__durable_arr_snap')
       body.push(['if', ['i32.lt_u', ['local.get', `$${pushBase}`], ['global.get', '$__heap_reset']],
         ['then', ['call', '$__durable_arr_snap', ['local.get', `$${pushBase}`]]]])
@@ -2064,7 +2064,7 @@ export default (ctx) => {
       // outlined); a shrink never relocates, so it serves the load too.
       const off = tempI32('pf')
       inc('__ptr_offset_fwd')
-      if (hasDurableReset()) inc('__durable_arr_snap')
+      if (hasDurableReset() && !madeByCall(arr)) inc('__durable_arr_snap')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, va],
         ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -2080,7 +2080,7 @@ export default (ctx) => {
             // the length word of the header the hop above resolved (`__set_len`
             // would read the tag and chase the forward again), a durable
             // header saved first as `__set_len` saves it
-            durableArrSnapNode(off, ['i64.reinterpret_f64', ['local.get', `$${t}`]]),
+            durableArrSnapNode(off, ['i64.reinterpret_f64', ['local.get', `$${t}`]], arr),
             ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['local.get', `$${len}`]],
             arrayValue(['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]])]]], 'f64')
     }
@@ -2194,7 +2194,7 @@ export default (ctx) => {
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
     // a splice whose value goes unread (a statement's) removes the range and builds no array of it
     const unread = ctx.func._expect === 'void'
-    if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
+    if (needsDurableFwdLog() && !madeByCall(arr)) inc('__durable_arr_snap')  // explicit edge: see durableArrSnapIR's comment
     const recv = hoistArrayValue(arr)
     const va = recv.value
     // ToIntegerOrInfinity position arg (23.1.3.30 step 3) — asI32Sat, not asI32 (see
@@ -2215,7 +2215,7 @@ export default (ctx) => {
       ...positions.setup,
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       lenInit,
-      durableArrSnapNode(off, ['i64.reinterpret_f64', cloneIR(va)]),
+      durableArrSnapNode(off, ['i64.reinterpret_f64', cloneIR(va)], arr),
       // clamp start to [0, len]
       ['local.set', `$${s}`, vs],
       ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
@@ -2700,7 +2700,7 @@ export default (ctx) => {
   // Reverse an array VALUE in place, returning it. `.reverse` mutates the
   // receiver (setup hoists it once); `.toReversed` (ES2023) reverses a fresh
   // __arr_from copy so the receiver is untouched.
-  function emitArrayReverseInPlace(setup, value) {
+  function emitArrayReverseInPlace(setup, value, recv = null) {
     const arrTmp = temp('rv')
     const base = tempI32('rb')
     const len = tempI32('rl')
@@ -2711,7 +2711,8 @@ export default (ctx) => {
     const exit = `$revexit${id}`, loop = `$revloop${id}`
 
     inc('__ptr_offset')
-    if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
+    const made = recv === true || madeByCall(recv)
+    if (needsDurableFwdLog() && !made) inc('__durable_arr_snap')  // explicit edge: see durableArrSnapIR's comment
 
     const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
 
@@ -2719,7 +2720,7 @@ export default (ctx) => {
       setup,
       ['local.set', `$${arrTmp}`, value],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
-      durableArrSnapNode(base, ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]),
+      made ? ['nop'] : durableArrSnapNode(base, ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]),
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
@@ -2737,12 +2738,12 @@ export default (ctx) => {
   }
   ctx.core.emit['.reverse'] = (arr) => {
     const recv = hoistArrayValue(arr)
-    return emitArrayReverseInPlace(recv.setup, recv.value)
+    return emitArrayReverseInPlace(recv.setup, recv.value, arr)
   }
   ctx.core.emit['.toReversed'] = (arr) => {
     const copy = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) ? '__arr_from' : '__arr_dense'
     inc(copy)
-    return emitArrayReverseInPlace(['nop'], typed(['call', '$' + copy, asI64(emit(arr))], 'f64'))
+    return emitArrayReverseInPlace(['nop'], typed(['call', '$' + copy, asI64(emit(arr))], 'f64'), true)
   }
 
   // Sort an array VALUE in place, returning it: `.sort` sorts the receiver,
@@ -2757,7 +2758,8 @@ export default (ctx) => {
   // cannot prove callable is tested once before the sort (sortComparator):
   // undefined takes the default order, a function compares, any other value
   // throws a TypeError; its records carry both forms.
-  function emitArraySortInPlace(setup, value, fn, dense = false) {
+  function emitArraySortInPlace(setup, value, fn, dense = false, recv = null) {
+    const made = recv === true || madeByCall(recv)
     const arrTmp = temp('sr'), base = tempI32('sb'), len = tempI32('sl'), m = tempI32('sm'), i = tempI32('si')
     const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv'), present = dense ? null : tempI32('sn')
     const cmp = sortComparator(fn), byDefault = cmp == null ? null : cmp.callable ? false : tempI32('sdf')
@@ -2809,7 +2811,7 @@ export default (ctx) => {
         mergeSortIR(buf, tmp, m, shift, after),
         // back into the array, as it stands now, undefined last
         ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
-        durableArrSnapNode(base, ['i64.reinterpret_f64', get(arrTmp)]),
+        made ? ['nop'] : durableArrSnapNode(base, ['i64.reinterpret_f64', get(arrTmp)]),
         ...walk(i, get(len), [
           ['f64.store', slot(base, i), ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(m)],
             ['then', ['f64.load', keyed ? plus8(rec(i)) : rec(i)]],
@@ -2821,7 +2823,7 @@ export default (ctx) => {
   }
   ctx.core.emit['.sort'] = (arr, fn) => {
     const recv = hoistArrayValue(arr)
-    return emitArraySortInPlace(recv.setup, recv.value, fn, recv.dense)
+    return emitArraySortInPlace(recv.setup, recv.value, fn, recv.dense, arr)
   }
   ctx.core.emit['.toSorted'] = (arr, fn) => {
     const copy = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) ? '__arr_from' : '__arr_dense'
@@ -2829,7 +2831,7 @@ export default (ctx) => {
     // the copy is made before the comparator is evaluated, as its receiver is
     const t = temp('tsc')
     return emitArraySortInPlace(['local.set', `$${t}`, typed(['call', '$' + copy, asI64(emit(arr))], 'f64')],
-      typed(['local.get', `$${t}`], 'f64'), fn, true)
+      typed(['local.get', `$${t}`], 'f64'), fn, true, true)
   }
 
   // .with(index, value) (ES2023) — a COPY with one element replaced. Negative

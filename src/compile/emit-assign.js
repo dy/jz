@@ -39,7 +39,7 @@ import { REP_EDGE_REJECT, representationStorageWriteAction } from './representat
 import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
-import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
+import { durableArrSnapNode, durableObjSnapNode, hasDurableReset, madeByCall } from '../../module/collection/durable.js'
 import { demandHostReceiver } from './func-exports.js'
 import { arrayRecordSlot } from './array-records.js'
 import { numericArrayExpr, numericArraysOn } from './numeric-arrays.js'
@@ -165,7 +165,7 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
     // (a binding the loop around saved for the reset ahead of it needs no snapshot test here: control-flow.js durableLoopArrays)
     const held = arrName != null ? ctx.func.refinements?.get(arrName) : null
-    const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base, ['i64.reinterpret_f64', direct ? cloneIR(arrExpr) : arrG])] : []
+    const saved = hasDurableReset() && !held?.saved && !madeByCall(arrName) ? [durableArrSnapNode(base, ['i64.reinterpret_f64', direct ? cloneIR(arrExpr) : arrG])] : []
     if (saved.length) inc('__durable_arr_snap')
     // (the size tier asks the offset of its helper, the speed tiers hop inline)
     const recv = typed(direct ? arrExpr : arrG, 'f64')
@@ -195,7 +195,7 @@ function storeFixedElement(arr, index, valueExpr, nullable) {
   const base = tempI32('fb'), recv = nullable && !held?.notNullish ? temp('fr') : null
   // A store of this block already saved the array (dispatch.js emitBlockBody).
   // (the pointer in a local where the save reads its aux: an array of raw Numbers logs a raw record)
-  const snap = hasDurableReset() && !held?.saved
+  const snap = hasDurableReset() && !held?.saved && !madeByCall(arr)
   const pin = snap && !recv && numericArraysOn() ? temp('fp') : recv
   const saved = snap ? [durableArrSnapNode(base, pin ? ['i64.reinterpret_f64', ['local.get', `$${pin}`]] : null)] : []
   if (saved.length) { inc('__durable_arr_snap'); if (typeof arr === 'string') (ctx.func.savedStores ??= []).push(arr) }

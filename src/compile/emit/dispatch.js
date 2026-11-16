@@ -40,7 +40,7 @@ import { reachOn } from '../../../module/core/reach.js'
 import { GLOBAL_TYPEOF, builtinGlobalOf } from '../../prepare/state.js'
 import { CMP_SET, boolEagerBody, copyReceiverFacts, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, isNullable, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
-import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
+import { durableArrSnapNode, hasDurableReset, madeByCall } from '../../../module/collection/durable.js'
 import { flatStoredValue } from '../../bridge.js'
 import { noteFieldCacheGuard } from './field-caches.js'
 
@@ -1444,7 +1444,7 @@ const blockSaves = (stmts) => {
     for (const [name, stored] of elementUses(stmts[j], new Map())) {
       if (!stored || done.has(name)) continue
       done.add(name)
-      if (frame.boxed?.has(name) || frame.flatObjects?.has(name) || frame.refinements?.get(name)?.saved) continue
+      if (frame.boxed?.has(name) || frame.flatObjects?.has(name) || frame.refinements?.get(name)?.saved || madeByCall(name)) continue
       if (isGlobal(name) ? !ctx.scope.consts?.has(name) : isReassigned(frame.body, name)) continue
       if (view.fixedLenOf(name) == null || isNullable(view.kindOfExpr(name))) continue
       const k = declaredAt(name)

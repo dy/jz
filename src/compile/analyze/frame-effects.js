@@ -449,6 +449,8 @@ const holdsNone = (e) => isArr(e) && (e[0] == null || e[0] === 'str' || e[0] ===
 // `{}` spells both a block statement (its child a statement list) and an object
 // literal (properties `[':', k, v]`, shorthand names, spreads); only the literal allocates.
 const isObjectLiteral = (n) => isArr(n) && n[0] === '{}' && (n.length === 1 || isName(n[1]) || (isArr(n[1]) && (n[1][0] === ':' || n[1][0] === '...')))
+// An object or an array literal (`[` builds an array in the prepared spelling).
+const isLiteral = (n) => isObjectLiteral(n) || (isArr(n) && n[0] === '[')
 const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? args.slice(1) : [args]
 
 /**
@@ -530,12 +532,13 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     const cur = decl.get(name)
     if (!declared) assigned.add(name)
     if (!declared && cur == null) return
-    // Object literals allocate in this call, after the reset boundary. Keep
-    // this narrower than freshInit: a user constructor or Object(existing)
-    // can return older storage. Every write must keep the literal origin.
-    if (declared && cur == null && (init === undefined || isObjectLiteral(init)))
+    // Object and array literals allocate in this call, after the reset boundary
+    // (only the start writes the mark, 0 as it begins). Keep this narrower than
+    // freshInit: a user constructor or Object(existing) can return older storage.
+    // Every write must keep the literal origin.
+    if (declared && cur == null && (init === undefined || isLiteral(init)))
       (out.freshObjects ??= new Set()).add(name)
-    else if (init !== undefined && !isObjectLiteral(init)) out.freshObjects?.delete(name)
+    else if (init !== undefined && !isLiteral(init)) out.freshObjects?.delete(name)
     if (declared && cur == null && isArr(init) && (init[0] === '.' || init[0] === '[]') && init.length === 3) reads.set(name, init); else reads.delete(name)
     if (init === undefined) { if (cur == null) decl.set(name, 'fresh'); return }   // bare `let x`
     const fresh = freshInit(init) || holdsNone(init)

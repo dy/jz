@@ -14,7 +14,7 @@ import { HEAP, LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
   asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
-import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
+import { durableArrSnapNode, hasDurableReset, madeByCall } from '../../../module/collection/durable.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign, nameShift } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
@@ -591,7 +591,7 @@ function durableLoopArrays(init, cond, step, body) {
         (cond != null && isReassigned(cond, name)) || (step != null && isReassigned(step, name))) continue
     if (isGlobal(name) && !ctx.scope.consts?.has(name)) continue
     if (!view || (view.fixedLenOf(name) == null && !(lookupValType(name) === VAL.ARRAY && inBounds(name))) || isNullable(view.kindOfExpr(name))) continue
-    if (ctx.func.refinements?.get(name)?.saved) continue
+    if (ctx.func.refinements?.get(name)?.saved || madeByCall(name)) continue
     out.push(name)
   }
   return out

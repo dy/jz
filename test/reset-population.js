@@ -73,7 +73,7 @@ const reads = (j) => [[`n_${j}`, []], ...Array.from({ length: READ }, (_, i) => 
 // A seed's programs as one module on one instance: each round, every program's calls, every
 // program read, the reset, every program read. The oracle: a fresh instance read, and for each
 // round a fresh instance after that round's calls, read.
-const population = (seed, progs) => {
+const population = (label, progs) => {
   if (onKernel()) return
   const src = progs.map(p => p.text.replace(OWN, `$1_${p.j}`)).join('\n')
   const R = Math.max(...progs.map(p => p.rounds.length))
@@ -112,9 +112,67 @@ const population = (seed, progs) => {
       at += 2 * progs.length * per + 1
     }
   }
-  // one assertion a seed: what it ran, and the first of what differed
-  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} reads at ${LEVELS.length} levels, ${bad.length} differing from a fresh instance's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  // one assertion a module: what it ran, and the first of what differed
+  is(bad.length, 0, `${label}: ${progs.length} programs, ${checks} reads at ${LEVELS.length} levels, ${bad.length} differing from a fresh instance's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
 }
 
 for (const seed of [1, 2, 3, 4])
-  test(`reset population: seed ${seed}, 100 arrays made at start on one instance, read after each reset as a fresh instance reads them`, () => population(seed, generate(seed, 100)))
+  test(`reset population: seed ${seed}, 100 arrays made at start on one instance, read after each reset as a fresh instance reads them`, () => population(`seed ${seed}`, generate(seed, 100)))
+
+// The stores a store through a literal of the running call leaves unsaved must not reach: the
+// census's freshObjects holds a binding whose every value is an object or array literal the call
+// made (compile/analyze/frame-effects.js), and its element stores keep no snapshot
+// (module/collection/durable.js madeByCall). A binding that also takes a parameter, a module
+// binding or a callee's result is not in it, nor is an array a closure or a generator keeps past
+// the call that made it. The last two: a literal a call of the start made and a module binding
+// keeps is durable, and later stores reach it through the binding, never the call's local, while
+// the start's own store needs no record (the start is no round). Each a module of its own.
+const READS = (P) => `export let n = () => ${P}.length
+export let at = (i) => { const v = ${P}[i]; return v === undefined ? -1 : v }`
+const FIXED = [
+  // (reassigned under a test the compiler cannot decide: a reassignment in line is a binding of its own)
+  ['a local reassigned from a parameter', `const G = [1, 2, 3]
+const g = (p, k) => { let b = [5]; if (k !== 0) b = p; b[0] = 9; b.push(4) }
+export let m0 = (k) => { g(G, k); return 0 }
+${READS('G')}`],
+  ['a local reassigned from a module binding', `const G = [1, 2, 3]
+export let m0 = (k) => { let b = [7]; if (k !== 0) b = G; b[1] = 9; b.push(4); return 0 }
+${READS('G')}`],
+  ["a callee's result", `const G = [1, 2, 3]
+const pick = () => G
+export let m0 = () => { const b = pick(); b[2] = 9; b.push(4); return 0 }
+${READS('G')}`],
+  ['an array a closure made at start keeps', `const mk = () => { const b = [1, 2]; return (k) => { if (k) { b[0] = 9; b.push(3) } return b } }
+const c = mk()
+const B = c(0)
+export let m0 = () => { c(1); return 0 }
+${READS('B')}`],
+  ['an array a closure made in a round keeps', `const mk = () => { const b = [1, 2]; return (k) => { if (k) b[0] = 9; return b } }
+let c = null, B = [0]
+export let m0 = () => { c = mk(); B = c(1); return 0 }
+${READS('B')}`],
+  // (one round: the generator's step is a number of its frame, which a reset keeps)
+  ['a generator begun at start, its array across a yield', `function* gen() { const b = [1, 2, 3]; yield b; b[0] = 9; b.push(7); yield b }
+const it = gen()
+const B = it.next().value
+export let m0 = () => { it.next(); return 0 }
+${READS('B')}`, [['m0']]],
+  ["a generator begun at start, a binding of one step", `function* gen() { let k = 0; while (true) { const b = [k, 2]; b[1] = 5; G.push(b[1]); k++; yield k } }
+const G = [1]
+const it = gen()
+it.next()
+export let m0 = () => { it.next(); return 0 }
+${READS('G')}`],
+  ['a literal a call of the start made, kept by a module binding, stored into again', `let KEEP = [0]
+const mk = () => { const b = [1, 2]; KEEP = b; b[0] = 9; return b }
+mk()
+export let m0 = () => { mk(); return 0 }
+export let m1 = () => { KEEP[1] = 7; KEEP.push(5); return 0 }
+${READS('KEEP')}`, [['m0'], ['m1'], ['m0', 'm1']]],
+  ['a literal a call of a round made, kept by a module binding', `let G2 = [0]
+export let m0 = () => { const b = [1, 2]; G2 = b; b[0] = 9; b.push(3); return 0 }
+export let m1 = () => { G2[0] = 4; return 0 }
+${READS('G2')}`, [['m0'], ['m1'], ['m0', 'm1']]],
+]
+for (const [name, text, rounds = [['m0'], ['m0', 'm0']]] of FIXED)
+  test(`reset population: ${name}`, () => population(name, [{ j: 0, text, rounds }]))
