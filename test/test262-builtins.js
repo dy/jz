@@ -212,9 +212,24 @@ const TRACKED_BUILTIN_PATHS = [
   'RegExp/prototype/global',
   'RegExp/prototype/sticky',
   'RegExp/prototype/unicode',
-  // Subclassing/species/descriptor tests absorb as skips.
+  // Promise pool wired 2026-07-13: the jzify async runtime implements
+  // resolve/reject/all/race/allSettled/any/try/withResolvers + executor +
+  // then/catch/finally; flags:[async] tests run through the $DONE shim
+  // (module-level, polled via __t262_check — same design as the language
+  // runner). Subclassing/species/descriptor tests absorb as skips.
   'Promise',
+  // Iterator pool wired 2026-07-13: generator objects in helper-using
+  // programs mint through __it_mk (jzify/generators.js) — map/filter/take/
+  // drop/flatMap + toArray/reduce/forEach/some/every/find as value-position
+  // methods, Symbol.iterator identity, `instanceof Iterator` shape probe.
+  // %Iterator.prototype% reflection / Iterator-as-constructor absorb as skips.
   'Iterator',
+  // Atomics/SharedArrayBuffer pool wired 2026-07-13: SharedArrayBuffer
+  // canonicalizes to ArrayBuffer (within one module the buffer IS jz's linear
+  // memory — sharedness is a pool.js LINKING concern, not an object property);
+  // Atomics map to wasm atomic ops on proven Int32Array views (module/
+  // atomics.js). $262.agent multi-thread tests need the agent harness over
+  // pool.js — a recorded follow-up; they absorb as skips meanwhile.
   'Atomics',
   'SharedArrayBuffer',
 ]
@@ -705,8 +720,11 @@ const DATE_UNSUPPORTED_TESTS = new Map([
 // Expected failures
 // Built-ins tests that COMPILE and RUN but assert-fail because they exercise a
 // feature jz deliberately does not implement (out of scope for the distilled-JS
-// subset) or a documented representation divergence. Compile-time fails ("… is not
-// in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
+// subset) or a documented representation divergence. They still run, but bucket
+// as `xfail` instead of `fail`, so the `fail` count gates *in-scope* correctness
+// honestly — any non-zero `fail` is a genuine regression. If a listed *file*
+// ever passes it is reported as `xpass` so the entry can be pruned. Compile-time
+// fails ("… is not in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
 //
 // A prefix covers a whole feature family that will not be implemented; a file
 // entry is an exact, individually-reviewed expectation (and gets xpass tracking).
@@ -761,7 +779,13 @@ const EXPECTED_FAIL_FILES = new Map([
   // String/indexOf entries just above (out of scope, not new). Fixed by routing every
   // ToIntegerOrInfinity position/index argument in module/string.js (`.slice`'s
   // start/end, `.indexOf`/`.includes`'s shared `posIndex`, `.lastIndexOf`'s explicit
-  // `from`) through the new `asI32Sat` (src/ir.js) instead.
+  // `from`) through the new `asI32Sat` (src/ir.js) instead. Promise — jz promises are
+  // fixed-shape values adopted STRUCTURALLY (`__p === 1` → subscribe), not via a
+  // dynamic `.then` lookup, so overriding `.then` on a native promise is not observed
+  // (documented divergence). audit-#12: a deliberate, self-consistent architectural
+  // choice (not an accident) — tagged [DIALECT] though this specific behavior has no
+  // verbatim README bullet; the general "method dispatch is static... traps cannot
+  // attach" Objects bullet covers it in spirit.
   ['built-ins/Promise/prototype/then/resolve-pending-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/prototype/then/resolve-pending-rejected-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/prototype/then/resolve-settled-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
@@ -848,13 +872,18 @@ function isAsyncFlagged(content) {
 function shouldSkip(raw, rel) {
   if (DATE_UNSUPPORTED_TESTS.has(rel)) return DATE_UNSUPPORTED_TESTS.get(rel)
   if (isFunctionalTest(rel)) return null
-  // Legacy dirs keep raw-content matching — their pass/skip balance was
-  // hand-curated under that rule, and code-only matching there admits hundreds
-  // of coercion/sparse-array tests that need individual triage first.
+  // Pools wired 2026-07-13 (Iterator, Promise) classify on CODE, not YAML:
+  // frontmatter `info:` prose routinely names `X.prototype`, `class`,
+  // `iterator` … and was skipping runnable tests. Legacy dirs keep raw-content
+  // matching — their pass/skip balance was hand-curated under that rule, and
+  // code-only matching there admits hundreds of coercion/sparse-array tests
+  // that need individual triage first.
   const codeOnly = /^built-ins\/(Iterator|Promise|Atomics|SharedArrayBuffer)\//.test(rel)
-  // The CAPABILITY they exercise (cross-thread atomicity + wait/notify
-  // blocking over shared memory) is proven end-to-end by test/workers.js over
-  // pool.js.
+  // $262.agent tests (all 112 include atomicsHelper.js) are host-object
+  // reflection machinery — they patch methods on the $262 host object, use
+  // .bind/this.setTimeout/Date.now — the family jz sheds by design. The
+  // CAPABILITY they exercise (cross-thread atomicity + wait/notify blocking
+  // over shared memory) is proven end-to-end by test/workers.js over pool.js.
   if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness — host reflection surface (capability proven by test/workers.js over pool.js)'
   const content = codeOnly ? raw.replace(/\/\*---[\s\S]*?---\*\//, '') : raw
   if (codeOnly) {
@@ -876,6 +905,8 @@ function shouldSkip(raw, rel) {
   if (/\bAggregateError\s*\(/.test(content) || /instanceof AggregateError/.test(content)) return 'AggregateError constructor semantics'
   if (/Symbol\.(species|toPrimitive|hasInstance|asyncIterator|match|replace|search|split)/.test(content)) return 'Symbol runtime hook'
   if (!codeOnly) {
+    // legacy-dir calibration (see codeOnly note above): these features ARE
+    // supported by jzify now, but admitting them here needs per-dir triage.
     if (/Symbol\.iterator/.test(content)) return 'Symbol runtime hook'
     if (/\biterator\b/i.test(content)) return 'iterator semantics'
     if (/\bgenerator\b/i.test(content) || /\byield\b/.test(content)) return 'generator semantics'
@@ -1125,10 +1156,13 @@ if (!isMainThread) {
     fails.sort().forEach(f => console.log(`  x ${f}`))
   }
 
-  // Any in-scope `fail`, any stale xpass, or a pass count below the committed
-  // baseline (test/test262-baseline.json, refreshed alongside a corpus pin
-  // bump or a real fix) is a hard failure. JZ_TEST262_BASELINE, if set,
-  // overrides the file — an escape hatch, not the source of truth.
+  // Gating — always on, locally and in CI (audit-#11 item 7 sub-3: this used
+  // to only gate when JZ_TEST262_BASELINE was set, so a local run exited 0
+  // despite in-scope failures). Any in-scope `fail`, any stale xpass, or a
+  // pass count below the committed baseline (test/test262-baseline.json,
+  // refreshed alongside a corpus pin bump or a real fix) is a hard failure.
+  // JZ_TEST262_BASELINE, if set, overrides the file — an escape hatch, not
+  // the source of truth.
   const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
   // audit-#12 item 3: the lock's corpus SHA must match the checkout this run
   // just measured against — a stale lock (PINNED_COMMIT bumped here without

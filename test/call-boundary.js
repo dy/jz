@@ -196,6 +196,7 @@ test('call boundary: a slot that may be a written plain array takes any value an
   const want = oracle(code), { exports } = jz(code)
   is(exports.head([1, 2, 3, 4], 2), 3, 'head(Array, number): 1 + 2')
   is(exports.head(Float32Array.of(1, 2, 3, 4), 3), want.head(Float32Array.of(1, 2, 3, 4), 3), 'head(Float32Array, number)')
+  // 0.1 stored into a Float32Array reads back 0.10000000149011612: the sum tells the variant that ran.
   for (const K of [Float32Array, Float64Array]) {
     const a = K.of(1, 2, 3), b = K.of(1, 2, 3)
     is(exports.damp(b, 2), want.damp(a, 2), `damp(${K.name}, number): the variant of its kind`)

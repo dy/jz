@@ -336,6 +336,7 @@ test('checkpoint: recording after the rewind allocates nothing, first and repeat
   const m0 = readMarks(forced)
   ok(m0.heapCheckpoint > 0 && m0.heapCheckpoint < m0.heapOptimize)
   const NAMES = m0.phases.map(p => p.name)
+  // inputs prepared before the measured calls: the name strings live in the arena already
   const listed = forced.memory.String('summary'), unlisted = forced.memory.String('no such phase')
   const h0 = heap(forced)
   forced.exports.recordPhase(listed)

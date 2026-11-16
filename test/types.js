@@ -22,7 +22,11 @@ const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
 // jz()-based — needed by slot/typed-narrow tests that use full host wiring.
 const runHost = (code) => jz(code).exports
-// Compile without watr's post-pass to inspect what jz actually emits.
+// Codegen-shape tests inspect jz's pre-watr structure (helper-function names,
+// per-local types, runtime dispatch calls). watr's `inlineOnce` + `treeshake`
+// dissolve non-exported helpers into their lone caller and erase them, so the
+// `(func $mk …)` regex no longer matches. Compile without watr's post-pass to
+// inspect what jz actually emits.
 const wat = (src) => compile(src, { wat: true, optimize: { watr: false } })
 const fnBody = (w, name) => {
   const re = new RegExp(`\\(func \\$${name}(?:\\s|$)`)
@@ -588,6 +592,10 @@ test('slot-types: codegen — unrelated allocations sharing a layout keep precis
   is(addN(), 15)
 })
 
+// Array-destructure kind preservation — `let [a, b] = [1, BigInt(v)]` used to
+// silently drop `b`'s VAL.BIGINT kind while the structurally identical object
+// form `let { b } = { b: BigInt(v) }` kept it.
+
 function inspectLocals(src, fnName = 'f', optimize) {
   return compile(src, { wat: true, inspect: true, ...(optimize ? { optimize } : {}) }).inspect.functions[fnName]?.locals || {}
 }
@@ -653,6 +661,12 @@ test('array-destructure kind: assignment-form (no `let`) already preserved it �
   is(localVal(locals, 'b'), VAL.BIGINT)
 })
 
+// BigInt retirement Slice 1: this test used to document a KNOWN, ACCEPTED gap — a heterogeneous array
+// literal (`[1, BigInt(v)]`, element 0 NUMBER, element 1 an unprovable BigInt) passed as a call
+// argument, whose per-index kind param destructuring never resolved. STRUCTURALLY IMPOSSIBLE to
+// construct the old repro anymore, same class as test/data.js's audit-#11 P0-1 deletion the design
+// calls out — converted, not deleted, since the shape itself (heterogeneous-array-literal call-arg)
+// remains valuable negative-space coverage.
 test('array-destructure kind: a heterogeneous BigInt-element array literal as a call-arg is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in) (was: silently-unresolved per-index kind)', () => {
   if (onKernel()) return
   if (onKernel()) return
@@ -680,6 +694,16 @@ test('array-destructure behavior: destructured nullable-bigint element keeps kin
   is(f(3n, true), 6n)
   is(f(3n, false), -1n)
 })
+
+// Bare BigInt array-element return (re-audit #6 finding 2): `let a = [1n];
+// return a[0]` used to decode as a raw-bit-reinterpreted NUMBER, not the
+// BigInt value — the array's own element-kind census (rep.arrayElemValType,
+// stamped correctly at emit time by the updateRep loop over
+// analyzeBody(body).arrElemValTypes, compile/index.js) was always right; the
+// function's RETURN-KIND pre-pass (narrow.js's narrowValResults /
+// narrowBoolResults) ran before that whole-program store existed for the
+// function under examination, unlike ctx.func.flatObjects (the object-field
+// sibling fix).
 
 test('array-elem kind census: BigInt array literal element carries arrayElemValType BIGINT at the 2^62 boundary', () => {
   if (onKernel()) return   // kernel: inspect never reaches through compile (see array-destructure note above)
@@ -817,7 +841,7 @@ test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
   `
   // 900→930: the index param `i` rides the i64 boundary carrier (its numericity isn't proven
   // before `a`'s typed-ness is known), so `f` gets a boundary thunk + a jz:i64exp section —
-  // metadata, zero runtime cost.
+  // metadata, zero runtime cost. Headroom kept for the narrowing/fusedRewrite regression guard.
   const bytes = compile(src).length
   ok(bytes <= 930, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>930b)`)
 })
@@ -1038,6 +1062,25 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
   is(r2.i, false); is(r2.j, false)
 })
 
+// mayBeUndefined REP field — pure analysis, no codegen impact YET. Honest
+// boundary, stated up front so a future reader doesn't mistake this for a
+// black-box regression suite: VT['[]']/VT['.']/VT['()']
+// (dictValueKindOf/mapValueKindOf's OWN exact-kind fold) stay DORMANT until
+// design §8 Slice 4 — every existing censusMaybeUndefined chokepoint (ir.js
+// toNumF64/toStrI64, emit.js nullableOperand/bigIntOperand/bigIntUnary,
+// module/string.js/number.js/ console.js) gates ITS OWN call to
+// censusMaybeUndefined behind `valTypeOf(node) === VAL.SOMETHING` first, and
+// `valTypeOf` for a dict/Map read stays null while that VT fold is dormant — so
+// this slice cannot yet change a single compiled byte or a single JS-observable
+// return value (verified: test/dyn-keys.js's audit-#9 repro table asserts
+// identical values before and after this slice). What DOES change, and what this
+// section pins: `analyzeValTypes` (analyze.js) now derives `mayBeUndefined` on a
+// decl'd/reassigned local exactly the way it already derives `nullable` (same
+// call site, `mayBeNullish` sibling), and `censusMaybeUndefinedKind` (kind.js)
+// now answers a bare NAME carrying that flag, not just the original read node —
+// the exact machinery Slice 4 needs already in place, so re-enabling the VT fold
+// then doesn't have to reinvent decl propagation under time pressure the way
+// audit #9 found it missing.
 // `dynWriteVarNames` mirrors `runAnalyze`'s `paramVals` pre-seed: the real
 // pipeline populates `ctx.types.dynWriteVars` whole-program (plan/index.js,
 // program-facts.js), which this per-function-only harness never runs — a
@@ -1126,8 +1169,9 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
   // `val` is a DELIBERATE, KEPT fallback (§15) for exactly the param shape —
   // a param's `val` comes from narrow.js's own call-site-argument fixpoint,
   // entirely independent of census provenance, so it can be legitimately
-  // non-null alongside `mayBeUndefined` with no `presentVal` ever set (params
-  // get no presentVal producer in this slice).
+  // non-null alongside `mayBeUndefined` with no `presentVal` ever set
+  // (params get no presentVal producer in this slice). See kind.js's own
+  // doc comment ("found LIVE... a param-hop regression pin flipped").
   updateRep('probeValFallback', { val: VAL.STRING, mayBeUndefined: true })
   is(censusMaybeUndefinedKind('probeValFallback'), VAL.STRING, '`val` is consulted as a fallback when presentVal is absent')
   // presentVal takes PRIORITY over val when both happen to be set.
@@ -1228,6 +1272,14 @@ test('presentVal and val are mutually exclusive by construction — never both n
   }`)
   is(r2.x, VAL.BIGINT)
 })
+
+// mayBeUndefined Slice 2 — whole-program propagation (param/return/closure).
+// Same honest-boundary framing as Slice 1 above: every consumer still gates
+// behind `valTypeOf(node) === VAL.SOMETHING` first, and `valTypeOf` for a
+// name/argument/return that traces to a census-shaped read stays null at
+// EVERY hop (decl, param, return) as long as VT['[]']/VT['.']/VT['()'] stay
+// dormant — a program-wide invariant, not slice-specific, so this section
+// pins the MECHANISM the same pure-analysis way Slice 1 did.
 
 // shared structural predicates (kind.js)
 
@@ -1364,10 +1416,21 @@ test('mayBeUndefined closure capture: an ordinary captured binding is not flagge
 })
 
 //
-// The mechanism itself (the `exprs.some(e => exprMayBeUndefinedIn(e, body))`
-// OR-fold) is still landed and correct — pinned here as a negative control so
-// a future change to bodyFacts.valTypes' settling rule that DOES make this
-// live doesn't silently ship unpinned.
+// Unlike closureBodyReturnMayBeUndefined (independently resolvable via an
+// externally-injected capturedKinds map, proven live just above),
+// narrowValResults' `vt0`/`allSame` fold and the mayBeUndefined trace both
+// read the SAME body evidence for a bare-name return (bodyFacts.valTypes vs.
+// exprMayBeUndefinedIn's own raw-AST walk) — empirically, whenever a return
+// site traces to a census-shaped write, bodyFacts.valTypes ALSO fails to
+// settle a kind for that same name (the identical "unresolved write poisons"
+// behavior Slice 1's own decl producer already documented), so `vt0`/
+// `allSame` never holds at the same time a live mayBeUndefined trace would
+// apply — no black-box positive repro exists for this ONE join site the way
+// it does for the param and closure-capture joins above. The mechanism
+// itself (the `exprs.some(e => exprMayBeUndefinedIn(e, body))` OR-fold) is
+// still landed and correct — pinned here as a negative control so a future
+// change to bodyFacts.valTypes' settling rule that DOES make this live
+// doesn't silently ship unpinned.
 test('mayBeUndefined valResult: an ordinary settled return never sets valResultMayBeUndefined', () => {
   if (onKernel()) return
   const insp = compile(`
@@ -1377,6 +1440,10 @@ test('mayBeUndefined valResult: an ordinary settled return never sets valResultM
   ok(insp.functions.useIt, 'expected useIt to survive as a separate function')
   is(insp.functions.useIt.valResultMayBeUndefined, undefined)
 })
+
+// `x.toString(16)` / `x.toFixed(d)` where x's static kind is erased (polymorphic
+// slot, mixed-element array) used to fall through every dispatch strategy to a
+// dynamic property lookup → `undefined`.
 
 test('untyped receiver: toString(radix) dispatches the number emitter', () => {
   const { f } = runHost(`
@@ -1491,10 +1558,12 @@ test('untyped receiver: own-property toFixed closure shadows the builtin', () =>
   is(f(), 'custom')
 })
 
-// No ctx/reset() needed: every case below is a literal AST shape or a bare-name
-// cond whose literalTruthiness is unresolved (`valTypeOf`/`lookupValType` degrade
-// to null without a live ctx.func, which is exactly the "no claim" case both VT
-// and the predicate already handle).
+// hasAmbiguousBoolMerge — pure structural predicate, mirroring kind.js
+// VT['?:']/VT['&&']/['||']/['??']'s own truth table branch-for-branch. No
+// ctx/reset() needed: every case below is a literal AST shape or a bare-name cond
+// whose literalTruthiness is unresolved (`valTypeOf`/`lookupValType` degrade to
+// null without a live ctx.func, which is exactly the "no claim" case both VT and
+// the predicate already handle).
 
 // AST node shorthands mirroring parser output: bigint/string literals are
 // self-describing op-tagged nodes (kind.js VT.bigint / VT.strcat); a bare

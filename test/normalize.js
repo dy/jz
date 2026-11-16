@@ -121,6 +121,7 @@ const CASES = [
   ['export let f = (n) => { const a = new Float64Array(16); let i = 0; while (true) { if (i >= n) break; a[i] = i + 0.5; i++ } let s = 0; for (let k = 0; k < 16; k++) s += a[k]; return s }', [16, 3.5, -2, 0, '9']],
   // a flipped test over a string bound converts it, either way round
   ['export let f = (n) => { let s = 0; for (let i = 0; n > i; i -= -1) s += i; return s }', [5, '5', 2.5, NaN]],
+  // a left side that calls: it reads after the counter now, and writes nothing the test reads
   ['export let f = (n) => { let s = 0, c = 0; const g = () => { c++; return n }; for (let i = 0; g() > i; i = i + 1) s += c; return s * 100 + c }', [4, 0]],
   ['export let f = (n) => { let s = 0, i = 0; do { s++; i++ } while (i < 3); i = 5; do { s += 10; i++ } while (i < 3); return s * 100 + i }', [0]],
   ['export let f = (n) => { let i = 0, s = 0; if (i < n) do { i++; if (i % 2) continue; s += i } while (i < n); return s }', [0, 7, 7.5, NaN]],

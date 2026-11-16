@@ -889,6 +889,11 @@ export let sweep = () => {
     is(jz(src, { optimize }).exports.sweep(), '__heap_end __heap ', `O${optimize}: untyped receiver scans`)
 })
 
+// Sticky /y anchoring + \p rejection + matchAll /g gate (2026-07-10). /y
+// previously scanned forward like /g (silently identical); \p{…} silently
+// matched the literal text "p{…}"; matchAll without /g scanned like /g instead
+// of the spec TypeError.
+
 test('regex: sticky /y anchors at lastIndex, no forward scan', () => {
   is(jz(`let re = /a/y; export let f = () => re.test("ba") ? 1 : 0`).exports.f(), 0)
   is(jz(`let re = /a/y; export let f = () => re.test("ab") ? 1 : 0`).exports.f(), 1)
@@ -918,11 +923,16 @@ test('regex: matchAll requires /g at compile time', () => {
   is(jz(`export let f = () => "a1b2".matchAll(/\\d/g).length`).exports.f(), 2)
 })
 
+// Named backreferences \k<name> (2026-07-11, Ring 2): resolved at parse time to
+// the group's NUMBERED backref node (the VM's existing \1-\9 machinery), so
+// forward references work and undefined names reject cleanly.
 test('regex: \\k<name> named backreferences', () => {
   is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xx") ? 1 : 0`).exports.f(), 1)
   is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xy") ? 1 : 0`).exports.f(), 0)
   is(jz(`export let f = () => /(?<q>['"]).*?\\k<q>/.test("say 'hi' ok") ? 1 : 0`).exports.f(), 1)  // quote-matching idiom
   is(jz(`export let f = () => /\\k<a>(?<a>x)/.test("x") ? 1 : 0`).exports.f(), 1)  // forward ref
+  // audit-#11 item 7 sub-4: see the property-escapes test above — compile-time
+  // error message text doesn't survive the kernel's wasm-ABI round trip.
   throws(() => jz(`export let f = () => /\\k<nope>x/.test("x")`), onKernel() ? new SyntaxError() : /undefined group/)
 })
 

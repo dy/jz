@@ -21,8 +21,8 @@ import { run, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
 import { initSchema } from '../module/schema.js'
 import { levels } from './_matrix.js'
 
-// A multi-schema static read unboxes only if EVERY alternative is proven boxed
-// BigInt.
+// A multi-schema static read unboxes only if EVERY alternative is proven
+// boxed BigInt. Per-schema (raw OR unboxed) does not prove a raw merged read.
 test('slot carriers: refinements require one common read representation', () => {
   const facts = { schema: { list: [['n'], ['n'], ['n'], []] }, func: { refinements: new Map() } }
   initSchema(facts)
@@ -156,13 +156,17 @@ export let main = () => {
 })
 
 test('slot-hazards: §21 counter-example — computed-key write through an untyped param still poisons the slot KIND (pointsTo===\'ALL\' load-bearing after the hz→pointsTo swap)', () => {
-  // If slotVT's gate ever dropped this term (or the product-lattice Slice 6b swap ever
-  // left a reader on the old, now-permanently-empty hz.sids), `f.count` downstream of
-  // `corrupt(f, 'count', 'oops')` would still answer NUMBER — wrong, since the call
-  // really did overwrite that slot with a string — and this test would decode the box's
-  // raw pointer bits as a number instead of taking the string concat path. (The second
-  // call, of another layout, keeps `obj` unresolved: a parameter every call passes one
-  // layout resolves to it.)
+  // `corrupt`'s `obj[key]=val` has an unresolvable receiver (obj: plain param, no
+  // schemaId) AND an unresolvable key (key: plain param, not a literal, not
+  // repOf(key)?.intCertain) — collectSlotWriteHazards can name neither a sid nor a prop
+  // to scope the hazard to, so it sets pointsTo to the 'ALL' sentinel (was `hz.all =
+  // true`) and NOTHING else. If slotVT's gate ever dropped this term (or the
+  // product-lattice Slice 6b swap ever left a reader on the old, now-permanently-empty
+  // hz.sids), `f.count` downstream of `corrupt(f, 'count', 'oops')` would still answer
+  // NUMBER — wrong, since the call really did overwrite that slot with a string — and
+  // this test would decode the box's raw pointer bits as a number instead of taking the
+  // string concat path. (The second call, of another layout, keeps `obj` unresolved: a
+  // parameter every call passes one layout resolves to it.)
   const src = `
 class Foo { constructor() { this.count = 0 } }
 const corrupt = (obj, key, val) => { obj[key] = val }
@@ -347,6 +351,16 @@ export let main = () => (use(mk()) * 10 + use(other())) | 0`
     is(run(src, { optimize }).main(), 79, `O${optimize}: shared-slot structural read exact`)
 })
 
+// Cross-function bare-name binding collision (the kernel-fragility episodes'
+// TRUE root, three times manifested): ctx.schema.vars is module-global and
+// keyed by BARE NAME, so one function's `const site = {…}` literal used to
+// resolve ANOTHER function's same-named binding — a for-of binding, a param, a
+// non-literal decl — through the literal's layout: a RAW fixed-slot load at a
+// foreign offset, no guard, no dyn fallback, at EVERY optimize level (the
+// self-compile kernel's rest-spec read `site.callee` off the wrong slot when an
+// unrelated pass added a differently-ordered literal). prepare's binding
+// census now bars such names from the vars channel (per-function ValueReps
+// keep devirtualizing); reads fall to the guarded/dyn path.
 test('slot-hazards: literal decl in one function must not type another function\'s for-of binding', () => {
   const src = `
 const use = (arr) => { let s = 0; for (const site of arr) s += site.callee; return s }
@@ -445,6 +459,9 @@ export let main = () => other()`
   is(sa, sb, 'same-length param rename does not change output size')
   for (const optimize of LEVELS) is(run(A, { optimize }).main(), 3, `O${optimize}: values exact`)
   // Second placement (the audit's 4× case): a CALLED use + a sibling local.
+  // Locals no longer publish into the module vars map, so both spellings take
+  // the lean scalar-replaced form — byte-identical AND free of the generic-+
+  // string machinery the pessimistic path pulled.
   const C = `
 const use = (o) => o.x
 const other = () => { let o; o = { x: 1 }; return o.x }

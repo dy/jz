@@ -395,6 +395,10 @@ test('Uint8ClampedArray: loop stores clamp at every optimize level', () => {
   for (const optimize of levels(0, 2, 3, 'size')) is(run(src, { optimize }), ref)
 })
 
+// `new T([…]).method(…)` receivers used to fall past elem resolution to the
+// plain-array emitters, which read f64 slots — silently wrong for every
+// element kind except Float64Array (Int32Array read 0s).
+
 test('method chains on fresh typed ctors resolve the element kind', () => {
   const arrows = [
     `() => new Int32Array([1, 2, 3]).map(x => x * 2)[2]`,

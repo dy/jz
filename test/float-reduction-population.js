@@ -142,7 +142,9 @@ const within = (cls, k, n, want, got, mag) => {
 }
 
 // Every program at each configuration, one module for them all: one assertion a differing call
-// (past the bound at speed), one a configuration saying what it ran.
+// (past the bound at speed), one a configuration saying what it ran. Not on the leg of the
+// compiler compiled by jz, which frees nothing within a compile: the whole module runs it out of
+// memory at exact and speed, and a third of it to a module took 66 minutes (2026-11-15).
 const names = /\b(P|f|g)\b/g
 const SRC = P.map((p, k) => p.src.replace(names, `$1_${k}`)).join('\n')
 for (const [tag, optimize] of CONFIGS) test(`float reduction population: ${P.length} reductions, ${ARGS.length} patterns and lengths, at ${tag}`, () => {

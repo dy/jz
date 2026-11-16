@@ -42,7 +42,10 @@ const TEST262 = join(import.meta.dirname, 'test262')
 const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
 
 // Ensure test262 is checked out AT the pinned commit (main thread only —
-// workers inherit the checkout).
+// workers inherit the checkout). `git fetch --depth 1 origin <sha>` works
+// directly against GitHub for any reachable commit, not just a ref, so this
+// stays a shallow (single-commit) checkout — just a deterministic one instead
+// of "whatever main tipped to when the clone ran".
 function ensureTest262() {
   if (!existsSync(TEST262)) {
     console.log(`Cloning test262 @ ${PINNED_COMMIT.slice(0, 8)} (this may take a minute)...`)
@@ -139,7 +142,24 @@ function isArgumentsObjectTest(rel) {
   return rel.includes('language/arguments-object/') && ARGUMENTS_OBJECT_TESTS.has(baseName(rel))
 }
 
-// Not shadowing them lets jz's real classes answer those checks soundly.
+// audit-#11 item 7 sub-1: this used to ALSO redefine Error/EvalError/
+// RangeError/ReferenceError/SyntaxError/TypeError/URIError as dummy
+// string-returning functions. jz has real, sound classes for all seven
+// (construction, .message/.name, and instanceof all work natively — verified
+// live) — the redefinitions only SHADOWED them with a plain user function.
+// Since jz's sound `instanceof` (38c7dde5) only recognizes its own catalog of
+// classes on the right-hand side, `e instanceof TypeError` against the
+// shadowed local loud-rejected at compile time ("instanceof: unsupported
+// right-hand side") for every test file that (a) needed this harness AND
+// (b) checked `instanceof <one of the seven>` anywhere in its own content —
+// 108 of the language suite's fails, and the matching bulk of the built-ins
+// suite's. Not shadowing them lets jz's real classes answer those checks
+// soundly. `Test262Error` has no jz-native equivalent (it's a harness-only
+// sentinel) and stays a plain function — `instanceof Test262Error` still
+// loud-rejects the same way (no prototype chain jz can model for an
+// arbitrary user constructor), which is now classified as a skip (see
+// runTest's catch below), matching the existing "structurally out of scope"
+// treatment the file already gives instanceof-across-a-custom-hierarchy.
 const ASSERT_HARNESS = `
 function Test262Error(message) { return message || 'Test262Error' }
 let __sameValue = (a, b) => {
@@ -362,11 +382,15 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/statements/try/S12.14_A18_T7.js', 'caught-exception object identity'],
   ['test/language/statements/try/S12.14_A19_T1.js', 'Error.prototype.toString on caught exception'],
   ['test/language/statements/try/S12.14_A19_T2.js', 'Error.prototype.toString on caught exception'],
+  // `delete` is no longer blanket-excluded (property deletion works); these
+  // residual files each hit a delete-operator corner jz does not model yet.
   ['test/language/expressions/delete/S8.12.7_A3.js', 'delete via numeric computed key (coerced to string) on static-schema object'],
   ['test/language/statements/for-in/S12.6.4_A7_T1.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
   ['test/language/statements/for-in/S12.6.4_A7_T2.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
   ['test/language/statements/function/S13_A11_T3.js', 'delete of an arguments-object element'],
   ['test/language/statements/function/S13_A11_T4.js', 'delete of an arguments-object element'],
+  // Surfaced by the 2026-07-10 unblanketing (for-of / destructuring / this /
+  // class / WeakMap patterns removed) — each residual hits a specific corner.
   ['test/language/statements/try/S12.14_A15.js', 'finally block with continue/break/return'],
   ['test/language/statementList/class-regexp-literal.js', 'regex literal directly after class body — slash disambiguation parser gap (subscript)'],
   ['test/language/statements/for-of/head-var-bound-names-let.js', 'let-as-identifier parser edge outside current jz scope'],
@@ -391,6 +415,8 @@ function shouldSkip(content, rel = '') {
   return r
 }
 function shouldSkipBase(content, rel = '') {
+  // Exact-file audited-out ledger — replaces the broad family regexes below
+  // that ate would-pass files (JZ_AUDIT sweep 2026-07-12).
   if (AUDITED_OUT.has(rel)) return AUDITED_OUT.get(rel)
   if (LEGACY_LANG_LIMITATIONS.has(rel)) return LEGACY_LANG_LIMITATIONS.get(rel)
   const codeContent = content
@@ -473,6 +499,9 @@ function shouldSkipBase(content, rel = '') {
   // Map/Set normalization still snapshots entries; arrays use a live bound.
   if (/\/for-of\/(map|set)(?:-(?:contract|expand))+\.js$|\/for-of\/set\.js$/.test(rel))
     return 'Map/Set for-of live-iteration mutation contract (snapshot iteration)'
+  // Member-expression targets in for-of heads / destructuring patterns
+  // (`for (obj.x of …)`, `[o.x] = arr` inside a for-of head) — recorded
+  // small-lowering gap.
   if (rel.includes('put-prop-ref') || rel.includes('/for-of/head-lhs-member') || rel.includes('/for-of/head-lhs-cover'))
     return 'member-expression for-of/destructure target outside current lowering (recorded)'
   // Per-iteration lexical binding closure — the recorded for-head let-capture item.
@@ -707,6 +736,9 @@ function shouldSkipBase(content, rel = '') {
     if (CLASS_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
     // fall through to the harness/negative-test filters below
   } else if (isAsyncFnTest(rel)) {
+    // async fns AND async generators/for-await landed (jzify/async.js tagged-
+    // yield machines + __ag_run driver) — narrow exclusions; the rest RUN via
+    // the $DONE shim.
     if (/asyncDispose|await\s+using/i.test(codeContent)) return 'await using / asyncDispose outside the sync dispose model'
     // `async *m()` method shorthand (class/object) — v1 covers declaration +
     // expression forms; `async function*` never matches (word between).
@@ -721,7 +753,7 @@ function shouldSkipBase(content, rel = '') {
     // fall through to the generic filters below
   } else if (isGeneratorTest(rel)) {
     // v1 machines: function*-declaration/expression bodies with statement-position
-    // yields.
+    // yields. Everything else is a named out-of-scope family.
     if (/GeneratorFunction|%Generator/i.test(codeContent)) return 'GeneratorFunction reflection outside jzify subset'
     if (/function\.sent/.test(codeContent)) return 'function.sent outside jzify subset'
     if (/__proto__|\bprototype\b|Object\.(getPrototypeOf|getOwnPropertyDescriptor|defineProperty)/.test(codeContent)) return 'generator prototype reflection outside jzify subset'
@@ -971,14 +1003,27 @@ function collectWork() {
 // (Mirrors the builtins suite.) Paths are `relative(TEST262, file)` form.
 const EXPECTED_FAIL_PREFIXES = [
 ]
-//  [WRONG-VALUE] tag below = release-blocking per README.md's semantics
-//     contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
-//     matches README "What differs from JS?"). [DIALECT] — documented dialect
-//     divergence (README "What differs from JS?" — generators/async lower to
-//     state machines, jobs drain at host boundaries). Pinned so it stays
-//     visible rather than reading as "just an xfail". [VERIFY] — outcome not
-//     conclusively determined (deep engine-internal spec corner); flagged
-//     honestly rather than guessed into either acceptable bucket.
+// [WRONG-VALUE] tag below = release-blocking per README.md's semantics
+// contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
+// matches README "What differs from JS?").
+// Audit-#12 classification pass (this commit) — every entry below is tagged
+// by OUTCOME, not just symptom, so a category-(iii) accepted-wrong value can
+// never hide behind a plausible-sounding xfail reason again:
+//   [REJECT]   — valid source, cleanly rejected at compile time as
+//                unsupported. No value was ever silently produced. Acceptable.
+//   [DIALECT]  — documented dialect divergence (README "What differs from
+//                JS?" — generators/async lower to state machines, jobs drain
+//                at host boundaries). Acceptable.
+//   [WRONG-VALUE] — accepted, ran, and produced a plausible-looking value that
+//                silently differs from JS with NO README coverage. Release-
+//                blocking per README.md's semantics contract; NOT fixed by
+//                this commit (out of the two assigned families — Family A
+//                rest-destructure isArray — surfaced
+//                here as a byproduct of walking the full xfail list). Pinned
+//                so it stays visible rather than reading as "just an xfail".
+//   [VERIFY]   — outcome not conclusively determined (deep engine-internal
+//                spec corner); flagged honestly rather than guessed into
+//                either acceptable bucket.
 const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed this commit] '
 //  - function/S13_A15_T4.js: `return typeof arguments; var arguments = X;`
 //    — jzify/arguments.js's lowerArguments renamed EVERY `arguments`
@@ -1143,14 +1188,20 @@ if (!isMainThread) {
 
   // CI gating, four guards (skipped in --quick mode, which runs only a subset
   // so its counts aren't comparable):
-  //   Out-of-scope/upstream gaps are bucketed as xfail (see EXPECTED_FAIL
-  //      above), and unsupported syntax as skip, so a real fail is always a jz
-  //      miscompile. This catches a one-for-one pass↔fail swap that leaves the
-  //      count unchanged (invisible to guard 3).
-  //   3. pass-count ratchet — pass must not drop below the committed
-  //      lock's `language` floor (test/test262-baseline.json, audit-#12 item
-  //      3). JZ_TEST262_BASELINE, if set, still overrides the file — a
-  //      one-off diagnostic escape hatch, not the source of truth.
+  //   1. fail===0 — the language suite's in-scope baseline is zero failures, so
+  //      ANY fail is a regression. Out-of-scope/upstream gaps are bucketed as
+  //      xfail (see EXPECTED_FAIL above), and unsupported syntax as skip, so a
+  //      real fail is always a jz miscompile. This catches a one-for-one
+  //      pass↔fail swap that leaves the count unchanged (invisible to guard 3).
+  //   2. xpass===0 — a file listed in EXPECTED_FAIL_FILES that now passes means
+  //      the entry is stale; prune it (keeps the expected-fail list honest).
+  //   3. pass-count ratchet — pass must not drop below the committed lock's
+  //      `language` floor (test/test262-baseline.json, audit-#12 item 3).
+  //      Always enforced (previously only when JZ_TEST262_BASELINE was set —
+  //      the CI-vs-local split this closes: CI carried its own stale
+  //      JZ_TEST262_BASELINE env value, 2975, while local runs were
+  //      floorless). JZ_TEST262_BASELINE, if set, still overrides the file —
+  //      a one-off diagnostic escape hatch, not the source of truth.
   //   4. exact accepted-negative ledger — both the count and every path must
   //      equal test262-neg-accepts.json. Additions, removals, and one-for-one
   //      swaps all require an explicit reviewed ledger update.

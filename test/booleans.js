@@ -246,6 +246,11 @@ test('bool: host boolean coerces to 0/1 in arithmetic', () => {
 // Pinned so the README's stated boundaries can't drift silently.
 
 test('bool: value-preserving &&/|| carry the boolean atom across the boundary (gap CLOSED)', () => {
+  // Was a documented gap: `5 && true` crossed as raw 1 (the value-preserving
+  // merge collapsed the BOOL arm to its numeric carrier). Closed by the
+  // ambiguous-BOOL-merge identity work: a merge with a statically-BOOL arm and a
+  // NUMBER sibling boxes the BOOL arm at identity/boundary escapes, so the atom
+  // survives to JS exactly.
   is(fn('export let f = () => 5 && true')(), true)
   is(fn('export let f = () => 0 || true')(), true)
   is(fn('export let f = () => 5 && 3')(), 3)
@@ -267,6 +272,15 @@ test('bool: identical ambiguous merge duplicated across return branches (quarant
 })
 
 test('bool: bare boolean read from a container decodes as a real boolean', () => {
+  // Was a documented gap (bare return crossed as the raw 1/0 carrier instead of
+  // proving BOOL at the boundary) — closed as a side effect of the member-
+  // compound-assign BigInt fix (2^62 boundary ledger entry): narrowValResults/
+  // narrowBoolResults (src/compile/narrow.js), the function-return-kind
+  // pre-pass, now installs the function's own analyzeBody(body).flatObjects
+  // before resolving a `.`/`[]` return tail's kind — previously it ran before
+  // ctx.func.flatObjects was populated for the function under examination, so
+  // a proven-BOOL (or BIGINT — see statements.js) flat array/object element's
+  // return tail read as unproven and kept the raw Number carrier.
   is(fn('export let f = () => { let a = [true, false]; return a[0] }')(), true)
   is(fn('export let f = () => { let a = [true, false]; return typeof a[0] }')(), 'boolean')
 })
@@ -427,6 +441,11 @@ test('bool identity: preset-table idiom (the kernel divergence chain)', async ()
 })
 
 test('bool identity: dyn-spread literal bool props keep the atom (=== true survives)', async () => {
+  // The rotateLoops loss: {...fromEntries(...), rotateLoops: true} lowers via
+  // emitDynamicSpread (unknown spread source → HASH); its explicit `k: v` writes
+  // stored `emit(v)` RAW — a literal true landed as 1.0 bits, not the TRUE atom —
+  // so every `cfg.flag === true` gate read false and speed-tier passes silently
+  // dropped in-kernel (sum|3 rotation, O3 preset flags).
   const SRC = `
   const AO = Object.fromEntries([['p', true]])
   const P = { ...AO, a: true, b: false, s: 'speed', n: 16 }

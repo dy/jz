@@ -33,24 +33,42 @@ import { baseOf, CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, cla
 import { appendEntries, chainProblems, contactProblems, entryProblems, heldoutFigures, LANES, MANIFEST, RECORD, registrationProblem, registrationProblems, rowOf } from '../bench/heldout/lane.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-// The named rivals of the claim. Unlike test/bench.js's availability-filtered list
-// (what can run HERE), the reference dataset must contest ALL of them. Every
-// JS-runtime lane in the reference dataset counts; absence of a lane is a coverage
-// hole, not a pass (same COVERAGE_FLOOR as the wasm rivals). V8-family engines
-// (node's V8, Deno's V8) and bun/JSC (both JavaScriptCore) are separate classes, so
-// a lane's engine family, not its runtime name, decides which claim it is held to.
-// Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28: the old
-// ">=5 rows" floor let 5 successes from a 60-case corpus count as "contested"). 0.7
-// is set from real corpus portability, not convenience: the least-portable
-// maintained lanes (go/zig families) genuinely port 43/60 = 0.72 of cases; a healthy
-// lane clears 0.7, a token lane cannot.
+// The named rivals of the claim. Unlike test/bench.js's availability-filtered
+// list (what can run HERE), the reference dataset must contest ALL of them.
+// (Porffor left the wasm field with its 2026 rewrite — it contests from the
+// native band as `porf-native`, presence-gated below, geomean-pinned in
+// test/bench.js.)
+// The OTHER published promise — "outruns the JIT" — same committed-evidence
+// discipline as the wasm claim (audit 2026-07-28: it was ungated; the snapshot
+// held 19 JIT losses across 9 cases that no test surfaced). Every JS-runtime
+// lane in the reference dataset counts; absence of a lane is a coverage hole,
+// not a pass (same COVERAGE_FLOOR as the wasm rivals).
+// V8-family engines (node's V8, Deno's V8) and bun/JSC (both JavaScriptCore) are
+// separate classes, so a lane's engine family, not its runtime name, decides which
+// claim it is held to. A case a class excepts by name (bench/claims.mjs
+// CLAIM_EXCEPTIONS: its measured cause and evidence) leaves that class's strict and
+// band tests and answers to its own band instead: a tripwire, not a claim.
+// Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28:
+// the old ">=5 rows" floor let 5 successes from a 60-case corpus count as
+// "contested"). 0.7 is set from real corpus portability, not convenience: the
+// least-portable maintained lanes (go/zig families) genuinely port 43/60 =
+// 0.72 of cases; a healthy lane clears 0.7, a token lane cannot.
 const COVERAGE_FLOOR = 0.7
+// SUPERSEDED 2026-08-28 (perf/size-leadership campaign — the owner's literal bar is
+// "ALWAYS smaller than AssemblyScript, ×1, per case"): the geomean-only scoping
+// decided 2026-08-01 is kept below as an aggregate backstop, but strict per-case
+// leadership is now ALSO asserted (see "claims: size — jz strictly smaller..." below)
+// — geomean alone let roughly half the corpus run larger than AS while staying green.
 // Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
 const SIZE_GEOMEAN_MAX = 1.05
-// Kept as an explicit list because the repo also holds non-codegen trees
-// (tests/site/bench evidence); the watr version is additionally cross-checked
-// against the snapshot's meta below. The list is bench/claims.mjs SOURCE_SCOPE,
-// which the held-out lane shares.
+// Compiler-source scope for freshness: a commit touching only tests/docs/site
+// doesn't invalidate perf evidence; one touching these does.
+// EVERY codegen input (audit 2026-07-27: the old allowlist missed package.json/
+// package-lock.json — dependency upgrades like the watr 5.7.12 determinism fix
+// change emitted code — and layout.js). Kept as an explicit list because the
+// repo also holds non-codegen trees (tests/site/bench evidence); the watr
+// version is additionally cross-checked against the snapshot's meta below.
+// The list is bench/claims.mjs SOURCE_SCOPE, which the held-out lane shares.
 
 const resultsPath = process.env.JZ_BENCH_RESULTS || join(ROOT, 'bench/results.json')
 const res = JSON.parse(readFileSync(resultsPath, 'utf8'))
@@ -129,6 +147,8 @@ test('claims: reference evidence is fresh (no compiler commits past any JZ row)'
   const validMetaBase = typeof metaBase === 'string' && /^[0-9a-f]{7,40}$/.test(metaBase)
   ok(validMetaBase, validMetaBase ? `results.json meta.commit ${metaBase}` : `results.json meta.commit missing/malformed: ${metaBase}`)
 
+  // A partial merge's meta.commit names the write, not every carried JZ run.
+  // Full snapshots have no row stamps and use meta.commit.
   const { byBase, missing, evidencedRows } = collectJzEvidence(res)
   ok(evidencedRows >= Math.ceil(Object.keys(cases).length * COVERAGE_FLOOR),
     `${evidencedRows} parity-valid JZ rows carry the performance claim`)
@@ -172,10 +192,21 @@ test('claims: partial (mixed-vintage) evidence requires a passing anchors check 
   if (!res.meta?.partial) { ok(true, 'not a partial refresh (meta.partial unset) — anchors not required'); return }
   ok(res.meta?.anchors?.pass === true,
     `meta.partial is true but meta.anchors.pass is not true (${JSON.stringify(res.meta?.anchors)}) — re-run with --verify-anchors before shipping a partial refresh`)
+  // audit-#14 item 8: a CARRIED verdict (bench.mjs stamps carried:true when a
+  // merge rides a prior run's anchors through) certifies a DIFFERENT machine
+  // state than the one this evidence's own meta records — it cannot back a
+  // partial refresh.
   ok(!res.meta.anchors.carried,
     `meta.partial is true but the anchors verdict is carried from a prior run (carried:true) — a same-invocation --verify-anchors pass is required for partial evidence`)
 })
 
+// VALIDITY — machine-state sanity for timing evidence (audit-#13 hygiene item
+// 2b, bench/machine-state.mjs). The WARM/MEMORY-FLOOR false-red campaign ("WARM
+// + MEMORY-FLOOR reds RESOLVED as ENVIRONMENT" status, 2026-08-06) found LIVE
+// that swap pressure alone explains multi-percent timing drift with zero code
+// change — every fresh timing write now carries meta.machineState; this gate
+// holds it to a sane bound so a future regression report can rule out "the
+// machine was swapping" before chasing a phantom code cause.
 const SWAP_SANE_BOUND_MB = 4096
 test('VALIDITY: reference evidence carries machineState within the swap-pressure sane bound', () => {
   const state = res.meta?.machineState
@@ -185,6 +216,12 @@ test('VALIDITY: reference evidence carries machineState within the swap-pressure
     `committed evidence's machineState.swapUsedMB=${state.swapUsedMB}MB exceeds the ${SWAP_SANE_BOUND_MB}MB sane bound — timing evidence recorded under swap pressure is validity-suspect; re-measure on a quieter (post-reboot) machine`)
 })
 
+// Live-machine validity (audit-#13 item 2b, inverted per audit-#14 item 9):
+// the earlier form asserted swap IS elevated ("KNOWN-BAD documented-red"),
+// which turned a bad environment into a green row — the exact disguise the
+// validity mechanism exists to prevent. The WARM/MEMORY-FLOOR campaign
+// (2026-08-06) established that elevated swap alone explains multi-percent
+// timing drift with zero code change.
 const _liveState = machineState()
 const _liveInvalid = _liveState.swapUsedMB != null && _liveState.swapUsedMB >= SWAP_SANE_BOUND_MB
 ;(_liveInvalid ? test.todo : test)('VALIDITY: live machine swap pressure below the sane bound (timing evidence is embargoed while this is TODO)', () => {
@@ -232,8 +269,9 @@ test('claims: allocation-heavy cases use no more peak RSS than V8', () => {
   ok(losses.length === 0, `JZ/V8 peak-RSS losses: ${losses.map(([name, ratio]) => `${name} ${ratio.toFixed(3)}×`).join(', ')}`)
 })
 
-// Keep reference verdicts together so CI can check a fresh dataset without
-// first requiring the obsolete one to pass.
+// Same native-lowering caps previously checked by test/bench.js against the
+// stored snapshot. Keep reference verdicts together so CI can check a fresh
+// dataset without first requiring the obsolete one to pass.
 const W2C_GEOMEAN_MAX = 1.35, W2C_CASE_MAX = 3.5
 test('claims: jz-w2c native lowering within regression bands', () => {
   const ratios = []
@@ -326,6 +364,7 @@ test('claims: every named rival is contested (coverage ≥ floor of the corpus)'
     ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${field.length} cases (floor ${needCovered})${res.meta?.contenders ? ` under --contenders=${res.meta.contenders}` : ''}`)
   }
   if (res.meta?.contenders) return
+  // Every lane measured: each rival over the cases it has a program for.
   for (const rival of [...CLAIM_RIVALS, ...FAST_RIVALS, ...JIT_RIVALS, 'porf-native']) {
     const ext = RIVAL_SOURCE[rival]
     const field = Object.keys(cases).filter(id => !ext || existsSync(join(ROOT, 'bench', id, id + ext)))
@@ -383,15 +422,46 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
   ok(sizeGeomean >= 1, `porf-native/jz artifact-byte geomean ${sizeGeomean?.toFixed(3) ?? 'missing'}×`)
 })
 
-// Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. Cases the claims
-// do not yet cover: a library's own code or a workload class added to the corpus that jz
-// does not lead on every runner yet (AGENTS.md's "tracked as todo in the gate until jz
-// takes the lead — never silently accepted"):
-// Kept as functions of their own, `forward` and `backward` compile in 1 ms each
-//   and still land after the last round. Leading here takes baseline code faster
-//   than V8's optimized JavaScript.
+// Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. `ids`
+// (optional Set) restricts which cases are considered — used to carve a
+// class's named exceptions out of its claim; `source` is the evidence.
+// Cases the claims do not yet cover: a library's own code or a workload class added to
+// the corpus that jz does not lead on every runner yet (AGENTS.md's "tracked as todo in
+// the gate until jz takes the lead — never silently accepted"):
+// - stdlib-exp led V8, bun and JSC on every runner sampled (Neoverse-N2, EPYC
+//   7763/9V45/9V74, Xeon 8370C/8573C) and every engine on an Apple M4, and trailed deno
+//   2.9.8 on x64 (1.20-1.61×). deno 2.9.8 embeds V8 15.0, node 24 V8 13.6, and runs the
+//   kernel's JavaScript 1.65-2.2× faster on arm64 (Neoverse-N2, 29.2 ms against 48.2)
+//   as on x64: the newer engine's gain, not the ISA's, with no work skipped (each of
+//   the 2^20 results is stored to a Float64Array the checksum reads). jz's own gap: its
+//   loop ran as V8's baseline code, since V8 replaces code between calls only and the
+//   void export's boundary wrapper hid the once-entered function from loopPasses
+//   (split-funcs.js); optimized, it runs 0.49× that time on an M4 (5.8 ms against
+//   11.7).
+// - fabrik runs ~70 µs a round, so its verdict is V8's tier-up race: the rounds
+//   of one process read 0.50-1.69× its own base build, and 9 of 22 probe runs saw
+//   V8 or deno ahead; the latest CI reference (EPYC 7763) reads jz 146 µs, V8
+//   1.339× and deno 1.197× faster. Kept as functions of their own, `forward` and
+//   `backward` compile in 1 ms each and still land after the last round. Leading
+//   here takes baseline code faster than V8's optimized JavaScript.
+// - stringify, jsontransform, mapstr, mapint, mapobj, setops and async, the JSON, Map
+//   and Set, and async workloads added on 2026-11-03: jz trailed the V8-family engines
+//   on all seven, the Rust and AssemblyScript wasm ports on the four Map and Set cases,
+//   and Porffor on async (an Apple M4, loaded: mapstr 1.97× Node, async 2.99× Node and
+//   1.51× Porffor after its job-queue rework); their work is in progress.
+// - jsonroundtrip, arraynumeric and arraydowngrade, Perry's benchmark suite
+//   (PerryTS/perry benchmarks/suite) added on 2026-11-03, paired on an Apple M4 at
+//   load 10 to 14: jsonroundtrip leads node (0.66×), deno, bun and every wasm port
+//   and trails the jsc shell (1.08×); arraynumeric leads every engine (node 0.64×,
+//   jsc 0.88×) and trails C → wasm (1.11×), its increment storing each sum through a
+//   NaN-canonicalizing select where clang's loop loads, adds and stores;
+//   arraydowngrade trails every engine (node 5.4×, deno 6.5×, bun and jsc 6.1×) and
+//   the C, Rust and AssemblyScript wasm ports (1.53×, 3.77×, 2.27×): its `arr[i] + 1`
+//   over slots of number, object and string is the dynamic add in a loop that may
+//   allocate, so each element also pays the in-loop collector's heap and iterator
+//   tests, a forwarding check of the array's header, a bounds and a hole test.
 // Excluded from the strict and band tests, the Porffor floor and the corpus-coverage
-//   test until the todo below flips; a case leaves this set the commit it leads.
+// test until the todo below flips; a case leaves this set the commit it leads.
 const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'stringify', 'jsontransform', 'mapstr', 'mapint', 'mapobj', 'setops', 'async',
   'jsonroundtrip', 'arraynumeric', 'arraydowngrade'])
 
@@ -582,8 +652,10 @@ test('claims: promotion asks for a strict lead in every contested class, the exa
   is(ready, ['leads', 'jsOnly'], 'a tie, a trailing or missing exact lane, no rival or no row keep a case pending')
 })
 
-// NAMED EXCEPTIONS — each excepted case against its class's fastest rival: within its band it holds (a lead says
-// the entry may go), past it the gate fails.
+// NAMED EXCEPTIONS — each excepted case against its class's fastest rival:
+// within its band it holds (a lead says the entry may go), past it the gate fails.
+// A case the evidence does not time is reported, not passed as held.
+// (a class that is the entry's claim measured another way, wasm-exact for wasm, answers to it with its own lane)
 const exceptionVerdicts = (source = cases, table = CLAIM_EXCEPTIONS.filter(e => RIVALS[e.class])) => table.flatMap(e =>
   CLAIM_CLASSES.filter(([label]) => claimOf(label) === e.class).map(([label, rivals]) => {
     const [row] = caseRatios(rivals, new Set([e.case]), source, baseOf(label))
@@ -635,9 +707,12 @@ test('claims: named exceptions — each excepted case stays within its band', ()
   ok(broken.length === 0, `named exception past its band, a regression the exception does not cover: ${broken.map(v => `${verdictText(v)} — ${v.cause}`).join('; ')}`)
 })
 
-// Both checks read only committed evidence (bench/results.json), consistent
-// with this file's own architecture (test/bench.js is the live-measurement
-// counterpart).
+// SIZE — the owner's bar (2026-08-28 tightened; supersedes the
+// par-or-geomean-only scoping this block used to carry): jz wasm must be
+// strictly smaller than AssemblyScript's on EVERY comparable case, ×1, not just
+// by geomean. Both checks read only committed evidence (bench/results.json),
+// consistent with this file's own architecture (test/bench.js is the
+// live-measurement counterpart).
 test('claims: size — jz strictly smaller than AssemblyScript on every comparable case', () => {
   const notLed = [], held = [], excepted = exceptionsOf('size')
   for (const [id, c] of Object.entries(cases)) {
@@ -665,8 +740,11 @@ test(`claims: size — jz geomean bytes vs AssemblyScript stays within the ${SIZ
   ok(geomean <= SIZE_GEOMEAN_MAX, `size geomean jz/as ${geomean.toFixed(3)}× exceeds the ${SIZE_GEOMEAN_MAX}× par band`)
 })
 
-// With no record the lane is unmeasured. Its fixture (bench/heldout/fixture: programs in the
-// sets' shapes, written for these tests) stands in for the sets, which are never read here.
+// ── The held-out lane (bench/heldout/manifest.json, bench/heldout/lane.mjs): programs jz was
+// never tuned on, measured once on first contact by .github/workflows/heldout.yml, the only
+// writer of the record (bench/heldout.json). With no record the lane is unmeasured. Its
+// fixture (bench/heldout/fixture: programs in the sets' shapes, written for these tests)
+// stands in for the sets, which are never read here.
 const HELDOUT = JSON.parse(readFileSync(join(ROOT, MANIFEST), 'utf8'))
 const FIXTURE = 'bench/heldout/fixture/manifest.json'
 const FIXTURE_MANIFEST = JSON.parse(readFileSync(join(ROOT, FIXTURE), 'utf8'))
@@ -724,6 +802,7 @@ test('heldout: drivers made from each set\'s interface pass V8\'s check, and a f
     ok(line('fx-clbg-forks').startsWith('out  ') && line('fx-clbg-forks').includes('V8 did not run its check: TypeError'),
       `a program that forks a worker of the running script does not run in the check: ${line('fx-clbg-forks')}`)
     ok(check.stdout.includes('6 of 8 programs pass their check in V8; 2 not measured (marked notMeasured, and failing in V8)'), 'and the totals count them')
+    // bench.mjs, which a contact runs over the drivers, takes none of a program marked not measured
     const cases = spawnSync(process.execPath, [join(ROOT, 'bench/bench.mjs'), '--list'], { cwd: ROOT, encoding: 'utf8', timeout: 120_000, env: { ...process.env, JZ_BENCH_CASES_DIR: join(dir, 'cases') } })
     const measured = FIXTURE_MANIFEST.sets.flatMap(s => s.programs).filter(p => !p.notMeasured).map(p => p.id)
     is(cases.stdout.trim().split('\n').sort().join(), measured.sort().join(), `bench.mjs takes every other program and neither marked one:\n${cases.stdout}${cases.stderr}`)
@@ -829,6 +908,7 @@ test('heldout: the record job appends each run to main\'s record, chained, and l
     // one run's evidence, as the measuring job uploads it
     const cases = join(dir, 'run/cases'), bench = join(dir, 'run/bench.json')
     mkdirSync(cases, { recursive: true })
+    // (a program marked not measured has a driver for the check and no case: bench.mjs has no row of it)
     const programs = FIXTURE_MANIFEST.sets.flatMap(set => set.programs.map(p => ({ id: p.id, set: set.id, interface: set.interface, path: p.path, blob: p.blob,
       sha256: 'e'.repeat(64), ...(p.notMeasured && { notMeasured: p.notMeasured }), source: { repo: `local:${set.local}`, commit: null }, files: {}, driver: 'd'.repeat(64) })))
     const measured = programs.filter(p => !p.notMeasured)
@@ -857,6 +937,7 @@ test('heldout: the record job appends each run to main\'s record, chained, and l
     writeFileSync(leaked, benchOf(programs))
     const refused = spawnSync(process.execPath, [join(work, 'scripts/heldout.mjs'), 'record', cases, leaked, `--manifest=${FIXTURE}`, `--record=${local}`], { cwd: work, encoding: 'utf8', env })
     ok(refused.status !== 0 && refused.stderr.includes('measured it, where the manifest marks it notMeasured') && !existsSync(local), `a bench row of a program marked not measured stops the record:\n${refused.stderr}`)
+    // a contact refuses a program registered before a compiler change, but none marked not measured
     add(['src/ast.js'], 'a compiler change')
     const stale = spawnSync(process.execPath, [join(work, 'scripts/heldout.mjs'), 'registered', cases, `--manifest=${FIXTURE}`], { cwd: work, encoding: 'utf8', env })
     is(stale.status, 1, stale.stdout + stale.stderr)

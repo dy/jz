@@ -363,9 +363,12 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   ok(threw && /already registered/.test(threw.message) && /testModuleE/.test(threw.message), 'bind-then-bind: message names the original registering module')
 
   // combo 5 (THE historical shape, byte-for-byte): bind() registers a flat
-  // key first (string.js's `bind('.valueOf', …)`), a LATER raw assignment —
-  // not bind(), a literal `ctx.core.emit[name] = …`, exactly date.js's
+  // key first (string.js's `bind('.valueOf', …)`), a LATER raw assignment
+  // — not bind(), a literal `ctx.core.emit[name] = …`, exactly date.js's
   // pre-fix `ctx.core.emit['.valueOf'] = emitDateGetTime` — clobbers it.
+  // Undetectable at the moment of the raw write (no Proxy), so this is
+  // verifyEmitIntegrity's post-hoc catch, same as combo 2, but now reached
+  // from bind()'s ledger entry instead of only reg()'s.
   reset({}, {}, noopBridge)
   m.ctx.core.currentModule = 'string'
   bind('.valueOf', (val) => val)                    // string.js's generic identity fallback

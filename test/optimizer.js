@@ -435,11 +435,20 @@ test('LSR (watr): speed tier advances record and summed-index addresses as point
 })
 
 test('LICM: checked-access length HEADER decode hoists once per function (neverGrown/TYPED pointer)', () => {
-  // sdf's edt1d (bench/sdf/sdf.js): a data-dependent hull cursor `k` indexes typed-array params
-  // `v`/`z` inside a while-pop nested in a for-loop — an UNPROVEN index (k isn't a canonical
-  // monotone `i<arr.length` counter), so every read takes the checked-access branchless form,
-  // whose length guard decodes the header fresh EVERY site: `i32.shr_u(i32.load(i32.sub(ptr,
-  // 8)), shift)`.
+  // sdf's edt1d (bench/sdf/sdf.js): a data-dependent hull cursor `k` indexes typed-array
+  // params `v`/`z` inside a while-pop nested in a for-loop — an UNPROVEN index (k isn't a
+  // canonical monotone `i<arr.length` counter), so every read takes the checked-access
+  // branchless form, whose length guard decodes the header fresh EVERY site:
+  // `i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`. `v`/`z` are TYPED-array params (fixed-size
+  // allocations — module/typedarray.js's typedBase: "no grow op, so it can never relocate")
+  // never reassigned in the body, so the DECODED LENGTH is loop-invariant — but was re-fetched
+  // from memory at every guard site regardless (ledger 'SDF GAP DISSECTED WITH SHARES
+  // 2026-07-25'). hoistInvariantLoop now admits this load (compile/index.js stamps
+  // `fn.stableHeaderNames` from VAL.TYPED / ARRAY-neverGrown reps; optimize/index.js's
+  // pureGiven recognizes `i32.load(i32.sub(local.get $X, i32.const 8))` for $X in that set as
+  // invariant with NO alias-analysis needed — the header word can never change once the
+  // receiver is allocated) — cascading bottom-up through the nested while and the outer for
+  // collapses every site to ONE decode, shared by both loops.
   const src = `
     const scan = (v, z, n) => {
       let k = 0
@@ -586,12 +595,13 @@ test('LICM: does not fire when loop contains calls', () => {
 })
 
 test('LICM: self-referential tee induction in loop condition is not hoisted (rfft stage-loop regression)', () => {
-  // `while ((nn = nn >>> 1))` — the loop's induction update is a self-referential tee in
-  // the condition (nn = f(nn)). hoistInvariantLoop treated the operand's `nn` read as
-  // the in-subtree teed value (it is actually the loop-carried previous value, read
-  // before the tee writes) and hoisted the whole update to the pre-header, freezing nn
-  // nonzero → a non-terminating loop and out-of-bounds stores. This is the rfft
-  // split-radix stage loop (examples/rfft/rfft.js transform()).
+  // `while ((nn = nn >>> 1))` — the loop's induction update is a self-referential
+  // tee in the condition (nn = f(nn)). hoistInvariantLoop treated the operand's
+  // `nn` read as the in-subtree teed value (it is actually the loop-carried previous
+  // value, read before the tee writes) and hoisted the whole update to the pre-header,
+  // freezing nn nonzero → a non-terminating loop and out-of-bounds stores. This is the
+  // rfft split-radix stage loop (examples/rfft/rfft.js transform()). The `count > 1000`
+  // guard bounds a regression to a wrong value instead of a hang.
   const src = `
     export const main = (n) => {
       let nn = n >>> 0, count = 0, acc = 0
@@ -1191,6 +1201,10 @@ test('inline: large multi-caller leaf folds at speed (transitive candidacy + exp
   ok(calls(2) >= 1, 'level 2: strict policy keeps the multi-caller leaf outlined for tier-up')
 })
 
+// The leaf site cap bounds duplication at sites outside loops; a site inside a
+// loop is the call the splice exists to remove. three's Vector3.fromArray has a
+// dozen callers in the library and a handful per element in a frame's kernels:
+// the library's straight-line callers no longer keep the kernels' calls.
 test('inline: a small leaf called from many straight-line sites still splices into the loops that call it', () => {
   // seven straight-line callers and four calls in the loop: over the leaf's site cap together, under it apart
   const cold = Array.from({ length: 7 }, (_, i) => `let c${i} = (a) => leaf(a, ${i})`).join('\n')
@@ -1677,7 +1691,12 @@ test('a small typed-index loop unrolls around a closure that writes a binding of
 
 test('a leaf called only from a method a dispatcher reaches still splices', () => {
   if (onKernel()) return
-  // The inliner counts sites in the functions that run.
+  // The inliner counts sites in the functions that run. A class method reached
+  // through a member access the census cannot name (two classes answer
+  // `valueAt`: a dispatcher tests each) is one of them, as the program index's
+  // call graph seeds it; the liveness the inliner read seeded only from direct
+  // calls, so every leaf such a method called kept its call (the Web Audio
+  // render's automation guards, 3.4× slower than the inlined render).
   const src = `
     const isRamp = (e) => e.kind === 'ramp'
     const isStep = (e) => e.kind === 'step'
@@ -1878,9 +1897,11 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   almost(main(1), refMain(1), 1e-9)
   almost(main(5), refMain(5), 1e-9)
 
-  // At the speed/relaxedFloat tier the OUTER-loop-invariant partial products are hoisted out
-  // of the n-loop (rust/LLVM's mat4-prologue trick — only a[0],a[5],b[0],b[5] mutate, so
-  // most of each a[r]·b[c] dot is constant across iterations). The reassociation (invariant
+  // At the speed/relaxedFloat tier the OUTER-loop-invariant partial products are hoisted
+  // out of the n-loop (rust/LLVM's mat4-prologue trick — only a[0],a[5],b[0],b[5] mutate,
+  // so most of each a[r]·b[c] dot is constant across iterations). Each unrolled dot then
+  // has < DOT_UNROLL accumulate steps, so it stays scalar instead of f64x2 — measured ~1.9×
+  // faster than the pack/extract SIMD form, beating rust-wasm. The reassociation (invariant
   // terms summed first) is ULP-level, so it is gated to speed; the level-2 path above keeps
   // the bit-exact f64x2 dot pairs.
   const speedWat = compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
@@ -1949,6 +1970,10 @@ test('nested small const-count for-loop unroll is opt-in', () => {
 })
 
 test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => {
+  // Static len + masked idx: the accesses are PROVEN in-bounds (mask class), so the
+  // bare loads the fusion peephole matches survive Root F's checked-by-default
+  // typed indexing (unprovable single accesses now emit branchless checked selects,
+  // which have no shared-base contract).
   const wat = compile(`
     export const main = (idx) => {
       const a = new Float64Array(64)
@@ -2387,6 +2412,9 @@ test('sourceInline: trailing-return helper inlines into `X = call(...)` assignme
 
 test('sourceInline: nested calls flatten — lerp(grad(a), grad(b), t) fully inlines', () => {
   if (belowOpt(2)) return
+  // A call whose args are THEMSELVES candidate calls (noise's `lerp(grad(aa,…), grad(ba,…), u)`)
+  // must flatten end-to-end: non-simple args bind to temps (no duplication), then a follow-up
+  // pass folds the inner candidate into the temp decl.
   const src = `
     const grad = (h, x, y) => { const g = h & 3; const u = (g & 1) === 0 ? x : -x; const v = (g & 2) === 0 ? y : -y; return u + v }
     const lerp = (a, b, t) => a + t * (b - a)
@@ -2693,7 +2721,11 @@ test('if→select: short-circuit || with a side-effecting cond is NOT folded (re
 
 test('Math.floor(bounded)|0 → one exact word, no +∞ guard', () => {
   // f64Range maps through f64.floor: Math.floor(u8 * scale) is a finite value, so toI32 emits
-  // i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard. Bit-exact.
+  // i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard. The default tier
+  // keeps that i64 form (V8 arm64's fastest; bytebeat 1521 → 1370 µs against the bare
+  // i32.trunc_sat this used to pin); the speed tier takes the word of the bounded integer by
+  // the add (its 1.5·2^52 sum read as bits), no conversion at all: x64 4.1 → 1.0 ns, arm64
+  // within 0.1 ns (bench/lowering.mjs). Bit-exact.
   const SRC = `
     const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
     export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
@@ -2956,16 +2988,21 @@ test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself'
   // f64.convert_i32_u of the char code. Inspect jz's type decisions before
   // watr `coalesceLocals` renames `$c`.
   //
-  // `n` itself is genuinely value-correct either way (verified below, incl. an
-  // input long enough to overflow i32 — `n` stays exact up to the f64
-  // safe-integer range, matching JS; the OLD i32-wraps-throughout codegen was
-  // only accidentally correct here because EVERY use of `n` before the final
-  // `|0` stays inside the +/× ring — proving that in general needs a "closed
-  // loop-carried ring under a terminal ToInt32" analysis nothing in jz does
-  // today, so it's not reproduced here). The trade is one
-  // `i64.trunc_sat_f64_s` at the final `n|0` (was 0) instead of a same-signed
-  // local the whole way — `c` itself, this test's actual subject, is
-  // unaffected.
+  // P0-2 ledger (2026-08-02): the digit accumulator `n = n*10 + (c-48)` is a
+  // loop-carried, unbounded local (reassigned every iteration — never a
+  // never-reassigned decl, so it never gets a range-rep fact either) — `n*10`
+  // no longer qualifies for `i32.mul` under the corrected, bilateral-bound
+  // `mulFitsI32` (10 alone bounding the product used to be enough; now `n`'s
+  // side needs a bound too, and a general loop accumulator has none). `n`
+  // itself is genuinely value-correct either way (verified below, incl. an
+  // input long enough to overflow i32 — `n` stays exact up to the f64 safe-
+  // integer range, matching JS; the OLD i32-wraps-throughout codegen was only
+  // accidentally correct here because EVERY use of `n` before the final `|0`
+  // stays inside the +/× ring — proving that in general needs a "closed loop-
+  // carried ring under a terminal ToInt32" analysis nothing in jz does today,
+  // so it's not reproduced here). The trade is one `i64.trunc_sat_f64_s` at
+  // the final `n|0` (was 0) instead of a same-signed local the whole way —
+  // `c` itself, this test's actual subject, is unaffected.
   const wat = compile(`
     export const main = (s) => {
       let n = 0
@@ -3002,10 +3039,13 @@ test('charCodeAt: runtime correctness — digit parse', () => {
   is(main('  9  '), 9)
 })
 
-// Host JS is the authority (plain `n=n*10+digit` repeated — exact IEEE-754
-// double arithmetic, no ToInt32 anywhere without the `|0`); '99999999999' (11
-// nines) accumulates well past 2^31-1 (~2.147e9) but stays exact in f64 (well
-// under 2^53).
+// P0-2 ledger: without the final `|0`, the accumulator's exact value must
+// escape as a genuine JS number — this is where the OLD i32.mul admission
+// (bounding only the literal `10` side, not `n`) would have wrapped mod 2^32
+// once the digit string grew past i32 range. Host JS is the authority (plain
+// `n=n*10+digit` repeated — exact IEEE-754 double arithmetic, no ToInt32
+// anywhere without the `|0`); '99999999999' (11 nines) accumulates well past
+// 2^31-1 (~2.147e9) but stays exact in f64 (well under 2^53).
 test('charCodeAt: digit parse stays exact past i32 range without a truncating sink', () => {
   const { main } = run(`
     export const main = (s) => {
@@ -3142,7 +3182,9 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(undefined).watr, true)
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
-  // string presets.
+  // string presets. 'balanced' was removed (it was a pure synonym for the default
+  // level 2); a stray 'balanced' now FAILS like any unknown preset — the silent
+  // level-2 fallback shipped the wrong pipeline on typos ('sped') with no signal.
   try { resolveOptimize('balanced'); ok(false, `removed 'balanced' must throw`) }
   catch (e) { ok(/optimize takes true, false, 'size' or 'speed'; got 'balanced'/.test(String(e.message)), `removed 'balanced' throws the unknown-preset error`) }
   const size = resolveOptimize('size')
@@ -3808,6 +3850,7 @@ test('schema slot integer certainty: int slot via local intCertain binding', () 
 })
 
 // pass semantic-preservation pins
+// Each pins one optimizer pass against a class of value-corrupting regression.
 // Behavioural (run + assert), since the failure mode is a wrong runtime value.
 
 test('zero-init drop (watr zeroinit): -0.0 initializer is preserved (not coerced to +0)', () => {
@@ -3850,6 +3893,8 @@ test('arenaRewind: an allocation that is returned must persist (no rewind)', () 
   is(ex.main(), 6)
 })
 
+// The value-model lowering leaves local round-trips `$b = $a; $b = f($b)`; copy-prop
+// rewrites the use to $a and the adjacent-dead-store pass drops the now-dead copy.
 const watStr = n => JSON.stringify(n)
 
 test('wat copy-prop: collapses a local copy round-trip, dropping the copy', () => {
@@ -3946,6 +3991,10 @@ test('splitCharScan: main loop narrows the char carrier to i32', () => {
   ok(/f64\.min|call \$math\.min/.test(wat), 'main bound is min(N, s.length)')
 })
 
+// The main loop's bound, `Math.min(n, s.length)`, has no hull below (n is any Number) but
+// rises no further than a string's length, an i32 field: the counter is a word, and the
+// char it reads is a raw word too (static.js topOf; lost between 8a84ee53 and 9b2826b7,
+// when tokenizer ran its scan on a Number counter with the NaN arm per char).
 test('splitCharScan: the main loop counts in a word and reads a raw char', () => {
   const wat = compile(`
     const count = (s, n) => {
@@ -4059,6 +4108,9 @@ test('splitCharScan: break in body disables the split (a main-loop break must no
 })
 
 test('for-bound snapshot: read-only builtin calls do not block the .length hoist', () => {
+  // `callFree` used to disqualify ANY call in the loop body — a charCodeAt /
+  // Math.imul body re-decoded the NaN-boxed string length every iteration (≈3×
+  // slower on byte loops).
   const src = `export const main = (s) => {
     let h = 0x811c9dc5 | 0
     for (let i = 0; i < s.length; i++) {
@@ -4749,7 +4801,9 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // `&&` parses left-deep (subscript's binary() combinator), so a 2-D bounds test `x>=0
   // && x<W && y>=0 && y<H` is `((x>=0 && x<W) && y>=0) && y<H` — the y-pair straddles
   // an intervening `&&` node (y>=0 is that node's right child, y<H is the outer call's
-  // `b`), not immediate AST siblings the way the x-pair is.
+  // `b`), not immediate AST siblings the way the x-pair is. This is the 2D-bounds-check
+  // shape from trace.js and any scanner/raster code with more than one range test
+  // chained.
   const wat = compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })
@@ -6652,6 +6706,10 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
 })
 
 test('co-induction accumulator fact: base64 op-counter recovers i32 storage (INDUCTION-VARIABLE FACT project)', () => {
+  // `op` is declared BEFORE the loop, stepped only by a body literal (`op += 4`),
+  // guarded by a SHIFTED loop bound (`i + 3 <= N`) — the exact base64 encode/decode
+  // shape f95b56bc/efe34b1c/d6460bce/c8700daa all named as "no existing slot in any
+  // current channel".
   const N = 3072
   const src = `
     const N = ${N}
@@ -6800,6 +6858,11 @@ test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', 
   for (const w of [1, 2, 3, 7, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8])
     is(blurOn(w, r), blurOff(w, r), `blur w=${w} r=${r}`)
 
+  // guards must bail (and stay bit-exact) on: non-monotonic iv, mutated bound, asymmetric
+  // tap, closure-mutated bound, plus — found by the adversarial panel — a clamp var
+  // mutated between its `xi=x+k` source and the clamp (so the clamp guards a DIFFERENT
+  // value than the peel assumes), two tap loops sharing the tap var (tapRadius would pick
+  // the wrong radius), and an `x++` living inside the tap loop (real outer step ≠ 1).
   const danger = {
     ivJump: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&3)===0)x=x+2;x++}return s|0}`,
     boundMut: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if(s>9000000)w=w-1;x++}return s|0}`,
@@ -6910,6 +6973,13 @@ test('clamp-peel: tap dominance, transfer targets and initializer scopes remain 
 })
 
 test('forward-propagation: typed-array global swap must survive (double-buffer idiom)', () => {
+  // The canonical ping-pong swap `let s = f; f = g; g = s` over reassignable typed-array
+  // module globals. forwardPropagate tracked `s = (global.get $f)` as a single-use copy but
+  // had NO invalidation for the intervening `f = g` (global.set $f) — so it substituted the
+  // now-stale `(global.get $f)` into `g = s`, collapsing it to `g = g` (a vacuumed self-store).
+  // After the swap f AND g then aliased the SAME buffer, so a stencil sim (lbm) streamed into
+  // the buffer it was reading → noise. purgeGlobalRefs on every global.set is the fix. Pin all
+  // opt levels, both swap legs, and the cross-call persistence (the bug also breaks getG alone).
   const SRC = `
     let f = new Float64Array(2)
     let g = new Float64Array(2)
@@ -6951,10 +7021,12 @@ test('unroll: flattened bodies re-init their accumulators (zero-init elided only
 })
 
 test('sourceInline preserves side effects of an expr-bodied callee at statement position', () => {
-  // `setS = v => s = v` is an expression-bodied arrow whose BODY is the effect (the
-  // assignment). (This is what froze the self-compile parser: its `seek = n => idx = n`
-  // stopped advancing `idx`, so comment-skip looped forever.) The effect must survive
-  // inlining.
+  // `setS = v => s = v` is an expression-bodied arrow whose BODY is the effect
+  // (the assignment). Called as a statement (`setS(7);`), the result is unused —
+  // but inlineHotInternalCalls used to splice only the prefix and DROP the value
+  // expression, losing the `s = v` write. (This is what froze the self-compile parser:
+  // its `seek = n => idx = n` stopped advancing `idx`, so comment-skip looped
+  // forever.) The effect must survive inlining.
   const setter = run(`
     let s = 0
     let setS = (v) => s = v
@@ -6972,6 +7044,9 @@ test('sourceInline preserves side effects of an expr-bodied callee at statement 
 
 test('dead helper does not leak the Eisel-Lemire decimal table', () => {
   if (onKernel()) return  // needs host-side { modules } wiring + optimize:'size' (the kernel owns its pipeline and ignores both — it can't resolve './lib.js')
+  // A dead lib export whose `arr[i] | 0` on an untyped param pulls __to_num →
+  // __dec_to_f64 (consumer of the 10.4 KB power-of-10 table). watr treeshakes the dead
+  // function but not the data segment, so the table used to bloat every such module.
   const lib = `export let used = (h, x) => ((h ^ (x | 0)) * 16777619) | 0
 export let dead = (arr) => { let h = 0; for (let i = 0; i < arr.length; i++) h = used(h, arr[i]); return h }`
   const bytes = compile(
@@ -7214,9 +7289,11 @@ for (const src of [
 
 test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const exponent compiles at every tier (colorpq shape)', () => {
   if (belowOpt(2)) return  // tier bit-identity premise needs BOTH sides vectorized — the opt0 leg forces the default side scalar
-  // Reaching the arm needs the exact colorpq shape: a pure fn kept as a call (multi-site, so
-  // sourceInline declines), inlined only DURING lift, its const exponent found via
-  // ctx.constLocals inside an AoS interleaved-channel loop.
+  // Regression: the arm's crPow branch read the optimize config off the LIFT ctx, which never
+  // carries it (`ctx.transform` undefined → TypeError at compile). Reaching the arm needs the
+  // exact colorpq shape: a pure fn kept as a call (multi-site, so sourceInline declines),
+  // inlined only DURING lift, its const exponent found via ctx.constLocals inside an AoS
+  // interleaved-channel loop.
   const src = `
     const spow = (a, e) => { const s = a < 0 ? -1 : 1, av = a < 0 ? -a : a; return s * av ** e }
     const nv = 2610 / 16384, p = 1.7 * 2523 / 32, c1 = 3424 / 4096, c2 = 2413 / 128, c3 = 2392 / 128
@@ -7354,6 +7431,11 @@ test('versioning: a counter running down past a loose hull is guarded by its ent
   ok(!/i64\.const 4095/.test(compile(src, { optimize: 2, wat: true })), 'no guard tests the loose hull')
 })
 
+// Mirror index in the versioning guard: `inp[N−k]` (symmetric fill — FFT
+// log-magnitude, reverse copies) has iv-coefficient −1; affineIdxOfIV used to
+// reject a<0 outright, so the versioned FAST arm kept a per-iteration bounds
+// check + header load on the mirror store. Extremes now follow the sign of a
+// (max at ENTRY, min at maxIv), and the fast arm stores raw.
 test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm', () => {
   const src = `
     const fill = (spec, inp, n, half) => {
@@ -7387,6 +7469,11 @@ test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm'
   is(exports.go(16, 8), 8000, 'undersized: checked twin drops the OOB mirror, keeps in-range')
 })
 
+// While-loop versioning guard off-by-one: maxIv used the EXCLUSIVE bound, so
+// `maxIv < len` failed exactly when len == bound — every half-spectrum /
+// tail-increment while loop (cepstrum's log fill, medianUs) silently ran the
+// CHECKED arm forever. maxIv is now the true pre-increment max (bound−1);
+// only genuinely post-increment accesses widen (cand.post).
 test('versioning: len == bound while-loop takes the fast arm at runtime', () => {
   const src = `
     const fill = (spec, inp, n, half) => {
@@ -8133,7 +8220,9 @@ export let main = () => {
 
 test('versioned nest: inner-unrolled level keeps its assumptions (fast arm raw)', () => {
   // The biquad cascade shape: outer sample loop versioned at the top, inner
-  // stage loop (const trip) unrolls INSIDE the arms.
+  // stage loop (const trip) unrolls INSIDE the arms. Assumptions are top-owned
+  // now; the fast arm must be sentinel-free while the checked twin keeps the
+  // exact semantics (guard-fail = OOB reads undefined).
   const src = `
 const proc = (x, coeffs, state, nStages, out) => {
   const n = x.length
@@ -8339,6 +8428,12 @@ export let crc = (len) => {
 })
 
 test('cse-load: element read must not CSE across a control boundary', () => {
+  // Pre-existing latent hole exposed by the pair+tail unroll shape: reads()
+  // walked INTO a while nested in a block statement, so the loop body's a[i]
+  // (loop-VARYING) shared a CSE key with a textual twin after the loop and the
+  // "common" load hoisted above the while — reading a[0] forever. reads() now
+  // stops and flushes at control boundaries; each nested sequence gets its own
+  // table via descend().
   const src = `
 export let main = () => {
   const a = new Int32Array(8)
@@ -8357,9 +8452,20 @@ export let main = () => {
 })
 
 test('scalar range facts: q16 chain stays i32 end-to-end (delayline class)', () => {
-  // `d` is still computed in native i32 (`i32.add`/`i32.mul`, confirmed below) and
-  // every value below is exact — this is a lost shift-strength-reduction, not a
-  // correctness gap.
+  // Module-const names (DSPAN) failed the product-i32 rule's literal check, so
+  // the whole q16 chain fell to f64 (f64.div + trunc per sample). intExprRange
+  // chains const names + ranged decl reps (mask → ternary hull → bounded
+  // product); the divide strength-reduces to a shift (or, since the P0-2 fix
+  // below, an exact-reciprocal f64 multiply) and the f64 fraction split
+  // multiplies by the exact reciprocal.
+  //
+  // P0-2 ledger (2026-08-02): `t*DSPAN`'s admission now requires a magnitude BOUND
+  // on BOTH operands (not `DSPAN`'s literal bound alone — the old rule's
+  // unsoundness). `d` is still computed in native i32 (`i32.add`/`i32.mul`,
+  // confirmed below) and every value below is exact — this is a lost
+  // shift-strength-reduction, not a correctness gap. Flagged for a follow-up; not
+  // fixed here (would mean reordering or duplicating an existing whole-function
+  // analysis pass, out of scope for the mulFitsI32 fix).
   const src = `
 const DMIN = 96, DSPAN = 2000
 export let f = (p) => {
@@ -8407,10 +8513,18 @@ test('f64 power-of-two division folds to exact reciprocal multiply', () => {
 })
 
 test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary keeps select', () => {
-  // A cheap ternary (no div/sqrt in either arm) must still take `select` — the noise lane's
-  // gradient sign-flip flagship, here reproduced as a tiny leaf inlined directly into a
-  // multiply (the shape that lets stripCanon clear its NaN-canon guard so the arms are pure
-  // AND cheap).
+  // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): the '?:' select gate (emit.js) and
+  // the post-watr f64 if→select fold (optimize/index.js) both chose `select` purely on
+  // isPureIR — which admits f64.div/f64.sqrt (non-trapping, so "pure", but 10-40+ cycle
+  // latency). The synth ADSR envelope's 4-way cascade (t/ATTACK : .../DECAY : SUSTAIN :
+  // .../RELEASE) got compiled to chained `select`s that eagerly pay for THREE f64.div
+  // every sample regardless of which arm is live — measured ~8% slower than a branch.
+  // hasExpensiveOp (ir.js, consulted as `eagerSelectOK` in emit.js) vetoes any arm whose
+  // subtree contains f64.div/f64.sqrt, recursively — so a cascade with a div ANYWHERE
+  // compiles entirely to nested if/else. A cheap ternary (no div/sqrt in either arm) must
+  // still take `select` — the noise lane's gradient sign-flip flagship, here reproduced as
+  // a tiny leaf inlined directly into a multiply (the shape that lets stripCanon clear its
+  // NaN-canon guard so the arms are pure AND cheap).
   const divCascade = `export const f = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2`
   const jsDiv = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2
   for (const optimize of levels(2, 3, 'speed')) {
@@ -8441,6 +8555,14 @@ test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary ke
 })
 
 test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-compare cond keeps select', () => {
+  // SHAPES + SORT DISSECTED (2026-07-26): a DIFFERENT axis from the arm-cost veto above —
+  // this one is about the select's CONDITION, not its arms. Sort's "pick larger child"
+  // (heapify's `if (child + 1 < n && a[child] < a[child + 1]) child++`, if-converted to a
+  // select-fed ternary by boolConvertToSelect) is the exact measured repro: branch-form
+  // surgery on this shape closed a 1.115x gap vs zig-wasm. dataDependentFlag (ir.js) +
+  // selectCondOK (emit.js) veto scoped to nested-if conds that carry a memory load; a
+  // plain multi-compare flag (noise's `(h & 1) === 0` class) never builds this shape and
+  // must keep `select`.
   const heap = new Float64Array([5, 1, 8, 3, 9, 2, 7, 4])
   const pickChild = `
     export const f = (n, child) => {
@@ -8491,6 +8613,14 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
 })
 
 test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def binding)', () => {
+  // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): stripCanon (emit.js) recurses
+  // structurally into `select`/`if` arms to drop a redundant NaN-canon guard (the guard is
+  // dead when the consumer re-canons its own escape) — but a NESTED call inside a bigger
+  // expression (`trig(ph) * env`, the synth's `sinTau(ph) * env` shape) gets rewritten by
+  // hoistNestedCalls (plan/inline.js) to `const __tmp = trig(ph); … __tmp * env` at the
+  // speed tier. Direct (non-hoisted) inlining already worked; this pins the
+  // previously-broken call-inlined shape and checks it now matches (bit-exact, and — once
+  // canon-free — cheap enough to become the branchless `select` LEVER 1 restores).
   const src = `
     const trig = (ph) => {
       const q = Math.sqrt(ph + 1)

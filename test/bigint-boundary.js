@@ -4,8 +4,13 @@
 // ToNumber read whatever the other operand is, the parameter (ANY at the host
 // boundary, BIGINT from every in-program call) is seeded NUMBER by the second
 // fixpoint, and an in-program call passing a BigInt then trips the runtime's
-// mixing check inside the function. The regression is ordinary JS; the pins
-// stay red until the summary's demand rule closes.
+// mixing check inside the function. This is layout.js's `i64Hex` and its
+// callers (src/compile/emit/comparisons.js `emitTypeofCmp`, the `typeof x ===
+// 'number'` arm), which is why the self-hosted kernel throws `Cannot mix
+// BigInt and other types` in emitFuncs on any program with a `typeof x ===
+// 'number'` test in expression position, its own source first of all. The
+// regression is ordinary JS; the pins stay red until the summary's demand rule
+// closes.
 //
 // What a repair must satisfy is semantic: every payload's exact bits reach the
 // function from the host and from the program alike, and the published ABI

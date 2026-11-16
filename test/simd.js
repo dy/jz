@@ -872,6 +872,9 @@ test('SIMD cbrt preserves scalar bits across normal boundaries and exceptional l
 })
 
 test('SIMD AoS - constant-exponent pow lifts per lane through the pow kernel (bit-exact with scalar)', () => {
+  // spow's `av ** e` (constant e via inline) is the scalar $math.pow kernel (an ulp of the host);
+  // the lift calls it per lane ($math.pow2), never a second algorithm (the 2-wide exp_v∘log_v it
+  // used to take was ~1e-9 relative off).
   const src = `
     const N = 200
     const spow = (a, e) => { const s = a<0?-1:1, av = a<0?-a:a; return s * av ** e }
@@ -1016,6 +1019,9 @@ test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
   }
   for (const [name, src] of Object.entries(cases)) {
     const w = wat(src, SPEED)
+    // Fail WITH the emitted body — the f32→i16 row failed on CI-linux only
+    // (2026-07-26; local green on every leg/platform/node): the next red run
+    // must carry its own WAT evidence instead of a bare boolean.
     ok(hasV128(w), `${name} vectorizes${hasV128(w) ? '' : ` — emitted (no v128):\n${w.split('\n  (func ').find(c => /^\$f\b/.test(c))?.slice(0, 1200)}`}`)
   }
 })
@@ -1281,7 +1287,12 @@ test('SIMD i32x4 - map bitwise still takes the SIMD lane path (unaffected by the
 // Int32Array(4).map(x => x & 1.5)` used to throw "Bad int 1.5" at compile time,
 // a spurious REJECT of valid JS (ECMAScript ToInt32: `x & 1.5` ≡ `x & 1`).
 // Differential against the host's own TypedArray.prototype.map (the
-// authoritative oracle) at O0/O2/O3, element-by-element.
+// authoritative oracle) at O0/O2/O3, element-by-element. Int16Array/Uint8Array
+// included as a CONTROL: elemType < 4 never reaches genSimdMap's SIMD i32 path
+// at all (declines unconditionally, "no SIMD path" below), so these two kinds
+// exercise the SAME constants purely through the pre-existing generic lowering
+// — confirms the differential harness itself (and that path) is sound,
+// independent of this fix.
 const INT_BW_CONSTS = [1.5, -0, 33, 0.9, 2147483648.7, NaN, Infinity, -1.5]
 const INT_BW_ELEMS = {
   Int32Array: [0, 1, -1, 5, -6, 255, -255, 2147483647, -2147483648, 1000000],
@@ -1377,14 +1388,31 @@ test('SIMD map i32x4 - WAT-shape control: integer constants still vectorize, fra
     const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 1.5) }`, { optimize: 0 })
     ok(!w.includes(watOp), `Int32Array x${jsOp}1.5: ${watOp} ABSENT (fast path declined)`)
   }
+  // A bitwise constant that was ALREADY valid WAT integer syntax before this
+  // fix (e.g. -0 stringifies to "0") must produce byte-identical WAT to
+  // before — normalization is idempotent on already-normalized constants.
   const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x & -0) }`, { optimize: 0 })
   ok(w.includes('i32.const 0'), `Int32Array x&-0: normalizes to i32.const 0 (ToInt32(-0) === 0)`)
 })
 
-//   Math.abs on Uint32Array — compiles fine but computes the WRONG
+// Same bug CLASS as the two decline gates above (float×bitwise,
+// integer×fractional-arithmetic-constant), now unified into ONE table,
+// SIMD_MAP_VALID_KINDS (module/typedarray/simd-map.js), consulted once by
+// genSimdMap: not every (op, elemType) pair genSimdMap was asked to lower
+// actually has a WASM instruction for it. Three more holes in that space,
+// found by probing every (op, elemType) pair analyzeSimd can produce against
+// the host's own TypedArray.prototype.map:
+//   1. `x / c` on Int32Array/Uint32Array for ANY constant (not just a
+//      fractional one) — WASM SIMD has no integer lane div (nor a scalar
+//      i32.div — not even a real instruction mnemonic); "Unknown
+//      instruction i32x4.div" was a compile-time crash.
+//   2. Math.sqrt/ceil/floor on Int32Array/Uint32Array — no integer lane or
+//      scalar form exists (float-only WASM instructions); same crash shape.
+//   3. Math.abs on Uint32Array — compiles fine but computes the WRONG
 //      VALUE: the lane op is SIGNED abs (negate if the sign bit is set),
 //      but a Uint32Array's ECMAScript value is already non-negative by
-//      construction, so Math.abs on it is the identity.
+//      construction, so Math.abs on it is the identity. Element
+//      4294967295 used to silently misreport as 1.
 
 const DIV_CONSTS = [3, 4, -1, 0, 7, -7, 1.5] // non-exact, pow2, overflow-trap risk, div-by-zero-trap risk, ..., fractional
 for (const Kind of ['Int32Array', 'Uint32Array']) {
@@ -1467,6 +1495,9 @@ test('SIMD map i32x4 - WAT-shape control: div/sqrt/ceil/floor decline on integer
     const w = wat(`export let f = (n) => { let a = new Uint32Array(n); return a.map(x => Math.abs(x)) }`, { optimize: 0 })
     ok(!w.includes('i32x4.abs'), 'Uint32Array Math.abs: i32x4.abs ABSENT (fast path declined)')
   }
+  // Positive: the SAME ops still vectorize on Float32Array/Float64Array
+  // (unaffected by the integer-only exclusion) — regression guard for the
+  // table refactor itself, not just the new rows.
   for (const [Kind, prefix] of [['Float32Array', 'f32x4'], ['Float64Array', 'f64x2']]) {
     for (const [expr, opName] of [['x / 3', 'div'], ['Math.sqrt(x)', 'sqrt'], ['Math.ceil(x)', 'ceil'], ['Math.floor(x)', 'floor'], ['Math.abs(x)', 'abs']]) {
       const w = wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => ${expr}) }`, { optimize: 0 })
@@ -1620,8 +1651,10 @@ test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
 })
 
 test('SIMD widening byte-map - IN-PLACE fixed-point fade (a[i] = (a[i]*k)>>8)', () => {
-  // The universal trail-fade: a single Uint8Array read AND written in place. (a[i]*234)>>8 ∈
-  // [0,233] ⇒ exact.
+  // The universal trail-fade: a single Uint8Array read AND written in place. The shared
+  // address is CSE'd to one `(local.tee $A (base + i))` in the load, reused as `(local.get
+  // $A)` in the store — which tryRampMap now resolves (addrLocals), so the in-place map
+  // lifts 16-wide just like the separate-array alpha blend. (a[i]*234)>>8 ∈ [0,233] ⇒ exact.
   const src = `export let main = () => {
     const a = new Uint8Array(2048)
     for (let i = 0; i < 2048; i++) a[i] = (i * 7) & 255
@@ -1677,7 +1710,8 @@ test('SIMD channel-reduce - RGBA box-filter accumulation', () => {
 test('SIMD channel-reduce - real 2D box blur (row loop nesting)', () => {
   // The actual separable-blur shape: an outer row loop wraps the pixel loop, so
   // LICM hoists the invariant edge bound (w-1) into the pixel-loop block ahead of
-  // the loop.
+  // the loop. The channel recognizer must tolerate that preamble (it previously
+  // bailed, so the vectorizer never fired on a real 2D blur — only the 1D test).
   const src = `export let main = () => {
     const src = new Uint8Array(64 * 48 * 4), dst = new Uint8Array(64 * 48 * 4)
     for (let i = 0; i < 64 * 48 * 4; i++) src[i] = (i * 7) & 255
@@ -1924,7 +1958,12 @@ test('SIMD tonemap - relaxedSimd:false truncates the admitted lanes saturating, 
 })
 
 // Per-pixel-color HAZARD (domain-color): a guarded conditional assignment `let fx=0; if(cond){fx=…}`
-// whose target later feeds a transcendental mirror (hypot/atan2).
+// whose target later feeds a transcendental mirror (hypot/atan2). `fx=0` lifts to an f64x2 lane
+// local, but the statement-form `if` lands in the SCALAR epilogue — so the lifted `hypot(fx,…)`,
+// emitted BEFORE the epilogue, read the stale splat(0) and the SIMD frame went ALL-ZERO while the
+// scalar one was correct (domain-color rendered solid black). tryPerPixelColor now bails to scalar
+// when a lane local is re-written in the epilogue AND consumed by another lane. Mirrors the exact
+// four-Math field (hypot+atan2+|sin|) over domain-color's nested pixel-loop shape.
 const COMPLEX_FIELD = (d, guarded) => `
   let W = ${d}, H = ${d}, px = new Uint32Array(${d * d})
   export let main = () => {
@@ -1960,6 +1999,7 @@ test('SIMD per-pixel-color - guarded assign into a transcendental stays bit-exac
   ok(/\$math\.hypot_2/.test(wu) && /\$math\.atan2_2/.test(wu), 'unconditional field lifts hypot/atan2 mirrors')
   for (const d of [8, 7, 3]) {     // even, odd-width tail, tiny
     is(runVec(COMPLEX_FIELD(d, false), SPEED).main(), runVec(COMPLEX_FIELD(d, false), SPEED_SCALAR).main(), `unconditional d=${d}: SIMD === scalar`)
+    // Regression: pre-fix the SIMD frame was all-zero here (stale fx/fy shadow) ≠ scalar.
     is(runVec(COMPLEX_FIELD(d, true), SPEED).main(), runVec(COMPLEX_FIELD(d, true), SPEED_SCALAR).main(), `guarded-assign + hypot d=${d}: SIMD === scalar`)
   }
 })
@@ -2334,6 +2374,9 @@ test('vectorize: power-of-2 AoS stride (a[i*2]) lifts, bit-exact', () => {
   ok(hasV128(wat(src, SIMD_OPT)), 'power-of-2 stride-2 access lifts to SIMD')
 })
 
+// Regression: sibling loops that each lift the SAME source local to a v128
+// scratch named `$<name>__v` used to emit that `local` decl twice → invalid wasm
+// ("Duplicate local").
 test('vectorize: sibling lifts dedupe lane locals (fft kernel @ speed)', () => {
   if (onKernel()) return  // compiles a real bench file via the host `modules` map; the kernel owns compilation and has no module resolver
   const ROOT = join(HERE, '..')
@@ -4200,9 +4243,11 @@ test('SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried: bails, stays c
     }`
   is(runVec(src, STENCIL).main(), runVec(src, SCALAR).main(), 'in-place stays bit-exact (bailed)')
   is(runVec(src, STENCIL).main(), oracle(src).main(), 'the dependent updates also match native JS')
-  // The store-back is the signature: an in-place stencil that vectorized would v128.store the
-  // computed lane back to `a`. The legit loops don't store-vectorize (the `i%7` init isn't
-  // lane-pure; the reduction accumulates in a local), so NO v128.store ⇒ the stencil bailed.
+  // The store-back is the signature: an in-place stencil that vectorized would v128.store
+  // the computed lane back to `a`. The legit loops don't store-vectorize (the `i%7` init
+  // isn't lane-pure; the reduction accumulates in a local), so NO v128.store ⇒ the stencil
+  // bailed. (Was `!/v128.load offset/` — stale since the reduction's v128 loads now fold to
+  // `offset=` form via the v128 memarg fold, so a load-offset is no longer stencil-specific.)
   ok(!/v128\.store/.test(wat(src, STENCIL)), 'in-place stencil not vectorized (no v128 store-back)')
 })
 
@@ -4254,7 +4299,11 @@ test('per-pixel-color f64x2 - odd widths exercise the scalar tail (bit-exact)', 
   }
 })
 
-// Both the conditional (→ v128.bitselect) and the |0 pack must stay bit-exact.
+// Phase 2: a sin+sqrt heavy pixel with an `a ** γ` sRGB pack. sin/sqrt go 2-wide; the constant-γ pow
+// lowers at emit-time to exp(γ·log a) (module/math.js emitPow — bit-identical to $math.pow for finite
+// x), which the lift then carries as TRUE 2-wide $math.log_v / $math.exp_v (both lanes one poly), so
+// the whole pixel is vectorized — better than the old per-lane-scalar $math.pow2 mirror. Both the
+// conditional (→ v128.bitselect) and the |0 pack must stay bit-exact.
 const PPC_POW = `
   let W=64, H=48
   let mem = new Uint32Array(W*H)
@@ -4602,6 +4651,17 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset vector
   ok(/i32\.ge_u\s+\(i32\.add \(local\.get \$[^\s)]+\) \(i32\.const 15\)\)\s+\(i32\.const 31\)/.test(w),'under the distance guard (|4 * off| >= 16 bytes)')
   ok(/i32\.store[\s\S]*i32x4\.add|i32x4\.add[\s\S]*i32\.store/.test(w), 'the scalar loop stays beside it')
 })
+
+// The `elemKey` same-array dependence gate above used to be an unconditional decline on any
+// mismatch. It now tries LLVM's own answer first: when the mismatched pair's element distance is a
+// LOOP-INVARIANT but compile-time-UNKNOWN value (a runtime param, not a literal), version the loop
+// — a hoisted `|distance| ≥ lanes` disjointness guard picks the unchanged SIMD codegen when true,
+// the UNTOUCHED original scalar loop (byte-identical, same store order) when false. Every case
+// below is a loop that declines on unmodified main (confirmed via a disposable instrumented
+// dispatch trace, reverted before landing) and now versions — swept across a runtime parameter that
+// ranges both BELOW and AT/ABOVE the lane count, so each test proves BOTH regimes in one sweep:
+// small values exercise the "overlapping → scalar fallback, still correct" branch, values ≥ lanes
+// exercise the "disjoint → SIMD, bit-exact" branch.
 
 test('SIMD alias-version i32 - same-array read shifted AHEAD of the write (a[i]=a[i+k+1]), pointer-param array, versions: SIMD when disjoint, scalar fallback when overlapping', () => {
   const src = `
@@ -5048,7 +5108,11 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
 // recognizer's address proof), confirmed identical on both the base tree and this branch via
 // `--why-not-simd` ("f64.add: no lane-pure SIMD mapping for i32") — out of this session's scope.
 // XOR has no overflow concern (native i32 domain always), isolating the address-proof reach this
-// session actually adds.
+// session actually adds. Each case is verified via a disposable `--why-not-simd` trace (not
+// committed) to decline under EVERY existing recognizer on unmodified main tip (`f2012e2c`)
+// before this session, and to vectorize + bit-exact-match after; `v128.xor`-count checks are
+// scoped (unrelated fill/checksum loops in the same program use `&`/`+`, never `^`) so a stray
+// incidental vectorization elsewhere can't false-pass the check.
 
 test('SIMD general-stencil: guarded row arithmetic preserves boundary values and reuse', () => {
   const src = `export function f(width, row, start, empty) {
@@ -5185,6 +5249,12 @@ test('SIMD general-stencil i32 - multiple input arrays (2-D row-base combine + a
 })
 
 test('SIMD general-stencil i32 - in-place 2-D row window at a RUNTIME row width, versions: SIMD when W ≥ lanes, scalar fallback when W < lanes', () => {
+  // Reuses layer 3's (f2012e2c) runtime alias-versioning for tryStencil's own elemKey in-place
+  // hazard: a[c]=a[c-W]^a[c+W]^a[c] writes and reads the SAME array at a row-stride delta of ±W.
+  // W is a genuine function-parameter (not a compile-time literal), so the delta can't fold — it
+  // versions: the hoisted `i32.or` disjointness guard picks the unchanged SIMD path when W ≥
+  // lanes (4, for i32), the untouched original scalar loop when W < lanes (the window genuinely
+  // overlaps within one SIMD step).
   const src = `
     let f = (a, WIn, H) => {
       const W = WIn | 0
@@ -5336,6 +5406,10 @@ test('SIMD if-conversion safety - integer division in a speculated arm declines 
 })
 
 test('SIMD if-conversion safety - a second store hiding in an arm never runs unconditionally', () => {
+  // `out2[i]=...` sits BEFORE the arm's own tail store (`out[i]=...`) — if lifted as an
+  // ordinary unconditional STORE_OPS statement (the bug this session's own negative-test
+  // sweep caught), `out2` would be written on EVERY lane regardless of `a[i] > 0`, not just
+  // the lanes where the source's `if` actually took the then-branch.
   const src = `export const main = () => {
     const n = 64
     const a = new Int32Array(n), out = new Int32Array(n), out2 = new Int32Array(n)
@@ -5399,6 +5473,8 @@ test('SIMD cost model - a real if-converted stencil (enough per-lane work) still
 })
 
 test('vectorizer pass names: canonical keys switch their passes, retired experimental* keys are refused', () => {
+  // The four vectorizer passes dropped their experimental* names (stencil/outerStrip/
+  // toneMap/slp); an old key is an unknown optimize key now.
   const src = `export const main = (n=64) => {
     const a = new Float64Array(n), out = new Float64Array(n)
     for (let i = 0; i < n; i++) a[i] = i * 0.5
@@ -5419,7 +5495,10 @@ test('vectorizer pass names: canonical keys switch their passes, retired experim
 })
 
 test('SIMD flag landing: `if (a[i] !== b[i]) ok = C` lifts, and the scalar lands the vector part', () => {
-  // The verify idiom of the lz and base64 kernels.
+  // The verify idiom of the lz and base64 kernels. Its lane shadow starts as
+  // the scalar's splat and lands after the vector loop (C when any lane took
+  // it): a mismatch inside the vector part once vanished (the shadow started
+  // at zero and never landed), so the lift was declined for the whole loop.
   const src = `
 export let verify = (n, at) => {
   const a = new Uint8Array(n), b = new Uint8Array(n)
@@ -5455,7 +5534,10 @@ export let count = (n, at) => {
 })
 
 test('SIMD live-out lane-locals: a NaN flag lands nothing, and a value carried out of a map is not vectorized', () => {
-  // Two ways a lane-local's v128 shadow can fail to reach its scalar.
+  // Two ways a lane-local's v128 shadow can fail to reach its scalar. A flag
+  // whose entry value is NaN: the landing once asked a float `ne` whether any
+  // lane changed, and NaN != NaN said yes with no mismatch at all, even at zero
+  // trips — it asks the bits now.
   const src = `
 export let nanFlag = (n) => { const a = new Float64Array(n), b = new Float64Array(n); for (let i = 0; i < n; i++) { a[i] = i; b[i] = i } let bad = NaN; for (let i = 0; i < n; i++) if (a[i] !== b[i]) bad = 7; return bad }
 export let last = (n) => { const a = new Float64Array(n), out = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i * 1.5; let last = -1; for (let i = 0; i < n; i++) { out[i] = a[i] * 2; last = a[i] } return last + out[n - 1] }`
@@ -5470,6 +5552,10 @@ export let last = (n) => { const a = new Float64Array(n), out = new Float64Array
 })
 
 test('per-pixel scaffold: a body that leaves its loop is not per-pixel work', () => {
+  // Every outer-pixel consumer copies the body ahead of the block its exit
+  // names (the SIMD strip, the per-lane epilogue), so a `break` in it (an
+  // overflow bail, a found pixel) would branch to a label that no longer
+  // encloses the copy: watr rejected the ocean example's sea loop so.
   const pixelLoop = (inBody) => {
     const tree = parseWat(`(module (memory 1)
       (func $f (param $w i32) (param $t f64) (local $x i32) (local $v f64) (local $c i32)

@@ -446,6 +446,7 @@ test('shadow contract: schema-slot writes stay visible to dyn reads (loop-minted
         export let f = () => { let q = g().then((v) => v + 1); while (mt.length > 0) { let cb = mt.shift(); cb() } return q.val }`
     // control: no loop-minted closure
     is(jz(src('p.st = 1; p.val = v')).exports.f(), 5)
+    // regression pin: identical flow + a (never-entered) loop minting closures
     is(jz(src('p.st = 1; p.val = v; let cbs = p.cbs; for (let i = 0; i < cbs.length; i++) { let cb = cbs[i]; mt.push(() => cb(v)) }')).exports.f(), 5)
 })
 
@@ -621,6 +622,10 @@ test('computed member-access target inside a destructuring pattern validates its
     ok(compile('export let f = () => { let s = new Float64Array(4); [s[1]] = [4]; return s[1] }') instanceof Uint8Array,
       'a plain computed-member destructuring target still compiles (parses clean; codegen for this exact combination is a separate, pre-existing concern outside this early-error pin)')
     is(jz('export let f = () => { let a, b; [a, b] = [1, 2]; return a * 10 + b }').exports.f(), 12)
+    // jzify's generator lowering doesn't yet reach yield inside an
+    // assignment RHS ('yield inside `=` is not supported yet', a separate
+    // pre-existing limitation) — parse() is the layer this fix touches, so
+    // pin at that layer rather than through the full compile() pipeline.
     ok(Array.isArray(parse("'use strict'; function* g() { let x = {}; [x[yield]] = [1] }")),
       'a real yield-expression key inside a generator is not an identifier-reference violation')
 })

@@ -133,9 +133,21 @@ const SAMPLES = [
   ['math-sqrt',   'export let main = () => (Math.abs(Math.sqrt(2) - 1.4142135623730951) < 1e-9) | 0', 1],
   ['math-exp',    'export let main = () => (Math.abs(Math.exp(0.3) - 1.3498588075760032) < 1e-6) | 0', 1],
   ['math-expm1',  'export let main = () => (Math.abs(Math.expm1(0.3) - 0.3498588075760032) < 1e-6) | 0', 1],
+  // OPCODE-dict miscompile (2026-07): watr's packData (data-segment zero-run trim/merge/
+  // split, watr/src/optimize.js) corrupted jz's internStrings-encoded static data
+  // (src/compile/index.js buildInternTable: an 8-byte [hash u32][len u32] header + a sparse
+  // open-addressing intern-probe table, both zero-run-dense) — ONLY at self-compile scale
+  // (native jz building dist/jz.wasm from the full self.js graph; a wrapped or reduced
+  // graph doesn't reproduce it). The fix shipped in watr 5.1.1; the build now uses the
+  // default packData configuration. math-exp/math-expm1 above cover this path; sin/cos/pow
+  // reach additional WAT-text kernels.
   ['math-sin',    'export let main = () => (Math.abs(Math.sin(1.2) - 0.9320390859672263) < 1e-6) | 0', 1],
   ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
   ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
+  // Typed-array element WRITE with a literal RHS ('samples[j] > 0'-shaped repro): jzify's
+  // isDestructurePat (jzify/hoist-vars.js) misclassified `arr[i] = v` as a
+  // destructuring-assignment pattern — both share the '[]' tag pre-prepare(), disambiguated
+  // only by arity (pattern length ≤2, element access always length 3).
   ['typed-elem-write-literal', 'export let main = () => { const s = new Float64Array(5); s[0] = 3; return s[0] === 3 ? 1 : 0 }', 1],
 ]
 
@@ -236,8 +248,12 @@ test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
   is(instantiate(bytes).exports.main(), 10, 'main() === 10 (1+2+3+4)')
 })
 
-// A 17-digit literal used twice (so it pools) whose reciprocal is a clean integer makes any
-// precision loss numerically visible.
+// Pins the LEVEL-2 f64-constant pool. hoistConstantPool used to key+emit a pooled constant through
+// `String(number)`, which keeps only ~9 sig digits IN THE KERNEL (jz's number formatter), so a
+// high-precision literal lost precision (0.041666666666666664 → 0x1.5555558325751p-5) — the
+// kernel's L2 output diverged from jz.js (fft/synth twiddle coefficients). A 17-digit literal used
+// twice (so it pools) whose reciprocal is a clean integer makes any precision loss numerically
+// visible.
 test('self-compile: level-2 f64-constant pool keeps full precision', () => {
   const s = instantiate(selfBytes())
   // 0.041666666666666664 === 1/24 exactly; pooled (two uses) → its reciprocal must stay 24.
@@ -262,6 +278,7 @@ test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.rou
   is(instantiate(bytes).exports.main(), jz(src, { optimize: 2 }).exports.main(), 'kernel L2 === jz.js L2')
 })
 
+// Pins the f64x2 lane vectorizer under self-compile — it broke ENTIRELY two ways this regression hit:
 //  Compile it SIMD ('speed') and scalar (optimize:false) through the kernel; both must
 //      instantiate and yield the same checksum.
 test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
@@ -343,8 +360,19 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
   is(instantiate(b).exports.main(), 48, 'B executes correctly after A')
 })
 
-// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles, and pin byte-parity
-// against a fresh instance compiling the same programs.
+// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
+// and pin byte-parity against a fresh instance compiling the same programs. Exercises
+// the caches that used to dangle across a warm `__jz_clear` (all now reset/copy-on-tag
+// per compile): DOLLAR (src/ir.js, with a new Map because the old backing
+// table is itself an arena allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
+// program-facts}.js — same fresh-instance-not-clear fix), the runtime __dyn_props /
+// __dyn_get_cache_off / __dyn_get_cache_props globals (module/core.js __clear, reset
+// alongside __heap), NULL_IR's missing `.slice()` before `typed()` (src/ir.js —
+// mutating the shared template in place left a dangling props sidecar), and
+// subscript's comment-list cache (external fix, feature/comment.js — rebuilds once
+// per top-level parse() instead of once ever). compile-clear-compile-clear-compile:
+// three rounds catch a fix that only survives ONE `__jz_clear` (e.g. a reset that clears
+// state but not a downstream 1-slot cache pointing at it).
 test('self-compile: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
   // charCodeAt-on-param is load-bearing: it pulls the abi/string.js param
   // decomposition, whose module-level ssoBitI64 memo used to dangle across
@@ -407,9 +435,22 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
   }
 })
 
-// Two field-name shapes (both single-letter-adjacent to jz's own AST op tags, and a
-// common short property name) at 30 rounds each was the smallest N that reproduced
-// that bug reliably.
+// Warm-instance reuse WITHOUT any `_clear()` — the bump arena grows monotonically
+// across every compile, exactly the condition under which narrow.js's pointer-ABI
+// fixes (applyPointerParamAbi's missing ptrAux, passthroughPtrParam's recursive
+// delegation — both in this same test/self-compile.js file's neighbor tests natively,
+// see test/objects.js's "devirt schema-slot" tests for the host-level pin) used to
+// leave a Map/Object receiver whose real schema the static analysis can't see
+// (bindAssignSchema poisons the binding on disagreeing assignments) routing
+// through ctx.schema.guardedSlotOf's speculative devirtualization with a wrong or
+// missing schema aux. The corruption doesn't surface on round 1 — the guard's
+// dyn-props fallback and the header allocator both write real, valid memory each
+// time, just occasionally at a wrong offset, and it takes dozens of accumulated
+// compiles (never rewound, unlike the _clear test above) for the drift to walk
+// off the end of a page and trap "memory access out of bounds" instead of
+// silently misreading. Two field-name shapes (both single-letter-adjacent to
+// jz's own AST op tags, and a common short property name) at 30 rounds each was
+// the smallest N that reproduced that bug reliably.
 //
 // Bumped 30→40 rounds/program to also cover a FOURTH, independent bug this same
 // stress shape (repeated Map/HASH-growth allocation, no _clear) surfaces once the
@@ -418,8 +459,15 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
 // followForwardingWat/ptrOffsetFwdWat (the ARRAY/SET/MAP/HASH relocation-forwarding
 // chase every dyn-prop/collection dereference runs through) bounded a pointer offset
 // against `i32.shl(memory.size, 16)` — which overflows to exactly 0 the one time
-// memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32). Keep at
-// or above 40 rather than shrinking it back down to "looks clean in a quick run".
+// memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32). That
+// silently disabled the forward-chase for the rest of execution: a stale reference
+// to an already-relocated collection stopped following its forwarding header and
+// read the abandoned block's cap=-1 sentinel as a real capacity, producing wild
+// table-probe writes ("memory access out of bounds" inside __alloc_hdr_n, or an
+// unbounded probe loop, depending on layout — the exact shape that landed at a given
+// round was highly layout-sensitive, but the trigger — sustained dyn-props
+// allocation pressure with no reset — was not). Keep at or above 40 rather than
+// shrinking it back down to "looks clean in a quick run".
 test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
   const warm = instantiate(selfBytes())
   const PROGRAMS = [

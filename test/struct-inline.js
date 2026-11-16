@@ -455,8 +455,11 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
     'byte-stride element math (12 B records, no pad cell)')
 })
 
-// Each case pins VALUE EXACTNESS at both opt levels (pre-patch: bracket read
-// WRONG VALUES, alias/forward OOB TRAP).
+// The 2026-07-18 re-audit's miscompile class: a cursor-param body whose uses
+// escape the cursor grammar (bracket read, alias, return, closure capture,
+// forwarding) must BLACK the union — schema membership alone is not carrier
+// provenance. Each case pins VALUE EXACTNESS at both opt levels (pre-patch:
+// bracket read WRONG VALUES, alias/forward OOB TRAP).
 test('union inline: non-grammar cursor-param uses fail closed, values exact', () => {
   const SRC = (read, extra = '') => `
     ${extra}

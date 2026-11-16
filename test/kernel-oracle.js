@@ -69,6 +69,11 @@ const AGREE = [
     { fn: 'reversed', args: [-1] }, { fn: 'reversed', args: [0] }, { fn: 'reversed', args: [1] },
     { fn: 'main', args: [] },
   ] },
+  // Self-compile miscompile #4/#5 (kernel-parity.js's audit-#5 shapes): nested
+  // same-family typed-array construction and TypedArray.from with a nested
+  // literal element. Both were fixed at the closure-capture-before-nested-emit
+  // root — this is the execution-level check that the fix is semantically
+  // correct, not just byte-stable.
   { name: 'nestedtyped', src: CORPUS.nestedtyped, calls: [{ fn: 'f', args: [3] }, { fn: 'f', args: [-1.5] }, { fn: 'f', args: [2 ** 33] }] },
   { name: 'fromnested', src: CORPUS.fromnested, calls: [{ fn: 'f', args: [] }] },
   // Store-side BigInt carrier pairing: both compiler hosts must match Node on
@@ -108,8 +113,24 @@ const AGREE = [
   { name: 'closure',
     src: `export let make = (n) => { let total = 0; const add = (x) => { total += x; return total }; for (let i = 0; i < n; i++) add(i); return total }`,
     calls: [{ fn: 'make', args: [5] }, { fn: 'make', args: [0] }] },
+  // FLIPPED from PENDING-FIX (audit #5 item 2, ledger "KERNEL LEG ZERO FAILS"
+  // boolconst row — THE LESSON's own named example): a helper mixing a NUMBER
+  // return with a bare `false` return, checked via `=== false` at the call site.
+  // Both native AND kernel now agree with the JS oracle — the AGREE tier is the
+  // correct home now, not a PENDING-FIX not()-tripwire.
   { name: 'boolconst', src: CORPUS.boolconst,
     calls: [{ fn: 'f', args: [5] }, { fn: 'f', args: ['hi'] }, { fn: 'f', args: [true] }] },
+  // FLIPPED from PENDING-FIX (the ambiguous BOOL-merge identity fix): `cond ? 1
+  // : false` used as a return value, observed via `=== false` at a DIFFERENT
+  // function's call site (the function-boundary mechanism, distinct from
+  // boolconst's own — this one routes through kind.js's hasAmbiguousBoolMerge +
+  // emit.js emitIdentitySafe, wired at the return-tail (src/compile/index.js
+  // emitFunc's mixedAtomReturn additive single-return admission + the top-level
+  // expression-body site) and at emitStrictEq's differing-class fold/box
+  // decision. Was previously documented as an open, different-mechanism gap
+  // from boolconst (its own comment lived here); now fixed at the same
+  // conceptual root (an atom must cross unboxed at NO identity-observing site),
+  // generalized rather than patched per-shape.
   { name: 'ternary-bool-merge-return', src: `const g = (s) => s ? 1 : false
 export let f = (s) => g(s) === false`,
     calls: [{ fn: 'f', args: [true] }, { fn: 'f', args: [false] }] },
@@ -151,6 +172,13 @@ export let f = (s) => g(s) === false`,
   { name: 'JSON.stringify',
     src: `export let f = (x) => JSON.stringify([x > 0 && 1])`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // module/function.js:291's closure-arg boxing (the call_indirect/$ftN
+  // convention) AND emit.js's generic coerceArg/emitCallArgs (the direct-
+  // call convention g() takes here, having no captures) both needed the fix
+  // — direct closure arg exercises the LATTER, verified live at every
+  // optimize level (O2+ also devirtualizes THIS call to a plain wasm call,
+  // a different, already-sound path, so O0 alone doesn't isolate the fix —
+  // both must agree).
   { name: 'direct closure arg',
     src: `const g = (p) => p === false
 export let f = (x) => g(x > 0 && 1)`,
@@ -161,6 +189,9 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'parenthesized-&&',
     src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // FLIPPED from PENDING-FIX (formatter/ ToPropertyKey carrier-dispatch fix): the
+  // same MECHANISM A/argIR producer-side collapse, un-swept at three consumer
+  // chokepoints.
   { name: 'String()',
     src: `export let f = (x) => String(x > 0 && 1)`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
@@ -177,15 +208,35 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'computed member key',
     src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // READ-side sibling family (Finding #2, same landing session, not a
+  // documented-then-flipped PENDING-FIX gap — a proactive fix): module/array.js's
+  // dyn-get key sites had the identical bare
+  // `emit(idx)`/`asI64(emit(idx))`/`asF64(emit(idx))` producer bypass for a bare
+  // `o[k]` read (no prior write).
   { name: 'computed member key read (inline, literal-key object)',
     src: `export let f = (x) => { let o = { '0': 'zero', 'false': 'FALSE' }; return o[x > 0 && 1] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
   { name: 'computed member key read (inline, dynamic hash)',
     src: `export let f = (x) => { let o = {}; o['0'] = 'zero'; o['false'] = 'FALSE'; return o[x > 0 && 1] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
+  // arr[arr.length] = x growth on a receiver Step 7 of emit-assign.js's
+  // emitElementAssign can't STATICALLY prove ARRAY (a property-chain
+  // expression, not a named local of known VAL) — found chasing bba45c0d's
+  // "self-compiled kernel's own array-write codegen for arr[arr.length]=x
+  // takes a different path than .push()'s" note (region CLOSURE arm entry).
+  // Was value-identical between native and kernel (both wrong the same way —
+  // this is a plain NATIVE miscompile, not a self-compile-only divergence;
+  // the AGREE tier is still the right home since native/kernel/oracle all
+  // disagreed pre-fix and all three agree post-fix).
   { name: 'array-growth-class: arr[arr.length]=x through a 2-level property chain',
     src: `export let f = (n) => { let o = { inner: { arr: [] } }; for (let i = 0; i < n; i++) o.inner.arr[o.inner.arr.length] = i * 3; let s = 0; for (let j = 0; j < o.inner.arr.length; j++) s += o.inner.arr[j]; return o.inner.arr.length + '|' + s }`,
     calls: [{ fn: 'f', args: [0] }, { fn: 'f', args: [1] }, { fn: 'f', args: [9] }, { fn: 'f', args: [64] }] },
+  // Closest analog to the real bba45c0d shape: a helper closure repeatedly
+  // indexed-appending into a 2-level property-chain table shared with a
+  // sibling `.push()`'d table at the same call site (ctx.closure.table.push
+  // next to ctx.closure.envMeta[tableIdx]=…) — the table.length-derived
+  // index is itself unproven-numeric (read off the same unproven chain),
+  // so it's the useRuntimeKeyDispatch fork on BOTH the receiver and the key.
   { name: 'array-growth-class: sibling push()+indexed-append tables (envMeta shape)',
     src: `export let f = (n) => {
       let ctx = { closure: { table: [], envMeta: [] } }
@@ -201,18 +252,38 @@ export let f = (x) => g(x > 0 && 1)`,
       return ctx.closure.table.length + '|' + ctx.closure.envMeta.length + '|' + s
     }`,
     calls: [{ fn: 'f', args: [0] }, { fn: 'f', args: [1] }, { fn: 'f', args: [5] }, { fn: 'f', args: [64] }] },
-  // Two NAMED functions, one calling the other at two call sites with two
-  // differently-typed second arguments, is the minimal shape that defeats the
-  // skip: it gives `callSites.length > 0`, forcing narrowSignatures (and
-  // therefore every later plan-tail/scan region round wired through `plan()`'s
-  // `round()` helper) to actually execute — closing the gap for ANY future
-  // plan()-internal region-boundary work, not just the chain-rounds session
-  // this row was added for.
+  // Chained-region-round coverage gap: NONE of the rows above exercise plan()'s
+  // narrowSignatures or any of the per-pass plan-tail/scan region boundaries
+  // that session designed — every one of them is small enough to take
+  // `canSkipWholeProgramNarrowing`'s early-return path (verified directly,
+  // scratch instrumentation on `programFacts`: every existing AGREE row that
+  // was checked returns skip=true or skip=false for reasons unrelated to
+  // genuine inter-function call-site analysis). Two NAMED functions, one
+  // calling the other at two call sites with two differently-typed second
+  // arguments, is the minimal shape that defeats the skip: it gives
+  // `callSites.length > 0`, forcing narrowSignatures (and therefore every later
+  // plan-tail/scan region round wired through `plan()`'s `round()` helper) to
+  // actually execute — closing the gap for ANY future plan()-internal
+  // region-boundary work, not just the chain-rounds session this row was added
+  // for.
   { name: 'whole-program-narrowing-forcing (defeats canSkipWholeProgramNarrowing)',
     src: `function add(a, b) { return a + b }
 function callAdd(x) { return add(x, 1) + add(x, 2.5) }
 export let f = (x) => callAdd(x)`,
     calls: [{ fn: 'f', args: [3] }, { fn: 'f', args: [-2] }] },
+  // Re-audit blocker 2 (root-cause regression test for f7d19d99's dataReset
+  // workaround). f7d19d99 fixed a self-compile-only data-segment truncation:
+  // wat/assemble.js's stripDeadLazyTables called
+  // dataReset(dataString().slice(0, spans[0].start)), re-deriving the kept
+  // prefix's byte length from the FRESH SLICE RESULT's own `.length` — under
+  // the KERNEL leg only, that `.length` read back 0 on the compiler's OWN
+  // ~11KB accumulated data-segment string (a genuine non-empty string, content
+  // proven bit-identical native/kernel throughout — only the length
+  // re-derivation was wrong). The re-audit flagged this as a WORKAROUND: the
+  // general primitive it sidesteps (module/string.js's compiled `.slice()`, on
+  // a large/binary-content string) had no direct semantic regression test of
+  // its own.
+  //
   // `kind` selects the slice bounds, sweeping across LAYOUT.SLICE_LEN_MASK
   // (0x1FFF = 8191, module/string.js) — the bit width of a view's packed
   // length field: under (152, mimicking the original spans[0].start), AT the
@@ -242,6 +313,14 @@ export let f = (x) => callAdd(x)`,
       { fn: 'f', args: [0, 0] }, { fn: 'f', args: [0, 1] }, { fn: 'f', args: [0, 2] },
       { fn: 'f', args: [0, 3] }, { fn: 'f', args: [0, 4] },
     ] },
+  // Copying-path sibling of the row above: `t` is stored into an escaping field
+  // (an object property read back AFTER the storing call returns) instead of
+  // read as a synchronous non-escaping local — analyze-scans.js's
+  // sliceViewCandidate explicitly disqualifies this shape ("stored into a heap
+  // object" is a documented escaping use), forcing the ordinary copying
+  // __str_slice (fresh `__alloc` + an explicit i32 length header written at
+  // offset-4, per module/string.js's heapLenExpr) rather than the SLICE_BIT
+  // view above.
   { name: 'large-binary-slice-copy (escaping through a storing callee, mirrors dataReset(dataString().slice(...)) shape)',
     src: `let store = { part: '' }
     function reset(s) { store.part = s }
@@ -302,13 +381,20 @@ test('kernel oracle: BigInt typed-array stores reject a Number before in-range o
   }
 })
 
-// preEval's rational constant-folding (src/prepare/pre-eval.js) carries an EXACT rational through a
-// whole numeric chain and rounds ONCE at the end (module doc, "Purity / precision guards":
-// `optimize.rationalConst`, by default as `relaxedFloat`: on at 'speed' alone). Naive JS rounds
-// after EVERY op ("double rounding"). This is NOT the native/kernel divergence audit P0-2 fixed
-// (that was native-vs-kernel disagreeing with EACH OTHER over HOST bigint width — both now compute
-// the SAME rational-fold answer); it is jz's constant-fold disagreeing with naive JS BY DESIGN, on
-// both legs identically.
+// preEval's rational constant-folding (src/prepare/pre-eval.js) carries an
+// EXACT rational through a whole numeric chain and rounds ONCE at the end
+// (module doc, "Purity / precision guards": `optimize.rationalConst`, by default
+// as `relaxedFloat`: on at 'speed' alone). Naive JS rounds after EVERY op ("double rounding"). For
+// `0.1 + 0.2 - 0.3` these genuinely disagree: JS's sequential rounding gives
+// 5.551115123125783e-17; jz's single-rounding exact-rational fold gives
+// 2.7755575615628914e-17 (exactly half — the classic double-rounding artifact
+// for this literal triple). This is NOT the native/kernel divergence audit
+// P0-2 fixed (that was native-vs-kernel disagreeing with EACH OTHER over HOST
+// bigint width — both now compute the SAME rational-fold answer); it is jz's
+// constant-fold disagreeing with naive JS BY DESIGN, on both legs identically.
+// The escape hatch (`optimize.rationalConst: false`) is asserted too, as the
+// design's own regression pin: turning rational folding off must recover
+// exact JS-oracle parity; and the levels where it is off by default answer as JS.
 test('kernel oracle: fold — documented divergence (rational constant-fold vs naive JS double-rounding)', async () => {
   if (onWasi()) return
   const src = CORPUS.fold
@@ -331,8 +417,21 @@ test('kernel oracle: fold — documented divergence (rational constant-fold vs n
     'fold: rationalConst:false recovers naive-JS parity (proves the divergence above is a chosen tradeoff, not an uncontrolled bug)')
 })
 
-// This is the oracle-tier version of test/data.js's P0-2 test (`onKernel()`-gated
-// for `JZ_TEST_TARGET=jz.wasm` runs of the whole suite): here BOTH legs run
+// Was a documented self-compile limit (README.md, "One known divergence class"):
+// inside dist/jz.wasm, BigInt values ride raw i64 bits in an f64 slot, and
+// small-magnitude bit patterns collide with subnormal Numbers (`1n` and `5e-324`
+// are the same 64 bits) — module/number.js's `__to_num` treated ANY nonzero
+// finite subnormal reaching it as raw BigInt carrier bits, UNGATED. The
+// compiler's OWN source is itself bigint-free by design (bignum.js's own doc
+// comment: earlier revisions carried rational n/d as native BigInt and hit
+// exactly this native-vs-kernel divergence, so it was rewritten onto plain
+// safe-integer limb arrays specifically to avoid it) — so `ctx.features. bigint`
+// is false for the compiler's own self-compiled compilation, and the kernel's
+// internal coercions of a subnormal literal like this one hit the exact same
+// unconditional-heuristic bug the compiled OUTPUT program did (audit-#11 P0-1:
+// `+Number.MIN_VALUE`/`+5e-324` misdecoded as bigint 1). This is the oracle-tier
+// version of test/data.js's P0-2 test (`onKernel()`-gated for
+// `JZ_TEST_TARGET=jz.wasm` runs of the whole suite): here BOTH legs run
 // unconditionally in one process, so the (now-closed) divergence's AGREEMENT is
 // asserted directly instead of behind an env-var branch.
 test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.features.bigint-gated __to_num)', async () => {
@@ -354,10 +453,16 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // BANKED, not fixed — pinned precisely (exact corrupted value, both native AND
 // kernel legs, both optimize tiers) so a future close of either (a) or (b)
 // flips this test's asserted values from the corrupted carrier to `want` in one
-// edit. `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a heterogeneous
-// array literal carrying a BigInt element into element storage whose kind this
-// program never proves uniform — exactly the "collection" flow class §4's table
-// names.
+// edit. BigInt retirement Slice 1: STRUCTURALLY IMPOSSIBLE now, not merely
+// re-pinned — same class as test/data.js's audit-#11 P0-1 deletion the design
+// itself calls out. `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a
+// heterogeneous array literal carrying a BigInt element into element storage
+// whose kind this program never proves uniform — exactly the "collection" flow
+// class §4's table names. With an unprovable BigInt array element refused at
+// compile time instead of carried (raw or boxed) into `Number()`'s dynamic
+// dispatch, there is no longer a value for either mechanism to act on — the
+// whole KNOWN-FAIL class is eliminated at the root, not narrowed or reordered
+// around.
 test('kernel oracle: heterogeneous BigInt array element — strict-mode (opt-in) collection diagnostic (was audit-#16 KNOWN-FAIL, a runtime module-ordering corruption)', () => {
   const bSrc = `
     const arr = [1.5, 123456789012345n, 2.5]
@@ -374,6 +479,11 @@ test('kernel oracle: heterogeneous BigInt array element — strict-mode (opt-in)
 })
 
 test('kernel oracle: ternary BOOL|NUMBER return — AGREE (closed by the ambiguous-BOOL-merge identity work)', async () => {
+  // Was PENDING FIX: g(false) returned the `false` atom collapsed to raw 0.0,
+  // so `g(s) === false` read false for both arguments. Closed —
+  // hasAmbiguousBoolMerge admits the single-return ternary at the return tail,
+  // and emitStrictEq's differing-class fold defers to the identity-safe path
+  // for ambiguous operands.
   if (onWasi()) return
   const src = `const g = (s) => s ? 1 : false
 export let f = (s) => g(s) === false`
@@ -412,6 +522,8 @@ test('kernel oracle: ambiguous BOOL|NUMBER local storage keeps its identity thro
 })
 
 test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDING-FIX, closed by the closure-capture identity shadow)', async () => {
+  // Was PENDING-FIX 'captured-then-read': arr[0]() returned the raw carrier 0
+  // (number) where JS says false — see the comment block above for the fix.
   // NOT the minimal `const g = () => v; return g()` shape (no array) — that
   // isn't a native/kernel split (PROBED 2026-08-21, falsifying this test's
   // prior "devirtualization eligibility differs" claim: compile vs
@@ -437,6 +549,8 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
   }
 })
 
+// ── AGREE tier: carrier-built KERNEL console.log string constants ─────────────
+//
 // Re-verified directly (§31): heap string ('bare-fired', ≥7 chars) and SSO
 // string ('short', ≤6 chars) BOTH print their correct, undecorated value on
 // the kernel leg, at every optimize level (0/1/2/3), deterministically,
@@ -461,7 +575,17 @@ test('kernel oracle: console.log string constants — AGREE (closed incidentally
   }
 })
 
-// Both a small (1n) and a near-2^62 magnitude are pinned.
+// ── AGREE tier: bare BigInt array-element return (re-audit #6 finding 2) ──
+//
+// FLIPPED from PENDING-FIX: `let a = [1n]; return a[0]` used to decode as a
+// raw-bit-reinterpreted NUMBER, not the BigInt value. Root ("NOT FIXED, BANKED"
+// entry, member-desugar landing session): BigInt array literals never qualify
+// for flat SRoA (static.js's staticValue has no 'bigint' case), so the kind had
+// to resolve through rep.arrayElemValType — a whole-program fact store the
+// return-kind pre-passes (narrow.js's narrowValResults / narrowBoolResults)
+// didn't install for the function under examination, unlike ctx.func.flatObjects
+// (the object-field sibling fix that landed earlier). Both a small (1n) and a
+// near-2^62 magnitude are pinned.
 test('kernel oracle: bare BigInt array-element return — AGREE', async () => {
   if (onWasi()) return
   const cases = [

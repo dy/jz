@@ -26,6 +26,8 @@ test('bench-svg: missing count degrades to corpus wording, never "undefined"', (
 })
 
 test('bench-svg: jz is labeled by optimization tier, not a pipeline', () => {
+  // jz's sub is its -O tier (parallel to clang/rustc/asc -O3); the wasm framing now
+  // lives in the chart's scope line + the rival subs, so jz's own label stays a tier.
   const svg = benchSvg(rows, 12)
   ok(svg.includes('>-O3<'), 'jz sub-label is -O3 (parallel to clang/rustc/asc -O3)')
   is(SVG_TARGETS.find(t => t.id === 'jz').sub, '-O3')
@@ -110,6 +112,9 @@ test('bench-svg: only a complete live run may replace the chart', () => {
 })
 
 test('bench-svg: a dataset render is internally consistent (caption N = Porffor denominator)', () => {
+  // The crux of the fix — a reader must never see "12 cases" above a row reading
+  // "runs 4 / 13". svgRows derives both the caption and the Porffor denominator
+  // from the same case set, so they can't disagree.
   const { rows, cases } = committedRows()
   const svg = benchSvg([...rows].sort((a, b) => a.ratio - b.ratio), cases)
   const capN = svg.match(/on the (\d+)-case benchmark corpus/)?.[1]
@@ -125,6 +130,7 @@ test('bench-svg: native C is always shown (the lone speed-of-light reference)', 
   for (const label of REFERENCE) ok(committedRows().rows.some(r => r.label === label), `results.json has a "${label}" row to fall back to`)
   const out = withReference(rows)   // rows has no native C
   ok(out.map(r => r.label).includes('native C'), 'native C injected when missing')
+  // a measured row wins — the fallback fills only genuine gaps, never duplicates
   const live = withReference([...rows, { label: 'native C', sub: 'clang -O3', ratio: 1.05 }])
   is(live.filter(r => r.label === 'native C').length, 1, 'measured native C not duplicated')
   is(live.find(r => r.label === 'native C').ratio, 1.05, 'measured native C ratio kept over snapshot')

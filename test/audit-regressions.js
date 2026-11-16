@@ -1749,6 +1749,10 @@ test('audit: an assignment read as a number answers the number assigned, not the
   }
 })
 
+// An unsigned word's top is past 2^31: `a - 1` over `a = k >>> 0` is no signed
+// word's difference though its lower side fits one (4294967294 answered -2 at
+// every level once the local's range was known; the remainder of it did on
+// every tree).
 test('audit: an unsigned word less a literal is no signed word', () => {
   const src = `export let sub = (k) => { const a = k >>> 0; const b = a - 1; return b }
     export let addNeg = (k) => { const a = k >>> 0; const b = a + -1; return b }
@@ -2031,6 +2035,10 @@ test('audit: an assignment read as a number is the number, whatever its target k
   ok(!/\(local \$h\w* f64\)/.test(wat), 'a hash local stays a word')
 })
 
+// A quotient under a test of its remainder is an integer only of what the test
+// divided: an operand the arm writes, or a closure or a callee it calls may
+// write, divides something else (each of these answered the wrong element or
+// a floor of a fraction on main).
 test('audit: an exact quotient is exact only of the operands the test divided', () => {
   const cases = [
     `export let f = (k) => { const T = [10, 20, 30, 40]; let a = Math.floor(k); if (a % 2 === 0) { a = a + 1; const q = a / 2; return T[q] === undefined ? 100 : T[q] } return -7 }`,
@@ -2058,6 +2066,9 @@ test('audit: a module global every write of which is an integer is read as one',
   is(floors(frac), 3, 'one fractional write keeps it')
 })
 
+// -0 is no integer a hull holds: a remainder of a dividend that may be -0 keeps
+// its sign (a binding of `-(y & 0)` answered +0 on main, a `-0` literal once the
+// proof read it as integral wherever finite).
 test('audit: a dividend that may be -0 keeps the remainder\'s sign', () => {
   const cases = [
     `export let f = (y) => { let v = -0; return 1 / (v % ((y & 7) + 1)) }`,
@@ -2070,6 +2081,8 @@ test('audit: a dividend that may be -0 keeps the remainder\'s sign', () => {
     for (const y of [0, 1, 2, 5]) is(jz(src, { optimize }).exports.f(y), oracle(src).f(y), `${src} f(${y}) at ${optimize}`)
 })
 
+// The half-integer test `nearest(x) === x - 0.5` held of an even one, where x -
+// 0.5 rounds back to x, and bumped it by one on main.
 test('audit: Math.round of an integer past 2^52 is the integer', () => {
   const src = `export let f = (k) => Math.round(k)`
   for (const optimize of levels(0, 2, 'speed')) {
@@ -2106,12 +2119,17 @@ test('audit: a typed array\'s key that may be a Boolean names no element', () =>
   }
   for (const H of Object.values(holders)) for (const V of ['true', 'k > 1']) for (const O of others) for (const U of uses) check(H(V, R => O(R) + U(R)))
   // A null and a string beside the number name none either ('1' names the second);
-  // an undefined key reads none.
+  // an undefined key reads none. They answered right on main: the key's storage
+  // kept them, which a demand that counts the key as a read still does.
   for (const H of [holders.module, holders.local, holders.element]) for (const V of ['null', `'1'`, `'1.0'`, 'undefined']) for (const U of uses.slice(0, 2)) check(H(V, R => others[1](R) + U(R)))
 })
 
 // A binding is stored as numbers where every read of it converts (the
-// summary's numeric demand), so a Boolean it holds lands as 0 or 1.
+// summary's numeric demand), so a Boolean it holds lands as 0 or 1. A read
+// that does not convert must count against that: on main a typed array's key
+// and `Array(x)` were no evidence, and a field nothing reads by name was none
+// though its object was serialized, enumerated, copied, handed to the host or
+// read by a key (`JSON.stringify({ ok })` wrote 1 for true at every level).
 test('audit: a Boolean beside a binding\'s numbers reaches a reader that does not convert it', () => {
   const mul = R => `if (${R} * 2 === 14) return -6; `
   const holders = {

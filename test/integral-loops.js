@@ -251,6 +251,8 @@ test('integral loops: what else the loop writes reads the same after it', () => 
   }
 })
 
+// `p = q + 1` reads q, which the loop halves: q is no integer, so p is none
+// either; the census drops both and stops (it used to re-add q forever)
 test('integral loops: a handler reads what the loop wrote before it threw', () => {
   // a copy writes the cursor under a name of its own, which a throw leaves unwritten
   const src = `const buf = new Float64Array(8)
@@ -901,7 +903,8 @@ test('integral loops: a rounded coordinate under a range test is an integer ther
 
 test('integral loops: a hull end at the word\'s extreme opens, so no guard that cannot hold', () => {
   // sandpile's relax: `c = queue[qHead]` is any int32, so `nb = c - gw` fits one
-  // signed word only for a width at most zero.
+  // signed word only for a width at most zero. A test of that end (`-2147483648 -
+  // gw >= -2147483648`) fails on every run and leaves the loop as written, cold.
   const src = `let W = 0, grid, queue, QN = 0
     export let resize = (w) => { W = w; grid = new Int32Array(w * w); queue = new Int32Array(w * w); QN = w * w; let i = 0; while (i < QN) { queue[i] = i; i++ } return grid }
     export let relax = (n) => {
@@ -1369,6 +1372,9 @@ test('integral loops: a version placed as the one statement of a block stays a b
 })
 
 test('integral loops: an index shifted to the word\'s extreme is no element of the proof, so no guard that cannot hold', () => {
+  // A box blur reads `src[(row + xi) << 2]`: the shifted index spans every
+  // int32, so a test of its ends against the length (`-2147483648 >= 0`) fails
+  // on every run and left the nest as written, cold.
   const src = `export let hblur = (src, dst, w, h, r) => {
       const win = 2 * r + 1
       for (let y = 0; y < h; y++) {
@@ -1525,7 +1531,10 @@ test('integral loops: a counter stepped by a byte-sized run takes a copy with a 
 test('integral loops: a sum of int32s past the word takes a copy that tests it and leaves for the loop as written', () => {
   // A DP row's cells: `up + 1` over an int32 element, `diag + (… ? 0 : 1)` over a
   // name every write of which is an element, `prev[j - 1] + 1`. No hull holds the
-  // sums within int32, so the loop as written computed them wide.
+  // sums within int32, so the loop as written computed them wide. The copy tests
+  // the wide side before each statement (`up > 2147483646`), bailing to the loop
+  // as written, resumed at the copy's counter, where the result would leave the
+  // word; under the tests the sums are words.
   const src = `const LB = 64
     const scan = (a, b, prev, n) => {
       for (let i = 1; i <= n; i++) {
@@ -2055,6 +2064,7 @@ test('integral loops: a closure bounded by a capture nothing writes', () => {
     }
   }
   if (belowOpt(2)) return
+  // (watr off: the closure, called directly now, would join its one caller, the copy's names shared with its locals)
   const w = wat(src, { optimize: { level: 2, watr: false } })
   // (a closure is named `$` + T + `closure<n>`, the copy's counter `i` + T + `int<n>`: prepare's binding mark)
   ok(w.split(/\n(?=  \(func )/).some(f => f.startsWith(`  (func $${T}closure`) && f.includes(`(local $i${T}int`)), 'the closure counts an int32 copy')
@@ -2261,7 +2271,9 @@ test('integral loops: a loop stepped by a literal counts its trips, a cursor of 
 test('integral loops: a cursor near 2^31 - 1 stepped in a nest keeps its value past the word', () => {
   // `p` enters an int32 and steps past 2^31 - 1: by a counted inner loop, whose landing `p = clc
   // + 2 * (trips | 0)` is an integer of integers (plan/counted-loops.js), and by an arm (`if (v
-  // >= 0) p += 2`) no counted loop takes.
+  // >= 0) p += 2`) no counted loop takes. A name the frame's guard tests that the round writes
+  // is an int32 where the copy enters, not where an inner version stands: an inner version read
+  // it as one and wrapped it (-2147483647 for 2147483649).
   const shape = (step) => `function walk(b, p, out, frames, nCh) {
       let s = 0
       for (let i = 0; i < frames; i++)

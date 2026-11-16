@@ -64,6 +64,11 @@ test('dyn-closure-tables: open keys retain named values and the checked fallback
 })
 
 test('dyn-closure-tables: direct writes of the same arrow, different captured envs, devirt to br_table', () => {
+  // Each setup(i, delta) call instantiates the SAME lexical arrow (one funcIdx)
+  // with a FRESH captured `delta` — the loop itself isn't used to build the
+  // table (jz's for-let capture shares one cell across iterations, a separate,
+  // pre-existing limitation unrelated to this pass) — a plain function call
+  // gives each instantiation its own parameter binding instead.
   const src = `
     let table = []
     const setup = (i, delta) => { table[i] = (x) => x + delta }

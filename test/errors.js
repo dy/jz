@@ -54,6 +54,10 @@ test('strict rejects: class', () => throws('class Foo {}', 'class', 'class shoul
 // outside a generator body is the remaining rejection.
 test('prohibited: yield outside a generator', () => throws('export let f = () => { let x = yield 1; return x }', 'yield outside a generator', 'stray yield should error'))
 test('prohibited: delete', () => throws('delete obj.x', 'delete', 'delete should error'))
+// 'in' operator now supported for HASH key existence checks instanceof GRADUATED (Slice B) —
+// Array/Map/Set/the 8 TypedArray ctors/ArrayBuffer/the 7 Error classes now work (see the
+// dedicated test block below); an unsupported RHS (jz has no prototype chain) remains a loud
+// compile-time reject, the one surviving case this test now pins.
 test('strict rejects: instanceof (unsupported RHS)', () => throws('x instanceof Object', 'instanceof', 'instanceof on an unsupported RHS should error', { strict: true }))
 test('prohibited: with', () => throws('with (obj) {}', 'with', 'with should error'))
 test('strict rejects: var', () => throws('var x = 1', 'var', 'var should error', { strict: true }))
@@ -109,8 +113,9 @@ test('block scope', () => {
 })
 
 test('block scope: same const name in sibling blocks resolves correctly', () => {
-  // Renaming the second decl restores per-block uniqueness at the WASM-local
-  // level.
+  // Two `const g = () => N` in if/else arms used to collapse to one WASM
+  // local. Renaming the second decl restores per-block uniqueness at the
+  // WASM-local level.
   const { f } = run(`export let f = (c) => {
     const out = (g) => g()
     if (c) {
@@ -350,9 +355,16 @@ test('error: strict mode dynamic property access message', () => {
   ok(error.message.includes('strict'), `message should mention strict mode: ${error.message}`)
 })
 
-// Reference: ECMA-262 13.15.2 (the value of `??`/`&&` is one operand,
-// unconverted), 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15
-// IsStrictlyEqual.
+// A binding that can hold a Boolean beside a Number (`let x = false ?? 1`,
+// `let x; x = c && 1`, separate stores of `true` and `1`) and whose reads
+// observe its identity (typeof, ===, a return) used to be rejected at
+// compile time (`Binding '…' can be both Boolean and Number…`), and a plain
+// reassignment once skipped even that and read the Boolean as a raw
+// number. The binding is now a tagged carrier: every Boolean store lands
+// as its atom (src/kind/val-type-of.js boolTagged, emit/dispatch.js boolCarrier)
+// and the reads take the dynamic forms a mixed kind takes. Reference:
+// ECMA-262 13.15.2 (the value of `??`/`&&` is one operand, unconverted),
+// 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15 IsStrictlyEqual.
 test('mixed Boolean and Number binding keeps its identity on plain reassignment', () => {
   const { f, g } = jz(`export let f = () => { let x; x = false ?? 1; return [typeof x, x === false, x] }
     export let g = (k) => { let v; if (k) v = true; else v = 1; return [typeof v, v === true, v] }`).exports
@@ -625,7 +637,11 @@ test('host decode: memory that cannot grow is the RangeError of an allocation', 
 
 // An array holds its elements dense, eight bytes each (module/core.js
 // DENSE_MAX): a length past 2^29 - 3 cannot be stored, where JavaScript makes a
-// sparse array.
+// sparse array. Every path to one throws the RangeError of an allocation, which
+// the program catches and after which the heap is whole: `new Array(n)` wrote
+// n into an i32 header over a block its wrapped size reserved (3e9 read
+// -1294967296, 2147483000 read -1), and an index store or a grow past 2^29
+// handed out the same block (memory access out of bounds, or worse, none).
 test('array length past what memory can hold is the RangeError of an allocation', () => {
   const src = `export let ctor = (n) => { const a = new Array(n); return [a.length, a[0], a[n - 1]] }
     export let setLen = (n) => { const a = [1, 2]; a.length = n; return [a.length, a[1], a[n - 1]] }
@@ -697,8 +713,10 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   // A real userThrows escape (WebAssembly.Exception path) writes the SAME marker
   // global a trap-lowered throw does — decodeThrown must consume it there too, or
   // a later genuine trap on the SAME instance reads the stale nonzero value and
-  // misdecodes as the earlier, already-handled error. The later trap is padStart's
-  // unmarked string-length guard (the pin above).
+  // misdecodes as the earlier, already-handled error. The later trap is
+  // padStart's unmarked string-length guard (the pin above). The in-wasm
+  // catch/finally marker consume (src/compile/emit.js 'catch'/'finally') is
+  // exercised by the audit-#8 P1-1 repro in this file's catch/finally section.
   const src = `export let f = (mode) => {
     if (mode === 1) throw 300
     return 'a'.padStart(2 ** 31).length
@@ -713,10 +731,13 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   ok(!(second instanceof SyntaxError), 'the stale marker from the first decode must not leak into the second')
 })
 
-// A LATER genuine trap (unrelated to $__jz_err — here, an oversized
-// Float64Array allocation) then misdecoded at the host boundary as the STALE
-// handled error instead of a plain RuntimeError. No `maxMemory` option needed
-// (unlike the pins above) — this repro runs on BOTH legs, native and kernel.
+// audit-#8 P1-1 (2026-08-03): a JSON error CAUGHT INSIDE wasm (a `try`/`catch`
+// the module fully handles — never rethrows, never escapes to the host) used to
+// leave $__jz_last_err_bits pointing at the handled error's code. A LATER
+// genuine trap (unrelated to $__jz_err — here, an oversized Float64Array
+// allocation) then misdecoded at the host boundary as the STALE handled error
+// instead of a plain RuntimeError. No `maxMemory` option needed (unlike the
+// pins above) — this repro runs on BOTH legs, native and kernel.
 test('host decode (audit-#8 P1-1): a JSON error caught IN-WASM does not stale-poison a later genuine trap — same call', () => {
   const src = `export let f = (n) => {
     try { JSON.parse('{bad json') } catch (e) {}
@@ -772,6 +793,10 @@ test('prohibited: .callee property access', () => {
   ok(err?.message.includes('callee'), `.callee should be prohibited: ${err?.message?.slice(0, 60)}`)
 })
 
+// Reject-cleanly cluster (2026-07-10) — constructs that previously leaked
+// internal errors ("Unknown op", watr "Unknown instruction", generic
+// not-in-scope) now carry curated messages.
+
 // generators graduated: an empty generator is a VALID machine (immediately done).
 test('generators: empty generator runs (immediately done)', () => {
   is(run('function* g() { } export let f = () => g().next().done ? 1 : 0').f(), 1)
@@ -812,11 +837,14 @@ test('try: discarded method result before return compiles and runs', () => {
   is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
 })
 
-// `.message`/ `.name` read correctly, and String()/template-literal interpolation format per
-// spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message empty / message if
-// name empty / name+": "+message otherwise / "Error" if both empty) via src/ir.js's toStrI64
-// Error-schema arm — the fix for the pre-existing `${anyDynamicObject}` → "" bug, at least
-// for Error objects.
+// Slice A: `new Error(msg)`/the 7 built-in subclasses now construct a real in-wasm object
+// (PTR.OBJECT, schema ['message','name'], module/core.js buildErrorObject) instead of
+// lowering to the bare message value — supersedes the old "Error IS its message string"
+// documented divergence this block used to pin. `.message`/ `.name` read correctly, and
+// String()/template-literal interpolation format per spec's Error.prototype.toString
+// (ECMA-262 20.5.3.4: name if message empty / message if name empty / name+": "+message
+// otherwise / "Error" if both empty) via src/ir.js's toStrI64 Error-schema arm — the fix for
+// the pre-existing `${anyDynamicObject}` → "" bug, at least for Error objects.
 test('errors: real Error objects (.work/archive/todo.md §deletion-sweep Slice A)', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return e.message } }`), 'boom', '.message reads the constructor argument')
@@ -828,6 +856,11 @@ test('errors: real Error objects (.work/archive/todo.md §deletion-sweep Slice A
   is(j(`export let f = () => { try { throw Error('bare') } catch (e) { return e.message } }`), 'bare')
 })
 
+// audit-#10 finding-4: a RETURNED (not thrown) Error object previously decoded
+// at the host boundary as a plain {message,name} object — never `instanceof
+// Error` — because interop.js's Error-class upgrade (mem.errorSidToClass, the
+// 'jz:errcls' custom section audit-#9 P0-2's Brand redesign added) only ever
+// ran inside decodeThrown, reached exclusively by an ESCAPING THROW.
 test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the boundary (audit-#10 finding-4)', () => {
   const j = (code) => jz(code, { jzify: true }).exports.f()
   const literal = j(`export let f = () => new TypeError('x')`)
@@ -843,6 +876,11 @@ test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the 
   ok(!(base instanceof TypeError), 'but is not instanceof a sibling subclass')
 })
 
+// audit-#20 (root-caused alongside finding-4 above): an async function that
+// RESOLVES (not throws) with ANY value — heap or primitive — lost or trapped
+// on it, in two AST-shape-dependent failure modes, both in the shared
+// generator/async machinery (not Error-specific — confirmed with a
+// plain-object, non-Error repro alongside the Error one):
 test('errors: an async function resolving with a heap value (object, Error, …) decodes correctly, both AST shapes (audit-#20)', async () => {
   if (onWasi() || onKernel()) return
   const j = (code) => jz(code, { jzify: true }).exports.f()
@@ -951,6 +989,15 @@ test('errors: internal errors materialize at catch without reinterpreting user n
   is(j(`export let f = () => { try { throw 300 } catch (e) { return e.message } }`), undefined, 'user numbers have no Error properties')
 })
 
+// Before audit-#8 P0-1, jzify answered the Error-family rows with its own broad
+// `typeof===object` guess BEFORE this sound handler ever saw the node — `new
+// TypeError(x) instanceof RangeError` answered `true` in default mode (JS:
+// false). isBoth below runs every row in BOTH modes so that regression cannot
+// come back unnoticed in either one. jzify keeps its own Promise/ Iterator
+// shape-probes (this file's handler rejects both RHS names) and its permissive
+// `typeof===object` fallback for RHS names outside INSTANCEOF_ALLOW
+// (Object/RegExp/user-class names — default mode stays permissive there; strict
+// mode's loud-reject table below is unaffected).
 const jBoth = (code) => [jz(code, {}).exports.f(), jz(code, { strict: true }).exports.f()]
 const isBoth = (code, expected, msg) => {
   const [d, s] = jBoth(code)
@@ -982,6 +1029,9 @@ test('instanceof: Array/Map/Set/ArrayBuffer/TypedArray — truth table (both mod
 })
 
 test('instanceof: Error family — tag+schema compare, class hierarchy (both modes)', () => {
+  // audit-#8 repro 1, exact form: a plain let-bound Error (not caught) checked
+  // against a SIBLING class. This is the repro that was `true` in default mode
+  // before the fix (JS: false).
   isBoth(`export let f = () => { let e = new TypeError("x"); return e instanceof RangeError }`, false, 'audit-#8 repro 1: new TypeError(x) instanceof RangeError')
   // constructed Error objects: exact class true, sibling false, base Error true (hierarchy)
   isBoth(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof TypeError } }`, true, 'e instanceof TypeError (exact class)')
@@ -1031,6 +1081,12 @@ test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)
     'for-in over an error sees no key')
 })
 
+// audit-#9 P0-2 groups 1/2: Object.assign/spread over a real Error object used
+// to crash the compiler outright (`__arr_set_idx_ptr` never registered /
+// `Unknown section func,$__obj_clone`). audit-#10 finding-3 then asked for one
+// consistent answer across keys, JSON, spread and for-in: (a) JS fidelity,
+// non-enumerable on every surface, which needed a per-slot enumerability fact
+// threaded through every enumeration site, or (b) enumerable everywhere.
 test('errors: Object.keys, JSON, for-in, spread and assign see no Error field, as JS', () => {
   const src = (e) => `export let f = () => { let e = new TypeError("x"); e.code = 7; return JSON.stringify(${e}) }`
   for (const e of ['Object.keys(e)', 'Object.values(e)', 'Object.entries(e)', '(() => { const r = []; for (const k in e) r.push(k); return r })()',
@@ -1039,6 +1095,13 @@ test('errors: Object.keys, JSON, for-in, spread and assign see no Error field, a
     for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(), oracle(src(e)).f(), `${e} O${optimize}`)
 })
 
+// FIXED (was KNOWN-FAIL, pre-existing, general, Error-unrelated — found live
+// while pinning the enumerability decision above): Object.assign onto an
+// ANONYMOUS object-LITERAL target (`Object.assign({}, {a:1})`, no bound name)
+// never grew the target's schema with a source's new keys — it only overwrote
+// slots the target literal's OWN props already declared, so a genuinely new
+// source key had no slot to land in and was silently dropped
+// (`Object.assign({}, {a:1})` gave `[]`, real JS gives `['a']`).
 test('Object.assign onto an object-literal target grows the result with every source key (ECMA-262: OrdinarySetWithOwnDescriptor copies left-to-right, later source wins a collision, a target key absent from every source survives)', () => {
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`).exports.f(), 1, 'a brand-new key from the source lands — the original pin (real JS: 1, [\'a\'])')
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).sort().join(',')`).exports.f(), 'a', 'key name matches')

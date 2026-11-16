@@ -207,6 +207,7 @@ for (const [name, gen] of [
   })
 }
 
+// Both populations now narrow completely (200/200 seeds).
 for (const [name, gen] of [
   ['Int32Array min/max', typedIntMinMaxSource],
   ['Int32Array break/continue (IV-SR)', typedIVSRSource],
@@ -216,17 +217,21 @@ for (const [name, gen] of [
   })
 }
 
-// Two fixes: (1) toI32 distributes ToInt32 through `(if result f64)` recursively so
-// nested integer `?:` chains narrow to `(if result i32)` (lane-vectorized as i32x4
-// bitselect); (2) the last 2 residuals weren't user-loop f64 at all — a mixed
-// number/boolean ternary lost type precision, so `+` emitted polymorphic string-concat
-// dispatch, pinning the number→string formatter whose OWN loops (dtoa) are f64
-// (src/kind.js VT['?:'], see the absence test below).
+// typed-int nested-conditional narrowing: now CLOSED (13 → 0). Two fixes: (1) toI32
+// distributes ToInt32 through `(if result f64)` recursively so nested integer `?:`
+// chains narrow to `(if result i32)` (lane-vectorized as i32x4 bitselect); (2) the
+// last 2 residuals weren't user-loop f64 at all — a mixed number/boolean ternary lost
+// type precision, so `+` emitted polymorphic string-concat dispatch, pinning the
+// number→string formatter whose OWN loops (dtoa) are f64 (src/kind.js VT['?:'], see
+// the absence test below). Hard-zero gate now; a regression on either path trips it.
 test(`sweep: typed-int emits NO f64 op in any loop body (seeds 1..${SWEEP}) — proven waste-free`, () => {
   is(countLoopF64(typedIntSource), 0)
 })
 
 test('absence: a pure-integer program pulls no number→string formatter (mixed num/bool ?: precision)', () => {
+  // A mixed number/boolean ternary `(c ? num : num>k)` used to lose type precision, so
+  // the enclosing `+` emitted the polymorphic string-concat dispatch on pure-numeric
+  // operands, pinning __str_concat → __to_str → __static_str (a dtoa formatter).
   const src = `export let f = () => { const a = new Int32Array(16); for (let i = 0; i < 16; i++) { a[i] = ((a[i] - ((a[i] <= 2) ? a[i] : a[i])) + ((a[i] === 255) ? a[i] : (a[i] > 2))) | 0 } return 0 }`
   const tree = parse(src, 2)
   const fmt = (n) => n[0] === 'func' && typeof n[1] === 'string' && /__static_str|__str_concat|__to_str|__ftoa/.test(n[1])

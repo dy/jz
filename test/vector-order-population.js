@@ -195,6 +195,8 @@ add('P cond store ahead', 64, `for (let i = 0; i < n; i++) if (s[i] > 0) d[i + 1
 add('P stencil', 64, `for (let i = 1; i < n; i++) d[i] = s[i - 1] + s[i] + t[i + 1]`, ALL, programP)
 add('P first element', 64, `for (let i = 0; i < n; i++) d[i] = s[0] + t[i]`, ALL, programP)
 
+// (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
+// out of memory on the whole module, 2026-11-15)
 test(`vector order population: ${progs.length} loops over typed arrays one may alias, ${CONFIGS.length} configurations`, () => {
   if (onKernel()) return
   population('vector order', progs, { configs: CONFIGS, own: ['a', 'b', 'c', 'kern', 'fill', 'hash'] })

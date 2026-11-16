@@ -101,7 +101,10 @@ const OWN = /\b(g\d|m\d|h|f|cb\d)\b/g
 
 // A seed's programs as one module: Node evaluates it afresh for each argument, as jz
 // instantiates it afresh, and calls every program in order; a program Node throws on is left
-// out, as the scratch population did. One assertion a differing call, one a hang.
+// out, as the scratch population did. One assertion a differing call, one a hang. Not on the
+// leg of the compiler compiled by jz: there the worker compiles a seed's 400 programs in that
+// compiler, which frees nothing within a compile (not measured; modules of 683 and 1,000
+// programs of other populations ran out of its memory, 2026-11-15).
 const population = (label, progs) => {
   if (onKernel()) return
   const part = progs.map(({ text, cbOf }, j) => ({ j, text, src: text.replace(OWN, `$1_${j}`), cbs: cbOf.map((m, i) => [`cb${i}_${j}`, `m${m}_${j}`]) }))
@@ -132,6 +135,8 @@ const population = (label, progs) => {
 for (const seed of [1, 2, 3])
   test(`reentry population: seed ${seed}, 400 generated programs on one instance an argument, ${GENERATED.length} configurations`, () => population(`seed ${seed}`, generate(seed, 400)))
 
+// The phase 7 scout's reaches: [name, the program, the export its import `cb` calls (none: the
+// control, the export called directly), f's arguments].
 const SCOUT = [
   ['a global read, the import bumps it, read again', `let g = 0
 export let bump = () => { g = g + 1 }

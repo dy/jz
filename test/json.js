@@ -71,6 +71,9 @@ test('JSON.parse', () => {
     ['string with escape sequences decodes to correct length', `() => JSON.parse('"abc\\\\"def"').length`, 7],
     // \n and \" mixed; decoded length is 5 ("a\nb\"c" → a, NL, b, ", c).
     ['string with escape sequences decodes to correct length', `() => JSON.parse('"a\\\\nb\\\\"c"').length`, 5],
+    // Reproduces the bug surface: object value strings with escapes were
+    // silently corrupting the heap because the second-scan decode wrote past
+    // the under-sized alloc.
     ['object value with escape', `() => JSON.parse('{"k":"a\\\\"b"}').k.length`, 3],
   ])
 })
@@ -149,7 +152,11 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
 // chunks in the first place (`leNum`, plain i32 bitwise pack — safe since
 // expectText is ASCII-only, so bit 31 of a 4-byte pack is never set); only the
 // genuine 8-byte/64-bit chunk still uses BigInt, feeding i64Hex (a hex-STRING
-// formatter, never routed through Number()/ToNumber).
+// formatter, never routed through Number()/ToNumber). This sidesteps the
+// ctx.features.bigint ordering hazard for this call site rather than fixing it
+// generally — the general fix (scrub the ~17-file self-compiled-reachable BigInt
+// surface, or redesign the carrier disambiguation off one whole-program boolean)
+// is a separate, larger, out-of-scope architectural task.
 test('JSON.parse: stable let source uses shaped runtime parser', () => {
   const src = `
     let SRC = '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}'
@@ -456,6 +463,11 @@ test('JSON.stringify', () => {
   ])
 })
 
+// audit-#8 P0-4 (2026-08-03): a BOOL∪NUMBER ambiguous merge (valTypeOf
+// collapses to NUMBER) reaching JSON.stringify/JSON.parse's scalar-argument
+// ingress raw — same class as the String()/template-literal formatter wave
+// (756ae10f), landed here via storedValue at the stringify/space/parse
+// argument chokepoints.
 test('JSON.stringify: ambiguous BOOL∪NUMBER merge argument boxes correctly', () => {
   is(run(`export let f = (s) => JSON.stringify(s ? 1 : false)`).f(1), '1')
   is(run(`export let f = (s) => JSON.stringify(s ? 1 : false)`).f(0), 'false')
@@ -474,8 +486,10 @@ test('JSON.parse: ambiguous BOOL∪NUMBER merge argument boxes correctly', () =>
   is(run(`export let f = (s) => typeof JSON.parse(s ? true : 1)`).f(1), 'boolean')
 })
 
-// One documented edge: a reviver returning undefined assigns undefined instead of
-// deleting.
+// JSON.parse reviver (2026-07-10): was silently DROPPED — now lowers to an
+// inline bottom-up walk (ES InternalizeJSONProperty). One documented edge:
+// a reviver returning undefined assigns undefined instead of deleting.
+// JSON.stringify with a non-foldable replacer now REJECTS (was silently ignored).
 test('json: parse reviver applies bottom-up', () => {
   is(run(`export let f = () => { let o = JSON.parse('{"a":1,"b":2}', (k, v) => typeof v === "number" ? v * 2 : v); return o.a * 10 + o.b }`).f(), 24)
   is(run(`export let f = () => { let a = JSON.parse('[1,2,3]', (k, v) => typeof v === "number" ? v + 1 : v); return a[0] * 100 + a[1] * 10 + a[2] }`).f(), 234)
@@ -589,6 +603,7 @@ test('JSON.parse: schema cache reuses decoded keys and rejects hash collisions',
     is(schema(src), id, 'reuse ' + src)
     is(j.exports.text(src), JSON.stringify(JSON.parse(src)), src)
   }
+  // Both keys hash to 1297082294.
   const x = '{"property_5e5gf5":1}', y = '{"property_-y7i35a":2}'
   const xid = schema(x), yid = schema(y)
   ok(xid !== yid, 'colliding strings have distinct schemas')

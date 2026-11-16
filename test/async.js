@@ -723,6 +723,9 @@ test('async: a class in the body reads its bindings', async () => {
 
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
+  // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals
+  // stopped only at '=>' (or nowhere), so a nested function declaration's own
+  // `return` forced statement decomposition and read as a machine return.
   const [c0, c1, c2, c3, c4, c5] = valAll([
     `async () => { function helper() { return 1 } return helper() }`,
     `async () => { const v = helper(); function helper() { return 6 } return v }`,

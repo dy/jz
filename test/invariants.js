@@ -616,6 +616,13 @@ test('layout: fixed-width hex formatting needs no general radix scratch', () => 
 })
 
 test('layout: i64Hex is self-compile-safe across the full 64-bit range', async () => {
+  // Under self-compile, BigInts are raw SIGNED i64 bits (kind-erased), so any
+  // formatting that routes through bits.toString(16) renders a bit-63-set
+  // value as a signed "-8000…" fragment — the emitted `(i64.const 0x00-…)`
+  // is unparseable and killed every durable-log helper the kernel compiled
+  // (the nanPrefixMaskHex regression). i64Hex must build the hex from
+  // logical-shifted 32-bit halves; this pins host output byte-for-byte
+  // against the toString reference for the boundary patterns.
   const { i64Hex, nanPrefixMaskHex } = await import('../layout.js')
   const ref = (b) => '0x' + b.toString(16).toUpperCase().padStart(16, '0')
   for (const bits of [0n, 1n, 0x7FF8000000000000n, 1n << 63n,
@@ -703,6 +710,9 @@ test('invariant: FunctionPlan transfers collections once and keeps projections d
   throws(() => installFunctionPlan(ctx, plan), /already-consumed FunctionPlan/)
 })
 
+// The data segment accumulates as parts + a maintained length
+// (src/static-data.js) because member-target `+=` fresh-copies the whole
+// segment per append in the self-compiled kernel (the jz×jz goal-gate wall).
 test('invariant: static-data parts accumulator matches string-form bytes and offsets', async () => {
   const { dataAlign, dataPush, dataLen, dataBytes, dataReset, pushStaticSlots, hexBytes } = await import('../src/static-data.js')
   const { ctx } = await import('../src/ctx.js')
@@ -807,10 +817,14 @@ test('invariant: closure dedup groups alpha-duplicates, every leaf value apart, 
   } finally { ctx.closure.table = savedTable }
 })
 
-// All three pins below are white-box against the freeze.js mechanism itself, not a
-// live compile's internal state — no onKernel() guard needed, since
-// JZ_TEST_TARGET=jz.wasm only changes WHERE compilation happens, never what this
-// plain, side-effect-free module does when called directly from the host.
+// program-facts freeze discipline (v1 architecture-convergence, "facts frozen before
+// consumers" — paramReps/callSites are STAGED facts, published empty/raw by
+// collectProgramFacts and settled by plan()'s own round 3; programFacts itself is
+// closed-shape once ProgramIndex is stapled on). All three pins below are white-box
+// against the freeze.js mechanism itself, not a live compile's internal state — no
+// onKernel() guard needed, since JZ_TEST_TARGET=jz.wasm only changes WHERE
+// compilation happens, never what this plain, side-effect-free module does when
+// called directly from the host.
 
 test('invariant: ProgramIndex owns stable numeric function and member-target identities', () => {
   const target = { name: 'target', sig: { params: [], results: ['f64'] }, body: ['return', [null, 1]] }
@@ -1268,6 +1282,9 @@ test('invariant: freezeCallSites blocks structural mutation of both the array an
 })
 
 test('invariant: assertProgramFactsShape rejects an undocumented programFacts key, always (not gated)', async () => {
+  // promoted from JZ_DEBUG_INVARIANTS-gated to always-on (measured <0.03 ms/compile —
+  // negligible against whole-compile time), so the throw now fires regardless of the env
+  // flag.
   const { spawnSync } = await import('node:child_process')
   const root = new URL('..', import.meta.url).pathname
   const script = `
@@ -1286,6 +1303,12 @@ test('invariant: assertProgramFactsShape rejects an undocumented programFacts ke
 })
 
 test('invariant: paramReps/callSites consumer order independence — a function\'s own compiled body does not depend on a sibling\'s declaration order', () => {
+  // Proxy for "two consumers swapped in registration order": since both
+  // functions' paramReps/callSites entries live in the SAME frozen Map/array
+  // (keyed by name, not position) once plan()'s round 3 settles, f's own
+  // narrowing/specialization must be identical whichever order the two
+  // functions were declared/registered in — a real, whole-compile pin, not a
+  // synthetic one, exercising the actual freeze this slice installs.
   const extractFunc = (w, name) => {
     const m = w.match(new RegExp(`\\(func \\$${name}\\b[\\s\\S]*?\\n  \\)`))
     return m && m[0]

@@ -624,6 +624,7 @@ test('interop: ptr/offset/type/aux codec round-trips', () => {
 })
 
 test('interop: i64ToF64 / f64ToI64 are bit-cast inverses', () => {
+  // ptr() now yields the i64 carrier directly (a BigInt) — no NaN-box ever materializes as f64.
   const box = interop.ptr(6, 3, 1024)
   is(typeof box, 'bigint')
   // i64→f64→i64 round-trips the bits losslessly (the f64 form is intact on V8).
@@ -768,6 +769,9 @@ test('interop: typed argument dispatch requires explicit bigint handles', () => 
 })
 
 test('interop: Uint8Array arg crosses via native memcpy (correct for stride-1)', () => {
+  // Regression: the inbound TypedArray path gated the fast `.set` memcpy on stride>=2,
+  // so a Uint8Array (stride 1, e.g. a whole audio file) fell to a per-byte DataView
+  // loop — slow, and a silent miscompile would surface here as a wrong sum.
   const { exports } = interop.instantiate(compile(`
     export let sum = (b) => { let n = b.length, s = 0; for (let i = 0; i < n; i++) s += b[i]; return s }
   `))
@@ -795,6 +799,17 @@ test('interop: a typed array made by length is a live view + box for zero-copy i
   is(out2[2], out[2])
 })
 
+// decodeThrown / jz:schema (watr downstream CI, 2026-08): a thrown Error's
+// `.message` decodes through mem.read's generic OBJECT case, which indexes
+// `mem.schemas[sid]` positionally (compile/index.js's jz:schema writer:
+// "entry index === schema id"). The reader used to merge incoming entries
+// into `mem.schemas` by CONTENT alone (`props.join(',')`) — sound for
+// ordinary object schemas (content really does mean "same shape" there),
+// unsound for the 7 built-in Error classes, which module/schema.js
+// deliberately keeps as SEPARATE compile-time ids sharing the identical
+// physical prop list ['message','name'] (distinguished only by a `salt` —
+// the class name — folded into ctx.schema.register's dedup key, never
+// serialized into the jz:schema bytes themselves).
 for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   test(`interop: decodeThrown recovers .message for EVERY built-in Error class in one module, not just the first (${lbl})`, () => {

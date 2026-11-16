@@ -26,6 +26,9 @@ test('unused timer names do not initialize an absent timer queue', () => {
   }
 })
 
+// Pins the js/wasi policy objects src/session.js's beginSession derives from
+// `host` — the single place ~24 scattered `ctx.transform.host === 'wasi'`
+// checks across compile/emit/module now read a named field from instead.
 // A field flip here means every consumer keyed on it flips too, so this is
 // the one test that has to catch a wrong default.
 
@@ -52,9 +55,11 @@ test('TargetProfile: js vs wasi field values', () => {
   is(targetProfileFor('bogus'), js, 'unrecognized host falls back to the js profile object')
 })
 
-// Pin the js leg as an actual identity transform so a future rewrite that forgets to gate
-// on commandEntry, or narrows its own gate, gets caught here instead of silently reshaping
-// non-WASI output.
+// legalizeForTarget (src/optimize/watr-tail.js) now ports real WASI-only rewrites onto the
+// assembled module tree (command-entry legalization + reactor `_initialize` conversion),
+// both gated on targetProfile.commandEntry — false under js. Pin the js leg as an actual
+// identity transform so a future rewrite that forgets to gate on commandEntry, or narrows
+// its own gate, gets caught here instead of silently reshaping non-WASI output.
 
 test('legalizeForTarget: identity transform under the js TargetProfile (same reference, untouched tree)', () => {
   const module = ['module',
@@ -325,9 +330,16 @@ test('WASI console.log: boolean read from a container prints as boolean', () => 
   is(captured.join(''), 'false\n')
 })
 
-// Under `host:'js'` this is masked (console.log there decodes host-side off
-// the raw i64, independent of what the compiler believed) — only reachable
-// under `host:'wasi'`, where module/console.js's own WASI-syscall writers run.
+// FIXED (Slice 5 site survey — LEAK C): module/console.js's writePart
+// dispatched on a bare `valTypeOf(part)` STRING/NUMBER check with no runtime
+// tag verification — a dict-census STRING/NUMBER claim ("every value ever
+// written") on an ABSENT key fed raw UNDEF_NAN bits straight to
+// `$__write_str`/`$__write_num`, which assume their argument really IS that
+// kind (no nullish check of their own — unlike `$__write_val`, the generic
+// fallback, which already dispatches on the actual runtime atom). Under
+// `host:'js'` this is masked (console.log there decodes host-side off the raw
+// i64, independent of what the compiler believed) — only reachable under
+// `host:'wasi'`, where module/console.js's own WASI-syscall writers run.
 test('WASI console.log: dict-census absent key prints as undefined, not empty/garbage (Slice 5 LEAK C)', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push(text) })
@@ -987,6 +999,10 @@ test('WASI polyfill: writes reach process.stdout as raw bytes', () => {
 })
 
 test('init: top-level WASI calls run via _start (command), not a start section', () => {
+  // The p1 ABI forbids WASI calls inside the wasm start section — it runs during
+  // `new WebAssembly.Instance`, before ANY host can wire memory, so a top-level
+  // console.log/Date.now crashed the JS shim ("Cannot read properties of null").
+  // host:'wasi' ships init as the command `_start` (and `__jz_init`) instead.
   const mod = new WebAssembly.Module(compile(`console.log('init'); export let f = () => 1`, { host: 'wasi' }))
   ok(WebAssembly.Module.exports(mod).some(e => e.name === '_start'), '_start exported')
   ok(!WebAssembly.Module.customSections(mod, 'start').length && WebAssembly.Module.exports(mod).some(e => e.name === '__jz_init'), '__jz_init exported')

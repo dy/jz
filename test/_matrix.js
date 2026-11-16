@@ -125,8 +125,14 @@ export const onWasi = () => HOST === 'wasi'
 
 /**
  * Force the BigInt retirement diagnostic (JZ_BIGINT_STRICT=1, src/ir.js
- *  bigintStrict()) for exactly the synchronous compile `fn` performs. Tests that
- *  pin the diagnostic's own wording/flow-class naming wrap their compile call in
+ *  bigintStrict()) for exactly the synchronous compile `fn` performs.
+ *  Main-stabilization interim flip (2026-08-14): an unprovable BigInt flow boxes
+ *  by DEFAULT again (the pre-Slice-1 behavior — any input program legitimately
+ *  reaching boxing, including watr/subscript's own bundled BigInt sites, must
+ *  keep compiling out of the box); Slice 1's own compile-time refusal is opt-in,
+ *  scoped tightly around one sync call so no concurrently-running test observes
+ *  the toggle (same discipline as test/watr.js's withRawCarrier). Tests that pin
+ *  the diagnostic's own wording/flow-class naming wrap their compile call in
  *  this.
  */
 export const withBigintStrict = (fn) => {

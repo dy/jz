@@ -1233,6 +1233,7 @@ test('array spread of a string yields its characters (length, indexing, map)', (
   is(run('export let f = () => { let arr = ["items","meta"]; let a = [...arr[0]]; return a.length }').f(), 5, 'unknown-source (array element) spread length')
   is(run('export let f = () => { let s = "ab" + "cde"; let a = [...s]; return a.length }').f(), 5, 'unknown-source (concat) spread length')
   is(run('export let f = () => { let arr = ["hi"]; let a = [...arr[0]]; return a[1].charCodeAt(0) }').f(), 105, 'unknown-source spread indexing (i)')
+  // typed-array + array spread still correct (no regression from the length-by-kind change)
   is(run('export let f = () => { let a = [1,2,3]; let b = [...a, 4]; return b.length * 10 + b[3] }').f(), 44, 'array spread intact')
 })
 
@@ -1263,6 +1264,12 @@ test('Regression: imported function returning array with props keeps numeric ind
   is(result[3], true)
 })
 
+// Regression surfaced in watr: `str()` attaches `bytes.valueOf = () => s` to a byte
+// array so `string.const` can recover the original string via `.valueOf()`, and
+// `normalize` distinguishes string-byte-arrays from sub-expressions via `arr.valueOf
+// !== Array.prototype.valueOf`. jz ignored the assignment — calling `arr.valueOf()`
+// returned the array itself — so `string.const`'s operand was misread as an opcode
+// ("Unknown instruction 104").
 test('valueOf: custom override on array is invoked', () => {
   const { f } = runHost(`export let f = () => {
     let a = [1, 2]
@@ -1313,6 +1320,8 @@ test('valueOf: identity vs Array.prototype.valueOf reflects override (not static
   is(f(), 'overridden')
 })
 
+// A plain array (no override) must still compare EQUAL to Array.prototype.valueOf,
+// so the fix narrows to "has an assigned override" rather than disabling the fold.
 test('valueOf: plain array identity still equals Array.prototype.valueOf', () => {
   const { f } = jz(`export let f = () => {
     let a = [104, 105]
@@ -1352,6 +1361,8 @@ test('Regression: ternary only evaluates the live branch', () => {
   is(result[1], 1)
 })
 
+// Regression: local-variable integer array fed through .map().join() produced
+// garbage floats ('8.48e-314,...') instead of the correct string.
 test('Regression: local-var integer array .map().join() matches JS (integers)', () => {
   const { f } = runHost(`export function f() {
     let a = [1, 2, 3]
@@ -1563,6 +1574,9 @@ test('for…of: reads the array it walks, as JS answers', () => {
 // .length assignment
 
 test('.length =: plain array resizes (grow & shrink), even when scalarization-eligible', () => {
+  // Regression: literal arrays with only "safe" uses were scalarized / promoted to
+  // Int32Array, folding the `.length` assignment TARGET into a literal —
+  // `Assignment to non-variable: [null,2]`.
   is(run('export let f = () => { let a = [1, 2]; a.length = 5; return a.length }').f(), 5)
   is(run('export let f = () => { let a = [1, 2, 3]; a.length = 1; return a.length }').f(), 1)
   is(run('export let f = () => { let a = [1, 2]; a.length = 4; return a[0] + a.length }').f(), 5)
@@ -1931,6 +1945,25 @@ test('every: typed-array field of heap-returned object', () => {
   is(test(4), 1)
 })
 
+// `typedArray.set(src)` on an array held in a DYNAMICALLY-ADDED struct field was a
+// silent no-op — a receiver whose static type is fully unknown (a dyn-prop field
+// carries no schema/ctor tracking at all) never reached ANY `.typed:*` emitter:
+// emitMethodCall's dispatch has no arm for "unknown-type receiver, but a
+// TYPED-specific emitter also exists for this method name" (the sibling of the
+// STRING-vs-generic runtime fork it already has), so `.set` fell to the generic
+// emitter — module/collection.js's `Map.prototype.set(key, val)` — silently
+// mistaking the source array for a Map key.
+//
+// `set: ['core','typedarray','collection']` landed in src/autoload.js PROP_MODULES,
+// generalized to every OTHER `.typed:*` name that shares a generic `.${method}` emitter
+// (fill/map/filter/reduce/forEach/find*/
+// every/some/copyWithin/at/toSorted/toReversed/with/sort/reverse/slice/indexOf/
+// lastIndexOf/includes) — audit found ALL of them missing `typedarray`, not just `set`;
+// differentially confirmed load-bearing (a host-provided typed-array PARAMETER — source
+// names no typed ctor anywhere, so `includeForRuntimeCtor` never fires — silently
+// misdispatched `.fill()` without this row: 1003 instead of 9009, reading a real
+// Float64Array as a guessed plain array).
+//
 // Differentially verified against real Node/V8 typed arrays (not hand-picked
 // literals) for Int8Array wrap (ECMA-262 ToInt8, 7.1.11), Uint8Array
 // wrap-not-clamp (ToUint8, 7.1.10 — contrast with Uint8ClampedArray's
@@ -2036,7 +2069,10 @@ test('filter: into typed-array field added dynamically to an empty object (narro
 })
 
 // .typed:slice / .typed:filter BigInt pins — the OTHER decline condition this
-// branch closed (`r.isBigInt`, alongside `!r` above).
+// branch closed (`r.isBigInt`, alongside `!r` above). Both now route through a
+// runtime aux-byte dispatch instead of a bare `return null`; asserted via
+// `.length` exercises the runtime structure; the provenance-through-local
+// indexed-value cases are pinned separately below.
 test('slice: BigInt64Array (isBigInt no longer bails to a bare decline)', () => {
   const { f } = runHost(`export let f = () => {
     let b = new BigInt64Array(4)
@@ -2082,10 +2118,11 @@ test('.map: into typed-array field added dynamically to an empty object (narrow 
 })
 
 test('.map: host-provided typed receiver (source names no typed ctor at all) preserves species + width', () => {
-  // Reads back via .forEach (proven-correct dispatch) rather than dst[i]/m[i]
-  // bracket indexing — seeing the SEPARATE
-  // bracket-index-on-erased-vt-host-receiver gap noted in the long comment above,
-  // not re-testing it here.
+  // dst carries no typed-ctor syntax anywhere in source, so resolveElem(dst) can
+  // never trace a binding — the `!r` decline this fix closes. Reads back via
+  // .forEach (proven-correct dispatch) rather than dst[i]/m[i] bracket
+  // indexing — seeing the SEPARATE bracket-index-on-erased-vt-host-receiver
+  // gap noted in the long comment above, not re-testing it here.
   const r = jz(`export function f(dst) {
     let m = dst.map(x => x * 2)
     let out = 0
@@ -2131,6 +2168,11 @@ test('.map: Float32Array keeps f32 store-rounding through the runtime decline pa
 // `cb.call([item, idxArg` in module/array.js — only `.reduce`'s (acc, item,
 // idx) needs a 3-wide floor); adding a receiver-array arg just for typed
 // `.map` would be new, inconsistent surface, not a mirror of anything.
+//
+// (B) BIGINT SPECIES — a statically-known BigInt64Array/BigUint64Array
+// receiver used to short-circuit `.typed:map` straight to generic
+// `Array.prototype.map` (module/typedarray.js, the `if (r?.isBigInt)` branch
+// that used to sit right after `resolveElem`).
 
 test('.map: callback receives (item, idx) — static scalar path (Uint8Array)', () => {
   // ECMA-262 23.2.3.20 ToIntegerOrInfinity / ToUint8 (7.1.10): element writes
@@ -2165,7 +2207,9 @@ test('.map: BigInt64Array/BigUint64Array preserve species (was: silently reroute
   const isView2 = runHost(`export let f = () => ArrayBuffer.isView(new BigUint64Array([1n]).map(x => x)) ? 1 : 0`).f
   is(isView2(), 1, 'BigUint64Array: same')
 
-  // Value pin: x => x + 1n over [1n] → [2n].
+  // Value pin: x => x + 1n over [1n] → [2n]. Constructor provenance now
+  // survives direct chains, concise callbacks, and local assignments through
+  // one typed-storage provenance authority.
   const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => { return x + 1n })[0] === 2n ? 1 : 0`).f
   is(val(), 1, '1n + 1n = 2n, correct species and bit-exact roundtrip')
 

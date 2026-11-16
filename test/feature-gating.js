@@ -87,7 +87,11 @@ test('features.external: computed reads use receiver facts, not previous demand'
 test('features.external ON: untyped ?.prop read — __ext_get import present', () => {
   if (onWasi()) return  // wasi: external object
   // `?.` on an unknown receiver delegates to the SAME emitPropAccess arm the
-  // plain `.` read uses (module/core.js) — same demand, same import.
+  // plain `.` read uses (module/core.js) — same demand, same import. `o` itself
+  // may BE the PTR.EXTERNAL host object reaching in through this very read, no
+  // other access needed to put "externals in play" first (an exported function's
+  // own untyped parameter is exactly this — see test/objects.js's marshalled-arg
+  // regression).
   const w = wat(`export let f = (o) => o?.x`)
   is(hasImport(w, '__ext_get'), true)
 })
@@ -153,6 +157,9 @@ test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
   // inference (same class as the preset-table skip in booleans.js).
   // Burn down with the string-param differential; do not widen this skip.
   if (onKernel()) return
+  // JSON.parse builds OBJECT pointers via a runtime schema cache (__jp_obj
+  // routes through __jp_schema_get); previously it emitted HASH and pulled
+  // __hash_set_local. The schema substrate is what gets exercised now.
   const w = wat(`export let f = (s) => JSON.parse(s)`)
   ok(hasDef(w, '__jp_schema_get'))
 })
@@ -294,6 +301,11 @@ test('alloc:false omits allocator helper exports', () => {
 // already proven the receiver ARRAY — same contract as __arr_idx_known vs __arr_idx.
 test('__arr_grow_known: proven-ARRAY grow skips the generic __ptr_offset call', () => {
   if (onKernel()) return  // self-compile kernel codegen shape differs; in-process leg owns this
+  // Was a single exported `f`'s own bare parameter (`(a) => { a.push(1); ... }`)
+  // — its ONLY "proof" that `a` was ARRAY came from src/compile/infer.js's
+  // methodEvidence source treating `.push` usage alone as certain (fix/
+  // param-mutation-propagation found that unsound: a plain OBJECT/HASH value can
+  // own a same-named closure property, so `.push` usage no longer induces ARRAY).
   const w = wat(`const g = (a) => { a.push(1); return a.length }; export const h1 = () => g([1]); export const h2 = () => g([2, 3])`)
   const body = w.match(/\(func \$__arr_grow_known\b[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'expected __arr_grow_known to be emitted')

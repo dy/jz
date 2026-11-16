@@ -57,7 +57,9 @@ for (let e = -300; e <= 300; e += 12) LOG_BASES.push(10 ** e)
 // literal for a fold to fire — so a whole exponent list compiles once.
 const perExp = (exps) => exps.map((c, i) => `export let e${i} = (x) => x ** ${c}`).join('\n')
 
-// Every pair must land within `limit` ulp.
+// Tally `pairs` of (x, y) through `pow` against host Math.pow: the bit-exact / 1-ulp /
+// worse counts, and — only on a genuine miss — the offending pairs, so a regression is
+// diagnosable from the log alone. Every pair must land within `limit` ulp.
 function tally(label, pairs, pow, limit = 1) {
   let exact = 0, oneUlp = 0
   const worse = []
@@ -79,6 +81,9 @@ function tally(label, pairs, pow, limit = 1) {
 let runtimePow
 const pow = (x, y) => (runtimePow ??= run('export let f = (x, y) => Math.pow(x, y)').f)(x, y)
 const TAIL_BASES = [...LOG_BASES, 0.18, 0.5, 1.0000001, 2.2, 255.7]
+// The pinned values from the colorpq regression (±0.1593017578125 — a PQ-curve exponent —
+// and ±78.84375, its far end) plus common non-integer shapes: ±0.5 (sqrt fast path),
+// ±1/3 (cube root), ±2.4 (sRGB gamma), ±100.7 (large non-integer).
 const TAIL_EXPS = [0.1593017578125, -0.1593017578125, 78.84375, -78.84375, 0.5, -0.5, 1 / 3, -1 / 3, 2.4, -2.4, 100.7, -100.7]
 // jz mirrors CURRENT V8's pow (src/prepare/math-kernel.js); older hosts' Math.pow itself
 // sits ±1 ulp off that reference on a few pairs (node 22 CI vs node ≥ 24), so the ≤1ulp
@@ -102,8 +107,12 @@ test('Math.pow non-integer tail — bit-exact/≤1ulp random pairs vs host', () 
   tally('random', pairs, pow, TAIL_LIMIT)
 })
 
-// Exponents that reach $math.pow_fold specifically — finite, non-integer, not ±0.5 and not a
-// k/5 fraction (those route to $math.sqrt / $math.fifthroot instead — section 3).
+// Exponents that reach $math.pow_fold specifically — finite, non-integer, not ±0.5 and
+// not a k/5 fraction (those route to $math.sqrt / $math.fifthroot instead — section 3).
+// The colorpq regression's own exponents (the PQ curve's nv=2610/16384 and
+// p=1.7·2523/32) plus common non-fifthroot shapes.
+// (2610/16384 IS 0.1593017578125, the pinned PQ exponent — listed once: identical
+// functions in one module deduplicate, and the probe below reads each function's own body.)
 const FOLD_EXPS = [
   2610 / 16384, -(2610 / 16384),
   1.7 * 2523 / 32, -(1.7 * 2523 / 32),
@@ -211,6 +220,11 @@ const exactFifthPow = (x, k) => {
   const [my, ey] = mantExp(y)                   // the midpoint to the next double: (2·my + 1) · 2^(ey − 1)
   return cmpScaled((2n * my + 1n) ** 5n, (ey - 1) * 5, xk, exk) < 0 ? step(y, 1) : y
 }
+// Regression ceiling against that reference: the fold measures a worst case of 4 ulp
+// across these exponents on the range it runs (four Newton steps, the last a correction:
+// module/math.js $math.fifthroot; the x^p · fifthroot(x^r) composition adds the rest),
+// so 96 catches a dropped step (three steps left a ~2.65M ulp floor) while tolerating
+// machine/input variance.
 const ULP_CEILING = 96
 
 test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, async () => {

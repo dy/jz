@@ -149,7 +149,9 @@ test('compact: a returned view outlives the compactions of the calls after it', 
 })
 
 // Once the program's own allocation grew the memory, the views handed before
-// are detached, and the compaction may grow it for its scratch again.
+// are detached, and the compaction may grow it for its scratch again. Under a
+// memory maximum each grow fits exactly, with no room to spare: a program that
+// returned one view still has its garbage collected, not an out-of-memory.
 test('compact: once the program grew the memory past its views, a compaction grows it again', () => {
   if (onWasi() || !counted()) return
   const src = `let px, junk
@@ -500,8 +502,10 @@ test('compact: durable arrays below and above the stub log\'s table heal at a re
 // the stub log's table at the start, the snapshot skipped the table's
 // addresses and the inline test did not: it read the bit of an array a table
 // away, or past the bitmap's end, and an array that bit called saved kept the
-// round's write through the reset. Arrays a table's span apart, written from
-// the last down and from the first up, all reset.
+// round's write through the reset. Every reader now takes a bit's cell by one
+// rule, the table skipped (collection/durable.js seenCellWat). Arrays a
+// table's span apart, written from the last down and from the first up, all
+// reset.
 test('compact: an element store asks the bit the snapshot sets, past the stub log\'s table', () => {
   if (onWasi() || !counted()) return
   const src = `const arrs = []
@@ -807,7 +811,10 @@ test('compact: named properties kept by address follow the objects a phase compa
 
 // The for-in key cache (module/object.js: the key array of the last table a
 // for-in enumerated, read only while its epoch holds) names memory it does not
-// own.
+// own. A reset bumps its epoch and leaves the pointer, as a rewound frame that
+// filled it does; a compaction rooting it would read the released round,
+// whatever the reused memory holds now, as the cached array, and rewrite words
+// of live data as its elements.
 test('compact: a for-in key cache a reset left is no root of the next round\'s compaction', () => {
   if (onWasi() || !counted()) return
   const src = `const dict = {}

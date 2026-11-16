@@ -376,6 +376,8 @@ test('recursive boolean results keep truthiness and declare final coercion temps
       return reads * 10 + yes
     }
   `
+  // A recursive predicate's result is the join of its returns (the program
+  // summary): a boolean, as in JS, not the 0/1 the boundary used to hand out.
   for (const optimize of levels(0, 2, 3)) {
     const { member, chain, other, block, effects } = jz(source, { optimize }).exports
     is(member(), true, `O${optimize}: direct recursive predicate`)
@@ -431,6 +433,13 @@ test('opaque .length nullish TypeError schema is catchable at every tier', () =>
     is(jz(src, { optimize }).exports.f(null), 1, `O${optimize}`)
 })
 
+// schema/errcls-vs-treeshake reconciliation (fix/schema-treeshake): the
+// length-throw's shared TypeError schema still mints eagerly at emission
+// (commit 8954dac2, pin above) so O0 catch planning never races it, but the
+// jz:schema/jz:errcls custom sections are now built AFTER treeshake and only
+// carry entries something surviving still constructs — a mint whose sole
+// caller treeshakes away must not leave dead schema/errcls bytes behind
+// (the aos/dotprod/wav/callback size-gate regression, e867c3af).
 test('dead opaque-length TypeError schema is pruned from custom sections post-treeshake', () => {
   // `dead` is declared but never called or exported — at O2/O3 (treeshake on)
   // it, and its only use of the shared length-throw path, are fully removed.
@@ -724,6 +733,14 @@ test('schema writes through aliases keep an existing dynamic sidecar coherent', 
   is(f(), 2)
 })
 
+// A name whose objects are minted elsewhere takes no merged layout
+// (ctx.schema.unknownInit; earlier prepare-time schema growth took a box
+// too): `const alias = ns.inner` replaced its box with the
+// inner object's pointer and `alias.f = b` then stored at the box's slot
+// offset into a 1-slot object; `Object.assign(o, {b, c})` on a parameter
+// slot-copied by the merged {b, c} into the caller's {a} object (`p.a` read
+// 2, slot 1 past the allocation). Both writes now take the dynamic path; the
+// neighbours stay intact and the caller's own field keeps its value.
 test('a foreign-minted name gets no merged layout: writes through it stay in bounds', () => {
   const { f, g } = run(`
     function a() { return 1 }
@@ -845,6 +862,10 @@ test('Regression: object-slot booleans coerce with Number and String', () => {
   is(strings(), 'false:true')
 })
 
+// Pre-existing bug surfaced while writing slot-type tests: `let o = w == 0 ?
+// mkA() : mkB()` where both arms returned narrowed-i32 OBJECT pointers used to
+// emit `(f64.convert_i32_s (if (result i32) ...))` — numeric convert of the
+// offset rather than NaN-rebox.
 test('Regression: ?: with two narrowed-OBJECT helpers preserves pointer identity', () => {
   const { f } = run(`
     let mkA = () => ({ x: 11 })
@@ -925,6 +946,11 @@ test('Regression: ?: polymorphic — same-shape distinct OBJECT schemas dedup', 
   is(hy(1), 200)
 })
 
+// Polymorphic `?:` with two narrowed-OBJECT arms of structurally distinct
+// schemas — `.prop` falls through `__dyn_get_any` → `__dyn_get`'s
+// OBJECT-schema fallback (added in commit) which reads receiver aux as
+// schemaId, looks up the schema name table, and resolves the slot at
+// runtime.
 test('Regression: ?: polymorphic — different-shape OBJECT schemas resolve .prop', () => {
   const { hy } = run(`
     let n = () => ({ x: 11, y: 100 })
@@ -1026,10 +1052,11 @@ test('Regression: dynamic key write updates existing fixed-shape object slot', (
 })
 
 test('Regression: numeric runtime key write on fixed-shape object preserves schema slots (no OOB)', () => {
-  // `o[i] = v` with a runtime numeric index on a schema object once emitted a raw array-style
-  // `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and trapping (memory
-  // access out of bounds) at large i. This is the exact fault that broke the self-compile when
-  // the dispatch table gained integer keys; runs under test:wasm.
+  // `o[i] = v` with a runtime numeric index on a schema object once emitted a raw
+  // array-style `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and
+  // trapping (memory access out of bounds) at large i. It now routes to __dyn_set (the
+  // per-OBJECT propsPtr sidecar), mirroring `o.prop = v`. This is the exact fault that
+  // broke the self-compile when the dispatch table gained integer keys; runs under test:wasm.
   const { slot, loop, big, compound } = run(`
     export let slot = (i) => { let o = { x: 1 }; o[i] = 99; return o.x }
     export let loop = () => { let o = { x: 1, y: 2 }; for (let i = 0; i < 3; i++) o[i] = 9; return o.x * 10 + o.y }
@@ -1044,8 +1071,9 @@ test('Regression: numeric runtime key write on fixed-shape object preserves sche
 })
 
 // Root A′: `o[i]=v` (numeric/dynamic key) on an UNTYPED empty-object binding (`let o =
-// {}` — null-typed, OBJECT only at runtime). The numeric-keyed READ stays array/typed
-// by design (returns undefined — see test/perf "skips __is_str_key dispatch"), but the
+// {}` — null-typed, OBJECT only at runtime). It now routes an OBJECT/HASH receiver to
+// __dyn_set (propsPtr sidecar, string key). The numeric-keyed READ stays array/typed by
+// design (returns undefined — see test/perf "skips __is_str_key dispatch"), but the
 // WRITE must never trap or corrupt. Runs under test:wasm. Gated on `rep.notString` so
 // typed-array params keep the lean store.
 test("Regression: o[i]=v on an untyped empty-object binding is OOB-safe (Root A′)", () => {
@@ -1112,7 +1140,10 @@ test('Object.keys: JSON.parse OBJECT does not return absent keys', () => {
 })
 
 // Mutation via __dyn_set writes into the OBJECT's propsPtr sidecar — and
-// enumeration MERGES it (JS semantics: added keys are enumerable).
+// enumeration MERGES it (JS semantics: added keys are enumerable). This pinned
+// length 1 while jz dropped dyn-added keys from the schema view; the
+// literalWriteKeys deopt (program-facts.js) + runtime sidecar/global merge now
+// match JS exactly (`let o = {a:1}; o.b = 2; Object.keys(o).length === 2`).
 test('Object.keys: JSON.parse OBJECT mutation grows the enumeration (JS-exact)', () => {
   const { f } = run(`export let f = () => {
     let o = JSON.parse('{"a":1}')
@@ -1213,9 +1244,12 @@ test('Regression: anonymous fixed-shape object literals do not allocate dynamic 
 })
 
 // A schema field lives in its slot only; the sidecar holds the keys outside
-// the schema (module/collection.js buildObjectSchemaSetArm). (Heap-path
-// literals: literals whose values are all constants take the static-segment
-// path.)
+// the schema (module/collection.js buildObjectSchemaSetArm). Object.keys /
+// values / entries / JSON.stringify enumerate the schema then the sidecar,
+// each key once: these pins held the dedup of the former construction-time
+// mirror (every literal of a dyn-reached schema copied its fields into the
+// sidecar) and now hold the enumeration's two sources. (Heap-path literals:
+// literals whose values are all constants take the static-segment path.)
 test('Regression: shadow-mirrored schema keys not duplicated by JSON.stringify', () => {
   const { f } = run(`export let f = (t, k, v) => {
     let probe = t[k]              // forces anyDynKey
@@ -1629,6 +1663,8 @@ test('jzify: map(String) canonicalizes to inline String callback', () => {
   is(f(), '1,2')
 })
 
+// Regression: compound assignments on array targets crashed with
+// "Unknown local $[],b,,0" because readVar() received an array node.
 test('Regression: compound assignments on typed-array index targets', () => {
   const { f } = run(`
     export let f = () => {
@@ -1734,7 +1770,10 @@ test('Object.create with array proto clones data', () => {
   is(f(), 60)
 })
 
-// (test262 S13.2_A7_T1/T2)
+// IIFE property access — `(function(){}).hasOwnProperty('caller')` used to
+// crash with "table index is out of bounds" because __dyn_get_expr_t returned
+// NULL_NAN for missing properties and call_indirect blindly used it as a table
+// index. (test262 S13.2_A7_T1/T2)
 
 test('IIFE property access — .hasOwnProperty("caller") does not crash', () => {
   const exports = run(`export let _run = () => { (function(){}).hasOwnProperty('caller'); return 1 }`, { jzify: true })
@@ -1791,7 +1830,10 @@ test('jzify: object arrow property keeps lexical this unsupported', () => {
 // A method shorthand is `key: function () {}` (ECMA-262 15.4 MethodDefinition):
 // its body is statement-shaped, so `{ m() { f() } }` returns undefined where the
 // arrow `m: () => f()` returns f()'s value, and `this` is the receiver whatever
-// the body's first statement is.
+// the body's first statement is. The parser used to spell both as the same
+// arrow, so a one-statement body that was not a return, an `if` or a loop read
+// as the arrow (`this.x = 5` failed "this not supported", `f()` returned f's
+// value).
 test('jzify: object methods with an expression-statement body are methods, not arrows', () => {
   const exports = run(`const f = () => 4
     export let assign = () => { const o = { x: 0, m() { this.x = 5 } }; o.m(); return o.x }
@@ -1804,7 +1846,9 @@ test('jzify: object methods with an expression-statement body are methods, not a
 
 // A parameter default is an expression of the function's scope (ECMA-262
 // 10.2.10 FunctionDeclarationInstantiation evaluates it in the function's
-// environment): the forms jzify lowers in a body lower in a default too.
+// environment): the forms jzify lowers in a body lower in a default too. They
+// used to reach the emitter untransformed, so a method shorthand or a
+// `function` expression in a default failed "function not supported".
 test('jzify: parameter defaults lower like body expressions', () => {
   const exports = run(`function render(o = { toString() { return 'default' } }) { return String(o) }
     function* gen(a = { k() { return 4 } }) { yield a.k() }
@@ -1846,11 +1890,17 @@ test('computed property names: effectful coercion runs and key stores under coer
   is(exports._run(), 3)
 })
 
-// Spread is NOT the trigger — prepare wraps every computed-key literal in
-// the same IIFE regardless — so both forms are pinned. Native JS:
-// spread/static then computed-key write (later key wins), Object.keys
-// reflects own-property insertion order (ECMA-262 CreateDataProperty /
-// OrdinaryOwnPropertyKeys).
+// Root cause: a computed key that ISN'T compile-time-foldable (`const k =
+// 'b'` folds away before reaching the buggy path, so the bug hides behind
+// any const-string key — only a genuinely dynamic key, e.g. a bare exported
+// param, exercises it) forces prepare's computed-key desugaring (`{...s,
+// [k]: v}` / `{a:1, [k]: v}` → `((t) => (t[k]=v, t))({...})`, the
+// `isComputed` handler in src/prepare/index.js) to capture `k` into a
+// synthesized ARROW. Spread is NOT the trigger — prepare wraps every
+// computed-key literal in the same IIFE regardless — so both forms are
+// pinned. Native JS: spread/static then computed-key write (later key wins),
+// Object.keys reflects own-property insertion order (ECMA-262
+// CreateDataProperty / OrdinaryOwnPropertyKeys).
 test('Regression: spread + non-const-foldable computed key resolves the real key, not a phantom index', () => {
   const { probe } = run(`export let probe = (k) => {
     const o = { ...{ a: 1 }, [k]: 2 }
@@ -1869,7 +1919,12 @@ test('Regression: computed key alone (no spread), non-const-foldable — same cl
 
 // static object-literal soundness: shared instance vs mutation
 // A pure-constant ≥2-prop literal takes the static-data fast path — ONE shared
-// instance returned from every evaluation.
+// instance returned from every evaluation. That used to leak writes between
+// "instances" (`mk().n++` visible through the next `mk()`), at every opt level;
+// inside the self-compile kernel the same bug pooled propagate's use-count records
+// ({gets,sets,tees}) across ALL locals, deleting live stores at kernel-L2.
+// writtenProps (program-facts) now disqualifies literals whose prop names are
+// ever written; read-only literals keep the static path.
 
 test('static literal: direct mutation does not alias instances', () => {
   const { f } = run(`
@@ -1938,6 +1993,9 @@ test('static literal: a key added to one instance does not show on the next', ()
   is(g(), true)
 })
 
+// A key Object.assign or Object.defineProperty copies in is a store of that
+// name: a literal holding it is written, and each evaluation allocates
+// (summary assignedProps, merged into writtenProps).
 test('static literal: a key a builtin stores into does not show on the next evaluation', () => {
   for (const body of ['let p={x:1,y:5};const before=p.y;Object.assign(p,{y:2});return before',
     'let p={x:1,y:5};const before=p.y;const s={y:2};Object.assign(p,s);return before',
@@ -1961,7 +2019,12 @@ test('static literal: read-only literals keep the shared static instance', () =>
 
 // schema shape-consensus (poisoning)
 // A variable's literal schema binds ONLY while every assignment agrees on that
-// one shape.
+// one shape. A disagreeing assignment — non-literal source (table/Map lookup)
+// or different-shape literal, even in dead code — unbinds and poisons the name:
+// fixed-slot reads against one literal's layout would misread the other
+// sources' objects (the `.x` = foreign slot-0 class of bug, found via the
+// self-compile kernel where a dead-branch literal poisoned tryReduce's
+// table entries and killed all reduce vectorization in jz.wasm).
 
 test('schema poison: dead-code literal must not fix slots for a table-sourced var', () => {
   const r = run(`
@@ -2047,7 +2110,9 @@ test('schema binding intact: single-shape literal still resolves props', () => {
 // Spread copy semantics
 // `{ ...src }` where src's schema is unknown at compile time (a param, an array
 // element, a member access, a HASH) must SHALLOW-COPY src, never alias it — every
-// later write to the result would otherwise leak back into the source.
+// later write to the result would otherwise leak back into the source. These run on
+// both the host and the jz.wasm kernel legs (test:wasm) — the bug was a
+// self-compile miscompile in jz's own narrow.js before this fix.
 
 test('spread copy: mutating the copy of an unknown source never touches the source', () => {
   const r = run(`
@@ -2310,10 +2375,16 @@ test('nested write through a host-passed plain-object param is silently lost', (
   is(f({}), 7)
 })
 
-// This is the load-bearing idiom of the audiojs digital-filter/audio-filter ecosystem
-// — `params.state` / `params.coefs` biquad state lazily allocated once and reused
-// across `filter(buffer, params)` calls — so output silently degraded to stale/NaN
-// from the second call on.
+// Same root cause as the test above, reached via `memory.Object()` instead of a bare
+// `{}`: the module never constructs a `{state: …}` object literal anywhere in its
+// source, so it compiles no matching schema — `memory.Object({state: [[0, 0]]})` finds
+// no schema for `{state}` and silently falls back to the same host-reference
+// (External) marshaling (`mem.Object`'s `else if (mem._extMap) return
+// mem.External(obj)` branch in interop.js), NOT a "wasm-native fixed-shape object" as
+// the call site suggests. This is the load-bearing idiom of the audiojs
+// digital-filter/audio-filter ecosystem — `params.state` / `params.coefs` biquad state
+// lazily allocated once and reused across `filter(buffer, params)` calls — so output
+// silently degraded to stale/NaN from the second call on.
 test('memory.Object() property reads alias nested container writes', () => {
   const { exports: { f }, memory } = jz(`export let f = (params) => {
     params.state[0] = [7, 9]
@@ -2553,6 +2624,10 @@ test('spread merge: enumeration sees the spread keys, not just the literal ones'
   is(r.gate(), 1, 'reads through the merged schema stay live')
 })
 
+// Object.freeze/isFrozen consistency (2026-07-10): freeze is a documented
+// no-enforcement passthrough, but a freeze()-marked never-reassigned binding
+// now answers isFrozen true (prepare records it at the identity fold) — the
+// self-inconsistent isFrozen(freeze(x)) === false wart is gone.
 test('objects: freeze/isFrozen consistency', () => {
   is(run(`export let f = () => { let o = { a: 1 }; return Object.isFrozen(Object.freeze(o)) ? 1 : 0 }`).f(), 1)
   is(run(`export let f = () => { const o = { a: 1 }; Object.freeze(o); return Object.isFrozen(o) ? 1 : 0 }`).f(), 1)
@@ -2562,6 +2637,9 @@ test('objects: freeze/isFrozen consistency', () => {
   is(run(`export let f = () => Object.freeze({ a: 7 }).a`).f(), 7)
 })
 
+// Builtin-name properties on plain objects (2026-07-11): `.size`/`.length` are
+// ORDINARY own keys on OBJECT/HASH — only Set/Map expose an entry count, only
+// string/array/typed a length.
 test('objects: size/length are ordinary props on objects, counts on collections', () => {
   const r = run(`
     let holder = { t: null }

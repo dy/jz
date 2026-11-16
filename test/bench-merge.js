@@ -240,6 +240,11 @@ test('bench --verify-anchors: detects drift, exits nonzero, and now REFUSES the 
   const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors'])
   ok(status !== 0 && status != null, `expected nonzero exit on anchor drift, got ${status}`)
   ok(/DRIFT DETECTED/.test(out), `expected a drift report in output:\n${out.slice(-1500)}`)
+  // Superseded by the structural write guard: DRIFT is a CONFIRMED-bad machine
+  // state, same category as "never checked" from the writer's point of view —
+  // both mean this run's own freshly-measured row is exactly as unconfirmed as
+  // the untouched rival rows are. The write is refused outright, matching the
+  // never-verified reject-path pin below, not merely reported and shipped.
   ok(/refusing to write partial evidence/.test(out), `expected the write-refusal message in output:\n${out.slice(-1500)}`)
   ok(readFileSync(scratch, 'utf8') === before, 'refused write on anchor drift must leave the file untouched (no partial write, no stale anchors overwrite)')
 })
@@ -268,6 +273,15 @@ test('bench --verify-anchors + --allow-unanchored: DRIFT is still reported and s
     '--allow-unanchored should still complete the merge (all cases present) despite the anchor failure')
 })
 
+// ── partial+unanchored structural write guard (audit-#13 hygiene item 2a) ──
+// The a9269390 manual restore proved the hole: a narrow --merge with neither
+// --verify-anchors (this run) nor a carried prior PASS verdict can still
+// land meta.partial=true evidence with NOTHING backing the untouched rival
+// rows' trustworthiness. The writer now refuses that write structurally
+// (nonzero exit, no file touched) instead of relying on a downstream reader
+// (test/bench-claims.js's own meta.partial ⇒ meta.anchors.pass check) to
+// catch it after the fact — a check a hand-edited/restored file can bypass
+// entirely, which is exactly what happened.
 test('bench --merge: REJECT path — partial merge with no anchors verdict at all (neither fresh nor carried) refuses the write', () => {
   // A plain --json (no --merge) write never carries a meta.anchors field
   // (pinned above) — start there, then merge again on top of it so the

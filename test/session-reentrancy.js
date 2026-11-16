@@ -103,11 +103,17 @@ const PREPARE_HEAVY = `
   }`
 const MINIMAL = `export let f = () => 1`
 
-// CLOSURE_LOOP_A/B are STRUCTURALLY parallel — same shape/position for a zero-capture
-// closure, a heap-capture closure, a boxed-cell closure (a reassigned-inside-closure
-// counter), and two loops (one with a typed hull, one plain) — but with different
-// literal bounds, so a stale plan leaking from A into B's same-shaped nodes would read
-// the WRONG hull/boundConst/storage and miscompile, not merely no-op.
+// Closure/loop-plan pair (audit-#19 P0 probe): compile/closure-plan.js's closure plans,
+// compile/loop-model.js's loop plans, and ir.js's loopPlanLink used to be module-global
+// WeakMaps — under self-compiling WeakMap lowers to a strong Map (no native GC), so
+// entries from a PRIOR compile() survive into the next one, and the kernel's arena-reset
+// offset reuse can pointer-collide a fresh AST node with a stale key, producing a
+// stale-plan HIT exactly where every reader here fails open on a miss. CLOSURE_LOOP_A/B
+// are STRUCTURALLY parallel — same shape/position for a zero-capture closure, a
+// heap-capture closure, a boxed-cell closure (a reassigned-inside-closure counter), and
+// two loops (one with a typed hull, one plain) — but with different literal bounds, so a
+// stale plan leaking from A into B's same-shaped nodes would read the WRONG
+// hull/boundConst/storage and miscompile, not merely no-op.
 const CLOSURE_LOOP_A = `
   export let mk = (n) => {
     let zero = () => 42
@@ -475,7 +481,9 @@ test('session-reentrancy: order-reversed — minimal then prepare-heavy, regex-f
 
 // This test now documents that known limitation directly (a regression guard against
 // silently reintroducing partial-mutation visibility, not a reentrancy-safety claim)
-// rather than asserting the now-false identity-swap behavior.
+// rather than asserting the now-false identity-swap behavior. Reentrancy is a named
+// future slice, deferred pending the write-site forensic (b8f802b8's own "concrete
+// next step") rather than re-landed blind.
 test('session-reentrancy: swap-reverted — a ctx reference held across a later reset() is NOT a stable snapshot (known limitation, deferred)', () => {
   if (onKernel()) return  // white-box probe of ctx.js's own module-binding identity
   compile(PREPARE_HEAVY)

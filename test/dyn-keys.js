@@ -1596,6 +1596,8 @@ test('dyn-keys: ToPropertyKey for atom keys (the prec[undefined] class)', () => 
   is(jz(`export let f = (b) => { const d = {}; d['true'] = 9; return d[b > 0] === undefined ? 1 : 0 }`).exports.f(1), 0)
 })
 
+// dyn-prop KEYING on a NUMERIC (non-string) key against an OBJECT receiver whose
+// static type is fully unknown — repro A + sweep siblings, ledger 2026-07-29.
 // `j` is a PARAMETER and `o`/`nums` are MODULE-LEVEL globals throughout (not
 // jzify'd/wrapped locals) — load-bearing: a local `nums` can let `nums[j]`'s
 // element kind get proven NUMBER, which exercises the SAME now-fixed
@@ -1631,12 +1633,17 @@ test('dyn-keys: numeric key on an unknown-type OBJECT receiver resolves through 
   is(jz(`const m = new Map()
     let nums = []; nums.push(1)
     export let f = (j) => { m.set(nums[j], 'x'); return m.has('1') ? 1 : 0 }`).exports.f(0), 0)
-  // Fixed by a receiver-kind guard (module/array.js "Proven-NUMBER key,
-  // receiver kind still unproven" arm): ARRAY/TYPED still take the lean
-  // typed-array read (no runtime dispatch beyond one pointer-kind tag test —
-  // no __is_str_key/__to_str call, since the key is already proven
-  // non-string); OBJECT/HASH takes the SAME ToPropertyKey dyn-props probe the
-  // runtime-dispatched sibling arm already used.
+  // Re-audit #5 finding #1 (2026-07-30): a numeric key PROVEN VAL.NUMBER at
+  // compile time on an unknown receiver used to skip dispatch entirely and
+  // route array-only (__typed_idx), silently reading undefined for an
+  // OBJECT/HASH receiver. Fixed by a receiver-kind guard (module/array.js
+  // "Proven-NUMBER key, receiver kind still unproven" arm): ARRAY/TYPED still
+  // take the lean typed-array read (no runtime dispatch beyond one pointer-
+  // kind tag test — no __is_str_key/__to_str call, since the key is already
+  // proven non-string); OBJECT/HASH takes the SAME ToPropertyKey dyn-props
+  // probe the runtime-dispatched sibling arm already used. `o[n]` for a
+  // proven-number local `n` now reads the value stored under the literal
+  // string key `o['1']`, matching JS.
   is(jz(`const o = {}; o['1'] = 9
     export let f = () => { let n = 1; return o[n] | 0 }`).exports.f(), 9)
 })
@@ -1776,7 +1783,12 @@ test('declared literal keys: a call in a literal\'s own values keeps the writes 
     'the factory\'s methods are slots, no dynamic store')
 })
 
-// The probe is the read's own lookup chain with a miss told apart from a stored
+// The runtime `in` (every receiver the closed-schema path cannot decide) read
+// the property and reported "non-nullish", so a present null or undefined
+// field was absent: watr's `node[1][0] in TRUNC_OF_CONVERT[op]` (a table whose
+// values are null) never fired in the kernel, and the kernel kept
+// `(i32.trunc_sat_f64_s (f64.convert_i32_s x))` where native folded it. The
+// probe is the read's own lookup chain with a miss told apart from a stored
 // value (`__dyn_has` over `__dyn_get_t_hm`), against the JS oracle.
 test('in: runtime membership sees a present null or undefined field on every receiver', () => {
   const SRC = `const TABLE = {
@@ -2053,7 +2065,9 @@ test('dyn-keys: a computed write reaches a slot-built literal through every rout
 // The deleted-slot mask (layout.js) marks a slot; the slot is the field's only
 // home, so a plain slot store makes the field present again whether the store
 // is static (`o.a = v`, which touches no mask) or dynamic (`o[k] = v`, which
-// also clears the bit): a marked slot is deleted while it holds undefined.
+// also clears the bit): a marked slot is deleted while it holds undefined. (A
+// rewritten field enumerates in slot order, JS appends it: the mask commit's
+// open, so the count is pinned, not the order.)
 test('in: a deleted field written again through a static dot write is present', () => {
   const SRC = `const has = (o, k) => k in o
   const count = (o) => { let n = 0; for (const k in o) n++; return n }
@@ -2111,17 +2125,33 @@ test('Map: a write through an alias is not lost to a stale census kind (audit P0
     return m.get('k') - 0`), NaN)  // 'oops1' - 0 === NaN, same as plain JS
 })
 
+// FIXED (Slice 1, value-join): dictValueKindOf (kind.js, consumed by
+// VT['[]']/VT['.']) had the SAME absent-key exact-promotion unsoundness as the
+// reverted mapValueKindOf — the census is "every value ever WRITTEN", not "this key
+// exists".
 test('dict: .get()-equivalent read on an absent key behaves as real undefined (Slice 1, dict-census sibling of audit P0)', () => {
   is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return d[rk] + 1`), NaN)  // undefined + 1 === NaN
   is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return String(d[rk])`), 'undefined')
 })
 
-// Closed by gating `dictValueKindOf` on `ctx.types.nameEscapes.has(name)` (kind.js)
-// — `d` lands in nameEscapes the moment it's read in a value position anywhere
-// (here, the `const alias = d` initializer). Repro confirmed red at HEAD (both with
-// and without the kind.js gate alone — the nameEscapes bug meant the gate had
-// nothing to consult): `jz = 'oops1'` (a raw NaN-boxed string pointer surviving `-
-// 0` bit-for-bit, decoded back to the string by the host bridge) vs `JS = NaN`.
+// FIXED (Slice 3, nameEscapes alias gate): dictValueKindOf (the ALREADY-LIVE dict
+// census consumer) had the SAME alias-write unsoundness as the reverted
+// mapValueKindOf — the census keys observations by SYNTACTIC receiver name
+// (analyze.js's dictValueTypeOf same-body scan), so a write through an alias (`const
+// a = d; a[k] = v`) is invisible to a census keyed on `d`, leaving a stale
+// exact-kind claim live after the alias write changes the real value's kind. Closed
+// by gating `dictValueKindOf` on `ctx.types.nameEscapes.has(name)` (kind.js) — `d`
+// lands in nameEscapes the moment it's read in a value position anywhere (here, the
+// `const alias = d` initializer). Repro confirmed red at HEAD (both with and without
+// the kind.js gate alone — the nameEscapes bug meant the gate had nothing to
+// consult): `jz = 'oops1'` (a raw NaN-boxed string pointer surviving `- 0`
+// bit-for-bit, decoded back to the string by the host bridge) vs `JS = NaN`.
+// String() is NOT a distinguishing case here (unlike the Slice 1 absent-key repro
+// above) — Slice 1's censusMaybeUndefined already routes ANY node where
+// dictValueKindOf(name) is truthy through toStrI64/__to_str's fully general,
+// runtime-tag-correct path for String(), regardless of whether the exact-kind claim
+// itself was sound — confirmed this already returned 'oops1' correctly even at HEAD,
+// pre-Slice-3.
 test('dict: a write through an alias is not lost to a stale census kind (audit P0 sibling, Slice 3)', () => {
   is(run(`const d = {}; const wk = 'a'; d[wk] = 1
     const alias = d; const wk2 = 'k'; alias[wk2] = 'oops1'
@@ -2131,15 +2161,20 @@ test('dict: a write through an alias is not lost to a stale census kind (audit P
     return String(d[wk2])`), 'oops1')  // already correct pre-Slice-3 (see comment above) — control, not a flip
 })
 
-// IEEE-754 f64.eq is FALSE for any NaN operand, always — including two
-// bit-identical NaN-boxed `undefined` sentinels — so `x === y` where BOTH x
-// and y are genuinely `undefined` at runtime (one masquerading as a proven
-// NUMBER via a dict census absent-key claim) wrongly read false; JS reads
-// true. The relational family (`<`/`>`/`<=`/`>=`, cmpOp) does NOT have this
-// bug — checked as part of the same survey: JS's `ToNumber(undefined) = NaN`,
-// "compared to NaN" is always false, which is exactly what an UNGUARDED f64
-// relational op already returns for ANY NaN-boxed operand — no fix needed
-// there (kept as a passing control below).
+// FIXED (Slice 5 site survey — LEAK A): emitLooseEq/emitStrictEq's
+// (src/compile/emit.js) raw `f64.eq`/`f64.ne` fast path fired whenever EITHER
+// side's static kind was VAL.NUMBER, with no runtime tag check — unlike
+// arithmetic (toNumF64) and String(), this never called
+// censusMaybeUndefined/coerceNullishToNum at all. IEEE-754 f64.eq is FALSE for
+// any NaN operand, always — including two bit-identical NaN-boxed `undefined`
+// sentinels — so `x === y` where BOTH x and y are genuinely `undefined` at
+// runtime (one masquerading as a proven NUMBER via a dict census absent-key
+// claim) wrongly read false; JS reads true. The relational family
+// (`<`/`>`/`<=`/`>=`, cmpOp) does NOT have this bug — checked as part of the
+// same survey: JS's `ToNumber(undefined) = NaN`, "compared to NaN" is always
+// false, which is exactly what an UNGUARDED f64 relational op already returns
+// for ANY NaN-boxed operand — no fix needed there (kept as a passing control
+// below).
 test('dict: strict/loose equality between two independently-maybe-undefined reads (Slice 5 LEAK A)', () => {
   // one side a real (non-census) undefined-holding local
   is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'
@@ -2162,6 +2197,11 @@ test('dict: strict/loose equality between two independently-maybe-undefined read
     return d[rk] > 5 ? 1 : 0`), 0)
 })
 
+// FIXED (Slice 5 site survey — LEAK B): ir.js's toStrI64 — the SAME function
+// module/string.js's `bind('String', …)` already delegates to for the
+// maybeUndefined-flagged case, on the stated belief it "falls through to the
+// LAST branch... already correct" — had its OWN unguarded `vt === VAL.STRING`
+// early return ABOVE that last branch.
 test('dict: String() and template literals on a STRING-census absent key (Slice 5 LEAK B)', () => {
   is(run(`const d = {}; const wk = 'a'; d[wk] = 'x'; const wk2 = 'b'; d[wk2] = 'y'
     const rk = 'missing'
@@ -2171,6 +2211,15 @@ test('dict: String() and template literals on a STRING-census absent key (Slice 
     return \`v=\${d[rk]}\``), 'v=undefined')
 })
 
+// audit-#8 P0-2: the Map/dict value census's same-body scan (analyze.js
+// dictValueTypeOf/mapValueTypeOf) AND the whole-program {fresh:true} half
+// (program-facts.js observeProgramSlots) both stopped dead at any nested `=>`
+// — a write CAPTURED in a callback (`[0].forEach(() => m.set('y', 'oops'))`)
+// was invisible to the census on either side, so a receiver written ONLY
+// NUMBER at every syntactically-visible top-level site still read back a stale
+// NUMBER census kind after a captured write actually stored a STRING —
+// `m.get('y') + 1` compiled straight to f64.add and silently dropped the
+// string, returning `'oops'` instead of JS's `'oops1'`.
 test('Map: a write captured in a nested callback is not lost to a stale census kind (audit-#8 P0-2)', () => {
   is(jz(`const m = new Map(); m.set('x', 1)
     export let f = () => { [0].forEach(() => m.set('y', 'oops')); return m.get('y') + 1 }`).exports.f(), 'oops1')
@@ -2179,6 +2228,14 @@ test('dict: a write captured in a nested callback is not lost to a stale census 
   is(jz(`const d = {}; const wk = 'x'; d[wk] = 1
     export let f = () => { [0].forEach(() => { const wk2 = 'y'; d[wk2] = 'oops' }); const rk = 'y'; return d[rk] + 1 }`).exports.f(), 'oops1')
 })
+// Numeric captured-write control — the dominant real-world shape (`arr.forEach(v =>
+// m.set(k, v))`) — a functional-correctness pin only now (audit #9 P0-1: the census
+// consumer this comment originally described as "the census win, no fallback to the
+// polymorphic-add path" is reverted/dormant, so EVERY `.get()`/dict read takes the
+// polymorphic path unconditionally — there is no fast-path win left to keep.
+// Historical note: pre-revert, this exact source was manually confirmed via a wasm
+// byte-size diff (worktree at 8182e465) to take the narrower numeric codegen; that
+// diff is no longer representative.
 test('Map: a numeric-only write captured in a nested callback keeps working (control)', () => {
   is(run(`const m = new Map(); [1, 2, 3].forEach(v => m.set('k', v * 2)); return m.get('k') + 1`), 7)
 })
@@ -2200,9 +2257,37 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
     return s + 1`), 6)
 })
 
-// Real JS: unary ops ToNumeric a single operand — undefined's ToNumeric is the
-// Number NaN, no TypeError (contrast the binary '+'/'-'/etc. case above, which
-// DOES throw — a second operand's type to mismatch against).
+// audit-#8 P0-4 Part 3 (2026-08-03): unary '-'/'~' on a maybeUndefined-BIGINT
+// receiver (Map.get() or a dict DYNAMIC-key read whose census claims BIGINT)
+// used to i64-negate/complement the UNDEF_NAN sentinel's raw bits, producing a
+// garbage bigint-shaped float. Real JS: unary ops ToNumeric a single operand —
+// undefined's ToNumeric is the Number NaN, no TypeError (contrast the binary
+// '+'/'-'/etc. case above, which DOES throw — a second operand's type to
+// mismatch against). Present-key case — FIXED (Slice 5, the `presentKindUnboxed`
+// family — the last named value-wrong family from the audit campaign). FIXED
+// with a LANE/KIND-INFORMATION fix, not a representation change (the raw-i64
+// BigInt carrier doctrine stays as-is): `censusBigintSentinelKind` (kind.js)
+// recognizes a census-BIGINT return tail — bare dict/Map read, call-result, or
+// `-`/`~` wrapping one — and `synthesizeBoundaryWrappers` emits a NEW
+// `jz:i64exp` result marker (`s`: 1 = bare read/call-result, sentinel bits =
+// UNDEF_NAN → `undefined`; 2 = unary `-`, sentinel = NaN's bits → `NaN`; 3 =
+// unary `~`, sentinel = `-1`'s bits → `-1`) instead of the generic `r` marker.
+// interop.js's new `decodeBigintSentinel` checks the raw i64 result against
+// exactly that sentinel's fixed bit pattern: a match decodes to the sentinel's
+// real JS value, anything else is returned as a raw BigInt — no generic
+// NaN-box/number decode, so a small BigInt's bits never get misread.
+//
+// Reverting that wiring regressed BOTH: (1) `-m.get('x')` (assertion 4 below) via
+// compile/index.js's `_resultNumeric` boundary-wrap gate wrongly trusting the
+// optimistic default and skipping the i64 wrap entirely, and (2) `-m.get('x') ===
+// -5n` (assertion 5) via emitStrictEq's REF_EQ_KINDS path no longer being reached at
+// all. (`_resultNumeric`'s companion `_resultBigintSentinel` was already
+// VT-independent per §13 — only `_resultNumeric` itself and emitStrictEq's dispatch
+// had the gap.) BigInt retirement Slice 1: every shape in the 3 tests below stores a
+// BigInt into a Map/dict (`m.set(k, 1n)`/`d[k]=1n`) — exactly the design's
+// "collection" flow class (`d[k]=5n`/`map.set(k,5n)`, §4's table) — which now refuses
+// to compile instead of materializing the value (boxed or raw) for a later unary op
+// to observe.
 test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`)), /BigInt value at this collection/)
@@ -2216,14 +2301,28 @@ test('dict: unary "-" on a LITERAL-key absent read (already sound — not this b
   throws(() => withBigintStrict(() => run(`const d = {}; d['x'] = 1n; return -d['missing']`)), /BigInt value at this collection/)
 })
 
+// Slice 5 (presentKindUnboxed) repro 5 itself — the bare `m.get()`/`d[k]` read, no
+// unary — closing the class this design named the whole audit campaign's last
+// value-wrong family. Was KNOWN-FAIL: `m.set('x', 5n); export let f = () =>
+// m.get('x')` returned the host `2.5e-323` (5n's raw i64 bits misread as an f64
+// subnormal), not `5n`. BigInt retirement Slice 1: both tests below construct
+// `m.set('x', 5n)`/`d[k1]=5n` — the "collection" flow class — which now refuses to
+// compile (§4's table names this exact shape: "map.set(k, 5n)"/"d[k]=5n with an
+// unresolvable key"). The whole export-boundary sentinel-lane machinery these tests
+// exercised (Slice 5's own `_resultBigintSentinel`) has no remaining input to fire
+// on — an unprovable BigInt never reaches a live value for it to decode.
 test('Slice 5: bare Map/dict .get()/[] read materializes the true BigInt across the export boundary (repro 5, was KNOWN-FAIL) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') }`, { jzify: true })), /BigInt value at this collection/)
   throws(() => withBigintStrict(() => jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return d[k1] }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// The statically-proven BigInt export negative control (no Map/dict involved
-// at all) is unaffected — kept as-is.
+// Negative controls (Slice 5): the mixed-kind-Map carve-out this pinned as
+// "documented (unfixed)" is exactly the class Slice 1 eliminates at the root
+// (same as test/data.js's audit-#11 P0-1 deletion) — `m.set('a', 5n)` alone
+// refuses to compile before the mixed-kind question is ever reached. The
+// statically-proven BigInt export negative control (no Map/dict involved at
+// all) is unaffected — kept as-is.
 test('Slice 5: negative controls — mixed-kind Map falls back to documented (unfixed) behavior; a statically-proven BigInt export is untouched', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })), /BigInt value at this collection/)
@@ -2234,29 +2333,50 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   is(jz(`export let f = () => -5n`).exports.f(), -5n)
 })
 
+// Slice 6 ("begin the presentVal opt-in model"): a NEW `presentVal` REP field
+// (reps.js) rides analyze.js's decl/reassign producer, poison-disciplined like `val`
+// itself (NOT a spread-merge boolean like `mayBeUndefined`) — the KIND-carrying
+// generalization one hop past a direct census read. BigInt retirement Slice 1: same
+// "collection" flow class as the Slice 5 tests above, one decl-hop further.
 test('Slice 6: decl-hop present-key BigInt census read materializes the true BigInt across the export boundary (one hop past repro 5) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); return x }`, { jzify: true })), /BigInt value at this collection/)
   throws(() => withBigintStrict(() => jz(`export let f = (k) => { const d = {}; d[k] = 5n; let x = d[k]; return x }`, { jzify: true })), /BigInt value at this collection/)
 })
 
+// Negative control (Slice 6): the mixed-kind-Map carve-out is eliminated at
+// the root, same as the Slice 5 negative control above.
 test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the documented (unfixed) Slice 5 gap — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 6); let x = m.get('a'); return x }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// `m.set('x', 5n)` refuses to compile before the runtime TypeError this test
-// pinned is ever reached.
+// FIXED (§14 point 4, audit #10's own "JOINT runtime domain dispatch" finding):
+// a present-key census-BIGINT value used in BINARY `+` with a NUMBER now throws
+// the TypeError real JS gives for BigInt⊕Number mixing, instead of silently
+// doing ordinary f64 addition on the raw i64-as-f64 carrier bits. `m.set('x',
+// 5n)` refuses to compile before the runtime TypeError this test pinned is ever
+// reached.
 test('§14 point 4: present-key census-BIGINT + NUMBER throws TypeError (was: silent NUMBER garbage) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') + 1 }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// This is the audit's own named "core case" — `m.get(absent1) + m.get(absent2)` is
-// NaN (both operands' ToNumeric is the Number NaN, no type mismatch to throw on),
-// while `m.get(absent) + m.get(present5n)` throws (Number NaN vs a real BigInt IS a
-// type mismatch) — the exact discrimination an operand-local guard cannot make, only
-// a JOINT check evaluating both operands' actual runtime domains together can.
+// §14 point 4 full presence×domain matrix, all 9 ops, verified against real JS for
+// every cell (differential, not hand-picked): a census-BIGINT Map with two keys, one
+// op at a time, over all four (present, absent) × (present, absent) combinations,
+// PLUS a present-key mix against a proven NUMBER literal (the original audit-#10
+// repro's own shape). This is the audit's own named "core case" — `m.get(absent1) +
+// m.get(absent2)` is NaN (both operands' ToNumeric is the Number NaN, no type
+// mismatch to throw on), while `m.get(absent) + m.get(present5n)` throws (Number NaN
+// vs a real BigInt IS a type mismatch) — the exact discrimination an operand-local
+// guard cannot make, only a JOINT check evaluating both operands' actual runtime
+// domains together can. BigInt retirement Slice 1: every cell of this matrix
+// (both-present, both-absent, present+absent, census-mixed-with-literal) shares one
+// precondition, `m.set('a'|'x', 6n)`, the "collection" flow class. All 9 ops now
+// refuse to compile at that shared precondition, before any presence×domain
+// distinction is ever reached — one throws() per op is enough to cover the class
+// (looping the full matrix would just repeat the identical refusal).
 test('§14 point 4: full presence×domain matrix over all 9 binary ops, differential against real JS — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
@@ -2272,13 +2392,23 @@ test('§14 point 4: full presence×domain matrix over all 9 binary ops, differen
 // them and passes the bits through as a raw BigInt. The VALUE is numerically correct
 // (0n == 0); only the TYPE tag is wrong. A real, documented divergence, not silently
 // dropped — this codebase already accepts the identical ambiguity class elsewhere
-// (0-literal BigInt/Number mixing).
+// (0-literal BigInt/Number mixing). BigInt retirement Slice 1: same class as
+// test/data.js's audit-#11 P0-1 (§7): a documented, "permanent," accepted
+// carrier-collision wrongness class, eliminated at the root once `m.set('a', 6n)`
+// itself refuses to compile.
 test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n, not Number 0 (carrier collision, permanent) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['&', '|', '^', '<<', '>>'])
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); let x = m.get('m1'); let y = m.get('m2'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
 })
 
+// AUDIT #10 BATTERY: the full repro set the audit named as live consequences
+// of Slice 4's global VT promotion — composed expressions, container
+// storage, kind-specific dispatch, String `+` inversion, BigInt joint
+// dispatch. Every container is PRIMED with a same-kind write before the
+// absent-key read (an empty census has no claim to promote in the first
+// place, VT wired or not — priming is what actually exercises the bug
+// class).
 test('audit #10: composed expressions (ternary/&&/||/comma) around an absent census-NUMBER read are JS-correct with the census dormant', () => {
   const ternary = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return (true ? m.get('missing') : 999) + 1 }`, { jzify: true }).exports.f
   is(ternary(), NaN, 'JS: (true ? undefined : 999) + 1 = NaN')
@@ -2303,6 +2433,14 @@ test('audit #10: Array.isArray on an absent ARRAY-census read is JS-correct with
   const f = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); return Array.isArray(m.get('missing')) }`, { jzify: true }).exports.f
   is(f(), false, 'JS: Array.isArray(undefined) = false — the audit-#10-live TRUE misfire is gone with the census dormant')
 })
+// FIXED (audit #10, this task): kind-specific member access / calls on a
+// genuinely-undefined census read now get real ES TypeError semantics instead
+// of a trap/garbage read/host-side dispatch Error. A real Error object (not a
+// bare numeric code) is what makes `instanceof TypeError` true in an
+// in-source catch (the tag+schema arm of the Error model, audit-#8 P0-2
+// removed the numeric-code range arm as unsound) and what lets interop.js's
+// decodeThrown resolve an uncaught throw to a real host TypeError — both
+// paths already existed for a user's own `new TypeError()`, reused verbatim.
 test('audit #10: kind-specific member access on a genuinely-undefined census read throws a real host-boundary TypeError', () => {
   const arrLen = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }`, { jzify: true }).exports.f
   let e1 = null; try { arrLen() } catch (e) { e1 = e }
@@ -2370,7 +2508,14 @@ test('audit #10: proven (non-census, statically-typed) receivers are unaffected 
 // audit-#11 P0-3: the five nullish-receiver checks above were themselves
 // gated on host:'wasi' being run via env-only (`test:wasi`'s JZ_TEST_HOST
 // default), a real but indirect pin — explicit host:'wasi' compiles here so
-// the parity holds regardless of how the suite is invoked.
+// the parity holds regardless of how the suite is invoked. Root cause:
+// externalMethodFallback (src/compile/emit.js, TOTAL last-resort strategy for
+// method calls) had its own `!ctx.transform.targetProfile.envImports` early
+// return (the wasi-no-`__ext_call` no-op) BEFORE the audit-#10 isNullish
+// check a few lines below it — under host:'wasi' (envImports always false)
+// that return fired on EVERY call reaching this fallback, so the check was
+// dead code for that host alone; `m.get('missing').toFixed(2)` read
+// `undefined` under wasi while the identical js-host build correctly threw.
 // RequireObjectCoercible precedes any dispatch-strategy choice (ES 13.3).
 test('audit #11 P0-3: js/wasi host parity — the five nullish-receiver TypeError checks hold under host:wasi too', () => {
   const src = {
@@ -2406,6 +2551,13 @@ test('audit #10: String `+` inversion — a STRING-census absent read through `+
   const absent = jz(`export let f = () => { const m = new Map(); m.set('a', 'x'); return m.get('missing') + 1 }`, { jzify: true }).exports.f
   is(absent(), NaN, 'JS: undefined + 1 = NaN, not "undefined1" — the audit-#10-live STATIC-concat-branch misfire is gone with the census dormant')
 })
+// FIXED (audit-#10 Error-bundle finding-1, 2026-08-04): was a compile-time
+// CRASH (module/object.js:535's Object.assign, `internal: stdlib
+// '__arr_set_idx_ptr' was requested but never registered`) — a literal `new
+// TypeError('x')` used directly as Object.assign's TARGET (never bound to a
+// name first) fell through `resolveSchema` unrecognized, routing into
+// `emitObjectAssignDynamic`'s dynamic path, which never pulls the `array`
+// module its own `__dyn_set` dependency needs.
 test('Object.assign onto a literal (unbound) Error instance mutates it in place, preserving instanceof (was KNOWN-FAIL, audit #10)', () => {
   const f = jz(`export let main = () => { const e = Object.assign(new TypeError('x'), {message: 'y'}); return e instanceof TypeError }`, { jzify: true }).exports.main
   is(f(), true, 'JS: true — Object.assign returns its target unchanged in class/identity')
@@ -2413,6 +2565,21 @@ test('Object.assign onto a literal (unbound) Error instance mutates it in place,
   is(g(), 'y', 'the message slot was actually overwritten')
 })
 
+// Slice 3: the chokepoint-sweep completion — bigintMixReject (emit.js, the
+// compile-time BigInt/Number literal-mix TypeError check) and the `+`
+// STRING-concat raw fast path now also consult censusMaybeUndefined (the SAME
+// predicate every other chokepoint in this file already asks), the two gaps
+// the design names as NEVER covered by the original chokepoint list.
+// `bigintMixReject` needs `valTypeOf(a) === VAL.BIGINT` to even ask the
+// census question, but VT['()']'s own `.get()` dispatch (kind.js, ~line 730
+// "NO `.get` short-circuit here") never promotes a Map/dict read to an exact
+// kind — so `valTypeOf` on a census-shaped node (direct or via a
+// mayBeUndefined-flagged bare name, whose `val` Slice 1/2 confirmed never
+// settles either) stays null, and `aBig`/`bBig` are false regardless of this
+// fix. Both fixes are representationally correct and become load-bearing the
+// moment Slice 4 (VT re-enablement, §5) lands — pinned here as negative
+// controls (genuine BigInt-mix / genuine STRING-concat behavior unchanged) so
+// a regression in EITHER surfaces now, not silently at Slice 4.
 test('Slice 3: bigintMixReject / `+` STRING-concat — negative controls (fix is representationally live, behaviorally inert pre-Slice-4)', () => {
   // genuine BigInt/Number literal mix still throws (bigintMixReject unaffected
   // for a PROVEN, non-census BIGINT operand — the new guard only excuses a
@@ -2428,6 +2595,10 @@ test('Slice 3: bigintMixReject / `+` STRING-concat — negative controls (fix is
   is(run(`let s = 'x'; s += 'y'; return s`), 'xy')
 })
 
+// Pinned here as a REGRESSION GUARD at this exact hop shape
+// (decl/param/capture), not a red→green flip — verified red→green only
+// means something once VT re-enables (Slice 4) and an exact kind claim
+// starts riding these same hops.
 test('Slice 3: decl/param/capture-hop arithmetic already JS-correct (regression pin, not a Slice-3 flip)', () => {
   const declMinus = jz(`export let f = (k) => { const m = new Map(); m.set('a', 1); let x = m.get(k); return x - 1 }`, { jzify: true }).exports.f
   is(declMinus('missing'), NaN)
@@ -2443,6 +2614,9 @@ test('Slice 3: decl/param/capture-hop arithmetic already JS-correct (regression 
   is(captureMinus('a'), 0)
 })
 
+// FIXED (audit, 2026-08): was KNOWN-FAIL — `const g = (v) => v + 1` called with a Map
+// absent-key argument through a SEPARATE (non-inlined) function returned `undefined`
+// instead of `NaN`.
 test('single-call-site "+" param-hop: absent Map key through a separate callee is JS-correct (regression pin, was KNOWN-FAIL)', () => {
   const paramPlus = jz(`
     const g = (v) => v + 1
@@ -2452,6 +2626,9 @@ test('single-call-site "+" param-hop: absent Map key through a separate callee i
   is(paramPlus('a'), 2)           // present-key stays correct
 })
 
+// Sibling sweep for the SAME foldStrDispatchF64/pureFuncMap fix (audit, 2026-08):
+// every carrier-domain producer feeding the identical single-call-site "+"
+// param-hop guard shape, not just Map.get.
 test('single-call-site "+" param-hop: sibling carrier-domain producers (regression pins)', () => {
   // dict (not Map) absent key
   is(jz(`
@@ -2476,12 +2653,20 @@ test('single-call-site "+" param-hop: sibling carrier-domain producers (regressi
   `, { jzify: true }).exports.f(10), NaN)
 })
 
-// Kept exactly as written and STILL GREEN — every assertion here is a
-// JS-VALUE correctness pin, not a WAT-codegen-shape pin, and the generic
-// dynamic dispatch path (the only path live once the census stops claiming
-// an exact kind) already produces the correct value for all four shapes —
-// the audit's own finding, re-confirmed: "the generic dynamic paths handle
-// it, that's been true at every prior disable."
+// Slice 4 (VT re-enablement) — dictValueKindOf/mapValueKindOf wired back
+// into VT['[]']/VT['.']/VT['()']. §5 criterion 1's own acceptance shape: a
+// census claim reaching a NON-chokepoint consumer through 2+ hops (decl →
+// arg → return → use), not just the single-hop repros earlier slices pinned.
+//
+// REVERTED (audit #10, §14 — the four "Slice 4" pins below): VT['[]']/
+// ['.']/['()']'s exact-kind promotion is dormant again, same reason as this
+// file's audit-#9-era "RENAMED"/"RE-RENAMED" pins above. Kept exactly as
+// written and STILL GREEN — every assertion here is a JS-VALUE correctness
+// pin, not a WAT-codegen-shape pin, and the generic dynamic dispatch path
+// (the only path live once the census stops claiming an exact kind) already
+// produces the correct value for all four shapes — the audit's own finding,
+// re-confirmed: "the generic dynamic paths handle it, that's been true at
+// every prior disable."
 test('Slice 4: multi-hop (decl -> call-arg -> return -> use) arithmetic stays JS-correct', () => {
   const f = jz(`
     const inner = (v) => v
@@ -2497,6 +2682,9 @@ test('Slice 4: multi-hop (decl -> call-arg -> return -> use) arithmetic stays JS
   is(f('a'), 2)
 })
 
+// Slice 4 IDENTITY-fold acceptance, live for the first time (Slices 1-3 were
+// representationally complete but inert here per their own honest-boundary
+// notes — `val` never settled non-null at any hop while VT stayed dormant).
 test('Slice 4: decl/param/capture-hop identity compare (`=== undefined`) on a census-traced bare name', () => {
   const decl = jz(`export let f = (k) => { const m = new Map(); m.set('a', 1); let x = m.get(k); return x === undefined ? 1 : 0 }`, { jzify: true }).exports.f
   is(decl('missing'), 1)
@@ -2512,10 +2700,19 @@ test('Slice 4: decl/param/capture-hop identity compare (`=== undefined`) on a ce
   is(capture('a'), 0)
 })
 
-// `g` must NOT be a single-expression arrow here — those inline before this
-// check ever runs, which is exactly why this class survived the multi-hop test
-// above unnoticed (relay/inner there both got inlined into a direct `.get()`
-// node).
+// Slice 4 gap found LIVE while walking §5 criterion 3's chokepoint-composition
+// check (kind.js `callResultMayBeUndefinedKind`, new): a call to a
+// non-inlined user function whose whole-program return-kind fixpoint
+// (narrow.js narrowValResults, Slice 2) settled BOTH a definite `valResult`
+// kind AND `valResultMayBeUndefined` is a census fact one call-hop removed.
+// Before this fix, `g(k) === undefined` constant-folded to the SAME wrong
+// boolean for a present AND an absent key (kind-traits.js calleeValType
+// returns `f.valResult` with no accompanying mayBeUndefined signal, and
+// nothing consulted `valResultMayBeUndefined` — it existed only for
+// ctx.inspect, per reps.js's own doc comment). `g` must NOT be a
+// single-expression arrow here — those inline before this check ever runs,
+// which is exactly why this class survived the multi-hop test above
+// unnoticed (relay/inner there both got inlined into a direct `.get()` node).
 test('Slice 4: call-result identity compare (`g(k) === undefined`) through a non-inlined callee (regression pin, found live)', () => {
   const f = jz(`
     const m = new Map(); m.set('a', 1)
@@ -2526,6 +2723,14 @@ test('Slice 4: call-result identity compare (`g(k) === undefined`) through a non
   is(f('a'), 0)
 })
 
+// Slice 4 gap #2, found live continuing the SAME investigation: the
+// ARITHMETIC sibling of the identity-fold gap above. `g(k) + 1` through a
+// non-inlined callee whose result may be undefined silently returned JS
+// `undefined` instead of `NaN` (ir.js toNumF64's `vt === VAL.NUMBER &&
+// censusMaybeUndefined(node)` gate, :999-1012 — calleeValType already
+// trusted `f.valResult` unconditionally; the fix above made
+// censusMaybeUndefined see the call-result claim, but toNumF64's own
+// `coerceNullishToNum` wrapper wasn't reachable through it yet either).
 test('Slice 4: call-result arithmetic (`g(k) + 1`) through a non-inlined callee is JS-correct (regression pin, found live)', () => {
   const f = jz(`
     const m = new Map(); m.set('a', 1)
@@ -2536,6 +2741,15 @@ test('Slice 4: call-result arithmetic (`g(k) + 1`) through a non-inlined callee 
   is(f('a'), 2)
 })
 
+// Slice 4 SOUNDNESS regression found and fixed while landing the two pins
+// above: `coerceNullishToNum` (ir.js) is documented as requiring its input be
+// side-effect-free — true for the ORIGINAL dict/Map-read and bare-name census
+// arms (a pure read), but the NEW call-result arm can carry a genuinely
+// side-effecting call (a captured-mutation counter, here). Before the fix
+// (hoist into a temp before coerceNullishToNum's triplicating cloneIR, ir.js
+// toNumF64), `g(k) + 1` where `g` mutates a captured local as a side effect
+// ran `g` THREE TIMES instead of once — count/total-calls came out at 3x the
+// correct value.
 test('Slice 4: call-result arithmetic does not triplicate a captured-mutation side effect (soundness regression pin)', () => {
   const f = jz(`
     export const main = (k) => {
@@ -2550,13 +2764,27 @@ test('Slice 4: call-result arithmetic does not triplicate a captured-mutation si
   is(f(0), 15005, 's=15 (sum of xs), count=5 (one increment per call) — not 15015 (count tripled)')
 })
 
+// Slice 7 ("widen the opt-in consumer chokepoints"): the
+// arithmetic/coercion chokepoints (ir.js toNumF64, emit.js's binary `+`
+// BigInt dispatch) gated on `valTypeOf(node)` FIRST and never saw a
+// decl/direct census claim (`vt` stays permanently null for this shape,
+// §14 point 3) — widened to also consult
+// `censusMaybeUndefinedKind`/`presentVal` directly, the SAME discipline
+// `nullableOperand`/`bigIntOperand`/`bigIntUnary` already had (found,
+// while landing this slice, to NOT need widening — they already call the
+// census predicate unconditionally, never gated on `vt` first).
+//
+// BigInt retirement Slice 1: every shape below shares the "collection" precondition
+// `m.set(k, 5n)`/`d[k]=5n`.
 test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads crosses the export boundary correctly (was garbage NUMBER) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x + y }`, { jzify: true })), /BigInt value at this collection/)
   throws(() => withBigintStrict(() => jz(`export let f = (k, j) => { const d = {}; d[k] = 5n; d[j] = 3n; let x = d[k]; let y = d[j]; return x + y }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// The genuine literal BigInt/Number mix (bigintMixReject, arithmetic-core, a
+// Negative controls (Slice 7): a single census-BigInt operand paired with a
+// PROVEN (non-census) side shares the same "collection" precondition. The
+// genuine literal BigInt/Number mix (bigintMixReject, arithmetic-core, a
 // different mechanism) and genuine BigInt+BigInt arithmetic (no Map/dict
 // involved at all) are unaffected — kept as-is.
 test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine literal mixes are unaffected', () => {
@@ -2568,6 +2796,21 @@ test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine
   is(jz('export let f = () => { return 1n + 2n }', { jzify: true }).exports.f(), 3n, 'genuine BigInt+BigInt (no census involved) unaffected')
 })
 
+//   (b-param) remains pinned below, unchanged, its own separate reason:
+//       architecturally out of reach of ANY static-proof mechanism — an unboxed
+//       dynamic export param crossing the JS↔wasm boundary has no runtime tag
+//       distinguishing "raw BigInt carrier" from "a genuinely tiny subnormal float
+//       the program computed" (interop.js's own `bits`/`i64ToF64` doc comments), so
+//       disambiguating it needs NEW boxing infrastructure at the boundary (§6's
+//       presentKindUnboxed/bigintBoxed producer gap), not a runtime-dispatch fix —
+//       §14 point 4's own subnormal-magnitude heuristic (the SAME one `typeof x ===
+//       'bigint'` uses) is exactly the tool `bigIntJointDispatch` reuses for a param
+//       mixed with a PROVEN BigInt (see the FIXED test further below) — but two
+//       ZERO-evidence params paired together have no side to prove ANY bigint
+//       evidence in the first place, so the joint dispatch never even activates (by
+//       design — §14 point 4's own "only emits where the static analysis says domains
+//       CAN mix" scope). BigInt retirement Slice 1: same "collection" precondition
+//       (`m.set('a', 6n)`) as the §14 point 4 tests above.
 test('§14 point 4 FIXED: the 9-op census-BigInt sub-case now crosses the export boundary as a real bigint (was: number) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['-', '*', '/', '%', '&'])
@@ -2576,7 +2819,9 @@ test('§14 point 4 FIXED: the 9-op census-BigInt sub-case now crosses the export
 test('zero-evidence host BigInt REJECTS at the wrapper (phase-c C4b correct-or-reject; was KNOWN-FAIL silent misdecode)', () => {
   // A plain, zero-evidence exported param pair is architecturally out of
   // reach of any static proof (see the block comment above) — the old
-  // behavior silently misdecoded (returned a number where JS says 2n).
+  // behavior silently misdecoded (returned a number where JS says 2n). The
+  // ratified policy is correct-or-reject: the interop wrapper now throws a
+  // typed error naming both remedies.
   const plainSub = jz('export let f = (a, b) => a - b', { jzify: true }).exports.f
   throws(() => plainSub(5n, 3n), /BigInt argument at param 0 of f\(\) has no BigInt evidence/,
     'zero-evidence BigInt ingress refuses loudly instead of silently misdecoding')
@@ -2621,7 +2866,15 @@ test('phase-c C4b (2): tagged (evidenced) BigInt param accepts plain bigint via 
   is(e.math(2), false, 'wrong magnitude correctly rejected (not a vacuous true)')
 })
 
+// (3) zero-evidence FIXED param rejects: the pre-existing test immediately above this block.
+
 test('phase-c C4b (4) NEW: zero-evidence REST BigInt argument REJECTS — audit P0 #2, was silent decimal-string stringify', () => {
+  // Before this fix, interop.js's rest path bypassed i64Arg entirely:
+  // `mem.Array(args.slice(fixed))` ran every element through mem.wrapVal,
+  // which turned a plain bigint into a decimal STRING
+  // (`mem.String(v.toString())`) — silent-wrong, the worst class: no error,
+  // a numeric consumer silently received a string instead of a computed
+  // value or a thrown error.
   const f = jz('export let f = (...args) => args.length', { jzify: true }).exports.f
   is(f(1, 2, 3), 3, 'sanity: ordinary rest args unaffected')
   throws(() => f(5n, 3n), /BigInt argument in the rest arguments of f\(\) has no BigInt evidence/,
@@ -2632,13 +2885,20 @@ test('phase-c C4b (5): rest-element BigInt evidence has no plan source today —
   // Rest elements are host-populated (interop's own mem.Array), never a
   // traceable in-program def site RepresentationPlan's provenance solver can
   // reach (zero "rest" references anywhere in representation-plan.js) — so
-  // jz:hostabi's `rest` flag is never true today; documented unsupported, not
-  // merely untested.
+  // jz:hostabi's `rest` flag is never true today; documented unsupported,
+  // not merely untested. Demonstrated against a function whose FIXED sibling
+  // param IS evidenced (tagged, works) to show the two policies are
+  // independent — evidence on one slot never leaks tag treatment onto
+  // another.
   const f = jz(`
     export let f = (flag, ...args) => { if (typeof flag === 'bigint') return flag; return args.length }
   `, { jzify: true }).exports.f
   is(f(1, 2, 3), 2, 'sanity: fixed+rest split unaffected')
   is(f(5n), 5n, 'the FIXED param, evidenced, tags and computes correctly')
+  // NEGATIVE tagged FIXED param (interop.js isBox fix, test/inference.js):
+  // a raw negative host BigInt's two's-complement sign-extension used to
+  // collide with isBox's sign-blind mask, so this exact box-then-passthrough
+  // shape read back a garbage/zero value instead of the round-tripped -5n.
   is(f(-5n), -5n, 'the FIXED param, evidenced, tags and round-trips a NEGATIVE BigInt correctly too')
   throws(() => f(1, 5n), /BigInt argument in the rest arguments of f\(\) has no BigInt evidence/,
     'the REST element, zero-evidence, still rejects even though the sibling fixed slot is tagged')
@@ -2694,9 +2954,11 @@ test('round-7: BigInt `<<`/`>>` flips direction on a negative shift amount (JS s
   is(compound('<<=', 6, -3), 0n); is(compound('>>=', 6, -3), 48n)
 })
 
-// Already correct at HEAD (VT.bool/CMP_OPS ignore operand kind entirely —
-// always VAL.BOOL — so there was never a static-claim gap here); pinned so a
-// future change can't regress it silently.
+// round-7: comparisons (`<` `>` `<=` `>=`) over locally-proven-BigInt operands
+// — verified, not assumed, per this fix's own sweep discipline. Already
+// correct at HEAD (VT.bool/CMP_OPS ignore operand kind entirely — always
+// VAL.BOOL — so there was never a static-claim gap here); pinned so a future
+// change can't regress it silently.
 test('round-7: comparisons over local BigInt() decls are (and stay) JS-correct', () => {
   const cmp = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`,
     { jzify: true }).exports.f(v, w)
@@ -2711,17 +2973,37 @@ test('round-7: comparisons over local BigInt() decls are (and stay) JS-correct',
 // correctly at COMPILE TIME for a provable mix (one side a genuine BigInt, the
 // other a numeric LITERAL — see the negative-controls test above), but had no
 // RUNTIME check at all for a proven-BigInt side paired with a genuinely
-// dynamic (zero-evidence) other operand.
+// dynamic (zero-evidence) other operand. Fixed by
+// `bigIntDomainsCanMix`/`bigIntJointDispatch` (emit.js): a proven-BigInt side
+// paired with an UNRESOLVED other operand now runs the SAME runtime magnitude
+// heuristic `typeof x === 'bigint'` already uses (finite, nonzero, subnormal
+// abs) on the unresolved side — `w`'s raw bits (a genuine small Number, 2.0)
+// are NOT subnormal-shaped, so the joint check correctly resolves a domain
+// mismatch and throws, matching real JS.
 test('§14 point 4 FIXED: a proven-local BigInt mixed with a zero-evidence dynamic param throws TypeError (was: silently wrong bigint)', () => {
   const f = jz('export let f = (v, w) => { let x = BigInt(v); return x - w }', { jzify: true }).exports.f
   let threw = null
   try { f(5, 2) } catch (e) { threw = e }
   ok(threw instanceof TypeError, 'JS: TypeError (Number 2 mixed with BigInt 5n)')
+  // Negative control: two proven-local BigInts (no zero-evidence side at all)
+  // stay on their existing, unaffected fast path — byte-identical structural
+  // pin, verified by the "round-7: local BigInt() decls..." test suite above;
+  // repeated here narrowly for this exact function shape.
   const both = jz('export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x - y }', { jzify: true }).exports.f
   is(both(5, 2), 3n)
   is(typeof both(5, 2), 'bigint')
 })
 
+// A BigInt-census value passed as a call-site ARGUMENT into a callee that
+// applies unary `-`/`~` to its own parameter now correctly seeds that param's
+// `presentVal`, so `emitNeg`/`~`'s own OR-arm (censusMaybeUndefinedKind,
+// already asking unconditionally — §16's own "needed NO widening" finding)
+// sees VAL.BIGINT instead of null.
+//
+// The local-receiver sibling below now has its own straight-line proof and
+// fail-closed rejection for control-dependent BigInt writes. BigInt retirement Slice
+// 1: same "collection" precondition (`m.set('a', 5n)`, a module-level Map) as every
+// other test in this file.
 test('single-call-site unary `-` param-hop: present-key BigInt census value (module-level Map) through a callee is JS-correct (regression pin, was KNOWN-FAIL) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`

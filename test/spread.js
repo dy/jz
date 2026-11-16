@@ -841,6 +841,9 @@ test('spread: rest-param spread through export-only unknown callee', () => {
 })
 
 test('unshift: multi-arg inserts in argument order, returns new length', () => {
+  // The old emitter silently DROPPED every argument past the first — in the
+  // self-compile kernel that broke assemble.js's own `inject.unshift(setBase,
+  // ...stores)`, the last byte-parity ordering divergence.
   const r = run(`
     export let go = () => {
       const a = [9]

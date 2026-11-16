@@ -19,10 +19,12 @@ import { collect } from './_gc.js'
 // KERNEL-ONLY hang exclusion — seed=84 at opt=3 compiles instantly and correctly
 // NATIVELY (confirmed: `node test/fuzz.js --seed=84` matches JS at every opt level
 // 0-3 with no delay) but the IDENTICAL source, compiled through the self-hosted
-// region-hooks-on kernel (`JZ_TEST_TARGET=jz.wasm`), never returned. Kept OUT of
-// KNOWN_OPEN (that ratchet only suppresses a RETURNED finding — it can't help a
-// call that never returns) and instead skipped before the compile is ever
-// attempted, gated on onKernel() so native fuzzing keeps full seed coverage.
+// region-hooks-on kernel (`JZ_TEST_TARGET=jz.wasm`), never returned: sustained 100%
+// CPU, STABLE ~1.1GB RSS (no runaway growth), for 8+ minutes with zero progress
+// signal before being killed. Kept OUT of KNOWN_OPEN (that ratchet only suppresses
+// a RETURNED finding — it can't help a call that never returns) and instead skipped
+// before the compile is ever attempted, gated on onKernel() so native fuzzing keeps
+// full seed coverage.
 const KERNEL_HANG_SEEDS = new Set([84])
 
 // PRNG — explicit LCG so every program + input vector reproduces from its seed.
@@ -264,6 +266,7 @@ export const check = (prog, opts) => {
   for (const args of inputs) {
     try { wants.push(jsFn(...args)) } catch { return { kind: 'invalid' } }
   }
+  // Program is valid JS — now compile once per opt level (compile is the cost).
   const wasmFns = {}
   for (const opt of opts.optLevels) {
     // The scalar oracle uses JS's rounding at each operation. Exact rational

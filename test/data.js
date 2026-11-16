@@ -887,6 +887,13 @@ test('bigint: a returned bigint crosses to JS as a real, lossless BigInt', () =>
   is(run('export let f = () => 10n - 3n').f(), 7n)
   is(run('export let f = () => 0n - 5n').f(), -5n)             // signed
   is(run('export let f = () => { return 7n * 6n }').f(), 42n)
+  // |value| ≥ 2^52 (past the f64-mantissa-as-subnormal carrier's "distinguishable from a
+  // number by magnitude alone" range) is now lossless on EVERY leg, native and kernel alike
+  // (audit P0-2: bigint LITERALS are tagged `['bigint', decimalStr]` at parse time — see
+  // parse.js — so the kernel's own literal-kind classification never depends on the
+  // magnitude heuristic in the first place; only a genuinely RUNTIME-COMPUTED bigint whose
+  // static kind isn't provable still rides the ambiguous carrier, a documented, unrelated
+  // limit — see statements.js 'typeof recognizes BigInt values' family).
   is(run('export let f = () => 9007199254740993n').f(), 9007199254740993n)  // lossless past 2^53
 })
 
@@ -1376,6 +1383,13 @@ test('RepresentationPlan: host ingress distinguishes JS BigInt from Number bits'
     is(e.check(5n), true, `O${optimize || 0}: tag check accepts host BigInt`)
     is(e.payload(2), true, `O${optimize || 0}: Number payload remains usable`)
     is(e.payload(5n), true, `O${optimize || 0}: boxed BigInt payload unboxes in wasm`)
+    // NEGATIVE host BigInt (interop.js isBox fix): a raw negative BigInt's
+    // 64-bit two's-complement sign-extension used to collide with isBox's
+    // sign-blind mask, so i64Arg/wrapVal skipped mem.BigInt's box allocation
+    // and the unboxed bits reached wasm looking like neither a box nor a
+    // string — $__typeof (module/core.js) read them as "number" (its own
+    // sign-inclusive NaN mask correctly rejects them as a box, so they fell
+    // to the generic-number arm), the exact inverse of the intended tag.
     is(e.kind(-5n), 'bigint', `O${optimize || 0}: NEGATIVE host BigInt is boxed at ingress (was: misread as number)`)
     is(e.check(-5n), true, `O${optimize || 0}: tag check accepts NEGATIVE host BigInt (was: false)`)
     // payloadNeg's target (-5n) is only reachable via the correct BigInt
@@ -1418,6 +1432,9 @@ test('RepresentationPlan: ordinary array storage preserves a dynamic BigInt memb
 const MIN_NORMAL = 2.2250738585072014e-308
 
 test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value on export (audit repro)', () => {
+  // The audit's own repro: kernel-compiled `() => 5e-324` used to export `1n` (the literal's OWN
+  // AST node misread as bigint via the magnitude heuristic, corrupting its export-boundary kind
+  // — see kind.js valTypeOf, emit.js emitNeg). 1e-320 used to export `2024n`.
   const cases = [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
   for (const v of cases) {
     const f = run(`export let f = () => ${v}`).f
@@ -1428,6 +1445,15 @@ test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value
 })
 
 test('P0-2: bigint literals near the 2^52 mantissa boundary stay bigint, exact', () => {
+  // 2^52-1 / 2^52+1 straddle the point where the i64 carrier's f64 exponent field would turn
+  // nonzero if it were EVER read as a plain float — both are still comfortably inside the
+  // dynamic-typeof heuristic's subnormal range, but the audit pins the LITERAL path
+  // specifically: the tag makes this exact regardless of magnitude, not just below 2^52.
+  // 2^52-1 used to be kernel-curated (its carrier bits are the MAX-SUBNORMAL band, and
+  // in-kernel the compiler's own handling of that literal value ToNumbered the carrier
+  // mid-pipeline, exporting 4841369599423283198n = the bits of the f64 it became) — same root
+  // and same fix as the negative-subnormal-literal case above (audit-#11 P0-1,
+  // ctx.features.bigint-gated __to_num).
   is(run('export let f = () => 4503599627370495n').f(), 4503599627370495n)   // 2^52 - 1
   is(run('export let f = () => 4503599627370497n').f(), 4503599627370497n)   // 2^52 + 1
 })
@@ -1653,7 +1679,9 @@ test('array: literal return ≤8 = multi-value', () => {
 })
 
 test('array: multi-value return of boxed STRINGS survives the JS boundary', () => {
-  // JS-host-only — WASI reads raw int64 and never canonicalizes.
+  // Regression: a multi-value `(f64,f64)` return of SSO-string NaN-boxes was canonicalized by V8 at
+  // the JS↔wasm boundary (every lane → bare NaN → null). JS-host-only — WASI reads raw int64 and
+  // never canonicalizes.
   if (onWasi()) return
   is(JSON.stringify(jz("export let f = () => ['a', 'b']").exports.f()), '["a","b"]')
   is(JSON.stringify(jz("export let f = () => ['x', 'y', 'z']").exports.f()), '["x","y","z"]')
@@ -1664,6 +1692,8 @@ test('array: multi-value return of boxed STRINGS survives the JS boundary', () =
 })
 
 test('array: string spread [...s] decodes its char elements (was null)', () => {
+  // Regression: `[...s]` stored UNDEF into every slot when the string module wasn't loaded
+  // (emitSpreadCopy fell to __typed_idx → __len=0 for a STRING → OOB).
   if (onWasi()) return
   is(JSON.stringify(jz('export let f = (s) => [...s]').exports.f('hi')), '["h","i"]')
   is(JSON.stringify(jz('export let f = (s) => [...s]').exports.f('abcdefgh')), '["a","b","c","d","e","f","g","h"]')  // heap source
@@ -1671,6 +1701,8 @@ test('array: string spread [...s] decodes its char elements (was null)', () => {
 })
 
 test('interop: string arg to a fully-untyped param marshals (SSO) instead of NaN', () => {
+  // Regression: a no-type-evidence param rides the i64 carrier; for a memoryless module the
+  // host marshaled a string via f64ToI64 → NaN. interop now SSO-encodes ≤6 ASCII host-side.
   if (onWasi()) return
   is(jz('export let f = (a) => a').exports.f('hi'), 'hi')
   is(jz('export let f = (a) => a').exports.f(42), 42)        // number unaffected
@@ -1942,6 +1974,9 @@ test('Set/Map: alias (mutate in place)', () => {
 })
 
 test('Map/Set: receiver laundered through an identity call keeps its pointer identity (O0 regression)', () => {
+  // at optimize:false, a Map/Set handle returned from `mk()` — where `mk` itself just forwards
+  // `new Map()` through a generic identity function `pick(v) => v` — total-missed every
+  // .has()/.get() at the O0 call site.
   const src = `
     export let mapProbe = () => { let m = mk(); m.set(5, 7); return m.has(5) ? m.get(5) : -1 }
     export let setProbe = () => { let s = mk2(); s.add('x'); return s.has('x') ? 1 : 0 }
@@ -2030,6 +2065,9 @@ test('Set/Map: grow past capacity + delete', () => {
       m.delete(1)
       return (m.get(1) === undefined ? 1 : 0) + m.size
     }`, 2],
+    // Regression: methodValType inferred `.delete` as VAL.SET, so `let r = s.delete(x)`
+    // boxed the i32 result into a (truthy) NaN-box — absent deletes read as true.
+    // delete(99)→false, size unchanged at 1
     ['Set: delete absent member returns false (boolean, not boxed coll)', `() => {
       let s = new Set()
       s.add(1)
@@ -2092,8 +2130,14 @@ test('Map/Set: has/delete cross the JS boundary as real booleans (proven receive
 })
 
 test('Map/Set: has() crosses the boundary as a real boolean through a genuinely dynamic (unproven) receiver, every optimize level', () => {
-  // O2/O3 constant-fold this same program before dispatch is observable in the
-  // WAT, but the crossed VALUE must still agree.
+  // A single closure called with BOTH a Map and a Set receiver: no single ptrKind
+  // narrows its param, so at O0 `.has()` routes through module/collection.js's
+  // collProbeDyn (the runtime Map-vs-Set __ptr_type dispatch) rather than the
+  // proven `.MAP:has`/`.SET:has` emitters — the other half of the probe family
+  // this fix covers (collProbeDyn already boxed its own result; the gap was
+  // purely in func.valResult never getting set to route through it at the
+  // boundary). O2/O3 constant-fold this same program before dispatch is
+  // observable in the WAT, but the crossed VALUE must still agree.
   const src = `export let f = () => {
     let probe = (c, k) => c.has(k)
     let m = new Map(); m.set(7, 1)
@@ -2343,7 +2387,10 @@ test('Regression (Root F): RUNTIME-variable typed index — OOB reads undefined,
   // The known-elem `.typed:[]` fast path emitted a raw `data + (i<<shift)` load/store
   // with NO bounds check for a runtime index: in-range-but-past-the-end silently read
   // or CORRUPTED adjacent heap; far indexes trapped. JS: typed OOB reads are
-  // `undefined`, typed OOB writes are no-ops (the RHS still evaluates).
+  // `undefined`, typed OOB writes are no-ops (the RHS still evaluates). The direct
+  // unchecked form is now gated on the structural in-bounds proof (the canonical
+  // `for (i=C; i<a.length; i++)` scan) — proven loops keep byte-identical emit — and
+  // every unproven index takes the checked form (`i u< len`, negatives included).
   const { rd, wr, neigh, fx, loopSum } = run(`
     const a = new Float64Array(4)
     const b = new Float64Array(4)
@@ -2526,6 +2573,10 @@ test('collections: arguments finish before construction, callback checks and gro
   }
 })
 
+// structuredClone (2026-07-11, Ring 2): deep arena clone — cycles terminate,
+// diamond sharing (incl. a buffer shared by views) is preserved, Map keys AND
+// values clone, Set/Map keep insertion order, Dates clone via their branded
+// schema.
 test('structuredClone: deep copy + isolation', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => structuredClone(42.5)`), 42.5)
@@ -2931,8 +2982,12 @@ test('closed-union tagged records: exact values, trailing-else variant, open-arr
   is(run(SRC).main(), host)
 })
 
-// The kernel-leg bool-identity test is the recursion pin (native never hung);
-// this differential pins that the iterative verdicts keep values JS-exact.
+// These three analyzeBody gates (lean-hash, i32-histogram, domain-cap) were
+// nested self-recursive closures with heavy capture — the exact shape the
+// SELF-COMPILED kernel miscompiled into infinite recursion (bool-identity leg
+// red, bisected to 83d6add5). The kernel-leg bool-identity test is the
+// recursion pin (native never hung); this differential pins that the iterative
+// verdicts keep values JS-exact.
 test('dict-use idioms: lean-hash, i32-histogram, domain-keyed all JS-exact', () => {
   const m = run(`
     export let lean = (n) => { let h = {}; for (let i = 0; i < n; i++) { let k = 'x' + i; h[k] = i * i }; let s = 0; for (let i = 0; i < n; i++) { let k = 'x' + i; s += h[k] }; return s }
@@ -2950,6 +3005,16 @@ test('dict-use idioms: lean-hash, i32-histogram, domain-keyed all JS-exact', () 
   is(m.domain(3), host.domain(3))
 })
 
+// dyn-prop KEYING: a PLAIN (non-self-referencing) write to an i32-lean HASH
+// local — ledger 2026-07-29, repro B's root. dictWalkI32 (analyze.js) proves a
+// dict-mode HASH local "lean" (values stored as raw i32 in the low 32 bits,
+// not NaN-boxed f64) whenever every WRITE is a discarded statement and every
+// READ is immediately bitwise-coerced — `counts[k] = 7` (a literal RHS, no
+// self-read) satisfies that exactly as much as `counts[k] = (counts[k]|0)+1`
+// does, but only the RMW-fusion emitter (`o[k]=f(o[k])`, emit-assign.js
+// tryHashRmwFusion) honored the lean contract on write; a plain write (RMW
+// fusion declines — no self-reference to fuse) fell through to the generic
+// __dyn_set path, which always stores a full NaN-boxed f64.
 test('dyn-keys: plain (non-RMW) write to an i32-lean HASH local is readable', () => {
   is(run(`export let f = () => {
     let k = 'cd'
@@ -3152,9 +3217,10 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
 })
 
 test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)', () => {
-  // With few exports the callee is an inline candidate — the union must keep its
-  // materialization (tag discipline) whether the call is kept or inlined, and the
-  // host boundary must decode a real lossless BigInt either way.
+  // The banked 2-export shape: gnorm's result is a string|number-entry union with
+  // bigint via body write. With few exports the callee is an inline candidate — the
+  // union must keep its materialization (tag discipline) whether the call is kept or
+  // inlined, and the host boundary must decode a real lossless BigInt either way.
   const gnorm = `export let gnorm = (n) => { if (typeof n === 'string') n = BigInt(n); return n }\n`
   const two = gnorm + `export let geq = (x) => gnorm(x) === 9n`
   const five = gnorm + `export let geq = (x) => gnorm(x) === 9n
@@ -3277,7 +3343,9 @@ test('bigint: storage-read method-family sweep — get/pop/shift/at/[]/.member c
   // Every STORAGE_READ_METHODS member plus the plain []/.member producer
   // (representation-plan.js's memberReceiver shape) x a compound reassignment
   // (`n >>= 7n`) x both a same-function local and a cross-function (covered,
-  // reassigned) param. 900n >> 7n === 7n for every cell.
+  // reassigned) param. 900n >> 7n === 7n for every cell. Pinned as one family
+  // so a regression in any single producer shape shows up immediately,
+  // matching this fixpoint's own discipline (falsified-predicate-forms note).
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const single = (setup, read) => `export let f = (i) => { ${setup}; let n = ${read}; n >>= 7n; return n }`
@@ -3381,10 +3449,21 @@ test('bigint: storage-read forwarded OUT of a dispatch-table closure into a seco
 
 test('bigint: storage-read forwarded through TWO plain named functions, no closure/dispatch table (shape #7 sibling — LANDED)', () => {
   // Found while probing shape #7's own "no closure at all" variant (phase-c
-  // doc): drop the dispatch table and the closure entirely -- a bare `f() ->
-  // handle(nodes) -> leb(nodes.shift())` direct-call chain, the SAME shape
-  // Shape #6 layer 6's forward-taint rule already covers (its own doc names
-  // this exact shape: "function handle(arr){ return i64(arr.shift()) }").
+  // doc): drop the dispatch table and the closure entirely -- a bare
+  // `f() -> handle(nodes) -> leb(nodes.shift())` direct-call chain, the
+  // SAME shape Shape #6 layer 6's forward-taint rule already covers (its
+  // own doc names this exact shape: "function handle(arr){ return
+  // i64(arr.shift()) }"). Was correct at O0/O2; wrong at O3 only -- a
+  // SEPARATE, narrower root cause from shape #7's own dispatch-table gap
+  // (which was wrong at every level, unconditionally): this shape has no
+  // closure and no computed-key dispatch anywhere, so none of shape #7's
+  // dispatch-table fix seams (collectDispatchTableClosures, exprMay/scan's
+  // dispatch-table wiring, visitCallSites' closure descent) touch it.
+  //
+  // The inliner/dead-code-liveness gap itself (a fully-spliced-away callee
+  // surviving in ctx.funcs.list) remains real and unfixed -- this pin closes
+  // because the SYMPTOM it produced no longer reaches a wrong value, not
+  // because the orphan stopped existing.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3401,6 +3480,15 @@ test('bigint: storage-read forwarded through TWO plain named functions, no closu
 })
 
 test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a bare name (shape #8 — FIXED)', () => {
+  // Was KNOWN-WRONG (shape #8): watr's actual memory64/float_memory64/
+  // call_indirect64 CI failures survived shape #7's closure/dispatch-table
+  // fix (above) because `encode.i64`'s own `n = i64.parse(n)` is a
+  // `.`-MEMBER call to `i64.parse` (`i64.parse = n => {…}`, a function
+  // attached as a static property of `i64`, a same-module sibling — not a
+  // bare name, not a computed dispatch, not a closure).
+  //
+  // An unresolved `.`-member call is untouched — same runtime dispatch, same
+  // "no claim" default as before this fix.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const src = `
@@ -3436,6 +3524,19 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
 })
 
 test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-name callee argument (shape #9 — FIXED)', () => {
+  // Found while validating shape #8's own real watr shape (i64.parse attached
+  // to a NAMED FUNCTION, not an object literal — a distinct resolver strategy
+  // from shape #8's own landed one, attempted and reverted after it regressed
+  // kernel-oracle). Isolated to a MINIMAL repro with ZERO `.`-member calls
+  // anywhere — confirmed pre-existing on unmodified main (aff67069),
+  // unrelated to the call-target index or any shape #6/#7/#8 mechanism.
+  //
+  // Root cause (live-traced, CORRECTS this pin's original prose): `leb`'s own
+  // boundary/body TARGET for `n` is BOXED, not RAW — `targetRepFor` only
+  // picks RAW when the legacy whole-program param census
+  // (`programFacts.paramReps`, which `current`/`target` deliberately stay
+  // pinned to — see the Shape #6 "TWO REGRESSIONS" note) can prove `n`
+  // closed-kind-pure bigint across every call site.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3461,6 +3562,9 @@ test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-na
 
 test('bigint: shape #9 sibling materializes through an index-resolved member callee', () => {
   // A named function used through a property has an uncovered value ABI.
+  // RepresentationPlan now admits its parameter only when the complete def
+  // set is materializable, then normalizes closure ingress, body writes, and
+  // result to the same boxed contract.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3487,6 +3591,8 @@ test('bigint: shape #9 sibling materializes through an index-resolved member cal
 })
 
 test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding write, not the RAW-consuming callee itself (FIXED)', () => {
+  // The pin above reaches the RAW-consuming callee through a member value ABI;
+  // it is now closed by RepresentationPlan's value-ABI materialization.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3520,10 +3626,16 @@ test('bigint: one-authority fix — valTypeOf itself resolves a `.`-member calle
 })
 
 test('bigint: one-authority fix — `.`-member callee result as a ternary arm feeding bitwise |/&/<<', () => {
-  // Sign-bit-safe magnitudes only (0x00ff... not 0xff...) — a value with the
-  // i64 sign bit set hits a SEPARATE, pre-existing, unrelated BigInt
-  // boundary-decode gap (confirmed identical on the bare-name control sibling
-  // below, so it is not this fix's own regression) not exercised by this pin.
+  // Without the upgrade, a ternary joining a closed-RAW literal against a
+  // `.`-member call whose result is ALSO proven closed-RAW emitted the two
+  // arms ASYMMETRICALLY (the literal stayed raw, the call's result got
+  // independently, incorrectly boxed at the call site) — found via watr's
+  // real f64() NaN-payload encoder (`value = flag ? QUIET : i64.parse(tail);
+  // value |= NAN`), reduced here to the minimal shape. Sign-bit-safe
+  // magnitudes only (0x00ff... not 0xff...) — a value with the i64 sign bit
+  // set hits a SEPARATE, pre-existing, unrelated BigInt boundary-decode gap
+  // (confirmed identical on the bare-name control sibling below, so it is not
+  // this fix's own regression) not exercised by this pin.
   const BODY = `
     export let trueOr = () => pick(true, '123') | 0x1n
     export let trueAnd = () => pick(true, '123') & 0xffn
@@ -3562,6 +3674,12 @@ test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2/O3 all corr
   // Same edge class with the BOXED source coming from a genuine call-site
   // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s
   // own `n` — rather than from a reassignment inside the caller.
+  //
+  // O3 used to be KNOWN-WRONG (a corrupted-number misread — `f()` returned
+  // the raw bigint bits reinterpreted as a plain f64, e.g. 3.5e-323 — not
+  // merely a typeof cosmetic): confirmed PRE-EXISTING and IDENTICAL on
+  // unmodified fb2dec2e, unrelated to the argStructurallyNeverBool fix this
+  // test's siblings pin.
   const src = `
     function leb(n) { n >>= 7n; return n }
     function relay(n) { return typeof n === 'bigint' ? leb(n) : n }
@@ -3602,6 +3720,14 @@ test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i
   is((fBody.match(/call \$__alloc\b/g) || []).length, 1, 'O0: the one box is the export result\'s, at the return edge')
 })
 
+// Range-boundary BOX/UNBOX OOB (2026-08 fix, src/ir.js applyBigintRepresentationAction +
+// src/compile/emit.js coerceArg): every plan-directed UNBOX now routes through
+// maybeUnboxBigInt (runtime tag-checked) instead of the unconditional unboxBigInt — see
+// that fix's own doc comment and test/pointers.js's "carrier: unboxBigInt applied to a
+// RAW…" pins for the mechanism (a raw payload's own low-32 bits misused as a heap
+// address once a plan proof calls for UNBOX on a value that never got boxed; 0x7fff…f
+// and 0xffff…f both decode to the address ~4 GiB, tripping "memory access out of bounds"
+// specifically, where a smaller BigInt would just silently misread nearby heap memory).
 // Pinned here as regression coverage for the fixed chokepoints themselves, across every
 // representation the family can take: ±(2^63-1), the 2^64-1 wrapped forms (asUintN(64,·)
 // collapses both to small-magnitude i64 bit patterns, ±1), and ±2^62 as in-range
@@ -3786,7 +3912,7 @@ test('bigint: typed stores convert unknown values before bounds and preserve the
     for (const level of levels(0, 1, 2, 3, 'size')) {
       const m = jz(source, { optimize: { level, sourceInline: false } })
       // Empty storage, last valid element, first invalid element, fractional
-      // and negative keys all convert.
+      // and negative keys all convert. A/A/B/error/A exercises one instance.
       for (const [index, length] of [[0, 0], [0, 1], [1, 1], [-1, 1], [0.5, 1]])
         for (const mode of [1, 1, 6, 7, 1, 0, 2, 3, 4, 5, 8, 9])
           is(m.exports.f(mode, index, length), js.f(mode, index, length), `${ctor} ${level}: mode=${mode}, index=${index}, length=${length}`)
@@ -3851,7 +3977,8 @@ test('bigint: unary "-"/"~" and joint-binary census results materialize through 
   }
 
   // The retired sentinel wrapper was the only export body that called
-  // $__ptr_type inline.
+  // $__ptr_type inline. Every census-BigInt shape now takes the generic
+  // plan-owned tagged decode, including the formerly residual bare read.
   const wrapperBody = (src, fname) => {
     const wat = compile(src, { optimize: false, wat: true })
     const start = wat.indexOf(`(func $${fname}$exp`)
@@ -3870,8 +3997,12 @@ test('bigint: unary "-"/"~" and joint-binary census results materialize through 
 })
 
 test('typeof folds preserve operand effects, in source order (audit P0: emitTypeofCmp erased calls)', () => {
-  // JS evaluates the typeof operand before comparing — the call must still run,
-  // exactly once, on every fold path.
+  // emitTypeofCmp (src/compile/emit.js) emits its operand into `va` ONCE, up front —
+  // but three fold sites (staticFold, shared by 'boolean'/'bigint', and the NUMBER-
+  // vs-BOOL-carrier fold) used to return a bare i32.const without ever placing `va`
+  // in the returned tree: `typeof bump() === 'boolean'` skipped bump() entirely
+  // whenever its return kind was statically known. JS evaluates the typeof operand
+  // before comparing — the call must still run, exactly once, on every fold path.
   for (const optimize of levels(false, 2, 3)) {
     const bo = jz(`
       let n = 0
@@ -4016,6 +4147,11 @@ test('RepresentationPlan: a forwarded param stays untrusted when its OWN source 
 })
 
 test("RepresentationPlan: possibleKinds census is pass-order-independent — swapping two forwarding functions' declaration order yields byte-identical WAT", () => {
+  // The bug was specifically an ordering artifact of narrow.js's worklist
+  // (which call site the fixpoint happens to visit first) — the strongest
+  // direct proof it's gone is that source-level declaration order (which
+  // determines the worklist's initial seed order) no longer affects the
+  // compiled output at all.
   const ulebSrc = `
     const uleb = (n, buffer = []) => {
       let byte = n & 0x7f
@@ -4332,7 +4468,8 @@ test('object passed as a parameter: a param that is only READ keeps its direct (
   // by the cross-function paramReps fixpoint — never through a method name)
   // and used only for `.length`/index READS must keep the direct, fast
   // array-header codegen — no own-property shadow probe, no dynamic
-  // dispatch.
+  // dispatch. Confirms the fix is scoped to the unsound guess and doesn't
+  // tax the common, already-sound proven-array path.
   const src = `
     function sumArr(a) {
       let s = 0
@@ -4458,6 +4595,12 @@ test('object read via a parameter: the STRING-guess WAT-dispatch shape — unpro
 })
 
 test('closed computed-dispatch table: a member forwarded into a named function gets its param proven from the table\'s own callers (positive) vs stays runtime-dispatched once the table escapes (negative control)', () => {
+  // watr's real shape: `const HANDLER = { a: (buf,v) => push2(buf,v), ... }`,
+  // invoked ONLY as `HANDLER[key](buf, v)`. Nobody ever calls `push2` by a bare
+  // name anywhere in the program — before this fix its `buf` param had ZERO
+  // observations (the outer computed dispatch is invisible to the call-site walker;
+  // program-facts.js's own doc on synthesizeComputedDispatchCallSites has the full
+  // mechanism).
   const closedSrc = `
     const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
     const HANDLER = {
@@ -4505,6 +4648,11 @@ test('closed computed-dispatch table: a member forwarded into a named function g
 })
 
 test('closed computed-dispatch table: declaration order relative to its caller does not affect the compiled output', () => {
+  // Same discipline as the possibleKinds ordering-independence pin above
+  // (test "possibleKinds census is pass-order-independent"): the strongest
+  // direct proof the fix isn't an accidental worklist-order artifact is that
+  // source declaration order (table before vs after the function that
+  // dispatches through it) doesn't change the compiled bytes at all.
   const push2Src = `const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }\n`
   const handlerSrc = `
     const HANDLER = {
@@ -4526,6 +4674,11 @@ test('closed computed-dispatch table: declaration order relative to its caller d
 })
 
 test('closed computed-dispatch table: an unresolvable SIBLING argument no longer poisons the whole synthesized call', () => {
+  // watr's real residual: `grab`'s inner call is `grab(lookup(idx, list),
+  // buf)` — arg0 nests a reference to `a`'s OWN body-local `idx` (from
+  // `list.shift()`, never statically resolvable — genuinely unknown, not
+  // absent), arg1 is `a`'s OWN param `buf`, forwarded cleanly from `instr`'s
+  // own array.
   const src = `
     const lookup = (k, m) => m[k]
     const grab = (x, buf) => { buf.push(x); return buf }
@@ -4552,6 +4705,11 @@ test('closed computed-dispatch table: an unresolvable SIBLING argument no longer
 })
 
 test('closed computed-dispatch table: a member reached by a SHORT outer call declines its own unsuppliable trailing param instead of forwarding it as a false "merely unknown" fact', () => {
+  // The regression this fix corrects: watr's real `for (const k in HANDLER)
+  // SIZE_HANDLER[k] = (n,c,op) => HANDLER[k](n,c,op).length` idiom calls every
+  // HANDLER member with 3 args, one short of the table's own 4-param convention —
+  // mirrored here by `short(key, buf, v)` calling `HANDLER[key](buf, v)` (2 args)
+  // against members declared `(buf, v, out)` (3 params).
   const src = `
     const write = (buf, x) => { buf.push(x); return buf }
     const relay = (buf, v, out) => { buf.push(v); if (out) write(out, v); return buf }
@@ -4678,6 +4836,11 @@ test('parameter index bounds preserve reassignment, missing calls and named nume
 })
 
 test("RepresentationPlan: `.`-property-read schemaId resolution is pass-order-independent — swapping a 3-function forwarding chain's declaration order yields byte-identical WAT", () => {
+  // Mirrors the existing possibleKinds-census ordering pin's discipline
+  // (above) for this fix's own two dependencies (schemaId, ctx.schema's
+  // SlotFact kind census): a 3-hop chain (grab <- relay <- outer, outer's
+  // OWN param c2 must itself settle to CTX's schemaId before relay's `c`
+  // can resolve it) checked across every declaration-order permutation.
   const grabSrc = 'function grab(nm, list) { return list[nm] }\n'
   const relaySrc = 'function relay(nm, c) { return grab(nm, c.items) }\n'
   const outerSrc = 'function outer(nm, c2) { return relay(nm, c2) }\n'
@@ -4730,6 +4893,10 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
   }
 })
 
+// `let/const T = []` receiver used as a static string-keyed dictionary via a `for
+// (k in OBJ) T[k] = VALUE` unroll over a constant object literal — the FOURTH
+// limitation diagnosed (`T` is never schema-registered: that mechanism only fires
+// on a `{}`-literal AST node, never `[]`).
 const extractFnBody = (wat, fname) => {
   const start = wat.indexOf(`(func $${fname}`)
   if (start < 0) return null
@@ -4946,7 +5113,15 @@ test('DictKindIndex: pass-order-independent — swapping the target/reader decla
   ok(!/__dyn_get_(?:expr|any)/.test(bodies[0]), 'O3: and the census genuinely resolved (no shadow probe), not vacuously identical because every permutation declined equally')
 })
 
+// Each was re-run against MAIN's own fix (not the branch's) at every optimize level
+// and labeled by what actually happens now, not by the branch's original labels.
+
 test('bigint: object-literal property referencing an existing function, both shorthand and explicit key (shape #8 sibling — already covered, FIXED)', () => {
+  // Re-confirmed here at the value level on main: correct at every optimize
+  // level, for both the `{ parseNum }` shorthand and the explicit `{ parse:
+  // parseNum }` key. The inline-closure and nested-base siblings below now
+  // take their own separately proven paths, so this remains the direct
+  // static-object control.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const body = `

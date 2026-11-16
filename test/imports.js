@@ -323,6 +323,10 @@ test('re-export: multi-level chain', () => {
 // `function/const foo; export { foo as bar }` reaches the WASM boundary
 // only via sec.customs (`f.exported=false` for the source func — the
 // snapshot at defFunc is taken before the `export { … }` statement runs).
+// Regression: until the isExported/exportNamesOf split, the rest-param
+// custom section + boundary wrapper both keyed on `f.exported`, so
+// aliased re-exports skipped rest-pack (NaN args) and skipped boundary
+// wrap (narrowed pointer/string params received raw f64 from JS).
 
 test('aliased re-export: rest params packed under alias name', () => {
   const { exports } = jz(`let f = (a, ...rest) => a + rest.length; export { f as g }`)
@@ -910,6 +914,10 @@ test('nested module imports do not stack prefixes', () => {
 // Cross-module array resize
 
 test('cross-module: importer `.length = 0` between owner pushes keeps one array', () => {
+  // `.length =` on a global used to be recorded as a schema PROPERTY write,
+  // auto-boxing the binding (['__inner__','length']): element reads then
+  // deref'd the box while the resize path persisted the raw array ptr into
+  // the global — a read/write protocol split that read garbage (62) here.
   const mods = { './state.js': 'export const arr = [7]\nexport let ownerPush = (v) => { arr.push(v); return 0 }\nexport let readLen = () => arr.length' }
   const { exports } = jz(`
     import { arr, ownerPush, readLen } from './state.js'
@@ -960,9 +968,13 @@ test('cross-module: default-imported factory-produced closure', () => {
 // compiles; simplified variants of the memo idiom also compile, so the trigger is
 // sensitive to taylor's exact shape — the taylor.js below is verbatim window-function
 // source, minimally re-based onto a stub util. Flip `test.todo` → `test` when fixed.
-// Residual: the memo VALUE computes wrong cross-module only (returns 1, want 0.4849…;
-// the same fn-attached memo idiom works single-module) — a distinct
-// dyn-props-on-closure-receiver or default-export-self-name bug.
+// PARTIAL (2026-07-08): the titled ENCODE CRASH is FIXED — program-facts now records
+// bare func-ref RHS in let/const decls (`let c = taylor`) as a VALUE use, so
+// resolveClosureWidth sizes the uniform ABI to the fn's full arity and the boundary
+// trampoline no longer forwards undeclared $__a{k} slots. Residual: the memo VALUE
+// computes wrong cross-module only (returns 1, want 0.4849…; the same fn-attached
+// memo idiom works single-module) — a distinct dyn-props-on-closure-receiver or
+// default-export-self-name bug.
 test('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
   const util = `
     export let PI = Math.PI
@@ -1051,6 +1063,10 @@ test('cross-module: dependency module calling AND aliased-re-exporting the same 
   is(exports.f(3), [0, 2, 4])
 })
 
+// This already worked before the fix above (exportName === the only reference
+// to `helper` is the export itself, so the missing walk-lookup key was never
+// actually consulted) — pinned so the fix doesn't accidentally narrow the
+// working case while widening the broken one.
 test('cross-module: aliased re-export with no internal call to the aliased name', () => {
   const { exports } = jz(
     `import { poles } from './dep.js'; export let f = (n) => poles(n)`,
@@ -1061,8 +1077,11 @@ test('cross-module: aliased re-export with no internal call to the aliased name'
   is(exports.f(4), 12)
 })
 
-// `helper` here is the CALLEE (not the caller) of an unexported sibling
-// `caller`, re-exported so `caller` stays reachable.
+// Same bug, reached through `export default helper` instead of a named `as`
+// alias — `export default X` is itself an aliased export (exportName
+// 'default' vs localName `X`), the deferred resolution branch `exportLocal`
+// now also covers. `helper` here is the CALLEE (not the caller) of an
+// unexported sibling `caller`, re-exported so `caller` stays reachable.
 test('cross-module: dependency module calling AND default-exporting the same private helper', () => {
   const { exports } = jz(
     `import { go } from './dep.js'; export let f = (n) => go(n)`,
@@ -1112,6 +1131,8 @@ test('cross-module: aliased re-export survives a second module hop', () => {
 })
 
 test('module-level destructuring takes the module prefix like a plain declaration', () => {
+  // Two modules destructuring the same names kept one shared global (and the
+  // second declaration was reported as a compiler-internal name conflict).
   const { exports } = jz(`import { fa } from './a.js'; import { fb } from './b.js'
     const [Xw, Yw] = [7, 8]
     export let f = () => fa() * 100 + fb() * 10 + Xw + Yw`, {

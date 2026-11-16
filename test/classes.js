@@ -664,6 +664,9 @@ export let f = () => 1`) } catch (e) { err = e }
   ok(err && /this/.test(err.message), 'mixed batch stays out')
 })
 
+// Static class members: fields + methods (this → the class) were already
+// lowered as post-decl closure props; static BLOCKS now run in class-init
+// order with the same this-binding.
 test('class: static fields, methods, and blocks', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`class A { static x = 41; static m(k) { return A.x + k } } export let f = () => A.m(1)`), 42)
@@ -913,7 +916,9 @@ test('class method boolean result keeps its atom through a dispatcher and an opt
 
 // `static get v() {}` / `static set v(x) {}` on one line parsed as a static
 // field named `get` followed by a method (the multi-line form too, silently),
-// and the one-line form failed with "Unclosed {". Reference: ECMA-262 15.7.1
+// and the one-line form failed with "Unclosed {". The parser now reads the
+// accessor after `static` (subscript feature/class.js), and the class lowering
+// takes the accessor onto the constructor. Reference: ECMA-262 15.7.1
 // ClassElement: `static MethodDefinition`, with MethodDefinition covering
 // `get`/`set` accessors.
 test('class static accessors, one line or many', () => {
@@ -953,6 +958,10 @@ test('class static accessors under every store', () => {
   }
 })
 
+// A derived class reads a static it does not declare through its base, as JS
+// reads it through the class's prototype: a method, a field as the base holds
+// it now, a getter and a setter, through the class's name or a value holding
+// it.
 test('class statics inherit through the base', () => {
   const src = `class A {
       static k = 3; static count = 0; static tag = 'a'

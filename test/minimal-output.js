@@ -105,7 +105,9 @@ test('minimal: alloc:false omits the uncallable arena-reset heal protocol', () =
 
 // No emitted compiler-internal function is dead
 // Every `$__foo` / `$math.foo` helper in the binary must be *reached* (called, in the elem
-// table, or exported). Holds at every opt level.
+// table, or exported). An eager include or a dead-branch dependency that nothing actually
+// calls is pure over-production — e.g. string concat used to ship the alloc trio's
+// `__alloc_hdr` (which it never calls) and a stray `__str_len`. Holds at every opt level.
 const deadInternalFuncs = (w) => {
   const internal = (n) => typeof n === 'string' && n !== '$__start' && (n.startsWith('$__') || /^\$[a-z_]+\./.test(n))
   const defined = parseWat(w).slice(1).filter(n => n[0] === 'func' && internal(n[1]) &&
@@ -175,8 +177,9 @@ test('minimal: dead pure expression statement is eliminated at O2', () => {
 
 // Constant aggregates: static data segment, no allocator
 // An all-literal array (≥4 elems) or object literal is a compile-time constant living in a static
-// data segment behind a const pointer, like a static string. (≤3-element arrays are excluded — see
-// the known-gap below.)
+// data segment behind a const pointer, like a static string. Reachability-gated: an array/object
+// module load no longer drags the allocator in wholesale — only a *reached* allocator does, and a
+// module-scope const reaches none. (≤3-element arrays are excluded — see the known-gap below.)
 const CONST_AGGREGATES = {
   'small array': 'export const x = [1, 2, 3]',
   'single-element array': 'export const x = [42]',
@@ -487,8 +490,10 @@ test('minimal: module numeric const table reads are value-correct', () => {
   is(jz('const C=[[0,4,7],[2,5,9]]\nexport let f=()=>C[1][2]*2').exports.f(), 18, 'nested direct read')
   is(jz('const C=[[0,4,7],[2,5,9]]\nexport let f=()=>{let ch=C[1];return ch[0]*2}').exports.f(), 4, 'nested via binding')
 })
-// The null case proves it routes through ToNumber (null→0), not the NaN-box coincidence
-// (which would give NaN).
+// SOUNDNESS (default-deny): a non-numeric element write — including a NESTED `C[i][j]=str`,
+// which the dynWriteVars root-walk now flags — must disable narrowing, else `*` would
+// f64.mul a NaN-boxed pointer. The null case proves it routes through ToNumber (null→0),
+// not the NaN-box coincidence (which would give NaN).
 test('minimal: module numeric table narrowing stays sound under non-numeric write', () => {
   if (skip) return
   ok(Number.isNaN(jz('const T=[1.5,2.5,3.5]\nexport let f=()=>{T[0]="hi";return T[0]*2}').exports.f()), 'flat string write → NaN')
@@ -514,14 +519,17 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
   }
 })
 
-// Reachability MUST still gate it exactly like every other Error mechanism
-// above: a program with no member-access/call site that could ever throw one
-// pays nothing (the pin right above already covers that — a program with NO
-// nullish-receiver check site at all never even calls throwTypeErrorIR, so
-// `ctx.module.include('string')` never fires). This pin is the positive
-// half: a program that DOES have one (a Map `.get()` absent-key read feeding
-// a property access — the same shape audit-#10's own dyn-keys.js repro uses)
-// must show the real strings.
+// audit-#11 gap-2: throwTypeErrorIR (src/ir.js) now forces module/string.js
+// inclusion + interns 'TypeError' and its two message strings — a real
+// dependency this synthetic TypeError never needed before (both were left
+// `undefined`). Reachability MUST still gate it exactly like every other
+// Error mechanism above: a program with no member-access/call site that
+// could ever throw one pays nothing (the pin right above already covers
+// that — a program with NO nullish-receiver check site at all never even
+// calls throwTypeErrorIR, so `ctx.module.include('string')` never fires).
+// This pin is the positive half: a program that DOES have one (a Map
+// `.get()` absent-key read feeding a property access — the same shape
+// audit-#10's own dyn-keys.js repro uses) must show the real strings.
 test('minimal: nullish-receiver TypeError message strings appear exactly when the check site does (audit-#11 gap-2)', () => {
   if (skip) return
   const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
@@ -536,7 +544,16 @@ test('minimal: nullish-receiver TypeError message strings appear exactly when th
 // but a LATER pass (optimizeModule's narrowing, here: proving `rows` is always the
 // array it was just built as) can resolve the specific call site to a direct
 // array-length read, leaving $__length/ $__length.value/$__throw_property_nullish
-// and the whole schema table with no surviving caller.
+// and the whole schema table with no surviving caller. Before this fix those
+// interned bytes leaked into every module with ANY opaque length/property-dispatch
+// site regardless of whether treeshake proved the throw path itself dead (the
+// audited aos/wav size-gate regression). stripDeadInternedSpans
+// (src/wat/assemble.js) reclaims that trailing dead run once real reachability is
+// known — this pin is the negative half (dead: neither string, matching the
+// schema-fix's OWN 'jz:schema' custom-section reconciliation this is the
+// runtime-data-segment analog of); the pin below is the positive half (live: both
+// strings, AND the throw actually happens with the right host-visible
+// class/message).
 test('minimal: dead opaque-.length throw path leaves neither the TypeError schema name nor its message string (fix/string-pool-reach)', () => {
   if (skip) return
   const src = `export let f = () => {
@@ -597,6 +614,16 @@ export let f = () => pick(${k})`
   }
 })
 
+// Per-instance RUNTIME HEAP cost of a constructed Error. audit-#9 P0-2 shrank
+// the object from 3 slots (['message','name','__errcls__']) to 2
+// (['message','name']) — class identity moved to the schema id, so this is
+// now a 16B payload + 16B header = 32B/instance, under the original design's
+// own ~60-100B ledger estimate. This is a claim about the `__jz_heap` bump-
+// allocator's growth per allocation, NOT compiled .wasm byte size (a single
+// construction call SITE costs the same code bytes whether it runs once or in
+// a hot loop) — measured directly via `instance.exports.__jz_heap` before/after a steady-
+// state batch (after `__jz_clear()` resets any one-time init/data-segment cost so
+// only the repeated per-call growth is counted).
 if (!skip) {
   test('minimal: constructed Error heap footprint (audit-#9 P0-2: 2-slot object, ~32B/instance)', () => {
     const inst = jz(`export let f = (n) => { let t = 0; for (let i = 0; i < n; i++) { let e = new Error('boom'); t = t + e.message.length } return t }`)

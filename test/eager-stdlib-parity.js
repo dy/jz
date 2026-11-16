@@ -40,6 +40,13 @@ for (const host of ['js', 'wasi']) {
   }
 }
 
+// Class 2 (dispatch-tier eager-load divergence, this session's other finding,
+// fixed in d1f4b585): a compile-time REJECT must fire identically whether or
+// not the fn/string/etc. modules were eager-preloaded — before the fix,
+// tryDynamicPropCall's `if (ctx.closure.call)` gate (now additionally
+// `&& ctx.module.demanded.has('fn')`) let this silently compile once `fn`
+// was eager-loaded, because ctx.closure.call is truthy the moment `fn`
+// merely registers, regardless of whether the source ever created a closure.
 test('eager-stdlib parity: unknown method on a proven array still rejects under eager preload', () => {
   if (skip) return
   const src = 'export let f = () => [3,1,2].frobnicate()'

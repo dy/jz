@@ -164,9 +164,12 @@ export const compileViaKernel = (code, opts = {}) => {
     // Forward an optimize config so the self-compile runs the same COMPILE-level passes
     // (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and emits the
     // same shapes. An UNSPECIFIED optimize mirrors the native default — level 2
-    // (resolveOptimize(undefined), as test/_env.js / JZ_TEST_OPTIMIZE applies it) — not
-    // optimize:false, else every level-2 shape test compares native-level-2 codegen
-    // against kernel-level-0 and diverges. Explicit optimize:false / 0 stays off.
+    // (resolveOptimize(undefined), as test/_env.js / JZ_TEST_OPTIMIZE applies it) —
+    // not optimize:false, else every level-2 shape test compares native-level-2 codegen
+    // against kernel-level-0 and diverges. The config (watr included) is forwarded
+    // verbatim: self.js's compileWat now runs the full index.js optimization tail
+    // (watOptimize + the optimizeFunc 'post' pass), so the self-compile emits the same
+    // WAT IR native does. Explicit optimize:false / 0 stays off.
     const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts), buildJSONFor(self, opts)))
     return wat
   }

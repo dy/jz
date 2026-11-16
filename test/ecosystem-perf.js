@@ -35,9 +35,14 @@ const timeMin = (fn) => {
   return best
 }
 
-// Build a wasm module from a driver entry that imports the library graph.
-// `compile()` is synchronous, so the whole build — and the env-var restore —
-// completes before any other concurrently-running test can observe it.
+// Build a wasm module from a driver entry that imports the library graph. BigInt
+// retirement Slice 1: both callers pull in real ecosystem source (subscript's jessie
+// parser, watr) — independently-versioned npm dependencies with their own
+// genuinely-unprovable BigInt usage this repo can't fix
+// (subscript/feature/number.js's `BigInt(str)` calls for `123n`-suffixed numeric
+// literals; watr's encode.js — see test/watr.js's withRawCarrier for the full
+// rationale). `compile()` is synchronous, so the whole build — and the env-var
+// restore — completes before any other concurrently-running test can observe it.
 const withRawCarrier = (fn) => fn()  // CARRIER_BOX flag deleted — boxing is unconditional; see test/watr.js
 const buildWasm = (driverName, driverSrc) => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-eco-'))

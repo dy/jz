@@ -197,7 +197,8 @@ test('boxed counters: rfft answers what Node answers, its index locals words of 
 })
 
 test('boxed counters: a product of a name the box holds stable is a word of the copy', () => {
-  // `W` the loop reads and never writes: aliased and tested into the box once. Expected values are Node's.
+  // `W` the loop reads and never writes: aliased and tested into the box once. The name reads as its own value
+  // now: `W * min(n - 1, H - 1)` the test, `imul(y, W)` the index. Expected values are Node's.
   const RANGE = `let W = 0, H = 0, px
 export let resize = (w, h) => { W = w; H = h; px = new Float64Array(w * h); return px.length }
 export let f = (n, x) => {
@@ -225,8 +226,8 @@ export let f = (n, x) => {
 })
 
 test('boxed counters: an entry outside the box runs the copy the planner builds with no box', () => {
-  // penrose's line walk (examples/penrose/penrose.js drawLine): `x += sx`, a stride of either sign.
-  // Expected values are Node's.
+  // penrose's line walk (examples/penrose/penrose.js drawLine): `x += sx`, a stride of either sign. The
+  // box is a tier above that copy now: where its guard fails, the copy runs. Expected values are Node's.
   const src = `let W = 0, H = 0, px
 export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); return px.length }
 let drawLine = (x0f, y0f, x1f, y1f, col) => {
@@ -267,7 +268,7 @@ export let lines = (n, x0, y0, x1, y1) => {
 
 test('boxed counters: where only the box builds a copy, the loop beside it stands as with no box', () => {
   // The planner builds no copy of the outer loop (`ix` and `id` leave any width it proves), the box
-  // does. Expected values are Node's.
+  // does. It stands so now: not cold, the inner copy in place. Expected values are Node's.
   const src = `const x = new Float64Array(64), a = new Float64Array(16)
 export let f = (n, m) => {
   let ix = 0, id = 1, r = 0

@@ -165,6 +165,8 @@ test('options: optimize object — tailCall:false uses ordinary call frames', ()
   ok(!/return_call/.test(compile(TAIL, { wat: true, optimize: { tailCall: false } })), 'tailCall:false')
 })
 
+// audit-#11: the wasm2c lane's TargetProfile (src/session.js, the internal host
+// 'native') forces the noTailCall policy tailCall:false sets explicitly.
 test('options: the internal host native uses ordinary call frames', () => {
   ok(!/return_call/.test(compileInternal(TAIL, { wat: true, host: 'native' })), "host 'native' emits no return_call")
 })

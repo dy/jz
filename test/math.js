@@ -446,6 +446,8 @@ test('Math.pow / ** — positive-constant base lowers to exp (no pow/log stdlib)
   const wat = compile(`export let g = (n) => 440 * (2 ** (n / 12))`, { wat: true })
   ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided for 2 ** (n/12)')
   ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
+  // exp route used — as a `$math.exp` func, or (since the O(1) loop-free exp is now
+  // inlinable) its inlined body, identified by the Taylor coefficient 1/6.
   ok(/\(func \$math\.exp|0\.16666666666666666/.test(wat), 'uses math.exp (func or inlined)')
 })
 
@@ -594,6 +596,9 @@ test('Number.isNaN', async () => {
 })
 
 test('Number.isNaN: dynamic/polymorphic argument (not statically NUMBER)', () => {
+  // A ternary-merged NUMBER∪other argument stays a genuinely runtime-typed f64 —
+  // the compiler can't fold it to a literal, so this exercises the kind-unknown
+  // runtime discrimination path, not just the static-literal short-circuit above.
   const src = `
     function isNaNOf(x) { return Number.isNaN(x) }
     export let f = (tag) => isNaNOf(
@@ -632,7 +637,9 @@ test('Number.isNaN: dict/map value-census absent-key argument (the may-be-undefi
 // ACCIDENTAL, not structural: a dict read with a non-numeric STRING-LITERAL key
 // (`d['zz']`, as opposed to a dynamic/variable key) already read `false` even
 // before this slice's fix — but not because dictValueKindOf was ever consulted
-// and found sound.
+// and found sound. Pinned here so a future refactor of that early classification
+// doesn't silently reintroduce the bug under the false impression that "literal
+// dict keys already worked".
 test('Number.isNaN: dict literal-key absent read — correct via a DIFFERENT, unrelated mechanism (VT null before census)', () => {
   is(jz(`const d = {}; d.a = 1; export let f = () => Number.isNaN(d["zz"])`).exports.f(), false)
 })
@@ -654,6 +661,10 @@ test('Number.isNaN: non-census proven-NUMBER argument keeps the bare self-compar
   is(f('missing'), false)
 })
 
+// Sibling sweep (Slice 2): isFinite/isInteger/ isSafeInteger need NO equivalent gate
+// — verified structural, not accidental, per the comment at emitIsFinite
+// (module/number.js): every formula in this trio OPENS with `f64.eq(v,v)`
+// (self-equality), which is false for ANY NaN bit pattern, including UNDEF_NAN.
 test('Number.isFinite/.isInteger/.isSafeInteger: dict/map value-census absent-key argument (structural, no gate needed)', () => {
   const mapAbsent = (method) => `const m = new Map(); m.set("a", 1); export let f = () => Number.${method}(m.get("zz"))`
   const dictAbsent = (method) => `const d = {}; const wk = "a"; d[wk] = 1
@@ -665,7 +676,12 @@ test('Number.isFinite/.isInteger/.isSafeInteger: dict/map value-census absent-ke
 })
 
 // Number.isFinite (21.1.2.2) / Number.isInteger (21.1.2.3) / Number.isSafeInteger
-// (21.1.2.5) share the same "not a Number → false, no coercion" contract.
+// (21.1.2.5) share the same "not a Number → false, no coercion" contract. Their raw
+// arithmetic (`x === x && …`) already excludes every NaN-boxed pointer/atom carrier
+// (self-compare fails on all of them) — the gap was specifically the RAW, non-NaN-
+// boxed carriers: a static boolean (unboxed i32 0/1) and any BigInt (raw i64 sharing
+// f64's bit-space with no tag at all) both convert/reinterpret to an ordinary finite
+// float and used to read as true.
 test('Number.isFinite', async () => {
   is(await evaluate('Number.isFinite(0)'), true)
   is(await evaluate('Number.isFinite(Infinity)'), false)
@@ -699,9 +715,16 @@ test('Number.isSafeInteger', async () => {
 })
 
 test('Number.isFinite / Object.is: exact boolean chain — typeof guard && (!isFinite || Object.is(-0))', () => {
-  // watr's print.js used exactly this composition (typeof-guarded,
-  // ||-short-circuited) to decide whether a number leaf needs a WAT non-finite/-0
-  // token.
+  // watr's print.js used exactly this composition (typeof-guarded, ||-short-
+  // circuited) to decide whether a number leaf needs a WAT non-finite/-0 token.
+  // Number.isFinite and Object.is are each correct standalone (pinned above /
+  // in test/objects.js) — this pins the FULL composed chain, since the reported
+  // in-kernel symptom ("finite 150 classified non-finite/-0") traced entirely to
+  // the `typeof x === 'number'` fast-path folding false for NaN (see
+  // test/statements.js's "typeof: NaN is still number" pin): once that's fixed,
+  // this chain needs no changes of its own — verified here so a regression in
+  // either operand would be caught immediately by the composition, not just in
+  // isolation.
   const src = `export let f = (v) =>
     (typeof v === 'number' && (!Number.isFinite(v) || Object.is(v, -0))) ? 1 : 0`
   const { f } = jz(src).exports
@@ -780,7 +803,12 @@ test('modulo - compound assignment (%=)', () => {
   is(run('export let f = () => { let x = 10; x %= 3; return x }').f(), 1)
 })
 
-// Unsigned right shift — `>>> 0` is the canonical "to uint32" idiom.
+// Unsigned right shift — `>>> 0` is the canonical "to uint32" idiom. When the
+// result crosses to f64 (division, template literal, return), the bit pattern
+// must be interpreted unsigned. jz used to lift via f64.convert_i32_s,
+// sign-flipping any value with high bit set. Repro found via biquad bench:
+// `(s >>> 0) / 4294967296` PRNG idiom produced negative outputs for
+// negative-i32 s.
 
 test('unsigned right shift - high bit f64 conversion', async () => {
   is(await evaluate('(-1 | 0) >>> 0'), 4294967295)
@@ -796,10 +824,14 @@ test('unsigned right shift - PRNG idiom produces [-1, 1)', () => {
 })
 
 test('unsigned right shift - division of high-bit value', async () => {
+  // 3959422976 = 0xEC000000 — high bit set, fits u32, exceeds i31.
   is(await evaluate('((-335544320 | 0) >>> 0) / 4294967296'), 3959422976 / 4294967296)
 })
 
 // Math.hypot n-ary (test262 builtins gate, 2026-07-10)
+// The pre-eval MATH_KERNEL hypot was strictly 2-ary: hypot() folded to
+// hypot(undefined,undefined)=NaN and hypot(3,4,12) silently dropped the third
+// arg. Kernel now mirrors the runtime emitter's left-chained 2-ary calls.
 
 test('Math: hypot arities (const-fold and runtime agree)', () => {
   is(run(`export let f = () => Math.hypot()`).f(), 0)
@@ -860,7 +892,9 @@ test('Math.sumPrecise: zeros, infinities, NaN (spec edge table)', () => {
 
 test('Math.sumPrecise: typed arrays — kind-aware reads, not stride-8 misreads', () => {
   // Int32Array elements are 4-byte lanes; the old raw stride-8 f64 load read
-  // pairs of them as one garbage double (8.48e-314 for [1,2,3]).
+  // pairs of them as one garbage double (8.48e-314 for [1,2,3]). Every element
+  // kind now routes through the runtime kind dispatch; int→f64 and f16/f32
+  // promotion are exact, so equality against JS is bit-for-bit.
   const r = run(`
     export let i32 = () => Math.sumPrecise(new Int32Array([1, 2, 3]))
     export let u32 = (a, b) => Math.sumPrecise(new Uint32Array([a, b]))

@@ -224,7 +224,11 @@ test('decodeURIComponent: malformed escape throws', () => {
 // TextEncoder
 
 // The Uint8Array returned by TextEncoder.encode must support indexed and spread
-// access, not just `.length`/`for-of`.
+// access, not just `.length`/`for-of`. Regression surfaced in watr: `str()` does
+// `bytes.push(...tenc.encode(buf))` and the export-name encoder then reads those
+// bytes by index. jz mis-typed the encode() result so indexed/spread reads were
+// f64-strided — `encode(':')[0]` yielded a denormal (bits of 58) and
+// `encode('AB')[1]` read 8 bytes ahead → 0.
 test('TextEncoder', () => {
   cases([
     ['encode result supports indexed access', `() => new TextEncoder().encode(':')[0]`, 58],
@@ -822,7 +826,9 @@ test('string: methods', () => {
   ])
 })
 
-// Per JS spec: split into individual chars, and "".split("") → [].
+// Empty separator: regression for infinite-loop when plen=0 (advance was
+// `i += plen`, so i never moved). Per JS spec: split into individual chars,
+// and "".split("") → [].
 test('string: .split("") splits into chars', () => {
   is(run(`export let f = () => "abc".split("").length | 0`).f(), 3)
   is(run(`export let f = () => "abc".split("")[0].charCodeAt(0) | 0`).f(), 97)
@@ -896,6 +902,8 @@ test('String: at out of range → undefined (not "\\x00")', () => {
 })
 
 test('String: .at on an untyped param dispatches to the string handler (not array)', () => {
+  // Regression: `at: ['core','array']` in autoload routed param `.at` to the array
+  // handler (raw f64 heap read).
   const f = run(`export let f = (s) => s.at(0)`).f
   is(f('hello'), 'h')
   ok(run(`export let g = (s) => s.at(9)`).g('abc') === undefined, 'OOB on param → undefined')
@@ -908,6 +916,8 @@ test('String: search / match / concat', () => {
     ['match found', `() => "hello world".match("world").length`, 1],
     ['match not found', `() => "hello".match("xyz")`, 0],
     ['match result content', `() => "hello world".match("world")[0].length`, 5],
+    // Regression: untyped `s.concat(...)` fell through to dynamic dispatch and hit an
+    // internal "__ext_call never registered" error.
     ['.concat on a dynamic (untyped) receiver: single arg', `(s) => s.concat("!")`, 'hi!', 'hi'],
     ['.concat on a dynamic (untyped) receiver: two args', `(s) => s.concat("-", "x")`, 'hi-x', 'hi'],
     ['.concat on a dynamic (untyped) receiver: literal receiver', `() => "ab".concat("cd")`, 'abcd'],
@@ -978,8 +988,10 @@ test('string: .replace(search, fn) invokes the callback', () => {
     'ab'.replace('a', m => m + m))                 // 'aab'
 })
 
-// A missed site silently corrupts strings, so exercise each path on 5- and 6-char
-// ASCII (the aux-spanning range) plus the host boundary.
+// Regression guard for the 7-bit ASCII small-string optimization: every string
+// producer and consumer must agree on the layout (char i at payload bit i*7, len at
+// bits 42-44). A missed site silently corrupts strings, so exercise each path on
+// 5- and 6-char ASCII (the aux-spanning range) plus the host boundary.
 test('SSO 7-bit: 6-char literal charCodeAt across the aux boundary', () => {
   const f = run(`export let f = (i) => "abcdef".charCodeAt(i)`).f
   for (let i = 0; i < 6; i++) is(f(i), 'abcdef'.charCodeAt(i))   // i=4,5 read from aux
@@ -1141,6 +1153,8 @@ test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () =>
 })
 
 test('indexOf substr: SIMD first-unit memchr is emitted + matches V8 over edge cases', () => {
+  // The multi-byte heap-haystack path broadcasts needle[0] and reads an i16x8.eq bitmask — a
+  // scan-bound substr search dropped from 5.7× slower than V8 to ~1.4×.
   const wat = compile(`export let f = (h, n) => h.indexOf(n)`, { wat: true })
   ok(/i16x8\.bitmask/.test(wat) && /i16x8\.eq/.test(wat), '__str_indexof carries the SIMD first-unit scan')
 
@@ -1164,6 +1178,7 @@ test('indexOf substr: SIMD first-unit memchr is emitted + matches V8 over edge c
 
 test('concat: a fresh result preserves its operands and a private builder can grow', () => {
   // In-place growth requires a private builder, not just self-assignment.
+  // A fresh target `t = s + x` over a live, heap-top `s` used to grow s in place (s += 2 bytes/iter).
   const { loop, after, accum, charAppend } = jz(`
     export let loop = (s, n) => { let a = 0; for (let r = 0; r < n; r = r + 1) { let t = s + "_x"; a = (a + t.length) | 0 } return a | 0 }
     export let after = (s) => { for (let r = 0; r < 5; r = r + 1) { let t = s + "_x" } return s.length | 0 }
@@ -1243,9 +1258,12 @@ test('concat: retained builder values stay immutable across appends', () => {
 })
 
 // prehash) — every producer of a ≤6-ASCII SSO string, crossed against every consumer of a
-// compile-time-literal-prehashed probe. If the two hash functions ever disagree for the same
-// SSO bits, the probe silently misses instead of erroring, so this is exercised for every
-// producer × every collection (Map/Set/HASH-object) × lengths 1-6.
+// compile-time-literal-prehashed probe. A key built at runtime by producer P must be found
+// by a `.get`/`.has`/dot-access whose key is a same-content STATIC LITERAL (which folds its
+// hash via strHashLiteral, module/collection.js, entirely at compile time — no __str_hash
+// call). If the two hash functions ever disagree for the same SSO bits, the probe silently
+// misses instead of erroring, so this is exercised for every producer × every collection
+// (Map/Set/HASH-object) × lengths 1-6.
 test('plain key walks preserve strings, Symbol identity and numeric collection equality', () => {
   const src=`export function f(mode) {
     const first=Symbol('same'),second=Symbol('same'),shared=Symbol.for('shared')
@@ -1299,6 +1317,9 @@ test('SSO hash mix: literal-prehashed probe finds a same-content key from every 
   }
 })
 test('SSO hash mix: literal-prehashed probe finds a same-content key from JSON.parse', () => {
+  // __jp_str's simple (no-escape) fast path and its escape-decode path both normalize
+  // ≤6-ASCII results to SSO (module/json.js __sso_norm calls) — both must be found by a
+  // literal-keyed dot-read, which folds strHashLiteral at compile time.
   for (const k of ['a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef']) {
     is(jz(`export let f = (s) => { let o = JSON.parse(s); return o.${k} }`).exports.f(`{"${k}":1}`), 1,
       `JSON.parse simple len=${k.length} → literal dot-read`)
@@ -1324,6 +1345,7 @@ test('SSO hash mix: clamp (h<=1 -> h+=2) holds for both JS and WAT by constructi
 
 // String.prototype.normalize — identity (all normalization forms are identity on
 // ASCII; Unicode case tables remain unsupported — README divergences).
+// Was a compile crash: the autoload tuple lacked the fallback's array dep.
 test('strings: normalize is identity (typed + generic receivers)', () => {
   is(run(`export let f = () => "héllo".normalize().length`).f(), 5)
   is(run(`export let f = () => "abc".normalize("NFD") === "abc" ? 1 : 0`).f(), 1)
@@ -1613,6 +1635,9 @@ test('string slices: interning uses UTF-16 offsets in copies and views', () => {
 })
 
 test('charCodeAt on a dissolved concat buffer reads UTF-16 units', () => {
+  // `const line = a + b + c` used only through `.length`/`.charCodeAt` dissolves
+  // into raw (buf, len) locals (emit/dispatch.js tryConcatBufferDecl); the reader
+  // indexes 16-bit units, never bytes (the strbuild checksum regression).
   const NAMES = ['alpha', 'bravo']
   for (const e of ['0 + "," + NAMES[0] + "," + ((-5 + 0) | 0) + "\\n"', '"," + NAMES[0] + ","', '"é" + NAMES[1] + "😀"']) {
     const src = `const NAMES = ${JSON.stringify(NAMES)}

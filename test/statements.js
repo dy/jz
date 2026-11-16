@@ -150,6 +150,9 @@ test('bigint: typeof guard works through internal function parameter', () => {
 })
 
 test('bigint: compares full unsigned 64-bit bounds', () => {
+  // The 0x…n operands are >= 2^52 — audit P0-2 fixed this row: bigint LITERALS are the
+  // tagged `['bigint', decimalStr]` node (parse.js), so bigintUnsignedBound (emit.js) reads
+  // the magnitude straight off the decimal STRING, unconditionally, on every leg.
   is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), false)
   is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), true)
   is(jz('export let f = () => -1n < 0n').exports.f(), true)
@@ -628,8 +631,11 @@ test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
 
 // A non-canonical NaN (f64.div(0,0) is 0xFFF8… on x86, 0x7FF8… on arm) must never reach the
 // bitwise __is_truthy helper, which bit-matches the canonical number-NaN and so mis-reads
-// x86's sign-set NaN as TRUTHY. Whitespace-insensitive and matches both
-// `call`/`return_call`. (Green on arm, red on x86 CI.)
+// x86's sign-set NaN as TRUTHY. The bug is invisible on arm (its arithmetic NaN is already
+// canonical) — so this asserts the codegen INVARIANT, not just a runtime value: if the
+// merged result `$<v>` is bit-tested via __is_truthy, its numeric arm must have been
+// NaN-canon'd (`select (f64.const nan) … (f64.ne x x)`). Whitespace-insensitive and matches
+// both `call`/`return_call`. (Green on arm, red on x86 CI.)
 const rawNaNToTruthy = (code, v) => {
   const wat = compile(code, { wat: true, optimize: 0 })
   const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
@@ -655,6 +661,7 @@ test('nullish-coalescing numeric fallback NaN is falsy', () => {
   const code = 'export let f = (p0, p1) => { let v = p0 ?? (p1 / p0); return v ? 1 : 0 }'
   is(run(code, { optimize: 0 }).f(undefined, 6995.66), 0)   // p0 nullish → v = p1/NaN = NaN → falsy
   ok(!rawNaNToTruthy(code, 'v'), 'un-canon NaN must not reach __is_truthy')
+  // `num ?? num` is now value-typed NUMBER (kind.js VT['??']) → read NaN-safe, no canon.
   is(run('export let f = (p0, p1) => { let v = (p0/p1) ?? (p1/p0); return v ? 1 : 0 }', { optimize: 0 }).f(0, 0), 0)
 })
 
@@ -667,7 +674,8 @@ const condBitTestsRawDiv = (code) =>
 test('&& / || with an arithmetic operand: no raw NaN reaches __is_truthy', () => {
   // `(a/b) && s` tests a/b's truthiness in the CONDITION and may return a/b as the result; a
   // non-numeric arm (string `s`) makes the merge value-untyped → its truthiness routes through
-  // __is_truthy.
+  // __is_truthy. Codegen assertion — the bug is arm-invisible (arm's arithmetic NaN is already
+  // canonical).
   for (const code of [
     'export let f = (p, q, s) => { s = s + ""; let v = (p / q) && s; return v ? 1 : 0 }',
     'export let f = (p, q, s) => { s = s + ""; let v = s && (p / q); return v ? 1 : 0 }',
@@ -795,6 +803,9 @@ test('typeof: number check', () => {
 test('typeof: NaN is still "number" (not a NaN-box pointer)', () => {
   is(jz('export let f = (x) => typeof x === "number"').exports.f(NaN), true)
   is(jz('export let f = (x) => typeof x !== "number"').exports.f(NaN), false)
+  // Sibling compare paths (general !==/===/==/!= dispatch, not the typeof fast
+  // path) were already correct — pinned alongside so a future regression in
+  // either direction is caught.
   is(jz('export let f = (x) => x !== x').exports.f(NaN), true)
   is(jz('export let f = (x) => x === x').exports.f(NaN), false)
   is(jz('export let f = (x) => x == x').exports.f(NaN), false)
@@ -829,7 +840,8 @@ test('for...in: count keys', () => {
 
 test('for...in: enumerates dynamically-added keys, consistent with Object.keys', () => {
   // for-in iterates `Object.keys(src)`, so a key added via computed assignment (`o[k]=v`) shows up
-  // in the loop, and both enumerations agree.
+  // in the loop, and both enumerations agree. (Regression: for-in used to unroll from the static
+  // schema only and miss it.)
   is(run("export let f = () => { let o = {x: 1}; let k = 'z'; o[k] = 2; let c = 0; for (let p in o) c++; return c }").f(), 2)
   is(run("export let f = () => { let o = {a: 1}; let k = 'b'; o[k] = 2; return Object.keys(o).length }").f(), 2)
   is(run("export let f = () => { let a = [10, 20, 30]; let n = 0; for (let i in a) n++; return n }").f(), 3)
@@ -843,6 +855,7 @@ test('for...in: null/undefined source is a no-op (no throw)', () => {
   is(run('export let f = () => { let n = 0; for (var x in null) n++; return n }').f(), 0)
   // a dynamically-null variable (not a static literal) is guarded at runtime too
   is(run('export let f = () => { let o = null; let n = 0; for (let k in o) n++; return n }').f(), 0)
+  // non-nullish sources still enumerate normally (no regression)
   is(run('export let f = () => { let o = {a: 1, b: 2}; let n = 0; for (let k in o) n++; return n }').f(), 2)
 })
 
@@ -1271,6 +1284,10 @@ test('statements: **= compound assignment', () => {
   is(run(`export let f = (x) => { x **= 0.5; return x }`).f(16), 4)
 })
 
+// BigInt mixed-type semantics (2026-07-10): arithmetic with a proven non-BigInt
+// side is a compile error (JS TypeError) — was raw f64-bit reinterpretation;
+// comparisons coerce mathematically via f64 (5n > 3, 0n < 0.5); unary + on a
+// BigInt rejects (the one coercion BigInt refuses); ** on BigInt rejects.
 test('statements: BigInt mixed ops', () => {
   is(run(`export let f = () => 5n > 3 ? 1 : 0`).f(), 1)
   is(run(`export let f = () => 0n < 0.5 ? 1 : 0`).f(), 1)
@@ -1296,8 +1313,13 @@ test('statements: compound-assign on BigInt uses i64 arithmetic, not f64', () =>
   is(run(`export let f = () => { let n = 9223372036854775800n; n %= 7n; return n }`).f(), 9223372036854775800n % 7n)
   is(run(`export let f = () => { let n = -17n; n /= 5n; return n }`).f(), -17n / 5n)          // truncates toward 0
   is(run(`export let f = () => { let n = -17n; n %= 5n; return n }`).f(), -17n % 5n)          // sign follows dividend
-  // Mix-reject: a genuinely mixed BigInt/Number compound-assign is a TypeError in JS,
-  // same as the spelled-out binary form (`statements: BigInt mixed ops` above).
+  // Complex-LHS compound-assign (obj.prop, arr[i]) is untouched by this fix — it
+  // already desugars to `name = name + val` at the '+='/etc dispatch, BEFORE ever
+  // reaching compoundAssign, so it hits the binary op's own BIGINT arm directly
+  // (that pre-existing desugar path is separately flaky under object-schema-census
+  // reuse across compiles — a distinct, out-of-scope finding — so it's not pinned here).
+  // Mix-reject: a genuinely mixed BigInt/Number compound-assign is a TypeError in
+  // JS, same as the spelled-out binary form (`statements: BigInt mixed ops` above).
   throws(() => run(`export let f = () => { let n = 8n; n += 1; return n }`), /Cannot mix BigInt/)
   throws(() => run(`export let f = () => { let n = 8n; n -= 1; return n }`), /Cannot mix BigInt/)
 })
@@ -1317,6 +1339,12 @@ test('statements: ++/-- on a BigInt uses i64 arithmetic, not f64', () => {
   // takes this path).
 })
 
+// A sibling gap surfaced by the SAME fix, in a DIFFERENT phase: exprType's
+// (src/type.js) bitwise-ops i32-narrowing gate used the identical locals-blind
+// valTypeOf(expr) BigInt check — left uncorrected, a proven-BIGINT local's
+// `~`/`&`/etc. return tail narrowed the function's WASM result to i32 while
+// narrowValResults (this fix) correctly claimed BIGINT for the same tail, a
+// WAT-validation crash (the two phases' facts about one expression must agree).
 test('statements: return-kind inference: unary BigInt family (u- ~ ++ --) proves through a local', () => {
   is(run(`export let f = () => { let n = 4611686018427387903n; return ++n }`).f(), 4611686018427387903n + 1n)
   is(run(`export let f = () => { let n = -4611686018427387903n; return --n }`).f(), -4611686018427387903n - 1n)
@@ -1359,12 +1387,17 @@ test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i
   is(run(`export let f = () => { let a = [${HI}n]; return a[0]++ + 0n }`).f(), HI)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] += 1n; return a[0] + 0n }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] + 0n }`).f(), HI + 1n)
+  // arr[i] — bare (unembedded) return of the boundary-kind pre-pass, no `+ 0n`
+  // arithmetic-path sidestep: re-audit #6 finding 2's own fix, direct pins.
   is(run(`export let f = () => { let a = [${HI}n]; a[0]++; return a[0] }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; ++a[0]; return a[0] }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0]--; return a[0] }`).f(), HI - 1n)
   is(run(`export let f = () => { let a = [${HI}n]; return a[0]++ }`).f(), HI)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] += 1n; return a[0] }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] }`).f(), HI + 1n)
+  // No writes at all — the ORIGINAL repro (re-audit #6 finding 2): a bare
+  // `let a = [1n]; return a[0]` misdecoded as an unrelated Number (the i64
+  // bit pattern reinterpreted as f64) with zero mutation involved.
   is(run(`export let f = () => { let a = [${HI}n]; return a[0] }`).f(), HI)
   // Genuine BigInt/Number mix through a member still TypeErrors (not masked by
   // the synthesized-1 exemption, which only matches prepare's own ±1 shape).
@@ -1373,8 +1406,10 @@ test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i
   throws(() => run(`export let f = () => { let o = {n: 8n}; o.n += 1; return o.n }`), /Cannot mix BigInt/)
 })
 
-// Exact values (not almost()), mirroring the pre-existing plain-number
-// member-mutation coverage in test/objects.js and test/minimal-output.js.
+// Ratchet: the fix above must change NOTHING for plain-NUMBER member ++/--/
+// compound-assign — bigint-gated paths only. Exact values (not almost()),
+// mirroring the pre-existing plain-number member-mutation coverage in
+// test/objects.js and test/minimal-output.js.
 test('statements: member Number ++/--/compound-assign unaffected by the BigInt member fix', () => {
   is(run(`export let f = () => { let o = {n: 5}; o.n++; return o.n }`).f(), 6)
   is(run(`export let f = () => { let o = {n: 5}; ++o.n; return o.n }`).f(), 6)
@@ -1403,6 +1438,14 @@ test('statements: BigInt has no >>> (unsigned right shift) — TypeError', () =>
 
 // Repeated-compile stability: the ledger flagged the obj-member BigInt shape
 // as "FLAKY across repeated compiles" (attributed to schema-census reuse).
+// Not reproduced under direct investigation (compiling the same and varying
+// object shapes 20-200x in one process gave identical results every time —
+// ctx.js's reset() rebuilds ctx.schema fresh per beginSession call, and
+// resetFactStore() rebuilds the program-facts store fresh too); pinned here
+// as a standing regression guard for exactly the shape the ledger named,
+// across enough repeated compiles in one process to catch any reintroduced
+// cross-compile state bleed (a fresh jz() call per iteration, deliberately —
+// same process, independent compiles).
 test('statements: member BigInt ++ is stable across repeated compiles (no schema-census bleed)', () => {
   const HI = 4611686018427387903n
   const src = `export let f = () => { let o = {n: ${HI}n}; o.n++; return o.n }`

@@ -22,6 +22,7 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
 
+// (levels 1 and 3 and size agree too, 2026-11-15: twice the time for no program more)
 const CONFIGS = [0, 2, 'speed']
 const KINDS = {
   obj: `{ x: 1 }`, obj2: `{ y: 2, x: 3 }`, arr: `[1, 2]`, num: `7`, str: `'s'`, nul: `null`,

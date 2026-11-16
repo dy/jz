@@ -83,6 +83,13 @@ export let go = () => {
   is(exports.go(), 1008)
 })
 
+// module-memo OBJECT-FIELD route (bench/provenance's edge 4, distinct from the
+// KNOWN-OPEN bare-typed-array "memo" edge above): `getMemo`'s return is
+// classified VAL.OBJECT (never nullish by construction — every path either
+// returns the already-populated global or freshly makes one), so
+// module/core.js's emitPropAccess devirtualizes the `.wre`/`.wim` field reads
+// through guardedSlotOf's runtime tag-checked fast path (same mechanism the
+// `field`/`fieldInline` edges above already use, previously skipped for a
 test('provenance: module-memo object-field route is value-correct', () => {
   const src = `const mk = (n) => { const wre = new Float64Array(n), wim = new Float64Array(n); for (let i = 0; i < n; i++) { wre[i] = i * 0.5; wim[i] = i * 0.25 }; return { wre, wim } }
 let lastN = 0, lastPlan = null

@@ -177,7 +177,9 @@ test('mem.Object: ambiguous schemas throws', async () => {
 
 test('mem.Object: unknown schema marshals as first-class hash', async () => {
   // Schema-less plain objects become real jz HASHes: wasm-side dyn reads, NEW-prop
-  // writes, and nested-container mutation all keep identity.
+  // writes, and nested-container mutation all keep identity. (The old External
+  // fallback decode/re-marshaled per access, so `params.P[i][i] = v` landed on a
+  // marshaling copy and vanished — the digital-filter rls.js covariance repro.)
   const r = jz(`export default function f (params) {
     let N = params.order
     params.P = new Array(N)
@@ -194,6 +196,15 @@ test('mem.Object: unknown schema marshals as first-class hash', async () => {
   const h = r.memory.Object({ z: 1, w: 2 })
   is(r.memory.read(h), { z: 1, w: 2 }, 'round-trips through mem.read')
 })
+
+// mem.Object's inline marshal loop, and mem.write's array/object in-place
+// update branches, used to hand-roll their own null/string/array dispatch
+// and fall through to bare `bits(v)` for everything else — a plain
+// (non-isBox) BigInt value silently stored raw, unmarked i64 bits instead
+// of going through mem.wrapVal's typed post-C4b throw (interop.js, the
+// `isBox(v)` check). mem.Array/mem.Hash already routed every element/value
+// through mem.wrapVal; mem.Object/mem.write now do too — one dispatch,
+// same C4b doctrine everywhere a host value crosses into jz memory.
 
 test('mem.Object: plain BigInt property value throws (post-C4b doctrine, mirrors mem.wrapVal)', async () => {
   const r = await run(`
@@ -532,7 +543,9 @@ test('shared memory: duplicate schemas not re-added', () => {
 
 test('one-off: inst.memory works without shared memory', () => {
   if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-compile
-  // { memory: 1 } requests owned (non-shared) memory.
+  // { memory: 1 } requests owned (non-shared) memory. A ≤8-element array return now
+  // comes back as a multi-value tuple with no heap at all, so without the explicit
+  // request this module would be memoryless — and there'd be no `inst.memory` to test.
   const inst = jz('export let f = () => [1, 2, 3]', { memory: 1 })
   ok(inst.memory instanceof WebAssembly.Memory, 'memory is WebAssembly.Memory')
   const arr = inst.memory.read(inst.instance.exports.f())
@@ -672,10 +685,13 @@ test('_clear() rewinds to the post-init heap mark, preserving module-init state'
 })
 
 test('_clear() restores runtime-written module globals to their post-init snapshot', () => {
-  // The contract that kills the whole class: _clear restores every runtime-written
-  // module global to its post-__start value — warm behaves as fresh, minus the init
-  // cost. `churn` reuses the freed arena between rounds so a dangling read is REAL
-  // garbage, not accidentally-intact bytes.
+  // The warm-reuse landmine class: a module-level lazy cache holds an ARENA pointer;
+  // `__jz_clear` rewinds the arena; the next round's `if (!CACHE)` sees a stale truthy
+  // handle and dereferences whatever now lives at that offset (watr's in-kernel NCLS
+  // dict, json's __jbuf — every one was this shape). The contract that kills the whole
+  // class: _clear restores every runtime-written module global to its post-__start
+  // value — warm behaves as fresh, minus the init cost. `churn` reuses the freed arena
+  // between rounds so a dangling read is REAL garbage, not accidentally-intact bytes.
   const { exports, memory } = jz(`
     let CACHE = null
     let hits = 0
@@ -694,7 +710,10 @@ test('_clear() restores runtime-written module globals to their post-init snapsh
 test('_clear() heals ephemeral values written into DURABLE collection slots', () => {
   // The durable-interior sibling of the global sweep above: the dict itself is
   // init-created (const binding — the sweep rightly skips it), but a round-1 memo
-  // write stores a round-arena array INTO its durable slot.
+  // write stores a round-arena array INTO its durable slot. Without the slot heal
+  // (__durable_slot_log/__durable_slot_heal), round 2's cache hit returns the
+  // stale handle and reads churned garbage — the corpus-wide warm trap (a durable
+  // literal-text→node dict handing round-1 arrays into round-2's tree).
   const { exports, memory } = jz(`
     const CACHE = new Map()
     let builds = 0
@@ -843,6 +862,7 @@ test('durable logs grow past their first buffers before _clear', () => {
 })
 
 test('_clear() heals a durable array header past IN-PLACE growth, not just relocation', () => {
+  // `site.length` read 154 instead of 150 after one push-grow-clear-regrow round.
   // `let site = []` gets a __start capacity of 4 — the first 4 pushes of a round
   // fit IN PLACE (len bumped 0→1→2→3→4 directly on the durable header, no
   // relocation, so arrGrow's own durableFwdLogIR — gated on off/newOff crossing
@@ -943,6 +963,17 @@ test('_clear() does not corrupt a durable array whose header is mutated by MODUL
   is(exports.dump(), '1,2,3,4,5', 'repeated bare _clear() — not a one-shot coincidence')
 })
 
+// splice-heal-2026-08-13: the length fix above heals the HEADER (len/cap) but a
+// durable array has no per-ELEMENT heal at all — in-place mutations of EXISTING
+// cells (arr[i]= on an in-bounds index, splice/copyWithin/unshift's memory.copy
+// shifts, reverse/sort's swaps, fill's overwrite, and a `.length=` grow-in-place
+// refill re-entering indices a same-round shrink narrowed past) leak round 1's
+// bytes into round 2 even though the LENGTH reads back correct (`a.splice(1,2)` on
+// `[1,2,3,4,5]` gave `3` both rounds, length healed, but the SURVIVING elements
+// differed round to round). Each case below: mutate a durable array, `_clear()`,
+// re-run the exact same operation — a correct heal means round 2 gives the SAME
+// answer as round 1 (starting from the same restored [1,2,3,4,5] baseline both
+// times), not round 1's leftover data feeding into round 2's computation.
 test('_clear() heals a durable array\'s ELEMENT DATA, not just its header, across every in-place mutator', () => {
   const { exports, memory } = jz(`
     let a1 = [1,2,3,4,5]
@@ -1036,17 +1067,21 @@ test('_clear() does NOT heal .shift()\'s header rebasing (documented intentional
 
 // Relocation-forwarding bound check (layout.js followForwardingWat/ptrOffsetFwdWat):
 // every ARRAY/SET/MAP/HASH pointer dereference validates its offset against
-// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. A large-offset
-// RUNTIME repro needs an actual ~4 GiB memory (exercised by the warm-kernel stress
-// above, which drives a real build to that ceiling); this is the fast, host-level
-// structural pin: the fix computes the same bound in i64 against a cached
-// $__heap_end64 global (module/core.js, kept in sync by __memgrow) instead of
-// recomputing the overflowing i32 shift at every dereference. Both counts are exact,
-// not just "present" — 1 legitimate i32.shl(memory.size,16) survives (module/core.js's
-// own $__heap_end assignment, whose wraparound is benign: __alloc's consumer just
-// slow-paths one extra call, __memgrow re-derives everything fresh in i64 — see that
-// file's comment); a regression back to the inline i32 bound at any forwarding site
-// would push this count above 1.
+// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. That bound
+// used to be computed as `i32.shl(memory.size, 16)` — sound for every page count
+// EXCEPT the wasm32 ceiling itself (memory.size()==65536 pages / 4 GiB), where
+// 65536*65536 == 2^32 overflows i32 to exactly 0, making the bound "offset <= 0" —
+// unsatisfiable for any real offset, so the forward-chase silently stops running for
+// the rest of execution. A large-offset RUNTIME repro needs an actual ~4 GiB memory
+// (exercised by the warm-kernel stress above, which drives a real build to that
+// ceiling); this is the fast, host-level structural pin: the fix computes the same
+// bound in i64 against a cached $__heap_end64 global (module/core.js, kept in sync by
+// __memgrow) instead of recomputing the overflowing i32 shift at every dereference.
+// Both counts are exact, not just "present" — 1 legitimate i32.shl(memory.size,16)
+// survives (module/core.js's own $__heap_end assignment, whose wraparound is benign:
+// __alloc's consumer just slow-paths one extra call, __memgrow re-derives everything
+// fresh in i64 — see that file's comment); a regression back to the inline i32 bound
+// at any forwarding site would push this count above 1.
 test('followForwardingWat/ptrOffsetFwdWat bound check is i64 (not i32.shl(memory.size,16), which overflows to 0 at the wasm32 4GiB ceiling)', () => {
   const wat = compile(
     `export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); const m = new Map(); m.set(1, 2); return xs.length + m.size }`,
@@ -1304,7 +1339,11 @@ test('host memory: boolean tags survive structured construction and writes', () 
 // A render loop allocates a block per iteration and lets nothing escape: the
 // per-iteration arena rewind (compile/analyze/frame-effects.js,
 // optimize/loop-rewind.js) restores the heap pointer at the top of every
-// iteration, so the memory holds flat over any number of blocks.
+// iteration, so the memory holds flat over any number of blocks. Two things
+// once defeated it: a store into a typed-array parameter the export boundary
+// types read as a store that could grow it (fixed storage cannot grow), and the
+// loop was found by a node the peephole walk had copied away (its label
+// survives).
 const rewoundLoops = wat => [...wat.matchAll(/\(loop (\$[^\s()]+)\n\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)\)/g)].map(m => m[1])
 const loopRestores = wat => rewoundLoops(wat).length
 // A literal-length block a function keeps to itself is static storage

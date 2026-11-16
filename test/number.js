@@ -167,12 +167,12 @@ test('Number: toString', () => {
     ['large int', '() => { let n = 9999999999; return n.toString().length }', 10],
     ['1e15', '() => { let n = 1000000000000000; return n.toString().length }', 16],
     // __ftoa was stripping trailing zeros from the integer part when prec=0 (auto-fit
-    // reduces prec because scaled value won't fit i32).
+    // reduces prec because scaled value won't fit i32). Repro: 1079623680 → "107962368".
     ['preserves trailing zero in integer', '() => { let n = 1079623680; return n.toString().length }', 10],
     ['preserves multiple trailing zeros in integer', '() => { let n = 1234567000; return n.toString().length }', 10],
     // The original bench bug surfaced via template-literal interpolation of an
-    // i32-spec'd value. Compute a value with trailing zero so it can't fold, then
-    // stringify.
+    // i32-spec'd value. Compute a value with trailing zero so it can't fold,
+    // then stringify. Without the fix, "1079623680" became "107962368" (length 9).
     ['preserves trailing zero through computed value', '() => { let n = 539811840 + 539811840; return n.toString().length }', 10],
   ])
 })
@@ -414,7 +414,8 @@ test('NaN const fold: sqrt(-1) through reductions stays canonical', () => {
 
 // Eisel-Lemire mul64 carry fix (1-ULP misparse)
 // The __dec_to_f64 WASM implementation used a 3-way 64-bit addition to compute
-// the 128-bit product's middle limb (mid = t01 + t10 + (t00>>32)).
+// the 128-bit product's middle limb (mid = t01 + t10 + (t00>>32)). This produced
+// a result 1 ULP low for values like 2505210838544172e-23.
 
 test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', () => {
   // 2505210838544172e-23: triggers the mul64 carry overflow in __dec_to_f64.
@@ -427,9 +428,10 @@ test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', (
   is(run(`export let f = () => +"1.23456789012345678e-40"`).f(), 1.23456789012345678e-40)
   is(run(`export let f = () => +"6.022140857e23"`).f(), 6.022140857e23)
   // f64-EXTREME exponents (|10^e| > 10^65 — denormals / near-MAX) intentionally fall
-  // back to POW10_SCALE (the EL table is trimmed for size, see module/number.js). No
-  // real-world literal reaches them; Number.MIN_VALUE / Number.MAX_VALUE are still
-  // exact (emitted as f64.const, not parsed).
+  // back to POW10_SCALE (the EL table is trimmed for size, see module/number.js).
+  // No real-world literal reaches them; Number.MIN_VALUE / Number.MAX_VALUE are still
+  // exact (emitted as f64.const, not parsed). The mul64 carry fix is exercised by the
+  // 2505210838544172e-23 case above (exp10 -23, inside the table).
 })
 
 // parseInt/parseFloat spec edges (test262 builtins gate, 2026-07-10)

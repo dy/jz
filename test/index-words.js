@@ -81,7 +81,10 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
 
 // x64's `roundsd` keeps the upper half of its destination, so it waits on whatever last
 // wrote that register, and V8 picks it with no regard to that: in a resampler's loop,
-// the sample the iteration before stored.
+// the sample the iteration before stored. The phase outlives its word (its fraction
+// reads it), so the add rounded it into another register and each index waited a whole
+// sample's evaluation; resample ran 2.4× slower on every x64 model measured, none of it
+// on arm64.
 test('index words: ToInt32 rounds a number it does not consume through a value that dies there', () => {
   const src = `export let run = (x, n) => {
       let s = 0, p = x

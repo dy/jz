@@ -226,8 +226,9 @@ test('subview — parent writes visible through view', () => {
 })
 
 test('subview — parent bytes outside window untouched', () => {
-  // Descriptor-backed views no longer write into parent memory, so surrounding bytes
-  // must stay intact.
+  // Regression: previously, new Uint8Array(buf, off, len) placed a header at
+  // (off - 8), clobbering parent buffer bytes. Descriptor-backed views no longer write
+  // into parent memory, so surrounding bytes must stay intact.
   const { exports } = jz(`
     export let main = () => {
       let buf = new ArrayBuffer(16)
@@ -340,6 +341,8 @@ test('reinterpret — Uint8Array from fresh ArrayBuffer', () => {
 })
 
 test('reinterpret — Uint32Array length = byteLength / 4', () => {
+  // Regression: previously, new Uint32Array(buf) used buf.length directly,
+  // yielding wrong length for multi-byte stride.
   const { exports } = jz(`
     export let main = () => {
       let buf = new ArrayBuffer(16)
@@ -854,7 +857,9 @@ test('subview — view-of-view via .buffer reconstructs root', () => {
 
 // A typed-array binding reassigned from an owned array to a VIEW (different
 // view-ness for the same elem type) is poisoned by the narrower (can't pick one
-// static view-ness for element access).
+// static view-ness for element access). The `.subarray`/`.slice` emitters must
+// then dispatch off the runtime aux byte instead of crashing on empty IR
+// (regression: "compiler internal: expected emitted IR value … got empty value").
 
 test('subarray — owned→view self-reassign compiles + indexes correctly', () => {
   const { exports } = jz(`
@@ -976,7 +981,9 @@ test('typed construction wraps out-of-range values like ES ToIntN', () => {
   // Three construction paths store integer elements: the array-literal fill
   // (was: asI32 saturation — 4e9 clamped to INT32_MAX), the .from copy loop and
   // the cross-kind TypedArray(typedArray) copy (both were trapping
-  // i32.trunc_f64_*). References: ES ToInt32/ToUint32 (`x | 0`, `x >>> 0`).
+  // i32.trunc_f64_*). All now use the same semantics as __typed_set_idx's
+  // runtime store: JS `| 0` at compile for constants, the i64 sat+wrap route at
+  // runtime. References: ES ToInt32/ToUint32 (`x | 0`, `x >>> 0`).
   const { exports: e } = jz(`
     export let lit = () => new Int32Array([4000000000])[0]
     export let lit8 = () => new Int8Array([4000000000])[0]

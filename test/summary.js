@@ -883,7 +883,12 @@ test('summary codegen: a method called through an array of instances, an exporte
   is(api.run(4), 2 * 0.5 * 1.5 * 2.5)
   // Nullish receiver checks retain the private error signal: 3060 → 3132 B. A
   // control build omitting only those checks restores 3060; keep the same slack.
-  // Preserve the existing 40 B slack; benchmark size caps are independent.
+  // The `jz:brand` custom section names the class for interop: 3184 → 3235 B. The
+  // unknown constructor argument's array arm converts each element (a nullish or
+  // boolean atom to its number, any other box NaN): 3235 → 3332 B. Escape tracking
+  // adds 210 B against 6f069d30 (3328 → 3538 B), and frees the complete call frame:
+  // 100 calls retained 33600 B before, zero now. Preserve the existing 40 B slack;
+  // benchmark size caps are independent.
   if (OPT_LEVEL === 2) {
     const mark = memory.used
     for (let i = 0; i < 100; i++) is(api.run(4), 3.75)

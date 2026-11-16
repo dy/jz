@@ -85,7 +85,8 @@ test('slp: bails on an INLINE subarray view (no binding)', () => {
 test('slp: does NOT splat distinct allocations (array-literal scatter)', () => {
   // `[new Float32Array(3), new Float32Array(3)]` builds an outer f64 array of two
   // adjacent pointer stores. They look identical but are DISTINCT allocations — SLP
-  // must not splat them (which would alias ch[0] and ch[1]).
+  // must not splat them (which would alias ch[0] and ch[1]). Regression: this aliased
+  // and returned 2220 instead of 1220.
   const { exports } = jz(`export let f = () => {
     let ch = [new Float32Array(3), new Float32Array(3)]
     for (let i = 0; i < 3; i++) for (let c = 0; c < 2; c++) ch[c][i] = (c + 1) * 10 + i
@@ -129,6 +130,7 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
   const unforwarded = compile(src, { wat: true, optimize: { ...speed, forwardStores: false } })
   is((unforwarded.match(/v128\.store/g) || []).length, 0, 'forward-shift RAW → SLP bails (no v128 store)')
   bitExact('forward shift', src)
+  // ground-truth: a regressed guard would re-pack and diverge from plain JS
   const js = (() => { let o = new Float64Array(99); for (let i=0;i<99;i++) o[i]=i+1; for (let k=0;k<96;k+=3){o[k+1]=o[k];o[k+2]=o[k+1]} let s=0; for (let i=0;i<99;i++) s+=o[i]; return s })()
   if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), js, 'jz speed == JS ground truth')  // WASI doesn't surface the return value
 })

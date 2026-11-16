@@ -24,6 +24,8 @@ test('Read property from external object', () => {
 
 test('Read property from external object via literal bracket key', () => {
   if (onWasi()) return  // wasi: external object
+  // Regression: `obj['nodeType']` IS `obj.nodeType` — both must reach the
+  // host-external read path.
   const { getDot, getBracket } = run(`
     export const getDot = (obj) => obj.nodeType
     export const getBracket = (obj) => obj['nodeType']
@@ -201,6 +203,10 @@ test('Return external object from JZ', () => {
   is(div.nodeName, 'DIV')
 })
 
+// `mem.read` (interop.js) already recursively decodes an ARRAY pointer back into a
+// real JS array, so the round-trip is correct including one level of
+// array-of-arrays nesting (see test/objects.js's two sibling fixes, same root
+// cause).
 test('staged external field writes retain their owner, result and evaluation order', () => {
   if (onWasi()) return
   const src = `export function f(o, mode, index) {

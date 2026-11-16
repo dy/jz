@@ -28,6 +28,7 @@ export const loopBodyOps = (tree, entered) => {
 }
 
 // Identify the loops selected by real entry guards, after all codegen passes.
+// Instrument only a temporary assembly: counters never enter the measured tree.
 export const runEntered = (tree, calls) => {
   const loops = [], start = new Map(), runs = []
   let cur = start
@@ -78,10 +79,13 @@ export const enteredLoopOps = (tree, calls) => {
 // and also cap the existing overall proxy at 1349. Inputs cover no work, positive integer
 // and fractional bounds; fallback presence cannot dilute the fast-path bar.
 const INT_CALLS = [[0, 3, 5, 7], [4, 3, 5, 7], [3.5, -1, 0, 7]]
-// With those calls the entered loops count what the whole corpus did before:
-// float 784, mixed 1137 against 1148, cond 581; the retained fallbacks are the
-// rest of the total, which keeps its own cap. A category that takes arrays is
-// counted whole, as before.
+// The float, mixed and cond programs take the same (n, p0, p1, p2) and got the
+// same guarded copy for their Number counters (2026-10-01, `prove counter
+// widths and preserve full Number loop bounds`; the wide accumulator's clones
+// are evaluated per carrier since the same day). With those calls the entered
+// loops count what the whole corpus did before: float 784, mixed 1137 against
+// 1148, cond 581; the retained fallbacks are the rest of the total, which keeps
+// its own cap. A category that takes arrays is counted whole, as before.
 export const NUMERIC_CALLS = { int: INT_CALLS, float: INT_CALLS, mixed: INT_CALLS, cond: INT_CALLS }
 // The array programs take the same guarded copies, and their totals count the
 // runtime's loops too (the reach walk, the reset's heal loops, the string

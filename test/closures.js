@@ -464,6 +464,7 @@ test('closure: integer const capture folds into closure body', () => {
     }
   `
   is(runHost(src).f(511), 255)
+  // `let g = …` inlines like a const now; the closure form is what this reads.
   const body = wat(src, { optimize: { sourceInline: false } }).match(/\(func \$[^\s)]*closure[\s\S]*?^  \)/m)?.[0]
   ok(body, 'closure body present')
   ok(!/\$__env|f64\.load|local\.get \$MASK/.test(body), 'const capture should not allocate/load an env slot')
@@ -619,7 +620,9 @@ test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed Bi
 test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel-oracle.js "captured BOOL∪NUMBER merge" AGREE row)', () => {
   // `let v = x > 0 && 1` (kind.js hasAmbiguousBoolMerge): the && collapses to
   // NUMBER (v's own valTypeOf) but its runtime value is drawn from {coerced
-  // false, real number 1} — never a genuine 0.
+  // false, real number 1} — never a genuine 0. `v` is a tagged binding now
+  // (kind.js boolTagged: the closure's read observes it): its own storage
+  // holds the atom, and the capture copies it.
   const src = `
     export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
     export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }
@@ -670,7 +673,9 @@ test('arity err: closure call with 9 args', () => {
 
 test('arity err: top-level func with 9 params used as value', () => {
   // `big` stored into an array — a genuine non-devirtualizable escape, so the
-  // closure ABI is unavoidable and the arity ceiling must fire.
+  // closure ABI is unavoidable and the arity ceiling must fire. (Passing it
+  // straight to a forwarder no longer suffices: inlineHotInternalCalls inlines
+  // the forwarder and the call devirtualizes to a direct `call $big`.)
   throws(
     `let big = (a,b,c,d,e,f,g,h,i) => a
     export let f = () => { let arr = [big]; return arr[0](1,2,3,4,5,6,7,8) }`,
@@ -1293,9 +1298,13 @@ test('func-namespace SROA: cross-module single-write only-called slot direct-cal
   // subscript's asi.js writes `parse.enter`/`parse.exit` onto parse.js's
   // EXPORTED `parse` — the lift's name must carry parse.js's module prefix
   // (the base function's OWNING module), not asi.js's (the module that
-  // TEXTUALLY contains the write). Two-module shape: m1 exports `lex` and
-  // calls its own `.next` slot; m2 (a DIFFERENT module) supplies the single
-  // write.
+  // TEXTUALLY contains the write). The dead-write matcher used to reconstruct
+  // the expected name from the local module's own mangling, so a
+  // cross-module lift never matched and both the write and every
+  // `parse.enter()`/`parse.exit()` call stayed on the dyn-prop path forever —
+  // exactly the hot tokenizer probes this pin catches. Two-module shape: m1
+  // exports `lex` and calls its own `.next` slot; m2 (a DIFFERENT module)
+  // supplies the single write.
   const code = `import { lex } from './m1.js'
 import './m2.js'
 export let f = () => lex('x')`
@@ -1568,6 +1577,11 @@ test('once-run factory: a program\'s module takes the lift the entry takes', () 
   if (!onKernel() && !belowOpt(2)) ok(!/call_indirect/.test(wat(src, { modules: { './quat.js': quat } })), 'the module binding is a function: no closure call')
 })
 
+// In V8, `{}` inherits Object.prototype, so `'valueOf' in CONSTANTS` was true and
+// `CONSTANTS['valueOf']` returned the inherited method — `let valueOf = 5` resolved to a boxed
+// function (emitted 0) and `valueOf = …` errored "Assignment to non-variable". jz.js-ONLY: the
+// self-compile kernel's jz objects are prototype-less, so the kernel compiled these correctly
+// all along (the bug only bit the compiler running in V8).
 test('identifiers named like Object methods resolve as plain variables (proto-less dicts)', () => {
   for (const n of ['valueOf', 'toString', 'hasOwnProperty', 'constructor', 'isPrototypeOf', 'propertyIsEnumerable']) {
     is(run(`export let main = () => { let ${n} = 5; return ${n} }`).main(), 5, `let ${n}`)
@@ -1766,6 +1780,7 @@ export let f = (n) => {
   const { f } = run(src)
   is(f(4), 0)   // same recurrence as the const-literal pin above
 
+  // Structural half only (tier guard after the value asserts — audit #5):
   if (belowOpt(2)) return
   const w = wat(src)
   ok(/\(f64\.add\s*\(local\.get \$__a0\)\s*\(local\.get \$__a1\)\)/.test(w),
@@ -1805,6 +1820,9 @@ export let f = (n) => { writer(); pick = tbl[0]; let h = 0; for (let i = 0; i < 
   ok(wat(alias).includes('__str_concat'), 'alias (guarded-idiom shape): fail-open, no false proof')
 })
 
+// f.call/apply/bind on a proven function binding lowers statically (prepare
+// foldFnCallApplyBind, 2026-07-10): thisArg is dead for jz functions (no
+// `this`), kept only for side effects.
 test('closures: call/apply/bind static lowering', () => {
   is(run(`let g = (a, b) => a + b; export let f = () => g.call(null, 1, 2)`).f(), 3)
   is(run(`let g = (a, b) => a + b; export let f = () => g.apply(null, [3, 4])`).f(), 7)
@@ -2091,7 +2109,8 @@ test('closures: a parameter default captures a loop binding and reassigns a func
 // Every assertion below is JS ground truth (value-oracle style) — run the same
 // source under Node to reproduce the expected column.
 test('closures: module-scope for-of/for-let captures per-iteration binding', () => {
-  // The audit's exact repro: module-scope for-of push.
+  // The audit's exact repro: module-scope for-of push. Was 22 (both closures
+  // read the LAST binding via the shared global); JS truth is 12.
   is(run(`let fs = []; for (let x of [1, 2]) fs.push(() => x); export let f = () => fs[0]() * 10 + fs[1]()`).f(), 12)
   // for-let (classic for-head) sibling, module scope.
   is(run(`let fs = []; for (let i = 0; i < 3; i++) fs.push(() => i); export let f = () => fs[0]() * 100 + fs[1]() * 10 + fs[2]()`).f(), 12)
@@ -2107,7 +2126,10 @@ test('closures: module-scope for-of/for-let captures per-iteration binding', () 
   // Pay-per-capture: an UNCAPTURED module-scope loop var stays the cheaper
   // single-instance global (no per-iteration cell/local machinery paid for).
   is(run(`let sum = 0; for (let x of [1, 2, 3]) sum += x; export let f = () => sum`).f(), 6)
-  // JS truth: lookup.f(2,3) = (2+3) + 1000 = 1005.
+  // The ledgered P0-2 banked class (closure-in-loop rebinding a dispatch-table
+  // slot), module-scope variant: `orig` is captured by the replacement arrow
+  // and must resolve to the pre-overwrite value at CALL time, not a stale/
+  // shared read. JS truth: lookup.f(2,3) = (2+3) + 1000 = 1005.
   is(run(`
     let lookup = {}
     lookup.f = (a, b) => a + b
@@ -2133,7 +2155,14 @@ test('closures: a module-scope loop body binds a closure that captures its count
   }
 })
 
-// Scope-tracked: writes to same-named LOCALS don't demote.
+// Reassigned function bindings: a depth-0 `let g = (…) => …` lifts into a FIXED
+// named function (defFunc) — sound only while the binding is immutable. JS
+// allows reassigning a let/var function binding (even from inside a function);
+// lifting one froze callers onto the FIRST value — the module-level reassign
+// made later calls silently run the stale arrow (differential vs native: 20
+// expected, 15 got), and an in-function reassign errored "'h' is not in scope"
+// (the write targeted a binding that no longer existed). Scope-tracked: writes
+// to same-named LOCALS don't demote.
 test('closures: reassigned module function bindings stay live', () => {
   const r = run(`
     let g = (x) => x + 5
@@ -2154,9 +2183,14 @@ test('closures: reassigned module function bindings stay live', () => {
   is(r.kval(), 9, 'the un-reassigned module binding stays lifted and correct')
 })
 
-// `+`/`+=` then trusted the STRING classification and skipped ToString: on the
-// not-reassigned (number) path, the number's box bits were handed straight to
-// the string concat helper — empty output instead of the digits.
+// Regression: inside a NESTED closure specifically (top-level functions were
+// unaffected), a `let` local whose declaration initializer has no statically
+// provable type — here a closure param, itself unresolved at analysis time — and
+// which is CONDITIONALLY reassigned to a string literal got typed as STRING
+// outright. `+`/`+=` then trusted the STRING classification and skipped
+// ToString: on the not-reassigned (number) path, the number's box bits were
+// handed straight to the string concat helper — empty output instead of the
+// digits.
 test('closures: let + conditional-reassign union local concats correctly (both arms)', () => {
   const r = run(`
     export function outer(n) {
@@ -2246,6 +2280,10 @@ export let f = () => [o.m(5), o.m(0)]`)
 })
 
 test('closures: mutually-recursive const arrows inside a CLOSURE-compiled function (preboxed cell order)', () => {
+  // The mutual pair must live inside a nested closure (not a top-level function): the
+  // closure-compile path used to populate ctx.func.preboxed AFTER emitting the body,
+  // so each boxed decl re-allocated its cell — the earlier arrow's env kept the entry
+  // cell (null) and calls through it silently no-opped.
   const { f } = runHost(`export let f = () => {
     const outer = () => {
       const tag = new Set(['x'])
@@ -2284,6 +2322,18 @@ test('static closure env: re-entrant enclosing function with two call sites read
   }
 })
 
+// closure-plan: deep-captured const loses its declaration (banked 2026-08-19) — a
+// function-scoped const captured by a closure nested 2+ arrow levels deep, where
+// the IMMEDIATE enclosing arrow ('mid') never references the const itself (only a
+// closure nested INSIDE mid does). mid's own ClosureEnvPlan
+// (src/compile/closure-plan.js) correctly folds the const away (mode 'constant', no
+// env slot — mid's body has it as a direct top-level declaration).
+//
+// First observed only via self-compile (src/wat/assemble.js's
+// dedupClosureBodies, commit a6220d95's SENTINEL/isSentinel/mix shape,
+// worked around by hoisting to module scope in a9449127) and mis-attributed
+// as self-compile-specific — it is not: the shape below reproduces natively,
+// no self-compile involved, at every optimize level.
 test('closure-plan: constant capture through a non-capturing intermediate arrow', () => {
   const src = `export function outer(x) {
     const S = -2
@@ -2449,6 +2499,9 @@ test('closures: a concise body naming a function returns it as a value', () => {
 // call: devirtGlobalCalls rewrites the site, so the call census, the inliner
 // and the parameter proofs read it as a direct call (stdlib's out-buffer
 // variants: `frexp.assign = assign`, called as `frexp.assign(x, out, 1, 0)`).
+// A global nothing reads once its calls are rewritten, or an alias of one,
+// drops its init and leaves the map: the function's address is no longer taken
+// by it.
 test('devirtGlobalCalls: the site calls the function; a global nothing reads drops its init', () => {
   const nz = `function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
     function m(v) { return nz(v, [0, 0], 1, 0) }
@@ -2592,6 +2645,8 @@ test('closure: a kernel a returned callback calls in its loop splices there', ()
 // A helper whose expression body reads its one parameter before anything but
 // literals (`lin2db(env(x))`, env a closure call with effects) splices with the
 // argument standing where the parameter is read: it runs where the call ran it.
+// The order is the plan's, read without watr (whose macro pass had its own order
+// bug, fixed in watr's own tests).
 test('closure: a helper reading its parameter first splices with a call for its argument', () => {
   const src = `let k = 1
     const lin2db = (lin) => 20 * Math.log10(Math.max(Math.abs(lin), 1e-10))

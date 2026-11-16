@@ -218,6 +218,7 @@ for (const row of TABLE) {
       ok(bad === null, `${name}: ${show(a)} => ${show(b)}` + (bad === null ? '' : ` differs at (${bad})`))
       if (bad !== null) break
     }
+    // (a tuple the condition refuses where both sides agree: reported, not failed)
     let agreeing = 0
     if (refused.length) {
       let rx = null

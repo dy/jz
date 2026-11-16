@@ -10,9 +10,12 @@ const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
-// The boxed carrier is the unconditional representation (the CARRIER_BOX flag and
-// its env toggle were deleted); a caller wanting the strict raw-i64 diagnostic uses
-// JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
+// BigInt retirement Slice 1: watr (an independently-versioned npm dependency, not jz
+// kernel source) has 4 of its own genuinely-unprovable BigInt sites (encode.js's
+// F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local), unreachable
+// from this repo to fix. The boxed carrier is the unconditional representation (the
+// CARRIER_BOX flag and its env toggle were deleted); a caller wanting the strict
+// raw-i64 diagnostic uses JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
 const withRawCarrier = (fn) => fn()
 
 const ENTRY_MODULES = {
@@ -397,6 +400,9 @@ test('watr-regression: f64.const large hex integer rounds correctly', () => {
   is(val, expected, `got ${val}, expected ${expected}`)
 })
 
+// These previously failed when jz-compiled watr.wasm produced incorrect
+// reference type opcodes, but were fixed in recent jz commits.
+// Kept as passing regression guards:
 test('watr-regression: ref_cast_null on null anyref', () => {
   if (onWasi()) return  // wasi: host global WebAssembly
   const wat = `(module

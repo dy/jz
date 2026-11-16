@@ -35,13 +35,22 @@ test('cond-vectorize: clamp → i32x4', () => {
 })
 
 test('cond-vectorize: two-arm select → i32x4 bitselect', () => {
-  // Re-mask `a[i]` before the multiply (`(a[i]&127)*2 ≤ 254`, genuinely i32-safe)
-  // so this test again exercises its OWN subject — the
-  // two-arm-select-to-bitselect lift — decoupled from the (separate, now-fixed)
-  // product-safety question.
+  // P0-2 ledger (2026-08-02): the `then` arm was bare `a[i] * 2` — an Int32Array
+  // element is a genuinely FULL-RANGE i32 (no narrowing load width like a
+  // Uint8/16Array, and jz has no whole-program proof that every WRITE into `a`
+  // stays masked), so `a[i]*2` is not actually provably i32-safe — the OLD
+  // `mulFitsI32` admitted it anyway (bounding only the literal `2` side), which
+  // was live-unsound (confirmed: `a[0]=2000000000; a[0]*2` wrapped to -294967296
+  // instead of 4000000000 at HEAD). Re-mask `a[i]` before the multiply
+  // (`(a[i]&127)*2 ≤ 254`, genuinely i32-safe) so this test again exercises its
+  // OWN subject — the two-arm-select-to-bitselect lift — decoupled from the
+  // (separate, now-fixed) product-safety question.
   //
-  // Re-mask it too (`(a[i]&127)+1 ≤ 128`, genuinely i32-safe) for the same
-  // reason.
+  // P0-2 SIBLING (2026-08-02): same story for the `else` arm, which was bare
+  // `a[i] + 1` — also not provably i32-safe (a[i] could be within 1 of
+  // INT32_MAX), so the now-corrected `addFitsI32` can't admit it as a bare
+  // i32.add either, and the vectorizer follows suit. Re-mask it too
+  // (`(a[i]&127)+1 ≤ 128`, genuinely i32-safe) for the same reason.
   pin('two-arm', `export let run = () => {
     let a = new Int32Array(64); for (let i = 0; i < 64; i++) a[i] = (i * 5) & 127
     for (let i = 0; i < 64; i++) a[i] = (a[i] > 50) ? ((a[i] & 127) * 2) : ((a[i] & 127) + 1)

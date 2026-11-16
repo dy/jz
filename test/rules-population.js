@@ -85,6 +85,9 @@ test('rules population: a ternary of a Boolean and another kind, its condition a
   population('constant ternary of mixed kinds', program(fns), names(fns), inputs)
 })
 
+// The phase 8 scout's three reaches as it wrote them (the forms above hold each class): two shifts
+// with a count outside 0..31, -0 plus a false comparison, a comparison of a mixed ternary whose
+// condition an unrolled counter makes a literal.
 test('rules population: the phase 8 scout\'s reaches', () => {
   const REACHES = [
     ['shift by a count outside 0..31, twice', `export let f = (x) => { x = x | 0; return ((x << -1) << 1) | 0 }`, [[1], [3], [-1]]],

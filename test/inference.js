@@ -125,6 +125,21 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length when stringy disqualifies')
 })
 
+// Was: "methodEvidence STRING: charCodeAt induces STRING (no __length poly)" —
+// asserted `.charCodeAt` usage alone made methodEvidence emit {val: STRING},
+// so a same-name `.length` read skipped every polymorphic/array-ish length
+// helper. fix/string-method-guess found that's unsound in general: a plain
+// OBJECT/HASH value can own a same-named `.charCodeAt` closure property
+// (`t.charCodeAt = (i) => t.n + i`) the exact same way the ARRAY twin's
+// `.push` idiom does, so usage alone is NOT proof of STRING (no
+// String/Array/Object equivalent exists for the disambiguation that claim
+// relied on). methodEvidence no longer induces a `val` from method-name
+// usage at all (see that module's header) — `s` here is genuinely unproven
+// (exported, no call-site evidence), so `.length` and `.charCodeAt` must
+// both stay on the general runtime-dispatch path. What must NOT regress:
+// a REAL string still computes the JS-correct answer through that path —
+// verified directly (see test/data.js's own-closure-collision pins for the
+// hijack-object side of this fix).
 test('a method name proves no kind, STRING: charCodeAt usage alone no longer proves STRING (unproven param stays runtime-dispatched, still correct for a real string)', () => {
   const src = `export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }`
   for (const optimize of levels(false, 2, 3)) {
@@ -133,6 +148,10 @@ test('a method name proves no kind, STRING: charCodeAt usage alone no longer pro
 })
 
 test('a method name proves no kind, STRING: expression-bodied arrow — same retirement, same correctness floor', () => {
+  // Sibling of the block-bodied case above, over an expression body (the
+  // original test's own regression target: `inferLocals` must still run for
+  // an expression-bodied arrow, not just a block-bodied one — unrelated to,
+  // and unaffected by, methodEvidence's retirement).
   const src = `export const hd = (s) => s.charCodeAt(0) + s.length`
   for (const optimize of levels(false, 2, 3)) {
     is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: expr-body — "AB".charCodeAt(0)=65 + "AB".length=2`)
@@ -157,12 +176,17 @@ test('Array.isArray flow refinement outranks an unrelated durable rep for .lengt
 })
 
 test('a method name proves no kind, ARRAY: .push proves NOT-STRING but must NOT induce VAL.ARRAY (fix/param-mutation-propagation)', () => {
-  // An unresolved receiver (no call-site proof — `tail` is exported, so no
-  // argument evidence exists) must stay on the fully-polymorphic runtime
-  // dispatch: `.push` still proves the receiver ISN'T a string
-  // (ARRAY_ONLY_POISON — no String.prototype.push exists), but `xs[xs.length
-  // - 1]` has to keep checking at runtime, same as any other unproven
-  // receiver.
+  // Was: "`.push` is in ARRAY_INDUCERS → method source emits {val: ARRAY}",
+  // asserting NO __str_idx dispatch survived — i.e. `.push` usage alone
+  // used to force the ARRAY-header fast path. That was unsound: a plain
+  // OBJECT/HASH value can own a same-named closure property (`b.push = (v)
+  // => {...}`, the makeByteBuf/ByteBuf idiom) — jz has no prototype chain
+  // to rule that out from the method NAME alone. An unresolved receiver
+  // (no call-site proof — `tail` is exported, so no argument evidence
+  // exists) must stay on the fully-polymorphic runtime dispatch: `.push`
+  // still proves the receiver ISN'T a string (ARRAY_ONLY_POISON — no
+  // String.prototype.push exists), but `xs[xs.length - 1]` has to keep
+  // checking at runtime, same as any other unproven receiver.
   const wat = compile(`
     export const tail = (xs) => {
       xs.push(0)
@@ -306,6 +330,9 @@ test('default-param narrowing: runtime stays JS-correct across arg shapes', () =
   is(h([9, 8]), 2, 'array forwarded reads array length')
 })
 
+// audit-#4 (re-audit finding 4): inferValType (src/compile/infer.js) fell back to
+// the LOCALS-BLIND valTypeOf for any COMPOUND call-site argument, discarding the
+// very callerValTypes map it was handed.
 test('call-site argument kind: compound BigInt-local call-site arg no longer folds a strict-eq to a wrong constant', () => {
   // Pre-fix: paramReps val=NUMBER let emitStrictEq's differing-primitive-class
   // fold constant-fold `n === 8n` to `false` at COMPILE TIME — wrong, since `n`
@@ -487,9 +514,12 @@ test('typed-array kind from callers: Float64Array arg unlocks SIMD vectorization
 })
 
 test('typed-array kind from callers: typed-array GLOBAL arg types the callee param (direct loads)', () => {
-  // A module-global typed array passed as an arg must resolve its ctor the same as
-  // a local would — the caller-side typed-elem context layers the module's typed
-  // globals under its body locals.
+  // A module-global typed array passed as an arg must resolve its ctor the same
+  // as a local would — the caller-side typed-elem context layers the module's
+  // typed globals under its body locals. Regression: watercolor's `samp(f,…)` and
+  // `advect(s,s0)` took their buffers from globals (u/v/dn), so without the global
+  // layer `f`/`s0` stayed untyped and every bilinear tap went through the runtime
+  // `__typed_idx` dispatch instead of a direct `f64.load` — ~1.6× slower than JS.
   const wat = compile(`
     let g, g0
     let samp = (f, i) => f[i] + f[i + 1]
@@ -658,11 +688,14 @@ test('paramAllUsesNumeric: multi-arg forward to a MODULE helper proves the param
 
 test('paramAllUsesNumeric: bare Math.* + `+` prove a numeric param inside a nested loop', () => {
   // The interference example: an exported `tick` used as `Math.sin(tick)` (bare),
-  // `Math.sin(tick*2)`, and `tick + 1.2`, driving a nested per-pixel sweep that stores
-  // into a global. `Math.f(x)` ToNumbers its arg, so a bare param there is a PROVING
-  // numeric use (like `x*2`); binary `+` is numeric-COMPATIBLE and must not reject
-  // that proof. The nested loop + global store defeats the simpler expression-level
-  // inference, so the proof must come from paramAllUsesNumeric here.
+  // `Math.sin(tick*2)`, and `tick + 1.2`, driving a nested per-pixel sweep that
+  // stores into a global. `Math.f(x)` ToNumbers its arg, so a bare param there is a
+  // PROVING numeric use (like `x*2`); binary `+` is numeric-COMPATIBLE and must not
+  // reject that proof. Before the fix the generic-call fallthrough rejected the bare
+  // Math arg, so `tick` stayed unproven and every cell paid a `__to_num` plus a
+  // polymorphic `+` string-concat fork — interference ran 0.90× of JS, now ~parity.
+  // The nested loop + global store defeats the simpler expression-level inference, so
+  // the proof must come from paramAllUsesNumeric here.
   const wat = compile(`
     let width = 0, mem
     export let setup = (n) => { width = n; mem = new Int32Array(n); return mem }
@@ -775,7 +808,9 @@ const forkOutsideInit = (src, initRe = /^\$(init|setup)$/) =>
 const noForkHot = (src, msg) => is(forkOutsideInit(src), 0, msg)
 
 test('module let typed-array kind: double-buffer swap keeps typed loads (waves regression)', () => {
-  // `let tmp = a; a = b; b = tmp` — the canonical ping-pong swap.
+  // `let tmp = a; a = b; b = tmp` — the canonical ping-pong swap. A forward pass
+  // invalidated both (made waves 16× slower — every a[i] forked __str_idx/__typed_idx,
+  // every + forked __str_concat).
   const src = `
     let a, b
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
@@ -856,8 +891,10 @@ test('module let typed-array kind: alias to a NON-typed value stays polymorphic 
 
 test('module let typed-array kind: swap-temp name colliding with a numeric local stays typed (lbm regression)', () => {
   // The swap temp `s` in `step` (aliases typed `a`) shares its NAME with the loop
-  // counter `s` in `frame` (a number, mutated by `s++`). Scope-qualified keys keep
-  // the two `s` apart.
+  // counter `s` in `frame` (a number, mutated by `s++`). A name-keyed alias graph
+  // let the numeric `s` poison the typed swap-temp, cascading MIXED into both
+  // buffers — every a[i] fell to runtime __str_idx/__typed_idx dispatch + f64
+  // indices (lbm: 3.9× slower than JS). Scope-qualified keys keep the two `s` apart.
   const src = `
     let a, b
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n) }
@@ -1093,11 +1130,22 @@ test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
   ok(count(fn, /f64\.mul/g) > 0, 'the full Number fallback preserves wide-product rounding')
 })
 
-// Host JS (`4194304 * 1000`, ECMA-262 Number::multiply — plain IEEE-754 double
-// multiplication, no ToInt32) is the authority for every value asserted below;
-// none of these expressions have a `|0`/bitwise sink to absorb a wrap, so jz's
-// result must match the EXACT (unwrapped) product.
+// P0-2 ledger (banked bug class #1, closed 2026-08-02): `mulFitsI32` (emit.js)
+// used to admit `i32.mul` whenever EITHER operand was provably ≤2^22, with NO
+// check on the other side — so a small literal times a genuinely unbounded i32
+// operand could overflow signed i32 while staying f64-representable, and
+// `i32.mul` silently wraps mod 2^32 regardless. Live at HEAD before the fix:
+// `4194304 * (x|0)` for x=1000 compiled to `i32.shl(x,22)` → wrapped to
+// -100663296 instead of the true 4194304000. Host JS (`4194304 * 1000`,
+// ECMA-262 Number::multiply — plain IEEE-754 double multiplication, no ToInt32)
+// is the authority for every value asserted below; none of these expressions
+// have a `|0`/bitwise sink to absorb a wrap, so jz's result must match the
+// EXACT (unwrapped) product.
 test('mulFitsI32 product-range soundness (P0-2): one bounded operand does not bound the PRODUCT', () => {
+  // Historical repro (bignum.js's 15-bit-limb workaround, ledger P0-2): a
+  // ≤2^22 literal times an unbounded i32 operand. 4194304 (2^22) * 1000 =
+  // 4194304000, which exceeds signed i32 (2^31-1 ≈ 2.147e9) but is exact in
+  // f64 — exactly the case the OLD "one side f64-exact" heuristic miscompiled.
   const f1 = run(`export let f = (x) => { let y = x | 0; return 4194304 * y }`).f
   is(f1(1000), 4194304 * 1000, 'small-literal × unbounded i32, returned bare, matches JS exactly')
   is(f1(512), 4194304 * 512, 'still correct right at the old 2^31 wrap boundary (product == 2^31)')
@@ -1136,6 +1184,10 @@ test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range
   is(f(0x7fff, 0x7fff), (0x7fff * 0x7fff) | 0)
 })
 
+// P0-2 SIBLING #1 (banked bug class #1's own follow-up, closed 2026-08-02): the bare `+`/`-` fast path (emit.js:
+// `isI32Num(va)&&isI32Num(vb)` → native `i32.add`/`i32.sub`) admitted the op UNCONDITIONALLY — no magnitude
+// check at all, worse than the OLD (already-unsound) mulFitsI32, which needed at least ONE bound. Live at HEAD
+// before the fix: `(a|0)+(b|0)` for a=b=2147483647 returned -2; JS gives 4294967294 (exact, f64-representable).
 //   2. type.js exprType('+'/'-'): a NEW `strict` parameter (default
 //      omitted/false — the overwhelming majority of exprType's callers are
 //      LOCAL/PARAM storage-type decisions, where magnitude-blind "both
@@ -1204,6 +1256,21 @@ test('integer storage: final word consumers preserve rounding across arithmetic 
   }
 })
 
+// P0-2 SIBLING #2, SAME LEDGER ENTRY: compoundAssign's `*=`/`+=`/`-=` fast
+// path (emit.js ~L3848) had ZERO gating whatsoever — not even one bound.
+//
+// NOTE ON SCOPE (verified, not assumed — see the KNOWN GAP test below): this
+// gate is PROVABLY INERT for the narrower "compound-assign target's OWN
+// local storage is i32, and THAT storage is later read bare elsewhere"
+// shape — ir.js writeVar's `toI32` coercion (this same ticket) recovers the
+// IDENTICAL wrapped value via narrowI32 regardless of which arm
+// (compoundAssign's i32 fast path or its f64 fallback) computed it, because
+// two i32-magnitude operands' sum/difference is unconditionally <2^53 (and a
+// common-magnitude product often is too — narrowI32's ring-safety ceiling).
+// That shape's real fix lives one level up, in the LOCAL-STORAGE-TYPE
+// decision itself (analyze-scans.js `collectI32SafeIndexVars` — see the
+// KNOWN GAP test) — a separate, precisely-diagnosed root cause, NOT
+// resolved by this ticket.
 test('compoundAssign requires the same bound proof as the binary operators when its OWN result escapes bare', () => {
   const f = run(`export let f = (x) => { let a = x | 0; return (a *= 100000) }`).f
   is(f(50000), 5000000000, '(a*=100000) returned directly from a compound-assign expression matches JS exactly')
@@ -1345,10 +1412,25 @@ test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its com
     export let f = (n) => { const comp = new Uint8Array(n); sieve(comp); return comp[0] }
   `
   const wat = compile(src, { wat: true, optimize: 'speed' })
+  // Absolute ratchet (perf-ratchet.js's own style), in crossings from a number to
+  // its word whatever lowering takes them (foldWords): 4 at the fix; 8 where `i`
+  // is widened to f64 (measured with `loopSquare: false`, the shape of the
+  // regression, where loop-square's `i` was blamed post-rewrite and a truncation
+  // returned per inner-loop iteration: 21 against 34 trunc/wrap tokens then).
   const words = (foldWords(wat).match(/\(word /g) || []).length
   ok(words <= 5, `sieve kernel's i*i-guarded index chain must stay i32 (got ${words} number-to-word crossings, expected <=5; the fixed compiler measures 4, a widened i 8)`)
 })
 
+// MODULE-GLOBAL SIBLING (fixed 2026-08-03): `plan/scope.js`'s
+// `inferModuleIntGlobals` — the module-global f64→i32 narrowing fixpoint — shared
+// the EXACT same one-way-storage-commitment flaw as the two local mechanisms
+// fixed above, in a THIRD file/mechanism (a different AST-walk shape, so not
+// reachable via the local collectBareEscapes call sites without duplicating the
+// scanner). Live at HEAD before the fix: `let counter=4; export let
+// bump=()=>{counter*=100000; return counter}` called repeatedly returned `400000,
+// 1345294336, -1827012608`; JS gives `400000, 40000000000, 4000000000000000`
+// (diverges the 2nd call).
+//
 // `inferModuleIntGlobals` calls it ONCE over a synthetic whole-program body
 // (module-init AST + every function body concatenated) — a global's relevant
 // scope for the "does every read re-apply the same ToInt32 the writes did"
@@ -1980,7 +2062,11 @@ test('param VAL.NUMBER: BigInt64Array element stays BigInt (ctor-gated, not narr
 })
 
 // The overlay (reps.js lookup tier #2) records decl/assignment value kinds as emit
-// passes them.
+// passes them. A fact is only sound while its recording site DOMINATES every read:
+// a name reassigned at a NESTED position (if/loop/closure body, for-step) must carry
+// no fact — `let x = [7,8]; if (c) x = 5; x.length` used to read the number 5
+// through the ARRAY fast path (OOB trap): a latent miscompile that predated the
+// for-init extension which exposed it.
 test('flow-fact: nested conditional reassignment invalidates the decl fact', () => {
   const f = jz('export let f = (n) => { let x = [7,8]; if (n > 0) x = 5; return x.length === undefined ? -1 : x.length }').exports.f
   is(f(1), -1, 'reassigned arm: number has no .length')
@@ -2002,7 +2088,10 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 
 // BIGINT is the one kind with no runtime tag — raw i64 bits ride the f64 slot — so `c ? BigInt(x)
 // : null` must CARRY the kind through the nullish arm or `.toString(16)` formats the bits as a
-// NUMBER denormal ("0.000…").
+// NUMBER denormal ("0.000…"). Root of the speed-tier lab-row throw. BigInt retirement Slice 1:
+// `const r = a > 0 ? BigInt(a) : null` is the design's OWN verbatim illustrative example for the
+// "ternary-nullish" flow class ("a `cond ? bigVal : null` merge... 'the one kind with no runtime
+// tag'").
 test('bigint∪null: kind carries through the nullish ternary arm, guards stay live — BigInt-or-null ternary merge strict-mode (opt-in) ternary-nullish diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`
@@ -2013,6 +2102,16 @@ test('bigint∪null: kind carries through the nullish ternary arm, guards stay l
   `, { memory: 64 })), /BigInt value at this ternary-nullish/)
 })
 
+// Census completeness: bundled sub-module INITS live outside the main AST
+// (ctx.module.moduleInits) and prepare's reduced init walk records no call
+// sites — so a const table of arrows (watr's FOLD/FOLD2 shape) called helpers
+// with args the param lattice never saw: the callee settled blind, its
+// bigint receiver fell to the number fork ("0.000…" hex), and
+// the call-site reachability filter culled the whole chain as dead (the speed-tier lab-row
+// throw). collectProgramFacts now walks moduleInits for '()' sites
+// (callerFunc = null — module scope), and the EXISTING lattice types the
+// chain: table args like `BigInt(x) * 3n` prove BIGINT with no caller
+// context at all.
 test('census: const-table arrow args in a bundled init reach the param lattice', () => {
   const dep = `
     export let hex = (v) => {
@@ -2187,7 +2286,12 @@ test('push on a param settles no element fact: heterogeneous guard must not cons
 })
 
 test('cross-call array-elem kind: uniform-string array through a param proves elements', () => {
-  // A proven-STRING elem read on the param side must skip the generic
+  // The wordcount shape: an array filled from ANOTHER array's indexed reads
+  // (`probes.push(words[i])`) then passed as a param. exprElemSourceVal used
+  // to fall to generic valTypeOf for indexed-read elements — invisible
+  // mid-walk for a body-local receiver — poisoning the fact narrow.js's
+  // cross-call join (runArrValTypeFixpoint) was already wired to carry. A
+  // proven-STRING elem read on the param side must skip the generic
   // ToPropertyKey path entirely (no __to_str in the module = the Ryu float
   // formatter stays out — the wordcount size root).
   const wat = compile(`
@@ -2215,6 +2319,10 @@ test('cross-call array-elem kind: uniform-string array through a param proves el
     }
   `)
   is(exports.f(), 7, 'param-side elem read hashes the right key')
+  // Building the key array from ANOTHER call-returned array's reads (words =
+  // build(); picks.push(words[i]); counts[words[1]] = 7; probe reads
+  // counts[picks[1]]) used to return 0 — a proven-write/generic-read hash-keying
+  // divergence.
   const twoHop = jz(`
     let build = () => { let ws = []; ws.push('ab'); ws.push('cd'); return ws }
     let probe = (counts, keys) => counts[keys[1]] | 0
@@ -2380,6 +2488,11 @@ test('a parameter the body writes: float-mutated param stays f64', () => {
   is(exports.run(3), 1.5, 'functional result unchanged')
 })
 
+// Convergence-cap regression (audit P1: solver convergence exhaustion must
+// ALWAYS throw an internal compiler error — src/compile/narrow.js's
+// param-lattice worklist / arr-schema-domain / typed-ctor fixpoints and
+// src/compile/program-facts.js's slot-int census).
+//
 // A genuinely NON-MONOTONE rule can't be authored from JS source — the four
 // guarded loops close over lattices the surrounding code proves monotone by
 // construction (finite height: i32→f64 widening, 0|1|2 int-certainty levels,
@@ -2387,7 +2500,13 @@ test('a parameter the body writes: float-mutated param stays f64', () => {
 // literally breaking a rule's monotonicity in the compiler itself, not
 // compiling adversarial input.
 //
-// Pin both well past their guard's stated budget as a canary: if a future
+// What IS a real, constructible regression: pathological-but-LEGITIMATE
+// DEPTH that could plausibly exceed a round cap without any rule being
+// non-monotone — a deep caller→callee forwarding chain (worklist cap) and a
+// long self-referential immutable-update schema domino (16-round domain
+// cap / 64-round slot-int census cap, both explicitly called out in the
+// surrounding doc comments as the stress shapes those caps exist for). Pin
+// both well past their guard's stated budget as a canary: if a future
 // change shrinks a cap, reorders a sweep from full-program to per-edge, or
 // otherwise makes these ordinary-if-extreme programs need more rounds than
 // budgeted, THIS throws the internal error (loudly, per the audit) instead
@@ -2466,12 +2585,28 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched, not call_indirect')
   const { f } = run(src)
   is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
+  // Closure-forwarding slice LANDED: host-BigInt ingress through the
+  // CLOSURE-mediated normalizer now computes correctly instead of rejecting.
   is(f(5n), 6n, 'closure-mediated normalizer: host BigInt ingress now computes correctly (was: loud reject)')
-  // JS truth: -5n + 1n === -4n.
+  // FIXED (was KNOWN-WRONG — pre-existing, independent of closure-forwarding;
+  // reproduced identically on an unmodified DIRECT non-closure typeof-guarded
+  // normalizer too, see the standalone pin below): root cause was interop.js's
+  // `isBox`, whose mask (0x7FF80000) never examined the sign bit, so a plain
+  // NEGATIVE host BigInt's 64-bit two's-complement sign-extension (top bits
+  // all 1) satisfied the mask and isBox misclassified it as "already a jz
+  // box". i64Arg's `!isBox(x)` gate (and mem.wrapVal's `isBox(v)` fallback)
+  // then skipped mem.BigInt's box allocation entirely — the raw unboxed bits
+  // crossed into wasm, `$__ptr_type` read a garbage tag off them (never
+  // PTR.BIGINT), and BigInt(v)'s dispatch (module/number.js __to_bigint) fell
+  // through its "not a box, not a string" arm to 0n. JS truth: -5n + 1n ===
+  // -4n.
   is(f(-5n), -4n, 'negative host BigInt via tagged ingress computes correctly (was: read back as magnitude 0)')
 })
 
 test('negative host BigInt tagged ingress: DIRECT (non-closure) normalizer — same fix, confirms the defect was never closure-forwarding-specific', () => {
+  // The exact shape the test above's old KNOWN-WRONG comment described but
+  // never independently pinned: no closure at all, just an inline typeof
+  // guard.
   const { f2 } = run(`
     export let f2 = (v) => {
       let x = typeof v === 'bigint' ? v : BigInt(v)
@@ -2481,6 +2616,9 @@ test('negative host BigInt tagged ingress: DIRECT (non-closure) normalizer — s
   is(f2(5n), 6n, 'positive host BigInt: unaffected control')
   is(f2(-5n), -4n, 'negative host BigInt: computes correctly (was: magnitude 0 → 1n)')
   is(f2(-1n), 0n, 'negative host BigInt at the small-magnitude boundary')
+  // Lossless past 2^53 (Number.MAX_SAFE_INTEGER + 1) — proves the fix boxes
+  // the full i64 payload (BigInt.asIntN(64,·) two's complement), not just
+  // enough bits to dodge the isBox collision at small magnitudes.
   is(f2(-9007199254740993n), -9007199254740992n, 'large-negative host BigInt stays lossless through the boxed round trip')
 })
 
@@ -2895,7 +3033,12 @@ test('Map summary: module facts agree across repeated compiles', () => {
   is(bag2, bag1, 'second independent compile agrees on the poison too')
 })
 
-// VALUES asserted, not just no-trap.
+// for-of/for-in dict population — the def-before-use OOB class: the dict-mode `{}`
+// alloc used to emit a RUNTIME `domain.length` read for the leanHashDomains
+// preallocation hint; a for-of/for-in iterator temp (or any local domain array) is
+// declared in the loop's own init — AFTER the dict decl — so the read hit an
+// uninitialized local (0.0), underflowed the header address math, and trapped at
+// instantiation for optimize>=1. VALUES asserted, not just no-trap.
 test('dict-mode alloc: for-of population of a module-level dict is sound at every tier', () => {
   const src = `export const T = {}
     const arr = ['a', 'b', 'c']
@@ -2946,6 +3089,15 @@ test('dict-mode alloc: statically-provable domain still sizes the preallocation 
 })
 
 // receiver-HASH global classification
+// module/object.js's `{}`-literal emitter already allocates a module-level dict
+// global (computed-key writes only, no static prop, empty merged schema) as a
+// real HASH pointer — but every OTHER function's read/write site was blind to it
+// (recordGlobalRep leaves the name's globalValTypes verdict null by construction:
+// VT['{}'] answers null for the empty-literal case). plan/index.js's
+// classifyHashDictGlobals fills `ctx.scope.globalValTypes` with the IDENTICAL
+// predicate the allocator uses, so `lookupValType`'s tier-4 fallback
+// (ctx.scope.globalValTypes) now resolves the receiver's kind at every OTHER call
+// site too.
 
 test('receiver-HASH: module-global dict receiver (subscript\'s prec shape) gets VAL.HASH on globalValTypes', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalValTypes (see section note above)
@@ -3003,6 +3155,12 @@ test('receiver-HASH: a module literal whose keys functions add is a dictionary, 
 // constIntExpr: i32 boundary clamp
 
 test('constIntExpr: i32 boundary — MAX/MIN fold exactly, MAX+1/MIN-1 refuse (no unclamped re-derivation)', () => {
+  // constIntExpr used to re-derive a literal's value itself (bare `number` and `[null,N]`
+  // array-literal node shapes) in a second copy of intLiteralValue's own lookup, run only
+  // when the first (clamped) attempt returned null — silently handing back the raw
+  // out-of-i32-range value instead of null. A source literal like `2147483648` parses
+  // straight into that exact `[null,N]` node shape (subscript's number.js `num()`), so this
+  // was reachable through ordinary source, not just a hypothetical fact-propagation state.
   const cases = [
     [I32_MAX, I32_MAX], [I32_MAX + 1, null],
     [I32_MIN, I32_MIN], [I32_MIN - 1, null],
@@ -3020,7 +3178,10 @@ test('constIntExpr: i32-boundary refusal reaches a real consumer — for-loop st
   // emit.js's unrollSmallConstFor folds a `for(i=0;i<N;i+=STEP)` with a compile-time
   // STEP into an unrolled constant sequence (no `(loop`) when constIntExpr(STEP)
   // resolves; a STEP one past I32_MAX must fail to resolve and fall back to a real
-  // runtime `(loop`.
+  // runtime `(loop`. Before the fix, the unclamped re-derivation resolved BOTH steps,
+  // wrongly unrolling the second (still numerically coincidental for this body, but
+  // the wrong compile-time DECISION — the un-narrowed WASM type of a genuinely
+  // reachable STEP would flip codegen shape either way).
   const mk = (step) => `export const f = () => { let sum = 0; for (let i = 0; i < 5; i += ${step}) sum += i; return sum }`
   const inRange = compile(mk(I32_MAX), { wat: true, optimize: 3 })
   const overRange = compile(mk(I32_MAX + 1), { wat: true, optimize: 3 })

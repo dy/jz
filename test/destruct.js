@@ -466,6 +466,8 @@ test('typeof: string heap', async () => {
 })
 
 // A destructured binding must carry the same type tag as the element it bound.
+// Regression: `let [, idx] = arr` lost the type tag, so `typeof idx` returned
+// 'undefined' even though the value coerced fine — while `arr[1]` was correct.
 test('typeof: destructured string binding', async () => {
   const { exports: { f } } = await jz(`export let f = () => { let arr = ['type', '\$name']; let [, idx] = arr; return typeof idx }`)
   is(f(), 'string')
@@ -718,6 +720,8 @@ test('destruct: arguments-path param default fires only on undefined', () => {
     export let g = () => f() * 1000 + f(null)`).g(), 9110)
 })
 
+// catch-param patterns + var-pattern for-of heads + assignment-form targets
+// (2026-07-10): all three bound nothing or shadowed the outer binding before.
 test('destruct: catch patterns / var-pattern heads / assignment-form targets', () => {
   is(run(`export let f = () => { try { throw { a: 5 } } catch ({ a }) { return a } }`).f(), 5)
   is(run(`export let f = () => { try { throw [7] } catch ([x]) { return x } }`).f(), 7)
@@ -730,6 +734,10 @@ test('destruct: catch patterns / var-pattern heads / assignment-form targets', (
   is(run(`export let f = () => { let k = 0; for (k in { z: 1 }) { } return k.length }`).f(), 1)
 })
 
+// Shadow renames for catch params + destructure targets (2026-07-20): a catch
+// param or pattern target shadowing an outer (renamed) binding used to resolve
+// handler/block reads to the OUTER binding — and the catch local aliased its
+// WASM slot.
 test('destruct: shadowed catch params and pattern targets bind their own local', () => {
   is(run(`export let main = () => { let e = 5; { let e = 6; try { throw 1 } catch (e) { return e } } }`).main(), 1)
   is(run(`export let main = () => { let e = 5; try { throw 1 } catch (e) { e = e + 10 } return e }`).main(), 5)
