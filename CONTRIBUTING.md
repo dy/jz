@@ -116,7 +116,9 @@ A local rewrite of WAT is a row of `src/optimize/rules.js`, `[name, relation, ma
 Generic recognizer work belongs in watr. The discipline below also applies to the
 existing JZ implementation while it migrates.
 
-The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/vectorize/index.js`](src/optimize/vectorize/index.js)) lifts typed-array loops to WASM-SIMD. Recognizers are tried in order in its dispatch; each consumes the shared `matchBlockLoop` descriptor and returns a wrapper or `null` — a `null` is fail-safe (the loop stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
+The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/vectorize/index.js`](src/optimize/vectorize/index.js)) lifts typed-array loops to WASM-SIMD. Every lowering is asked of the loop; each lift it makes passes the one legality (`legality.js`) and is costed by one measure read off its own code (`cost-model.js` passCost: the weighted ops of a pass of the loop). The cheapest is emitted; of two that cost the same, the smaller, and of two the same size the first asked. A lowering that takes nothing returns `null` — a `null` is fail-safe (the loop stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
+
+Which loops lift is a table, `test/vector-coverage.json`: which of the alias battery's loops a lift takes, as a table that only grows. A kernel fails on any difference from its listing: a mark lost is a lift lost; a mark gained is a lift to list, `node test/vector-coverage.js --update`, after the review of its legality.
 
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 
