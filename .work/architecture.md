@@ -1947,6 +1947,33 @@ on the real sets with V8 alone.
 
 The landing's battery: on 2bab745c7, one leg at a time: `lint:imports` and `audit:files` clean; bench bytes by hash 0 of 105 moved; the examples 1.65× V8 by geomean, jz ahead on 25 of 25 (blackhole read 3% slower in the first run and epicycles 5.6% in the second, each byte for byte main's wasm at level 2, size and speed: the machine's, three writers' suites beside the run); the invariants leg (level 3, the facts guard on) 7,280; core 7,481; `test:bootstrap -- --full`, its five parts, the hosted build 37,146,722 bytes against main's 37,145,851; level 0 7,264; level 3 7,278; wasi 7,353; generated 144; the integration suite 226 (1 skipped), 76, 76 and 79 at the default, level 0, level 3 and wasi; test262 4,120 and 0 failing; the core suite in one process 7,481. All passing. Eleven hours, the hosted suite 108 minutes of it.
 
+**The first dry run (2026-11-15)**, run 43777318282 on f7092c17b: `awfy` 14 of 14 pass,
+`clbg` 9 of 11. V8 did not run two through the harness, and each is the program's shape,
+not a defect of the harness:
+
+- `clbg-nbody-node-2` is a script of sloppy mode: `n = +process.argv[2];` and `runTest =
+  function(n) {…}` assign names it never declares. A script makes globals of them; the
+  driver is an ES module, strict, and the first throws `ReferenceError: n is not defined`.
+  Every lane takes the driver as an ES module, and declaring the names would rewrite it.
+- `clbg-mandelbrot` spreads its work over processes: `require('cluster')` forks
+  `os.cpus().length * 2` workers of the running script, which send their rows back by
+  `process.send` for the master to write. In the driver the round returned once the master
+  had forked, so the driver passed with a time of the forks alone (read from the source,
+  and reproduced by the fixture's `forks`); the check, run by `node -e`, has no script to
+  fork, and `fork` threw (`ERR_INVALID_ARG_TYPE` at `child_process:126`).
+
+Neither can run as one ES module in one process without being rewritten, and neither
+decision reads a result of jz's (a dry run builds none). Both stay registered, marked
+`notMeasured` with the reason. The dry check requires a marked program to fail in V8 and
+fails when one passes; no lane measures one (its driver is `not-measured.js`, which
+bench.mjs does not take as a case); the record stores no entry of it, and the figures keep
+it in every denominator, named (`k of 11 (2 not measured)`). A failure's line now quotes
+V8's error, where it quoted the source line above it. The two sources were fetched to this
+machine and read after their registration, not run; the manifest's header says so. The
+fixture gains `sloppy` and `forks`, written to those shapes: on the unchanged harness they
+fail as the two did on CI, and each new test fails with its piece taken out (scratch
+copies).
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
