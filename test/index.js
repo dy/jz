@@ -290,6 +290,7 @@ const TESTS = [
   'view-order-population',
   'handler-population',
   'reset-population',
+  'map-population',
   'start-population',
   'store-population',
   'durable-join-population',
