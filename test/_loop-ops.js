@@ -5,18 +5,6 @@ import { instantiate } from '../interop.js'
 import encodeWat from 'watr/compile'
 
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
-// A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
-// original loop as the cold fallback, the last child of its `$__wa…d` block:
-// the per-iteration cost this proxies is the guarded clone's, so the fallback
-// is not counted. The clone's header check is real per-iteration work and is.
-// A specialized loop (src/optimize/specialize.js) keeps the loop as written
-// the same way: the last child of its `$__sp.f<n>d` block, or of the block
-// that block holds (the loop's own exit). The copy's guards and the tests
-// ahead of it are counted.
-// A loop's compaction site (src/optimize/loop-compact.js) tests the heap
-// against a threshold each iteration, which is counted, and past it runs the
-// kernel once per megabytes allocated: that block, `(if (call $__gc_begin …)
-// (then …))`, is cold and not counted.
 const isLoop = (n) => Array.isArray(n) && n[0] === 'loop'
 const isSite = (n) => n[0] === 'if' && Array.isArray(n[1]) && n[1][0] === 'call' && n[1][1] === '$__gc_begin'
 export const loopBodyOps = (tree, entered) => {
@@ -40,13 +28,6 @@ export const loopBodyOps = (tree, entered) => {
 }
 
 // Identify the loops selected by real entry guards, after all codegen passes.
-// Instrument only a temporary assembly: counters never enter the measured tree.
-// This handles both if/else and block/br_if forms without guessing from names or
-// ignoring arbitrary fallback arms. Total loop cost remains independently capped.
-// `calls` are [export, args] pairs, run in order on one instance: the result is
-// the loops entered at instantiation, and for each call the loops it entered
-// (with the reset after it) and what it returned. Each is a Map from the loop to
-// the times its head ran: once for a loop that tests at its head and runs no trip.
 export const runEntered = (tree, calls) => {
   const loops = [], start = new Map(), runs = []
   let cur = start
@@ -97,26 +78,16 @@ export const enteredLoopOps = (tree, calls) => {
 // and also cap the existing overall proxy at 1349. Inputs cover no work, positive integer
 // and fractional bounds; fallback presence cannot dilute the fast-path bar.
 const INT_CALLS = [[0, 3, 5, 7], [4, 3, 5, 7], [3.5, -1, 0, 7]]
-// The float, mixed and cond programs take the same (n, p0, p1, p2) and got the
-// same guarded copy for their Number counters (2026-10-01, `prove counter
-// widths and preserve full Number loop bounds`; the wide accumulator's clones
-// are evaluated per carrier since the same day). With those calls the entered
-// loops count what the whole corpus did before: float 784, mixed 1137 against
-// 1148, cond 581; the retained fallbacks are the rest of the total, which keeps
-// its own cap. A category that takes arrays is counted whole, as before.
+// With those calls the entered loops count what the whole corpus did before:
+// float 784, mixed 1137 against 1148, cond 581; the retained fallbacks are the
+// rest of the total, which keeps its own cap. A category that takes arrays is
+// counted whole, as before.
 export const NUMERIC_CALLS = { int: INT_CALLS, float: INT_CALLS, mixed: INT_CALLS, cond: INT_CALLS }
 // The array programs take the same guarded copies, and their totals count the
 // runtime's loops too (the reach walk, the reset's heal loops, the string
 // helpers), so the loops the calls enter are a small share of each: Float64Array,
 // Float32Array and plain arrays run each element-kind variant, no work and a
-// fractional bound run the guards. Against the restored baselines' tree
-// (88f5f193), entered: buf 3715 -> 2830, nest 1878 -> 2034, slice 25910 -> 26128,
-// ring 4720 -> 4720, condref 10565 -> 7587, fgather 6840 -> 5920; the totals'
-// growth (buf 17288 -> 23668, nest 3571 -> 5595, slice 121648 -> 153420, ring
-// 18720 -> 30720, condref 85265 -> 139181, fgather 14400 -> 18800) is the
-// retained Number loops beside the guarded copies, as int's was. nest's four and
-// slice's five more nodes a program sit in the versioned outer loops' bound
-// snaps; the inner loops are what they were.
+// fractional bound run the guards.
 const f64 = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = (i * 7 % 11) + 0.25; return a }
 const f32 = (n) => new Float32Array(f64(n))
 const arr = (n) => Array.from(f64(n))

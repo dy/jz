@@ -8,11 +8,8 @@
 //   node test/_hashes.mjs <before.json> <after.json>
 //     lists the keys whose outputs differ and exits 1 if any do.
 //
-// Test-only, in the style of test/_mutant.mjs: index.js is edited as Node loads
-// it so compileInProcess (src/compiler.js) reports to the recorder; the tree on disk is untouched.
-// A key compiled more than once keeps the set of its outcomes. Options are keyed
-// with object keys sorted, functions by arity (what setupCtx reads of them),
-// memories by size, and `profile` by presence (it collects timings).
+// Test-only, in the style of test/_mutant.mjs: index.js is edited as Node loads it so
+// compileInProcess (src/compiler.js) reports to the recorder; the tree on disk is untouched.
 import { register } from 'node:module'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'

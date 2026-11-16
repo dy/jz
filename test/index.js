@@ -369,22 +369,8 @@ if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core 
 //     labeled-statement misparses. Reads src via parse/jzify directly, never the
 //     compiler-under-test, so the kernel leg would only re-run it identically.
 //
-// KERNEL-LEG DEBT (2026-07-15 per-file bisect, scratchpad/kernel-bisect.mjs —
-// each entry is a RECORDED kernel bug or leg-mismatch, not a permanent skip;
-// burn the list down as the kernel fixes land, re-including each file):
-//   HANGS (in-kernel infinite loop, 420 s fence): errors, parser-bugs,
-//     transform — one nonterminating compile each; needs in-file bisection
-//     before per-test guards are possible. (generators/async cleared
-//     2026-07-25 — see the dated notes below the list.)
-//   Module-resolver class (kernel takes one AST, no host resolver — same as
-//     `watr` above, per-test onKernel guards pending): destruct, closures,
-//     inference.
-//   Optimizer-shape class (kernel runs optimize:false; shape asserts can't
-//     match — same as perf-ratchet above): simd, optimizer, never-grown,
-//     slot-hazards.
-//   (2026-07-25: no remaining recorded kernel VALUE bugs in this list — the
-//   json shaped-parser asserts cleared with the elemOrigin fix; what's left
-//   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
+// Optimizer-shape class (kernel runs optimize:false; shape asserts can't match — same
+// as perf-ratchet above): simd, optimizer, never-grown, slot-hazards.
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'spellings', 'vector-coverage', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   'runner', 'bench-build', 'source-map', // JS entry/CLI options and debug metadata are outside the kernel ABI
   'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
@@ -395,42 +381,14 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
   'pass-table', // the optimizer's order as data, read in the host: the kernel leg would run it again unchanged
   'effects', // the effects summary and the passes that ask it, called in the host on hand-written IR
   'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
-  // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
-  // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
-  // (Array.isArray-as-value closure-support + bool-identity closure-ABI Bad
-  // int) — full kernel leg with these five in is baseline-clean.
-  // 'inference' cleared 2026-07-28: the census row was never order-dependent —
-  // `new Set(undefined)` threw the __iter_arr for-of TypeError when the
-  // compiler ran self-compiled (prepare's own `new Set(skip)`); the Set
-  // constructor is now spec-correct (nullish iterable → empty set,
-  // __iter_arr_ctor) and the whole exclusions burn-down is COMPLETE.
   'simd', 'optimizer', 'slot-hazards', 'struct-inline',
-  // 'objects','strings','spread' cleared 2026-07-23: reassigned-param val
-  // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
-  // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
-  // shaped-parser-selection asserts (parity gap, not value bugs).
-  ])  // 'speculate' cleared 2026-07-23: narrowed-param versioning-guard fix
-  // 'async','generators' cleared 2026-07-25: two roots — (1) closure-path boxed
-  // cells now allocate before body emission (mutually-recursive const arrows no
-  // longer capture stale null cells; every machine compiled hollow before);
-  // (2) asI32 wraps mod 2^32 per ES ToInt32 (bare trunc_sat saturated
-  // negative-f64 hi-words → static completion objects read null).
-  // 'statements','data','preeval' cleared 2026-07-24: bigint-carrier fold
-  // guards (numLiteralNode zero-exemption, WIDE_BIGINT rational-carry gate,
-  // structural subnormal fold guards in prepare/pre-eval/emitNeg); the one
-  // deep-carrier row (-1n<0n at O2, watr-in-kernel dynamic-compare) is
-  // onKernel-curated in statements.js with the mechanism.
-  // 'pow' (then pow-fold-ulp and fifthroot-ulp) cleared 2026-07-24: three stacked kernel gaps
-  // peeled in powResolvePool — regex ctrl-char pattern escapes (→ manual scan),
-  // startsWith positional arg dropped (→ slice-compare), obj[numVar] object
-  // read (→ dense arrays for type/lastUse/regOf).
-// Files whose compile inputs are the same on every leg — measured, not assumed:
-// each was run under the default, opt0, opt3 and wasi legs with every in-process
-// compile hashed (source plus the options after the env defaults merge), and the
-// four hash sets were identical. They build the kernel, spawn tooling, or pass
-// every option themselves, so a leg cannot change what they test: the default leg
-// owns them and the opt0/opt3/wasi legs skip them (about 6 minutes a leg). Naming
-// a file on the command line runs it on any leg.
+  ])
+  // Files whose compile inputs are the same on every leg — measured, not assumed: each was
+  // run under the default, opt0, opt3 and wasi legs with every in-process compile hashed
+  // (source plus the options after the env defaults merge), and the four hash sets were
+  // identical. They build the kernel, spawn tooling, or pass every option themselves, so a
+  // leg cannot change what they test: the default leg owns them and the opt0/opt3/wasi legs
+  // skip them (about 6 minutes a leg). Naming a file on the command line runs it on any leg.
 const LEG_INVARIANT = new Set([
   'runner', 'test-infrastructure', // host test-runner lifecycle; no compiler inputs
   'bench-build', // fixed host and size options, CLI subprocess

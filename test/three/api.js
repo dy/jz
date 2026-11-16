@@ -122,7 +122,6 @@ export const euler_angle_t = () => { let s = 0, k = 1
     s += (e.x + e.y * 3 + e.z * 7 + f.x * 11 + f.y * 13 + f.z * 17 + g.x * 19 + g.y * 23 + g.z * 29) * k; k += 2 }
   return s }
 
-// ---- Matrix2 / Matrix3
 export const m2_all = () => sm(new Matrix2(1, 2, 3, 4), 4) + sm(new Matrix2().identity(), 4) * 3 + sm(new Matrix2().fromArray([0, 5, 6, 7, 8], 1), 4) * 7 + sm(new Matrix2().set(9, 8, 7, 6), 4) * 11 + b(new Matrix2().isMatrix2) * 13
 export const m3_algebra = () => { const a = M3(), c = new Matrix3().set(1, 2, 3, 0, 1, 4, 5, 6, 0), x = V3(), y = V3(), z = V3(), arr = [0, 0, 0, 0, 0, 0, 0, 0, 0]
   a.extractBasis(x, y, z); a.transposeIntoArray(arr)
@@ -149,7 +148,6 @@ export const m4_make = () => { const p = V3(), q = new Quaternion(), s = V3()
 export const m4_angle_t = () => sm(new Matrix4().makeRotationX(0.4), 16) + sm(new Matrix4().makeRotationY(0.4), 16) * 3 + sm(new Matrix4().makeRotationZ(0.4), 16) * 5 + sm(new Matrix4().makeRotationAxis(V3(0, 0.6, 0.8), 0.4), 16) * 7
   + sm(new Matrix4().makeRotationFromEuler(new Euler(0.1, 0.2, 0.3, 'ZXY')), 16) * 11
 
-// ---- Box2 / Box3
 export const box2_all = () => { const a = new Box2(V2(-1, -2), V2(3, 4)), c = new Box2().setFromPoints([V2(0, 0), V2(5, 1), V2(-2, 3)]), t = V2()
   return s2(a.getCenter(t)) + s2(a.getSize(t)) * 2 + s2(c.min) * 3 + s2(c.max) * 5 + b(a.isEmpty()) * 7 + b(new Box2().isEmpty()) * 11 + b(a.containsPoint(V2(1, 1))) * 13 + b(a.containsBox(c)) * 17
     + b(a.intersectsBox(c)) * 19 + s2(a.getParameter(V2(1, 1), t)) * 23 + s2(a.clampPoint(V2(9, -9), t)) * 29 + a.distanceToPoint(V2(9, -9)) * 31 + s2(a.clone().intersect(c).max) * 37
@@ -164,7 +162,6 @@ export const box3_all = () => { const a = new Box3(V3(-1, -2, -3), V3(3, 4, 5)),
     + b(a.intersectsTriangle(new Triangle(V3(0, 0, 0), V3(9, 0, 0), V3(0, 9, 0)))) * 97 + b(a.intersectsTriangle(new Triangle(V3(9, 9, 9), V3(19, 9, 9), V3(9, 19, 9)))) * 101
     + (s3(a.getBoundingSphere(sph).center) + sph.radius) * 103 + s3(new Box3().setFromArray([1, 2, 3, -4, 5, 6, 7, -8, 9]).min) * 107 + s3(a.clone().applyMatrix4(M4()).max) * 109 + s3(new Box3().set(V3(1, 2, 3), V3(4, 5, 6)).max) * 113 }
 
-// ---- Sphere / Plane / Ray / Line3 / Triangle / Frustum
 export const sphere_all = () => { const a = new Sphere(V3(1, 2, 3), 4), t = V3(), bx = new Box3()
   return b(a.isEmpty()) + b(new Sphere().isEmpty()) * 2 + b(a.containsPoint(V3(2, 3, 4))) * 3 + a.distanceToPoint(V3(9, 9, 9)) * 5 + b(a.intersectsSphere(new Sphere(V3(8, 2, 3), 3))) * 7
     + b(a.intersectsBox(new Box3(V3(4, 4, 4), V3(9, 9, 9)))) * 11 + b(a.intersectsPlane(new Plane(V3(0, 1, 0), -5))) * 13 + s3(a.clampPoint(V3(9, 9, 9), t)) * 17 + s3(a.getBoundingBox(bx).max) * 19
@@ -211,7 +208,6 @@ export const color_text_t = () => { const sc = (q) => q.r + q.g * 3 + q.b * 7, h
     + sc(new Color(0.25, 0.5, 0.75).convertLinearToSRGB()) * 47 + sc(new Color().copySRGBToLinear(new Color(0.25, 0.5, 0.75))) * 53 + sc(new Color().copyLinearToSRGB(new Color(0.25, 0.5, 0.75))) * 59 }
 export const color_strings_t = () => new Color(0.25, 0.5, 0.75).getHexString() + ' ' + new Color('#1a2b3c').getStyle() + ' ' + new Color(0xff8040).getHexString()
 
-// ---- Spherical / Cylindrical / SphericalHarmonics3
 export const spherical_t = () => { const ss = (q) => q.radius + q.phi * 3 + q.theta * 7, sc = (q) => q.radius + q.theta * 3 + q.y * 7
   return ss(new Spherical(2, 0.4, 0.9)) + ss(new Spherical().set(1, 0, 0).makeSafe()) * 2 + ss(new Spherical().setFromVector3(V3(1, 2, 3))) * 3 + ss(new Spherical().setFromCartesianCoords(-1, 0.5, 2)) * 5
     + ss(new Spherical().copy(new Spherical(2, 0.4, 0.9)).clone()) * 7 + sc(new Cylindrical(2, 0.4, 0.9)) * 11 + sc(new Cylindrical().setFromVector3(V3(1, 2, 3))) * 13 + sc(new Cylindrical().setFromCartesianCoords(-1, 0.5, 2)) * 17
@@ -246,7 +242,6 @@ export const interpolants_t = () => { const times = new Float32Array([0, 1, 2]),
   for (const t of [0.25, 0.5, 1.75]) { const r = q.evaluate(t); s += (r[0] + r[1] * 3 + r[2] * 7 + r[3] * 11) * k; k += 2 }
   return s }
 
-// ---- Object3D's wiring: rotation and quaternion keep each other in step through `_onChange`
 export const object3d_sync_t = () => { const rotation = new Euler(), quaternion = new Quaternion()
   function onRotationChange() { quaternion.setFromEuler(rotation, false) }
   function onQuaternionChange() { rotation.setFromQuaternion(quaternion, undefined, false) }

@@ -1,11 +1,9 @@
 // Self-compiled compile target for `JZ_TEST_TARGET=jz.wasm node test/index.js`.
 //
-// Routes every `compile` (and thus jz()) through a kernel
-// — jz's whole pipeline (parse → jzify → prepare → compile → watr-encode) compiled to
-// wasm BY jz. The wasm takes a source string and returns wasm bytes; the host only
-// marshals the string in and reads the bytes out. Running the whole suite this way is
-// the test matrix with the compiler being jz-compiled-by-jz: any divergence from the
-// native run is a self-compile bug.
+// Routes every `compile` (and thus jz()) through a kernel — jz's whole pipeline
+// (parse → jzify → prepare → compile → watr-encode) compiled to wasm BY jz. Running
+// the whole suite this way is the test matrix with the compiler being
+// jz-compiled-by-jz: any divergence from the native run is a self-compile bug.
 //
 // The kernel is named, never substituted: JZ_KERNEL=<file> names explicit bytes
 // (a private review kernel); the jz.wasm leg (JZ_TEST_TARGET=jz.wasm) consumes
@@ -65,9 +63,8 @@ const DEFAULT_OPT = (() => {
 // "Duplicate local"); a real self-compile run compiles one program per instance, so a
 // fresh instance per compile both models that and keeps the test:wasm signal free of
 // cross-compile contamination. `instantiate` accepts a Module, so this is just a new
-// Instance (fresh memory) — no recompile.
-// Cache failure as well: a later test must not retry or consume an artifact
-// that appeared after this run's build/read failed. Program errors are separate.
+// Instance (fresh memory) — no recompile. Cache failure as well: a later test must
+// not retry or consume an artifact that appeared after this run's build/read failed.
 let selfModule, selfFailure
 /** Which kernel this process consumes, by name. */
 export const kernelSource = () => process.env.JZ_KERNEL ? `JZ_KERNEL ${process.env.JZ_KERNEL}` : process.env.JZ_TEST_TARGET === 'jz.wasm' ? 'dist/jz.wasm' : 'fresh private build'
@@ -147,8 +144,6 @@ export const compileViaKernel = (code, opts = {}) => {
     throw new Error('Analysis inspection and compiler profiles require the in-process compiler; the Wasm target does not expose host compiler state')
   // Compile-time advisories: the kernel runs the same advise passes and returns the
   // collected entries as JSON, which we splice into the caller's `warnings` sink.
-  // Done on its own fresh instance, then we fall through to produce the bytes/WAT
-  // (jz() compiles AND instantiates while reading advisories off the result).
   if (opts.warnings || typeof opts.whyNotRewind === 'function') {
     const w = freshSelf()
     const entries = JSON.parse(w.memory.read(w.exports.compileWarnings(w.memory.String(code), opts.strict ? 1 : 0, optJSONFor(w, opts), modulesJSONFor(w, opts), hostFor(w, opts), sourceTypeFor(w, opts), buildJSONFor(w, opts))))
@@ -169,12 +164,9 @@ export const compileViaKernel = (code, opts = {}) => {
     // Forward an optimize config so the self-compile runs the same COMPILE-level passes
     // (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and emits the
     // same shapes. An UNSPECIFIED optimize mirrors the native default — level 2
-    // (resolveOptimize(undefined), as test/_env.js / JZ_TEST_OPTIMIZE applies it) —
-    // not optimize:false, else every level-2 shape test compares native-level-2 codegen
-    // against kernel-level-0 and diverges. The config (watr included) is forwarded
-    // verbatim: self.js's compileWat now runs the full index.js optimization tail
-    // (watOptimize + the optimizeFunc 'post' pass), so the self-compile emits the same
-    // WAT IR native does. Explicit optimize:false / 0 stays off.
+    // (resolveOptimize(undefined), as test/_env.js / JZ_TEST_OPTIMIZE applies it) — not
+    // optimize:false, else every level-2 shape test compares native-level-2 codegen
+    // against kernel-level-0 and diverges. Explicit optimize:false / 0 stays off.
     const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts), buildJSONFor(self, opts)))
     return wat
   }

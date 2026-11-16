@@ -9,9 +9,7 @@ if (!gc && isMainThread) {
   v8.setFlagsFromString('--no-expose-gc')
 }
 
-// Call only after a test/program's instances have left the stack. Wasm memory
-// is outside V8's managed heap. Batches bound GC overhead; a byte threshold
-// handles a few large instances sooner. Workers inherit --expose-gc from Node.
+// Call only after a test/program's instances have left the stack.
 export function collector(collect = gc) {
   let completed = 0, previous = process.memoryUsage()
   return (force = false) => {

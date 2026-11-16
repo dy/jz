@@ -1,10 +1,9 @@
 // Hold each optimizer step to its entry in the pass table (src/optimize/pass-table.js): a step
 // reads of the compile's facts only what its entry takes or makes, and writes only what it
 // makes. On under JZ_DEBUG_INVARIANTS for every compile of the process (test/util.js loads
-// this, the fuzzer through it); test/pass-table.js turns it on for its own compiles.
-// A Proxy, so it lives here: the compiler's source stays in the subset it compiles, and its
-// walks hand a step the facts themselves. The hold wraps each stage's runners instead, in
-// the lists the stages read them off.
+// this, the fuzzer through it); test/pass-table.js turns it on for its own compiles. A Proxy,
+// so it lives here: the compiler's source stays in the subset it compiles, and its walks hand
+// a step the facts themselves.
 import { PASSES } from '../src/optimize/pass-table.js'
 import { RUN } from '../src/optimize/driver.js'
 import { MODULE, GLOBAL_PTR, GLOBAL_LOADS } from '../src/wat/assemble/optimize-module.js'

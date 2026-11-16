@@ -2,10 +2,9 @@
 // loops forever is a failed assertion, not a hung suite. `bounded(job, ms)` hands the worker
 // (test/_bounded-worker.js) a job: `src` compiled once at `optimize`, then each of `runs` on an
 // instance of its own, a list of [export, args] called in order (`@reset` for the instance's
-// `memory.reset()`); `calls` the host imports, each
-// [import, export], an import that calls the export back. Answers come back as strings, a throw
-// as `throws: <message>`. Returns { results, calls } (the calls back), or { hung: [run, call] }:
-// where the job was when the limit came. The caller waits synchronously (Atomics.wait).
+// `memory.reset()`); `calls` the host imports, each [import, export], an import that calls the
+// export back. Answers come back as strings, a throw as `throws: <message>`. Returns { results,
+// calls } (the calls back), or { hung: [run, call] }: where the job was when the limit came.
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads'
 
 let worker = null, port = null, flags = null

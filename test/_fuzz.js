@@ -1,25 +1,17 @@
 // Differential FUZZER — generative correctness oracle for the compiler.
 //
-// `differential.js` pins 13 hand-written programs; this file SYNTHESIZES random
-// programs from the jz subset, runs each one two ways — as plain JavaScript
-// (ground truth, since "valid jz = valid JS") and as jz-compiled WASM at every
-// optimize level — and asserts the results agree. A disagreement is a miscompile;
-// the run is deterministic (seeded) and self-shrinks the failing program to a
-// minimal reproducer.
+// A disagreement is a miscompile; the run is deterministic (seeded) and
+// self-shrinks the failing program to a minimal reproducer.
 //
 // Scope = the bit-exact numeric core: arithmetic, bitwise, comparisons, ternary,
 // let/assignment, if/else, bounded while loops, and the Math.* fns that are
 // IEEE-identical between wasm f64 and JS f64 (floor/ceil/round/trunc/abs/sqrt/
 // min/max/imul). Transcendental Math.* and fractional `**` are excluded — their
-// last-ULP differences are not jz bugs. Strings/objects/arrays are future work
-// (the generator is feature-gated so they can be added without touching the loop);
-// arrays of records read across frames have a mode of their own (record-flow).
+// last-ULP differences are not jz bugs.
 //
 // The generators, oracles and shrinker live here; the seeded suite gate and the
 // exploratory CLI are test/fuzz.js, and test/wat-invariants.js sweeps the same
 // populations for absence-of-overhead.
-//
-// @module test/_fuzz
 import { onKernel } from './_matrix.js'
 import { oracle, jz } from './util.js'
 import { collect } from './_gc.js'
@@ -27,35 +19,19 @@ import { collect } from './_gc.js'
 // KERNEL-ONLY hang exclusion (region-hooks-on kernel investigation,
 // .work/archive/region-release-notes.md "goal (2)", 2026-08-28) — seed=84 at opt=3
 // compiles instantly and correctly NATIVELY (confirmed: `node test/fuzz.js
-// --seed=84` matches JS at every opt level 0-3 with no delay) but the
-// IDENTICAL source, compiled through the self-hosted region-hooks-on kernel
-// (`JZ_TEST_TARGET=jz.wasm`), never returned: sustained 100% CPU, STABLE
-// ~1.1GB RSS (no runaway growth), for 8+ minutes with zero progress signal
-// before being killed — well past the 420s fence test/index.js's own
-// `KERNEL-LEG DEBT` comment documents for the `transform` file's own
-// still-open in-kernel hang exclusion (the closest existing precedent). A
-// PRIOR session's kernel-target run (before this campaign's Class 1/Class 2/
-// mfold/date fixes landed) reported a DIFFERENT symptom for this same seed —
-// a fast, synchronous "Maximum call stack size exceeded" — not a hang; this
-// discrepancy (crash → hang) between sessions is itself unexplained and is
-// the most useful lead for whoever localizes this for real: something in
-// this campaign's own accumulated fixes plausibly changed which code path
-// the self-hosted compiler takes for this exact generated program, without
-// closing whatever pathology sits underneath (isPlanTaggedBigint depth?
-// narrowSignatures' own fixpoint on a wide/nested ternary-heavy body? — not
-// determined). NOT proven to be a self-hosted-compiler stack-depth limit
-// (native has plenty of headroom, but that alone doesn't localize an
-// in-kernel-only hang) and NOT proven to be a genuine region-arena defect —
-// this is a documented, unresolved gap, the same disposition as `transform`'s
-// own exclusion. Kept OUT of KNOWN_OPEN (that ratchet only suppresses a
-// RETURNED finding — it can't help a call that never returns) and instead
-// skipped before the compile is ever attempted, gated on onKernel() so
+// --seed=84` matches JS at every opt level 0-3 with no delay) but the IDENTICAL
+// source, compiled through the self-hosted region-hooks-on kernel
+// (`JZ_TEST_TARGET=jz.wasm`), never returned: sustained 100% CPU, STABLE ~1.1GB
+// RSS (no runaway growth), for 8+ minutes with zero progress signal before being
+// killed — well past the 420s fence test/index.js's own `KERNEL-LEG DEBT` comment
+// documents for the `transform` file's own still-open in-kernel hang exclusion
+// (the closest existing precedent). Kept OUT of KNOWN_OPEN (that ratchet only
+// suppresses a RETURNED finding — it can't help a call that never returns) and
+// instead skipped before the compile is ever attempted, gated on onKernel() so
 // native fuzzing keeps full seed coverage.
 const KERNEL_HANG_SEEDS = new Set([84])
 
-// ─────────────────────────────────────────────────────────────────────────────
 // PRNG — explicit LCG so every program + input vector reproduces from its seed.
-// ─────────────────────────────────────────────────────────────────────────────
 const mkRng = (seed) => {
   let s = seed >>> 0
   const r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296
@@ -65,11 +41,7 @@ const mkRng = (seed) => {
   return r
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Generator — builds a small AST of plain tagged objects. Every expression is
-// numeric; the serializer fully parenthesizes, so generation never reasons about
-// precedence and the shrinker can swap any subtree freely.
-// ─────────────────────────────────────────────────────────────────────────────
+// Generator — builds a small AST of plain tagged objects.
 const ARITH = ['+', '-', '*', '/', '%']
 const BITWISE = ['&', '|', '^', '<<', '>>', '>>>']
 const CMP = ['<', '>', '<=', '>=', '===', '!==']
@@ -84,10 +56,9 @@ export const DEFAULTS = { maxDepth: 4, maxStmts: 6, maxParams: 3, loops: true, b
 //   • Every binding name is globally unique (shared `ctr`). jz hoists `let` to
 //     function scope, so two same-named block-locals would merge in jz but not in
 //     JS — uniqueness erases that divergence.
-//   • `rw` = readable+writable in-scope names (params + lets declared earlier in
-//     this block / enclosing blocks). `ro` = read-only (loop counters). A child
-//     block copies its parent's names; its own `let`s do NOT leak back out, so a
-//     binding is never read before its declaration or outside its block.
+//   A child block copies its parent's names; its own `let`s do NOT leak back
+//     out, so a binding is never read before its declaration or outside its
+//     block.
 const readable = (scope) => scope.ro.length ? scope.rw.concat(scope.ro) : scope.rw
 const childScope = (scope, extraRo = []) => ({ rw: [...scope.rw], ro: [...scope.ro, ...extraRo], ctr: scope.ctr })
 
@@ -154,9 +125,7 @@ const genProgram = (seed, cfg = DEFAULTS) => {
   return { params, body, ret }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Serializer — AST → source. Fully parenthesized; identical text for JS and jz.
-// ─────────────────────────────────────────────────────────────────────────────
+// Serializer — AST → source.
 const sExpr = (e) => {
   switch (e.k) {
     case 'num': return String(e.v)
@@ -179,20 +148,15 @@ const sStmt = (s) => {
 const toSource = (prog) =>
   `export let f = (${prog.params.join(', ')}) => { ${sStmts(prog.body)} return ${sExpr(prog.ret)}; }`
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Oracle — compile/run both ways; compare bit-exactly (Object.is folds -0/NaN).
-// ─────────────────────────────────────────────────────────────────────────────
-// Modest inputs can still produce wide intermediates. Keep those in scope,
-// including unsigned results and signed zero; only the documented wide
-// bitwise-operand divergence is filtered below.
+// Keep those in scope, including unsigned results and signed zero; only the
+// documented wide bitwise-operand divergence is filtered below.
 const SPECIALS = [0, -0, 1, -1, 2, -2, 0.5, -0.5, 3, 7, 255, 256, -256, 1000, -1000, 8191, 0.1, NaN, Infinity, -Infinity, 12345.678, -9876.5]
 const argval = (g) => g.chance(0.4) ? g.pick(SPECIALS) : (g() - 0.5) * (g.chance(0.5) ? 2 ** 14 : 200)
 // Object.is also observes signed zero and agrees for two NaNs.
 export const same = (a, b) => Object.is(a, b)
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Contract model — track only executed bitwise operands outside |x| < 2^63.
-// ─────────────────────────────────────────────────────────────────────────────
 const wideBitwise = v => Math.abs(v) >= 2 ** 63
 const jsBin = (o, a, b) => {
   switch (o) {
@@ -266,9 +230,7 @@ const compileJS = (src) => oracle(src).f
 
 // Static lexical-scope validity. JS only throws on an undeclared read when the
 // read is *evaluated*, so a dead branch (`(1) ? 0 : undeclared`) runs fine in JS
-// but jz (AOT, compiles all branches) rejects it — not a miscompile. A runtime
-// probe can't see this; this static walk does. Used to reject shrink candidates
-// that break scoping (the generator's own output is always well-scoped).
+// but jz (AOT, compiles all branches) rejects it — not a miscompile.
 const exprScoped = (e, sc) =>
   e.k === 'num' ? true
     : e.k === 'var' ? sc.has(e.n)
@@ -292,10 +254,7 @@ const wellScoped = (prog) => {
 }
 
 // Check one program. Returns null when every opt level matches JS for every
-// input, else the divergence { kind, opt, args, got, want }. `kind: 'invalid'`
-// means the program is malformed JS (the numeric subset never throws at runtime,
-// so a JS throw ⇒ a bad shrink dropped a still-referenced binding) — it is NOT a
-// jz finding; failsKind ignores it, so shrinking can never drift there.
+// input, else the divergence { kind, opt, args, got, want }.
 export const check = (prog, opts) => {
   if (!wellScoped(prog)) return { kind: 'invalid' }   // reject scope-broken shrink candidates
   const src = toSource(prog)
@@ -311,7 +270,6 @@ export const check = (prog, opts) => {
   for (const args of inputs) {
     try { wants.push(jsFn(...args)) } catch { return { kind: 'invalid' } }
   }
-  // Program is valid JS — now compile once per opt level (compile is the cost).
   const wasmFns = {}
   for (const opt of opts.optLevels) {
     // The scalar oracle uses JS's rounding at each operation. Exact rational
@@ -334,10 +292,8 @@ export const check = (prog, opts) => {
   return null
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Shrinker — greedily mutate the failing program toward a minimal still-failing
-// one. Mutate-test-restore on the live tree: cheap, no path bookkeeping.
-// ─────────────────────────────────────────────────────────────────────────────
+// one.
 // Shrinking preserves the divergence *kind*: a reduction is kept only if it still
 // fails the SAME way (mismatch / jz-compile / wasm-threw). A dropped `let` that
 // leaves an undeclared read makes JS throw (a different kind) → rejected →
@@ -403,9 +359,7 @@ const collectStmtExprs = (s) => {
   return out
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Driver.
-// ─────────────────────────────────────────────────────────────────────────────
 export const fuzz = (opts) => {
   contractStats.compared = contractStats.skipped = contractStats.nonNumeric = 0
   const findings = []
@@ -428,9 +382,7 @@ export const fuzz = (opts) => {
   return findings
 }
 
-// One human-readable report for a finding. Shrinks to a minimal reproducer
-// (preserving the failure kind), then RE-EVALUATES the shrunk program so the
-// shown args/got/want describe the minimal program — never the original.
+// One human-readable report for a finding.
 export const report = (f, opts) => {
   let prog = f.prog, d = f
   if (prog) {
@@ -446,19 +398,15 @@ export const report = (f, opts) => {
   return lines.join('\n')
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Typed-array mode (FUZZ-1) — exercises Float64Array element read/write/loop/reduce.
-// ─────────────────────────────────────────────────────────────────────────────
-// The scalar fuzzer never touches linear memory; this generates kernels that load,
-// mutate and store Float64Array elements in a counted loop and a reduction, then
-// diffs jz (memory-backed array) against JS (plain Float64Array) element-by-element
-// AND on the returned reduction. Element VALUE expressions use ONLY f64-stable ops
-// (+ - * / Math.sqrt/abs/min/max) over `buf[i]` and float literals: a Float64 load is
-// exact and these never i32-narrow, so jz == JS bit-for-bit with no contract caveat —
-// PROVIDED the generated expression isn't itself a compile-time constant (see below).
-// The loop counter `i` is i32 and is used only as the subscript — never inside a value
-// expression. The scalar generator separately covers arithmetic over counters,
-// including signed zero and results outside the signed-word range.
+// The scalar fuzzer never touches linear memory; this generates kernels that load, mutate
+// and store Float64Array elements in a counted loop and a reduction, then diffs jz
+// (memory-backed array) against JS (plain Float64Array) element-by-element AND on the
+// returned reduction. Element VALUE expressions use ONLY f64-stable ops (+ - * /
+// Math.sqrt/abs/min/max) over `buf[i]` and float literals: a Float64 load is exact and
+// these never i32-narrow, so jz == JS bit-for-bit with no contract caveat — PROVIDED the
+// generated expression isn't itself a compile-time constant (see below). The loop counter
+// `i` is i32 and is used only as the subscript — never inside a value expression.
 //
 // A subtree built ENTIRELY from F_LEAF
 // literals (no `buf[i]` anywhere in it) is exactly the shape `src/prepare/pre-eval.js`
@@ -552,17 +500,12 @@ export const fuzzTyped = (opts) => {
   return findings
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Pure-MAP mode (FUZZ-1) — the loop that ACTUALLY vectorizes.
-// ─────────────────────────────────────────────────────────────────────────────
 // `checkTyped` above mixes a store and a reduction in one loop, so `acc` is
-// loop-carried and the loop never lifts to SIMD. This generates a PURE element
-// map — `buf[i] = f(buf[i], consts)` with no cross-lane dataflow — which the
-// vectorizer DOES lift. Such a map is bit-exact by construction: lane k computes
-// exactly what scalar element k computes, with the same ops in the same order
-// (no reassociation), so jz == JS for ANY data including NaN/±Inf/±0 — no contract
-// caveat. The value expression includes `?:` conditionals (clamp / ReLU /
-// threshold), which is the generative coverage for conditional-lane vectorization.
+// loop-carried and the loop never lifts to SIMD. Such a map is bit-exact by
+// construction: lane k computes exactly what scalar element k computes, with the
+// same ops in the same order (no reassociation), so jz == JS for ANY data
+// including NaN/±Inf/±0 — no contract caveat.
 const genFloatCond = (g, d) => `(${genFloatExpr(g, d)} ${g.pick(CMP)} ${genFloatExpr(g, d)})`
 const genFloatVal = (g, d) =>
   (d > 0 && g.chance(0.32))
@@ -570,11 +513,7 @@ const genFloatVal = (g, d) =>
     : genFloatExpr(g, d)
 // The array is INTERNAL with a CONSTANT length: a param-array map keeps `n` as an
 // f64 (so the bound test is `f64.lt`, which the vectorizer skips) and lowers the
-// element WRITE through the dynamic-assign path — neither vectorizes. An internal
-// `new Float64Array(N)` with `i < N` gives the clean `i32`-bounded `f64.load`/
-// `f64.store` loop the vectorizer lifts. We seed it with a spread spanning the
-// comparison boundaries (negative/zero/positive) and return it for an element-wise
-// diff (Object.is — exact, distinguishes ±0, treats NaN==NaN).
+// element WRITE through the dynamic-assign path — neither vectorizes.
 const typedMapSource = (seed) => {
   const g = mkRng(seed)
   const N = 60 + g.int(8)   // 60..67: even & odd ⇒ exercises the SIMD body AND the scalar tail
@@ -611,18 +550,14 @@ export const fuzzTypedMap = (opts) => {
   return findings
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Int32Array mode (FUZZ-1) — integer maps + an i32 sum reduction.
-// ─────────────────────────────────────────────────────────────────────────────
 // Exercises the `(i32 ± i32)|0` lowering over typed-array loads (which emit as f64
 // then ToInt32): the optimizer folds it back to i32.add/sub, which is what lets the
-// int SUM reduction vectorize to i32x4.add. Every op is `|0`-clamped so JS and jz
-// agree step-for-step, including their explicit wrapping. The
-// returned sum crosses both the map result and the reduction.
-// `*` excluded: products of i32 values can exceed 2^53, where JS (Number) loses
-// precision before `|0`; multiplication needs its own rounding-sensitive oracle. The
-// kept ops are mod-2^32 homomorphic, so jz's per-step wrap == JS's exact-then-`|0`,
-// and the small init keeps every value well inside the exact range.
+// int SUM reduction vectorize to i32x4.add. `*` excluded: products of i32 values can
+// exceed 2^53, where JS (Number) loses precision before `|0`; multiplication needs
+// its own rounding-sensitive oracle. The kept ops are mod-2^32 homomorphic, so jz's
+// per-step wrap == JS's exact-then-`|0`, and the small init keeps every value well
+// inside the exact range.
 const I_LEAF = ['a[i]', '1', '2', '3', '7', '255']
 const iLeaf = (g) => g.chance(0.6) ? 'a[i]' : g.pick(I_LEAF)
 // Leaf comparisons isolate the typed map's comparison and conditional lowering.
@@ -722,8 +657,7 @@ export const fuzzTypedIntMinMax = (opts) => {
 // Affine Int32Array loops that do NOT vectorize (an early break/continue), so the
 // vectorizer falls through to induction-variable strength reduction — `a[i]` addressing
 // becomes a strided pointer. Differential vs JS validates the IV-SR transform keeps the
-// pointer in lockstep with `i` across break/continue control flow. Every op is `|0`-clamped
-// so JS and jz agree exactly, including their explicit wrapping.
+// pointer in lockstep with `i` across break/continue control flow.
 const IVSR_BODIES = [
   'if (a[i] > T) break; acc = (acc + a[i]) | 0;',
   'if (a[i] < 0) continue; acc = (acc ^ a[i]) | 0;',
@@ -803,9 +737,7 @@ export const fuzzTypedByteScan = (opts) => {
   return findings
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Loop-bound mode — PARAM-bounded counted loops over adversarial numeric bounds.
-// ─────────────────────────────────────────────────────────────────────────────
 // Every other generator uses a CONSTANT loop bound, so none exercises
 // narrowLoopBound's f64-param-bound → i32 snap against a NaN / ±Inf / fractional
 // bound — exactly where a naive `i <= n` narrowing miscompiles: `floor(NaN)` →
@@ -857,19 +789,8 @@ export const fuzzLoopBound = (opts) => {
   return findings
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Record-flow mode: an array of same-shaped records built in one frame, read in
 // another.
-// ─────────────────────────────────────────────────────────────────────────────
-// jz stores such an array inline (structInline; unionInline for a closed set of
-// shapes: the fields of every element in place, no object per record) only when
-// every frame that sees it agrees on the layout. The generators above build no
-// records and run in one function, so none tests that agreement: 1.0.0 shipped
-// reading a top-level binding of such an array with half its elements' worth of
-// garbage. Each program builds its records in `mk`, keeps the layout engaged
-// through `keep` (a reader the layout serves), hands `mk`'s result through one
-// SITE (the module's top level, an export the host reads, a callback, a closure,
-// a parameter default, a wrapper, a container) and reads it with one READER.
 const REC_FIELDS = ['x', 'y', 'vx', 'vy', 'm']
 const recordSource = (seed) => {
   const g = mkRng(seed)
@@ -973,7 +894,7 @@ export const fuzzRecords = (opts) => {
 // (test/wat-invariants.js) sweeps the SAME seeded programs the correctness
 // fuzzer runs, but checks the optimized WAT for absence-of-overhead (no f64
 // round-trip in an integer loop, no per-iteration pointer decode, …) rather
-// than just value parity. Same population, two oracles: correctness + waste.
+// than just value parity.
 export {
   genProgram as genScalarProgram, toSource as scalarSource,
   typedSource, typedMapSource, typedIntSource, typedIntMinMaxSource,

@@ -1,6 +1,5 @@
 import { correctBenchmarkRow } from '../assets/headline.js'
 
-// Allocation-heavy release controls, measured with the same Node host.
 export const MEMORY_CASES = ['jessie', 'watr', 'webaudio']
 
 // `bands` names a case held to a band of jz's peak over V8's instead (bench/claims.mjs,

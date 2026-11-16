@@ -23,9 +23,10 @@ const call = (m, k, a) => {
   } catch (e) { return `throws ${e?.constructor?.name ?? typeof e}` }
 }
 
-/** Every program of `progs` called with each of its argument lists at each of `configs`, against
- *  Node: one assertion a differing call, and one a population saying what it ran. `own` names the
- *  top-level bindings of a program (besides f, pre, g); `chunk` programs go to a module. */
+/**
+ * Every program of `progs` called with each of its argument lists at each of `configs`, against
+ *  Node: one assertion a differing call, and one a population saying what it ran.
+ */
 export function population(label, progs, { configs, own = [], chunk = Infinity }) {
   const names = new RegExp(`\\b(${['f', 'pre', 'g', ...own].join('|')})\\b`, 'g')
   let checks = 0

@@ -2,10 +2,7 @@ import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
 
 // The Porffor the bench's `porf-native` lane measures: release alpha 23, the
 // binary porffor.dev/install.sh installs (.github/workflows/bench.yml pins the
-// same release). Its version text names the commit by its first seven
-// characters; the evidence's `meta.versions.porffor` must carry them. The
-// compiler-core adapter (scripts/porffor-core-adapter.mjs) keeps an independent
-// compatibility fixture: it rewrites Porffor's source and checks its shape.
+// same release).
 export const PORFFOR_REV = 'a97a0ae8e296009aee482dff11b150528098a9b7'
 export const PORFFOR_RELEASE = 'alpha 23'
 export const porfforEvidenceMatches = version => !!version && version.includes(PORFFOR_REV.slice(0, 7))
