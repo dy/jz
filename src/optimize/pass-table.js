@@ -109,7 +109,7 @@ export const PASSES = [
   P('unswitchTypedParamLoop', 'func', '+vectorizeLaneLocal unswitchTypedParamLoop', { takes: 'f16' }),
   P('vectorizeLaneLocal', 'func', '+vectorizeLaneLocal', {
     after: [['nanCanon', 'the lifts read the sums, a canon only arithmetic reads gone'], ['pureFuncMap', 'its inline candidates']],
-    takes: 'pureFuncMap loweringLinks typedView warn', reads: 'loweringLinks cold', makes: 'vectorized', drops: 'loweringLinks irange mem' }),
+    takes: 'pureFuncMap loweringLinks typedView warn effects globals exports', reads: 'loweringLinks cold', makes: 'vectorized', drops: 'loweringLinks irange mem' }),
   P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
   P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
   P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),

@@ -50,6 +50,19 @@ export const stablePtrGlobalNames = (globalValTypes) => {
   return out
 }
 
+/** Whether no code writes module global `g` ('$name') once the start function has run: it is
+ *  immutable, or the module's code sets it in no function but the start function (`effects`,
+ *  optimize/effects.js setAfterStart) and the host reaches it by no export (an exported mutable
+ *  global is the host's to set between calls) and no import. Of the compile's facts: `globals`
+ *  (ctx.scope.globals) and `exports` (ctx.funcs.exports, a binding's name or the one it names). */
+export const settledGlobal = (g, { effects, globals, exports }) => {
+  const name = g.slice(1), rec = globals?.get(name)
+  if (!rec) return false
+  if (!rec.mut) return true
+  if (rec.export != null || exports && (Object.hasOwn(exports, name) || Object.values(exports).includes(name))) return false
+  return !!effects && !effects.setAfterStart(g)
+}
+
 export function hoistGlobalPtrOffset(fn, stablePtrGlobals, fx) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
   const bodyStart = findBodyStart(fn)

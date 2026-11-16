@@ -65,7 +65,7 @@ import { tryPerPixelColor } from './per-pixel-color.js'
 import { tryRampMap } from './ramp.js'
 import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduceBitExact, tryReduceReassoc } from './reduce.js'
-import { arrayPointers } from './alias.js'
+import { arrayPointers, globalCopies } from './alias.js'
 import { countsSigned, legal, localsHold } from './legality.js'
 import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks, stripScaffold, strips } from './scaffold.js'
 import { passCost } from './cost-model.js'
@@ -85,11 +85,12 @@ import { tryToneMap } from './tone-map.js'
 //   multiAcc, relaxedFloat, relaxedSimd, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap;
 // and the facts of the compile it reads: `links` (each emitted loop's block → what the
 // emitter proved of it, src/ir/control.js), `typedView` (a typed view of another's
-// buffer exists, which the store pairing does not model) and `warn` (the advisory sink).
+// buffer exists, which the store pairing does not model), `settled` (whether no code
+// writes a global after start, optimize/globals.js settledGlobal) and `warn` (the advisory sink).
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFloat = false, relaxedSimd = false, blurMP = true, whyNot = false,
     stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
-    pairIterations = false, links = null, typedView = false, warn = null } = opts
+    pairIterations = false, links = null, typedView = false, warn = null, settled = null } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -114,7 +115,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // (a static one's entry write is the address every call passes, compile/emit-func.js).
   const distinctParams = fn.distinctParams ? new Set(fn.distinctParams) : null
   if (distinctParams) for (const n of writtenLocals(fn)) distinctParams.delete(n)
-  let pointerOf = null
+  let pointerOf = null, globals = null
 
   // Build local-name → wasm-type map.
   const fnLocals = new Map()
@@ -126,7 +127,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       fnLocals.set(d[1], d[2])
     }
   }
-  const env = { fnLocals, distinct: distinctParams, pointerOf: () => pointerOf ??= arrayPointers(fn) }
+  const env = { fnLocals, distinct: distinctParams, pointerOf: () => pointerOf ??= arrayPointers(fn), globals: () => globals ??= globalCopies(fn, settled) }
 
   // Loop-invariant constant locals — hoistConstantPool's `$…_pg` pool (`set $L (f64.const C)`,
   // written exactly once). name → numeric value, used to resolve a constant `pow` exponent that

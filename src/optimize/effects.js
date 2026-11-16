@@ -135,7 +135,7 @@ export function solveEffects(funcs, { imports = null, callsNothing = null, later
   // Each function's own facts, one walk of its body.
   const names = [...bodies.keys()], ids = new Map()
   for (let i = 0; i < names.length; i++) ids.set(names[i], i)
-  const gIds = new Map(), tIds = new Map()
+  const gIds = new Map(), tIds = new Map(), afterStart = new Set()
   const own = [], edges = [], leaves = new Uint8Array(names.length)
   let flags = 0, sets = null, calls = null, stores = null, leaving = false
   const scan = (n) => {
@@ -168,7 +168,7 @@ export function solveEffects(funcs, { imports = null, callsNothing = null, later
       const aliases = globalBaseAliases(fn)
       for (const s of stores) { const g = memGlobal(s, aliases).global; if (g) typed.add(g); else { flags |= MEM; break } }
     }
-    for (const g of sets ?? []) if (!gIds.has(g)) gIds.set(g, gIds.size)
+    for (const g of sets ?? []) { if (!gIds.has(g)) gIds.set(g, gIds.size); if (names[f] !== '$__start') afterStart.add(g) }
     if (!(flags & MEM)) for (const g of typed) if (!tIds.has(g)) tIds.set(g, tIds.size)
     const more = later?.get(names[f])
     if (more) for (const m of more) if (ids.has(m)) (calls ??= new Set()).add(m); else flags |= foreign(m)
@@ -275,6 +275,9 @@ export function solveEffects(funcs, { imports = null, callsNothing = null, later
     sets: (name, g) => { const id = gIds.get(g); return id !== undefined && has(row(name), G0 + id) },
     /** May it set any global. */
     setsAny: (name) => { const r = row(name); for (let b = G0; b < bits; b++) if (has(r, b)) return true; return false },
+    /** May the module's code set global `g` once its start function has run: a function but
+     *  `$__start` sets it in its own body (what the host may set is the caller's to rule out). */
+    setAfterStart: (g) => afterStart.has(g),
     /** May it write memory a program value reaches. */
     writes: (name) => { const r = row(name); if (r[0] & MEM) return true; for (let b = T0; b < G0; b++) if (has(r, b)) return true; return false },
     /** The typed-array globals it may write through, with '*' for any memory. */
@@ -300,7 +303,7 @@ export function solveEffects(funcs, { imports = null, callsNothing = null, later
 export const lazyEffects = (solve) => {
   let fx = null
   const get = () => fx ??= solve()
-  return { sets: (name, g) => get().sets(name, g), setsAny: (name) => get().setsAny(name), writes: (name) => get().writes(name),
+  return { sets: (name, g) => get().sets(name, g), setsAny: (name) => get().setsAny(name), setAfterStart: (g) => get().setAfterStart(g), writes: (name) => get().writes(name),
     memOf: (name) => get().memOf(name), header: (name) => get().header(name), throws: (name) => get().throws(name), marked: (name) => get().marked(name),
     host: (name) => get().host(name), returns: (name) => get().returns(name), results: (name) => get().results(name), kind }
 }

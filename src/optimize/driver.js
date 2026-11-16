@@ -22,7 +22,7 @@ import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs, foldLoadCasts, holdWordNumbers,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
-import { promoteGlobals } from './globals.js'
+import { promoteGlobals, settledGlobal } from './globals.js'
 import { promoteCells } from './cells.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
@@ -93,6 +93,7 @@ export const RUN = [
       crPow: cfg.crPow === true,
       pairIterations: cfg.pairIterations === true,
       links: facts.loweringLinks, typedView: !!facts.typedView, warn: facts.warn,
+      settled: (g) => settledGlobal(g, facts),
     }) && typeof fn[1] === 'string') facts.vectorized?.add(fn[1])
   }],
   // The vectorizer emits `v128.load/store (i32.add base K)` for the unrolled

@@ -48,7 +48,7 @@ import { shut, strips } from './scaffold.js'
  *  `fnLocals`, `distinct` parameters and `pointerOf()` (alias.js arrayPointers). */
 export function legal(r, node, liveAfter, env) {
   if (!r || !localsHold(r, node, liveAfter) || !countsSigned(r, node)) return null
-  return gateStrips(r, node, env.fnLocals, env.distinct, env.pointerOf())
+  return gateStrips(r, node, env.fnLocals, env.distinct, env.pointerOf(), env.globals?.())
 }
 
 /** Whether `r`'s strips run the iterations of `node`'s loop: under an unsigned exit, each

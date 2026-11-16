@@ -165,6 +165,25 @@ export function arrayPointers(fn) {
 // (an allocation's payload is where its pointer points: module/core.js __alloc_hdr)
 const POINTER_CALLS = new Set(['$__ptr_offset', '$__ptr_offset_fwd', '$__alloc_hdr', '$__alloc_hdr_n'])
 
+/** The locals every write of which copies one global no code writes after start (`settled`,
+ *  optimize/globals.js settledGlobal), each to that `global.get`: the local holds the global's
+ *  value wherever it is read, so a reader of an address reads the global through it. A test of
+ *  two such bases (gateStrips) then reads the globals, which are constants where the assembly
+ *  declares them with theirs (wat/assemble/start-fn.js hoistConstGlobalInits); a copy of one is
+ *  a local the optimizer keeps where its address is no small literal. */
+export function globalCopies(fn, settled) {
+  const of = new Map(), out = new Map()
+  if (!settled) return out
+  walkAst(fn, { enter: n => {
+    if (n[0] === 'param' && typeof n[1] === 'string') of.set(n[1], null)
+    if ((n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string') return
+    const v = n[2], g = n.length === 3 && isArr(v) && v[0] === 'global.get' && typeof v[1] === 'string' ? v[1] : null
+    of.set(n[1], !of.has(n[1]) || of.get(n[1]) === g ? g : null)
+  } })
+  for (const [local, g] of of) if (g && settled(g)) out.set(local, ['global.get', g])
+  return out
+}
+
 /** The test `D = 0 or |D| ≥ span`. */
 const apart = (d, span) => {
   const D = distanceExpr(d)
@@ -174,13 +193,14 @@ const apart = (d, span) => {
 
 /** Close the strips of the lift `r` of `node` behind the test its stores need: the lift, or
  *  null when some pair cannot be tested and the loop stays scalar. `distinct`: the parameters
- *  proven separate allocations. */
-export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
+ *  proven separate allocations. `globals`: the copies of settled globals (globalCopies). */
+export function gateStrips(r, node, fnLocals, distinct, pointerOf, globals) {
   const { wrapper } = r
   const loop = node.find(c => isArr(c) && c[0] === 'loop')
   const sites = loop ? memorySites(loop) : []
   if (!sites.some(s => s.store)) return r
   const { defs, copies, steps, written } = addressFacts(node, loop, fnLocals)
+  for (const [local, g] of globals ?? []) if (!copies.has(local) && !written.has(local)) copies.set(local, g)
   // The statements a lift runs lane by lane, in the loop's order (an outer strip's epilogue):
   // two of their sites on one base meet as the loop meets them.
   const inOrder = new Set()

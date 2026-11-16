@@ -9,7 +9,9 @@ import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
 import { simdBound, stripBlock, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
-import { gateStrips } from '../src/optimize/vectorize/alias.js'
+import { gateStrips, globalCopies } from '../src/optimize/vectorize/alias.js'
+import { solveEffects } from '../src/optimize/effects.js'
+import { settledGlobal } from '../src/optimize/globals.js'
 import { matchOuterPixelLoop } from '../src/optimize/vectorize/outer-scaffold.js'
 import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
 import { tryVectorize } from '../src/optimize/vectorize/map.js'
@@ -4943,6 +4945,45 @@ test('SIMD two names for one array - a lift with no strip to close stays scalar 
   const strip = stripBlock(['block', '$s'], '$i', ['local.get', '$n'], 2), r = { wrapper: ['block', strip] }
   ok(gateStrips(r, scalar, locals, null, () => true), 'a statement strip is closed')
   is(r.wrapper[1][0], 'if', 'behind its test')
+})
+
+// A local that copies a global no code writes after start (optimize/promoteGlobals' copy of a
+// global the function reads three times or more) is that global to the strip's test: two module
+// arrays are two constants once the assembly declares them, and their distance folds where a
+// copy of one, an address no small literal, kept the test as the loop ran.
+test('SIMD two names for one array - a copy of a global no code writes after start is that global to the strip\'s test', () => {
+  if (belowOpt(2)) return
+  const pre = `const a = new Float64Array(64), b = new Float64Array(64)
+export let init = () => { for (let i = 0; i < 64; i++) { a[i] = (i * 37 % 23) - 11; b[i] = i % 7 } }
+export let k = () => { `
+  const bodies = [
+    'for (let i = 60; i >= 0; i--) b[i] = a[i] + 1; return b[0] + b[1] + b[2]',
+    'for (let i = 0; i < 60; i++) b[i] = a[i] + 1; return b[0] + b[1] + b[2]',
+    'for (let i = 0; i < 60; i++) b[i] = a[i] + 1; return a[0] + a[1] + b[0] + b[1] + b[2]',
+  ]
+  for (const body of bodies) for (const optimize of levels(2, 3)) {
+    const src = pre + body + ' }\n', want = oracle(src), got = jz(src, { optimize }).exports
+    want.init(); got.init()
+    is(got.k(), want.k(), `${body}: k at ${optimize}`)
+    if (onKernel()) continue
+    const w = funcWat(compile(src, { optimize, wat: true }), 'k')
+    ok(hasV128(w) && !/\(select/.test(w), `${body}: lifted with no test at ${optimize}`)
+  }
+})
+
+test('SIMD two names for one array - the copies of a settled global, and what settles one', () => {
+  const fn = ['func', '$f', ['param', '$p', 'i32'], ['local', '$a', 'i32'], ['local', '$b', 'i32'], ['local', '$c', 'i32'], ['local', '$d', 'i32'],
+    ['local.set', '$a', ['global.get', '$x']], ['local.set', '$b', ['global.get', '$x']], ['local.set', '$b', ['global.get', '$y']],
+    ['local.set', '$c', ['global.get', '$x']], ['local.set', '$c', ['i32.const', 0]], ['local.set', '$p', ['global.get', '$x']],
+    ['drop', ['local.tee', '$d', ['global.get', '$x']]], ['local.set', '$d', ['global.get', '$x']]]
+  is([...globalCopies(fn, () => true)].map(([l, g]) => l + '=' + g[1]).join(), '$a=$x,$d=$x', 'every write the one global, never a parameter')
+  is(globalCopies(fn, (g) => g !== '$x').size, 0, 'nor a global that may be written')
+  const fx = solveEffects([['func', '$__start', ['global.set', '$x', ['i32.const', 16]]], ['func', '$f', ['global.set', '$y', ['i32.const', 1]]]])
+  ok(!fx.setAfterStart('$x') && fx.setAfterStart('$y'), 'the start function\'s writes are before every other')
+  const globals = new Map([['x', { mut: true }], ['y', { mut: true }], ['z', { mut: false }], ['h', { mut: true, export: '__h' }]])
+  const settled = (g, exports = {}) => settledGlobal(g, { effects: fx, globals, exports })
+  is([settled('$x'), settled('$y'), settled('$z'), settled('$h'), settled('$w'), settled('$x', { x: true }), settled('$x', { e: 'x' })].join(),
+    'true,false,true,false,false,false,false', 'set by start alone, immutable; never one set later, the host\'s, an import, or exported')
 })
 
 test('SIMD map over a plain array of Numbers - the hop hoisted ahead of the loop runs ahead of the strip too, bit-exact', () => {
