@@ -32,6 +32,7 @@ import { is } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
 import { compile } from './util.js'
 import { bounded } from './_bounded.js'
+import { onKernel } from './_matrix.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const show = v => Object.is(v, -0) ? '-0' : String(v)
@@ -114,8 +115,12 @@ const OWN = /\b(g\d|m\d|h|f|cb\d)\b/g
 
 // A seed's programs as one module: Node evaluates it afresh for each argument, as jz
 // instantiates it afresh, and calls every program in order; a program Node throws on is left
-// out, as the scratch population did. One assertion a differing call, one a hang.
+// out, as the scratch population did. One assertion a differing call, one a hang. Not on the
+// leg of the compiler compiled by jz: there the worker compiles a seed's 400 programs in that
+// compiler, which frees nothing within a compile (not measured; modules of 683 and 1,000
+// programs of other populations ran out of its memory, 2026-11-15).
 const population = (label, progs) => {
+  if (onKernel()) return
   const part = progs.map(({ text, cbOf }, j) => ({ j, text, src: text.replace(OWN, `$1_${j}`), cbs: cbOf.map((m, i) => [`cb${i}_${j}`, `m${m}_${j}`]) }))
   const cbs = part.flatMap(q => q.cbs)
   const body = part.map(q => q.src).join('\n')

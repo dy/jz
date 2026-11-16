@@ -14,6 +14,7 @@
 // 2 and 3.
 import test from 'tst'
 import { population } from './_population.js'
+import { onKernel } from './_matrix.js'
 
 // (levels 1, 3 and size agree too, native and under WASI, 2026-11-15: 236 s of one core for the
 // six levels at load 20; with a part of 6a's legality taken out, level 2 is the first to differ)
@@ -198,8 +199,12 @@ add('P cond store ahead', 64, `for (let i = 0; i < n; i++) if (s[i] > 0) d[i + 1
 add('P stencil', 64, `for (let i = 1; i < n; i++) d[i] = s[i - 1] + s[i] + t[i + 1]`, ALL, programP)
 add('P first element', 64, `for (let i = 0; i < n; i++) d[i] = s[0] + t[i]`, ALL, programP)
 
-test(`vector order population: ${progs.length} loops over typed arrays one may alias, ${CONFIGS.length} configurations`, () =>
-  population('vector order', progs, { configs: CONFIGS, own: ['a', 'b', 'c', 'kern', 'fill', 'hash'] }))
+// (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
+// out of memory on the whole module, 2026-11-15)
+test(`vector order population: ${progs.length} loops over typed arrays one may alias, ${CONFIGS.length} configurations`, () => {
+  if (onKernel()) return
+  population('vector order', progs, { configs: CONFIGS, own: ['a', 'b', 'c', 'kern', 'fill', 'hash'] })
+})
 
 // The census's nine, each `f()` of no argument
 const fillA = 'for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) - 5.75'

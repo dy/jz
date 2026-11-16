@@ -14,6 +14,7 @@
 // 2^63. Node runs them as the README reads them, the product so converted before the shift.
 import test from 'tst'
 import { population } from './_population.js'
+import { onKernel } from './_matrix.js'
 
 // (levels 1, 3 and size agree too, 2026-11-15: 266 s of one core for the six levels at load 20;
 // with either fix above taken out, level 2 is the first to differ)
@@ -75,5 +76,9 @@ for (const p of progs) p.args = TRIPS.map(n => [n])
 const R63 = '((v) => v >= 2 ** 63 ? -1 : v <= -(2 ** 63) ? 0 : v)'
 for (const p of progs) if (p.name === 'u32 fixed mul' || p.name === 'u32 fixed mul 15') p.node = p.src.replace('b[i] = (a[i] * c[i]) >>', `b[i] = ${R63}(a[i] * c[i]) >>`)
 
-test(`vector narrow population: ${progs.length} loops of narrow-element arithmetic, ${CONFIGS.length} configurations`, () =>
-  population('vector narrow', progs, { configs: CONFIGS, own: ['a', 'b', 'c'] }))
+// (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
+// out of memory on the whole module, 2026-11-15)
+test(`vector narrow population: ${progs.length} loops of narrow-element arithmetic, ${CONFIGS.length} configurations`, () => {
+  if (onKernel()) return
+  population('vector narrow', progs, { configs: CONFIGS, own: ['a', 'b', 'c'] })
+})

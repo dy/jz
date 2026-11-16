@@ -5,6 +5,12 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { instantiate } from '../interop.js'
 import { compile } from './util.js'
 
+// The leg's compiler, as test/index.js sets it for the main thread: a worker's modules are its own.
+if (process.env.JZ_TEST_TARGET === 'jz.wasm') {
+  const [{ setCompileTarget }, { compileViaKernel }] = await Promise.all([import('../src/compiler.js'), import('./kernel-target.js')])
+  setCompileTarget(compileViaKernel)
+}
+
 const { port, flags } = workerData
 const show = v => Object.is(v, -0) ? '-0' : String(v)
 
