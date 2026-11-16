@@ -216,11 +216,11 @@ export let f = (x) => callAdd(x)`,
   // `kind` selects the slice bounds, sweeping across LAYOUT.SLICE_LEN_MASK
   // (0x1FFF = 8191, module/string.js) — the bit width of a view's packed
   // length field: under (152, mimicking the original spans[0].start), AT the
-  // mask exactly, one OVER it (nlen > SLICE_LEN_MASK forces
-  // __str_slice_view's OWN internal fallback to a copy), and a large offset
-  // slice. Each `kind` branch's `t` is its own `let t = s.slice(...)`
-  // declaration read back only via `t.length` (a non-escaping local) — the
-  // documented trigger for __str_slice_view (SLICE_BIT, no-copy) lowering
+  // mask exactly, one OVER it (nlen > SLICE_LEN_MASK forces __str_slice_view's
+  // OWN internal fallback to a copy), and a large offset slice. Each `kind`
+  // branch's `t` is its own `let t = s.slice(...)` declaration read back only
+  // via `t.length` (a non-escaping local) — the documented trigger for
+  // __str_slice_view (SLICE_BIT, no-copy) lowering
   // (src/compile/analyze-scans.js sliceViewCandidate requires the initializer
   // to be a DIRECT `.slice()` call — a ternary-selected initializer does NOT
   // qualify, verified while authoring this row: the ternary form the branches
@@ -302,8 +302,8 @@ test('kernel oracle: BigInt typed-array stores reject a Number before in-range o
   }
 })
 
-// preEval's rational constant-folding (src/prepare/pre-eval.js) carries an EXACT rational through
-// a whole numeric chain and rounds ONCE at the end (module doc, "Purity / precision guards":
+// preEval's rational constant-folding (src/prepare/pre-eval.js) carries an EXACT rational through a
+// whole numeric chain and rounds ONCE at the end (module doc, "Purity / precision guards":
 // `optimize.rationalConst`, by default as `relaxedFloat`: on at 'speed' alone). Naive JS rounds
 // after EVERY op ("double rounding"). This is NOT the native/kernel divergence audit P0-2 fixed
 // (that was native-vs-kernel disagreeing with EACH OTHER over HOST bigint width — both now compute
@@ -331,11 +331,10 @@ test('kernel oracle: fold — documented divergence (rational constant-fold vs n
     'fold: rationalConst:false recovers naive-JS parity (proves the divergence above is a chosen tradeoff, not an uncontrolled bug)')
 })
 
-// This is the oracle-tier version of test/data.js's P0-2 test
-// (`onKernel()`-gated for `JZ_TEST_TARGET=jz.wasm` runs of the whole suite):
-// here BOTH legs run unconditionally in one process, so the (now-closed)
-// divergence's AGREEMENT is asserted directly instead of behind an env-var
-// branch.
+// This is the oracle-tier version of test/data.js's P0-2 test (`onKernel()`-gated
+// for `JZ_TEST_TARGET=jz.wasm` runs of the whole suite): here BOTH legs run
+// unconditionally in one process, so the (now-closed) divergence's AGREEMENT is
+// asserted directly instead of behind an env-var branch.
 test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.features.bigint-gated __to_num)', async () => {
   if (onWasi()) return
   const src = 'export let f = () => -5e-324'
@@ -353,11 +352,12 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // in the program.
 //
 // BANKED, not fixed — pinned precisely (exact corrupted value, both native AND
-// kernel legs, both optimize tiers) so a future close of either (a) or (b) flips
-// this test's asserted values from the corrupted carrier to `want` in one edit.
-// `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a heterogeneous array
-// literal carrying a BigInt element into element storage whose kind this program
-// never proves uniform — exactly the "collection" flow class §4's table names.
+// kernel legs, both optimize tiers) so a future close of either (a) or (b)
+// flips this test's asserted values from the corrupted carrier to `want` in one
+// edit. `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a heterogeneous
+// array literal carrying a BigInt element into element storage whose kind this
+// program never proves uniform — exactly the "collection" flow class §4's table
+// names.
 test('kernel oracle: heterogeneous BigInt array element — strict-mode (opt-in) collection diagnostic (was audit-#16 KNOWN-FAIL, a runtime module-ordering corruption)', () => {
   const bSrc = `
     const arr = [1.5, 123456789012345n, 2.5]
@@ -437,15 +437,19 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
   }
 })
 
-// FLIPPED from KNOWN-FAIL (2026-08-10, §31): a carrier-built KERNEL (JZ_CARRIER_BOX=1, self-compiled —
-// dist/jz.wasm compiled from scripts/ self.js by the NATIVE compiler under the same flag) used to miscompile ANY
-// heap string literal used as a console.log argument — traced by §17 to mkPtrIR/packPtrBits (src/ir.js)
-// constant-folding a NaN-boxed pointer via layout.js's `ptrBits`, whose `LAYOUT.NAN_PREFIX_BITS` read starves
-// for `slotBigintProvenBySid` under the self-compiled build's whole-program `pointsTo==='ALL'` blanket (§17
-// finding 1, kernel-parity's `dict` row — STILL open, §18/§21/§22/§23 all walled on closing it safely).
-// Re-verified directly (§31): heap string ('bare-fired', ≥7 chars) and SSO string ('short', ≤6 chars) BOTH print
-// their correct, undecorated value on the kernel leg, at every optimize level (0/1/2/3), deterministically,
-// across repeated fresh-process runs — not a fluke of one run.
+// FLIPPED from KNOWN-FAIL (2026-08-10, §31): a carrier-built KERNEL
+// (JZ_CARRIER_BOX=1, self-compiled — dist/jz.wasm compiled from scripts/
+// self.js by the NATIVE compiler under the same flag) used to miscompile ANY
+// heap string literal used as a console.log argument — traced by §17 to
+// mkPtrIR/packPtrBits (src/ir.js) constant-folding a NaN-boxed pointer via
+// layout.js's `ptrBits`, whose `LAYOUT.NAN_PREFIX_BITS` read starves for
+// `slotBigintProvenBySid` under the self-compiled build's whole-program
+// `pointsTo==='ALL'` blanket (§17 finding 1, kernel-parity's `dict` row —
+// STILL open, §18/§21/§22/§23 all walled on closing it safely). Re-verified
+// directly (§31): heap string ('bare-fired', ≥7 chars) and SSO string
+// ('short', ≤6 chars) BOTH print their correct, undecorated value on the
+// kernel leg, at every optimize level (0/1/2/3), deterministically, across
+// repeated fresh-process runs — not a fluke of one run.
 test('kernel oracle: console.log string constants — AGREE (closed incidentally by §24 CONSERVATIVE PAIRING, .work/archive/carrier-representation-design.md §16→§17→§31)', async () => {
   if (onWasi()) return
   const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string

@@ -1,9 +1,9 @@
 /**
  * Reentrancy probe. Not another "compile twice in one process" determinism check
- * (test/determinism.js already has that) — this compares a WARM in-process
- * compile against a compile of the SAME program in a BRAND-NEW node process, so a
- * bug that corrupts BOTH the warm and a same-process "fresh" compile identically
- * (e.g. a wrong default baked in at module load) can't hide.
+ * (test/determinism.js already has that) — this compares a WARM in-process compile
+ * against a compile of the SAME program in a BRAND-NEW node process, so a bug that
+ * corrupts BOTH the warm and a same-process "fresh" compile identically (e.g. a
+ * wrong default baked in at module load) can't hide.
  *
  * Two pairs, each picked to bleed through exactly the state this slice folded
  * into ONE reset choreography (src/ctx.js's RESET_HOOKS / src/session.js's

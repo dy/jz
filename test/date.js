@@ -79,8 +79,8 @@ test('Date object: getTime and valueOf', () => {
 test('Date object: proven-receiver .valueOf()/.getTime() compares correctly against a NUMBER literal', () => {
   // kind-traits.js methodValType's `.valueOf() -> receiver kind` rule is
   // right for every OTHER type (jz's valueOf is a receiver passthrough,
-  // module/string.js) but wrong for Date: `.valueOf()` returns the
-  // timestamp, a NUMBER, never the receiver.
+  // module/string.js) but wrong for Date: `.valueOf()` returns the timestamp,
+  // a NUMBER, never the receiver.
   const [r0, r1] = runMany([
     'export let f = () => { let d = new Date(1234567890000); return d.valueOf() === 1234567890000 }',
     'export let f = () => { let d = new Date(1234567890000); return d.getTime() === 1234567890000 }',

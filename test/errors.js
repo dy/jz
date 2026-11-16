@@ -265,9 +265,9 @@ test('strict: string-default param rejects a number argument', () =>
   throwsStrict('export const g = (s = "") => s; export const a = () => g("x"); export const f = () => g(5)',
     'strict mode', 'string param <- number arg should error'))
 
-// `g`'s param is therefore genuinely polymorphic here (one call site passes
-// a real string, another passes a number) and must compile permissively,
-// same as any other duck-typed parameter jz can't prove a single kind for —
+// `g`'s param is therefore genuinely polymorphic here (one call site passes a
+// real string, another passes a number) and must compile permissively, same
+// as any other duck-typed parameter jz can't prove a single kind for —
 // trading an optional extra strict-mode diagnostic for never silently
 // miscompiling the closure-shadow shape (README.md: a missed compile-time
 // reject is far preferable to a silent wrong value).
@@ -276,12 +276,12 @@ test('strict: .charCodeAt usage alone does not prove a STRING param (no false-po
     { strict: true }).byteLength > 0, 'a genuinely polymorphic (string-or-number) .charCodeAt-using param must not be rejected on usage alone')
 })
 
-// `g`'s param is therefore genuinely polymorphic here (one call site
-// passes a real array, another passes a number) and must compile
-// permissively, same as any other duck-typed parameter jz can't prove a
-// single kind for — trading an optional extra strict-mode diagnostic for
-// never silently miscompiling the makeByteBuf shape (README.md: a missed
-// compile-time reject is far preferable to a silent wrong value).
+// `g`'s param is therefore genuinely polymorphic here (one call site passes
+// a real array, another passes a number) and must compile permissively,
+// same as any other duck-typed parameter jz can't prove a single kind for —
+// trading an optional extra strict-mode diagnostic for never silently
+// miscompiling the makeByteBuf shape (README.md: a missed compile-time
+// reject is far preferable to a silent wrong value).
 test('strict: .push usage alone does not prove an ARRAY param (no false-positive reject)', () => {
   ok(compile('export const g = (a) => { a.push(1); return a[0] }; export const h = () => g([1]); export const f = () => g(7)',
     { strict: true }).byteLength > 0, 'a genuinely polymorphic (array-or-number) .push-using param must not be rejected on usage alone')
@@ -682,9 +682,9 @@ test('array length past what memory can hold is the RangeError of an allocation'
 // elements, a byte each; a parse or a split that doubles its room) or a hash
 // table's capacity passes what memory can hold only past 512 MiB of data, more
 // than a test allocates: each such site is pinned by the test it makes where the
-// length comes in (`__dense_check` past DENSE_MAX, `__table_check` past
-// TABLE_MAX, module/core.js), the RangeError of an allocation the tests above
-// read through `new Array(n)`, a length store and an index store, which share it.
+// length comes in (`__dense_check` past DENSE_MAX, `__table_check` past TABLE_MAX,
+// module/core.js), the RangeError of an allocation the tests above read through
+// `new Array(n)`, a length store and an index store, which share it.
 test('a length taken from other data is tested where it comes in', () => {
   const sites = [
     ['spread of a typed array', 'export let f = (n) => [...new Uint8Array(n)].length', 'dense'],
@@ -720,8 +720,8 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   // A real userThrows escape (WebAssembly.Exception path) writes the SAME marker
   // global a trap-lowered throw does — decodeThrown must consume it there too, or
   // a later genuine trap on the SAME instance reads the stale nonzero value and
-  // misdecodes as the earlier, already-handled error. The later trap is
-  // padStart's unmarked string-length guard (the pin above).
+  // misdecodes as the earlier, already-handled error. The later trap is padStart's
+  // unmarked string-length guard (the pin above).
   const src = `export let f = (mode) => {
     if (mode === 1) throw 300
     return 'a'.padStart(2 ** 31).length
@@ -835,11 +835,11 @@ test('try: discarded method result before return compiles and runs', () => {
   is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
 })
 
-// `.message`/ `.name` read correctly, and String()/template-literal interpolation format
-// per spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message empty / message
-// if name empty / name+": "+message otherwise / "Error" if both empty) via src/ir.js's
-// toStrI64 Error-schema arm — the fix for the pre-existing `${anyDynamicObject}` → "" bug,
-// at least for Error objects.
+// `.message`/ `.name` read correctly, and String()/template-literal interpolation format per
+// spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message empty / message if
+// name empty / name+": "+message otherwise / "Error" if both empty) via src/ir.js's toStrI64
+// Error-schema arm — the fix for the pre-existing `${anyDynamicObject}` → "" bug, at least
+// for Error objects.
 test('errors: real Error objects (.work/archive/todo.md §deletion-sweep Slice A)', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return e.message } }`), 'boom', '.message reads the constructor argument')
@@ -909,8 +909,8 @@ test('errors: Error ctor message coercion (ES 20.5.1.1, audit-#9 P1)', () => {
 // The GENERAL ES 20.5.1.1 invariant — ToString(message) for ANY non-undefined message,
 // not just a literal — was already routing through toStrI64 (the same chokepoint
 // String()/template literals use) for the non-special-cased case; the gap was narrower
-// than "absent": a BOUND name pointing at a closed-schema object (no toString/valueOf,
-// no dyn/out-of-schema writes) didn't get the literal's short-circuit, so it fell into
+// than "absent": a BOUND name pointing at a closed-schema object (no toString/valueOf, no
+// dyn/out-of-schema writes) didn't get the literal's short-circuit, so it fell into
 // toStrI64's generic OBJECT path — which has a real, pre-existing, general,
 // Error-unrelated bug for non-Array objects (confirmed live: `String(o)` for a bound
 // plain object returns typeof "object", not a string at all — .work/archive/todo.md
@@ -1160,8 +1160,8 @@ test('instanceof: primitive wrapper probes include nullish values and primitive 
 
 // A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
 // names none by its spelling: `({}) instanceof OBJECT` folded to false. An
-// alias of a builtin constructor rejects: its instances are not told apart by
-// a run-time test, as an ordinary function's (`new` of one calls it) are not.
+// alias of a builtin constructor rejects: its instances are not told apart by a
+// run-time test, as an ordinary function's (`new` of one calls it) are not.
 test('instanceof: a binding holding a constructor is not told apart by its spelling', () => {
   for (const [src, want] of [
     [`export let f = () => { const O = Object; return 'o' instanceof O }`, false],
@@ -1183,8 +1183,8 @@ test('instanceof: a binding holding a constructor is not told apart by its spell
 
 // A function value answers as OrdinaryHasInstance does with its `prototype`
 // (ECMA-262 7.3.22): a generator's objects, sync or async, are its own (the
-// mark its factory puts on them, jzify/generators.js genMark), also through
-// a class's generator method read as a value; a function with no `prototype`
+// mark its factory puts on them, jzify/generators.js genMark), also through a
+// class's generator method read as a value; a function with no `prototype`
 // (an arrow, a method, an async function) throws the TypeError for an object
 // and answers false for a primitive.
 test('instanceof: a function value answers by its prototype', () => {
@@ -1304,8 +1304,8 @@ test('runtime throws: a constant error is thrown by one shared helper, every sit
 
 test('catch: a spread of a value that may not iterate keeps its try', () => {
   // The catch emitter drops a try whose body it proves cannot throw; a spread
-  // throws through the runtime's iterable normalization, with no call or
-  // throw in the source.
+  // throws through the runtime's iterable normalization, with no call or throw
+  // in the source.
   const src = `
     export const lit = (v) => { let r = 0; try { const a = [...v]; r = a.length } catch (e) { r = 7 } return r }
     const len = (...xs) => xs.length

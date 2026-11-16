@@ -4,8 +4,8 @@
 // rfft's butterflies keeps its index locals in integer registers. The inputs are
 // rfft's (examples/rfft): `id *= 4` leaves the word for n >= 2^31 - 1, `i0 += id` for
 // n >= 3 * 2^29 - 1, the stage loops' `ix = (id << 1) - n2` for n >= 2^29, a counter
-// at 2^31; and the box's own edges, where the copy is left mid-loop. Each loop
-// carries a cap on its trips where Node itself would not end.
+// at 2^31; and the box's own edges, where the copy is left mid-loop. Each loop carries
+// a cap on its trips where Node itself would not end.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
@@ -130,9 +130,9 @@ export let f = (s, st, n) => {
 })
 
 test('boxed counters: a -0 among the names of the box is no word of it', () => {
-  // A name the copy reads as written (a local every write of which is a literal, a bit operation or
-  // a length) lies in the box by comparison where it is -0, and the proof reads a name of the box as
-  // no -0: `(i + 1) * z` was a word of the copy, +0, at levels 2 and over, where the product is -0
+  // A name the copy reads as written (a local every write of which is a literal, a bit operation or a
+  // length) lies in the box by comparison where it is -0, and the proof reads a name of the box as no
+  // -0: `(i + 1) * z` was a word of the copy, +0, at levels 2 and over, where the product is -0
   // (ECMA-262, Number::multiply: a product's sign is negative where the operands' signs differ, a
   // zero's among them). `1 / i` tells the zeros apart. Expected values are Node's.
   const DECL = {
@@ -266,8 +266,8 @@ export let lines = (n, x0, y0, x1, y1) => {
 })
 
 test('boxed counters: where only the box builds a copy, the loop beside it stands as with no box', () => {
-  // The planner builds no copy of the outer loop (`ix` and `id` leave any width it proves), the
-  // box does. Expected values are Node's.
+  // The planner builds no copy of the outer loop (`ix` and `id` leave any width it proves), the box
+  // does. Expected values are Node's.
   const src = `const x = new Float64Array(64), a = new Float64Array(16)
 export let f = (n, m) => {
   let ix = 0, id = 1, r = 0

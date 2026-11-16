@@ -2,11 +2,11 @@
 // Node answers at levels 0 to 3, size and speed (the integrator's, against
 // src/compile/plan/integral-loops.js as read): what a held name enters with where the statement
 // before the loop is not what it looks like, -0 among the names of the box, a parameter the loop
-// writes, a loop with no braces, the state the copy hands over; a held name the declaring
-// statement writes again; and a copy that leaves for the loop as written, which must start where
-// the copy stopped (the DP row of test/integral-loops.js, its inner loop spelled six ways, alone
-// and as a `for` whose init is an assignment). Each scratch population is a block of its own
-// below, its names its own.
+// writes, a loop with no braces, the state the copy hands over; a held name the declaring statement
+// writes again; and a copy that leaves for the loop as written, which must start where the copy
+// stopped (the DP row of test/integral-loops.js, its inner loop spelled six ways, alone and as a
+// `for` whose init is an assignment). Each scratch population is a block of its own below, its
+// names its own.
 //
 // One program meets a divergence the README documents ("Numeric export parameters": a parameter
 // an exported function never uses as a string is compiled as a number and converted at the

@@ -1,9 +1,9 @@
 // Populations of the loops the bound tier admits (a counter an f64 for want of a range on its
-// bound, or whose hull is a step or a sum past the word), each program answering what Node
-// answers at levels 0 to 3, size and speed. The bound a word, a uint32, a sum or a difference of
-// words, another receiver's length, a module binding a step wrote; `for` and `while` up and down
-// by literal steps from the word's edges; nests, exits, a bound the body moves, an inner
-// function's integral parameter.
+// bound, or whose hull is a step or a sum past the word), each program answering what Node answers
+// at levels 0 to 3, size and speed. The bound a word, a uint32, a sum or a difference of words,
+// another receiver's length, a module binding a step wrote; `for` and `while` up and down by
+// literal steps from the word's edges; nests, exits, a bound the body moves, an inner function's
+// integral parameter.
 import test from 'tst'
 import { population } from './_population.js'
 

@@ -16,8 +16,8 @@ import { compile } from './util.js'
 
 
 // Residual known divergences: NONE — every corpus row is byte-identical at
-// every tier. If a change re-opens a divergence, re-add its `name|opt` key
-// here with a dated note.
+// every tier. If a change re-opens a divergence, re-add its `name|opt` key here
+// with a dated note.
 const PARITY_TODO = new Set()
 
 test('kernel parity: owned, imported and shared memory preserve options and returned values', () => {

@@ -590,8 +590,8 @@ test('call release: views of older storage release copied arguments and new desc
   }
 })
 
-// An arm a literal decides against is dropped by the emitter, its stores
-// with it: a site the census listed there is no escape.
+// An arm a literal decides against is dropped by the emitter, its stores with
+// it: a site the census listed there is no escape.
 for (const optimize of levels(2, 3, 'size'))
   test(`call release: a store in an arm a literal decides against is no escape, at ${optimize}`, () => {
     const src = `const st = { sos: null }

@@ -484,8 +484,8 @@ test('typeof: destructured matches indexed', async () => {
   is(f(), 'match')
 })
 
-// Destructuring the Math builtin must bind members like the equivalent alias `let
-// abs = Math.abs` (which compiles and runs).
+// Destructuring the Math builtin must bind members like the equivalent alias `let abs
+// = Math.abs` (which compiles and runs).
 test('destruct: from Math builtin namespace', () => {
   const { exports: { f } } = jz(`let { abs } = Math
 export let f = (x) => abs(x)`)
@@ -518,8 +518,8 @@ export let f = (v) => sqrt(abs(v)) * SQRT1_2 * SQRT2`)
   is(f(-4), Math.sqrt(Math.abs(-4)) * Math.SQRT1_2 * Math.SQRT2)
 })
 
-// Module top-level `let { … } = Math` must not collide with the compiler's
-// own internal globals of the same name in a multi-module bundle (observed as
+// Module top-level `let { … } = Math` must not collide with the compiler's own
+// internal globals of the same name in a multi-module bundle (observed as
 // "'abs' conflicts with a compiler internal — choose a different name").
 test('destruct: top-level `let {abs} = Math` in a multi-module bundle', () => {
   const { exports } = jz(

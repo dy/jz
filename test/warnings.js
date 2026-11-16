@@ -399,8 +399,8 @@ test('warnings: shape-lost names the layout of each construction site', () => {
 })
 
 // A summary the compile supersedes may lose a shape the program keeps: here the
-// first, taken before the spread of a spread has a layout, reads `opts.hop` as
-// a value of any kind and loses `ctx` to the hook its test would call.
+// first, taken before the spread of a spread has a layout, reads `opts.hop` as a
+// value of any kind and loses `ctx` to the hook its test would call.
 test('warnings: shape-lost reports what the emitted program loses, not an earlier summary', () => {
   const src = `let settings = (o) => ({ ...o, size: 2048 })
 let run = (opts) => { const hop = opts.hop, fn = typeof hop === 'function' ? hop : null; const ctx = { a: 1, b: 2 }; let s = 0; for (let i = 0; i < 4; i++) { if (fn) ctx.a = fn(i, ctx); s += ctx.a * ctx.b + (fn ? 0 : hop) } return s }

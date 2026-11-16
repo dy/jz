@@ -3,9 +3,9 @@
 // size and speed: the loop's bound (inline, less and plus one, halved, a mirrored index, a
 // `while`, an outer and an inner bound of a nest), a bound counted down to and from, the
 // counter's start, a stride, six offsets of the index, a cursor started or stepped by it; read,
-// tested for presence, stored, read and stored; four array types. Every loop is capped by its
-// own count, so any argument ends; each store past the end is no store in Node and each read
-// there undefined.
+// tested for presence, stored, read and stored; four array types. Every loop is capped by its own
+// count, so any argument ends; each store past the end is no store in Node and each read there
+// undefined.
 import test from 'tst'
 import { population } from './_population.js'
 

@@ -128,8 +128,8 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
     ok(!/call \$math\.pow2/.test(it), 'interference never needs the per-lane-scalar $math.pow2 mirror');
 });
 
-// It must be BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders
-// nothing per lane.
+// It must be BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders nothing
+// per lane.
 test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/watercolor/watercolor.js', import.meta.url), 'utf8');
     const watText = compile(src, { ...OPT, wat: true });
@@ -202,10 +202,10 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'metaballs outer-strip bit-exact vs scalar (1536 px, 15 frames)');
 });
 
-// Iterated-map reduction (tryIteratedReduce): lyapunov runs a per-pixel logistic recurrence over
-// two inner loops (warmup + accumulate), gathers a forcing sequence seq[si] (scalar index), selects
-// the rate r = seq[si]<1 ? a : b, and accumulates λ += log|r·(1−2x)| under a per-lane guard.
-// BIT-EXACT — per-lane IEEE arithmetic + the log_v mirror reorder nothing.
+// Iterated-map reduction (tryIteratedReduce): lyapunov runs a per-pixel logistic recurrence over two
+// inner loops (warmup + accumulate), gathers a forcing sequence seq[si] (scalar index), selects the
+// rate r = seq[si]<1 ? a : b, and accumulates λ += log|r·(1−2x)| under a per-lane guard. BIT-EXACT —
+// per-lane IEEE arithmetic + the log_v mirror reorder nothing.
 test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/lyapunov/lyapunov.js', import.meta.url), 'utf8');
     const base = (compile(src, { optimize: { level: OPT.optimize, outerStrip: false }, wat: true }).match(/f64x2\./g) || []).length;
@@ -327,8 +327,8 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
 
 // BIT-EXACT (extract-repack mirror + lane-parallel arithmetic).
 //
-// It may legitimately still contain `__is_str_key` — that's not tested here; what matters is the
-// lift itself (asserted above) and bit-exactness against the scalar path (below).
+// It may legitimately still contain `__is_str_key` — that's not tested here; what matters is the lift
+// itself (asserted above) and bit-exactness against the scalar path (below).
 test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)', () => {
     const src = fs.readFileSync(new URL('../examples/plasma/plasma.js', import.meta.url), 'utf8');
     const wat = compile(src, { ...OPT, wat: true });
@@ -353,10 +353,10 @@ test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exac
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'newton outcome-tracking bit-exact vs scalar (1536 px)');
 });
 
-// lorenz renders an f32 energy field then composites it paper→ink. NOTE: the unconditional
-// composite (clamp f32 energy → lerp → pack ARGB → store) does NOT vectorize yet — the
-// per-pixel-color pass only lifts the u32-density tonemap shape — so this is also the regression
-// guard for vectorizing it (it must stay bit-exact).
+// lorenz renders an f32 energy field then composites it paper→ink. NOTE: the unconditional composite
+// (clamp f32 energy → lerp → pack ARGB → store) does NOT vectorize yet — the per-pixel-color pass
+// only lifts the u32-density tonemap shape — so this is also the regression guard for vectorizing it
+// (it must stay bit-exact).
 test('example: lorenz energy composite renders + stays bit-exact scalar↔SIMD', () => {
     const src = fs.readFileSync(new URL('../examples/lorenz/lorenz.js', import.meta.url), 'utf8');
     const run = (opts) => { const { exports } = jz(src, { ...opts, randomSeed: 5 }); const px = exports.resize(80, 60); if (exports.init) exports.init(); for (let f = 0; f < 30; f++) exports.frame(f * 0.05, 0.3); return [...px]; };

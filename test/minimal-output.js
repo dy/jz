@@ -140,8 +140,8 @@ for (const [name, src] of Object.entries(NO_DEAD)) {
 }
 
 // Hot-loop leaf helpers inline (no per-iteration call tax)
-// A leaf with no loop of its own, ≤2 call sites, all inside a caller's loop, is spliced
-// in — V8's pre-Turboshaft wasm tiers never inline cross-function, so an out-of-line call
+// A leaf with no loop of its own, ≤2 call sites, all inside a caller's loop, is spliced in
+// — V8's pre-Turboshaft wasm tiers never inline cross-function, so an out-of-line call
 // here is a hard per-iteration cost. Guards the in-loop cap against creeping back down
 // below the medium-helper range.
 test('minimal: medium leaf called in a hot loop inlines', () => {
@@ -527,13 +527,13 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
 })
 
 // Reachability MUST still gate it exactly like every other Error mechanism
-// above: a program with no member-access/call site that could ever throw
-// one pays nothing (the pin right above already covers that — a program
-// with NO nullish-receiver check site at all never even calls
-// throwTypeErrorIR, so `ctx.module.include('string')` never fires). This
-// pin is the positive half: a program that DOES have one (a Map `.get()`
-// absent-key read feeding a property access — the same shape audit-#10's
-// own dyn-keys.js repro uses) must show the real strings.
+// above: a program with no member-access/call site that could ever throw one
+// pays nothing (the pin right above already covers that — a program with NO
+// nullish-receiver check site at all never even calls throwTypeErrorIR, so
+// `ctx.module.include('string')` never fires). This pin is the positive
+// half: a program that DOES have one (a Map `.get()` absent-key read feeding
+// a property access — the same shape audit-#10's own dyn-keys.js repro uses)
+// must show the real strings.
 test('minimal: nullish-receiver TypeError message strings appear exactly when the check site does (audit-#11 gap-2)', () => {
   if (skip) return
   const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
@@ -1127,9 +1127,9 @@ test('minimal: a binding an if fills holds a value past it', () => {
   }
 })
 
-// A collection or an array the summary proves is read in place: `new Set(array)` by
-// the program's own element read, `.size` from the table's header, `.length = 0` by
-// the word (module/collection.js, emit-assign.js).
+// A collection or an array the summary proves is read in place: `new Set(array)` by the
+// program's own element read, `.size` from the table's header, `.length = 0` by the
+// word (module/collection.js, emit-assign.js).
 test('minimal: a proven source reads in place', () => {
   if (skip) return
   const srcs = {
@@ -1271,9 +1271,9 @@ test('minimal: a proven table probes by its key\'s form', () => {
 })
 
 // An index the summary bounds reads in place (summary/span.js, summary/index.js):
-// a remainder of a shifted word by a fixed array's length, through a constant
-// too; a counter its loop bounds by the length, where the body calls a table's
-// method or pushes (none shrinks an array).
+// a remainder of a shifted word by a fixed array's length, through a constant too;
+// a counter its loop bounds by the length, where the body calls a table's method
+// or pushes (none shrinks an array).
 test('minimal: a bounded index reads in place', () => {
   if (skip) return
   const srcs = {

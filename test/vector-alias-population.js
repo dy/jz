@@ -1,12 +1,12 @@
 // A population of loops over arrays that may be one array, each answering what Node answers at
 // levels 0 to 3, size and speed, whichever arrays the loop is handed: two views of one buffer at
-// any distance (the store of one round read by a later one, or not yet overwritten when an
-// earlier one reads it), made by `subarray`, by the constructor over the buffer, or the same view
-// twice; 28 kernels (copies, maps, stencils, prefix sums, reductions, swaps, conditional stores,
-// reversed and strided walks, a cursor, a wrap) over five element types, and five kernels over
-// one array with the store a run-time distance from the load, a plain array among them. `off` and
-// `n` arrive at run time, the trip count around a strip of lanes, and the function reads what the
-// loop leaves in its locals.
+// any distance (the store of one round read by a later one, or not yet overwritten when an earlier
+// one reads it), made by `subarray`, by the constructor over the buffer, or the same view twice;
+// 28 kernels (copies, maps, stencils, prefix sums, reductions, swaps, conditional stores, reversed
+// and strided walks, a cursor, a wrap) over five element types, and five kernels over one array
+// with the store a run-time distance from the load, a plain array among them. `off` and `n` arrive
+// at run time, the trip count around a strip of lanes, and the function reads what the loop leaves
+// in its locals.
 import test from 'tst'
 import { population } from './_population.js'
 

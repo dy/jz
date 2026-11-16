@@ -34,8 +34,8 @@ test('cond-vectorize: clamp → i32x4', () => {
 })
 
 test('cond-vectorize: two-arm select → i32x4 bitselect', () => {
-  // Re-mask `a[i]` before the multiply (`(a[i]&127)*2 ≤ 254`, genuinely
-  // i32-safe) so this test again exercises its OWN subject — the
+  // Re-mask `a[i]` before the multiply (`(a[i]&127)*2 ≤ 254`, genuinely i32-safe)
+  // so this test again exercises its OWN subject — the
   // two-arm-select-to-bitselect lift — decoupled from the (separate, now-fixed)
   // product-safety question.
   //

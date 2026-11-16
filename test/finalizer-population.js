@@ -6,9 +6,9 @@
 // `o` in the finalizer; `main` calls it without a throw, with one, and without again, each
 // with other arguments, so a value left over from another copy or another call shows.
 //
-// Guards the class "a block's end a `try_table`'s catch clause branches to is a join". The
-// try population has finalizers too, of parameters of two kinds; here each parameter is of
-// one kind, as the values the optimizer shares are.
+// Guards the class "a block's end a `try_table`'s catch clause branches to is a join". The try
+// population has finalizers too, of parameters of two kinds; here each parameter is of one
+// kind, as the values the optimizer shares are.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'

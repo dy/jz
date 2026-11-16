@@ -47,8 +47,7 @@ const SIMD = head(/^(v128|f64x2|f32x4|i32x4|i16x8|i8x16)\./)
 const LI_SNAP = (n) => typeof n[1] === 'string' && /^\$__li\d/.test(n[1])
 
 // ABLATION — overhead PRESENT with the guarding pass off, ABSENT with it on.
-//    (control proves the check has teeth; on-state proves the named pass
-//    fires.)
+//    (control proves the check has teeth; on-state proves the named pass fires.)
 
 const boundedLoop = tree => {
   const loops = []
@@ -220,9 +219,9 @@ for (const [name, gen] of [
 // Two fixes: (1) toI32 distributes ToInt32 through `(if result f64)` recursively so
 // nested integer `?:` chains narrow to `(if result i32)` (lane-vectorized as i32x4
 // bitselect); (2) the last 2 residuals weren't user-loop f64 at all — a mixed
-// number/boolean ternary lost type precision, so `+` emitted polymorphic
-// string-concat dispatch, pinning the number→string formatter whose OWN loops (dtoa)
-// are f64 (src/kind.js VT['?:'], see the absence test below).
+// number/boolean ternary lost type precision, so `+` emitted polymorphic string-concat
+// dispatch, pinning the number→string formatter whose OWN loops (dtoa) are f64
+// (src/kind.js VT['?:'], see the absence test below).
 test(`sweep: typed-int emits NO f64 op in any loop body (seeds 1..${SWEEP}) — proven waste-free`, () => {
   is(countLoopF64(typedIntSource), 0)
 })

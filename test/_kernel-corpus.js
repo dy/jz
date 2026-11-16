@@ -19,9 +19,9 @@ export const CORPUS = {
   // while a bare-local zero arm stays visible to dense-switch recognition.
   eqzero: EQ_ZERO_KERNEL,
   // Compiling THIS SOURCE (not running it) is what exposed the bug: native jz
-  // never runs typedarray.js's own JS through jz's compiler, only the kernel
-  // build does (dist/jz.wasm = jz compiling its own source) — so a codegen defect
-  // in this exact shape stayed invisible until self-compiled.
+  // never runs typedarray.js's own JS through jz's compiler, only the kernel build
+  // does (dist/jz.wasm = jz compiling its own source) — so a codegen defect in
+  // this exact shape stayed invisible until self-compiled.
   boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
 export let f = (s) => g(s) === false`,
   nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,

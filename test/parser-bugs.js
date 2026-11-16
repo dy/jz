@@ -395,10 +395,10 @@ test('element-assignment target is never mistaken for a destructuring pattern', 
 // ── emit.js 'return' handler: ternary-duplicated emit() call (fresh-corpus invalid-wasm hunt) ──
 // `dist/jz.wasm` compiled the bench corpus to genuinely INVALID wasm: "type error in return[0]:
 // expected f64, got i32", identical signature on every case (mat4, json, sort, crc32, bitwise,
-// callback, …). Behaviorally identical in JS (same AST subtree, one call happens either way) —
-// but the SELF-COMPILED kernel, at every self-compile build level (0/1/2) and every runtime
-// optimize level, drops the rebox on the taken arm's result. compile/index.js's sibling call site
-// (`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`) already
+// callback, …). Behaviorally identical in JS (same AST subtree, one call happens either way) — but
+// the SELF-COMPILED kernel, at every self-compile build level (0/1/2) and every runtime optimize
+// level, drops the rebox on the taken arm's result. compile/index.js's sibling call site (`const
+// ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`) already
 // materializes the call to a local first and was never affected — mirroring that shape in
 // emit.js's 'return' handler is the fix.
 test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function converts to f64', () => {
@@ -709,10 +709,10 @@ test('lexical-risk pre-filter reaches unterminated comments, dot-adjacent separa
     // to run: an unterminated block comment anywhere in the source
     // (`src.includes('/*')`); a numeric separator directly after the decimal
     // point (`10._1` — the existing digit-before-underscore pattern never
-    // anchors on a DOT before the underscore); and a raw LineTerminator
-    // inside a single/double-quoted string (hasNewlineInQuote, a tight
-    // quote-tracking scan — anchoring only on "quote+newline+quote" would
-    // false-positive on any file with 2+ same-line-separated strings).
+    // anchors on a DOT before the underscore); and a raw LineTerminator inside
+    // a single/double-quoted string (hasNewlineInQuote, a tight quote-tracking
+    // scan — anchoring only on "quote+newline+quote" would false-positive on
+    // any file with 2+ same-line-separated strings).
     rejects('export let f = () => 1;\n/*unterminated', 'unterminated block comment')
     rejects('export let f = () => 10._1', 'separator')
     rejects('export let f = () => 10._', 'separator')

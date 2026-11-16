@@ -186,9 +186,9 @@ test('stdlib: namespace introspection preserves booleans, aliases and user bindi
 // Numeric proof
 
 // A parameter returned as itself keeps its identity for the host (`fib('1')` is
-// '1', test/audit-regressions.js), so the export boxes it. A return under a
-// guard only a number passes (`x !== x`, `x === 0.0`, `isnan( x )`, `isInfinite(
-// x )`) gives back a number, never the value itself: those keep the f64 export,
+// '1', test/audit-regressions.js), so the export boxes it. A return under a guard
+// only a number passes (`x !== x`, `x === 0.0`, `isnan( x )`, `isInfinite( x )`)
+// gives back a number, never the value itself: those keep the f64 export,
 // directly and through a wrapper (`export let f = (x) => fn(x)`, the stdlib
 // driver shape).
 test('stdlib: a parameter returned under a numeric guard keeps the f64 export', () => {
@@ -258,8 +258,8 @@ test('stdlib: a zero remainder by a literal keeps the dividend\'s sign', () => {
   for (const x of [-0, -4, -3, 3.5]) same(`export let f = (x) => x % 2.0`, x)
   for (const x of [-0, -720, 7]) same(`export let f = (x) => { var r = x % 360.0; if (r === 0.0) { return r } return 1.0 }`, x)
 })
-// The additive identity must keep a zero's sign: `0.0 + x` of -0 is +0, which
-// `1 / that` tells from -0 (an integer x cannot be -0, so its fold stands).
+// The additive identity must keep a zero's sign: `0.0 + x` of -0 is +0, which `1
+// / that` tells from -0 (an integer x cannot be -0, so its fold stands).
 test('stdlib: the additive identity keeps the sign of zero', () => {
   for (const x of [-0, 0, -1]) same(`export let f = (x) => 1 / (0.0 + x)`, x)
   for (const x of [-0, 0, -1]) same(`export let f = (x) => 1 / (x + 0.0)`, x)

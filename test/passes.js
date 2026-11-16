@@ -158,8 +158,8 @@ test('passes: unknown optimize keys and presets fail loudly', () => {
 
 test('passes: dead code never changes retained-code bytes (no hidden auto-tuning)', () => {
   // The retired AST-shape auto-tuner flipped watr:false past size thresholds,
-  // so appending DEAD functions changed the LIVE function's optimization
-  // (+30% size at the crossing).
+  // so appending DEAD functions changed the LIVE function's optimization (+30%
+  // size at the crossing).
   const live = `export let f = (x) => x * 2 + 1`
   const dead = live + '\n' + Array.from({ length: 60 }, (_, i) =>
     `let unused${i} = (a) => { let s = 0; for (let k = 0; k < 9; k++) s += a * k; return s }`).join('\n')
@@ -363,8 +363,8 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   ok(threw && /already registered/.test(threw.message) && /testModuleE/.test(threw.message), 'bind-then-bind: message names the original registering module')
 
   // combo 5 (THE historical shape, byte-for-byte): bind() registers a flat
-  // key first (string.js's `bind('.valueOf', …)`), a LATER raw assignment
-  // — not bind(), a literal `ctx.core.emit[name] = …`, exactly date.js's
+  // key first (string.js's `bind('.valueOf', …)`), a LATER raw assignment —
+  // not bind(), a literal `ctx.core.emit[name] = …`, exactly date.js's
   // pre-fix `ctx.core.emit['.valueOf'] = emitDateGetTime` — clobbers it.
   reset({}, {}, noopBridge)
   m.ctx.core.currentModule = 'string'

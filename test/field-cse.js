@@ -83,9 +83,9 @@ test('field cse: the guards of one event read its type once', () => {
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
 })
 
-// The guards of the library's own events, which each store one name: every
-// test answers by the layout the pointer carries (comparisons.js
-// slotLiteralTest), so nothing reads the cache.
+// The guards of the library's own events, which each store one name: every test
+// answers by the layout the pointer carries (comparisons.js slotLiteralTest),
+// so nothing reads the cache.
 const named = guards.replace('export let f', 'export let g = (n) => { try { return timeOf(n > 0 ? mk(n) : undefined) } catch (e) { return e instanceof TypeError ? -1 : -2 } }\nexport let f')
   .replace('h * 1.0001 + timeOf(list[i])', 'h * 1.0001 + timeOf(list[i]) - timeOf(list[(i + 4) % list.length]) * 0.5')
 

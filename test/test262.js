@@ -1144,9 +1144,9 @@ if (!isMainThread) {
   // CI gating, four guards (skipped in --quick mode, which runs only a subset
   // so its counts aren't comparable):
   //   Out-of-scope/upstream gaps are bucketed as xfail (see EXPECTED_FAIL
-  //      above), and unsupported syntax as skip, so a real fail is always a
-  //      jz miscompile. This catches a one-for-one pass↔fail swap that leaves
-  //      the count unchanged (invisible to guard 3).
+  //      above), and unsupported syntax as skip, so a real fail is always a jz
+  //      miscompile. This catches a one-for-one pass↔fail swap that leaves the
+  //      count unchanged (invisible to guard 3).
   //   3. pass-count ratchet — pass must not drop below the committed
   //      lock's `language` floor (test/test262-baseline.json, audit-#12 item
   //      3). JZ_TEST262_BASELINE, if set, still overrides the file — a

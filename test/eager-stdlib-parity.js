@@ -8,11 +8,11 @@
  * (.work/archive/region-release-notes.md "Class 1"), or worse, changes which dispatch
  * tier a method call resolves through ("Class 2").
  *
- * This file proves the invariant NATIVELY — no region-arena mark/exit machinery
- * needed. `opts._eagerStdlib` (src/front.js, index.js) forces the SAME
- * includeAllMods() call, so `compile(src, opts)` vs `compile(src, {...opts,
- * _eagerStdlib:true})` on IDENTICAL source is the exact "includeAllMods() forced vs
- * default" comparison.
+ * This file proves the invariant NATIVELY — no region-arena mark/exit
+ * machinery needed. `opts._eagerStdlib` (src/front.js, index.js) forces the
+ * SAME includeAllMods() call, so `compile(src, opts)` vs `compile(src,
+ * {...opts, _eagerStdlib:true})` on IDENTICAL source is the exact
+ * "includeAllMods() forced vs default" comparison.
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'

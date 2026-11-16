@@ -157,9 +157,9 @@ test('array scan: the tail counter is an index', () => {
   }
 })
 
-// A bound a constant declared before the loop holds below the lengths (`const
-// n = a.length`, a `Math.min` of several) proves the loop in bounds as a bound
-// of `a.length` itself does, while nothing between shrinks an array: a `pop`
+// A bound a constant declared before the loop holds below the lengths (`const n
+// = a.length`, a `Math.min` of several) proves the loop in bounds as a bound of
+// `a.length` itself does, while nothing between shrinks an array: a `pop`
 // between keeps the loop as written.
 const declared = `const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }
   const digest = (a) => { let h = a.length; for (let i = 0; i < a.length; i++) h = (h * 31 + (a[i] === undefined ? 7 : a[i] !== a[i] ? 13 : a[i])) | 0; return h }

@@ -1,7 +1,7 @@
 // bench.svg renderer contract — the README's headline performance chart. Pure string
 // assertions, no toolchain, so it runs in the default `npm test`. Guards the two ways
-// the chart used to mislead: a bare ratio with no "geomean of N cases" caption, and
-// jz labeled "→ wasm" (a pipeline) while every rival showed its optimization tier
+// the chart used to mislead: a bare ratio with no "geomean of N cases" caption, and jz
+// labeled "→ wasm" (a pipeline) while every rival showed its optimization tier
 // (clang/rustc/asc -O3).
 import { readFileSync } from 'node:fs'
 import test from 'tst'

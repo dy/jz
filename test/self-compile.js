@@ -249,8 +249,8 @@ test('self-compile: level-2 f64-constant pool keeps full precision', () => {
   is(instantiate(bytes).exports.main(), jz(src).exports.main(), 'kernel L2 === jz.js L2')
 })
 
-// Needs the LICM shape: Math.round(p0) loop-invariant in the INNER of two nested loops, p0
-// reassigned in the OUTER → the round's f64.nearest is hoisted.
+// Needs the LICM shape: Math.round(p0) loop-invariant in the INNER of two nested loops, p0 reassigned
+// in the OUTER → the round's f64.nearest is hoisted.
 test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
   const s = instantiate(selfBytes())
   const src = 'let f = (p0) => { let r = 0; let i = 0; while (i < 4) { let j = 0; while (j < 3) { r = r + Math.round(p0); j = j + 1; } p0 = p0 + 0.4; i = i + 1; } return r }; export let main = () => f(2.6)'
@@ -343,8 +343,8 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
   is(instantiate(b).exports.main(), 48, 'B executes correctly after A')
 })
 
-// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles, and pin
-// byte-parity against a fresh instance compiling the same programs.
+// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles, and pin byte-parity
+// against a fresh instance compiling the same programs.
 test('self-compile: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
   // charCodeAt-on-param is load-bearing: it pulls the abi/string.js param
   // decomposition, whose module-level ssoBitI64 memo used to dangle across
@@ -413,8 +413,8 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
 //
 // Bumped 30→40 rounds/program to also cover a FOURTH, independent bug this same
 // stress shape (repeated Map/HASH-growth allocation, no _clear) surfaces once the
-// bump arena's absolute byte address crosses ~2 GiB and later needs the wasm32 memory
-// to grow to its full 65536-page (4 GiB) ceiling: layout.js's
+// bump arena's absolute byte address crosses ~2 GiB and later needs the wasm32
+// memory to grow to its full 65536-page (4 GiB) ceiling: layout.js's
 // followForwardingWat/ptrOffsetFwdWat (the ARRAY/SET/MAP/HASH relocation-forwarding
 // chase every dyn-prop/collection dereference runs through) bounded a pointer offset
 // against `i32.shl(memory.size, 16)` — which overflows to exactly 0 the one time

@@ -8,12 +8,12 @@
 // Beside them a generated population (the scratch reentrypop): one to four globals of seven kinds
 // (numbers, Float64Array, Int32Array, an array, an object, a string), one to three exports that
 // write or replace them, one or two imports each calling one export; `f(k)` reads the globals
-// around the imports' calls, straight, in loops, under a test, behind a function of the module
-// and beside a shim of the runtime's own (`Math.random()`, `Date.now()`: they call nothing back).
-// 400 programs from each of three seeds, each called with 0 to 3. A seed's programs share one
-// module and, for each argument, one instance, called in order: what one program's calls leave in
-// the heap the next one's meet. Each seed runs in a worker the test stops at a limit, so a hang
-// is a failed assertion (test/_bounded.js).
+// around the imports' calls, straight, in loops, under a test, behind a function of the module and
+// beside a shim of the runtime's own (`Math.random()`, `Date.now()`: they call nothing back). 400
+// programs from each of three seeds, each called with 0 to 3. A seed's programs share one module
+// and, for each argument, one instance, called in order: what one program's calls leave in the
+// heap the next one's meet. Each seed runs in a worker the test stops at a limit, so a hang is a
+// failed assertion (test/_bounded.js).
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { instantiate } from '../interop.js'

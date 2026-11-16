@@ -76,8 +76,8 @@ const CASES = ['mat4', 'fft', 'biquad', 'sort', 'crc32', 'mandelbrot']
 // V8 tiering balance) a miss prints informational instead of failing.
 //
 // Honest claim at this cap: warm PARITY (~1.00–1.02×), fresh strict win
-// (0.78×). Tightening back to 0.99 after landing those requires only
-// deleting this block.
+// (0.78×). Tightening back to 0.99 after landing those requires only deleting
+// this block.
 const okTiming = (cond, msg) => process.env.CI
   ? (cond || console.log(`  timing (informational on CI): ${msg}`))
   : ok(cond, msg)

@@ -287,19 +287,18 @@ test('carrier: box/unbox roundtrip — i64 min (-2^63)', () => {
   is(f64BitsBig(f()), -9223372036854775808n)
 })
 
-// Call it on a value that was NEVER boxed — a raw BigInt payload
-// reinterpreted as if it were a pointer — and its own bits become the
-// "address". For most BigInts that's a small, silently-wrong offset
-// (reads/corrupts adjacent heap garbage, no trap). For 0x7fffffffffffffffn
-// (i64 max) and 0xffffffffffffffffn (2^64-1, wraps to the all-ones i64 bit
-// pattern), the low 32 bits are 0xFFFFFFFF — ~4 GiB — which is out of bounds
-// for any realistically-sized instance, so `i64.load` there TRAPS instead of
-// merely corrupting: "memory access out of bounds". `__unbox_bigint` itself
-// stays the raw, unconditional primitive on purpose (its own doc comment:
-// exposes ir.js's unboxBigInt directly, nothing production calls it) —
-// calling it on a bare, un-boxed literal is a genuine precondition violation,
-// not the bug; these two pins document that precondition rather than expect
-// it to somehow stop trapping.
+// Call it on a value that was NEVER boxed — a raw BigInt payload reinterpreted
+// as if it were a pointer — and its own bits become the "address". For most
+// BigInts that's a small, silently-wrong offset (reads/corrupts adjacent heap
+// garbage, no trap). For 0x7fffffffffffffffn (i64 max) and 0xffffffffffffffffn
+// (2^64-1, wraps to the all-ones i64 bit pattern), the low 32 bits are
+// 0xFFFFFFFF — ~4 GiB — which is out of bounds for any realistically-sized
+// instance, so `i64.load` there TRAPS instead of merely corrupting: "memory
+// access out of bounds". `__unbox_bigint` itself stays the raw, unconditional
+// primitive on purpose (its own doc comment: exposes ir.js's unboxBigInt
+// directly, nothing production calls it) — calling it on a bare, un-boxed
+// literal is a genuine precondition violation, not the bug; these two pins
+// document that precondition rather than expect it to somehow stop trapping.
 test('carrier: unboxBigInt applied to a RAW (never-boxed) i64-max payload traps — documents the precondition unboxBigInt trusts unconditionally', () => {
   const { f } = run(`export let f = () => { let a=[0]; return __unbox_bigint(9223372036854775807n) }`)
   throws(f)
@@ -451,14 +450,13 @@ test('carrier: a ternary of two non-nullish BigInt arms keeps its value through 
   // JZ_CARRIER_BOX=1 at O3: `fold()` returned 5.826595490514274e+252 instead
   // of 2.000000000000001. Off-flag (CARRIER_BOX is a compile-time env-read
   // const) this shape is a no-op, so the assertion is meaningful specifically
-  // under JZ_CARRIER_BOX=1 and merely non-regressing (never crashes)
-  // otherwise — the failure mode observed here was OFTEN a trap (`memory
-  // access out of bounds`), not just a wrong value, so running this
-  // compiled+called unconditionally (regardless of which flag state the test
-  // process itself was started under) still catches a crash-class regression
-  // either way. A WASI export named `run` is the reserved void command entry;
-  // use a normal export so this carrier assertion remains meaningful on that
-  // leg.
+  // under JZ_CARRIER_BOX=1 and merely non-regressing (never crashes) otherwise
+  // — the failure mode observed here was OFTEN a trap (`memory access out of
+  // bounds`), not just a wrong value, so running this compiled+called
+  // unconditionally (regardless of which flag state the test process itself
+  // was started under) still catches a crash-class regression either way. A
+  // WASI export named `run` is the reserved void command entry; use a normal
+  // export so this carrier assertion remains meaningful on that leg.
   const src = `
     const hex16 = (v) => v.toString(16)
     const canon = (mag, neg) => hex16(neg ? -BigInt(mag) : BigInt(mag))
@@ -473,8 +471,8 @@ test('carrier: a ternary of two non-nullish BigInt arms keeps its value through 
 
 // Reproduces (pre-fix) with the REAL layout.js (a hand-mimicked single-call-site shape does NOT
 // reproduce — layout.js's i64Hex is called from ~9 sites). Under Slice 1's flip, this residual
-// "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a compile-time refusal instead of a box —
-// the CONSERVATIVE PAIRING read-side machinery this test verified has no remaining input to exercise
+// "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a compile-time refusal instead of a box — the
+// CONSERVATIVE PAIRING read-side machinery this test verified has no remaining input to exercise
 // (nothing ever reaches a real box for it to correctly unbox).
 test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and decode raw-exact (.work/archive/carrier-representation-design.md §15/§16 → decl-literal raw slots + const-field staticValue fold)', () => {
   if (onKernel()) return
@@ -530,12 +528,12 @@ test('nan-box: large offset', () => {
 
 // A bare string literal is enough to make the prefix nonzero on a plain NATIVE
 // compile (no eager loading needed): a string pulls in the 'string' module, which
-// MOD_DEPS-chains to 'number' (src/autoload.js), and module/number.js
-// unconditionally seeds `ctx.runtime.staticDataLen` with its canonical
-// NaN/Infinity/true/false/… constant block the moment it loads — 77 bytes for the
-// source below, confirmed by direct instrumentation. The offset (1048576) is chosen
-// to sit far past any plausible static-data segment length, so a correct
-// implementation must leave it untouched.
+// MOD_DEPS-chains to 'number' (src/autoload.js), and module/number.js unconditionally
+// seeds `ctx.runtime.staticDataLen` with its canonical NaN/Infinity/true/false/…
+// constant block the moment it loads — 77 bytes for the source below, confirmed by
+// direct instrumentation. The offset (1048576) is chosen to sit far past any
+// plausible static-data segment length, so a correct implementation must leave it
+// untouched.
 for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   for (const ty of [1, 6]) {  // ARRAY, OBJECT — both were affected; ATOM (0) never is

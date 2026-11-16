@@ -1,14 +1,14 @@
 // A population of loops over typed arrays in every order their statements read and write one
 // array, each answering what Node answers at levels 0, 2 and speed (the integrator's population
 // for phase 6a's review, written without reading the writer's tests): two sites of one base in
-// either statement order at distances around a strip of each lane width, stencils and records
-// in place, what a loop leaves in a local or a global, ramps and narrow lanes, shifts, arms,
-// exits and counts, outer loops over inner ones, straight lines, and one function over its
-// arrays apart or one. Module arrays a, b, c and a global g; `n` the trip count; `ret` and g
-// join the hash of the three arrays. Beside them the nine programs of the vectorizer census
-// whose answer differed from Node's ("6a landed": W7 to W9 the dependence test, W1, W2 and W6
-// the account of locals, W3 and W5 a store under a condition, W4 a shift in a narrow lane),
-// which test/vector-legality.js pins at levels 2 and 3.
+// either statement order at distances around a strip of each lane width, stencils and records in
+// place, what a loop leaves in a local or a global, ramps and narrow lanes, shifts, arms, exits
+// and counts, outer loops over inner ones, straight lines, and one function over its arrays
+// apart or one. Module arrays a, b, c and a global g; `n` the trip count; `ret` and g join the
+// hash of the three arrays. Beside them the nine programs of the vectorizer census whose answer
+// differed from Node's ("6a landed": W7 to W9 the dependence test, W1, W2 and W6 the account of
+// locals, W3 and W5 a store under a condition, W4 a shift in a narrow lane), which
+// test/vector-legality.js pins at levels 2 and 3.
 import test from 'tst'
 import { population } from './_population.js'
 import { onKernel } from './_matrix.js'

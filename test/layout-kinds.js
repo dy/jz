@@ -184,8 +184,8 @@ test('structuredClone passes an immutable boxed BigInt through unchanged', () =>
 // distant behavior regression.
 //
 // FINDINGS[identity-arm-divergence] (layout-kinds.js): extracting these two
-// eq-style chains verbatim surfaced a genuine, PRE-EXISTING divergence between
-// $__eq and $__same_value_zero's STRING arms.
+// eq-style chains verbatim surfaced a genuine, PRE-EXISTING divergence
+// between $__eq and $__same_value_zero's STRING arms.
 
 test('registry: content-identity kinds are BIGINT then STRING, in that order', () => {
   is(CONTENT_IDENTITY_ORDER.length, 2)
@@ -209,18 +209,17 @@ test('golden[sameValueZeroIdentityChain]: $__same_value_zero\'s generated chain 
 
 // FINDINGS[identity-arm-divergence] live regression: an ordinary finite,
 // self-equal f64 can have ANY 4-bit pattern at mantissa bits 47-50 (the tag
-// field) by sheer construction — including PTR.STRING's tag id (4) — purely
-// by chance. 0x3ff20000ffffffff (≈1.1250009536743162) is one such value:
-// finite (exponent 0x3ff, nowhere near the 0x7ff NaN/Inf reserved range),
-// self-equal, tag-bits-alias-STRING. Natural full-hash collisions are ~2^-32,
-// far outside what a jz-source fuzz probe could hit — this test reaches the
-// same runtime arm the way the runtime itself would (a genuine bucket and
-// entry hash match), by writing the Set's own bucket and entry hash words
-// directly, as __set_add itself does on an insert
-// (module/collection/ordered.js: the entries in insertion order, then the
-// buckets, each `(hash & 0xFC000000) | (entry index + 1)`). See
-// layout-kinds-doc.js's FINDINGS[identity-arm-divergence] for the full
-// writeup.
+// field) by sheer construction — including PTR.STRING's tag id (4) — purely by
+// chance. 0x3ff20000ffffffff (≈1.1250009536743162) is one such value: finite
+// (exponent 0x3ff, nowhere near the 0x7ff NaN/Inf reserved range), self-equal,
+// tag-bits-alias-STRING. Natural full-hash collisions are ~2^-32, far outside
+// what a jz-source fuzz probe could hit — this test reaches the same runtime
+// arm the way the runtime itself would (a genuine bucket and entry hash
+// match), by writing the Set's own bucket and entry hash words directly, as
+// __set_add itself does on an insert (module/collection/ordered.js: the
+// entries in insertion order, then the buckets, each `(hash & 0xFC000000) |
+// (entry index + 1)`). See layout-kinds-doc.js's
+// FINDINGS[identity-arm-divergence] for the full writeup.
 test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-aliasing hash collision (regression pin)', () => {
   const SET_ENTRY = 16
   const code = `

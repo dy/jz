@@ -532,9 +532,9 @@ test('counter width: imul takes the product\'s range within one word, any word b
 })
 
 // A counter each pass of its loop admits by the truth of an element read at it (`(d =
-// ops[i++])`, the read's own step, or `ops[i]` under `i++`) rises only through
-// indices of elements its receiver holds, so it stays within the receiver's length:
-// an array's eight-byte elements in a 32-bit memory, a string's i32 length (static.js
+// ops[i++])`, the read's own step, or `ops[i]` under `i++`) rises only through indices
+// of elements its receiver holds, so it stays within the receiver's length: an array's
+// eight-byte elements in a 32-bit memory, a string's i32 length (static.js
 // elementCounter).
 test('counter width: a counter admitted by an element read stays within its receiver\'s length', () => {
   const source = `const sum = (ops) => { let d, n = 0; for (let i = 0; (d = ops[i++]);) n += d; return n }

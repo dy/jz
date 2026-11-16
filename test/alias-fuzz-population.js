@@ -1,7 +1,7 @@
-// Random programs over memory that aliases, each answering what Node answers at level 2 and
-// speed (the phase 7 scout's fuzz, the levels it ran). Module storage of every kind one function
-// reads and writes: a Float64Array and three views of it (two the same range, one overlapping),
-// a Float64Array apart, two plain arrays, two objects, and helpers that write through any two of
+// Random programs over memory that aliases, each answering what Node answers at level 2 and speed
+// (the phase 7 scout's fuzz, the levels it ran). Module storage of every kind one function reads
+// and writes: a Float64Array and three views of it (two the same range, one overlapping), a
+// Float64Array apart, two plain arrays, two objects, and helpers that write through any two of
 // them; statements store an element or a field, assign a local, call a helper, loop over the
 // views, branch. The second population adds an Int32Array counted into, a plain array grown by
 // `push` and read at its end, and loops that read and write through a cursor. `f(s)` is called

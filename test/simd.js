@@ -1381,9 +1381,9 @@ test('SIMD map i32x4 - WAT-shape control: integer constants still vectorize, fra
   ok(w.includes('i32.const 0'), `Int32Array x&-0: normalizes to i32.const 0 (ToInt32(-0) === 0)`)
 })
 
-//   Math.abs on Uint32Array — compiles fine but computes the WRONG VALUE:
-//      the lane op is SIGNED abs (negate if the sign bit is set), but a
-//      Uint32Array's ECMAScript value is already non-negative by
+//   Math.abs on Uint32Array — compiles fine but computes the WRONG
+//      VALUE: the lane op is SIGNED abs (negate if the sign bit is set),
+//      but a Uint32Array's ECMAScript value is already non-negative by
 //      construction, so Math.abs on it is the identity.
 
 const DIV_CONSTS = [3, 4, -1, 0, 7, -7, 1.5] // non-exact, pow2, overflow-trap risk, div-by-zero-trap risk, ..., fractional
@@ -1577,8 +1577,8 @@ test('SIMD ramp-map - tail (length not a multiple of 4) stays correct', () => {
   ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
 })
 
-// u8 loads feeding i32 arithmetic that overflows a byte — tryVectorize can't
-// (no i8x16.mul; shifts excluded on narrow lanes). Checked against the scalar
+// u8 loads feeding i32 arithmetic that overflows a byte — tryVectorize can't (no
+// i8x16.mul; shifts excluded on narrow lanes). Checked against the scalar
 // (NOVEC) oracle.
 
 test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
@@ -3330,8 +3330,8 @@ test('memop: induction variable and bound state exact after the lift', () => {
 })
 
 // `m = Math.max(m, u8[i])` (acc f64, narrow lanes) folds at the LOAD's own
-// width/sign — i8x16.max_u etc., 16/8 lanes per op — exact because min/max
-// never rounds and narrow values are exact in f64.
+// width/sign — i8x16.max_u etc., 16/8 lanes per op — exact because min/max never
+// rounds and narrow values are exact in f64.
 
 test('widen minmax: u8/s16 fold at lane width, all seeds exact', () => {
   const src = `
@@ -4093,9 +4093,9 @@ test('SIMD map-reduce - bit-exact f64 reduction (the n-body force loop)', () => 
 test('SIMD reduce - offset-indexed dot (matmul A[off+i]*B[off+i]) folds the invariant into the base', () => {
   // The index `off+i` lowers to (i32.shl (i32.add off i) 3), which matchLaneAddr rejects
   // (the IV isn't the bare shift operand). tryReduce folds the loop-invariant `off` into
-  // the base — (base + (off+i)<<3) → ((base + off<<3) + i<<3) — so the offset is the
-  // bare IV the matcher/lifter accept; the byte address is unchanged ⇒ bit-exact.
-  // Small-int data keeps the product-sum exact in f64.
+  // the base — (base + (off+i)<<3) → ((base + off<<3) + i<<3) — so the offset is the bare
+  // IV the matcher/lifter accept; the byte address is unchanged ⇒ bit-exact. Small-int
+  // data keeps the product-sum exact in f64.
   const mm = (N) => `export let main = () => {
     const N=${N}, A=new Float64Array(N*N), B=new Float64Array(N*N), C=new Float64Array(N*N)
     for(let i=0;i<N*N;i++){ A[i]=(i%13)-6; B[i]=((i*7)%11)-5 }
@@ -4903,11 +4903,12 @@ test('SIMD map over a plain array of Numbers - the hop hoisted ahead of the loop
 // Runs LAST in the dispatch chain (after tryGeneralMap), only when the shape-specific `tryReduce`
 // (tryReduceReassoc/tryReduceBitExact) above it already declined.
 //
-// Each case sums/xors/maxes over a RUNTIME-offset window (`off = (offIn|0) & 7`, masked so the compiler's
-// own range analysis proves the whole affine access range in-bounds WITHOUT a runtime guard — an
-// unmasked/unbounded runtime offset instead triggers jz's bounds-check-safety pass, which rewrites the loop
-// into a per-element NaN-canonicalized guarded form upstream of the vectorizer entirely — a different,
-// correct, and untouched safety mechanism, not this pass's concern).
+// Each case sums/xors/maxes over a RUNTIME-offset window (`off = (offIn|0) & 7`, masked so the
+// compiler's own range analysis proves the whole affine access range in-bounds WITHOUT a runtime
+// guard — an unmasked/unbounded runtime offset instead triggers jz's bounds-check-safety pass,
+// which rewrites the loop into a per-element NaN-canonicalized guarded form upstream of the
+// vectorizer entirely — a different, correct, and untouched safety mechanism, not this pass's
+// concern).
 //
 // Each test asserts BOTH that the specific reduce-lane SIMD op fires (scoped patterns, not a bare
 // `hasV128`, so an unrelated fill-loop's own incidental vectorization can't false-pass the check)
@@ -5039,11 +5040,12 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
 
 // Every positive case below uses `^` (XOR) rather than `+` for the neighbour combine: jz's own
 // overflow-safe integer-arithmetic idiom computes an unprovable-range i32 SUM as a chain of
-// `f64.add(convert_i32_s(...))` internally, and `liftAddSubOfConverts` only fuses a single 2-term f64.add
-// — a genuinely separate, pre-existing lift-machinery gap in the SHARED lifter (not this recognizer's
-// address proof), confirmed identical on both the base tree and this branch via `--why-not-simd`
-// ("f64.add: no lane-pure SIMD mapping for i32") — out of this session's scope. XOR has no overflow
-// concern (native i32 domain always), isolating the address-proof reach this session actually adds.
+// `f64.add(convert_i32_s(...))` internally, and `liftAddSubOfConverts` only fuses a single 2-term
+// f64.add — a genuinely separate, pre-existing lift-machinery gap in the SHARED lifter (not this
+// recognizer's address proof), confirmed identical on both the base tree and this branch via
+// `--why-not-simd` ("f64.add: no lane-pure SIMD mapping for i32") — out of this session's scope.
+// XOR has no overflow concern (native i32 domain always), isolating the address-proof reach this
+// session actually adds.
 
 test('SIMD general-stencil: guarded row arithmetic preserves boundary values and reuse', () => {
   const src = `export function f(width, row, start, empty) {

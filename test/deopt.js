@@ -1,9 +1,9 @@
 // Deopt battery — the "unreasonable" deopts: idiomatic source that jz narrows
 // wrongly, paying the dynamic-dispatch tax despite carrying enough type evidence.
 //
-// The pinning discipline mirrors perf-ratchet.js: a correctness `diff()` guards
-// every case (never defend a miscompile), and each codegen pin is a regression
-// backstop that locks in the fix.
+// The pinning discipline mirrors perf-ratchet.js: a correctness `diff()` guards every
+// case (never defend a miscompile), and each codegen pin is a regression backstop
+// that locks in the fix.
 //
 //   D1 — built-in numeric properties (.length/.byteLength/.byteOffset/.size) in
 //        `+`.
@@ -12,8 +12,8 @@
 //
 //   D3 — `arr[<const idx>]()` stays call_indirect (devirt miss).
 //
-// Confirmed-reasonable cases (the "untyped stays dynamic" contract, NOT deopts) are
-// pinned below so future fuzzing does not re-flag them.
+// Confirmed-reasonable cases (the "untyped stays dynamic" contract, NOT deopts)
+// are pinned below so future fuzzing does not re-flag them.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
@@ -96,8 +96,8 @@ test('deopt D1: SOUNDNESS — untyped receiver .length stays conservative', () =
 //
 //   Allocation/ dispatch-only calls
 //      (__str_concat/__is_str_key/__to_num/__to_str) don't modify EXISTING heap
-//      memory, so they don't block the hoist. The pin uses 50×50 bounds to
-//      avoid small-loop unrolling masking the effect.
+//      memory, so they don't block the hoist. The pin uses 50×50 bounds to avoid
+//      small-loop unrolling masking the effect.
 
 const D2_SRC = (hoist) => `let grid
   export let init=(n)=>{grid=[];for(let i=0;i<n;i++)grid.push(new Float64Array(n));return grid}
@@ -224,14 +224,14 @@ test('for-in deopt: a heavy body stays a pooled loop, not an N× unroll (size bu
   const heavy = `export let run=(z)=>{let o={${k16}}; let s=0; for(let k in o){ s += o[k]*o[k] + o[k]*3 - 7; s += o[k]*2 - o[k]; s -= o[k] % 5 } return s}`
   diff(heavy)   // VALUE is correct on every target (this is the correctness half)
   if (belowOpt(1)) return
-  // The size-budget SHAPE (keys × forInBodyCost > BUDGET ⇒ stay pooled) is asserted
-  // on the native compiler only. Under the self-compiled kernel leg the budget flips
+  // The size-budget SHAPE (keys × forInBodyCost > BUDGET ⇒ stay pooled) is asserted on
+  // the native compiler only. Under the self-compiled kernel leg the budget flips
   // after schema-state accumulation across the one no-GC instance —
   // `ctx.schema.resolve(o)` under-resolves the 8-key shape once the kernel's schema
   // list has grown, so keys.length drops and the gate unrolls. Benign (values above
   // are exact either way); it's the self-compile-row kernel-statefulness class, not a
-  // codegen regression — so pin the heuristic where it's stable and let the native
-  // leg own it.
+  // codegen regression — so pin the heuristic where it's stable and let the native leg
+  // own it.
   if (onKernel()) return
   const body = funcWat(compile(heavy, { wat: true }), 'run')
   ok(body.includes('(loop'), 'heavy body kept the single pooled loop (not unrolled)')

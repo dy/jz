@@ -125,9 +125,9 @@ export const onWasi = () => HOST === 'wasi'
 
 /**
  * Force the BigInt retirement diagnostic (JZ_BIGINT_STRICT=1, src/ir.js
- *  bigintStrict()) for exactly the synchronous compile `fn` performs. Tests
- *  that pin the diagnostic's own wording/flow-class naming wrap their compile
- *  call in this.
+ *  bigintStrict()) for exactly the synchronous compile `fn` performs. Tests that
+ *  pin the diagnostic's own wording/flow-class naming wrap their compile call in
+ *  this.
  */
 export const withBigintStrict = (fn) => {
   const prev = process.env.JZ_BIGINT_STRICT

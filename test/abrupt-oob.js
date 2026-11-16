@@ -5,8 +5,8 @@
 //
 // (2) OOB SENTINEL: a checked typed read yields the UNDEF sentinel NaN in its
 // miss arm. Consumed by f64 ARITHMETIC, hardware NaN propagation carries the
-// PAYLOAD to the escape, where the boundary decoded it back as `undefined` — JS
-// says ToNumber(undefined) = NaN.
+// PAYLOAD to the escape, where the boundary decoded it back as `undefined` —
+// JS says ToNumber(undefined) = NaN.
 //
 // Every case runs the JS source as ground truth, then jz at O0/O2/O3 — the
 // four values must agree exactly (NaN compares by Object.is semantics here).

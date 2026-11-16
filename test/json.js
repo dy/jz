@@ -144,13 +144,13 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
 // bits (0x000000006d657469, low 32 = ASCII "item") proved a BigInt CARRIER (raw
 // i64 bits reinterpreted as f64, never converted) was landing in an `(i32.const
 // …)` WAT position. Root: module/json.js's `expectText` SWAR key-match codegen
-// packed each ≤4-byte text chunk through `Number(BigInt(...))`, routed through
-// the self-compiled kernel's own ToNumber(BigInt) — gated on a whole-program
+// packed each ≤4-byte text chunk through `Number(BigInt(...))`, routed through the
+// self-compiled kernel's own ToNumber(BigInt) — gated on a whole-program
 // `ctx.features.bigint` flag baked once at first module-inclusion
 // (src/prepare/index.js), which self-compiling's module-inclusion ORDER can bake
 // false before it ever sees this same file's later BigInt use, leaving
-// ToNumber(BigInt) on its unguarded/raw-carrier arm. Fixed by never constructing
-// a BigInt for the ≤4-byte chunks in the first place (`leNum`, plain i32 bitwise
+// ToNumber(BigInt) on its unguarded/raw-carrier arm. Fixed by never constructing a
+// BigInt for the ≤4-byte chunks in the first place (`leNum`, plain i32 bitwise
 // pack — safe since expectText is ASCII-only, so bit 31 of a 4-byte pack is never
 // set); only the genuine 8-byte/64-bit chunk still uses BigInt, feeding i64Hex (a
 // hex-STRING formatter, never routed through Number()/ToNumber).

@@ -3,8 +3,8 @@
  * (bench/results.json, or JZ_BENCH_RESULTS from CI) must be CURRENT, COMPLETE,
  * and WINNING before the claim ships. Unlike test/bench.js (which measures THIS
  * machine and treats ratios informationally on CI), this gate reads pinned
- * evidence and hard-fails — wired into `prepublishOnly`, run explicitly via
- * `npm run test:claims`. JZ_MEMORY_RESULTS can name a complete benchmark JSON
+ * evidence and hard-fails — wired into `prepublishOnly`, run explicitly via `npm
+ * run test:claims`. JZ_MEMORY_RESULTS can name a complete benchmark JSON
  * snapshot for the same release's RSS gate.
  *
  *   1. FRESH: no compiler-source commit may postdate any JZ row's
@@ -42,8 +42,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28: the old
 // ">=5 rows" floor let 5 successes from a 60-case corpus count as "contested"). 0.7
 // is set from real corpus portability, not convenience: the least-portable
-// maintained lanes (go/zig families) genuinely port 43/60 = 0.72 of cases; a
-// healthy lane clears 0.7, a token lane cannot.
+// maintained lanes (go/zig families) genuinely port 43/60 = 0.72 of cases; a healthy
+// lane clears 0.7, a token lane cannot.
 const COVERAGE_FLOOR = 0.7
 // Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
 const SIZE_GEOMEAN_MAX = 1.05
@@ -381,12 +381,12 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 })
 
 // Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. Cases the claims
-// do not yet cover: a library's own code or a workload class added to the corpus that
-// jz does not lead on every runner yet (AGENTS.md's "tracked as todo in the gate until
-// jz takes the lead — never silently accepted"):
-// Kept as functions of their own, `forward` and `backward` compile in 1 ms each and
-//   still land after the last round. Leading here takes baseline code faster than V8's
-//   optimized JavaScript.
+// do not yet cover: a library's own code or a workload class added to the corpus that jz
+// does not lead on every runner yet (AGENTS.md's "tracked as todo in the gate until jz
+// takes the lead — never silently accepted"):
+// Kept as functions of their own, `forward` and `backward` compile in 1 ms each
+//   and still land after the last round. Leading here takes baseline code faster
+//   than V8's optimized JavaScript.
 // Excluded from the strict and band tests, the Porffor floor and the corpus-coverage
 //   test until the todo below flips; a case leaves this set the commit it leads.
 const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'stringify', 'jsontransform', 'mapstr', 'mapint', 'mapobj', 'setops', 'async',

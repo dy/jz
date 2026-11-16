@@ -617,9 +617,9 @@ test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed Bi
 })
 
 test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel-oracle.js "captured BOOL∪NUMBER merge" AGREE row)', () => {
-  // `let v = x > 0 && 1` (kind.js hasAmbiguousBoolMerge): the && collapses
-  // to NUMBER (v's own valTypeOf) but its runtime value is drawn from
-  // {coerced false, real number 1} — never a genuine 0.
+  // `let v = x > 0 && 1` (kind.js hasAmbiguousBoolMerge): the && collapses to
+  // NUMBER (v's own valTypeOf) but its runtime value is drawn from {coerced
+  // false, real number 1} — never a genuine 0.
   const src = `
     export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
     export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }
@@ -1124,10 +1124,9 @@ test('closure-unbox: o.fn(g) — module-level binding', () => {
 })
 
 test('trampoline arity: closure ABI widens to a table-resident function arity', () => {
-  // `pick3` (arity 3) is lifted to a top-level function and used only as a first-class
-  // value; the sole indirect call passes 1 arg, so maxCall=1, and a lifted def's param list
-  // is never re-observed by the arity scan (it walks bodies, not param lists) so maxDef
-  // misses it too.
+  // `pick3` (arity 3) is lifted to a top-level function and used only as a first-class value;
+  // the sole indirect call passes 1 arg, so maxCall=1, and a lifted def's param list is never
+  // re-observed by the arity scan (it walks bodies, not param lists) so maxDef misses it too.
   const { put, run } = runHost(`
     let pick3 = (a, b, c) => a
     let store = []
@@ -1262,9 +1261,9 @@ test('func-namespace SROA: single-write only-called slot direct-calls, no table'
 // A computed-key write on a function value, `g[k] = v`, addresses the same
 // property bag `g.tag = v` writes (the closure-keyed side table): a closure has
 // no elements, so no key is an index. Each receiver form against JS at O0, O1
-// and O2: a local closure, one with a capture, a module-level arrow and
-// function declaration, the read, `in`, `delete`, a numeric key (ToPropertyKey)
-// and a call after the write.
+// and O2: a local closure, one with a capture, a module-level arrow and function
+// declaration, the read, `in`, `delete`, a numeric key (ToPropertyKey) and a
+// call after the write.
 test('a computed-key write on a closure is a property write, on every receiver form', () => {
   const SRC = `const g = (x) => x + 1
   function h(x) { return x * 2 }
@@ -1327,8 +1326,8 @@ test('func-namespace SROA: escaping namespace keeps the dynamic path correct', (
 
 // A module global written only by unconditional init statements, resolving
 // (through aliases/chained assignment/`??=`/`||=`) to one statically-known
-// function, collapses every call through it to a direct `call` — no call_indirect,
-// no trampoline.
+// function, collapses every call through it to a direct `call` — no
+// call_indirect, no trampoline.
 
 test('devirtGlobalCalls: ??= chain resolves the pre-wrap value (subscript asi.js baseSpace shape)', () => {
   // `const baseSpace = parse._baseSpace ??= parse.space` — asi.js captures
@@ -1534,8 +1533,8 @@ test('IIFE lift: a name that reads no binding is no capture', () => {
 
 // A module binding made by a factory run once (gl-matrix's `export const rotationTo =
 // (() => { const tmp = create(); …; return (out, a, b) => { … } })()`) held a closure:
-// every call rode the closure ABI with boxed arguments, and the arrow's parameters,
-// and the library's beneath it, kept no kind.
+// every call rode the closure ABI with boxed arguments, and the arrow's parameters, and
+// the library's beneath it, kept no kind.
 test('once-run factory: a module binding takes the returned arrow, its declarations the module', () => {
   const src = `const make = () => [1, 2, 3]
     export const f = (() => { const a = make(); let n = 0; return (o, x) => { n++; o[0] = a[0] + x; return o[0] + n } })()
@@ -1836,8 +1835,8 @@ test('closures: bind of a function inside its own body', () => {
 })
 
 // Function.prototype.bind of any function value (module/function.js `__bound`):
-// the bound function calls the target with the receiver and the arguments
-// bound, then its own, its length the target's less the bound count.
+// the bound function calls the target with the receiver and the arguments bound,
+// then its own, its length the target's less the bound count.
 test('closures: bind of any function value', () => {
   const src = `const top = (a, b, c) => a * 100 + b * 10 + c
     function decl(a, b) { return a - b }
@@ -2745,8 +2744,8 @@ test('closures: a call from a sibling reaches the parameter', () => {
   for (const src of srcs) { const want = oracle(src).f; for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(3), want(3), `${src.slice(23, 80)} at ${optimize}`) }
 })
 
-// A closure its binding hands on (an argument, a builtin's callback, a store,
-// a return, a copy, `bind`, `call`, `apply`), or calls in a form the call-site
+// A closure its binding hands on (an argument, a builtin's callback, a store, a
+// return, a copy, `bind`, `call`, `apply`), or calls in a form the call-site
 // rows do not record (a spread, an optional call), runs for callers the rows
 // never see: its direct calls say nothing of its parameters.
 test('closures: a closure its binding hands on takes its parameters from every caller', () => {

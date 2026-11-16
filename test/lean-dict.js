@@ -1,9 +1,9 @@
 // A count dictionary the census proves i32-lean (analyze/val-types.js dictWalkI32:
 // every read bitwise-coerced, every write a statement) keeps raw i32 bits in its
-// slots and reads them with a bare wrap. Every store path must encode the value
-// the same way. The shapes here reached the runtime key-kind dispatch, whose
-// string arm stored the boxed number: a read of `7.0` answered its low word, 0.
-// Values are differentials against the host.
+// slots and reads them with a bare wrap. Every store path must encode the value the
+// same way. The shapes here reached the runtime key-kind dispatch, whose string arm
+// stored the boxed number: a read of `7.0` answered its low word, 0. Values are
+// differentials against the host.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { run, oracle } from './util.js'

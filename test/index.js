@@ -369,8 +369,8 @@ if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core 
 //     labeled-statement misparses. Reads src via parse/jzify directly, never the
 //     compiler-under-test, so the kernel leg would only re-run it identically.
 //
-// Optimizer-shape class (kernel runs optimize:false; shape asserts can't match — same
-// as perf-ratchet above): simd, optimizer, never-grown, slot-hazards.
+// Optimizer-shape class (kernel runs optimize:false; shape asserts can't match
+// — same as perf-ratchet above): simd, optimizer, never-grown, slot-hazards.
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'spellings', 'vector-coverage', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   'runner', 'bench-build', 'source-map', // JS entry/CLI options and debug metadata are outside the kernel ABI
   'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
@@ -383,12 +383,12 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
   'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
   'simd', 'optimizer', 'slot-hazards', 'struct-inline',
   ])
-  // Files whose compile inputs are the same on every leg — measured, not assumed: each was
-  // run under the default, opt0, opt3 and wasi legs with every in-process compile hashed
-  // (source plus the options after the env defaults merge), and the four hash sets were
-  // identical. They build the kernel, spawn tooling, or pass every option themselves, so a
-  // leg cannot change what they test: the default leg owns them and the opt0/opt3/wasi legs
-  // skip them (about 6 minutes a leg). Naming a file on the command line runs it on any leg.
+  // Files whose compile inputs are the same on every leg — measured, not assumed: each was run
+  // under the default, opt0, opt3 and wasi legs with every in-process compile hashed (source
+  // plus the options after the env defaults merge), and the four hash sets were identical.
+  // They build the kernel, spawn tooling, or pass every option themselves, so a leg cannot
+  // change what they test: the default leg owns them and the opt0/opt3/wasi legs skip them
+  // (about 6 minutes a leg). Naming a file on the command line runs it on any leg.
 const LEG_INVARIANT = new Set([
   'runner', 'test-infrastructure', // host test-runner lifecycle; no compiler inputs
   'bench-build', // fixed host and size options, CLI subprocess

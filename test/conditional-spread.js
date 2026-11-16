@@ -1,9 +1,9 @@
 // Conditional-spread schema inference: `{...(cond && {k: v, …})}` (module/
 // function.js bodyFn's `...(restParam && { rest: restParam })` idiom, 12
 // independent instances in that one literal). resolveSchema/spreadSourceSchema
-// (module/object.js) now recognize this shape — conditionalSpreadGroup — so
-// the merged schema devirtualizes to a fixed-slot OBJECT instead of a runtime
-// HASH (emitDynamicSpread) even though every group's presence is a runtime
+// (module/object.js) now recognize this shape — conditionalSpreadGroup — so the
+// merged schema devirtualizes to a fixed-slot OBJECT instead of a runtime HASH
+// (emitDynamicSpread) even though every group's presence is a runtime
 // condition.
 //
 // Every differential test below runs the JZ source and an IDENTICAL native

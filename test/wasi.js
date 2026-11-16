@@ -327,8 +327,7 @@ test('WASI console.log: boolean read from a container prints as boolean', () => 
 
 // Under `host:'js'` this is masked (console.log there decodes host-side off
 // the raw i64, independent of what the compiler believed) — only reachable
-// under `host:'wasi'`, where module/console.js's own WASI-syscall writers
-// run.
+// under `host:'wasi'`, where module/console.js's own WASI-syscall writers run.
 test('WASI console.log: dict-census absent key prints as undefined, not empty/garbage (Slice 5 LEAK C)', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push(text) })
@@ -877,8 +876,8 @@ test('fs: a node:fs reader passed as a callback fills a typed array, no dynamic 
 // A byte array made for a read, and read only below the count the read returned,
 // takes no zero fill (plan/read-buffers.js): the reporter's host made one per read
 // of `n - got` bytes and zeroed the rest of a megabyte at every 1 KiB read of a
-// pipe. Each case holds one typed array, made anew each pass of a loop, and
-// answers what Node answers.
+// pipe. Each case holds one typed array, made anew each pass of a loop, and answers
+// what Node answers.
 test('fs: a buffer only its read\'s count reads takes no zero fill', async () => {
   const wrap = (body) => `import fs from 'fs'
     function sum (t) { let s = 0; for (let i = 0; i < t.length; i++) s = (s * 31 + t[i]) | 0; return s }

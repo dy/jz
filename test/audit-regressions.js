@@ -1921,8 +1921,8 @@ test('audit: a reassigned module string is read, not folded', () => {
   ok(!compile('let X = \'ab\'\nexport let f = (k) => `${X}${X}`.length + k', { optimize: 0, wat: true }).includes('__str_concat'), 'an unassigned module string folds in a template')
 })
 
-// A function's own assignment of a module binding says what a read after it
-// holds only until a call: any call may run a function that assigns the binding.
+// A function's own assignment of a module binding says what a read after it holds
+// only until a call: any call may run a function that assigns the binding.
 test('audit: a module binding a function assigns is not what the caller last wrote', () => {
   const cases = [
     `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab' }\nexport let f = (k) => { X = 1; w(k); return X + 1 }`,

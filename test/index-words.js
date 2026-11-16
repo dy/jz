@@ -79,9 +79,9 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
   }
 })
 
-// x64's `roundsd` keeps the upper half of its destination, so it waits on whatever
-// last wrote that register, and V8 picks it with no regard to that: in a resampler's
-// loop, the sample the iteration before stored.
+// x64's `roundsd` keeps the upper half of its destination, so it waits on whatever last
+// wrote that register, and V8 picks it with no regard to that: in a resampler's loop,
+// the sample the iteration before stored.
 test('index words: ToInt32 rounds a number it does not consume through a value that dies there', () => {
   const src = `export let run = (x, n) => {
       let s = 0, p = x

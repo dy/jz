@@ -1,10 +1,9 @@
 // Frame effects (src/compile/analyze/frame-effects.js) and the arena rewind
-// they gate (src/optimize/arena-rewind.js). A rewind restores the heap
-// pointer at return; it is sound only when no allocation made during the call
-// outlives the frame. An escape lowers the escape flag, where it runs, to the
-// address it wrote into, and a frame restores when the flag stands at or
-// above its own mark: what was written into is the frame's own, and goes with
-// it.
+// they gate (src/optimize/arena-rewind.js). A rewind restores the heap pointer
+// at return; it is sound only when no allocation made during the call outlives
+// the frame. An escape lowers the escape flag, where it runs, to the address
+// it wrote into, and a frame restores when the flag stands at or above its own
+// mark: what was written into is the frame's own, and goes with it.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'

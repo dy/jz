@@ -1129,8 +1129,8 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
   // `val` is a DELIBERATE, KEPT fallback (§15) for exactly the param shape —
   // a param's `val` comes from narrow.js's own call-site-argument fixpoint,
   // entirely independent of census provenance, so it can be legitimately
-  // non-null alongside `mayBeUndefined` with no `presentVal` ever set
-  // (params get no presentVal producer in this slice).
+  // non-null alongside `mayBeUndefined` with no `presentVal` ever set (params
+  // get no presentVal producer in this slice).
   updateRep('probeValFallback', { val: VAL.STRING, mayBeUndefined: true })
   is(censusMaybeUndefinedKind('probeValFallback'), VAL.STRING, '`val` is consulted as a fallback when presentVal is absent')
   // presentVal takes PRIORITY over val when both happen to be set.
@@ -1368,9 +1368,9 @@ test('mayBeUndefined closure capture: an ordinary captured binding is not flagge
 
 //
 // The mechanism itself (the `exprs.some(e => exprMayBeUndefinedIn(e, body))`
-// OR-fold) is still landed and correct — pinned here as a negative control
-// so a future change to bodyFacts.valTypes' settling rule that DOES make
-// this live doesn't silently ship unpinned.
+// OR-fold) is still landed and correct — pinned here as a negative control so
+// a future change to bodyFacts.valTypes' settling rule that DOES make this
+// live doesn't silently ship unpinned.
 test('mayBeUndefined valResult: an ordinary settled return never sets valResultMayBeUndefined', () => {
   if (onKernel()) return
   const insp = compile(`

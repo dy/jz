@@ -167,9 +167,9 @@ test('inline tiny: a loop formatting records splices the runtime it calls per ro
   is(called({ level: 2 }), HELPERS, 'the default tier keeps its calls')
 })
 
-// A math kernel (optimize/pure-funcs.js) past the loop bound joins each call a kernel loop makes,
-// in an arm of an `if` too, through a copy of its own the single-caller inliner dissolves: V8 grows
-// a loop's function past 640 bytes by a tenth at most, less than a sine.
+// A math kernel (optimize/pure-funcs.js) past the loop bound joins each call a kernel loop makes, in
+// an arm of an `if` too, through a copy of its own the single-caller inliner dissolves: V8 grows a
+// loop's function past 640 bytes by a tenth at most, less than a sine.
 const horner = (depth) => depth ? `(f64.add (f64.const ${(depth * 0.37) % 1}) (f64.mul (local.get $x) ${horner(depth - 1)}))` : '(f64.const 0.5)'
 const KERNEL = `(module
   (func $math.k (param $x f64) (result f64)

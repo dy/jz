@@ -1,7 +1,7 @@
 // jz/interop — standalone host-side boundary bridge.
 //
-// Validates that prebuilt jz wasm bytes can be instantiated and called through
-// the host runtime (interop.js) with no compiler / parser / watr dep. The wasm is
+// Validates that prebuilt jz wasm bytes can be instantiated and called through the
+// host runtime (interop.js) with no compiler / parser / watr dep. The wasm is
 // produced once via the full jz pipeline, then handed to the runtime as bytes.
 
 import test from 'tst'
@@ -1073,9 +1073,9 @@ test('interop: typed views, typed methods and accumulators keep an array-like pa
 })
 
 // Two classes of one field list are two schemas: the compiler brands each
-// (module/schema.js), and the `jz:brand` section carries the brand, so
-// interop keeps their sids and field contracts apart within a module and
-// across the modules sharing one memory.
+// (module/schema.js), and the `jz:brand` section carries the brand, so interop
+// keeps their sids and field contracts apart within a module and across the
+// modules sharing one memory.
 test('interop: classes of one field list keep their identity through the sections', () => {
   if (onWasi() || onKernel()) return
   const one = jz(`class A { constructor(x) { this.x = x } }\nclass B { constructor(x) { this.x = x } }
@@ -1140,8 +1140,8 @@ test('interop: numeric host imports preserve zero, NaN, infinities and hidden co
 })
 
 // A host function is JavaScript: it can call an export back, and the export can write a
-// global of the module or replace what it holds. Each program runs in Node too, the
-// import a function that calls the export, and jz answers the same.
+// global of the module or replace what it holds. Each program runs in Node too, the import
+// a function that calls the export, and jz answers the same.
 test('interop: a host import that calls an export back leaves no stale copy of a global', () => {
   if (onWasi() || onKernel()) return
   const cases = [
@@ -1379,8 +1379,8 @@ test('interop: a WASI module\'s stdio goes through the wasi option', () => {
 })
 
 // A method that captures nothing is a closure with no environment; the host
-// calls it on the object it read it from, so that object stays held as long
-// as the host holds it, though the closure holds no memory itself (interop.js
+// calls it on the object it read it from, so that object stays held as long as
+// the host holds it, though the closure holds no memory itself (interop.js
 // S.read: every decoded closure counts toward pinning its owner).
 test('interop: an object whose methods capture nothing stays held while the host calls them', () => {
   if (onWasi() || onKernel()) return

@@ -1,8 +1,8 @@
-// A function's properties are the function value's own: they live in the
-// table its pointer keys (module/collection.js __dyn_set), so a function read
-// as a value stays callable, `typeof` says 'function', and every name for it
-// sees one set of properties. Where the function never escapes, the plan
-// dissolves them into module globals (plan/scope.js flattenFuncNamespaces).
+// A function's properties are the function value's own: they live in the table
+// its pointer keys (module/collection.js __dyn_set), so a function read as a
+// value stays callable, `typeof` says 'function', and every name for it sees
+// one set of properties. Where the function never escapes, the plan dissolves
+// them into module globals (plan/scope.js flattenFuncNamespaces).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { levels, belowOpt, onWasi, onKernel } from './_matrix.js'

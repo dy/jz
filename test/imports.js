@@ -402,8 +402,8 @@ test('import: method name colliding with module-scoped binding is not renamed', 
 
 test('import: a nested arrow\'s default reads a module-scoped binding', () => {
   // The rename walk renamed an arrow's body but not its parameter list, so a
-  // default of an arrow inside a function declaration kept the bare name: "'C'
-  // is not in scope".
+  // default of an arrow inside a function declaration kept the bare name: "'C' is
+  // not in scope".
   const mod = `
     const B = 2, C = 3
     function order(n) {
@@ -926,8 +926,8 @@ test('cross-module: importer `.length = 0` between owner pushes keeps one array'
 
 // A destructuring export declaration (`export let { a } = obj`) must register its
 // bindings in the module's export table. The single-module form compiles; only the
-// cross-module import fails ("'a' is not exported from …"). Fix in prepare's
-// export registration, then flip `test.todo` → `test`.
+// cross-module import fails ("'a' is not exported from …"). Fix in prepare's export
+// registration, then flip `test.todo` → `test`.
 test('cross-module: destructured export declaration registers bindings', () => {
   const { exports } = jz(
     `import { a } from './dep.js'; export let f = () => a`,
@@ -958,11 +958,11 @@ test('cross-module: default-imported factory-produced closure', () => {
 // N)` calling an unknown `fn`) dies in encode with "'__a3' is not in scope" (AST
 // [";"]), while `--wat` emission of the identical graph succeeds. Either piece alone
 // compiles; simplified variants of the memo idiom also compile, so the trigger is
-// sensitive to taylor's exact shape — the taylor.js below is verbatim
-// window-function source, minimally re-based onto a stub util. Flip `test.todo` →
-// `test` when fixed. Residual: the memo VALUE computes wrong cross-module only
-// (returns 1, want 0.4849…; the same fn-attached memo idiom works single-module) — a
-// distinct dyn-props-on-closure-receiver or default-export-self-name bug.
+// sensitive to taylor's exact shape — the taylor.js below is verbatim window-function
+// source, minimally re-based onto a stub util. Flip `test.todo` → `test` when fixed.
+// Residual: the memo VALUE computes wrong cross-module only (returns 1, want 0.4849…;
+// the same fn-attached memo idiom works single-module) — a distinct
+// dyn-props-on-closure-receiver or default-export-self-name bug.
 test('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
   const util = `
     export let PI = Math.PI
@@ -1017,11 +1017,11 @@ test('cross-module: function-attached memo state + export-only HOF encodes to bi
 })
 
 // A top-level const in a NON-ENTRY bundled module initialized by a Math.* call reads
-// back truncated to its integer part — Math.PI * 2 → 6, Math.sqrt(2) → 1,
-// Math.cos(1) → 0 — both when imported by name and when read inside its own module's
-// functions. A plain-arithmetic const in the same position (`1.1 * 2`) is exact, and
-// the same Math.* const in the ENTRY module is exact. Compiles and runs clean —
-// silently wrong. Flip `test.todo` → `test` when fixed.
+// back truncated to its integer part — Math.PI * 2 → 6, Math.sqrt(2) → 1, Math.cos(1)
+// → 0 — both when imported by name and when read inside its own module's functions. A
+// plain-arithmetic const in the same position (`1.1 * 2`) is exact, and the same
+// Math.* const in the ENTRY module is exact. Compiles and runs clean — silently
+// wrong. Flip `test.todo` → `test` when fixed.
 test('cross-module: Math.*-initialized const in a dep module reads back exact', () => {
   const { exports } = jz(
     `import { TWO_PI, R2 } from './util.js'

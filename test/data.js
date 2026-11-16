@@ -2931,8 +2931,8 @@ test('closed-union tagged records: exact values, trailing-else variant, open-arr
   is(run(SRC).main(), host)
 })
 
-// The kernel-leg bool-identity test is the recursion pin (native never hung); this
-// differential pins that the iterative verdicts keep values JS-exact.
+// The kernel-leg bool-identity test is the recursion pin (native never hung);
+// this differential pins that the iterative verdicts keep values JS-exact.
 test('dict-use idioms: lean-hash, i32-histogram, domain-keyed all JS-exact', () => {
   const m = run(`
     export let lean = (n) => { let h = {}; for (let i = 0; i < n; i++) { let k = 'x' + i; h[k] = i * i }; let s = 0; for (let i = 0; i < n; i++) { let k = 'x' + i; s += h[k] }; return s }
@@ -3275,10 +3275,9 @@ test('bigint: storage-read box-pointer-bits leak through a reassigned param acro
 
 test('bigint: storage-read method-family sweep — get/pop/shift/at/[]/.member compound-reassign across a call (shape #6)', () => {
   // Every STORAGE_READ_METHODS member plus the plain []/.member producer
-  // (representation-plan.js's memberReceiver shape) x a compound
-  // reassignment (`n >>= 7n`) x both a same-function local and a
-  // cross-function (covered, reassigned) param. 900n >> 7n === 7n for every
-  // cell.
+  // (representation-plan.js's memberReceiver shape) x a compound reassignment
+  // (`n >>= 7n`) x both a same-function local and a cross-function (covered,
+  // reassigned) param. 900n >> 7n === 7n for every cell.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const single = (setup, read) => `export let f = (i) => { ${setup}; let n = ${read}; n >>= 7n; return n }`
@@ -3331,9 +3330,8 @@ test('bigint: ++/-- on a covered-function param uses RepresentationPlan provenan
 })
 
 test('bigint: storage-read forwarded through a closure/dispatch-table call (shape #6 closure close)', () => {
-  // Closure bodies are outside the named-function provenance scan. This is
-  // the actual watr HANDLER[key] dispatch shape, not a direct-call
-  // approximation.
+  // Closure bodies are outside the named-function provenance scan. This is the
+  // actual watr HANDLER[key] dispatch shape, not a direct-call approximation.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3504,11 +3502,11 @@ test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding
 test('bigint: one-authority fix — valTypeOf itself resolves a `.`-member callee (large magnitude, tag-aliasing-prone)', () => {
   // This magnitude (0xaf00f0000_9999 / 3078696982321561, watr's own
   // int_literals.wast "i64-hex-sep1" case) has bits that alias PTR.BIGINT's own
-  // NaN-box tag pattern (tag=5) when the reassigned `n = i64.parse(n)` result
-  // is left UNBOXED and mistaken for a real payload downstream — the exact
+  // NaN-box tag pattern (tag=5) when the reassigned `n = i64.parse(n)` result is
+  // left UNBOXED and mistaken for a real payload downstream — the exact
   // "box-tag-shaped i64 constant" hazard this file documents elsewhere. Small
-  // magnitudes (900) don't collide with the tag and passed even before this
-  // fix; this one didn't.
+  // magnitudes (900) don't collide with the tag and passed even before this fix;
+  // this one didn't.
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3524,9 +3522,8 @@ test('bigint: one-authority fix — valTypeOf itself resolves a `.`-member calle
 test('bigint: one-authority fix — `.`-member callee result as a ternary arm feeding bitwise |/&/<<', () => {
   // Sign-bit-safe magnitudes only (0x00ff... not 0xff...) — a value with the
   // i64 sign bit set hits a SEPARATE, pre-existing, unrelated BigInt
-  // boundary-decode gap (confirmed identical on the bare-name control
-  // sibling below, so it is not this fix's own regression) not exercised by
-  // this pin.
+  // boundary-decode gap (confirmed identical on the bare-name control sibling
+  // below, so it is not this fix's own regression) not exercised by this pin.
   const BODY = `
     export let trueOr = () => pick(true, '123') | 0x1n
     export let trueAnd = () => pick(true, '123') & 0xffn
@@ -3606,9 +3603,9 @@ test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i
 })
 
 // Pinned here as regression coverage for the fixed chokepoints themselves, across every
-// representation the family can take: ±(2^63-1), the 2^64-1 wrapped forms
-// (asUintN(64,·) collapses both to small-magnitude i64 bit patterns, ±1), and ±2^62 as
-// in-range controls.
+// representation the family can take: ±(2^63-1), the 2^64-1 wrapped forms (asUintN(64,·)
+// collapses both to small-magnitude i64 bit patterns, ±1), and ±2^62 as in-range
+// controls.
 test('bigint: range-boundary family survives storage box/unbox (array push+read+arithmetic)', () => {
   const FAMILY = {
     'i64 max (2^63-1)': ['9223372036854775807n', 9223372036854775807n],
@@ -3816,10 +3813,10 @@ test('bigint: known typed stores never treat an unknown Number carrier as raw Bi
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
   // The retired sentinel export lane could not be disabled until these producer
   // shapes materialized through the generic tagged decode; doing so earlier
-  // produced silent wrong values on the present-key case at every optimize
-  // level (`-m.get('x')` with x=5n present read back as `2.5e-323`, 5n's raw
-  // i64 bits misread as an f64 subnormal — the exact disease this whole
-  // mechanism exists to prevent).
+  // produced silent wrong values on the present-key case at every optimize level
+  // (`-m.get('x')` with x=5n present read back as `2.5e-323`, 5n's raw i64 bits
+  // misread as an f64 subnormal — the exact disease this whole mechanism exists
+  // to prevent).
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
 
@@ -4332,9 +4329,9 @@ test('object mutated via a parameter: the real watr-shaped repro (makeByteBuf/wr
 test('object passed as a parameter: a param that is only READ keeps its direct (non-shadow-probed) codegen — WAT shape', () => {
   // Negative control for the fix above: a parameter proven ARRAY through a
   // real construction/call-site proof (a literal array argument, resolved
-  // by the cross-function paramReps fixpoint — never through a method
-  // name) and used only for `.length`/index READS must keep the direct,
-  // fast array-header codegen — no own-property shadow probe, no dynamic
+  // by the cross-function paramReps fixpoint — never through a method name)
+  // and used only for `.length`/index READS must keep the direct, fast
+  // array-header codegen — no own-property shadow probe, no dynamic
   // dispatch.
   const src = `
     function sumArr(a) {
@@ -4477,8 +4474,8 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   // Negative control: byte-identical shape, except HANDLER also reaches the
   // host (returned from an export), which may call its members with anything:
   // the summary escapes them (src/summary escapeToHost), so push2's `buf`
-  // stays exactly as unprovable as it always was: real runtime dispatch, not
-  // a wrong guess.
+  // stays exactly as unprovable as it always was: real runtime dispatch, not a
+  // wrong guess.
   const escapedSrc = `
     const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
     const HANDLER = {
@@ -4616,10 +4613,9 @@ test('RepresentationPlan: a param fed only a `.`-property read of a proven-schem
 })
 
 test('RepresentationPlan: a `.`-property read chained off a proven array-element read also proves the field (positive, array-element-chained receiver)', () => {
-  // The second proof source the `.`-property-read case supports: the
-  // receiver itself is `rows[i]` (a proven-array-element read, not a bare
-  // name) — `grab`'s list param is fed `rows[i].items`, two hops from a
-  // literal.
+  // The second proof source the `.`-property-read case supports: the receiver
+  // itself is `rows[i]` (a proven-array-element read, not a bare name) —
+  // `grab`'s list param is fed `rows[i].items`, two hops from a literal.
   const src = `
     function grab(nm, list) { return list[nm] }
     function visit(i, rows) { return grab(0, rows[i].items) }

@@ -314,8 +314,8 @@ test('bool: strict-eq boxes a short-circuited BOOL arm even when the sibling arm
 
 // Boolean identity across untyped carriers
 //
-// Strict equality against a bool literal on an unknown operand compares atom
-// BITS (emitStrictEq) — `1 === true` is false, exactly ES; BOOL∪NUMBER merges
+// Strict equality against a bool literal on an unknown operand compares atom BITS
+// (emitStrictEq) — `1 === true` is false, exactly ES; BOOL∪NUMBER merges
 // deliberately stay raw (the 0/1 IS the ToNumber image — VT['?:'] carries NUMBER
 // there).
 
@@ -518,11 +518,10 @@ test('bool identity: strict equality of a number against an untyped operand conv
   }
 })
 
-// A boolean the analysis marks nullable (a builtin's result, `la.has(a)`,
-// fails closed) keeps its raw 0/1 carrier; strictly compared with a value the
-// program cannot kind (`lb.has(b)`, lb a slot value: its result is an atom) it
-// enters the dynamic compare as its atom, as it would enter any untyped
-// carrier.
+// A boolean the analysis marks nullable (a builtin's result, `la.has(a)`, fails
+// closed) keeps its raw 0/1 carrier; strictly compared with a value the program
+// cannot kind (`lb.has(b)`, lb a slot value: its result is an atom) it enters
+// the dynamic compare as its atom, as it would enter any untyped carrier.
 test('bool identity: a nullable boolean beside an unkinded boolean compares strictly as its atom', () => {
   const SRC = `const namesOf = (fn) => { const names = new Set(); for (const n of fn) if (typeof n === 'string') names.add(n); return names }
   const equalBodies = (fa, la, fb, lb) => {

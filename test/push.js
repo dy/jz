@@ -95,8 +95,8 @@ test('push: an array at the heap top grows in place without the host allocator',
 })
 
 // The kernel: a fresh array a loop pushes into as many times as the data says
-// (no count it could reserve is proven). The size tier keeps one call per
-// push site (`__arr_push1`; two sites, so watr keeps it a call).
+// (no count it could reserve is proven). The size tier keeps one call per push
+// site (`__arr_push1`; two sites, so watr keeps it a call).
 test('push: a push loop stores in place at the speed tier', () => {
   if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
   const src = `export let f = (n) => { const a = [], b = []; while (n > 1) { if (n % 2) { a.push(n); n = 3 * n + 1 } else { b.push(n); n = n / 2 } } return a.length * 1000 + b.length + a[a.length - 1] }`

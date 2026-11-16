@@ -82,9 +82,9 @@ const FORCED = selfBuildWith({
     '        if (nm.valueOf() === \'"__fail_after_unpark"\') throw new Error(\'test-only failure in the encoder, after the unpark: export "__fail_after_unpark"\')\n        ctx.export.push([nm, [kind, items.length]])\n',
   ]],
 })
-// module/core.js: the park lane's end. __park_begin grows the instance's memory to
-// it: that is address space the engine reserves (memory.buffer.byteLength); the OS
-// commits pages as they are touched.
+// module/core.js: the park lane's end. __park_begin grows the instance's memory to it:
+// that is address space the engine reserves (memory.buffer.byteLength); the OS commits
+// pages as they are touched.
 const PARK_END = 0xFFFFFFF0
 
 let normal, forced

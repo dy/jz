@@ -4,8 +4,8 @@
 // parameter are tests of the literal the site passed. A test of literals is its
 // answer, the arm it rules out is no code, and the binding holds its literal past
 // the test. The bindings followed are the splices' own: each flow below runs as
-// the body of a call (`spliced`), and as the function the source wrote. Every
-// form answers what the host answers.
+// the body of a call (`spliced`), and as the function the source wrote. Every form
+// answers what the host answers.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'

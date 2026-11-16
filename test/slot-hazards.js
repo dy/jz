@@ -21,8 +21,8 @@ import { run, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
 import { initSchema } from '../module/schema.js'
 import { levels } from './_matrix.js'
 
-// A multi-schema static read unboxes only if EVERY alternative is proven
-// boxed BigInt.
+// A multi-schema static read unboxes only if EVERY alternative is proven boxed
+// BigInt.
 test('slot carriers: refinements require one common read representation', () => {
   const facts = { schema: { list: [['n'], ['n'], ['n'], []] }, func: { refinements: new Map() } }
   initSchema(facts)
@@ -159,10 +159,10 @@ test('slot-hazards: §21 counter-example — computed-key write through an untyp
   // If slotVT's gate ever dropped this term (or the product-lattice Slice 6b swap ever
   // left a reader on the old, now-permanently-empty hz.sids), `f.count` downstream of
   // `corrupt(f, 'count', 'oops')` would still answer NUMBER — wrong, since the call
-  // really did overwrite that slot with a string — and this test would decode the
-  // box's raw pointer bits as a number instead of taking the string concat path. (The
-  // second call, of another layout, keeps `obj` unresolved: a parameter every call
-  // passes one layout resolves to it.)
+  // really did overwrite that slot with a string — and this test would decode the box's
+  // raw pointer bits as a number instead of taking the string concat path. (The second
+  // call, of another layout, keeps `obj` unresolved: a parameter every call passes one
+  // layout resolves to it.)
   const src = `
 class Foo { constructor() { this.count = 0 } }
 const corrupt = (obj, key, val) => { obj[key] = val }
@@ -310,10 +310,9 @@ export let main = (n) => {
 
 // Structural slotOf closed-world hole: the old form checked slot-consistency
 // only among schemas CONTAINING the prop — an OBJECT receiver of a schema
-// LACKING it read (and WROTE) the foreign slot. Sound form: the prop must
-// live at the same slot in EVERY registered schema; unique-prop receivers
-// keep the runtime-guarded devirt (guardedSlotOf), everything else goes
-// dynamic.
+// LACKING it read (and WROTE) the foreign slot. Sound form: the prop must live
+// at the same slot in EVERY registered schema; unique-prop receivers keep the
+// runtime-guarded devirt (guardedSlotOf), everything else goes dynamic.
 test('slot-hazards: structural slotOf refuses schemas lacking the prop (read + write)', () => {
   const src = `
 const mk = () => { const a = []; a.push({ x: 41, y: 2 }); return a }

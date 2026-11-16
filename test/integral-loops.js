@@ -677,8 +677,8 @@ test('integral loops: a ring counter is a cursor with a floor, and a loop under 
   ok(/\(local \$si\S+ i32\)/.test(frame), 'the ring counter is a word in the copies the bound versions')
 })
 
-// The copy's words, read off the planned body: the plan pass rewrites in place,
-// so the function's body after a compile holds the copies it made.
+// The copy's words, read off the planned body: the plan pass rewrites in place, so
+// the function's body after a compile holds the copies it made.
 const loopFloats = (text) => {
   const loops = []
   const walk = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop') { loops.push(n); return } for (const c of n) walk(c) }
@@ -1065,8 +1065,8 @@ test('integral loops: an inner copy\'s hull tests lift to the outer guard at the
 
 test('integral loops: a walk over links is a word of the copy, a missed link ending it', () => {
   // fireflies' neighbour gather: `let j = head[c]; while (j >= 0) { … j = next[j] }`
-  // over int32 arrays. The copy reads a missed link as -1, the same end, and walks
-  // by an i32: no conversion per link.
+  // over int32 arrays. The copy reads a missed link as -1, the same end, and walks by
+  // an i32: no conversion per link.
   const src = `let N = 0, head, next, val, out
     export let resize = (n) => {
       N = n; head = new Int32Array(4); next = new Int32Array(n); val = new Float64Array(n); out = new Float64Array(4)
@@ -1284,8 +1284,8 @@ test('integral loops: an end moved by a literal past the type\'s extreme is no e
 
 test('integral loops: a self-call\'s argument reading its own parameter ends the fraction check', () => {
   // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its call
-  // sites, one of which passes an expression of `x` itself; the check once recursed
-  // without end (stdlib-special in the benchmark corpus).
+  // sites, one of which passes an expression of `x` itself; the check once recursed without
+  // end (stdlib-special in the benchmark corpus).
   const src = `let acc = new Float64Array(8)
     let walk = (n, x) => { let i = 0; while (i < n) { acc[i] += x; i++ } if (n > 1) walk(n - 1, x * 0.5) }
     export let run = (n) => { walk(n, 1.0); return acc[0] }`
@@ -1572,8 +1572,8 @@ test('integral loops: a sum of int32s past the word takes a copy that tests it a
 
 test('integral loops: a `for` whose copy leaves at a sum runs its init once', () => {
   // A copy that leaves a `while` for the loop as written, standing alone, leaves to the loop as
-  // written past its guard: one cold loop. A `for` with an init is no resumption of itself:
-  // `for (z += 5; …)` left at a cell of the word's top ran `z += 5` again, at levels 2 and over
+  // written past its guard: one cold loop. A `for` with an init is no resumption of itself: `for
+  // (z += 5; …)` left at a cell of the word's top ran `z += 5` again, at levels 2 and over
   // (ECMA-262, ForStatement: the init expression is evaluated once, before the first test).
   // Expected values are Node's.
   const row = (decl, head, tail, after) => `const LB = 16
@@ -2259,9 +2259,9 @@ test('integral loops: a loop stepped by a literal counts its trips, a cursor of 
 })
 
 test('integral loops: a cursor near 2^31 - 1 stepped in a nest keeps its value past the word', () => {
-  // `p` enters an int32 and steps past 2^31 - 1: by a counted inner loop, whose landing `p =
-  // clc + 2 * (trips | 0)` is an integer of integers (plan/counted-loops.js), and by an arm
-  // (`if (v >= 0) p += 2`) no counted loop takes.
+  // `p` enters an int32 and steps past 2^31 - 1: by a counted inner loop, whose landing `p = clc
+  // + 2 * (trips | 0)` is an integer of integers (plan/counted-loops.js), and by an arm (`if (v
+  // >= 0) p += 2`) no counted loop takes.
   const shape = (step) => `function walk(b, p, out, frames, nCh) {
       let s = 0
       for (let i = 0; i < frames; i++)

@@ -1,9 +1,9 @@
 // Self-compiled compile target for `JZ_TEST_TARGET=jz.wasm node test/index.js`.
 //
-// Routes every `compile` (and thus jz()) through a kernel — jz's whole pipeline
-// (parse → jzify → prepare → compile → watr-encode) compiled to wasm BY jz. Running
-// the whole suite this way is the test matrix with the compiler being
-// jz-compiled-by-jz: any divergence from the native run is a self-compile bug.
+// Routes every `compile` (and thus jz()) through a kernel — jz's whole pipeline (parse
+// → jzify → prepare → compile → watr-encode) compiled to wasm BY jz. Running the whole
+// suite this way is the test matrix with the compiler being jz-compiled-by-jz: any
+// divergence from the native run is a self-compile bug.
 //
 // The kernel is named, never substituted: JZ_KERNEL=<file> names explicit bytes
 // (a private review kernel); the jz.wasm leg (JZ_TEST_TARGET=jz.wasm) consumes
@@ -63,8 +63,8 @@ const DEFAULT_OPT = (() => {
 // "Duplicate local"); a real self-compile run compiles one program per instance, so a
 // fresh instance per compile both models that and keeps the test:wasm signal free of
 // cross-compile contamination. `instantiate` accepts a Module, so this is just a new
-// Instance (fresh memory) — no recompile. Cache failure as well: a later test must
-// not retry or consume an artifact that appeared after this run's build/read failed.
+// Instance (fresh memory) — no recompile. Cache failure as well: a later test must not
+// retry or consume an artifact that appeared after this run's build/read failed.
 let selfModule, selfFailure
 /** Which kernel this process consumes, by name. */
 export const kernelSource = () => process.env.JZ_KERNEL ? `JZ_KERNEL ${process.env.JZ_KERNEL}` : process.env.JZ_TEST_TARGET === 'jz.wasm' ? 'dist/jz.wasm' : 'fresh private build'

@@ -306,9 +306,9 @@ test('staged host field stores retain BigInt assignment results', () => {
 // own linear memory, not a host-owned copy (interop.js `mem.read`'s TYPED branch:
 // `new Ctor(mem.buffer, off, len)`). Fixed narrowly at `__ext_set` (interop.js) —
 // NOT in `mem.read` itself, which stays a live view for its other callers (a
-// function-return-value peek, or explicit `instance.memory.read(ptr)`, where a
-// live view is the documented, intentional behavior — test/external.js's own
-// "Return external object from JZ" above relies on it).
+// function-return-value peek, or explicit `instance.memory.read(ptr)`, where a live
+// view is the documented, intentional behavior — test/external.js's own "Return
+// external object from JZ" above relies on it).
 test('typed-array field on an external object survives memory growth', () => {
   if (onWasi()) return  // wasi: external object
   const { step } = run(`
@@ -364,8 +364,8 @@ test('A host object or function held in a native container reads and calls throu
   }
 })
 
-// A for await over a host stream read the string key, found no iterator and ended
-// at once; a for of that takes the iterator protocol (in a program that reads
+// A for await over a host stream read the string key, found no iterator and ended at
+// once; a for of that takes the iterator protocol (in a program that reads
 // Symbol.iterator, as here, or defines a generator) threw over a host iterable.
 test('A host object answers well-known symbol keys: for await over a host stream, the iterator protocol over a host iterable', async () => {
   if (onWasi()) return

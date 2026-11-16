@@ -894,8 +894,8 @@ test('spread into a fixed-arity function fills its parameters from the array', (
 })
 
 test('spread into a method: the source is staged once, by its kind', () => {
-  // A string source counts characters and reads a character per element; a
-  // Set iterates its keys; an unknown source decides at runtime.
+  // A string source counts characters and reads a character per element; a Set
+  // iterates its keys; an unknown source decides at runtime.
   const src = `const app = (a, s) => { a.push(...s); return a.length }
     const pre = (a, s) => { a.unshift(...s); return a.length }
     export let f = () => {
@@ -952,8 +952,8 @@ test('spread: a layout the summary derives types the literal\'s fields', () => {
   }
 })
 
-// A spread of such a literal makes another layout, known only once the first
-// is named.
+// A spread of such a literal makes another layout, known only once the first is
+// named.
 test('spread: a spread of a spread\'s result reads its fields as slots', () => {
   const cases = [
     `let inner = (o) => ({ ...o, y: 2 })\nlet outer = (o) => ({ ...inner(o), z: 3 })\nlet use = (o) => o.x + o.y * 10 + o.z * 100\nexport let f = (n) => use(outer({ x: n }))`,

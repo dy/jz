@@ -127,8 +127,8 @@ test('typed store: the same through local receivers', () => {
 })
 
 // The pixel composite (`px[i] = lut[ink[i]]`, a lut of 256 entries indexed by a
-// byte, both arrays made at a resize) and the pixel fade store words: no
-// ToInt32 call at any tier.
+// byte, both arrays made at a resize) and the pixel fade store words: no ToInt32
+// call at any tier.
 const pixels = `let W = 0, H = 0, px, ink
 let lut = new Uint32Array(256)
 export const resize = (w, h) => { W = w; H = h; ink = new Uint8Array(W * H); px = new Uint32Array(W * H); return px }
@@ -187,8 +187,8 @@ test('typed store: a clamped byte rounds half to even inside [0, 255], inline', 
 
 // A checked element read after a checked store of that element reads the stored word, and one
 // after a checked read of it the read word (optimize/forward-checked.js): `grid[i] += k; if
-// (grid[i] >= 4)` loads `grid[i]` once, `grid[i] >= 4 ? grid[i] >> 2 : …` too. An index the
-// check fails reads undefined either way; the stored word is ToInt32's, wrapped, never the sum.
+// (grid[i] >= 4)` loads `grid[i]` once, `grid[i] >= 4 ? grid[i] >> 2 : …` too. An index the check
+// fails reads undefined either way; the stored word is ToInt32's, wrapped, never the sum.
 const reread = `let grid, cells
 export const resize = (n) => { grid = new Int32Array(n); cells = new Uint32Array(n); return n }
 export const pour = (i, k) => {

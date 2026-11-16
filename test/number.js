@@ -393,8 +393,9 @@ test('Number: String() large-value fraction-drop + trap', () => {
 })
 
 // platform-NaN const folding (the linux-x64 self-compile OOB)
-// x64 wasm arithmetic produces SIGN-SET qNaNs where arm64 produces canonical ones.
-// Byte-identical kernels passed on arm64 and OOB'd on linux-x64 until this.
+// x64 wasm arithmetic produces SIGN-SET qNaNs where arm64 produces canonical
+// ones. Byte-identical kernels passed on arm64 and OOB'd on linux-x64 until
+// this.
 
 test('NaN const fold: sqrt(-1) through reductions stays canonical', () => {
   const r = run(`
@@ -607,8 +608,8 @@ test('Number generic boundaries canonicalize box-looking NaNs without changing n
 })
 
 test('Number payload proofs: plain-array arithmetic stores raw, raw ingress still normalizes', () => {
-  // A boxed array's elements were normalized where they were stored, and
-  // arithmetic on them makes no payload: the store back needs no select.
+  // A boxed array's elements were normalized where they were stored, and arithmetic
+  // on them makes no payload: the store back needs no select.
   const kernel=(make,use='')=>`const a=${make};export function f(n){const o=[];for(let i=0;i<4;i++)a[i]=i*0.5+a[(i+1)&3];${use}
     for(let i=0;i<4;i++){const x=a[i];let y=x*2;y=y+a[i];o[i]=Math.sqrt(y)-x}return o}`
   // canonicalNumberIR's own test of its temp: `cn != cn`
@@ -636,8 +637,8 @@ test('Number payload proofs: plain-array arithmetic stores raw, raw ingress stil
 test('Number payload proofs: an exported Number result crosses as a Number whatever its bits', () => {
   // the host reads a result crossing as a Number as one (interop.js numberRet):
   // a NaN whose bits spell a boolean, a string or an array's pointer is NaN,
-  // returned by an arrow or a function, a typed array's element or arithmetic
-  // on one.
+  // returned by an arrow or a function, a typed array's element or arithmetic on
+  // one.
   const src=`const bits=(hi,lo)=>{const t=new Float64Array(1),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;return t}
     export let e=(hi,lo)=>bits(hi,lo)[0]
     export function d(hi,lo){const v=bits(hi,lo)[0];return v}

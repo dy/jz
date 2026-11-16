@@ -790,8 +790,8 @@ test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (
       while (i < 1000) { ax = ax + DX[dir]; dir = (dir + 1) & 3; i = i + 1 }
       out[0] = ax
     }`, { wat: true })
-  // Every `+` in the kernel is integer (ax, DX[dir], dir+1, i+1) so a correct lowering has
-  // NO f64 arithmetic at all.
+  // Every `+` in the kernel is integer (ax, DX[dir], dir+1, i+1) so a correct lowering has NO
+  // f64 arithmetic at all.
   is((wat.match(/f64\.add/g) || []).length, 0, 'no f64.add on the integer accumulation')
   is((wat.match(/f64\.convert_i32_s/g) || []).length, 0, 'no i32→f64 convert feeding the accumulation')
   ok((wat.match(/i32\.add/g) || []).length >= 1, 'accumulation lowers to native i32.add')
@@ -1192,9 +1192,9 @@ test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => 
 })
 
 test('codegen: f64-strided index does NOT force its counter to i32', () => {
-  // Guard against over-narrowing: when the index carries a genuinely-f64 operand
-  // (here `w` is an exported-function param, fixed f64 by the host ABI), the access
-  // truncs no matter what, so keeping the counter i32 would add a compare-convert per
+  // Guard against over-narrowing: when the index carries a genuinely-f64 operand (here
+  // `w` is an exported-function param, fixed f64 by the host ABI), the access truncs
+  // no matter what, so keeping the counter i32 would add a compare-convert per
   // iteration for zero trunc savings (a net loss — the game-of-life regression). The
   // counter must keep widening to f64 exactly as before the auto-narrow rule.
   const wat = compile(`
@@ -1311,8 +1311,8 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
 
 test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile global)', () => {
   if (belowOpt(2)) return  // hoistGlobalPtrOffset base-decode hoist is a level-2 pass (not in the level-1 preset)
-  // The wireworld / cellular-automaton shape: two grids `a`/`b` swapped each frame (`a
-  // = b; b = tmp`).
+  // The wireworld / cellular-automaton shape: two grids `a`/`b` swapped each frame (`a =
+  // b; b = tmp`).
   const wat = compile(`
     let W = 0, a, b
     export let init = (n) => { W = n; a = new Int32Array(n); b = new Int32Array(n); return a }

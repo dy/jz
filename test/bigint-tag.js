@@ -409,9 +409,9 @@ test('bigint tag: a module binding holds its BigInt in one carrier for every wri
   }
 })
 
-// A tagged local beside an operand with no evidence: `at` copies the
-// `length` of an untyped parameter (a builder from a closure table), and the
-// program holds a BigInt elsewhere, so the plan tags `at`.
+// A tagged local beside an operand with no evidence: `at` copies the `length`
+// of an untyped parameter (a builder from a closure table), and the program
+// holds a BigInt elsewhere, so the plan tags `at`.
 test('bigint tag: a tagged carrier beside an unresolved operand dispatches on the tag', () => {
   const SRC = `const makeBuf = (cap) => {
     const b = { buf: new Uint8Array(cap), length: 0 }
@@ -556,8 +556,8 @@ test('bigint tag: a closure receives its BigInt arguments tagged, called directl
 
 test('bigint tag: a parameter of every kind materializes; the joins it feeds keep every arm\'s identity', () => {
   // The join `typeof v === 'bigint' ? v : BigInt(v)` has no kind of its own,
-  // so the edge into its RAW binding was dropped and the reads took the
-  // box's pointer bits (watr's slebSize answered 10 for 300n).
+  // so the edge into its RAW binding was dropped and the reads took the box's
+  // pointer bits (watr's slebSize answered 10 for 300n).
   const SRCS = [
     `const size = (v) => { let x = typeof v === 'bigint' ? v : typeof v === 'string' ? BigInt(v) : BigInt(Math.trunc(Number(v) || 0)); let n = 1; while (true) { const b = x & 0x7fn; x >>= 7n; if ((x === 0n && (b & 0x40n) === 0n) || (x === -1n && (b & 0x40n) !== 0n)) return n; n++ } }
      const parse = (s) => { const w = s.split(' '); return [w[0], w[1].endsWith('n') ? BigInt(w[1].slice(0, -1)) : w[1].startsWith('#') ? Number(w[1].slice(1)) : w[1]] }

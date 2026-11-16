@@ -1175,9 +1175,9 @@ test('Regression: dynamic property access on string returns undefined', () => {
 })
 
 test('Regression: dynamic property assignment on string throws', () => {
-  // Every jz module is strict code: PutValue on a primitive base throws
-  // TypeError (ES2023 §10.1.9.2 OrdinarySetWithOwnDescriptor returns false for a
-  // primitive receiver, §6.2.5.6 throws in strict code).
+  // Every jz module is strict code: PutValue on a primitive base throws TypeError
+  // (ES2023 §10.1.9.2 OrdinarySetWithOwnDescriptor returns false for a primitive
+  // receiver, §6.2.5.6 throws in strict code).
   const { test } = runHost(`
     export let test = () => { let s = "foo"; try { s.prop = 42; return s.prop } catch (e) { return e.name } }
   `)
@@ -1299,11 +1299,11 @@ test('valueOf: override wins on an array-element receiver', () => {
 })
 
 // The comparison `arr.valueOf !== Array.prototype.valueOf` must reflect a runtime
-// override — not be constant-folded from the receiver's static type. Distinct from
-// the tests above, which compare against a captured runtime value or call
-// `.valueOf()`; both of those already pass. Uses the jzify path:
-// `Array.prototype.valueOf` only resolves under jzify (the path watr's build takes);
-// the bare in-memory path rejects it as "not in scope".
+// override — not be constant-folded from the receiver's static type. Distinct from the
+// tests above, which compare against a captured runtime value or call `.valueOf()`;
+// both of those already pass. Uses the jzify path: `Array.prototype.valueOf` only
+// resolves under jzify (the path watr's build takes); the bare in-memory path rejects
+// it as "not in scope".
 test('valueOf: identity vs Array.prototype.valueOf reflects override (not static fold)', () => {
   const { f } = jz(`export let f = () => {
     let a = [104, 105]
@@ -1931,38 +1931,40 @@ test('every: typed-array field of heap-returned object', () => {
   is(test(4), 1)
 })
 
-// Correctness is solid: `npm run build` + kernel-oracle (539/539 AGREE-tier assertions,
-// native vs kernel vs JS-oracle) + kernel-parity (byte-identical WAT at O2/O3) all
-// passed clean on a dist/jz.wasm built with this diff, plus this test's own runtime
-// result and forEach/fill/slice/Map.set differential probes — no logic or semantic
-// defect found anywhere. `node scripts/build-dist.mjs` /
+// Correctness is solid: `npm run build` + kernel-oracle (539/539 AGREE-tier
+// assertions, native vs kernel vs JS-oracle) + kernel-parity (byte-identical WAT at
+// O2/O3) all passed clean on a dist/jz.wasm built with this diff, plus this test's
+// own runtime result and forEach/fill/slice/Map.set differential probes — no logic
+// or semantic defect found anywhere. `node scripts/build-dist.mjs` /
 // `scripts/self-compile-build.mjs` (both: native jz compiling its own ~159-module
-// source graph at -O3) call watr's assemble() and, WITH this diff applied, die there 4
-// of 5 runs with "Unknown instruction null" (a memidx/data-segment site,
-// watr/src/compile.js) — including two failures on scripts/build-dist.mjs itself, the
-// exact script the ONE success came from (byte-for-byte the same source: the build is
-// flaky, not just script-dependent). Next session: reproduce with JZ_SELF_COMPILE_OPT=2
-// (rule out -O3-only), then bisect self.js's 159-module graph (disable half, retry) to
-// the source position feeding `null` into watr's memidx/data builder — the in-kernel
-// discipline pass this shape has needed since the first attempt. Crash-rate reproduced
-// first: 5/5 `npm run build` runs failed on this worktree (was 4/5), identical stack
-// every time (watr/src/compile.js instr()@1127, called from the code/func-body section
-// handler @851, assemble/compile @267/356, index.js's watrCompile(optimized) call) —
-// confirms the defect, not a fluke of the prior session's count. Root-caused via a temp
-// pre-watrCompile IR census (index.js, gated on JZ_DEBUG_DUMP_TREE, deleted with this
-// fix): 2 real `npm run build` runs both surfaced the identical shape, a bare `['then',
-// null]` (2-element array) nested under an `(if …(i32.and tagbits mask)(i32.eq
-// …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e. `dispatchByPtrType`'s
-// (src/ir.js) own `['then', ir]` construction with `ir` unresolved to `null`.
-// JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
-// localization run above used `npm run build`'s O3 default. Build-crash gate PASSED
-// clean: `npm run build` × 5/5 (was 5/5 FAIL without the guard).
+// source graph at -O3) call watr's assemble() and, WITH this diff applied, die
+// there 4 of 5 runs with "Unknown instruction null" (a memidx/data-segment site,
+// watr/src/compile.js) — including two failures on scripts/build-dist.mjs itself,
+// the exact script the ONE success came from (byte-for-byte the same source: the
+// build is flaky, not just script-dependent). Next session: reproduce with
+// JZ_SELF_COMPILE_OPT=2 (rule out -O3-only), then bisect self.js's 159-module graph
+// (disable half, retry) to the source position feeding `null` into watr's
+// memidx/data builder — the in-kernel discipline pass this shape has needed since
+// the first attempt. Crash-rate reproduced first: 5/5 `npm run build` runs failed
+// on this worktree (was 4/5), identical stack every time (watr/src/compile.js
+// instr()@1127, called from the code/func-body section handler @851,
+// assemble/compile @267/356, index.js's watrCompile(optimized) call) — confirms the
+// defect, not a fluke of the prior session's count. Root-caused via a temp
+// pre-watrCompile IR census (index.js, gated on JZ_DEBUG_DUMP_TREE, deleted with
+// this fix): 2 real `npm run build` runs both surfaced the identical shape, a bare
+// `['then', null]` (2-element array) nested under an `(if …(i32.and tagbits
+// mask)(i32.eq …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e.
+// `dispatchByPtrType`'s (src/ir.js) own `['then', ir]` construction with `ir`
+// unresolved to `null`. JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run
+// separately — every localization run above used `npm run build`'s O3 default.
+// Build-crash gate PASSED clean: `npm run build` × 5/5 (was 5/5 FAIL without the
+// guard).
 //
-// Differentially verified against real Node/V8 typed arrays (not hand-picked literals)
-// for Int8Array wrap (ECMA-262 ToInt8, 7.1.11), Uint8Array wrap-not-clamp (ToUint8,
-// 7.1.10 — contrast with Uint8ClampedArray's ToUint8Clamp, 7.1.12, which only its
-// element WRITES use), and Float32Array f32 store-rounding (distinct from f64
-// arithmetic), at optimize 0/2/3.
+// Differentially verified against real Node/V8 typed arrays (not hand-picked
+// literals) for Int8Array wrap (ECMA-262 ToInt8, 7.1.11), Uint8Array
+// wrap-not-clamp (ToUint8, 7.1.10 — contrast with Uint8ClampedArray's
+// ToUint8Clamp, 7.1.12, which only its element WRITES use), and Float32Array
+// f32 store-rounding (distinct from f64 arithmetic), at optimize 0/2/3.
 test('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
@@ -2111,8 +2113,8 @@ test('.map: into typed-array field added dynamically to an empty object (narrow 
 test('.map: host-provided typed receiver (source names no typed ctor at all) preserves species + width', () => {
   // Reads back via .forEach (proven-correct dispatch) rather than dst[i]/m[i]
   // bracket indexing — seeing the SEPARATE
-  // bracket-index-on-erased-vt-host-receiver gap noted in the long comment
-  // above, not re-testing it here.
+  // bracket-index-on-erased-vt-host-receiver gap noted in the long comment above,
+  // not re-testing it here.
   const r = jz(`export function f(dst) {
     let m = dst.map(x => x * 2)
     let out = 0

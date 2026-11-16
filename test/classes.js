@@ -1072,8 +1072,8 @@ test('a static a derived class takes as declared and the program stores again is
 
 // A store to a getter with no setter of its name throws a TypeError, as in
 // strict code: on an instance (of the getter's class or a derived one, under
-// every assignment, in the constructor too), on an object literal and
-// through a receiver of unknown kind.
+// every assignment, in the constructor too), on an object literal and through
+// a receiver of unknown kind.
 test('a store to a getter-only accessor throws', () => {
   const src = `class P { constructor() { this.w = 1 } get v() { return this.w * 2 } }
     class Q extends P {}

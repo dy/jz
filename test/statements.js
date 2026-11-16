@@ -626,9 +626,9 @@ test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
   is(run(code, { optimize: 0 }).f(12345.678, 6995.664226531982), 0)
 })
 
-// A non-canonical NaN (f64.div(0,0) is 0xFFF8… on x86, 0x7FF8… on arm) must never reach
-// the bitwise __is_truthy helper, which bit-matches the canonical number-NaN and so
-// mis-reads x86's sign-set NaN as TRUTHY. Whitespace-insensitive and matches both
+// A non-canonical NaN (f64.div(0,0) is 0xFFF8… on x86, 0x7FF8… on arm) must never reach the
+// bitwise __is_truthy helper, which bit-matches the canonical number-NaN and so mis-reads
+// x86's sign-set NaN as TRUTHY. Whitespace-insensitive and matches both
 // `call`/`return_call`. (Green on arm, red on x86 CI.)
 const rawNaNToTruthy = (code, v) => {
   const wat = compile(code, { wat: true, optimize: 0 })
@@ -666,8 +666,8 @@ const condBitTestsRawDiv = (code) =>
 
 test('&& / || with an arithmetic operand: no raw NaN reaches __is_truthy', () => {
   // `(a/b) && s` tests a/b's truthiness in the CONDITION and may return a/b as the result; a
-  // non-numeric arm (string `s`) makes the merge value-untyped → its truthiness routes
-  // through __is_truthy.
+  // non-numeric arm (string `s`) makes the merge value-untyped → its truthiness routes through
+  // __is_truthy.
   for (const code of [
     'export let f = (p, q, s) => { s = s + ""; let v = (p / q) && s; return v ? 1 : 0 }',
     'export let f = (p, q, s) => { s = s + ""; let v = s && (p / q); return v ? 1 : 0 }',

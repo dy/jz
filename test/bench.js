@@ -134,8 +134,8 @@ const SPEED = {
   // structurally trail V8's native strings + JIT here, so it lands ~1.12-1.20× of
   // V8 — and the 5-run median itself floats across that band run-to-run, so even
   // `near` (1.10×) flaked. `trail` is the honest non-flaky ceiling; it still gates
-  // a real regression (a jump past 1.25× fails), and watr stays in the geomean
-  // (the aggregate guarantee, where jz wins decisively).
+  // a real regression (a jump past 1.25× fails), and watr stays in the geomean (the
+  // aggregate guarantee, where jz wins decisively).
   watr:           { v8: 'trail', as: 'na'   },
   // jessie is the subscript parser (jz compiling a Pratt parser: descriptor
   // dispatch, closure-set calls, AST arrays with a `loc` property). `tie`
@@ -221,9 +221,9 @@ const NATIVE_GEOMEAN_MAX = 1.05
 
 // NARRATIVE ONLY — win/tie/todo below are historical annotations (why a case sat
 // where it did, and the shape-class notes toward closing it), not gates: the
-// actual size gate ("Assertions: size — strict per-case leadership" below)
-// asserts jz < AS, hard, on every case in the full bench corpus, regardless of
-// what's marked here.
+// actual size gate ("Assertions: size — strict per-case leadership" below) asserts
+// jz < AS, hard, on every case in the full bench corpus, regardless of what's
+// marked here.
 const SIZE = {
   sosfilter:      { as: 'na' },
   movavg:         { as: 'na' },
@@ -247,12 +247,12 @@ const SIZE = {
   // aos/sort were re-pinned after checked-by-default typed indexing (Root F):
   // JS-exact OOB semantics cost bytes per unproven site that AS's trap doesn't
   // pay. Restored by three engine waves: -Os lean lowering (if-form reads, len
-  // hoist, guard-inline pure stores), watr 5.5.0 intguard checked-read
-  // collapse (ToInt32-guarded reads → i32 if-forms through the -Os const
-  // pool), and the cross-function PARAM TYPEDLEN channel (narrow.js: unanimous
-  // static call-site lengths seed the callee's proof family — heapsort/codec
-  // params read main-sized arrays). Ring-ratchet precedent: a deliberate,
-  // understood, sub-1% shift from a correct fix is re-baselined, not chased.
+  // hoist, guard-inline pure stores), watr 5.5.0 intguard checked-read collapse
+  // (ToInt32-guarded reads → i32 if-forms through the -Os const pool), and the
+  // cross-function PARAM TYPEDLEN channel (narrow.js: unanimous static
+  // call-site lengths seed the callee's proof family — heapsort/codec params
+  // read main-sized arrays). Ring-ratchet precedent: a deliberate, understood,
+  // sub-1% shift from a correct fix is re-baselined, not chased.
   aos:            { as: 'tie' },
   entity:         { as: 'todo' },
   json:           { as: 'na' },
@@ -298,21 +298,21 @@ const WASMOPT_SLACK_MIN = 0.90
 // Absolute byte backstop — catches gross codegen bloat independent of competitors. The
 // benchmark table reports the size-tier artifact; timings use its separate speed build.
 // `watr` pin is calibrated against the current watr lib version pinned in package.json: it
-// sat ~205 kB at watr 4.6.10; the STR_INTERN_BIT machinery (per-string cached-hash headers
-// + the literal-eq inline at every tag-compare site) costs ~26 kB at level 'speed' and is
-// what flipped the watr CASE to beating V8 — deliberate speed-for-bytes, 'size' preset
-// keeps it all off. When jz codegen tightens, ratchet this down rather than letting it
-// drift up silently. bytebeat: the 16-wide ramp-map SIMD store (5c00cab) traded ~240 B for
-// a ~1.4× throughput win that put it ahead of native clang/rustc -O3 — deliberate
-// speed-for-bytes, like the watr STR_INTERN pin above. The default-optimize build measured
-// here is now the vectorized one (was ~2300 B scalar when blur landed); same deliberate
-// speed-for-bytes trade as bytebeat. Same deliberate speed-for-bytes trade as
-// bytebeat/blur. Ratchet down as codegen tightens.
+// sat ~205 kB at watr 4.6.10; the STR_INTERN_BIT machinery (per-string cached-hash headers +
+// the literal-eq inline at every tag-compare site) costs ~26 kB at level 'speed' and is what
+// flipped the watr CASE to beating V8 — deliberate speed-for-bytes, 'size' preset keeps it
+// all off. When jz codegen tightens, ratchet this down rather than letting it drift up
+// silently. bytebeat: the 16-wide ramp-map SIMD store (5c00cab) traded ~240 B for a ~1.4×
+// throughput win that put it ahead of native clang/rustc -O3 — deliberate speed-for-bytes,
+// like the watr STR_INTERN pin above. The default-optimize build measured here is now the
+// vectorized one (was ~2300 B scalar when blur landed); same deliberate speed-for-bytes
+// trade as bytebeat. Same deliberate speed-for-bytes trade as bytebeat/blur. Ratchet down as
+// codegen tightens.
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
-  // Soundness, not bloat; ratchet down when a result's length proof reaches
-  // its caller's loop bound.
+  // Soundness, not bloat; ratchet down when a result's length proof reaches its
+  // caller's loop bound.
   entity: 2300,
   // Ratchet down when cross-function result-kind provenance lands (the walled
   // precision-rung-3 prerequisite) — that is the only sound reducer. Ratchet down as the
@@ -327,16 +327,15 @@ const SIZE_BUDGET = {
 // Fastest-wasm claim (AGENTS.md §Performance claims)
 // jz must be the fastest WASM producer on every case — ahead of clang→wasm, rustc→wasm,
 // tinygo→wasm, AssemblyScript (native clang -O3 is the only allowed-faster target). WASM_RIVALS
-// are the wasm-emitting competitors; for each case jz's median must be ≤ the BEST rival's
-// (within tolerance) UNLESS the case is in WASM_TODO — the explicit, shrinking gap list. A case
-// that leaves the lead set (regresses below a rival) trips the gate; closing a WASM_TODO case
-// (jz takes the lead) should delete it here. Availability probes match each target's ACTUAL
-// builder: c-wasm compiles with `zig cc -target wasm32-wasi` (not clang), go-wasm with the
-// standard Go toolchain (GOOS=wasip1, not tinygo — that mismatch silently dropped go-wasm from
-// the gate on machines with go but no tinygo). tinygo and zig-wasm are their own rivals: each
-// gates when its toolchain is present; a rival whose build fails produces no row and bestRival
-// skips it — the coverage assertion below keeps that skip from silently zeroing out a whole
-// producer.
+// are the wasm-emitting competitors; for each case jz's median must be ≤ the BEST rival's (within
+// tolerance) UNLESS the case is in WASM_TODO — the explicit, shrinking gap list. A case that
+// leaves the lead set (regresses below a rival) trips the gate; closing a WASM_TODO case (jz
+// takes the lead) should delete it here. Availability probes match each target's ACTUAL builder:
+// c-wasm compiles with `zig cc -target wasm32-wasi` (not clang), go-wasm with the standard Go
+// toolchain (GOOS=wasip1, not tinygo — that mismatch silently dropped go-wasm from the gate on
+// machines with go but no tinygo). tinygo and zig-wasm are their own rivals: each gates when its
+// toolchain is present; a rival whose build fails produces no row and bestRival skips it — the
+// coverage assertion below keeps that skip from silently zeroing out a whole producer.
 const wasmRivalAvail = { 'c-wasm': have('zig'), 'rust-wasm': have('rustc'), 'go-wasm': have('go'), tinygo: have('tinygo'), 'zig-wasm': have('zig'), as: ascAvailable }
 const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as'].filter(t => wasmRivalAvail[t])
 // Cases where a wasm rival is currently faster than jz — the gap to close (general techniques, not
@@ -769,8 +768,8 @@ test('bench: examples corpus — jz beats V8 per frame (geomean > 1, winners ≥
 
 // Floatbeat perf gate
 // Pin it: each jz-compiled floatbeat must stay at least as fast as V8's JS run of the
-// same `(t)=>sample` source, measured at the player's chunk (sr/2), so a future
-// slowdown trips here even while the kernel corpus stays green.
+// same `(t)=>sample` source, measured at the player's chunk (sr/2), so a future slowdown
+// trips here even while the kernel corpus stays green.
 const fbMed = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
 const fbClamp = s => s < -1 ? -1 : s > 1 ? 1 : s
 const fbTime = fn => { const ts = []; for (let k = 0; k < 13; k++) { const t = performance.now(); fn(); if (k >= 4) ts.push(performance.now() - t) } return fbMed(ts) }

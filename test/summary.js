@@ -1638,8 +1638,8 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
   ok(stores.length && stores.every(l => !/call \$__(dyn_set|dyn_get\b|is_str_key|add_slow)/.test(l)), 'the overlap-add stores by a numeric index')
 })
 
-// A member path tested against null in a conditional whose arm neither calls
-// nor stores reads what the test read: `params.x1 != null ? params.x1 : 0` is a
+// A member path tested against null in a conditional whose arm neither calls nor
+// stores reads what the test read: `params.x1 != null ? params.x1 : 0` is a
 // Number, the filter state a kernel reads back from its record, which a loop
 // then carries without converting.
 test('summary: a member tested against null reads as present in the arm', () => {
@@ -1885,8 +1885,8 @@ test('summary: a logical assignment reads as its target or its value', () => {
 })
 
 // A method the summary cannot see through, called on a host value, stores no
-// named property into a typed array (summary/index.js escapeReceiver): no
-// typed array method stores one and a host holds its elements alone.
+// named property into a typed array (summary/index.js escapeReceiver): no typed
+// array method stores one and a host holds its elements alone.
 test('summary: a method on a host value leaves typed arrays\' named properties as the program stores them', () => {
   const body = `const t = new Float32Array(4), b = new Uint8Array(4)
     export function f() { for (let i = 0; i < 4; i++) { t[i] = i + 0.5; b[i] = 3 - i } let s = 0; for (let i = 0; i < 8; i++) s += t[b[i]] ?? 1; return s }`
@@ -1937,8 +1937,8 @@ test('summary: a parameter used inside a try statement is no parameter only test
   }
 })
 
-// The walk reads a parameter as what its callers pass until its first reassignment,
-// and a name within the tags its tests prove (summary/index.js `pre`, `refined`).
+// The walk reads a parameter as what its callers pass until its first reassignment, and
+// a name within the tags its tests prove (summary/index.js `pre`, `refined`).
 test('summary: an assignment under an `if` ends the parameter\'s incoming kind and the proofs around it', () => {
   const show = `let show = (v) => v === null ? 'null' : v === undefined ? 'undef' : typeof v === 'function' ? 'fn' : typeof v === 'object' ? 'obj' + v.x : typeof v + v`
   const set = `if (typeof o === 'number') o = { x: o }`

@@ -73,8 +73,8 @@ test('held method: a name a store may change, or used as a value, is not the met
 })
 
 // A held builtin is any function of the target a name holds: a method of a prototype the
-// target dispatches by the receiver's kind (String, Number, Boolean, Array beside
-// Object), a function named bare or in a namespace (`Symbol`, `String.fromCharCode`).
+// target dispatches by the receiver's kind (String, Number, Boolean, Array beside Object),
+// a function named bare or in a namespace (`Symbol`, `String.fromCharCode`).
 const builtins = {
   'a method of String.prototype': `var lower = String.prototype.toLowerCase, sl = String.prototype.slice
     export let f = () => lower.call('AbC') + sl.call('abcdef', 1, 3)`,

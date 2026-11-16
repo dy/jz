@@ -939,10 +939,10 @@ test('channelData scatter — correct values across construction forms', () => {
 })
 
 // Property-getter dispatch (`.byteOffset` / `.buffer` / `.byteLength` / `.size`) must
-// resolve STATICALLY, not fall through to a runtime `__dyn_get` (which returns
-// undefined for these). NO onKernel guard — this runs on the JZ_TEST_TARGET=jz.wasm leg
-// and pins the parity (it was the root of the fft/synth/json self-compile parity
-// divergence in checksumF64's typed-array view).
+// resolve STATICALLY, not fall through to a runtime `__dyn_get` (which returns undefined
+// for these). NO onKernel guard — this runs on the JZ_TEST_TARGET=jz.wasm leg and pins
+// the parity (it was the root of the fft/synth/json self-compile parity divergence in
+// checksumF64's typed-array view).
 test('typed-array property getters resolve statically (self-compile parity)', () => {
   const { byteOffset, bufLen, viewWord, size } = jz(`
     export let byteOffset = () => { let a = new Float64Array(4); return a.byteOffset }
@@ -999,9 +999,9 @@ test('integer stores share one ToIntN semantic: ±Infinity → 0, out-of-range w
   // One semantic across every integer store family — element writes
   // (__typed_set_idx + the proven-kind path), .set/.map/.filter via elemStoreIR
   // (was: trapping i32.trunc_f64_*), and DataView setIntN (was: saturating
-  // asI32). The i64 sat route alone wraps +Inf to -1; ES SetValueInBuffer
-  // stores 0. f16/f32/f64 and Uint8ClampedArray keep their own spec conversions
-  // (Inf stays Inf; clamped Inf → 255).
+  // asI32). The i64 sat route alone wraps +Inf to -1; ES SetValueInBuffer stores
+  // 0. f16/f32/f64 and Uint8ClampedArray keep their own spec conversions (Inf
+  // stays Inf; clamped Inf → 255).
   const { exports: e } = jz(`
     export let setIdx = (x) => { let t = new Int32Array(1); t[0] = x; return t[0] }
     export let setIdxU = (x) => { let t = new Uint32Array(1); t[0] = x; return t[0] }

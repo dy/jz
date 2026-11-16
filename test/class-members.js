@@ -213,8 +213,8 @@ test('class members: an own closure over a method shadows it only on the shapes 
 // A read of a name a class has as a method, and another class or an object
 // literal as a getter, takes whichever the receiver has: through a receiver the
 // summary cannot name, the getter's probe falls back to the class's method
-// (module/core.js `__raw_prop`), and one dispatcher of the read, or of the
-// call, answers a getter class and a method class alike (class-dispatch.js
+// (module/core.js `__raw_prop`), and one dispatcher of the read, or of the call,
+// answers a getter class and a method class alike (class-dispatch.js
 // synthesizeClassDispatchers).
 test('class members: a method reads and calls beside a getter of its name elsewhere', () => {
   const rows = [

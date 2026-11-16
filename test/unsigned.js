@@ -606,8 +606,8 @@ test('signed i32 operands keep their fast-path semantics', async () => {
   is(await evaluate('(-1 | 0) < 5'), true) // signed -1 < 5
 })
 
-// A Uint32Array element read is typed i32 (the 32-bit element) for fast integer/bitwise use, but
-// its full 0..2^32-1 magnitude must survive EVERY use — bitwise (bits), comparison, integer and f64
+// A Uint32Array element read is typed i32 (the 32-bit element) for fast integer/bitwise use, but its
+// full 0..2^32-1 magnitude must survive EVERY use — bitwise (bits), comparison, integer and f64
 // arithmetic, and a raw value read. Unlike the `>>>`-result local below, the typed-array read
 // carries its unsigned elem-aux to each use, so high values (≥ 2^31) don't sign-flip.
 test('uint32: Uint32Array element reads keep full unsigned range across all uses', () => {
@@ -694,9 +694,9 @@ test('a mixed-sign `?:` tail must NOT claim unsigned (ECMA-262 §7.1.8 ToUint32 
 test('mixed-sign `?:` ternary: each arm widens by its OWN sign at O0/O2/O3 (regression for the select-join gap above)', () => {
   // The exact shape the mixed-sign-tail test above documented as a known,
   // separate gap: `h` is a narrowUint32-proven uint32 accumulator (the true
-  // arm), `s` an ordinary negative signed local (the false arm). Pinned at
-  // all three optimize tiers since O2/O3 inline `f` into its caller
-  // (different IR shape reaching the same '?:' handler).
+  // arm), `s` an ordinary negative signed local (the false arm). Pinned at all
+  // three optimize tiers since O2/O3 inline `f` into its caller (different IR
+  // shape reaching the same '?:' handler).
   for (const optimize of levels(0, 2, 3)) {
     const { f } = run(`export let f = (c) => { let h = 0; h = (h + 3000000000) >>> 0; let s = -5; return c ? h : s }`, { optimize })
     is(f(true), 3000000000, `O${optimize}: unsigned arm (h) reads its true uint32 magnitude`)

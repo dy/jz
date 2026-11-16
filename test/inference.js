@@ -160,9 +160,9 @@ test('a method name proves no kind, ARRAY: .push proves NOT-STRING but must NOT 
   // An unresolved receiver (no call-site proof — `tail` is exported, so no
   // argument evidence exists) must stay on the fully-polymorphic runtime
   // dispatch: `.push` still proves the receiver ISN'T a string
-  // (ARRAY_ONLY_POISON — no String.prototype.push exists), but
-  // `xs[xs.length - 1]` has to keep checking at runtime, same as any other
-  // unproven receiver.
+  // (ARRAY_ONLY_POISON — no String.prototype.push exists), but `xs[xs.length
+  // - 1]` has to keep checking at runtime, same as any other unproven
+  // receiver.
   const wat = compile(`
     export const tail = (xs) => {
       xs.push(0)
@@ -658,11 +658,11 @@ test('paramAllUsesNumeric: multi-arg forward to a MODULE helper proves the param
 
 test('paramAllUsesNumeric: bare Math.* + `+` prove a numeric param inside a nested loop', () => {
   // The interference example: an exported `tick` used as `Math.sin(tick)` (bare),
-  // `Math.sin(tick*2)`, and `tick + 1.2`, driving a nested per-pixel sweep that
-  // stores into a global. `Math.f(x)` ToNumbers its arg, so a bare param there is a
-  // PROVING numeric use (like `x*2`); binary `+` is numeric-COMPATIBLE and must not
-  // reject that proof. The nested loop + global store defeats the simpler
-  // expression-level inference, so the proof must come from paramAllUsesNumeric here.
+  // `Math.sin(tick*2)`, and `tick + 1.2`, driving a nested per-pixel sweep that stores
+  // into a global. `Math.f(x)` ToNumbers its arg, so a bare param there is a PROVING
+  // numeric use (like `x*2`); binary `+` is numeric-COMPATIBLE and must not reject
+  // that proof. The nested loop + global store defeats the simpler expression-level
+  // inference, so the proof must come from paramAllUsesNumeric here.
   const wat = compile(`
     let width = 0, mem
     export let setup = (n) => { width = n; mem = new Int32Array(n); return mem }
@@ -943,8 +943,8 @@ test('module global value kind: a local shadowing the global name does not pollu
 
 test('module global value kind: a write from a nested closure counts (poisons on conflict)', () => {
   // If the closure body were invisible to the scan (treated as an opaque `=>`
-  // boundary, the way analyzeBody's OWN per-function walk deliberately is),
-  // `g` would wrongly resolve STRING from `setStr` alone.
+  // boundary, the way analyzeBody's OWN per-function walk deliberately is), `g`
+  // would wrongly resolve STRING from `setStr` alone.
   const src = `
     let g
     export let setStr = () => { g = 'x' }
@@ -1134,10 +1134,12 @@ test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range
   is(f(0x7fff, 0x7fff), (0x7fff * 0x7fff) | 0)
 })
 
-//   2. type.js exprType('+'/'-'): a NEW `strict` parameter (default omitted/false — the overwhelming majority
-//      of exprType's callers are LOCAL/PARAM storage-type decisions, where magnitude-blind "both operands i32"
-//      typing is SAFE — every read of that storage re-applies the same ToInt32 the write did) — `strict=true`
-//      additionally requires addFitsI32's AST-level twin.
+//   2. type.js exprType('+'/'-'): a NEW `strict` parameter (default
+//      omitted/false — the overwhelming majority of exprType's callers are
+//      LOCAL/PARAM storage-type decisions, where magnitude-blind "both
+//      operands i32" typing is SAFE — every read of that storage re-applies
+//      the same ToInt32 the write did) — `strict=true` additionally requires
+//      addFitsI32's AST-level twin.
 test('addFitsI32 sum-range soundness (P0-2 sibling): two full-range i32 operands can overflow signed i32', () => {
   const fAdd = run(`export let f = (a, b) => { let x = a | 0, y = b | 0; return x + y }`).f
   is(fAdd(2147483647, 2147483647), 4294967294, 'I32_MAX + I32_MAX, returned bare, matches JS exactly (was -2)')
@@ -1347,9 +1349,9 @@ test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its com
 
 // `inferModuleIntGlobals` calls it ONCE over a synthetic whole-program body
 // (module-init AST + every function body concatenated) — a global's relevant
-// scope for the "does every read re-apply the same ToInt32 the writes did" proof
-// is the WHOLE PROGRAM, not one function, since its storage outlives any one
-// function.
+// scope for the "does every read re-apply the same ToInt32 the writes did"
+// proof is the WHOLE PROGRAM, not one function, since its storage outlives
+// any one function.
 test('module-global i32-narrowing no longer wraps a bare-escaped compound-assign counter (inferModuleIntGlobals sibling, 2026-08-03)', () => {
   const srcMul = `let counter = 4; export let bump = () => { counter *= 100000; return counter }`
   const mMul = run(srcMul)
@@ -1996,9 +1998,9 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
   is(g(-1), 15)
 })
 
-// BIGINT is the one kind with no runtime tag — raw i64 bits ride the f64 slot — so `c ?
-// BigInt(x) : null` must CARRY the kind through the nullish arm or `.toString(16)` formats the
-// bits as a NUMBER denormal ("0.000…").
+// BIGINT is the one kind with no runtime tag — raw i64 bits ride the f64 slot — so `c ? BigInt(x)
+// : null` must CARRY the kind through the nullish arm or `.toString(16)` formats the bits as a
+// NUMBER denormal ("0.000…").
 test('bigint∪null: kind carries through the nullish ternary arm, guards stay live — BigInt-or-null ternary merge strict-mode (opt-in) ternary-nullish diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`
@@ -2353,8 +2355,8 @@ test('a parameter the body writes: default and throwing writes recover on the ne
 })
 
 test('a parameter the body writes: float-mutated param stays f64', () => {
-  // Same cursor-through-helper shape as above, but the mutation itself (`i =
-  // i + 0.5`) isn't integer-valued, so it cannot meet the strict signed-word
+  // Same cursor-through-helper shape as above, but the mutation itself (`i = i
+  // + 0.5`) isn't integer-valued, so it cannot meet the strict signed-word
   // requirement.
   const src = `
     const drift = (buf, i, n) => {
@@ -2386,8 +2388,8 @@ test('a parameter the body writes: float-mutated param stays f64', () => {
 // Pin both well past their guard's stated budget as a canary: if a future
 // change shrinks a cap, reorders a sweep from full-program to per-edge, or
 // otherwise makes these ordinary-if-extreme programs need more rounds than
-// budgeted, THIS throws the internal error (loudly, per the audit) instead of
-// the old silent truncation — a real user hitting it would get the same
+// budgeted, THIS throws the internal error (loudly, per the audit) instead
+// of the old silent truncation — a real user hitting it would get the same
 // diagnosis.
 
 test('convergence caps: 100-deep caller->callee forwarding chain compiles (worklist budget canary)', () => {

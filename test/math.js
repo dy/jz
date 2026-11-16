@@ -120,8 +120,8 @@ test('Math.round', async () => {
 })
 
 test('Math.floor/ceil/trunc/round elide on intCertain operand', async () => {
-  // Each function is a no-op on integer values. (words folded: the
-  // truncation of `x | 0` is its own, not Math.trunc's)
+  // Each function is a no-op on integer values. (words folded: the truncation
+  // of `x | 0` is its own, not Math.trunc's)
   const wat = foldWords(await compile(
     'export let f = (x) => { let i = x | 0; return Math.floor(i) + Math.ceil(i) + Math.trunc(i) + Math.round(i) }',
     { wat: true }
@@ -700,8 +700,8 @@ test('Number.isSafeInteger', async () => {
 
 test('Number.isFinite / Object.is: exact boolean chain — typeof guard && (!isFinite || Object.is(-0))', () => {
   // watr's print.js used exactly this composition (typeof-guarded,
-  // ||-short-circuited) to decide whether a number leaf needs a WAT
-  // non-finite/-0 token.
+  // ||-short-circuited) to decide whether a number leaf needs a WAT non-finite/-0
+  // token.
   const src = `export let f = (v) =>
     (typeof v === 'number' && (!Number.isFinite(v) || Object.is(v, -0))) ? 1 : 0`
   const { f } = jz(src).exports

@@ -21,14 +21,14 @@ import { collect } from './_gc.js'
 // compiles instantly and correctly NATIVELY (confirmed: `node test/fuzz.js
 // --seed=84` matches JS at every opt level 0-3 with no delay) but the IDENTICAL
 // source, compiled through the self-hosted region-hooks-on kernel
-// (`JZ_TEST_TARGET=jz.wasm`), never returned: sustained 100% CPU, STABLE ~1.1GB
-// RSS (no runaway growth), for 8+ minutes with zero progress signal before being
-// killed — well past the 420s fence test/index.js's own `KERNEL-LEG DEBT` comment
-// documents for the `transform` file's own still-open in-kernel hang exclusion
-// (the closest existing precedent). Kept OUT of KNOWN_OPEN (that ratchet only
-// suppresses a RETURNED finding — it can't help a call that never returns) and
-// instead skipped before the compile is ever attempted, gated on onKernel() so
-// native fuzzing keeps full seed coverage.
+// (`JZ_TEST_TARGET=jz.wasm`), never returned: sustained 100% CPU, STABLE ~1.1GB RSS
+// (no runaway growth), for 8+ minutes with zero progress signal before being killed
+// — well past the 420s fence test/index.js's own `KERNEL-LEG DEBT` comment
+// documents for the `transform` file's own still-open in-kernel hang exclusion (the
+// closest existing precedent). Kept OUT of KNOWN_OPEN (that ratchet only suppresses
+// a RETURNED finding — it can't help a call that never returns) and instead skipped
+// before the compile is ever attempted, gated on onKernel() so native fuzzing keeps
+// full seed coverage.
 const KERNEL_HANG_SEEDS = new Set([84])
 
 // PRNG — explicit LCG so every program + input vector reproduces from its seed.
@@ -399,14 +399,15 @@ export const report = (f, opts) => {
 }
 
 // Typed-array mode (FUZZ-1) — exercises Float64Array element read/write/loop/reduce.
-// The scalar fuzzer never touches linear memory; this generates kernels that load, mutate
-// and store Float64Array elements in a counted loop and a reduction, then diffs jz
-// (memory-backed array) against JS (plain Float64Array) element-by-element AND on the
-// returned reduction. Element VALUE expressions use ONLY f64-stable ops (+ - * /
+// The scalar fuzzer never touches linear memory; this generates kernels that load,
+// mutate and store Float64Array elements in a counted loop and a reduction, then diffs
+// jz (memory-backed array) against JS (plain Float64Array) element-by-element AND on
+// the returned reduction. Element VALUE expressions use ONLY f64-stable ops (+ - * /
 // Math.sqrt/abs/min/max) over `buf[i]` and float literals: a Float64 load is exact and
-// these never i32-narrow, so jz == JS bit-for-bit with no contract caveat — PROVIDED the
-// generated expression isn't itself a compile-time constant (see below). The loop counter
-// `i` is i32 and is used only as the subscript — never inside a value expression.
+// these never i32-narrow, so jz == JS bit-for-bit with no contract caveat — PROVIDED
+// the generated expression isn't itself a compile-time constant (see below). The loop
+// counter `i` is i32 and is used only as the subscript — never inside a value
+// expression.
 //
 // A subtree built ENTIRELY from F_LEAF
 // literals (no `buf[i]` anywhere in it) is exactly the shape `src/prepare/pre-eval.js`
@@ -504,8 +505,8 @@ export const fuzzTyped = (opts) => {
 // `checkTyped` above mixes a store and a reduction in one loop, so `acc` is
 // loop-carried and the loop never lifts to SIMD. Such a map is bit-exact by
 // construction: lane k computes exactly what scalar element k computes, with the
-// same ops in the same order (no reassociation), so jz == JS for ANY data
-// including NaN/±Inf/±0 — no contract caveat.
+// same ops in the same order (no reassociation), so jz == JS for ANY data including
+// NaN/±Inf/±0 — no contract caveat.
 const genFloatCond = (g, d) => `(${genFloatExpr(g, d)} ${g.pick(CMP)} ${genFloatExpr(g, d)})`
 const genFloatVal = (g, d) =>
   (d > 0 && g.chance(0.32))
@@ -654,10 +655,10 @@ export const fuzzTypedIntMinMax = (opts) => {
   return findings
 }
 
-// Affine Int32Array loops that do NOT vectorize (an early break/continue), so the
-// vectorizer falls through to induction-variable strength reduction — `a[i]` addressing
-// becomes a strided pointer. Differential vs JS validates the IV-SR transform keeps the
-// pointer in lockstep with `i` across break/continue control flow.
+// Affine Int32Array loops that do NOT vectorize (an early break/continue), so the vectorizer
+// falls through to induction-variable strength reduction — `a[i]` addressing becomes a
+// strided pointer. Differential vs JS validates the IV-SR transform keeps the pointer in
+// lockstep with `i` across break/continue control flow.
 const IVSR_BODIES = [
   'if (a[i] > T) break; acc = (acc + a[i]) | 0;',
   'if (a[i] < 0) continue; acc = (acc ^ a[i]) | 0;',

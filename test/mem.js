@@ -703,8 +703,8 @@ test('_clear() restores runtime-written module globals to their post-init snapsh
 
 test('_clear() heals ephemeral values written into DURABLE collection slots', () => {
   // The durable-interior sibling of the global sweep above: the dict itself is
-  // init-created (const binding — the sweep rightly skips it), but a round-1
-  // memo write stores a round-arena array INTO its durable slot.
+  // init-created (const binding — the sweep rightly skips it), but a round-1 memo
+  // write stores a round-arena array INTO its durable slot.
   const { exports, memory } = jz(`
     const CACHE = new Map()
     let builds = 0
@@ -856,11 +856,11 @@ test('_clear() heals a durable array header past IN-PLACE growth, not just reloc
   // `let site = []` gets a __start capacity of 4 — the first 4 pushes of a round
   // fit IN PLACE (len bumped 0→1→2→3→4 directly on the durable header, no
   // relocation, so arrGrow's own durableFwdLogIR — gated on off/newOff crossing
-  // the durable/ ephemeral boundary — never fires). Only the 5th push crosses
-  // into a fresh ephemeral block and finally logs, but by then it reads len=4 off
-  // the header, not the header's true post-__start value of 0.
-  // `__durable_fwd_heal` then "restored" the header to a length it never had:
-  // healed len 4 + this round's 150 real pushes = 154.
+  // the durable/ ephemeral boundary — never fires). Only the 5th push crosses into
+  // a fresh ephemeral block and finally logs, but by then it reads len=4 off the
+  // header, not the header's true post-__start value of 0. `__durable_fwd_heal`
+  // then "restored" the header to a length it never had: healed len 4 + this
+  // round's 150 real pushes = 154.
   const { exports, memory } = jz(`
     let site = []
     export let grow = (n) => { for (let i = 0; i < n; i++) site.push(i + '|' + i); return site.length }`,
@@ -929,17 +929,17 @@ test('_clear() heals in-place length writes on the OTHER durable-array length si
   is(exports.pop(2), 3, 'round 2: same result — the original popped elements are back')
 })
 
-// `$__heap_reset` is only captured to its TRUE post-init watermark as the LAST
-// thing `__start` does — while `__start` is still running its OWN body, the global
-// still reads its declared constant (HEAP.START, the static-data-end address). A
+// `$__heap_reset` is only captured to its TRUE post-init watermark as the LAST thing
+// `__start` does — while `__start` is still running its OWN body, the global still
+// reads its declared constant (HEAP.START, the static-data-end address). A
 // compile-time-constant literal (array/hash/set/map built entirely from literals)
 // gets folded BELOW that address — so any in-place header mutation reachable from
-// module-level (non-function) init code, e.g. `let a = [1,2,3,4,5,6,7,8]; a.length
-// = 5` as top-level statements, reads its own low static address as "<
-// __heap_reset" and wrongly logs itself as a this-round mutation to heal AWAY —
-// even though it's establishing the module's own post-__start baseline. `_clear()`
-// then "heals" the array back to its PRE-init-truncation content, corrupting the
-// very state `_clear()` exists to restore TO.
+// module-level (non-function) init code, e.g. `let a = [1,2,3,4,5,6,7,8]; a.length =
+// 5` as top-level statements, reads its own low static address as "< __heap_reset"
+// and wrongly logs itself as a this-round mutation to heal AWAY — even though it's
+// establishing the module's own post-__start baseline. `_clear()` then "heals" the
+// array back to its PRE-init-truncation content, corrupting the very state
+// `_clear()` exists to restore TO.
 test('_clear() does not corrupt a durable array whose header is mutated by MODULE-LEVEL (non-function) init code', () => {
   const { exports, memory } = jz(`
     let a = [1,2,3,4,5,6,7,8]
@@ -1046,17 +1046,17 @@ test('_clear() does NOT heal .shift()\'s header rebasing (documented intentional
 
 // Relocation-forwarding bound check (layout.js followForwardingWat/ptrOffsetFwdWat):
 // every ARRAY/SET/MAP/HASH pointer dereference validates its offset against
-// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. A
-// large-offset RUNTIME repro needs an actual ~4 GiB memory (exercised by the
-// warm-kernel stress above, which drives a real build to that ceiling); this is the
-// fast, host-level structural pin: the fix computes the same bound in i64 against a
-// cached $__heap_end64 global (module/core.js, kept in sync by __memgrow) instead of
+// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. A large-offset
+// RUNTIME repro needs an actual ~4 GiB memory (exercised by the warm-kernel stress
+// above, which drives a real build to that ceiling); this is the fast, host-level
+// structural pin: the fix computes the same bound in i64 against a cached
+// $__heap_end64 global (module/core.js, kept in sync by __memgrow) instead of
 // recomputing the overflowing i32 shift at every dereference. Both counts are exact,
-// not just "present" — 1 legitimate i32.shl(memory.size,16) survives
-// (module/core.js's own $__heap_end assignment, whose wraparound is benign: __alloc's
-// consumer just slow-paths one extra call, __memgrow re-derives everything fresh in
-// i64 — see that file's comment); a regression back to the inline i32 bound at any
-// forwarding site would push this count above 1.
+// not just "present" — 1 legitimate i32.shl(memory.size,16) survives (module/core.js's
+// own $__heap_end assignment, whose wraparound is benign: __alloc's consumer just
+// slow-paths one extra call, __memgrow re-derives everything fresh in i64 — see that
+// file's comment); a regression back to the inline i32 bound at any forwarding site
+// would push this count above 1.
 test('followForwardingWat/ptrOffsetFwdWat bound check is i64 (not i32.shl(memory.size,16), which overflows to 0 at the wasm32 4GiB ceiling)', () => {
   const wat = compile(
     `export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); const m = new Map(); m.set(1, 2); return xs.length + m.size }`,
@@ -1669,8 +1669,8 @@ test('reset: an object made at start reads as it started, whatever a call stored
 })
 
 // A call's first store of a round into an array made as the module started saves the array for
-// the reset in a record the round's log holds (module/core/durable-log.js
-// `__durable_arr_snap`). Run in a worker stopped at a limit.
+// the reset in a record the round's log holds (module/core/durable-log.js `__durable_arr_snap`).
+// Run in a worker stopped at a limit.
 test('reset: the record of an array a call first stores a number into is the round\'s, whatever frame stored it', () => {
   if (!onWasi()) {
     const healed = `let b = [2, 3, 5]

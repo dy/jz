@@ -2,22 +2,21 @@
 // host's own Math.pow (V8 ports the same fdlibm algorithm — see module/math.js) and
 // against authoritative correctly-rounded vectors:
 //
-//   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double
-//      log, exact split product, jz's exp table; module/math.js), the kernel the
-//      runtime-y $math.pow takes for every positive finite base and non-integer
-//      exponent, and for integer exponents past its square-and-multiply fast path
-//      (|y| ≤ 16). Documented worst case 0.54 ulp: bit-exact against the host on
-//      nearly every input, one ulp off on the rest — V8 ports fdlibm's e_pow.c,
-//      itself "nearly rounded", so an occasional last-ulp difference between two
-//      sub-ulp kernels is expected, not a jz bug.
+//   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double log,
+//      exact split product, jz's exp table; module/math.js), the kernel the runtime-y
+//      $math.pow takes for every positive finite base and non-integer exponent, and for
+//      integer exponents past its square-and-multiply fast path (|y| ≤ 16). Documented
+//      worst case 0.54 ulp: bit-exact against the host on nearly every input, one ulp
+//      off on the rest — V8 ports fdlibm's e_pow.c, itself "nearly rounded", so an
+//      occasional last-ulp difference between two sub-ulp kernels is expected, not a jz
+//      bug.
 //   2. $math.pow_fold — the CORRECTLY-ROUNDED CONST-EXPONENT fold under
-//      `optimize.crPow` (the authoritative comment is above emitPow in
-//      module/math.js): `x ** C` / Math.pow(x, C) with a compile-time-constant,
-//      non-integer, non-±0.5, non-k/5 exponent C lowers to `$math.pow_fold`, which
-//      shares $math.pow_transcend's two-phase Ziv dd/td kernel with $math.pow_core.
-//      The WAT is probed per function to confirm the fold took the cheap path (no
-//      `$math.pow`/`$math.pow_core` call) rather than silently falling through to
-//      the general call, which would make the gate vacuous.
+//      `optimize.crPow` (the authoritative comment is above emitPow in module/math.js): `x
+//      ** C` / Math.pow(x, C) with a compile-time-constant, non-integer, non-±0.5, non-k/5
+//      exponent C lowers to `$math.pow_fold`, which shares $math.pow_transcend's two-phase
+//      Ziv dd/td kernel with $math.pow_core. The WAT is probed per function to confirm the
+//      fold took the cheap path (no `$math.pow`/`$math.pow_core` call) rather than
+//      silently falling through to the general call, which would make the gate vacuous.
 //   3. $math.pow_fifths, the k/5 fold (x ** 2.4, the sRGB/Rec.709 decode gamma):
 //      x^p·fifthroot(x^r), $math.fifthroot's bit-hack seed and four Newton steps, on the
 //      range where it stays within 40 ulp of x^c (module/math/trig-tables.js fifthFold),
@@ -34,8 +33,8 @@
 //      STRICTLY coerced to doubles before evaluation. Baselines at bake time: V8
 //      Math.pow misses 3/5152 (0.058%, all in the mined tail); jz runtime $math.pow
 //      missed 424 (8.2%); the const-exponent fold missed 194/827 (23.5%). The gate
-//      demands ZERO on both jz paths — correctly rounded is unique, so this also
-//      pins fold==runtime consistency (self-compile byte-parity depends on it).
+//      demands ZERO on both jz paths — correctly rounded is unique, so this also pins
+//      fold==runtime consistency (self-compile byte-parity depends on it).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
@@ -103,8 +102,8 @@ test('Math.pow non-integer tail — bit-exact/≤1ulp random pairs vs host', () 
   tally('random', pairs, pow, TAIL_LIMIT)
 })
 
-// Exponents that reach $math.pow_fold specifically — finite, non-integer, not ±0.5 and not
-// a k/5 fraction (those route to $math.sqrt / $math.fifthroot instead — section 3).
+// Exponents that reach $math.pow_fold specifically — finite, non-integer, not ±0.5 and not a
+// k/5 fraction (those route to $math.sqrt / $math.fifthroot instead — section 3).
 const FOLD_EXPS = [
   2610 / 16384, -(2610 / 16384),
   1.7 * 2523 / 32, -(1.7 * 2523 / 32),

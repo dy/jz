@@ -171,8 +171,8 @@ const TRACKED_BUILTIN_PATHS = [
   'NaN',
   'undefined',
   'Symbol',
-  // Tests using harness helpers (testTypedArray.js etc.) absorb as
-  // not-in-scope skips.
+  // Tests using harness helpers (testTypedArray.js etc.) absorb as not-in-scope
+  // skips.
   'TypedArray/prototype/at',
   'TypedArray/prototype/copyWithin',
   'TypedArray/prototype/every',
@@ -705,8 +705,8 @@ const DATE_UNSUPPORTED_TESTS = new Map([
 // Expected failures
 // Built-ins tests that COMPILE and RUN but assert-fail because they exercise a
 // feature jz deliberately does not implement (out of scope for the distilled-JS
-// subset) or a documented representation divergence. Compile-time fails ("… is
-// not in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
+// subset) or a documented representation divergence. Compile-time fails ("… is not
+// in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
 //
 // A prefix covers a whole feature family that will not be implemented; a file
 // entry is an exact, individually-reviewed expectation (and gets xpass tracking).
@@ -714,15 +714,15 @@ const DATE_UNSUPPORTED_TESTS = new Map([
 // just read) to check the label against actual behavior — result: several
 // long-standing "out of scope" reasons here describe a SILENT wrong value, not a
 // reject (confirmed live: `parseInt({valueOf:()=>"42"})` → null not NaN; `typeof
-// Promise` → 'undefined' not 'function'; `Object.keys(fnWithOwnProp)` → [] not
-// the real keys; `JSON.stringify({toJSON:()=>42})` → "{}" not "42";
+// Promise` → 'undefined' not 'function'; `Object.keys(fnWithOwnProp)` → [] not the
+// real keys; `JSON.stringify({toJSON:()=>42})` → "{}" not "42";
 // `"abcxdef".indexOf({valueOf:()=>"x"})` → 3 not -1 (real ToPrimitive tries
 // toString before valueOf for a string-hint coercion — jz calls valueOf
 // directly)). The common thread: a dynamic-dispatch / ToPrimitive coercion /
 // function-object-reflection protocol that jz's static object model can't invoke,
-// so it silently falls back to SOME other behavior instead of rejecting. Files
-// not yet run were left unclassified rather than assumed into either bucket; the
-// final classification pass below resolves them.
+// so it silently falls back to SOME other behavior instead of rejecting. Files not
+// yet run were left unclassified rather than assumed into either bucket; the final
+// classification pass below resolves them.
 const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/BigInt/', '[DIALECT] BigInt arithmetic/coercion — out of scope (README: BigInt is a signed 64-bit integer, not arbitrary precision)'],
   ['built-ins/Symbol/', '[REJECT] Symbol primitive semantics — out of scope (confirmed: bare `Symbol` reference rejects \'not in scope\')'],
@@ -755,19 +755,19 @@ const EXPECTED_FAIL_FILES = new Map([
   // answered correctly — jz never invokes ANY toJSON hook at all (SEPARATELY
   // confirmed, still true, still unfixed: a genuinely CALLABLE toJSON is
   // silently ignored, `JSON.stringify({toJSON:()=>42})` gives "{}" not "42" — a
-  // real gap, but not what THIS file tests, and no test262 file currently
-  // pinned below needs it either), so "not invoked" is spec-correct here
-  // regardless of the reason. fix/wrong-values-2 left the file failing on an
-  // UNRELATED bug its own probes surfaced: line 25's `JSON.stringify({toJSON:
-  // /re/})` (a RegExp VALUE, not a toJSON question) serialized as
-  // "{\"toJSON\":0}" instead of "{\"toJSON\":{}}". fix/wrong-values-3:
-  // root-caused and fixed. module/regex.js's own doc ("Regex literals become
-  // compile-time WASM functions") names the actual cause — a regex VALUE
-  // (ctx.core.emit['//']) is a bare i32 compile-time table index, boxed to f64
-  // the same as any real number, so once it reaches __json_val's runtime tag
-  // dispatch (module/json.js) it is bit-identical to the NUMBER 0/1/2/… (the
-  // literal's table index) and gets misrendered as that raw index — no runtime
-  // tag can recover "this was a regex" after that degradation.
+  // real gap, but not what THIS file tests, and no test262 file currently pinned
+  // below needs it either), so "not invoked" is spec-correct here regardless of
+  // the reason. fix/wrong-values-2 left the file failing on an UNRELATED bug its
+  // own probes surfaced: line 25's `JSON.stringify({toJSON: /re/})` (a RegExp
+  // VALUE, not a toJSON question) serialized as "{\"toJSON\":0}" instead of
+  // "{\"toJSON\":{}}". fix/wrong-values-3: root-caused and fixed.
+  // module/regex.js's own doc ("Regex literals become compile-time WASM
+  // functions") names the actual cause — a regex VALUE (ctx.core.emit['//']) is
+  // a bare i32 compile-time table index, boxed to f64 the same as any real
+  // number, so once it reaches __json_val's runtime tag dispatch
+  // (module/json.js) it is bit-identical to the NUMBER 0/1/2/… (the literal's
+  // table index) and gets misrendered as that raw index — no runtime tag can
+  // recover "this was a regex" after that degradation.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
   // GetMethod, ES 7.3.11: a non-callable method value is treated as absent, not
@@ -775,8 +775,8 @@ const EXPECTED_FAIL_FILES = new Map([
   // implementing an inherited-toString fallback is a materially bigger feature than a
   // per-call-site coercion fix. audit-#11 item 7 sub-3 (gate honesty pass): three
   // PRE-EXISTING real fails, A1_T9 is the one PRE-EXISTING fail from that trio that's
-  // still genuinely out of scope (not a bug — see the String/indexOf entries above
-  // for the same class): A1_T9: `new String(obj).slice(...)` where obj has a custom
+  // still genuinely out of scope (not a bug — see the String/indexOf entries above for
+  // the same class): A1_T9: `new String(obj).slice(...)` where obj has a custom
   // valueOf/toString — same ToPrimitive-coercion-on-a-wrapped-object class as the
   // String/indexOf entries just above (out of scope, not new). Fixed by routing every
   // ToIntegerOrInfinity position/index argument in module/string.js (`.slice`'s
@@ -1145,10 +1145,10 @@ if (!isMainThread) {
     fails.sort().forEach(f => console.log(`  x ${f}`))
   }
 
-  // Any in-scope `fail`, any stale xpass, or a pass count below the
-  // committed baseline (test/test262-baseline.json, refreshed alongside a
-  // corpus pin bump or a real fix) is a hard failure. JZ_TEST262_BASELINE,
-  // if set, overrides the file — an escape hatch, not the source of truth.
+  // Any in-scope `fail`, any stale xpass, or a pass count below the committed
+  // baseline (test/test262-baseline.json, refreshed alongside a corpus pin
+  // bump or a real fix) is a hard failure. JZ_TEST262_BASELINE, if set,
+  // overrides the file — an escape hatch, not the source of truth.
   const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
   // audit-#12 item 3: the lock's corpus SHA must match the checkout this run
   // just measured against — a stale lock (PINNED_COMMIT bumped here without

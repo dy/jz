@@ -1,8 +1,8 @@
 // Dynamic-key dictionary semantics vs V8 (the lean-write/generic-read layout
 // mismatch family). The load-bearing pin: a LOOP-BUILT dict (keys from array
-// elements — qualifies the ephemeral write layout unless reads disqualify
-// it) read with a missing key must be undefined, never a trap and never a
-// garbage hit.
+// elements — qualifies the ephemeral write layout unless reads disqualify it)
+// read with a missing key must be undefined, never a trap and never a garbage
+// hit.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { f64ToI64 } from '../interop.js'
@@ -1186,8 +1186,8 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
   if (!onKernel()) {
     // (no local coalescing: a bound temporary read by name holds the bound alone)
     const guard = src => funcWat(compile(src, { optimize: { level: 'speed', watr: false, coalesceLocals: false }, wat: true }), 'run')
-    // Copy propagation may separate the bound/cursor definitions from the comparison. Check the actual
-    // extent, not adjacency of their temporary tees.
+    // Copy propagation may separate the bound/cursor definitions from the comparison. Check the actual extent,
+    // not adjacency of their temporary tees.
     const readsCursor = v => { const t = JSON.stringify(v); return t.includes('["local.get","$k"]') || /\["local\.get","\$k[^"]*int\d+"\]/.test(t) }
     // the cursor's snapshot, or its word read in place where the guard tests its sign no more
     const isCursor = t => t?.[0] === 'local.get' && /tvm\d+$/.test(t[1]) || t?.[0] === 'i64.extend_i32_s' && readsCursor(t)
@@ -1776,8 +1776,8 @@ test('declared literal keys: a call in a literal\'s own values keeps the writes 
     'the factory\'s methods are slots, no dynamic store')
 })
 
-// The probe is the read's own lookup chain with a miss told apart from a
-// stored value (`__dyn_has` over `__dyn_get_t_hm`), against the JS oracle.
+// The probe is the read's own lookup chain with a miss told apart from a stored
+// value (`__dyn_has` over `__dyn_get_t_hm`), against the JS oracle.
 test('in: runtime membership sees a present null or undefined field on every receiver', () => {
   const SRC = `const TABLE = {
     'i32.trunc_sat_f64_s': { 'f64.convert_i32_s': null },
@@ -2073,8 +2073,8 @@ test('in: a deleted field written again through a static dot write is present', 
 // sidOf cannot by the summary's kind per site, and classes a numeric key: a
 // number addresses a schema slot only through its canonical-integer string, so
 // `node[1]` on a parameter of unknown kind (the AST walker's shape) reaches the
-// integer-named schemas alone. Host-visible literals must allocate
-// independently because memory.write can mutate them between calls.
+// integer-named schemas alone. Host-visible literals must allocate independently
+// because memory.write can mutate them between calls.
 test('dyn-reach: host-visible literals allocate regardless of dynamic-key reach', () => {
   const lits = `export const mk = () => ({ x: 1, y: 2 })\nexport const mk1 = () => ({ 1: 10, 2: 20 })\n`
   const cases = [
@@ -2201,8 +2201,8 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 })
 
 // Real JS: unary ops ToNumeric a single operand — undefined's ToNumeric is the
-// Number NaN, no TypeError (contrast the binary '+'/'-'/etc. case above, which DOES
-// throw — a second operand's type to mismatch against).
+// Number NaN, no TypeError (contrast the binary '+'/'-'/etc. case above, which
+// DOES throw — a second operand's type to mismatch against).
 test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`)), /BigInt value at this collection/)
@@ -2228,8 +2228,8 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })), /BigInt value at this collection/)
   // A statically-proven BigInt export (no census, no Map/dict) keeps taking the
-  // ORIGINAL unmarked BigInt result lane, unaffected by this retirement —
-  // structural pin against the new diagnostic over-firing on an already-sound case.
+  // ORIGINAL unmarked BigInt result lane, unaffected by this retirement — structural
+  // pin against the new diagnostic over-firing on an already-sound case.
   is(jz(`export let f = () => 5n`).exports.f(), 5n)
   is(jz(`export let f = () => -5n`).exports.f(), -5n)
 })
@@ -2263,16 +2263,16 @@ test('§14 point 4: full presence×domain matrix over all 9 binary ops, differen
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
 })
 
-// Documented, accepted, PERMANENT carrier-doctrine gap (not fixed, per this
-// design's own doctrine — bigintMixReject's own "0n's carrier is bit-identical to
-// the number 0.0" exemption is the SAME class): the bitwise family's "both absent"
-// cell ToInt32(NaN)=0 on both sides, giving the NUMBER 0 in real JS — but 0's raw
-// i64/f64 bit pattern is IDENTICAL to a genuine BigInt 0n's carrier, so the export
-// lane (no sentinel exists or safely CAN exist for this specific value) cannot
-// distinguish them and passes the bits through as a raw BigInt. The VALUE is
-// numerically correct (0n == 0); only the TYPE tag is wrong. A real, documented
-// divergence, not silently dropped — this codebase already accepts the identical
-// ambiguity class elsewhere (0-literal BigInt/Number mixing).
+// Documented, accepted, PERMANENT carrier-doctrine gap (not fixed, per this design's
+// own doctrine — bigintMixReject's own "0n's carrier is bit-identical to the number
+// 0.0" exemption is the SAME class): the bitwise family's "both absent" cell
+// ToInt32(NaN)=0 on both sides, giving the NUMBER 0 in real JS — but 0's raw i64/f64
+// bit pattern is IDENTICAL to a genuine BigInt 0n's carrier, so the export lane (no
+// sentinel exists or safely CAN exist for this specific value) cannot distinguish
+// them and passes the bits through as a raw BigInt. The VALUE is numerically correct
+// (0n == 0); only the TYPE tag is wrong. A real, documented divergence, not silently
+// dropped — this codebase already accepts the identical ambiguity class elsewhere
+// (0-literal BigInt/Number mixing).
 test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n, not Number 0 (carrier collision, permanent) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['&', '|', '^', '<<', '>>'])
@@ -2556,8 +2556,8 @@ test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads c
   throws(() => withBigintStrict(() => jz(`export let f = (k, j) => { const d = {}; d[k] = 5n; d[j] = 3n; let x = d[k]; let y = d[j]; return x + y }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// The genuine literal BigInt/Number mix (bigintMixReject, arithmetic-core,
-// a different mechanism) and genuine BigInt+BigInt arithmetic (no Map/dict
+// The genuine literal BigInt/Number mix (bigintMixReject, arithmetic-core, a
+// different mechanism) and genuine BigInt+BigInt arithmetic (no Map/dict
 // involved at all) are unaffected — kept as-is.
 test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine literal mixes are unaffected', () => {
   if (onKernel()) return
@@ -2630,8 +2630,8 @@ test('phase-c C4b (5): rest-element BigInt evidence has no plan source today —
   // Rest elements are host-populated (interop's own mem.Array), never a
   // traceable in-program def site RepresentationPlan's provenance solver can
   // reach (zero "rest" references anywhere in representation-plan.js) — so
-  // jz:hostabi's `rest` flag is never true today; documented unsupported,
-  // not merely untested.
+  // jz:hostabi's `rest` flag is never true today; documented unsupported, not
+  // merely untested.
   const f = jz(`
     export let f = (flag, ...args) => { if (typeof flag === 'bigint') return flag; return args.length }
   `, { jzify: true }).exports.f
@@ -2642,8 +2642,8 @@ test('phase-c C4b (5): rest-element BigInt evidence has no plan source today —
     'the REST element, zero-evidence, still rejects even though the sibling fixed slot is tagged')
 })
 
-// Native BigInt operator functions (no `eval` — this repo's own errors.js
-// pins `eval` as a prohibited construct in COMPILED source; using it here to
+// Native BigInt operator functions (no `eval` — this repo's own errors.js pins
+// `eval` as a prohibited construct in COMPILED source; using it here to
 // compute an expected value in the TEST HARNESS is a different concern, but
 // explicit functions keep the oracle unambiguous either way).
 const BIGINT_OP = {
@@ -2674,10 +2674,10 @@ test('round-7: local BigInt() decls through every binary arithmetic/bitwise op c
 })
 
 // round-7: `<<`/`>>` NEGATIVE shift amount — ES2024 13.2.9/13.2.10
-// BigInt::leftShift/rightShift flip DIRECTION on a negative shift count (`x
-// << -3n` === `x >> 3n`, exactly), unlike Number `<<`/`>>` (ToInt32 & 31, no
-// direction flip) or WASM's native i64.shl/i64.shr_s (shift count mod 64,
-// also no sign awareness — a naive port silently wraps `-3` to a 61-bit
+// BigInt::leftShift/rightShift flip DIRECTION on a negative shift count (`x <<
+// -3n` === `x >> 3n`, exactly), unlike Number `<<`/`>>` (ToInt32 & 31, no
+// direction flip) or WASM's native i64.shl/i64.shr_s (shift count mod 64, also
+// no sign awareness — a naive port silently wraps `-3` to a 61-bit
 // wrong-direction shift).
 test('round-7: BigInt `<<`/`>>` flips direction on a negative shift amount (JS spec 13.2.9/13.2.10)', () => {
   const shift = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`,
@@ -2706,10 +2706,10 @@ test('round-7: comparisons over local BigInt() decls are (and stay) JS-correct',
 // FIXED (§14 point 4, audit #10): real JS throws TypeError mixing BigInt and
 // Number in arithmetic (ES2024 6.1.6.2.20 step 6, "Type(lnum) is not
 // Type(rnum)") — `bigintMixReject` (emit.js) already implemented this
-// correctly at COMPILE TIME for a provable mix (one side a genuine BigInt,
-// the other a numeric LITERAL — see the negative-controls test above), but
-// had no RUNTIME check at all for a proven-BigInt side paired with a
-// genuinely dynamic (zero-evidence) other operand.
+// correctly at COMPILE TIME for a provable mix (one side a genuine BigInt, the
+// other a numeric LITERAL — see the negative-controls test above), but had no
+// RUNTIME check at all for a proven-BigInt side paired with a genuinely
+// dynamic (zero-evidence) other operand.
 test('§14 point 4 FIXED: a proven-local BigInt mixed with a zero-evidence dynamic param throws TypeError (was: silently wrong bigint)', () => {
   const f = jz('export let f = (v, w) => { let x = BigInt(v); return x - w }', { jzify: true }).exports.f
   let threw = null

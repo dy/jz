@@ -882,9 +882,9 @@ test('Regression: ?: result fed directly to .prop access', () => {
 })
 
 test('Regression: ?: with literal object branches — distinct schemas', () => {
-  // Both arms are inline `{}` (no narrowed-call return), so this stresses
-  // the ptrKind propagation through the object-literal emit shape rather
-  // than the call-result shape.
+  // Both arms are inline `{}` (no narrowed-call return), so this stresses the
+  // ptrKind propagation through the object-literal emit shape rather than the
+  // call-result shape.
   const { f } = run(`
     export let f = (w) => {
       let o = w == 0 ? { x: 11, y: 1 } : { x: 22, z: 2 }
@@ -1028,8 +1028,8 @@ test('Regression: dynamic key write updates existing fixed-shape object slot', (
 test('Regression: numeric runtime key write on fixed-shape object preserves schema slots (no OOB)', () => {
   // `o[i] = v` with a runtime numeric index on a schema object once emitted a raw array-style
   // `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and trapping (memory
-  // access out of bounds) at large i. This is the exact fault that broke the self-compile
-  // when the dispatch table gained integer keys; runs under test:wasm.
+  // access out of bounds) at large i. This is the exact fault that broke the self-compile when
+  // the dispatch table gained integer keys; runs under test:wasm.
   const { slot, loop, big, compound } = run(`
     export let slot = (i) => { let o = { x: 1 }; o[i] = 99; return o.x }
     export let loop = () => { let o = { x: 1, y: 2 }; for (let i = 0; i < 3; i++) o[i] = 9; return o.x * 10 + o.y }
@@ -1789,9 +1789,9 @@ test('jzify: object arrow property keeps lexical this unsupported', () => {
 })
 
 // A method shorthand is `key: function () {}` (ECMA-262 15.4 MethodDefinition):
-// its body is statement-shaped, so `{ m() { f() } }` returns undefined where
-// the arrow `m: () => f()` returns f()'s value, and `this` is the receiver
-// whatever the body's first statement is.
+// its body is statement-shaped, so `{ m() { f() } }` returns undefined where the
+// arrow `m: () => f()` returns f()'s value, and `this` is the receiver whatever
+// the body's first statement is.
 test('jzify: object methods with an expression-statement body are methods, not arrows', () => {
   const exports = run(`const f = () => 4
     export let assign = () => { const o = { x: 0, m() { this.x = 5 } }; o.m(); return o.x }
@@ -2326,8 +2326,8 @@ test('memory.Object() property reads alias nested container writes', () => {
 // These pin the runtime SEMANTICS: the guard must reject every receiver it
 // doesn't precisely match — wrong schema, no schema, not even an object —
 // falling back to the exact same dynamic dispatch, and — the one genuine
-// soundness question — a dynamic write to a schema-named key must stay
-// visible through the fast-path read (collection.js's __dyn_set schema arm,
+// soundness question — a dynamic write to a schema-named key must stay visible
+// through the fast-path read (collection.js's __dyn_set schema arm,
 // buildObjectSchemaSetArm, mirrors such a write into the payload slot, so the
 // slot is never stale/shadowed).
 
@@ -2406,8 +2406,8 @@ test('devirt schema-slot: recursive OBJECT param keeps its real schema id, not s
 })
 
 test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
-  // The dictionary-mode `{}` (computed keys only → real HASH) plus the `o[k]
-  // = f(o[k])` single-probe fusion. Values pinned at both levels: a fused
+  // The dictionary-mode `{}` (computed keys only → real HASH) plus the `o[k] =
+  // f(o[k])` single-probe fusion. Values pinned at both levels: a fused
   // miscount (e.g. a re-inserting probe) shows here.
   const src = `
   const words = ['aaa', 'bbb', 'ccc']

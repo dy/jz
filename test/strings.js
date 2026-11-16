@@ -1243,9 +1243,9 @@ test('concat: retained builder values stay immutable across appends', () => {
 })
 
 // prehash) — every producer of a ≤6-ASCII SSO string, crossed against every consumer of a
-// compile-time-literal-prehashed probe. If the two hash functions ever disagree for the
-// same SSO bits, the probe silently misses instead of erroring, so this is exercised for
-// every producer × every collection (Map/Set/HASH-object) × lengths 1-6.
+// compile-time-literal-prehashed probe. If the two hash functions ever disagree for the same
+// SSO bits, the probe silently misses instead of erroring, so this is exercised for every
+// producer × every collection (Map/Set/HASH-object) × lengths 1-6.
 test('plain key walks preserve strings, Symbol identity and numeric collection equality', () => {
   const src=`export function f(mode) {
     const first=Symbol('same'),second=Symbol('same'),shared=Symbol.for('shared')

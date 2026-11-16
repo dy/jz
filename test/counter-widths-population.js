@@ -3,8 +3,8 @@
 // the integrator for the counter widths step without reading the writer's tests). Every program
 // is `f(b, s, t)`, a bound, a start and a step: `for` and `while` up and down by literal steps
 // and by a name, from 0, a literal near 2^31 and an argument, the bound a parameter, a word, a
-// uint32, a module binding, a field and a derived Number; a counter no test names; names the
-// loop writes (a step that grows, a counter recomputed, a jump out of the word and back); two
+// uint32, a module binding, a field and a derived Number; a counter no test names; names the loop
+// writes (a step that grows, a counter recomputed, a jump out of the word and back); two
 // counters, a counter of the module, a callee that moves the bound or the counter; counters past
 // 2^52, where a Number's step rounds; labels, do-while, returns, switches, closures over each
 // trip's counter. A capped program leaves by `if (++c > CAP) break` whatever its arguments; an

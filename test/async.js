@@ -575,9 +575,9 @@ test('async: using disposes across awaits', async () => {
 })
 
 // What JS evaluates before a suspension reads before it where another
-// activation could tell: a name another call or a closure assigns meanwhile,
-// a callee of that name, a method off a receiver whose key the program writes
-// or a getter defines (called on that receiver), a constructor, a spread's
+// activation could tell: a name another call or a closure assigns meanwhile, a
+// callee of that name, a method off a receiver whose key the program writes or
+// a getter defines (called on that receiver), a constructor, a spread's
 // iteration, a shorthand's value, a computed key, an assignment's receiver.
 test('async: operands read before an await where JS reads them', async () => {
   if (onWasi() || onKernel()) return
@@ -979,9 +979,9 @@ test('async: an async function\'s machine drives itself from one frame record', 
 })
 
 // An awaited value keeps the layout its producer gave it: the async runtime
-// holds what an async function returns and what one awaits without its
-// identity (src/summary/index.js opaque), the summary reading an awaited value
-// off the promise it names, Promise.all's an array of its inputs' (COMBINED).
+// holds what an async function returns and what one awaits without its identity
+// (src/summary/index.js opaque), the summary reading an awaited value off the
+// promise it names, Promise.all's an array of its inputs' (COMBINED).
 test('async: an awaited value keeps the layout its producer gave it', async () => {
   const src = `const ORD = [[{ qty: 1, cents: 2 }], [{ qty: 3, cents: 4 }, { qty: 5, cents: 6 }]]
 const USR = [{ id: 7, tier: 1 }]
