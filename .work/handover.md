@@ -347,3 +347,28 @@ kinds used ten ways in five try forms, 2,800 programs, each beside a twin with n
 on its way into the generated suite as `test/try-population.js`, branch `populations`),
 the probe of the binding split's crash, and esbuild's bundle of a CommonJS import (the
 test in `test/features.js` carries its text).
+
+## Branches of the land-c landing (2026-11-16), tips before deletion
+
+```
+5d3f9d9ae land-c                             the landing branch as the battery ran it: land-b and seven more (the hang fix, the hosted leg's three skips, the held-out lane's two, watr 5.13.7, the -o directory, subscript 10.8.4), on f7092c17b. For main it was replayed over the dataset's refresh bf4e75ff6, where it is ea0795b7d; not an ancestor of main
+b49b003c9 land-b                             the populations, 6c and the exception edge on f7092c17b: the tree of the first battery, stopped after its self-compile leg; abd8fd14b on main
+5d7b0c6fe land-6c                            6c on the populations, before the exception edge; superseded
+9a6971aa5 populations                        the integrator's three commits and the sixteen ports' base; its last is 96ad796d7 on main
+ccc68ef24 worktree-agent-af3f6d07ee6e728c6   6c's writer, landed as 49a1a75b9 to f8ec7f7fe
+4524efb83 worktree-agent-a2790de10cf3d3dfc   the exception edge's writer, landed as cdb188e97 to abd8fd14b
+964a137b5 worktree-agent-aa7af9dd572a6b3b7   the held-out harness's writer, landed as 7795bde16, c97822437
+83f6f07bb worktree-agent-a999c751978a0f58a   phase 10's guide, eleven commits on 5d3f9d9ae, landed as b4061dd72 to a79b59c52, with f1e4472d4 after them (its pointer to the old file, renamed for main)
+```
+
+At work when this was written, each on the next landing tree `land-d` (the guide's tip
+and above): `worktree-agent-a0535e0f76860e45e` (7b, 7c, the counted copy),
+`worktree-agent-a8c9abf4b664de951` (the tests' comments and nine deletions),
+`worktree-agent-a29e352754b8f20da` (the hang's writer: the reset of a shift, shifts as
+the module starts, the store through a binding the call made; next the reset of a Map,
+a Set and an object's string field). `worktree-agent-a4519a2dc39ff972e` (238aedd6e, the
+counter's bound tier) is still not landed and not ruled on.
+
+The pins: watr 5.13.7 and subscript 10.8.4, both published 2026-11-16; the main
+checkout's `node_modules` holds them once `npm install` is run there (worktrees of this
+session linked a directory of links to the two checkouts meanwhile).

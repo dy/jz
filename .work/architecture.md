@@ -71,11 +71,11 @@ Rules for every change here:
 | 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b landed: one `walk` (src/ir/arrays.js) at 38 sites, typed-array callbacks bound by the summary and inlined, `reduce` cells closed (82 gaps of 470), `src/` and `module/` 114 lines fewer. 3c landed: an arrow of plain value runs in the walk that calls it (compile/in-place.js, every emitter that builds a callback), `for…of` reads its array (plan/alias.js), and a cell no closure took is a local in the optimizer (optimize/cells.js `promoteCells`); `kernel/dot` written with `forEach` or `for…of` and an index vectorizes as the `for` loop does (78 gaps of 470), ratchet unchanged, bench bytes -847 at size and -3,232 at speed, `src/` and `module/` 221 lines more (the pass is 76). Left: a typed `map` whose callback reads a second array by the index does not vectorize (its walk is sized by `__len` at run time; cause inferred by 3c's agent, not traced); a body that makes a function, writes a parameter or returns early keeps the closure |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | handed back, held unlanded (branch `worktree-agent-ad38f46bbe9197c87`, a48e8b6fe on ba71f66a6; `.work/phase-4-compile-time.md`): the memo is byte-identical with it off on the agent's checks (the suite compared compile by compile, 561 corpus pairs, bench bytes; not run again by the integrator), and warm allocating one-liners compile 1.25× to 1.36× faster, not 3×: the per-function passes are 20 to 26% of a warm compile and watr about 75% of what remains; `npm test` CPU -8%, its wall time unchanged; a `settled` set for watr breaks byte identity and the byte-safe segment memo has a ceiling near 11% of watr's time. The 3× was the plan's estimate and it was wrong. Held, the owner's decision (2026-11-12), on the integrator's recommendation: the mechanism (518 lines under `src`, 491 of them recording what each pass reads through proxies, and state kept across compiles) is what phase 5's explicit `(fn, facts)` inputs replace with a keyed cache, and landing it now puts it under `src/optimize` just before phase 5 moves every file there. Its findings go to phase 5's brief: what the passes read, emit's node marks, `word-ranges.js` at 18.9% and watr's `optimize.js` at 19.1% of compile CPU Dropped 2026-11-15 on the owner's word ("if useless then drop"): its base stands before phase 5, which took `ctx` out of every pass the memo recorded through, so it would be written again, for 1.25x to 1.36x on warm one-liners. The branch is deleted, its tip in the handover; the two costs it measured (`word-ranges.js`, watr's `optimize.js`) are where compile time is to be had. |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | 5a landed (d462f1b6e, e7e5d1fd2, b8d12a2bd, b03e99d4e; `.work/phase-5a-pass-table.md`): the order is `src/optimize/pass-table.js`, 123 entries in 7 stages, and no file under `src/optimize` imports `ctx.js`. The sequences are not generated from the table: each stage lists its runners where it calls them and fails where it loads if list and table differ (runners collected by the table made the hosted compiler 9.5% larger; as landed 2.1%). No byte moved natively. 5b is closed with a census and no index: built once to be read many times it saves 0.6% of compile CPU, so it is built with phase 7's passes, which need it; the one helper the census found costly, the range walk, is fixed (963a49a64: decode-wav compiles in 23 s, was 71). See "5a landed" and the two sections after it |
-| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter): landed as a tier above the planner's copy (b41b03528 to afc2446f3; "Counter widths landed"): rfft 1.06x, no input slower than before by more than the entry tests. Then 6b the loop's facts from the emitter (`.work/phase-6b-loop-facts.md`, with its writer), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" 6b landed (1195ad0ed, 5a6fffa78, f1df9cc00, dcee6f67f): a counted loop is read once (`vectorize/scaffold.js` `describeLoop`), shifted, inclusive and descending tests lift through one scaffold, and which loops of the alias battery lift is a table that only grows (`test/vector-coverage.json`, 321 -> 357 of 840). 6c, a lift as a lowering chosen by cost, is with its writer (`.work/phase-6c-lowerings.md`). |
-| 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | 7a landed (778a2225e to 9b05247da, the review's acd02157e; `.work/phase-7-values.md`, the scout's map `.work/maps/value-passes.md`): one effects summary answers what a call does (`src/optimize/effects.js`), six closures and nine hand lists deleted. 7b and 7c, one address form, one set of regions and one numbering, are with their writer (`.work/phase-7b-values.md`). |
+| 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | 6a landed (6ae8ff1f1 to 07da84014 and the review's 21112c9aa, dc4858fbc, cdc3b0711; `.work/phase-6a-legality.md`): every lift passes one legality (`vectorize/legality.js`: memory, locals, iterations), the nine wrong programs fixed by class and the leads run down. One loop lost its lift, bench/spmv's rows, whose lift was wrong. Ahead of 6b: counter widths (the examples gate's rfft at 0.64x of V8, one root with the 252 loops the vectorizer refuses for an f64 counter): landed as a tier above the planner's copy (b41b03528 to afc2446f3; "Counter widths landed"): rfft 1.06x, no input slower than before by more than the entry tests. Then 6b the loop's facts from the emitter (`.work/phase-6b-loop-facts.md`, with its writer), 6c lowerings chosen by cost. See "Phase 6 measured before it was designed", "6a landed", "Found reviewing 6a", "The loop's facts, measured for 6b", "The examples gate" 6b landed (1195ad0ed, 5a6fffa78, f1df9cc00, dcee6f67f): a counted loop is read once (`vectorize/scaffold.js` `describeLoop`), shifted, inclusive and descending tests lift through one scaffold, and which loops of the alias battery lift is a table that only grows (`test/vector-coverage.json`, 321 -> 357 of 840). 6c landed (49a1a75b9 to f8ec7f7fe; `.work/phase-6c-lowerings.md`, "6c landed" below): every lowering is asked of every loop and the lift whose pass costs least is emitted, a reduction's exact lowering beside the reordered one; the fixed order is gone. |
+| 7 | Value passes on the index (numbering, redundancy, constants, memory) | the forwarding and reuse files are deleted, ratchet not above today's | 7a landed (778a2225e to 9b05247da, the review's acd02157e; `.work/phase-7-values.md`, the scout's map `.work/maps/value-passes.md`): one effects summary answers what a call does (`src/optimize/effects.js`), six closures and nine hand lists deleted. 7b and 7c, one address form and one numbering, are handed back and stand on the next landing tree with the copy a counted loop takes of a global (`.work/phase-7b-values.md`). |
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | landed (d0976a1ed to 094d0e159): `src/optimize/rules.js`, 32 rows, each with its relation, checked by `test/rules.js` on every row's own values and on a population; one `foldMemarg` for the three passes that folded an address's constant apart. |
-| 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | 9a landed (50f7854d3 to 53a139b82): every float rewrite that rounds otherwise than JavaScript is one option, `optimize.relaxedFloat`, on at `'speed'` alone; the lanes `jz-exact` and `c-wasm-fast`; README's and the landing's measured figures written from the dataset. 9b landed (4f74e5006, 13f00eb3d; `.work/phase-9b-heldout.md`): the held-out lane, 25 programs registered and none fetched, its record a chain the workflow alone appends to. The contact run waits for the last compiler phase. |
-| 10 | CONTRIBUTING.md cut to a guide; shape-pin tests retired with the recognizers they pin | under 30 KB; pins replaced by gate cells | |
+| 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | 9a landed (50f7854d3 to 53a139b82): every float rewrite that rounds otherwise than JavaScript is one option, `optimize.relaxedFloat`, on at `'speed'` alone; the lanes `jz-exact` and `c-wasm-fast`; README's and the landing's measured figures written from the dataset. 9b landed (4f74e5006, 13f00eb3d; `.work/phase-9b-heldout.md`): the held-out lane, 25 programs registered and none fetched, its record a chain the workflow alone appends to. Its first dry run's two programs that no lane can run are marked not measured (7795bde16, c97822437). The contact run waits for the last compiler phase. |
+| 10 | CONTRIBUTING.md cut to a guide; shape-pin tests retired with the recognizers they pin | under 30 KB; pins replaced by gate cells | the guide landed (b4061dd72 to a79b59c52): 501,512 -> 32,730 bytes, 24,977 outside the public contract. By the owner's word (2026-11-16) a design note is kept only where a change would go wrong without it, in the header of the file it concerns; `.work/phase-10-docs.md` is the ledger of every block. The tests' part, by the same word (comments cut by the same test, nine tests that guard nothing deleted, stale titles renamed), stands on the next landing tree. "Pins replaced by gate cells" is not done: no pin is of a deleted recognizer, and no gate has a cell for a helper's absence ("Phase 10 mapped before it was briefed" below). |
 | 11 | Meet the claims: every sentence of AGENTS.md and README the reference run contradicts (`.work/claims-for-the-owner.md`) | a reference run passes the claims gate: each gap closed, or an exception earned by measurement as AGENTS.md says | after phase 10 (the owner, 2026-11-15); the sentences stay as written until then |
 
 ## Found on the way (2026-11-09)
@@ -1973,6 +1973,430 @@ machine and read after their registration, not run; the manifest's header says s
 fixture gains `sloppy` and `forks`, written to those shapes: on the unchanged harness they
 fail as the two did on CI, and each new test fails with its piece taken out (scratch
 copies).
+
+## A catch clause is a branch: the finalizer population and what it found (2026-11-15)
+
+Found reading 7b/7c's hand-back (ec74f23f2), then on main by the population written to hold it.
+
+A finalizer is emitted once for each way out of its body (compile/emit/statements.js,
+'finally'): the normal copy inside the block a `try_table`'s catch clause names, the
+handler's copy after that block's end, which only the clause reaches. A walker that
+takes `br`, `br_if` and `br_table` for the branches reads that end as fallen into, and
+gives the handler's copy what the normal copy computed, on a way that never ran it.
+
+- **7c's numbering** (not landed): `targetedIn` and `targets` of optimize/numbering.js.
+  `try { if (t) throw 1 } finally { sum += a[i] + a[i + 1] }` over a Float64Array read
+  the subscript's address from a local the handler's way never set: 103 for 115 at levels
+  2, 3, size and speed. Main answered right: the pass it replaced cleared at the end of
+  every block that held any exit, a `try_table` among them. Back with its writer.
+- **optimize/forward-checked.js** (4a9fa96de, 2026-10-21: v1.0.0 to v1.0.3), `targets`:
+  `for (…) { try { if (t && k) throw 1 } finally { sum += o[i] } i += 1 }` over an
+  Int32Array gave the handler's copy the word the normal copy had loaded the round
+  before: 600.25 for 306.25, at `size` alone, where the function is spliced into its
+  caller. Fixed (3b5b5381a): a catch clause's last operand is its
+  label.
+
+`test/finalizer-population.js`: 12 uses of a parameter of one kind (a typed element, an
+element, a field, a length, a tag, a string, a closure, a word and its bytes) in 7 forms
+of finalizer (alone, a body that returns, a callee that throws, the use in the body too,
+after a handler that throws on, a handler and a finalizer, in a loop), each called
+without a throw, with one and without again: 84 programs, a module each, six levels, 62
+s at load 12. With the fix out `a word read once in a finalizer in a loop` fails at
+`size`. Its first form, twelve programs to a module, passed with the fix out: what the
+optimizer shares in a function turns on what its module inlines, and a program of this
+class has a module of its own.
+
+The try population had no finalizer whose body throws (`try { r = 1 } finally { … }` is
+emitted as the two in a row, no handler made). It gained the position (96ad796d7: 4,312
+programs, about eleven minutes of one core); the position does not catch this class,
+its parameters being of two kinds, and differs on main where the handler's does.
+
+A scout then read forty walkers for the class and found, on main and in every release
+since v1.0.0, six more wrong answers the integrator ran (`scoutcheck.mjs`, 24 of 42 checks
+differ on 9ff7eb3d5): reuse-loads.js (a field read in a finalizer after a throw adds 0),
+settled-tests.js (a test in a finalizer the body's write changed is dropped),
+compile/cse-load.js (a read after the throw read again in the finalizer),
+liveness.js through loop-compact.js (a list the handler reads is no root of a loop's
+compaction), plan/integral-loops.js (a local written either side of a call that throws),
+each at levels 2 and over, and the emitter at every level (a `return`'s copy of a
+finalizer runs inside the try's own `try_table`, so a finalizer that throws runs twice).
+One class: a catch clause is a branch to its label from every point of its body, and a
+local the handler reads is live through the body. Its writer's brief is
+`.work/exception-edges.md`.
+
+## What the scout of 6c's lowerings found on main (2026-11-15)
+
+A scout ran about fifteen million calls of generated kernels against Node on the 6c tree and
+on its base (copy and fill counting down, views of one buffer, three and four arrays, strips
+counting down, exact reductions, the chooser over the examples): no difference of 6c's own.
+Three it found on both trees, each run by the integrator on main 9ff7eb3d5 and on v1.0.3
+(`scout6c-check.mjs`, 9 of 24 checks differ on each; `scout6c-bisect.mjs` names the pass):
+
+- **Two views of one buffer, of different element types, swapped at one index**
+  (`t = d[i]; d[i] = s[i]; s[i] = t`, `d` a Float32Array and `s` an Int32Array of the same
+  bytes): the words keep the float's bits where Node leaves 0, at levels 2, 3 and speed.
+  Righted by `vectorizeLaneLocal: false`. With 6c's writer.
+- **A Uint32Array element stored to a Float32Array in a lifted copy converts as signed**:
+  -1 for 4294967296, at levels 3 and speed. Righted by `vectorizeLaneLocal: false`. With
+  6c's writer, as the class "a lane conversion out of an unsigned element".
+- **watr's `outline` shared one helper between two expressions**, at `size`:
+  `A[i*16+j]*x[j]` in one export and `A[j*16+i]*x[j]` in another, the second read `x[i]`
+  (400 for 200). Righted by `watr: { outline: false }`. The pass grouped sites by a
+  name-blind key (every `local.get` an `L`) and the parameters' types, and built the helper
+  from the first site alone: where each local repeats was compared nowhere. Its key is a
+  32-bit hash past 64 characters, compared nowhere either: two expressions that differ in a
+  constant (439599 and 622382, searched for) shared the first's constant.
+  Fixed in watr 5.13.7 (740f3db and 49e387a, pushed with the tag 2026-11-15; the npm release
+  is the owner's, `npm whoami` answers 401 here): the key takes the position each local
+  repeats at, and a site takes the first's body only where the two compare equal node for
+  node, a leaf by its spelling. Three tests, each failing with its part of the fix out.
+  watr's suite, plain and against its wasm build: 382 pass and 2 skipped, 39 of 39, the spec
+  suite 268 pass and 20 skipped. jz reads it through its pin in package.json (5.13.5 today).
+
+  **Where the integrator was wrong.** The first form of the fix (tagged v5.13.6, never
+  published) compared leaves by type, and moved the `size` bytes of 25 of the 105 bench
+  programs up by 5 to 245. Read as wrong shares undone; it was not. Each of the 25 answers
+  at `size` under 5.13.5 what it answers at `speed` (`sizecheck.sh`), and an instrumented
+  5.13.5 (`outline-diag.sh`) counted 828 groups and 11,650 sites in them with no site of
+  other positions and none of another tree: 1,337 sites differed from their group's first
+  only in a constant held as a number where the first held a string (jz's emitted nodes
+  beside its runtime's parsed text). With leaves compared by spelling the 25 are byte for
+  byte what 5.13.5 gives (`bhsize.mjs`, moved 0), and the two programs that fail on 5.13.5
+  answer right. So the defect is real and no bench program has it.
+
+Read by the integrator in 6c's diff: memcpy.js whole (a copy counting down is memmove unless
+the source starts strictly inside the destination's window: the guard is that test, the
+counter left one below the low end, the last offset the low end's); the exact reduction's
+lane tables (each load reads exactly the two elements' bytes; the conversions are the
+scalar ones per lane). `tryReduceBitExact` gives a body local its lanes before it lifts the
+local's own statement, so the recognizer alone would take `x = x * 0.5 + a[i]` for a lane:
+the one legality declines the loop (`carryprobe.mjs`, seven programs, six levels, no
+difference). alias.js's `own` and `limits` splice read, not proven by reading.
+
+Scratch: `v103` (a worktree of v1.0.3), `jzwatr` (main linked to the fixed watr, built by
+`watrfarm.sh`), `watr-outline` (the watr worktree), `bh-main9ff.jsonl` and `bh-watr.jsonl`
+(bench bytes, main against main with the fixed watr).
+
+## 6c landed: a lift chosen by cost, the exact lowering beside the reordered one (2026-11-16)
+
+Landing tree `land-b`: main f7092c17b, then the integrator's three (the try population's new
+position, forward-checked.js's catch clause with the finalizer population), the sixteen
+ports of the scratch populations (test files only), 6c's twelve commits and three more of
+its writer's. Notes of the first two groups: the sections "A catch clause is a branch" and
+"What the scout of 6c's lowerings found" above.
+
+**What 6c is.** vectorize/index.js asks every lowering of every loop and takes the one whose
+pass costs least (cost-model.js); a reduction has two, the reordered (lanes folded at the
+end, under `relaxedFloat` alone for a float sum or product) and the exact (`tryReduceBitExact`:
+the work of each element in f64x2 lanes, the accumulation in the loop's own order). Strips
+count down; a copy or a fill counting down is `memory.copy` / `memory.fill`; the general map's
+and stencil's own alias versioning is gone, the one legality's distance test answers; an
+enclosing loop's lift wins over the lifts inside it.
+
+**The writer's figures (not rerun by the integrator).** Census of 423 units: lifted at speed
+593 to 594, at level 2 375 to 401 (26 gained, none lost). The exact lowering at level 2:
+dotprod 0.931, matmul 0.838, stdlib-ddot 0.759 of the time before. Hosted compiler +42,955
+bytes on its own bootstrap. Examples: nbody alone moves.
+
+**The integrator's review.**
+- A scout: about fifteen million calls against Node over the new lowerings, no difference of
+  6c's own (its three older finds are the section before this one).
+- The scratch populations on the twelve commits: nothing new (the two documented divergences,
+  boxprobe 150 in 1 and vecnarrow 144 in 2; `finloop`'s handler in a loop at `size`, which the
+  base has and the exception edge's branch rights).
+- Bench bytes by hash: no case at `size`; ten at `speed` (colorconv, colorlch, colorlog and
+  colorpq -92 each, fft -34, fftplan -39, stdlib-ddot -192, webaudio -60, matmul +5,
+  provenance +10). forward-checked.js's fix alone moves none.
+- Timing, sixty alternating rounds a process each at load 20, those ten and two controls
+  (alpha 1.000, aos 1.003 by the least): every one within 1.5% by the least and the median
+  (fftplan 0.991 and 1.009, webaudio 1.007 and 0.985, matmul 0.986 and 0.989, provenance
+  0.991 and 0.990), geomean 0.998. The 1.038 of fftplan and 1.031 of webaudio the writer
+  could not settle did not repeat.
+- Read: memcpy.js whole, the exact reduction's lane tables, the two fixes below. alias.js's
+  `own` and `limits` splice read and not proven by reading.
+
+**Two wrong answers older than 6c, fixed by its writer (in v1.0.0 to v1.0.3).**
+- vectorize/map.js moved a lane local's definition, its load with it, to its one use past a
+  store between: `t = d[i]; d[i] = s[i]; s[i] = t` over a Float32Array and an Int32Array of
+  one buffer left the float's bits (levels 2, 3, speed). `movesTo`: a definition moves only
+  where it commutes with what runs between. `test/view-order-population.js`, 378 programs.
+  Of the three rewrites the rule guards, the narrowing store's alone is shown failing
+  without it.
+- vectorize/lift.js took an f32 lane conversion's sign from the load, which an Int32Array
+  and a Uint32Array share: a Uint32Array copied to a Float32Array read 4294967296 as -1
+  (levels 3, speed). One table, `CONVERT_LANES`, keyed by the scalar's conversion.
+  `test/lane-convert-population.js`, 518 programs. The column convolution's new guard is not
+  shown failing.
+- `tryReduceBitExact` registers a body local's lanes after its statement is lifted (no wrong
+  answer before: the one legality declined the loop).
+
+**Open after 6c.**
+- stdlib-ddot at the exact level is 2.44× rust-wasm: optimize/guards.js does not merge the
+  bounds checks of a cursor stepped by a constant.
+- `INT_WIDEN_F32`'s `lossy` on `i32.load` is wrong (an i32 to f64 is exact and the demotion
+  rounds once, as the lanes' conversion does): an Int32Array or Uint32Array to Float32Array
+  map could lift at the exact levels. Moves bytes; not taken.
+- Four loop kinds the chooser does not lift (the writer's hand-back names them);
+  `licm.js` `SAFE_OFFSET_CALLS` has no reader.
+- The two new populations add about twelve minutes to the generated suite.
+
+**The float default (the integrator's reading of the owner's rule, open to the owner).** The
+rule: a deviation within 100 ulp is allowed where it saves time or size. Kept: the default
+level exact, reordered float sums and products at `'speed'` (which is level 3) alone. A
+reordered sum has no ulp bound under cancellation (README's bound is n·2⁻⁵² of the terms'
+total magnitude), so it cannot be promised within 100 ulp; and the gain is three kernels of
+105 (dotprod, matmul, stdlib-ddot, 1.6 to 2×) and no example, where the exact lowering
+already takes 7 to 24% of their time at level 2.
+
+## The exception edge landed: six wrong answers of one class (2026-11-16)
+
+Eight commits of its writer's, on the same tree (its brief is `.work/exception-edges.md`).
+One reader, `leavesTo(node, name)` and `leftLabels(node)` in src/ir/control.js: a branch's
+labels and a `try_table`'s catch clause, whose label is its last operand. reuse-loads.js,
+settled-tests.js, forward-checked.js, cse-address.js, effects.js and
+vectorize/outer-scaffold.js ask it. liveness.js holds what a handler reads live through the
+whole of its `try_table`'s body (`keep`: no write in the body kills it); compile/cse-load.js
+ends its loads at a try statement; plan/integral-loops.js leaves a step inside a try
+statement where it is; the emitter takes the throw of a finalizer's copy that a `return`,
+`break` or `continue` runs past the statement's own handlers by a catch clause of its own
+(the copy stays where the exit is; it ran inside the statement's `try_table`, and a
+finalizer that threw ran twice); split-funcs.js moves no run out of a list that already
+left with an earlier one (a compile error, `'f0$p5' is not in scope`, which the scout had
+read as a state leak: it is not one).
+
+- `scoutcheck.mjs` on the landing tree: 0 of 42 differ (24 on 9ff7eb3d5). `finloop.mjs`'s
+  handler in a loop at `size`, which the populations tip had, is right.
+- `test/handler-population.js`: 527 programs, a module each, six levels; the writer shows
+  it failing with each of the seven fixes out.
+- Bench bytes (the writer's take-outs; the integrator's hashes agree): async +52 at speed
+  (more compaction roots), decode-dsd +67 and +99, decode-tta +29 and +33, decode-wav +31
+  and +33, webaudio +58 and +55 at size and speed (the emitter: `try { … return f() }
+  finally { r.free() }`), stdlib-special -30 and watr -19 at speed.
+- Timing by the integrator, sixty alternating rounds, load 12 to 27, controls alpha 1.000,
+  decode-qoa 1.002 and jessie 1.002 by the least: async 1.011 and 1.020 (least, median),
+  watr 1.013 and 1.011, the other five within 0.5%. Geomean 1.002. The writer's own run
+  (load 30 to 40, a control at 1.049) decided nothing.
+- Hosted compiler +633 bytes on the writer's bootstrap.
+
+Not fixed, by the writer's reading (no program differs today): jump-pointers.js never
+joins a handler's path (it keeps the body's end state; safe while interval-proof.js kills
+at entry every local a try statement writes, so none is typed i32), and licm.js
+`cseScalarLoad` is right only because every block a catch clause names ends in a `br` or a
+`return` the emitter puts there. flow-range.js, forward-hops.js `deadResets` and
+split-slots.js settled by their own lines. The loop and region escape checks that bail at
+a `try_table` (word-ranges.js, split-funcs.js `back`, sink-stores.js, specialize.js,
+prefilter.js, wide-accumulator.js, guards.js, carry-stores.js) keep their own readers,
+unchecked.
+
+## The held-out lane's first dry run, and the two programs it cannot run (2026-11-16)
+
+(The harness writer's own note is its commit c97822437 under 9b; this is the integrator's.)
+Run 43777318282 on f7092c17b, V8 alone: awfy 14 of 14, clbg 9 of 11. clbg-nbody-node-2 is
+a sloppy-mode script (it assigns `n` and `runTest`, never declared) and every lane takes
+the driver as a module; clbg-mandelbrot forks `cluster` workers and a lane is one process.
+Both stay registered and carry `notMeasured` with the reason (7795bde16): the dry check
+expects each to fail in V8 and fails when one passes, the record holds no entry for them,
+the figures keep them in the denominator by name. The two sources were fetched and read
+on the integrator's word after their registration and before any contact; neither was run
+here. Harness only: not in the battery below, its own `npm test` 7,481 and the held-out
+tests of test/bench-claims.js passing (the file's 21 failures are main's, the stale
+dataset). The dry run after landing should print 9 of 11 and `2 not measured`, exit 0.
+
+## A program that never returned: the record of an array's first store, freed under the log (2026-11-16)
+
+Found by the re-entry population's port, fixed by its writer (82e3cbc75 on the landing
+tree), in v1.0.0 to v1.0.3. Eight lines, three exports called in order from JavaScript:
+
+    let a = [7, 1, 5]
+    export let w1 = () => { a[0] = a[0] + 1; return 1 }
+    let b = [2, 3, 5]
+    let s = 'bc'
+    export let w2 = () => { b[0] = b[0] + 2; s = s + 'x'; return 1 }
+    let c = [4, 8, 4]
+    let o = { a: 4, b: 4 }
+    export let w3 = () => { c[0] = c[0] + 6; o = { a: 1, b: o.b + 1 }; return c[0] + c[1] + o.a + o.b }
+
+`w3()` never returned at the default level and at `speed` (levels 0 and `size` answered).
+The integrator ran it in a child process with a 20 s limit at the four public levels
+(`hangcheck.mjs`): no answer at `true` and `speed` on main f7092c17b and on the tag v1.0.3,
+Node's answers at all four on the landing tree.
+
+The cause: a call's first in-place store of a number into an array made as the module
+started saves the array for `memory.reset()` in a record (`__durable_arr_snap`) allocated in
+the call's own frame and linked into the round's log. Such a store is no escape the frame
+census counts, so nothing lowered the escape flag, and a frame that gives its heap back at
+its return (`w2`'s, which reads the flag for the concatenation) freed the record while the
+log still named it. The next allocation wrote over it; the next walk of the log
+(`__survive`, module/core/reach.js) followed the overwritten link without end, or
+`memory.reset()` read it and trapped. The fix is at the one inline site every direct
+element store emits (module/collection/durable.js `durableArrSnapNode`): the flag goes down
+to the array as the record is made. The kernels' stores (push, fill, splice, sort and the
+rest) stood at census sites and were right: the writer probed 19 mutation paths.
+
+- `test/mem.js`: the hang and the trap, each in a worker the test stops at 60 s
+  (`test/_bounded.js`); `test/reentry-population.js`: 1,200 programs of three seeds, a
+  seed's programs one module, in the generated suite (about 250 s at load 20 to 31). The
+  writer shows seed 1 and the pin failing with the lowering out.
+- Bench bytes: 0 of 105 at size and speed (no bench program resets its memory). Hosted
+  compiler +4,170 bytes on the writer's bootstrap.
+- What it costs, found by the integrator hashing all 70 examples (the bench corpus does
+  not show it): `examples/zzfx` grows 32,950 -> 37,619 bytes at the default level and
+  46,274 -> 51,077 at speed (equal at size), the one example of 70 that moves. Its
+  `b = []` is filled by `b[i++] = …`; the site of such a store now holds a call that
+  lowers the flag, so the function's frame reads as one that may keep memory, and that
+  links the compaction kernel (`__compact` and 19 helpers) into a program that had none.
+  At run time the path is never taken (the array is the call's own): the frame of
+  examples/bench.mjs took 721 to 741 µs before and 721 to 730 after, five interleaved
+  rounds, and `memory.used` stays 0. Open: a store through a local whose every value is
+  an array the same activation made needs no record and no test (a resumable function
+  aside: a generator begun as the module starts stores after it); that drops the site,
+  the kernel here and a compare from every such store.
+- Not fixed, a separate defect the writer found: `memory.reset()` does not undo `shift()` of
+  an array made at start (`const b = [2, 3, 5, 7]`, shifted once, reads `3,5,7` after the
+  reset, at every level, in v1.0.3 too): the log never records a shift.
+
+**The hosted leg cannot hold three of the ported populations** (6177d78ee): the compiler
+compiled by jz frees nothing within a compile and ran out of memory on the vector order
+and vector narrow modules (683 and 1,000 programs joined) and on the float reductions at
+exact and speed. They return at once on that leg (`onKernel()`), with the reason beside
+each; the re-entry population's generated programs skip it too. Split in thirds the float
+reductions passed there and took 66 minutes, so they are not split. The integrator's run
+of the tree before the skips (abd8fd14b, `test:bootstrap -- --full`) ended 6,533 of 6,537
+on the hosted suite in 3.5 hours: those four tests and no other, each "Out of memory: the
+heap cannot grow". Every other ported population passed there.
+
+## The two parsers' and the two commands' small things (2026-11-16)
+
+- **watr 5.13.7** (4da718708): the `outline` fix of the section above; `scout6c-check.mjs`
+  is 0 of 24 on the landing tree. Published 2026-11-16 from 334b608.
+- **subscript 10.8.4** (ea0795b7d): subscript's issue 41 (`a < b << c` read
+  `(a < b) << c` wherever `<` was registered after `<<`) is the defect jz's parser entry
+  had worked around by ordering each character's operators longest first after its tokens.
+  subscript now keeps that order as each operator is registered (one stable sort in its
+  `register`), so the entry's loop is deleted. The order every character's operators are
+  tried in is the same before and after (`opsdump.mjs`, 39 first characters). In subscript
+  the fix was checked against V8: every pair and triple of JS's 23 binary operators,
+  12,959 expressions, 385 differed before and none after.
+  One bench case moves with the pin, by its input: `bench/jessie` compiles subscript's own
+  parser from `node_modules`, so 10.8.4's `register` is in its source (76,173 -> 77,433
+  bytes at size, 193,351 -> 192,628 at speed; the tree before the pin, given 10.8.4,
+  compiles it to the same bytes). Its times in the dataset are of 10.8.3's source until
+  the next reference run.
+- **`-o` naming a directory** (63c13d60f, discussion #120): `compile.mjs … -o ./out` with
+  `./out` a directory built everything and failed in the linker; `jz … -o out` answered
+  EISDIR. An output that is a directory, or is spelled with a trailing separator, holds
+  the file under the input's name (`out/host`, `out/host.wasm`), as `go build -o` reads
+  one, and the native script makes its output's directories as jz does.
+
+- Found on the way, not fixed, older than this landing: two copies of jz loaded in one
+  process over one copy of subscript (two checkouts whose `node_modules` resolve to the
+  same directory) stop parsing a source that begins with a comment, in both copies:
+  "Unexpected character" at 1:1 (`twojz.mjs`; abd8fd14b with subscript 10.8.3 the same).
+  The parser entry registers its tokens on subscript's module-wide tables as it loads,
+  and the second load undoes the first's comment handling. An install does not meet it
+  unless two copies of jz share one subscript; a probe that imports two trees does.
+
+**The landing's battery** (2026-11-16, 05:22Z to 12:40Z, a leg at a time at four jobs), on
+the landing tree as it stood then: land-b's 42 commits and the seven above them on
+f7092c17b, tip 5d3f9d9ae. Lint and the file audit clean; bench bytes 1 of 105 moved against
+land-b's rows (jessie, by its input); the invariants leg 7,286; default 7,487; the
+bootstrap whole (self-roundtrip, kernel parity, checkpoint, the hosted suite in 2 h 10 min,
+recursive); level 0 7,270; level 3 7,284; WASI 7,359; generated 229; integration 229, 76,
+76 and 79; test262 4,120 and 0; one process 7,487; the examples 25 of 25 ahead of V8,
+geomean 1.66× (24 of them 8 to 14% faster than land-b's logs, which were taken beside a
+stray process of the integrator's at a full core, the hang's reproduction left running
+ten hours: the bytes of 69 of the 70 examples are equal on the two trees, so the
+difference is the base's load). The first battery, on land-b, was stopped after its
+self-compile leg ended as foreseen, 6,533 of 6,537 on the hosted suite.
+
+The guide's eleven commits above it (tip 83f6f07bb) change no code token in 60 script
+files; on that tree the core suite 7,487, lint and the audit clean.
+
+**Replayed for main.** The weekly bench run had meanwhile committed its refresh on main
+(bf4e75ff6: bench/results-ci.json, one figure of README.md, index.html), so the sixty
+commits were replayed over it and every commit of this landing is named in this file as
+main has it: the tested tips 5d3f9d9ae and 83f6f07bb are ea0795b7d and a79b59c52 there,
+their trees equal but for the refresh's three files. One commit more points the guide and
+its ledger at ea0795b7d, the last tree with the 501 KB file (f1e4472d4).
+
+Found at the replay, not this landing's: the refresh leaves `test/bench-claims.js` with one
+failure more on main itself (24 pass and 22 fail at bf4e75ff6, 25 and 21 before it): "2
+figure(s) in the prose are STALE vs results.json". The weekly run writes README's figures
+from `bench/results-ci.json` and the test holds them to `bench/results.json`. Phase 11's
+to settle with the reference run.
+
+## Phase 10 mapped before it was briefed (2026-11-16)
+
+A scout mapped the file and the tests before a writer was briefed (Sonnet 5.5, read-only,
+on the landing tree ea0795b7d; its map was session scratch). The integrator checked: 25 headings, the one
+reader at test/bench-claims.js:320, the two `docs/CONTRIBUTING.md` paths.
+
+- CONTRIBUTING.md is 501,512 bytes, 6,606 lines, 25 headings, 270 paragraph blocks.
+  254 KB stand under one heading that does not describe them ("Shared watr optimizer").
+  By the scout's classes (inferred from first lines for about 240 blocks): design prose
+  465,614 bytes, guide 30,843, history 4,784. About 17% repeats text found elsewhere
+  (8-word runs, a lower bound that generic phrases inflate); the large blocks are in no
+  other file. It grew from 145 KB on 2026-09-25.
+- 42 lines elsewhere point into it; 11 name "Stdlib registration", which is no heading.
+  One test reads it (`asc -Oz --converge`). Eight workflows ignore pushes that touch it
+  alone. No gate holds its size.
+- Tests: 1,498 assertions on WAT text in 184 files (plus 397 through helpers), about 40%
+  the presence or absence of a named helper or instruction; no test imports a deleted
+  recognizer; about 38 labels and 10 comments name functions or files that are gone.
+  No existing gate has a cell for "this program links no helper X".
+
+The row's done criterion as briefed (the row was written before the map):
+1. The guide is at most 30,000 bytes.
+2. No design note is deleted for size: each block is kept in the guide, moved to the
+   header of the file it describes or to a README of the directory whose mechanism it
+   describes, deleted as a duplicate of a named place, or deleted as stale with what
+   contradicts it named. A ledger (`.work/phase-10-docs.md`) and a rerunnable check hold
+   the move; moved text is moved by script, not retyped.
+3. Under src/, module/, jzify/ only comments change: token streams equal, bench bytes 0
+   of 105.
+4. Every pointer into the file names something that exists.
+5. Tests: stale labels only. "Pins replaced by gate cells" is dropped from this phase
+   (the integrator's call, put to the owner): no pin is of a deleted recognizer, and
+   turning 1,500 assertions into table cells is a project of its own with no cell kind
+   for helper absence today. Left as open work: a census of which pins state an outcome
+   (links no string helper, vectorizes) and which a form (an instruction sequence).
+
+The writer (Opus 5.5, xhigh) started 2026-11-16 on land-c's tip, beside the battery.
+Blocks about files 7b/7c deletes stay in a marked tail until that branch lands.
+
+**The owner's ruling, the same day** ("contributing - srink drastically; design notes are
+not needed if no value; reply to the question; shrink whatever tests possible to shrink"):
+- Points 2 and 5 above are overruled. A design block is deleted by default and kept only
+  where a person changing the code would get something wrong without it (a contract the
+  code does not state, a soundness condition, a decision with the figure that decided
+  it); kept sentences verbatim, by selection, never paraphrased. The ledger records each
+  block's state. Sent to the writer as a change of brief; test labels taken out of its job.
+- Tests are to shrink wherever they can. A census first (the scout again, read-only:
+  duplicates by AST, identical compiles, tests that assert nothing, pins a gate holds,
+  dead files, comment weight; session scratch, `p10/tests.md`), then a writer after the
+  battery, a test deleted or merged only on evidence that what it guards stays guarded.
+- The reply in discussion #120 is posted (discussioncomment-19646838).
+
+**The guide as handed back** (branch `worktree-agent-a999c751978a0f58a`, 11 commits on
+ea0795b7d, b4061dd72 to a79b59c52; Opus 5.5, effort asked xhigh and not confirmable from
+its transcript): CONTRIBUTING.md 501,512 -> 32,730 bytes (24,977 outside the public
+contract, which is 7,753 of its 11,851). By the ledger (`.work/phase-10-docs.md`, its
+check session scratch, `p10w/check.py`): cut as describing the code 393,718, as a
+duplicate of a header 52,427, stale 3,282, history 1,730; guide 27,859; kept verbatim in
+the headers of 55 source files 22,496. No README was made, README.md is untouched.
+The integrator's checks: the ledger check passes; `tokeq.mjs ea0795b7d <branch>` reads 60
+script files equal in code with comments dropped, 0 differing; the authors are the owner
+alone; read whole; of the ten cuts the writer was least sure of, one read (the x64
+rounding hazard of the ToInt32 lowering: src/optimize/to-int32.js's header holds it).
+Sent back once: the contract had gone to README.md (50 KB, internals in it) and returned
+to the guide cut by the same test; "recognizers are tried in order" was stale since 6c and
+now reads as index.js's own words. Not rerun by the integrator: the whole suite (the
+writer's: 7,487 pass), bench bytes (the writer's: 0 of 105). Lands with or right after
+land-c: it changes no code.
+- Put to the owner, unanswered: the guide's "One shared optimizer, owned by watr … the
+  existing generic passes in `src/optimize/` are migration work" beside the pass table
+  and rule table built in jz.
+- At the merge of 7b/7c: its CONTRIBUTING.md hunk (old L1941-1951) lands on cut text; drop it.
 
 ## Decisions taken
 
