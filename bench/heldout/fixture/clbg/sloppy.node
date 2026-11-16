@@ -1,0 +1,17 @@
+/* Fixture program in the Benchmarks Game's shape (ours), a script of sloppy mode: it
+   assigns n and show, names it never declares, which a script makes globals of and an
+   ES module, strict, refuses with a ReferenceError. */
+
+function triangle(k) {
+  var s = 0;
+  for (var i = 1; i <= k; i++) s += i;
+  return s;
+}
+
+n = +process.argv[2];
+
+show = function (k) {
+  console.log(triangle(k) + ' ' + triangle(k >> 1));
+};
+
+show(n);

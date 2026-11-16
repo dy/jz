@@ -7,11 +7,16 @@
 //   node scripts/heldout.mjs generate <dir> <cases>    one driver a program, bench/<id>/<id>.js's shape, bundled
 //                                                      by esbuild with nothing rewritten; <cases>/index.json lists them
 //   node scripts/heldout.mjs check <cases> <dir>       V8 runs every driver and the set's own check (the dry run);
-//                                                      exit 1 when a program does not pass it
+//                                                      exit 1 when a program does not pass it, or when one the
+//                                                      manifest marks notMeasured does
 //   node scripts/heldout.mjs registered <cases>        exit 1 when a program not yet measured was registered under
 //                                                      a compiler that has changed since (a contact run refuses it)
 //   node scripts/heldout.mjs record <cases> <bench.json>   append each program's entry to the record (the workflow's
 //                                                      record job alone, on the latest main: --publish commits it)
+//
+// A program marked notMeasured (the manifest's header: a reason V8 alone shows, no result of
+// jz's) keeps its driver for the check, under a name bench.mjs does not take, so no lane
+// measures it and the record stores nothing of it.
 //
 // Options: --manifest=<path> (a fixture's), --sets=<id,…>, --record=<path>.
 // The workflow is the only writer of the record and the only place a program is fetched:
@@ -48,6 +53,9 @@ const filesOf = set => [...set.programs.map(p => p.path), ...(set.support ?? [])
 const blobsOf = set => new Map([...set.programs, ...set.support ?? [], ...set.checks ?? [], ...set.config ? [set.config] : []].map(f => [f.path, f.blob]))
 /** Where a set's files come from: its repository at its commit, or a fixture's directory. */
 const origin = set => set.local ? `local:${set.local}` : set.repo
+/** A program's driver: bench.mjs takes a case by <id>/<id>.js alone, and a program marked
+ *  notMeasured is no case, so its driver, kept for the check, is named otherwise. */
+const driverFile = (out, p) => join(out, p.id, p.notMeasured ? 'not-measured.js' : `${p.id}.js`)
 
 // ── fetch ──
 async function fetchSets(dir) {
@@ -205,10 +213,11 @@ async function generate(dir, out) {
         made = { error: String(e.message || e).split('\n').slice(0, 3).join(' ') }
         say(`${p.id}: not bundled: ${made.error}`)
       }
-      if (made.driver) writeFileSync(join(out, p.id, `${p.id}.js`), made.driver)
+      if (made.driver) writeFileSync(driverFile(out, p), made.driver)
       if (made.check) writeFileSync(join(out, p.id, 'check.mjs'), made.check)
       index.programs.push({
         id: p.id, set: set.id, interface: set.interface, path: p.path, blob: p.blob, sha256: files[p.path],
+        ...(p.notMeasured && { notMeasured: p.notMeasured }),
         // what its driver is made of and what checks it, each by the sha256 it was fetched at
         source: { repo: origin(set), commit: set.commit ?? null }, files: { ...shared, ...(p.check && { [p.check.path]: files[p.check.path] }) },
         ...(made.driver ? { driver: sha256(made.driver) } : { bundle: made.error }),
@@ -218,23 +227,33 @@ async function generate(dir, out) {
     }
   }
   writeFileSync(join(out, 'index.json'), JSON.stringify(index, null, 2) + '\n')
-  say(`${index.programs.length} programs: ${index.programs.filter(p => p.driver).length} drivers in ${out}`)
+  const marked = index.programs.filter(p => p.notMeasured).length
+  say(`${index.programs.length} programs: ${index.programs.filter(p => p.driver).length} drivers in ${out}${marked ? `; ${marked} marked notMeasured, their drivers for the check alone` : ''}`)
 }
 
 // ── check (V8 alone) ──
 const runV8 = (file, extra = []) => spawnSync(process.execPath, [...extra, join(ROOT, 'bench/_lib/run-v8.mjs'), file],
   { cwd: ROOT, encoding: 'utf8', timeout: 600_000, killSignal: 'SIGKILL' })
 const metric = stdout => stdout?.match(/median_us=(\d+)\s+checksum=(\d+)/)
+/** Why a run of V8 failed: the error's own line and where it was thrown (Node prints the
+ *  place, the source line and a caret before it), else the output's first lines. */
+const failureOf = r => {
+  const lines = String(r.stderr || r.stdout || '').trim().split('\n')
+  const error = lines.find(l => /^[A-Z]\w*( \[\w+\])?: /.test(l))
+  const at = error && /:\d+$/.test(lines[0]) ? ` (${basename(lines[0])})` : ''
+  return (error ? error + at : lines.slice(0, 2).join(' ') || String(r.signal || r.error?.message || 'no output')).slice(0, 300)
+}
 
 function checkPrograms(out, dir) {
   const index = readJson(join(out, 'index.json'), null) ?? die(`${out}: no index.json (run generate first)`)
   const results = {}
+  let failed = 0, marked = 0
   for (const p of index.programs) {
     const verdict = (() => {
       if (!p.driver) return `not bundled: ${p.bundle}`
-      const r = runV8(join(out, p.id, `${p.id}.js`))
+      const r = runV8(driverFile(out, p))
       const m = metric(r.stdout)
-      if (!m) return `V8 did not run it: ${(r.stderr || r.stdout || r.signal || '').trim().split('\n').slice(0, 2).join(' ').slice(0, 200)}`
+      if (!m) return `V8 did not run it: ${failureOf(r)}`
       const line = `V8 ${(m[1] / 1000).toFixed(1)} ms a round`
       if (p.interface === 'awfy') return +m[2] === p.expected ? `ok (${line})` : `V8 does not verify it at ${p.inner} inner iterations (${line}, checksum ${m[2]} where every round verified is ${p.expected})`
       if (p.interface === 'clbg') {
@@ -242,13 +261,26 @@ function checkPrograms(out, dir) {
         const c = spawnSync(process.execPath, ['--input-type=module', '-e',
           `const { output } = await import(${JSON.stringify(pathToFileURL(join(out, p.id, 'check.mjs')).href)}); process.stdout.write(Buffer.from(output()))`],
         { cwd: ROOT, timeout: 600_000, killSignal: 'SIGKILL', maxBuffer: 1 << 28 })
-        if (c.status !== 0) return `V8 did not run its check: ${String(c.stderr).trim().split('\n').slice(0, 2).join(' ').slice(0, 200)}`
+        if (c.status !== 0) return `V8 did not run its check: ${failureOf(c)}`
         return Buffer.compare(c.stdout, want) === 0 ? `ok (${line}; ${p.check.path} matches byte for byte)` : `its output at ${p.check.arg} differs from ${p.check.path} (${c.stdout.length} bytes against ${want.length})`
       }
       return `no check for the interface ${p.interface}`
     })()
-    results[p.id] = verdict.startsWith('ok') ? 'ok' : verdict
-    say(`${verdict.startsWith('ok') ? 'ok  ' : 'FAIL'} ${p.id}: ${verdict}`)
+    const passes = verdict.startsWith('ok')
+    // a program marked not measured must still fail: the mark ends when its reason does
+    if (p.notMeasured && passes) {
+      results[p.id] = `passes in V8 ${verdict.slice(3)}, where the manifest marks it notMeasured (${p.notMeasured}): the mark no longer holds`
+      failed++
+      say(`FAIL ${p.id}: ${results[p.id]}`)
+    } else if (p.notMeasured) {
+      results[p.id] = `not measured: ${p.notMeasured}`
+      marked++
+      say(`out  ${p.id}: not measured, as the manifest marks it (${p.notMeasured}); ${verdict}`)
+    } else {
+      results[p.id] = passes ? 'ok' : verdict
+      if (!passes) failed++
+      say(`${passes ? 'ok  ' : 'FAIL'} ${p.id}: ${verdict}`)
+    }
   }
   // the inner iterations beside rebench.conf's lines that name each program (the manifest recalls them)
   for (const set of sets.filter(s => s.config)) {
@@ -260,8 +292,9 @@ function checkPrograms(out, dir) {
     }
   }
   writeFileSync(join(out, 'check.json'), JSON.stringify(results, null, 2) + '\n')
-  const failed = Object.values(results).filter(v => v !== 'ok').length
-  say(failed ? `${failed} of ${index.programs.length} programs do not pass the harness's check in V8` : `every program of ${index.programs.length} passes its check in V8`)
+  const n = index.programs.length, also = marked ? `; ${marked} not measured (marked notMeasured, and failing in V8)` : ''
+  say(failed ? `${failed} of ${n} programs do not pass the harness's check in V8${also}`
+    : marked ? `${n - marked} of ${n} programs pass their check in V8${also}` : `every program of ${n} passes its check in V8`)
   return failed
 }
 
@@ -270,7 +303,7 @@ function registered(out) {
   const index = readJson(join(out, 'index.json'), null) ?? die(`${out}: no index.json`)
   const contacted = new Set(readJson(recordPath, { entries: [] }).entries.filter(e => e.contact === 'first').map(e => e.program))
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
-  const problems = index.programs.filter(p => !contacted.has(p.id))
+  const problems = index.programs.filter(p => !contacted.has(p.id) && !p.notMeasured)
     .map(p => registrationProblem(p.id, head, { manifest: relative(ROOT, manifestPath) }).problem).filter(Boolean)
   for (const line of problems) say(`refused: ${line}`)
   say(problems.length ? `${problems.length} programs refused: a first contact measures the compiler its program was registered under (the manifest's header)`
@@ -293,9 +326,15 @@ function entriesFor(out, benchPath, record) {
       .concat([['esbuild', index.esbuild]])),
   }
   const seen = new Set(record.entries.map(e => e.program))
+  // a program marked not measured is no case and no lane runs it: a row of one means the
+  // mark was not kept, and nothing of the run is recorded
+  for (const p of index.programs.filter(p => p.notMeasured)) {
+    if (bench.cases?.[p.id]) die(`${p.id}: ${benchPath} measured it, where the manifest marks it notMeasured (${p.notMeasured}): nothing is recorded`)
+    say(`${p.id}: registered, not measured: ${p.notMeasured}`)
+  }
   // a program the run did not reach stays unmeasured: no entry, no contact spent
-  const reached = index.programs.filter(p => !p.driver || bench.cases?.[p.id])
-  for (const p of index.programs) if (!reached.includes(p)) say(`${p.id}: no row in ${benchPath}, so not recorded`)
+  const reached = index.programs.filter(p => !p.notMeasured && (!p.driver || bench.cases?.[p.id]))
+  for (const p of index.programs) if (!p.notMeasured && !reached.includes(p)) say(`${p.id}: no row in ${benchPath}, so not recorded`)
   return reached.map(p => {
     const c = bench.cases?.[p.id]
     const check = checks[p.id] ?? 'not checked'

@@ -18,13 +18,15 @@
       "name": "the fixture in the Benchmarks Game's shape",
       "local": "bench/heldout/fixture/clbg",
       "interface": "clbg",
-      "about": "Four programs written for the tests: harmonic prints with console.log, bitmap writes a PBM image's bytes with process.stdout.write, roots prints a sum that is wrong under jz ((-Infinity) ** 0.5 is NaN there, Infinity in JavaScript), cores requires Node's os module; each <n>_out is the program's output under node at n.",
-      "checks": [{"path":"100_out","blob":"7a1aa75ece8edb644f663ab093b6c57426ea3298","size":24},{"path":"16_out","blob":"eb78de0c51bb82c5e367e3cb3fbf98507ef7e4f1","size":41},{"path":"10_out","blob":"3c62151db76baeeb488b10313071a0f0162b342d","size":9},{"path":"12_out","blob":"32f7b3bb1b5c3b26051d12c9c66f637df52410aa","size":5}],
+      "about": "Six programs written for the tests: harmonic prints with console.log, bitmap writes a PBM image's bytes with process.stdout.write, roots prints a sum that is wrong under jz ((-Infinity) ** 0.5 is NaN there, Infinity in JavaScript), cores requires Node's os module, sloppy assigns names it never declares and forks spreads its work over processes, the last two marked notMeasured as a program of a set the lane cannot run is; each <n>_out is the program's output under node, run as a script, at n.",
+      "checks": [{"path":"100_out","blob":"7a1aa75ece8edb644f663ab093b6c57426ea3298","size":24},{"path":"16_out","blob":"eb78de0c51bb82c5e367e3cb3fbf98507ef7e4f1","size":41},{"path":"10_out","blob":"3c62151db76baeeb488b10313071a0f0162b342d","size":9},{"path":"12_out","blob":"32f7b3bb1b5c3b26051d12c9c66f637df52410aa","size":5},{"path":"24_out","blob":"49e223b9a5dbf5cb2edc3806b8f24845edf2353e","size":7},{"path":"20_out","blob":"425151f3a411f5e088d7753e7c8d016303b1b9d1","size":3}],
       "programs": [
         {"id":"fx-clbg-harmonic","path":"harmonic.node","blob":"98d1a66f5931a6a89df2a07edcb3c3a1a7acc114","size":357,"arg":400000,"check":{"arg":100,"path":"100_out"},"registered":"2026-11-15"},
         {"id":"fx-clbg-bitmap","path":"bitmap.node","blob":"a9485872ee885ddddbe755af4eb1a35d33e3985b","size":453,"arg":512,"check":{"arg":16,"path":"16_out"},"registered":"2026-11-15"},
         {"id":"fx-clbg-roots","path":"roots.node","blob":"efa2404c4fdb057a9d29f2293c0e184c68b4c6d0","size":367,"arg":1000,"check":{"arg":10,"path":"10_out"},"registered":"2026-11-15"},
-        {"id":"fx-clbg-cores","path":"cores.node","blob":"bc21c9f748768bbea952a2dc1789ae53a01cfd33","size":354,"arg":100000,"check":{"arg":12,"path":"12_out"},"registered":"2026-11-15"}
+        {"id":"fx-clbg-cores","path":"cores.node","blob":"bc21c9f748768bbea952a2dc1789ae53a01cfd33","size":354,"arg":100000,"check":{"arg":12,"path":"12_out"},"registered":"2026-11-15"},
+        {"id":"fx-clbg-sloppy","path":"sloppy.node","blob":"32645dd377c79d636dd87595714dc7910464dff1","size":431,"arg":100000,"check":{"arg":24,"path":"24_out"},"registered":"2026-11-15","notMeasured":"a script of sloppy mode: it assigns n and show, names it never declares, which a script makes globals of and the driver, an ES module and so strict, refuses with a ReferenceError"},
+        {"id":"fx-clbg-forks","path":"forks.node","blob":"4dc4fcbd98d00bb54f7023d547f15f16995b6d3c","size":520,"arg":100000,"check":{"arg":20,"path":"20_out"},"registered":"2026-11-15","notMeasured":"it forks a worker of the running script (cluster) and prints what the worker sends back, where a lane runs one program in one process"}
       ]
     }
   ]

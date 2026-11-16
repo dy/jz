@@ -1,0 +1,17 @@
+/* Fixture program in the Benchmarks Game's shape (ours) that spreads its work over
+   processes: the primary forks a worker of the running script (cluster), the worker
+   sends its sum back and the primary prints it. */
+const cluster = require('cluster');
+const n = +process.argv[2];
+
+if (cluster.isPrimary) {
+  const worker = cluster.fork();
+  worker.on('message', function (s) {
+    console.log(s);
+    worker.kill();
+  });
+} else {
+  let s = 0;
+  for (let i = 0; i < n; i++) s += i % 5;
+  process.send(String(s));
+}

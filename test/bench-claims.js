@@ -805,11 +805,13 @@ test('heldout: the manifest pins every program of each set, how it is run and ho
       ok(/^[0-9a-f]{40}$/.test(p.blob) && p.path, `${p.id}: pinned by its blob id`)
       ok(set.interface === 'awfy' ? Number.isInteger(p.inner)
         : set.interface === 'clbg' ? p.arg != null && set.checks.some(c => c.path === p.check?.path) : false, `${p.id}: how it is run and checked`)
+      if ('notMeasured' in p) ok(typeof p.notMeasured === 'string' && p.notMeasured.trim().length > 0, `${p.id}: marked not measured, and why`)
     }
   }
   const about = HELDOUT.about.join(' ')
   ok(about.includes('needs new programs registered for it'), 'the header says a release that quotes the lane needs new programs')
   ok(about.includes('What no test can hold, the owner keeps'), 'and names the rule no test can hold')
+  ok(about.includes('notMeasured'), 'and what a program marked not measured is')
 })
 
 const heldoutCli = (...args) => spawnSync(process.execPath, [join(ROOT, 'scripts/heldout.mjs'), ...args],
@@ -826,7 +828,30 @@ test('heldout: drivers made from each set\'s interface pass V8\'s check, and a f
     const index = made('src', 'cases')
     is(index.programs.filter(p => p.driver).length, programCount(FIXTURE_MANIFEST), 'a driver for every program')
     const check = heldoutCli('check', join(dir, 'cases'), join(dir, 'src'), M)
-    is(check.status, 0, `V8 runs every driver and passes each set's check:\n${check.stdout}${check.stderr}`)
+    is(check.status, 0, `V8 runs every driver and passes each set's check, but the programs marked not measured:\n${check.stdout}${check.stderr}`)
+    // the two marked so (sloppy, forks): V8 runs each as a script, not through the harness
+    const line = id => check.stdout.split('\n').find(l => l.includes(` ${id}: `)) ?? ''
+    ok(line('fx-clbg-sloppy').startsWith('out  ') && line('fx-clbg-sloppy').includes('V8 did not run it: ReferenceError: n is not defined'),
+      `a sloppy script, its driver an ES module, throws, and the line says what V8 threw: ${line('fx-clbg-sloppy')}`)
+    ok(line('fx-clbg-forks').startsWith('out  ') && line('fx-clbg-forks').includes('V8 did not run its check: TypeError'),
+      `a program that forks a worker of the running script does not run in the check: ${line('fx-clbg-forks')}`)
+    ok(check.stdout.includes('6 of 8 programs pass their check in V8; 2 not measured (marked notMeasured, and failing in V8)'), 'and the totals count them')
+    // bench.mjs, which a contact runs over the drivers, takes none of a program marked not measured
+    const cases = spawnSync(process.execPath, [join(ROOT, 'bench/bench.mjs'), '--list'], { cwd: ROOT, encoding: 'utf8', timeout: 120_000, env: { ...process.env, JZ_BENCH_CASES_DIR: join(dir, 'cases') } })
+    const measured = FIXTURE_MANIFEST.sets.flatMap(s => s.programs).filter(p => !p.notMeasured).map(p => p.id)
+    is(cases.stdout.trim().split('\n').sort().join(), measured.sort().join(), `bench.mjs takes every other program and neither marked one:\n${cases.stdout}${cases.stderr}`)
+    // a mark taken out fails the dry check, and so does one on a program that passes
+    const marks = JSON.parse(readFileSync(join(ROOT, FIXTURE), 'utf8'))
+    const clbg = marks.sets.find(s => s.id === 'fx-clbg').programs
+    delete clbg.find(p => p.id === 'fx-clbg-sloppy').notMeasured
+    clbg.find(p => p.id === 'fx-clbg-harmonic').notMeasured = 'marked by this test'
+    writeFileSync(join(dir, 'marks.json'), JSON.stringify(marks))
+    const Mk = `--manifest=${join(dir, 'marks.json')}`
+    is(heldoutCli('generate', join(dir, 'src'), join(dir, 'cases-marks'), Mk, '--sets=fx-clbg').status, 0, 'the drivers of the marks moved')
+    const moved = heldoutCli('check', join(dir, 'cases-marks'), join(dir, 'src'), Mk, '--sets=fx-clbg')
+    is(moved.status, 1, `a dry check with a mark taken out or misplaced fails:\n${moved.stdout}`)
+    ok(moved.stdout.includes('FAIL fx-clbg-sloppy: V8 did not run it'), 'a program V8 does not run through the harness, unmarked, fails it')
+    ok(moved.stdout.includes('FAIL fx-clbg-harmonic: passes in V8') && moved.stdout.includes('the mark no longer holds'), 'and a marked program that passes fails it: a mark ends with its reason')
     is(made('src2', 'cases2').programs.map(p => p.driver).join(), index.programs.map(p => p.driver).join(), 'the same pinned files make the same drivers wherever they are made')
     const driver = readFileSync(join(dir, 'cases/fx-clbg-bitmap/fx-clbg-bitmap.js'), 'utf8')
     ok(/\nimport \{[^}]+\} from '\.\.\/_lib\/benchlib\.js'\n/.test(driver) && /\nexport \{ run as main \}\n$/.test(driver), 'a driver is a case as bench.mjs takes one')
@@ -845,7 +870,7 @@ test('heldout: drivers made from each set\'s interface pass V8\'s check, and a f
 // V8 measured, paired; porf-native and jsc stand-in failures of their own kinds): the
 // AWFY-shaped programs do not compile under jz (esbuild's CommonJS wrapper, `summary: no
 // fixpoint`), nor does cores (Node's own modules), roots is wrong under jz, harmonic and
-// bitmap run.
+// bitmap run. sloppy and forks are marked not measured: no lane runs them.
 const FIXTURE_RUN = (() => {
   const fail = (reason, stage) => ({ status: 'fail', reason, ...(stage && { stage }) })
   const noFixpoint = fail('summary: no fixpoint\n    at solve (src/summary/solve.js)', 'build')
@@ -859,7 +884,7 @@ const FIXTURE_RUN = (() => {
     'fx-clbg-roots': { jz: { medianUs: 11, parity: 'DIFF' }, 'jz-exact': { medianUs: 11, parity: 'DIFF' }, v8: { medianUs: 23, parity: 'ok' } },
   }
 })()
-const fixtureEntries = () => FIXTURE_MANIFEST.sets.flatMap(set => set.programs.map(p => ({
+const fixtureEntries = () => FIXTURE_MANIFEST.sets.flatMap(set => set.programs.filter(p => !p.notMeasured).map(p => ({
   program: p.id, set: set.id,
   source: { repo: `local:${set.local}`, commit: null, path: p.path, blob: p.blob, sha256: 'e'.repeat(64) },
   files: {}, driver: 'd'.repeat(64), compiler: 'c'.repeat(40), registered: 'c'.repeat(40), contact: 'first',
@@ -917,18 +942,22 @@ test('heldout: the record job appends each run to main\'s record, chained, and l
     // one run's evidence, as the measuring job uploads it
     const cases = join(dir, 'run/cases'), bench = join(dir, 'run/bench.json')
     mkdirSync(cases, { recursive: true })
+    // (a program marked not measured has a driver for the check and no case: bench.mjs has no row of it)
     const programs = FIXTURE_MANIFEST.sets.flatMap(set => set.programs.map(p => ({ id: p.id, set: set.id, interface: set.interface, path: p.path, blob: p.blob,
-      sha256: 'e'.repeat(64), source: { repo: `local:${set.local}`, commit: null }, files: {}, driver: 'd'.repeat(64) })))
+      sha256: 'e'.repeat(64), ...(p.notMeasured && { notMeasured: p.notMeasured }), source: { repo: `local:${set.local}`, commit: null }, files: {}, driver: 'd'.repeat(64) })))
+    const measured = programs.filter(p => !p.notMeasured)
     writeFileSync(join(cases, 'index.json'), JSON.stringify({ manifest: FIXTURE, esbuild: '0.28.2', programs }))
-    writeFileSync(join(cases, 'check.json'), JSON.stringify(Object.fromEntries(programs.map(p => [p.id, 'ok']))))
-    writeFileSync(bench, JSON.stringify({ meta: { commit: registered.slice(0, 9), date: '2026-11-15 05:00 UTC', host: { platform: 'linux', arch: 'x64', cpu: 'fixture' }, versions: { node: 'v24.11.1', jz: '1.0.3' } },
-      cases: Object.fromEntries(programs.map(p => [p.id, { ref: 1, targets: FIXTURE_RUN[p.id] }])) }))
+    writeFileSync(join(cases, 'check.json'), JSON.stringify(Object.fromEntries(programs.map(p => [p.id, p.notMeasured ? `not measured: ${p.notMeasured}` : 'ok']))))
+    const benchOf = ps => JSON.stringify({ meta: { commit: registered.slice(0, 9), date: '2026-11-15 05:00 UTC', host: { platform: 'linux', arch: 'x64', cpu: 'fixture' }, versions: { node: 'v24.11.1', jz: '1.0.3' } },
+      cases: Object.fromEntries(ps.map(p => [p.id, { ref: 1, targets: FIXTURE_RUN[p.id] ?? {} }])) })
+    writeFileSync(bench, benchOf(measured))
     const publish = () => spawnSync(process.execPath, [join(work, 'scripts/heldout.mjs'), 'record', cases, bench, `--manifest=${FIXTURE}`, '--publish'], { cwd: work, encoding: 'utf8', env })
     const onMain = () => JSON.parse(execFileSync('git', ['--git-dir', origin, 'show', 'main:bench/heldout.json'], { encoding: 'utf8' })).entries
     const r = publish()
     is(r.status, 0, r.stdout + r.stderr)
     const first = onMain()
-    is(first.length, programCount(FIXTURE_MANIFEST), 'an entry a program')
+    is(first.map(e => e.program).join(), measured.map(p => p.id).join(), 'an entry a program measured, none of a program marked not measured')
+    ok(r.stdout.includes('fx-clbg-sloppy: registered, not measured: a script of sloppy mode') && r.stdout.includes('fx-clbg-forks: registered, not measured: it forks'), `which the run names, with why:\n${r.stdout}`)
     ok(first.every(e => e.contact === 'first' && e.registered === registered && e.compiler === registered), 'each a first contact of the compiler it was registered under')
     is(chainProblems(first).join('\n'), '', 'chained')
     ok(!existsSync(join(work, 'bench/heldout.json')) && git(work, 'rev-parse', 'HEAD') === registered, 'the checkout stays as it was')
@@ -937,6 +966,16 @@ test('heldout: the record job appends each run to main\'s record, chained, and l
     const both = onMain()
     ok(both.length === 2 * first.length && both.slice(first.length).every(e => e.contact === 'tuned'), 'a program run again is stored beside its first contact, as tuned')
     is([...chainProblems(both), ...contactProblems(both)].join('\n'), '', 'and the record holds')
+    // a run with a row of a program marked not measured is recorded not at all
+    const leaked = join(dir, 'run/leaked.json'), local = join(dir, 'local.json')
+    writeFileSync(leaked, benchOf(programs))
+    const refused = spawnSync(process.execPath, [join(work, 'scripts/heldout.mjs'), 'record', cases, leaked, `--manifest=${FIXTURE}`, `--record=${local}`], { cwd: work, encoding: 'utf8', env })
+    ok(refused.status !== 0 && refused.stderr.includes('measured it, where the manifest marks it notMeasured') && !existsSync(local), `a bench row of a program marked not measured stops the record:\n${refused.stderr}`)
+    // a contact refuses a program registered before a compiler change, but none marked not measured
+    add(['src/ast.js'], 'a compiler change')
+    const stale = spawnSync(process.execPath, [join(work, 'scripts/heldout.mjs'), 'registered', cases, `--manifest=${FIXTURE}`], { cwd: work, encoding: 'utf8', env })
+    is(stale.status, 1, stale.stdout + stale.stderr)
+    ok(measured.every(p => stale.stdout.includes(`refused: ${p.id}:`)) && !/refused: fx-clbg-(sloppy|forks)/.test(stale.stdout), `every program measured is refused, no program marked not measured:\n${stale.stdout}`)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -979,13 +1018,15 @@ test('heldout: the lane\'s figures count every program of a set, failures in the
   const entries = appendEntries([], fixtureEntries())
   const fig = heldoutFigures({ entries }, FIXTURE_MANIFEST)
   is(fig['heldout-fx-awfy-runs'], '0 of 2', 'neither AWFY-shaped program compiles under jz')
-  is(fig['heldout-fx-clbg-runs'], '2 of 4', 'roots is wrong under jz and cores does not compile: counted, not left out')
-  is(fig['heldout-runs'], '2 of 6', 'every set together')
-  ok(/^\d+\.\d\d× over 2 of 4$/.test(fig['heldout-fx-clbg-v8']), `V8's time over jz's, over the programs both run right, of every program: ${fig['heldout-fx-clbg-v8']}`)
-  is(heldoutFigures({ entries: entries.slice(1) }, FIXTURE_MANIFEST)['heldout-runs'], 'unmeasured (5 of 6 run)', 'a set not run whole is unmeasured')
+  is(fig['heldout-fx-clbg-runs'], '2 of 6 (2 not measured)', 'roots is wrong under jz and cores does not compile: counted, not left out; sloppy and forks, marked not measured, counted and named')
+  is(fig['heldout-runs'], '2 of 8 (2 not measured)', 'every set together')
+  ok(/^\d+\.\d\d× over 2 of 6$/.test(fig['heldout-fx-clbg-v8']), `V8's time over jz's, over the programs both run right, of every program: ${fig['heldout-fx-clbg-v8']}`)
+  is(heldoutFigures({ entries: entries.slice(1) }, FIXTURE_MANIFEST)['heldout-runs'], 'unmeasured (5 of 8 run, 2 not measured)', 'a set not run whole is unmeasured')
   is(heldoutFigures({ entries: [] }, FIXTURE_MANIFEST)['heldout-runs'], 'unmeasured', 'and with no record, the lane')
   const tuned = appendEntries(entries, [{ ...fixtureEntries()[0], contact: 'tuned', rows: fixtureEntries()[2].rows }])
-  is(heldoutFigures({ entries: tuned }, FIXTURE_MANIFEST)['heldout-runs'], '2 of 6', 'a tuned measurement moves no figure')
+  is(heldoutFigures({ entries: tuned }, FIXTURE_MANIFEST)['heldout-runs'], '2 of 8 (2 not measured)', 'a tuned measurement moves no figure')
+  const contacted = appendEntries(entries, [{ ...fixtureEntries()[2], program: 'fx-clbg-sloppy' }])
+  is(heldoutFigures({ entries: contacted }, FIXTURE_MANIFEST)['heldout-fx-clbg-runs'], '3 of 6 (1 not measured)', 'a first contact counts, marked or not: a mark holds out only a program never measured')
   // a doc's figure for the lane is the record's (scripts/bench-readme.mjs --check)
   const dir = mkdtempSync(join(tmpdir(), 'jz-heldout-fig-'))
   try {
@@ -996,9 +1037,11 @@ test('heldout: the lane\'s figures count every program of a set, failures in the
       return spawnSync(process.execPath, [join(ROOT, 'scripts/bench-readme.mjs'), '--check'], { cwd: ROOT, encoding: 'utf8',
         env: { ...process.env, JZ_BENCH_README: doc, JZ_FIG_DOCS: '', JZ_HELDOUT_RECORD: record, JZ_HELDOUT_MANIFEST: join(ROOT, FIXTURE) } })
     }
-    const right = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 4<!-- /fig --> of them.\n')
+    const right = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 6 (2 not measured)<!-- /fig --> of them.\n')
     is(right.status, 0, `the record's figure stands:\n${right.stdout}${right.stderr}`)
-    const dropped = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 3<!-- /fig --> of them.\n')
-    ok(dropped.status === 1 && dropped.stderr.includes('heldout-fx-clbg-runs reads 2 of 3'), 'a figure that leaves a failure out of its denominator fails')
+    const dropped = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 5 (2 not measured)<!-- /fig --> of them.\n')
+    ok(dropped.status === 1 && dropped.stderr.includes('heldout-fx-clbg-runs reads 2 of 5'), 'a figure that leaves a failure out of its denominator fails')
+    const unmarked = docs('jz runs <!-- fig:heldout-fx-clbg-runs -->2 of 4<!-- /fig --> of them.\n')
+    ok(unmarked.status === 1 && unmarked.stderr.includes('heldout-fx-clbg-runs reads 2 of 4'), 'and so does one that leaves out the programs not measured')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

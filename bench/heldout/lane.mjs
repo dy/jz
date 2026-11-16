@@ -148,21 +148,25 @@ const jzOverV8 = e => e.paired?.['jz/v8']?.median ?? e.rows.jz.medianUs / e.rows
 /** The lane's figures from first contacts alone, every program of a set in the denominator:
  *  `<set>-runs` the programs jz at 'speed' runs correctly, `<set>-exact-runs` the same of
  *  jz-exact, `<set>-v8` V8's time over jz's (a geomean over the programs both run
- *  correctly), each set alone and every set together. A set not yet run whole is unmeasured. */
+ *  correctly), each set alone and every set together. A program the manifest marks
+ *  notMeasured, with no first contact, stays in the denominator and is named beside it.
+ *  A set is unmeasured until every program but those has a first contact. */
 export const heldoutFigures = (record, manifest) => {
   const firsts = new Map((record?.entries ?? []).filter(e => e.contact === 'first').map(e => [e.program, e]))
   const fig = {}
   const figuresOf = (key, programs) => {
     const run = programs.filter(p => firsts.has(p.id)).length, n = programs.length
-    if (run < n) {
-      const v = run ? `unmeasured (${run} of ${n} run)` : 'unmeasured'
+    const out = programs.filter(p => p.notMeasured && !firsts.has(p.id)).length
+    if (run + out < n) {
+      const v = run ? `unmeasured (${run} of ${n} run${out ? `, ${out} not measured` : ''})` : 'unmeasured'
       for (const k of ['runs', 'exact-runs', 'v8']) fig[`${key}-${k}`] = v
       return
     }
-    const es = programs.map(p => firsts.get(p.id))
+    const es = programs.filter(p => firsts.has(p.id)).map(p => firsts.get(p.id))
     const okOf = lane => es.filter(e => e.rows[lane]?.result === 'ok')
-    fig[`${key}-runs`] = `${okOf('jz').length} of ${n}`
-    fig[`${key}-exact-runs`] = `${okOf('jz-exact').length} of ${n}`
+    const not = out ? ` (${out} not measured)` : ''
+    fig[`${key}-runs`] = `${okOf('jz').length} of ${n}${not}`
+    fig[`${key}-exact-runs`] = `${okOf('jz-exact').length} of ${n}${not}`
     const both = okOf('jz').filter(e => e.rows.v8?.result === 'ok')
     fig[`${key}-v8`] = both.length ? `${geomean(both.map(e => 1 / jzOverV8(e))).toFixed(2)}× over ${both.length} of ${n}` : `none of ${n}`
   }
