@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile as compileWat } from 'watr'
-import { CFLAGS, codegen, declareV128, PROVIDED, sysroot, toolchain, wasm2native } from '../scripts/native/compile.mjs'
+import { CFLAGS, codegen, declareV128, outPath, PROVIDED, sysroot, toolchain, wasm2native } from '../scripts/native/compile.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const POST = join(ROOT, 'scripts/native/postprocess-watr.awk')
@@ -279,6 +279,28 @@ test('native executable: an internal function returning a v128 among several val
   wasm2native(wasm, bin, { dir, tools: NATIVE })
   const r = spawnSync(bin, { encoding: 'utf8' })
   is(r.status, 0, `the struct-returned v128 carries its lanes: ${r.stderr}`)
+}))
+
+// discussion #120: `-o ./out`, a directory, built everything and failed in the linker
+// (`cannot open output file ./out: Is a directory`).
+test('native executable: an output that names a directory holds the executable under the input\'s name', () => scratchDir('out', dir => {
+  mkdirSync(join(dir, 'bin'))
+  is(outPath(join(dir, 'host.mjs')), join(dir, 'host'), 'no -o: beside the input, its extension dropped')
+  is(outPath(join(dir, 'host.wasm'), join(dir, 'h')), join(dir, 'h'), 'a file name stays')
+  is(outPath(join(dir, 'host.js'), join(dir, 'bin')), join(dir, 'bin', 'host'), 'a directory that exists')
+  is(outPath(join(dir, 'host.wasm'), join(dir, 'new') + '/'), join(dir, 'new', 'host'), 'a trailing separator')
+  is(outPath(join(dir, 'bin.js')), join(dir, 'bin', 'bin'), 'no -o, a directory of the input\'s name')
+}))
+
+test('native executable: built into a directory, one that exists and one to make', { skip: !!NATIVE.error }, () => scratchDir('outdir', dir => {
+  const js = join(dir, 'hi.mjs')
+  writeFileSync(js, `console.log('hi')\n`)
+  mkdirSync(join(dir, 'bin'))
+  for (const out of [join(dir, 'bin'), join(dir, 'made', 'deep') + '/']) {
+    const r = spawnSync(process.execPath, [COMPILE, js, '-o', out], { encoding: 'utf8' })
+    is(r.status, 0, r.stderr)
+    is(execFileSync(join(out, 'hi'), { encoding: 'utf8' }), 'hi\n', `-o ${out.slice(dir.length + 1)} runs`)
+  }
 }))
 
 test('native executable: a CC carrying arguments, and a C failure blamed on no tail call', { skip: !!NATIVE.error }, () => scratchDir('cc', dir => {

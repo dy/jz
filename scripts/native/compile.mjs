@@ -15,7 +15,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -197,7 +197,19 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess = POS
 
 // jz options that take a value, so the value is not mistaken for the input.
 const VALUED = new Set(['-O', '-D', '--define', '--memory'])
-const USAGE = 'usage: node scripts/native/compile.mjs <program.js | program.wasm> [-o out] [jz options]'
+const USAGE = 'usage: node scripts/native/compile.mjs <program.js | program.wasm> [-o out | dir/] [jz options]'
+
+/**
+ * Where the executable goes: beside the input, its extension dropped, with no `-o`; and where
+ * that or `-o` names a directory (one that exists, or spelled with a trailing separator), in
+ * it under the input's name, as `go build -o` reads one. The linker's own answer to a
+ * directory came after the whole build: `cannot open output file ./out: Is a directory`.
+ */
+export const outPath = (input, out) => {
+  const stem = input.replace(/\.[cm]?js$|\.wasm$/, '')
+  out ??= stem
+  return /[\\/]$/.test(out) || statSync(out, { throwIfNoEntry: false })?.isDirectory() ? join(out, basename(stem)) : out
+}
 
 function cli(args) {
   let input, out
@@ -214,10 +226,12 @@ function cli(args) {
   if (!input) throw Error(USAGE)
   const isWasm = input.endsWith('.wasm')
   if (isWasm && jz.length) throw Error(`jz options (${jz.join(' ')}) apply to a .js input, not ${input}`)
-  out ??= input.replace(/\.[cm]?js$|\.wasm$/, '')
+  out = outPath(input, out)
   if (resolve(out) === resolve(input)) throw Error(`name the executable with -o: it would overwrite ${input}`)
   const tools = toolchain()
   if (tools.error) throw Error(tools.error)
+  // `-o bin/host` creates bin/, as `jz host.js -o dist/host.wasm` creates dist/.
+  mkdirSync(dirname(resolve(out)), { recursive: true })
 
   const dir = mkdtempSync(join(tmpdir(), 'jz-native-'))
   const drop = () => rmSync(dir, { recursive: true, force: true })

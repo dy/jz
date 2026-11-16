@@ -2,8 +2,8 @@
 
 /** jz CLI — compile a JavaScript file to WebAssembly. */
 
-import { writeFileSync, mkdirSync } from 'fs'
-import { resolve, dirname, basename, relative, isAbsolute } from 'path'
+import { writeFileSync, mkdirSync, statSync } from 'fs'
+import { resolve, dirname, basename, join, relative, isAbsolute } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { compileInternal } from './src/compiler.js'
@@ -28,7 +28,7 @@ Examples:
   jz kernel.js --why            # report what the optimizer declined
 
 Options:
-  -o, --output <file>       Output path: .wasm, .wat, or - for stdout
+  -o, --output <file>       Output path: .wasm, .wat, a directory, or - for stdout
   -O0 | -O2 | -O3 | -Os     Optimization: none, balanced (the default), speed, size
   -O <json>                 Optimize object, e.g. -O '{"level":"speed","simd":false}'
   -D, --define <K=V>        Compile-time constant (JSON value or string); repeatable
@@ -120,7 +120,10 @@ function main() {
     else throw new Error(`unexpected argument '${a}' — jz compiles one entry file`)
   }
   if (!inputFile) throw new Error('No input file specified — usage: jz <file.js> (jz --help for options)')
-  if (!outputFile) outputFile = inputFile.replace(/\.[cm]?js$/, '') + (wat ? '.wat' : '.wasm')
+  const named = inputFile.replace(/\.[cm]?js$/, '') + (wat ? '.wat' : '.wasm')
+  // `-o dist/` or `-o <a directory>` says where the file goes: it takes the input's name there.
+  if (!outputFile) outputFile = named
+  else if (outputFile !== '-' && (/[\\/]$/.test(outputFile) || statSync(outputFile, { throwIfNoEntry: false })?.isDirectory())) outputFile = join(outputFile, basename(named))
   if (outputFile.endsWith('.wat')) wat = true
   else if (wat && outputFile.endsWith('.wasm')) throw new Error(`--wat writes text: name the output .wat, not ${outputFile}`)
   if (sourceMap && (wat || outputFile === '-')) throw new Error('--source-map writes the map beside a .wasm file: it takes neither --wat, a .wat output nor -o -')

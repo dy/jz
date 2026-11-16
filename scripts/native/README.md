@@ -10,6 +10,7 @@ WASI Preview 1 shim for exactly the imports jz emits (`fd_read`, `fd_write`,
 
 ```bash
 node scripts/native/compile.mjs host.js -o host     # jz options may follow: -O3, -D K=V, --no-simd
+node scripts/native/compile.mjs host.js -o bin/     # a directory: bin/host
 
 jz host.js --host wasi -o host.wasm                 # or a module you already built
 node scripts/native/compile.mjs host.wasm -o host

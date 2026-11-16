@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { execFileSync, spawnSync } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync, existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
@@ -351,6 +351,17 @@ test('cli: refuses an output it would write wrong', () => {
     const { status, stderr } = cliFail(input, '--source-map', ...args)
     is(status, 1, args.join(' ')); ok(/--source-map writes the map beside a \.wasm file/.test(stderr), stderr)
   }
+})
+
+test('cli: an output that names a directory takes the input\'s name there', () => {
+  const input = join(tmp, 'into.js'), dir = join(tmp, 'into-dir'), made = join(tmp, 'into-made')
+  writeFileSync(input, 'export let f = () => 1')
+  mkdirSync(dir)
+  ok(cli(input, '-o', dir).includes(join(dir, 'into.wasm')), 'a directory that exists, named in the report')
+  ok(WebAssembly.validate(readFileSync(join(dir, 'into.wasm'))), 'the module is in it')
+  cli(input, '--wat', '-o', made + '/')
+  ok(readFileSync(join(made, 'into.wat'), 'utf8').startsWith('(module'), 'a trailing separator: the directory made, --wat names the text')
+  rmSync(dir, { recursive: true }); rmSync(made, { recursive: true }); unlinkSync(input)
 })
 
 test('cli: a warning prints as file:line:col: warning[code]: message', () => {
