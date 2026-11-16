@@ -765,10 +765,10 @@ export default (ctx) => {
     const body = [['local.set', `$${t}`, asF64(emit(target))]]
     body.push(...assignTargetGuard(target, t))
     body.push(['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
-    // Each copied value runs before logging its destination field. Only a
-    // heap value needs an undo record; numeric fields keep their mutations.
+    // Each copied value runs before logging its destination field. Only a value
+    // that is no number needs an undo record; numeric fields keep their mutations.
     const field = temp('av'), fieldGet = ['local.get', `$${field}`]
-    if (hasDurableReset()) inc('__durable_obj_snap', '__is_eph_bits')
+    if (hasDurableReset()) inc('__durable_obj_snap')
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i]
       const sSchema = resolveSchemas[i]

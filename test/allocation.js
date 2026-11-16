@@ -172,6 +172,8 @@ test('allocation: empty collection iteration needs no snapshot storage', () => {
     function choose(mode) { return mode === 0 ? s : mode === 1 ? m : a }
     function visit(mode) { for (const value of choose(mode)) out.add(value) }
     export function probe(mode, count) {
+      // (the round's first clear of a Set made at start saves its table for the reset, once)
+      out.clear()
       const start = __heap_mark()
       for (let i = 0; i < count; i++) { visit(mode); out.clear() }
       return __heap_mark() - start

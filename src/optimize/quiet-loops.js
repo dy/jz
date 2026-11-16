@@ -54,7 +54,7 @@ const ALLOCATORS = new Set(['$__alloc', '$__alloc_hdr', '$__alloc_hdr_n'])
 // per container. No compaction or release could give that back: a loop that
 // allocates nothing else carries neither (a loop whose stores are in bounds
 // saves its arrays once ahead of itself, emit/control-flow.js).
-const LOGS = new Set(['$__durable_arr_snap', '$__durable_obj_snap'])
+const LOGS = new Set(['$__durable_arr_snap', '$__durable_obj_snap', '$__durable_tbl_snap'])
 const HANDLERS = new Set(['try', 'try_table', 'catch', 'catch_all', 'catch_ref', 'catch_all_ref', 'delegate'])
 const INDIRECT = new Set(['call_indirect', 'call_ref', 'return_call_indirect', 'return_call_ref'])
 const DIRECT = new Set(['call', 'return_call'])

@@ -28,7 +28,7 @@ import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, declGlobal, PTR, LAYOUT } from '../../src/ctx.js'
 import { UNDEF_NAN, TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, arrBaseWat } from '../../layout.js'
-import { seenCellWat } from '../collection/durable.js'
+import { seenCellWat, noNumberWat } from '../collection/durable.js'
 
 export const registerDurableLog = () => {
   // Durable relocation log — see collection.js's durableFwdLogIR for the full
@@ -189,6 +189,34 @@ export const registerDurableLog = () => {
     (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $at) (i32.shl (local.get $n) (i32.const 3)))
     (global.set $__durable_arr_log (local.get $rec)))`
   }
+  // A Map's or a Set's table (module/collection/ordered.js), saved whole at the
+  // round's first mutation as an array is: its header and its block of `bytes`
+  // (entries, buckets and the appended count) in the array's record, which the
+  // heal copies back. A set, an add, a delete, a clear and a growth's forward are
+  // then all undone by one record, where the entries' own logs (an insertion
+  // tombstoned at the reset, a value replaced by undefined) left a delete, a
+  // clear and a store of a number or of a string of the static data or inline
+  // in the round. The table's bit marks it saved.
+  ctx.core.stdlib['__durable_tbl_snap'] = `(func $__durable_tbl_snap (param $off i32) (param $bytes i32)
+    (local $cell i32) (local $bit i32) (local $n i32) (local $rec i32)
+    (if (i32.eqz (global.get $__durable_arr_seen))
+      (then
+        (local.set $n (i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1)))
+        (global.set $__durable_arr_seen (call $__alloc (local.get $n)))
+        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $n))))
+    (local.set $cell (i32.add (global.get $__durable_arr_seen) ${seenCellWat('(local.get $off)')}))
+    (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
+    (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
+    (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
+    ;; the header's word and the block's, to the 8 bytes the allocation rounds it to
+    (local.set $n (i32.shr_u (i32.add (local.get $bytes) (i32.const 15)) (i32.const 3)))
+    (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $n) (i32.const 3)))))
+    (i32.store (local.get $rec) (global.get $__durable_arr_log))
+    (i32.store offset=4 (local.get $rec) (i32.sub (local.get $off) (i32.const 8)))
+    (i32.store offset=8 (local.get $rec) (local.get $n))
+    (i32.store offset=12 (local.get $rec) (i32.const 0))
+    (memory.copy (i32.add (local.get $rec) (i32.const 16)) (i32.sub (local.get $off) (i32.const 8)) (i32.shl (local.get $n) (i32.const 3)))
+    (global.set $__durable_arr_log (local.get $rec)))`
   // An object field's undo record shares the array log and address bitmap.
   // Only a store of an ephemeral pointer needs one. Recording that field,
   // rather than scanning the whole object, never interprets a neighboring
@@ -230,13 +258,14 @@ export const registerDurableLog = () => {
       (local.set $len (i32.load offset=8 (local.get $rec)))
       (if (i32.and (local.get $off) (i32.const 1))
         (then${ctx.core.includes.has('__durable_obj_snap') ? `
-          ;; an object field: restore its saved value only while it names the round's memory
+          ;; an object field: restore its saved value while it holds no number (a number it keeps)
           (local.set $off (i32.and (local.get $off) (i32.const -2)))
           (local.set $i (i32.shl (i32.load offset=12 (local.get $rec)) (i32.const 3)))
           (block $slots (loop $slot
             (br_if $slots (i32.eqz (local.get $i)))
             (local.set $i (i32.sub (local.get $i) (i32.const 8)))
-            (if (call $__is_eph_bits (i64.load (i32.add (local.get $off) (local.get $i))))
+            (local.set $was (i64.load (i32.add (local.get $off) (local.get $i))))
+            (if ${noNumberWat('(local.get $was)')}
               (then
                 (local.set $was (i64.load (i32.add (i32.add (local.get $rec) (i32.const 16)) (local.get $i))))
                 (i64.store (i32.add (local.get $off) (local.get $i))

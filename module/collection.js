@@ -109,7 +109,7 @@ export const dynPropsFilterSetIR = (offExpr) =>
 const dynPropsFilterMissIR = (offExpr) =>
   `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
 
-import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode, durableObjSnapIR } from './collection/durable.js'
+import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode, durableObjSnapIR, durableTblSnapIR } from './collection/durable.js'
 // Re-exported from their new home (module/collection/durable.js — the
 // durable-heap logging primitives, pure-moved out of this file) so
 // module/core.js's/module/json.js's `heapResetWat` imports, module/core.js's
@@ -299,6 +299,10 @@ export default (ctx) => {
   // self-compile's auto-scan would otherwise drop these helpers and every
   // kernel-compiled `.delete()` would trap.
   const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
+  // A Set's or a Map's table, saved whole for the reset at its round's first write (collection/ordered.js)
+  const tblSnapDeps = () => needsDurableFwdLog() ? ['__durable_tbl_snap'] : []
+  // the holder's stub a growth retargets, whose words the relocation log keeps (collection/ordered.js genOrdUpsert)
+  const holderDeps = () => needsDurableFwdLog() && !lean ? ['__durable_fwd_log'] : []
   // A Set's or Map's insertion: the key's hash and equality, the one-hop
   // forward, the cold rebuild, the host's store for an external receiver, and
   // the durable logs of a growth (its stub, the holder's stub) and of an entry.
@@ -306,10 +310,9 @@ export default (ctx) => {
   const probeDeps = (k = '') => lean ? [k === 'b' ? '__ord_probe_b' : k === 's' ? '__ord_probe_s' : '__ord_probe'] : []
   const insertDeps = () => lean ? ['__ord_insert', '__ord_full'] : []
   const ordUpsertDeps = () => [...probeDeps(), ...insertDeps(), '__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd', '__ord_grow',
-    ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()]
-  // A delete tombstones its entry where it stands: no entry moves, so only a
-  // pending log of the entry itself is cancelled.
-  const ordDeleteDeps = () => [...probeDeps(), '__map_hash', '__same_value_zero', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_slot_cancel'] : [])]
+    ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...holderDeps(), ...tblSnapDeps()]
+  // A delete tombstones its entry where it stands.
+  const ordDeleteDeps = () => [...probeDeps(), '__map_hash', '__same_value_zero', '__ptr_offset_fwd', ...tblSnapDeps()]
   // A program that builds an object literal with an accessor resolves a
   // computed key through a layout's view as well (__view_find below).
   const viewDeps = (...names) => viewsOn() ? ['__view_find', ...names] : []
@@ -384,9 +387,9 @@ export default (ctx) => {
     __map_slot: () => ordUpsertDeps(),
     __coll_step: ['__ptr_offset_fwd', '__coll_seek'],
     __ord_grow: ['__ord_rebuild', '__ord_live', '__ord_index', '__table_check', '__memgrow'],
-    __map_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
-    __set_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
-    __map_put_at: () => ['__map_set', '__ptr_offset_fwd', ...slotLogDeps()],
+    __map_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd', ...tblSnapDeps()],
+    __set_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd', ...tblSnapDeps()],
+    __map_put_at: () => ['__map_set', '__ptr_offset_fwd'],
     __slot_heal: ['__ptr_offset_fwd'],
     __set_put_at: () => ['__set_add', '__ptr_offset_fwd', ...slotLogDeps()],
     __ord_rebuild: ['__alloc_hdr_n', '__ord_live', '__ord_index'],
@@ -432,7 +435,7 @@ export default (ctx) => {
     __str_u32_idx: ['__str_length'],
     __typed_str_idx: ['__str_length'],
     __typed_key_idx: ['__typed_str_idx', '__key_eq', '__to_num', '__ftoa', '__str_length', '__char_at'],
-    __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
+    __coll_clear: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', ...tblSnapDeps()],
   })
 
   inc('__ptr_offset', '__ptr_offset_fwd', '__cap')
@@ -828,15 +831,16 @@ export default (ctx) => {
   // the length header. A Set's block is 12 bytes a bucket, a Map's 16
   // (collection/ordered.js ordStride): `(t == MAP) << 2` adds the difference.
   // Returns undefined; a non-collection arg is a guarded no-op.
-  ctx.core.stdlib['__coll_clear'] = `(func $__coll_clear (param $coll i64) (result f64)
-    (local $off i32) (local $cap i32) (local $t i32)
+  ctx.core.stdlib['__coll_clear'] = () => `(func $__coll_clear (param $coll i64) (result f64)
+    (local $off i32) (local $cap i32) (local $t i32) (local $n i32)
     (local.set $t (call $__ptr_type (local.get $coll)))
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
       (then
         (local.set $off (call $__ptr_offset (local.get $coll)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-        (memory.fill (local.get $off) (i32.const 0)
-          ${ordBytesWat('(local.get $cap)', `(select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))`)})
+        (local.set $n ${ordBytesWat('(local.get $cap)', `(select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))`)})
+        ${durableTblSnapIR('off', '(local.get $n)')}
+        (memory.fill (local.get $off) (i32.const 0) (local.get $n))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
 
@@ -1496,7 +1500,7 @@ export default (ctx) => {
   ctx.core.stdlib['__ord_full'] = genOrdFull
   deps({
     __ord_probe: ['__same_value_zero'], __ord_probe_b: ['__eq_bits'], __ord_probe_s: ['__eq_str'],
-    __ord_full: () => ['__ord_grow', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...(sitesOn() ? ['__gc_stub', '__mkptr'] : [])],
+    __ord_full: () => ['__ord_grow', ...(sitesOn() ? ['__gc_stub', '__mkptr'] : [])],
   })
   ctx.core.stdlib['__hash_bits'] = genHashBits
   ctx.core.stdlib['__hash_str'] = genHashStr
@@ -1510,9 +1514,8 @@ export default (ctx) => {
     const keyDeps = (...generic) => k === '' ? generic : k === 's' ? ['__str_hash', '__str_eq', ...(lean ? ['__hash_str', '__eq_str'] : [])] : lean ? ['__hash_bits', '__eq_bits'] : []
     const reg = (name, gen, d) => { ctx.core.stdlib[name + sfx] = () => gen(name + sfx); deps({ [name + sfx]: d }) }
     const lookupDeps = () => [...probeDeps(k), ...keyDeps('__map_hash', '__same_value_zero'), '__ptr_offset', '__ptr_offset_fwd']
-    const upsertDeps = () => [...probeDeps(k), ...insertDeps(), ...keyDeps('__map_hash', ...pinDeps(), '__same_value_zero'), '__ptr_offset_fwd', '__ord_grow',
-      ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()]
-    const deleteDeps = () => [...probeDeps(k), ...keyDeps('__map_hash', '__same_value_zero'), '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_slot_cancel'] : [])]
+    const upsertDeps = () => [...probeDeps(k), ...insertDeps(), ...keyDeps('__map_hash', ...pinDeps(), '__same_value_zero'), '__ptr_offset_fwd', '__ord_grow', ...holderDeps(), ...tblSnapDeps()]
+    const deleteDeps = () => [...probeDeps(k), ...keyDeps('__map_hash', '__same_value_zero'), '__ptr_offset_fwd', ...tblSnapDeps()]
     reg('__map_get', n => genOrdLookup(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, UNDEF_NAN, form), lookupDeps)
     reg('__map_has', n => genOrdLookup(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, false, UNDEF_NAN, form), lookupDeps)
     reg('__set_has', n => genOrdLookup(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, false, UNDEF_NAN, form), lookupDeps)

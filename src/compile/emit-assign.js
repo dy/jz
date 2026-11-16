@@ -50,16 +50,17 @@ import { markElem, markField } from '../ir/mem-alias.js'
 // module/*.js consumer imports the same `storedValue` this file does, instead
 // of hand-reimplementing the unsound `carrierF64(node, emit(node))` half.
 
-// Updating an existing object's tagged slot may install a pointer into this
-// round's arena. Save durable slots before that first store; numeric and raw
-// BigInt carriers name no allocation and must never be interpreted as tags.
+// Updating an existing object's tagged slot may install a value the reset must
+// take back: a pointer into this round's arena, a string, an atom. Save durable
+// slots before that first store; a number the field keeps (README, Memory), and
+// raw BigInt carriers must never be interpreted as tags.
 function storeObjectField(base, slot, value, source, sid = null, receiver = null) {
   const kind = valTypeOf(source)
-  if (!hasDurableReset() || typeof receiver === 'string' && ctx.func.freshObjects?.has(receiver) || kind === VAL.NUMBER || kind === VAL.BOOL ||
+  if (!hasDurableReset() || typeof receiver === 'string' && ctx.func.freshObjects?.has(receiver) || kind === VAL.NUMBER ||
       sid != null && ctx.schema.slotRawBigint.get(sid)?.has(slot))
     return markField(ctx.abi.object.ops.store(base, slot, value), receiver, slot)
   const off = tempI32('ob')
-  inc('__durable_obj_snap', '__is_eph_bits')
+  inc('__durable_obj_snap')
   return ['block', ['local.set', `$${off}`, base],
     durableObjSnapNode(off, value, slot),
     markField(ctx.abi.object.ops.store(['local.get', `$${off}`], slot, value), receiver, slot)]

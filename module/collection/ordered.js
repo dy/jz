@@ -7,8 +7,8 @@
  * last word counts the entries appended. A bucket holds its entry's index
  * plus one under the top six bits of the entry's hash (0 is an empty bucket),
  * so a probe reads an entry only where those bits agree. A delete leaves the
- * entry where it stands, its key the tombstone (TOMB_NAN, which a reset's heal
- * also writes). The speed tier closes the bucket's gap by backward shift, so
+ * entry where it stands, its key the tombstone (TOMB_NAN). The speed tier
+ * closes the bucket's gap by backward shift, so
  * a probe of a churned table ends where its live keys do; the size tier
  * leaves the bucket pointing at the tombstone, which matches no key (the
  * buckets filled never outnumber the entries appended). Enumeration walks
@@ -34,6 +34,13 @@
  * host's decoder reads entries until it has the table's size, so it needs
  * no geometry.
  *
+ * A table the module made as it started is saved whole before its round's
+ * first write (collection/durable.js durableTblSnapIR, core/durable-log.js
+ * `__durable_tbl_snap`): a found key's value, a slot handed out for one, an
+ * insertion, a delete's tombstone, a clear, the find of a statement that may
+ * store. The reset copies the block back, its header (a growth's forward)
+ * with it, so it reads as it started.
+ *
  * @module collection/ordered
  */
 
@@ -41,7 +48,7 @@ import { TOMB_NAN, UNDEF_NAN, numberNanIR } from '../../src/ir.js'
 import print from 'watr/print'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, ordStride as ordStrideAt, ordEntries as ordEntriesAt } from '../../layout.js'
-import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, hasDurableReset, heapResetWat } from './durable.js'
+import { durableLenLogIR, durableTblSnapIR, hasDurableReset, heapResetWat } from './durable.js'
 import { stubLogIR, sitesOn } from '../core/stub-log.js'
 import { arrayKeysOn, keyArmsOn } from './identity.js'
 import { liveTable } from './upsert.js'
@@ -92,6 +99,10 @@ export const genOrdCap = (floor) => {
     (select (i32.const ${floor}) (local.get $c) (i32.gt_u (i32.const ${floor}) (local.get $c))))`
 }
 
+// The table at `$off` of `$cap` buckets saved for the reset before its first write of a
+// round (collection/durable.js durableTblSnapIR): a table the call made pays the compare.
+const saveTable = (es) => durableTblSnapIR('off', ordBytesWat('(local.get $cap)', `(i32.const ${es})`))
+
 const resolve = (recv) => liveTable(`(i32.wrap_i64 (i64.and (local.get ${recv}) (i64.const ${LAYOUT.OFFSET_MASK})))`)
 
 const geometry = (es) => `(local.set $ecap ${ordEntriesWat('(local.get $cap)')})
@@ -110,7 +121,7 @@ const entryOf = (w, es) => `(i32.add (local.get $off) (i32.mul (i32.sub (i32.and
 
 // The probe: from the key's home bucket to the bucket of its entry ($slot set,
 // `onHit` runs) or to the first empty bucket ($b names it, the block falls
-// through to what follows). A tombstoned entry a reset left indexed matches no key.
+// through to what follows). A tombstoned entry left indexed matches no key.
 const probe = (es, eqExpr, onHit) => `(local.set $b (i32.and (local.get $h) (local.get $m)))
     (block $miss (loop $probe
       (local.set $w (i32.load ${bucketAt('(local.get $b)')}))
@@ -259,12 +270,12 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
   if (lean()) return leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, prologue, form)
   const off = form.recv === 'off'
   const valParam = hasVal && !slotOnly ? '(param $val i64) ' : ''
-  const slotLog = hasVal && !slotOnly ? durableSlotLogIR('slot', 16, 'val') : ''
   const storeVal = slotOnly ? `\n        (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
-    : hasVal ? `\n        (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}` : ''
-  const onHit = hasVal && !slotOnly
-    ? `(i64.store offset=16 (local.get $slot) (local.get $val))${slotLog} (br $done)`
-    : '(br $done)'
+    : hasVal ? `\n        (i64.store offset=16 (local.get $slot) (local.get $val))` : ''
+  // a found key writes a Map's value, or hands its slot out for one; a Set's writes nothing
+  const onHit = hasVal && !slotOnly ? `${saveTable(es)}
+          (i64.store offset=16 (local.get $slot) (local.get $val)) (br $done)`
+    : slotOnly ? `${saveTable(es)} (br $done)` : '(br $done)'
   const miss = slotOnly ? '(i32.const 0)' : '(local.get $coll)'
   const t = typeExpr('$coll')
   const extBranch = hasVal
@@ -274,19 +285,20 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
     ? `(if (i32.ne ${t} (i32.const ${expectedType})) (then (if (i32.eq ${t} (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return ${miss})))`
     : `(if (i32.ne ${t} (i32.const ${expectedType})) (then (return ${miss})))`
   return `(func $${name} ${formParams(form)} ${valParam}${slotOnly ? '(result i32)' : off ? '' : '(result i64)'}
-    ${probeLocals}${formLocals(form)} (local $used i32) (local $size i32) (local $newptr i32) (local $o0 i32)
+    ${probeLocals}${formLocals(form)} (local $used i32) (local $newptr i32) (local $o0 i32)
     ${off ? '' : typeGuard}
     ${formResolve(form)}${prologue}
     ${formHash(form, hashFn)}
     (block $done (loop $retry
     ${geometry(es)}
     ${probe(es, formEq(form, eqExpr), onHit)}
+    ${saveTable(es)}
     (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)}))
     (if (i32.lt_u (local.get $used) (local.get $ecap))
       (then
         (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (i32.const ${es}))))
         ${seqStore()}
-        ${keyStore}${durableEntryLogIR('slot', 'off')}${storeVal}
+        ${keyStore}${storeVal}
         (i32.store ${bucketAt('(local.get $b)')}
           (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))
         (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)} (i32.add (local.get $used) (i32.const 1)))
@@ -294,12 +306,10 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
           (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
         (br $done)))
     ;; full: the live entries move to a new block, the old one forwards there
-    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newptr (call $__ord_grow (local.get $off) (local.get $cap) (i32.const ${es})))
     ;; a table that moved leaves a stub (one grown in place stands where it was)
     (if (i32.ne (local.get $newptr) (local.get $off))
       (then
-        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         ${stubLogIR('off', 'newptr', expectedType)}
@@ -373,6 +383,7 @@ export function genOrdFind(name, es, hashFn, eqExpr, prologue = '') {
   return `(func $${name} (param $coll i64) (param $key i64) (result i32)
     ${probeLocals}
     ${resolve('$coll')}${prologue}
+    ${saveTable(es)}
     ${keyHash(hashFn)}
     ${geometry(es)}
     ${probe(es, eqExpr, '(return (local.get $slot))')}
@@ -395,8 +406,8 @@ export function genOrdPutAt(name, es, hasVal, fallback) {
     (local.set $ix (i32.add (local.get $off) (i32.mul (local.get $ecap) (i32.const ${es}))))
     (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (i32.const ${es}))))
     ${seqStore()}
-    ${keyStore}${durableEntryLogIR('slot', 'off')}${hasVal ? `
-    (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}` : ''}
+    ${keyStore}${hasVal ? `
+    (i64.store offset=16 (local.get $slot) (local.get $val))` : ''}
     (i32.store (i32.add (local.get $ix) (i32.shl (local.get $b) (i32.const 2)))
       (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))
     (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)} (i32.add (local.get $used) (i32.const 1)))
@@ -408,7 +419,7 @@ export function genOrdPutAt(name, es, hasVal, fallback) {
 // it (a tombstone matches no key, and a probe passes it as it passes any
 // other key's entry; the buckets filled never outnumber the entries appended,
 // which a rebuild clears of tombstones), the table's size one less.
-const deleteTail = (es) => `${durableSlotCancelIR('slot', es)}
+const deleteTail = (es) => `${saveTable(es)}
     (i64.store offset=8 (local.get $slot) (i64.const ${TOMB_NAN}))
     (i32.store (i32.sub (local.get $off) (i32.const 8))
       (i32.sub (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
@@ -429,7 +440,7 @@ export function genOrdDelete(name, es, hashFn, eqExpr, expectedType, form = {}) 
     (block $found
       ${probe(es, formEq(form, eqExpr), '(br $found)')}
       (return (i32.const 0)))
-    ${durableSlotCancelIR('slot', es)}
+    ${saveTable(es)}
     (i64.store offset=8 (local.get $slot) (i64.const ${TOMB_NAN}))
     (local.set $j (local.get $b))
     (block $stop (loop $shift
@@ -502,12 +513,10 @@ export const genOrdInsert = () => `(func $__ord_insert (param $off i32) (param $
  *  where it moved (a stub a holder names keeps its hop, `$__ptr_offset_fwd`
  *  walks the chain); `$tag` the table's kind. */
 export const genOrdFull = () => `(func $__ord_full (param $off i32) (param $cap i32) (param $es i32) (param $tag i32) (result i32)
-    (local $size i32) (local $newptr i32)
-    ${hasDurableReset() ? '(local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))' : ''}
+    (local $newptr i32)
     (local.set $newptr (call $__ord_grow (local.get $off) (local.get $cap) (local.get $es)))
     (if (i32.ne (local.get $newptr) (local.get $off))
       (then
-        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         ${stubLogAt('off', 'newptr')}))
@@ -525,10 +534,10 @@ const leanTypeGuard = (expectedType, miss, extThen) => {
 function leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, prologue, form) {
   const off = form.recv === 'off'
   const valParam = hasVal && !slotOnly ? '(param $val i64) ' : ''
-  const slotLog = hasVal && !slotOnly ? durableSlotLogIR('slot', 16, 'val') : ''
   const storeVal = slotOnly ? `(i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
-    : hasVal ? `(i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}` : ''
-  const onHit = hasVal && !slotOnly ? `(i64.store offset=16 (local.get $slot) (local.get $val))${slotLog} (br $done)` : '(br $done)'
+    : hasVal ? `(i64.store offset=16 (local.get $slot) (local.get $val))` : ''
+  const onHit = hasVal && !slotOnly ? `${saveTable(es)} (i64.store offset=16 (local.get $slot) (local.get $val)) (br $done)`
+    : slotOnly ? `${saveTable(es)} (br $done)` : '(br $done)'
   const guard = off ? '' : leanTypeGuard(expectedType, slotOnly ? '(i32.const 0)' : '(local.get $coll)',
     !hasExt ? null : hasVal ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)' : '(then (nop))')
   return `(func $${name} ${formParams(form)} ${valParam}${slotOnly ? '(result i32)' : off ? '' : '(result i64)'}
@@ -538,9 +547,10 @@ function leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, pr
     ${formHash(form, hashFn)}
     (block $done (loop $retry
       (if (local.tee $slot ${probeCall(form, es)}) (then ${onHit}))
+      ${saveTable(es)}
       (if (local.tee $slot (call $__ord_insert (local.get $off) (local.get $cap) (local.get $h) (i32.const ${es})))
         (then
-          ${keyStoreOf(form)}${durableEntryLogIR('slot', 'off')}
+          ${keyStoreOf(form)}
           ${storeVal}
           (br $done)))
       (local.set $off (call $__ord_full (local.get $off) (local.get $cap) (i32.const ${es}) (i32.const ${expectedType})))

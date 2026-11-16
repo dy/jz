@@ -609,21 +609,9 @@ export function pullStdlib(sec) {
         inc('__durable_fwd_heal')
         resets.push(`(call $__durable_fwd_heal)`)
       }
-      // Durable ARRAY element-data heal (module/collection.js's durableArrSnapIR/
-      // durableArrSnapNode, core.js's __durable_arr_snap/__durable_arr_heal — the
-      // per-array-element sibling of the header-only fwd heal above; see either
-      // helper's doc comment for the full rationale). Same explicit-include
-      // reasoning as __durable_fwd_heal just above (its only call site is this
-      // injected text).
-      if (ctx.core.includes.has('__durable_arr_snap') || ctx.core.includes.has('__durable_obj_snap')) {
-        inc('__durable_arr_heal')
-        // an object's heal asks each slot whether it names memory of the round
-        if (ctx.core.includes.has('__durable_obj_snap')) inc('__is_eph_bits')
-        resets.push(`(call $__durable_arr_heal)`)
-      }
       // Durable SLOT heal (core.js __durable_slot_log/__durable_slot_heal — the
       // entry/value sibling of the relocation heal above): every logged durable
-      // collection slot written this round is healed (inserted entries zombied +
+      // dictionary slot written this round is healed (inserted entries zombied +
       // len decremented, overwritten values read undefined) before the arena
       // rewinds. Ordered AFTER the fwd heal: a grown-then-healed table's len must
       // already be its restored pre-grow value when the zombie decrements land.
@@ -631,6 +619,18 @@ export function pullStdlib(sec) {
       if (ctx.core.includes.has('__durable_slot_log')) {
         inc('__durable_slot_heal')
         resets.push(`(call $__durable_slot_heal)`)
+      }
+      // Durable ARRAY, TABLE and FIELD heal (module/collection/durable.js's
+      // durableArrSnapIR/durableArrSnapNode/durableTblSnapIR, core/durable-log.js's
+      // records and __durable_arr_heal), last: a record holds its words as the
+      // round found them, so it wins over a slot the value write of a fused update
+      // logged inside a Map's table too (`__slot_write`, which a dictionary shares).
+      // Same explicit-include reasoning as __durable_fwd_heal above.
+      if (ctx.core.includes.has('__durable_arr_snap') || ctx.core.includes.has('__durable_obj_snap') || ctx.core.includes.has('__durable_tbl_snap')) {
+        inc('__durable_arr_heal')
+        // an object's heal asks each saved value whether it names memory of the round
+        if (ctx.core.includes.has('__durable_obj_snap')) inc('__is_eph_bits')
+        resets.push(`(call $__durable_arr_heal)`)
       }
       // Global-snapshot restores (see the sweep above) join the same rebuilt body.
       // Order is free — restores touch only globals + the durable slab, which the

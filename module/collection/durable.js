@@ -19,7 +19,8 @@
  */
 
 import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
-import { ctx } from '../../src/ctx.js'
+import { ctx, LAYOUT } from '../../src/ctx.js'
+import { i64Hex, nanPrefixHex, nanPrefixMaskHex } from '../../layout.js'
 
 // The post-init high-water mark (see module/core.js's __heap_reset) as a WAT operand —
 // everything at/above it is EPHEMERAL (this compile's own arena, wiped by `_clear`);
@@ -135,9 +136,9 @@ export const durableLenLogIR = (base) => {
 // restores the right LENGTH but round 2 still reads round 1's leftover bytes at
 // every surviving index (.work/evidence.md's own repro: `a.splice(1,2)` on
 // `[1,2,3,4,5]` gave `3` both rounds — length healed — but the SURVIVING elements
-// differed round to round). HASH/SET/MAP don't have this gap because their entries
-// are individually addressed and durableEntryLogIR/durableSlotLogIR already log
-// each one; an array's N element cells have no such per-slot identity to hang a
+// differed round to round). A dictionary's (HASH's) entries are individually
+// addressed and durableEntryLogIR/durableSlotLogIR log each one (a Set's and a
+// Map's table is saved whole, durableTblSnapIR); an array's N element cells have no such per-slot identity to hang a
 // per-write log off without paying an idempotent-scan on EVERY store — ruinous for
 // .sort()/.reverse() (O(n) or O(n log n) swaps, each a separate write) and no
 // cheaper than the alternative below for the bulk ops (.fill/.splice/.copyWithin)
@@ -254,15 +255,23 @@ export const seenCellWat = (off) =>
 export const seenCellNode = (b) =>
   ['i32.shr_u', ['i32.sub', b, ['select', ['global.get', '$__durable_skip'], ['i32.const', 0], ['i32.ge_u', b, ['global.get', '$__durable_lo']]]], ['i32.const', 6]]
 
-// A tagged object field receives a pointer into this round's arena: record
-// its prior value once. The address bitmap is shared with array snapshots;
-// an odd record address distinguishes a field from an array header.
-// Callers pass an already evaluated value so getters and RHS effects run once.
+// A field of an object made at start receives a value that is no number (a
+// pointer into the round's arena, a string of the static data or inline, an
+// atom): record its prior value once. A number it keeps (README, Memory). The
+// address bitmap is shared with array snapshots; an odd record address
+// distinguishes a field from an array header. Callers pass an already
+// evaluated value so getters and RHS effects run once.
+const TAG_AUX = i64Hex((BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT)) | (BigInt(LAYOUT.AUX_MASK) << BigInt(LAYOUT.AUX_SHIFT)))
+/** Whether the i64 bits `b` name no number: a box whose tag or aux is set (a
+ *  numeric NaN is a box of neither, src/ir/sentinels.js numberNanIR). */
+export const noNumberWat = (b) => `(i32.and (i64.eq (i64.and ${b} (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()})) (i64.ne (i64.and ${b} (i64.const ${TAG_AUX})) (i64.const 0)))`
+const noNumberNode = (b) => ['i32.and', ['i64.eq', ['i64.and', b, ['i64.const', nanPrefixMaskHex()]], ['i64.const', nanPrefixHex()]],
+  ['i64.ne', ['i64.and', b, ['i64.const', TAG_AUX]], ['i64.const', 0]]]
 export const durableObjSnapIR = (base, val, slot) => {
   if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
-      (then (if (call $__is_eph_bits (local.get $${val}))
+      (then (if ${noNumberWat(`(local.get $${val})`)}
         (then (call $__durable_obj_snap (i32.add (local.get $${base}) (i32.shl (local.get $${slot}) (i32.const 3))))))))`
 }
 export const durableObjSnapNode = (base, value, slot) => {
@@ -270,8 +279,19 @@ export const durableObjSnapNode = (base, value, slot) => {
   const b = ['local.get', `$${base}`]
   const addr = slot === 0 ? b : ['i32.add', b, ['i32.const', slot * 8]]
   return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
-    ['then', ['if', ['call', '$__is_eph_bits', ['i64.reinterpret_f64', value]],
+    ['then', ['if', noNumberNode(['i64.reinterpret_f64', value]),
       ['then', ['call', '$__durable_obj_snap', addr]]]]]
+}
+
+// A Map's or a Set's table (module/collection/ordered.js) at `off` of `bytes`
+// is saved whole at the round's first mutation (core/durable-log.js
+// `__durable_tbl_snap`): a table the call made pays this compare, one saved
+// this round the call and its bit's test.
+export const durableTblSnapIR = (off, bytes) => {
+  if (!hasDurableReset()) return ''
+  return `
+    (if (i32.lt_u (local.get $${off}) ${heapResetWat()})
+      (then (call $__durable_tbl_snap (local.get $${off}) ${bytes})))`
 }
 
 // Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a

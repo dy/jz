@@ -67,7 +67,7 @@ const generate = (seed, count) => {
 }
 
 // A program's own names, numbered.
-const OWN = /\b(b|o|h|m\d|n|at)\b/g
+const OWN = /\b(b|o|h|m\d|n|at|t|code)\b/g
 const reads = (j) => [[`n_${j}`, []], ...Array.from({ length: READ }, (_, i) => [`at_${j}`, [i]])]
 
 // A seed's programs as one module on one instance: each round, every program's calls, every
@@ -176,3 +176,71 @@ ${READS('G2')}`, [['m0'], ['m1'], ['m0', 'm1']]],
 ]
 for (const [name, text, rounds = [['m0'], ['m0', 'm0']]] of FIXED)
   test(`reset population: ${name}`, () => population(name, [{ j: 0, text, rounds }]))
+
+// The same generator pointed at a Map, a Set and an object made at start: keys and values of
+// the static data, strings the call makes (short enough to be held inline, or on the heap) and
+// arrays it makes; a set of a new and of a present key, a fused update (`set(k, get(k))`, `if
+// (!has(k)) set(k, v)`), a delete of a present and of a missing key, a clear, a growth past the
+// table; an object's field given a string, an array, a boolean or a new key (a field that
+// holds a number keeps it, README). A delete, a clear and a store of a number or of a string
+// that names no memory of the round outlived the reset in 1.0.3 too (246 of 360 programs and
+// levels of a Map differed): a Map's or a Set's table is now saved whole at its round's first
+// write (module/core/durable-log.js `__durable_tbl_snap`), and an object's field record taken
+// for any value that is no number. A Map's, a Set's and an object's reads walk them in order.
+// Before (e521f93b8) the Maps' seeds differed in 398 and 388 reads, the Sets' in 349 and 187, the
+// objects' in 363 and 312; with the table's save taken out the Maps and a Set never answer in
+// 30 s and the other Set differs in 366; with the field record back to pointers alone the
+// objects differ in 351 and 294 (2026-11-16, levels 1, 2 and size).
+const generateTables = (seed, count, target) => {
+  let state = (seed * 7919 + target.length) >>> 0 || 1
+  const rnd = () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296 }
+  const pick = (a) => a[Math.floor(rnd() * a.length)]
+  const int = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1))
+  const one = (j) => {
+    const size = pick([0, 1, 2, 4, 7]), holder = pick(['bind', 'bind', 'field'])
+    const keys = Array.from({ length: size }, (_, i) => i % 3 === 2 ? String(i) : `'${String.fromCharCode(112 + i)}'`)
+    const vals = Array.from({ length: size }, (_, i) => i % 2 ? String(11 + i) : `'${String.fromCharCode(97 + i)}${i}'`)
+    // a value: a number or a string of the static data, a string or an array the call makes
+    const v = () => pick(['8', '-3', `'x'`, `'yz'`, `'w' + (t++)`, `'a string made in the call, long enough for the heap ' + (t++)`, '[t++, 1]', 'true'])
+    // (a field the object has from its literal holds a string: one given a number keeps it)
+    const vo = () => pick([`'x'`, `'yz'`, `'w' + (t++)`, `'a string made in the call, long enough for the heap ' + (t++)`, '[t++, 1]', 'true'])
+    const k = () => pick([`'p'`, `'q'`, `'r'`, `'s'`, `'kz'`, '3', '4'])
+    const made = target === 'map' ? `new Map([${keys.map((key, i) => `[${key}, ${vals[i]}]`).join(', ')}])`
+      : target === 'set' ? `new Set([${vals.join(', ')}])`
+      : `{ ${keys.map((key, i) => `${/^\d/.test(key) ? `[${key}]` : key.slice(1, -1)}: ${i % 2 ? `'${String.fromCharCode(97 + i)}'` : vals[i]}`).join(', ')} }`
+    const decl = holder === 'bind' ? `const b = ${made}` : `const o = { k: 1, a: ${made} }`
+    const P = holder === 'bind' ? 'b' : 'o.a'
+    const MUT = target === 'map' ? [`${P}.set(${k()}, ${v()})`, `${P}.set('p', ${v()})`, `${P}.delete(${k()})`, `${P}.delete('p')`, `${P}.clear()`,
+        `for (let i = 0; i < 9; i++) ${P}.set(i * 7, ${v()})`, `${P}.set(${P}.size, ${v()})`, `${P}.delete('q'); ${P}.set('q', ${v()})`,
+        `${P}.set('p', ${P}.get('q'))`, `if (!${P}.has(${k()})) ${P}.set(${k()}, ${v()})`]
+      : target === 'set' ? [`${P}.add(${v()})`, `${P}.add('a0')`, `${P}.delete(${v()})`, `${P}.delete(11 + 1)`, `${P}.delete('a0')`, `${P}.clear()`,
+        `for (let i = 0; i < 9; i++) ${P}.add(i * 7)`, `${P}.add(${P}.size)`, `if (!${P}.has('c2')) ${P}.add('c2')`]
+      : [`${P}.p = ${vo()}`, `${P}.q = ${vo()}`, `${P}.zz = ${v()}`, `${P}[3] = ${v()}`, `${P}.p = ${P}.q`]
+    const read = target === 'map' ? `let c = 0; for (const [k, v] of ${P}) { if (c++ === i) return code(k) * 1000 + code(v) } return -1`
+      : target === 'set' ? `let c = 0; for (const v of ${P}) { if (c++ === i) return code(v) } return -1`
+      : `const ks = Object.keys(${P}); return i < ks.length ? code(ks[i]) * 1000 + code(${P}[ks[i]]) : -1`
+    const nm = int(2, 3), muts = []
+    for (let i = 0; i < nm; i++) muts.push(Array.from({ length: int(1, 4) }, () => pick(MUT)).join('; '))
+    // (the start gives an object no key its literal lacks: a dictionary's entries keep their own logs,
+    // and one the start added, overwritten in a round, does not read as it started; listed apart)
+    const start = rnd() >= 0.3 ? '' : target !== 'obj' ? pick(MUT) : size >= 2 ? pick([`${P}.p = ${vo()}`, `${P}.q = ${vo()}`]) : ''
+    const text = ['let t = 0', decl, start,
+      ...muts.map((body, i) => `export let m${i} = () => { ${body}; return 0 }`),
+      `export let n = () => ${target === 'obj' ? `Object.keys(${P}).length` : `${P}.size`}`,
+      `const code = (v) => typeof v === 'string' ? 100 + v.length * 7 + v.charCodeAt(0) : typeof v === 'number' ? v : Array.isArray(v) ? 500 + v.length : v === true ? 700 : -2`,
+      `export let at = (i) => { ${read} }`].filter(Boolean).join('\n')
+    const rounds = Array.from({ length: int(2, 3) }, () => Array.from({ length: int(1, 3) }, () => `m${int(0, nm - 1)}`))
+    return { j, text, rounds }
+  }
+  return Array.from({ length: count }, (_, j) => one(j))
+}
+for (const target of ['map', 'set', 'obj']) for (const seed of [1, 2])
+  test(`reset population: seed ${seed}, 60 ${target === 'obj' ? 'objects' : target === 'map' ? 'Maps' : 'Sets'} made at start, read after each reset as a fresh instance reads them`,
+    () => population(`${target} seed ${seed}`, generateTables(seed, 60, target)))
+// (a string the call makes short enough to be held inline names no memory: the entries' own
+// value log let it stay past the reset)
+test('reset population: a short string a call makes, stored into a Map made at start', () => population('inline string', [{ j: 0, rounds: [['m0'], ['m0', 'm0']], text: `let t = 0
+const b = new Map([['p', 'start'], ['q', 7]])
+export let m0 = () => { b.set('p', 'w' + (t++)); b.set('q', 'v' + t); return 0 }
+export let n = () => b.size
+export let at = (i) => { let c = 0; for (const [k, v] of b) { if (c++ === i) return typeof v === 'string' ? v.length * 1000 + v.charCodeAt(v.length - 1) : v } return -1 }` }]))

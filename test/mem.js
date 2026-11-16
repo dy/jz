@@ -827,11 +827,12 @@ test('durable slot log reuses repeated writes and cancelled entries before _clea
   }
 })
 
-// The reset's logs grow with the round: a value written into each of thousands
-// of entries of a Map built at init (one pending heal each), and hundreds of
-// collections built at init each grown into new storage (one relocation
-// record each), pass the logs' first buffers (1024 heals, 256 relocations)
-// and still heal, where the first buffer's end trapped.
+// The reset's log grows with the round: a value written into each of thousands
+// of entries of a Map built at init, and hundreds of collections built at init
+// each grown into new storage, one record each (a table saved whole at its
+// round's first write, module/core/durable-log.js `__durable_tbl_snap`), where
+// the entries' own logs' first buffers (1024 heals, 256 relocations) trapped
+// at their end. The values read as they started.
 test('durable logs grow past their first buffers before _clear', () => {
   const source = `
     const cache = new Map(), maps = []
@@ -854,7 +855,7 @@ test('durable logs grow past their first buffers before _clear', () => {
       is(e.sizes(), 6000, 'every grown collection holds its entries')
       memory.reset()
       is(e.size(), 3000, 'the reset keeps every entry made at init')
-      is(e.value(5), -1, 'a value the round wrote reads undefined after the reset')
+      is(e.value(5), 5, 'a value the round wrote reads as it started after the reset')
       is(e.value(2500), 2500, 'a value the round left keeps its init value')
       is(e.sizes(), 0, 'the grown collections return to their init storage')
     }
