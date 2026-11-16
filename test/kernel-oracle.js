@@ -450,12 +450,9 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // syntax; `b.jz` (imported second) is the ONLY module with bigint syntax anywhere
 // in the program.
 //
-// BANKED, not fixed — pinned precisely (exact corrupted value, both native AND
-// kernel legs, both optimize tiers) so a future close of either (a) or (b)
-// flips this test's asserted values from the corrupted carrier to `want` in one
-// edit. BigInt retirement Slice 1: STRUCTURALLY IMPOSSIBLE now, not merely
-// re-pinned — same class as test/data.js's audit-#11 P0-1 deletion the design
-// itself calls out. `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a
+// BigInt retirement Slice 1: STRUCTURALLY IMPOSSIBLE now, not merely re-pinned
+// — same class as test/data.js's audit-#11 P0-1 deletion the design itself
+// calls out. `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a
 // heterogeneous array literal carrying a BigInt element into element storage
 // whose kind this program never proves uniform — exactly the "collection" flow
 // class §4's table names. With an unprovable BigInt array element refused at
@@ -503,11 +500,6 @@ export let f = (s) => g(s) === false`
   }
 })
 
-// Both legs then hit the decl-STORAGE WALL directly (previous paragraph):
-// `v`'s own storage is the raw carrier, `return v` is a bare name with no
-// expression shape for hasAmbiguousBoolMerge to see, so both compilers return
-// the raw 0/number where JS returns the coerced-false atom — agreeing with
-// EACH OTHER, disagreeing with the oracle.
 test('kernel oracle: ambiguous BOOL|NUMBER local storage keeps its identity through a capturing closure', () => {
   if (onWasi()) return
   const rows = [

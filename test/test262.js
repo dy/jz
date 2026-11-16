@@ -1025,12 +1025,6 @@ const EXPECTED_FAIL_PREFIXES = [
 //                spec corner); flagged honestly rather than guessed into
 //                either acceptable bucket.
 const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed this commit] '
-//  - function/S13_A15_T4.js: `return typeof arguments; var arguments = X;`
-//    — jzify/arguments.js's lowerArguments renamed EVERY `arguments`
-//    reference in a body containing `var arguments = X` to an independent
-//    fresh variable (defaulting to undefined) the moment the declaration
-//    existed anywhere, even textually after the point spec requires the REAL
-//    Arguments object to still be visible.
 const EXPECTED_FAIL_FILES = new Map([
 ])
 function expectedFailReason(rel) {

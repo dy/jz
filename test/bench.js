@@ -452,24 +452,12 @@ const WASM_TODO = {
   glyfparse: "jz at parity with c-wasm (0.998× per-round ratio, 16 alternating rounds at load 11; 1.122× before). Not the bounds checks: dropping every stream and flagBuf check by hand measured no change. The versioned coordinate loops accumulate in i32 (compile/twin-locals.js: the checked twin writes locals of its own), and the flag loop's `rep` stays a word (the census admits uses a missing element and zero answer alike). A hand-hinted scratch variant with the same fast code measured ~0.96× c-wasm: quiet paired evidence decides the lead.",
   noise:    "jz ~1.66 ms vs rust-wasm ~1.45 ms (1.13×; it led at 84af634, 0.90×). The per-octave op census matches rust within a few ops; the ToInt32 guards and the perm bounds checks measured no cost (dropped by hand, no change), and unrolling the four octaves measured 3.6% slower than the loop, so a small-constant unroll now stops at 1000 body nodes. SLP stays disproven (the four corners need different per-lane inputs; a hand-vectorized perlin ran 65% slower). The residual is V8-codegen-level.",
   fft:      'dual-IV SIMD butterfly is structurally present and usually leads, but the latest loaded frontier measured jz 1.51ms vs rust-wasm 1.43ms (1.060×), just outside the hard 5% band. Keep visible until repeated loaded evidence or a general SIMD scheduling improvement closes it.',
-  // tokenizer: WON. Param string decomposition makes both SSO/heap arms
-  // trap-safe, then unswitches the representation once outside each leaf scan;
-  // five repeated frontiers put jz at 43–48µs vs AS 51–55µs.
-  // fft: the general map strips the dual-counter radix-2 inner loop 2-wide: adjacent
-  // re/im a/b pairs as v128, strided twiddles as scalar-pair+combine, rotation lanes with no
-  // reassociation/fusion ⇒ checksum-identical (the parity contract held through SIMD).
-  // 8% over scalar, ahead of rust-wasm; provenance rode the same recognizer for -32%.
   raytrace: 'repeated same-engine runs put jz at ~1.14–1.24ms vs rust-wasm ~0.97–1.00ms. The hot sphere loop is scalar in both outputs; the remaining gap is the previously verified scheduling/invariant-hoist class. Unsafe scratch renaming and benchmark-specific source hoists remain rejected.',
   nqueens:  'NO jz codegen fix: solve() is already optimal i32 (clean tail recursion, 0 f64, tight bitmask loop). Gap is LLVM/rustc interprocedural recursion opts (tail-duplication/inlining) jz does not do.',
-  // mat4: WON. The "no jz vectorizer or peephole closes it" verdict here was WRONG — it missed
-  // that rust`s winning 0-SIMD form hoists the OUTER-loop-invariant partial products out of the
-  // n-loop (only a[0],a[5],b[0],b[5] mutate, so most of each a[r]·b[c] dot is constant). jz now
-  // does the same (hoistReductionInvariantsIn, speed tier): 2068→1079µs, beats rust-wasm 1.5×.
   qoi:      'amortized cursor bounds, call-free pure boolean chains, and branch-loop unrolling cut jz from ~10.5ms to ~7.6–9.4ms. Rust-wasm is ~7.5–8.1ms and still crosses the 5% band in loaded runs. Typed checks are gone; the remaining broad class is branch-heavy scalar scheduling/code shape under V8 wasm.',
   sort:     "heapsort sift-down, 1.0–1.09× zig-wasm paired (0.76× rust, 0.93× c). Two lowering defects, both fixed: watr's ifset folded the child pick `if (child+1 < n && a[child] < a[child+1]) child++` into a select over a branchy condition, which V8 runs 35% slower than the branch (ifset now keeps branchy conditions); and the sift reloaded a[i]/a[child] after the compare (load CSE now survives an exit-only if). The residual is the dependent-load chain.",
   dict:     'open-addressing linear-probe hash table — AS leads ~1.09×. NOT a narrowing leak: the hot insert/probe/lookup loop is verified clean i32 (0 trunc_sat / 0 f64.convert / 0 reinterpret in $runKernel; the 2 f64.const-nan are discarded void-insert returns, the module f64 is all in benchlib). Same scalar-codegen-race class as qoi — the probe loop`s branch/bounds quality, no jz-side narrowing fix.',
   shapes:   'megamorphic shape scan — the closed heterogeneous-record representation LANDED end to end: byte-stride packed raw-i32 union records (20 B at stride 5, no pad cell), guard-free discriminant-refined reads, carrier-specialized raw-i32 clones ($measure$union takes (param i32), zero unbox). Focused alternated pairs put jz ≈1.10–1.15× AS, stable; op census ≤ AS and every A/B lever is exhausted (inline beats call, 20 B ≈ 24 B). The residual ~0.8 cy/record is V8-codegen-level (regalloc/scheduling of the fused loop) — next lever is machine-code profiling (Instruments/xctrace or a V8 debug build), not a representation change.',
-  // radixsort: within the hard 5% frontier band.
 }
 // Three DISTINCT verdicts per case (the audit's strict-lead/band/red split —
 // a 1.04× row is a statistical TIE inside microbench jitter, not a "lead"):
