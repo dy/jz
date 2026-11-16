@@ -440,8 +440,10 @@ export const registerIterRelease = () => {
 }
 
 /** Whether the program keeps properties in the runtime's table by address
- *  (module/collection.js): `__dyn_set` alone writes it. */
-const keyedProps = () => ctx.scope.globals.has('__dyn_props') && ctx.core.includes.has('__dyn_set') && ctx.core.stdlib['__ihash_get_local'] != null
+ *  (module/collection.js): `__dyn_set_own` alone writes it, called by `__dyn_set`
+ *  and directly (an array's store under a Number, `__arr_set_num`; a store of
+ *  an unproven receiver, `__arr_typed_obj_set_idx_tail`). */
+const keyedProps = () => ctx.scope.globals.has('__dyn_props') && (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) && ctx.core.stdlib['__ihash_get_local'] != null
 
 /** What each kernel of the walk calls. */
 export const REACH_DEPS = {
