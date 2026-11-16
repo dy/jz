@@ -17,7 +17,7 @@
       "entered": 581
     },
     "buf": {
-      "total": 30033,
+      "total": 30083,
       "entered": 2390
     },
     "nest": {
@@ -33,7 +33,7 @@
       "entered": 4720
     },
     "condref": {
-      "total": 190035,
+      "total": 190435,
       "entered": 4001
     },
     "fgather": {
@@ -59,7 +59,7 @@
       "entered": 581
     },
     "buf": {
-      "total": 23878,
+      "total": 23928,
       "entered": 2390
     },
     "nest": {
@@ -75,7 +75,7 @@
       "entered": 4720
     },
     "condref": {
-      "total": 140795,
+      "total": 141195,
       "entered": 4001
     },
     "fgather": {
