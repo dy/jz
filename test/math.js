@@ -799,6 +799,8 @@ test('unsigned right shift - division of high-bit value', async () => {
   is(await evaluate('((-335544320 | 0) >>> 0) / 4294967296'), 3959422976 / 4294967296)
 })
 
+// Math.hypot n-ary (test262 builtins gate, 2026-07-10)
+
 test('Math: hypot arities (const-fold and runtime agree)', () => {
   is(run(`export let f = () => Math.hypot()`).f(), 0)
   is(run(`export let f = () => 1 / Math.hypot(0)`).f(), Infinity)

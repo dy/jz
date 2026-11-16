@@ -550,6 +550,7 @@ test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param ki
     for (const optimize of levels(false, true)) is(jz(src2, { optimize }).exports.f(), 42)
 })
 
+// test262 negative-parse residual closures (fix/parser-residuals)
 // Each rejects() pins a family the accepted-negative ledger (test262-neg-
 // accepts.json) used to carry; each is paired with a positive twin proving
 // the nearby VALID construct still compiles — the exact-set ledger's own

@@ -1785,6 +1785,7 @@ test('.indexOf / .includes: typed honor fromIndex (was ignored)', () => {
   is(inc(), 0)     // 3 is at index 0, excluded by fromIndex 1
 })
 
+// TypedArray ES2023 immutable methods: toReversed / toSorted / with
 // All return a fresh typed array (receiver unchanged); were unimplemented (threw).
 
 test('.toReversed: reversed copy, original untouched', () => {

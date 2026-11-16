@@ -431,6 +431,7 @@ test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', (
   // exact (emitted as f64.const, not parsed).
 })
 
+// parseInt/parseFloat spec edges (test262 builtins gate, 2026-07-10)
 // parseInt: StrWhiteSpace is UTF-8-decoded __skipws (NBSP/LS/PS/Zs — was ASCII-
 // only), invalid radix (≠0 and outside 2..36 after ToInt32) is NaN before any
 // input inspection, and a number input takes ToString like any other value —

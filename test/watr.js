@@ -10,11 +10,9 @@ const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
-// This file compiles watr's REAL bundled source through jz (not a self-compiled
-// kernel — a native, in-process compile, same mechanism), so it hits those same
-// sites. The boxed carrier is the unconditional representation (the CARRIER_BOX
-// flag and its env toggle were deleted); a caller wanting the strict raw-i64
-// diagnostic uses JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
+// The boxed carrier is the unconditional representation (the CARRIER_BOX flag and
+// its env toggle were deleted); a caller wanting the strict raw-i64 diagnostic uses
+// JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
 const withRawCarrier = (fn) => fn()
 
 const ENTRY_MODULES = {
@@ -385,6 +383,7 @@ function f64Value(wat) {
   return dv.getFloat64(0, true)
 }
 
+// Bug 1: f64 hex integer literal > 53 bits loses precision (const.wast)
 // f64.parse accumulates hex integers from LSD→MSD so small contributions are
 // preserved before the final large+small addition. Exact value: 2^97+2^44+1
 // → correctly rounds to 2^97+2^45 (mantissa=1).
@@ -442,6 +441,7 @@ test('watr-regression: ref_test_null_data returns 2', () => {
   is(exports.ref_test_null_data(2), 2)
 })
 
+// Bug 4: v128.const i64x2 encodes as f64 (simd const / simd i64x2)
 // jz-compiled watr treats i64x2 lane values as f64 instead of i64,
 // producing wrong bytes for large values like 0xffffffffffffffff.
 test('watr-regression: v128.const i64x2 encodes correctly', () => {

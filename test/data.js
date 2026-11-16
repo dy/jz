@@ -2857,6 +2857,7 @@ test('hash lane: churn (from-pairs, delete-shift, grow, clear, dict) matches hos
   is(typeof got === 'bigint' ? memory.read(got) : got, host)
 })
 
+// ToNumber discipline for undefined through compound assignment
 // UNDEF is a quiet-NaN payload; raw f64.add propagates it to the boundary where
 // it decodes back as `undefined` (JS: NaN). compoundAssign routes both operands
 // through toNumF64; the plain-array inline checked read tags checkedNumRead so

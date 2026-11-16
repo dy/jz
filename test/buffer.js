@@ -970,6 +970,8 @@ test('new TypedArray(typedArray) COPIES — mutations do not alias (spec %TypedA
   is(Number(r.exports.default(r.memory.Float64Array([1, 2]))), 1, 'host-marshaled source (runtime dispatch): copies')
 })
 
+// Element conversion: ES ToIntN wrap (SetValueInBuffer), not saturate/trap
+
 test('typed construction wraps out-of-range values like ES ToIntN', () => {
   // Three construction paths store integer elements: the array-literal fill
   // (was: asI32 saturation — 4e9 clamped to INT32_MAX), the .from copy loop and

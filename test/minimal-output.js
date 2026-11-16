@@ -207,6 +207,7 @@ for (const [name, src] of Object.entries(STATIC_TEMPLATES)) {
   })
 }
 
+// Flat-object typed slots specialize — no polymorphic ToNumber/string battery
 // A non-escaping object literal is SRoA'd into scalar locals, and a write-once slot
 // carries its initializer's value-type (kind.js `VT['.']`). So arithmetic on a numeric
 // slot — `p.x * 2`, `p.x * p.y` — stays a plain f64 op, never the ToNumber + ftoa +
@@ -388,6 +389,7 @@ test('minimal: typed-array reads skip the forwarding follow', () => {
   is(jz(src).exports.f(2), 240, 'typed array still computes correctly')  // 2*sum(0..15) = 2*120
 })
 
+// Numeric Array(n) loops skip ToNumber / string formatting
 // Numeric cells carry Number-or-undefined reads: holes become NaN in arithmetic.
 // Pin the direct numeric loop paths, not the cold helpers' mere presence.
 const NUMERIC_FILL = {
@@ -459,6 +461,7 @@ test('minimal: numeric Array(n) narrowing stays sound under non-numeric use', ()
   is(jz('export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=i; a[0]="hi"; return a[0]+a[1]}').exports.f(3), 'hi1', 'mixed string write disqualifies narrowing')
 })
 
+// Module-level numeric const tables shed the ToNumber/string subsystem
 // A top-level `const T = [n, …]` (flat) or `[[n,…], …]` (nested) is provably numeric, so
 // `T[i]` / `T[i][j]` reads skip __to_num — the synth/floatbeat lookup-table shape.
 const NUMERIC_TABLE = {

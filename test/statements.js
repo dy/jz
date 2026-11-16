@@ -1195,6 +1195,8 @@ test('delete: jzify path also rejects literal-key form', () => {
   ok(err?.message.includes('object shape is fixed'), `delete should remain prohibited: ${err?.message?.slice(0, 80)}`)
 })
 
+// Unicode identifiers (test262 identifiers/start-unicode-*, part-unicode-*)
+
 test('unicode escape in identifier — \\u{XXXX} compiles and runs', () => {
   if (onKernel()) return  // non-ASCII identifier — see byte-vs-codeunit note below
   const exports = run(`export let _run = () => { var \\u{0860} = 1; return \\u{0860} }`, { jzify: true })
@@ -1210,6 +1212,8 @@ test('non-ASCII identifier — bare codepoint works', () => {
   const exports = run(`export let _run = () => { var ࡠ = 1; return ࡠ }`, { jzify: true })
   is(exports._run(), 1)
 })
+
+// Lexical grammar basics (test262: ASI, comments, line terminators, directive prologue)
 
 test('lexical grammar: ASI, comments, whitespace, line terminators, directive prologue', () => {
   const exports = run(`"use strict";
@@ -1251,6 +1255,8 @@ test('redeclaration: repeated var keeps the first initializer', () => {
   const exports = run(`export let _run = () => { var x = 3; var x; return x }`, { jzify: true })
   is(exports._run(), 3)
 })
+
+// for-in with `let` as identifier (test262 identifier-let-allowed)
 
 test('for-in with let as identifier compiles and runs', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`, { jzify: true })
