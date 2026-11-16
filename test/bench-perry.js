@@ -21,7 +21,6 @@ test('Perry bench lane: native globals, paired reuse, parity, failures, and hard
     const oom = join(scratch, 'oom_kill')
     const hang = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(pid)}, String(process.pid)); setInterval(() => {}, 1000)`
     // Exercise real process termination without waiting the production 60/120s.
-    // Reject a soft deadline before spawning, so a regression cannot hang CI.
     writeFileSync(hook, `import cp from 'node:child_process'
 import fs, { readFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'

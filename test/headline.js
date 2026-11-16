@@ -180,8 +180,6 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
     return { nodes, fetched }
   }
   // Navigation reloads the document, so each boot also discards browser-run rows.
-  // A URL that names a view loads that dataset alone; the plain page loads both and shows the
-  // newer by measured date (the reference on a tie), one machine's dataset, never a merge.
   const both = ['./results.json', './results-ci.json']
   for (const [search, machine, ratio, ciDate] of [
     ['', 'reference', '2.00×'], ['', 'reference', '2.00×'], ['', 'ci', '7.00×', '2026-11-03 05:10 UTC'],

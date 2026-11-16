@@ -62,7 +62,6 @@ const freshAnchoredCopy = () => {
   return scratch
 }
 
-// ── --merge: byte-preservation + provenance ─────────────────────────────────
 test('bench --merge: unmeasured case is byte-preserved', () => {
   const scratch = freshCopy()
   run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
@@ -163,7 +162,6 @@ test('bench: without --merge, a full --json run is schema-identical to the pre-m
   ok(out.cases.mat4.targets.jz.measuredAt === undefined, 'measuredAt should not appear without --merge')
 })
 
-// ── --verify-anchors: pass path ─────────────────────────────────────────────
 // Build the baseline through the real CLI using controlled anchor timings.
 const freshAnchorBaseline = () => {
   const scratch = freshCopy()
@@ -226,7 +224,6 @@ test('bench --verify-anchors: a wrong stored checksum row cannot certify timing'
   ok(pair.pass === false && pair.ratio == null, `wrong-result anchor produced a ratio: ${JSON.stringify(pair)}`)
 })
 
-// ── --verify-anchors: fail path (perturbed scratch copy) ────────────────────
 test('bench --verify-anchors: detects drift, exits nonzero, and now REFUSES the write (audit-#13 hygiene item 2a)', () => {
   // Start from a just-measured baseline (see freshAnchorBaseline above) so the
   // TWO pairs we don't perturb stay reliably within tolerance — only the one
@@ -240,11 +237,6 @@ test('bench --verify-anchors: detects drift, exits nonzero, and now REFUSES the 
   const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors'])
   ok(status !== 0 && status != null, `expected nonzero exit on anchor drift, got ${status}`)
   ok(/DRIFT DETECTED/.test(out), `expected a drift report in output:\n${out.slice(-1500)}`)
-  // Superseded by the structural write guard: DRIFT is a CONFIRMED-bad machine
-  // state, same category as "never checked" from the writer's point of view —
-  // both mean this run's own freshly-measured row is exactly as unconfirmed as
-  // the untouched rival rows are. The write is refused outright, matching the
-  // never-verified reject-path pin below, not merely reported and shipped.
   ok(/refusing to write partial evidence/.test(out), `expected the write-refusal message in output:\n${out.slice(-1500)}`)
   ok(readFileSync(scratch, 'utf8') === before, 'refused write on anchor drift must leave the file untouched (no partial write, no stale anchors overwrite)')
 })
@@ -273,15 +265,6 @@ test('bench --verify-anchors + --allow-unanchored: DRIFT is still reported and s
     '--allow-unanchored should still complete the merge (all cases present) despite the anchor failure')
 })
 
-// ── partial+unanchored structural write guard (audit-#13 hygiene item 2a) ──
-// The a9269390 manual restore proved the hole: a narrow --merge with neither
-// --verify-anchors (this run) nor a carried prior PASS verdict can still
-// land meta.partial=true evidence with NOTHING backing the untouched rival
-// rows' trustworthiness. The writer now refuses that write structurally
-// (nonzero exit, no file touched) instead of relying on a downstream reader
-// (test/bench-claims.js's own meta.partial ⇒ meta.anchors.pass check) to
-// catch it after the fact — a check a hand-edited/restored file can bypass
-// entirely, which is exactly what happened.
 test('bench --merge: REJECT path — partial merge with no anchors verdict at all (neither fresh nor carried) refuses the write', () => {
   // A plain --json (no --merge) write never carries a meta.anchors field
   // (pinned above) — start there, then merge again on top of it so the
@@ -340,7 +323,6 @@ test('bench --merge --allow-unanchored: escape hatch lets a partial, wholly-unve
   ok(merged.cases.mat4 && merged.cases.fft, 'both the carried mat4 row and the freshly measured fft row should be present')
 })
 
-// ── --merge shrink-guard (audit-#12 item 4) ─────────────────────────────────
 // An agent's naive `--merge` once silently fell through to a plain full-file
 // overwrite when PREV failed to load, dropping 59/60 cases from the committed
 // bench/results.json (recovered by hand). These pin the fix: --merge refuses

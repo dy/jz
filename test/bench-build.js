@@ -98,9 +98,7 @@ test('bench build: every committed workload is a valid JavaScript module', () =>
 })
 
 // A NaN's bits in a Float64Array are the engine's to choose, and the CPU's: x64
-// sets the sign of a NaN an invalid operation makes, arm64 does not. The stdlib
-// sweeps' checksum (scripts/stdlib-probe.mjs and the cases it wrote) hashes
-// every NaN as one encoding, so one reference holds on both.
+// sets the sign of a NaN an invalid operation makes, arm64 does not.
 test('bench build: the stdlib sweeps hash a NaN as one encoding', () => {
   for (const file of ['scripts/stdlib-probe.mjs', 'bench/stdlib-dists/stdlib-dists.js', 'bench/stdlib-special/stdlib-special.js']) {
     const body = readFileSync(join(ROOT, file), 'utf8').match(/\nconst checksum = \(out\) => \{[\s\S]*?\n\}/)?.[0]

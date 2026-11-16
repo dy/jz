@@ -1,14 +1,7 @@
 /**
  * Self-compile PERFORMANCE gate — the hard pin on the V8-parity milestone.
  *
- * The achievement (2026-07-01, commits ec6a229..42dc91c): dist/jz.wasm — the jz
- * compiler compiled to wasm by jz — compiles the bench corpus faster than the
- * same compiler running as JS on V8 in the production warm-instance mode.
- * Paired, order-alternated 2026-07-15 measurements land at ~0.94–0.98×
- * warm and ~0.71–0.76× fresh. (The old independent-min method unfairly paired
- * unrelated best samples and drifted as high as 1.07× fresh.)
- *
- * Two layers, per the project's proof discipline (research.md):
+ * Two layers:
  *  1. STRUCTURAL pins (deterministic, stopwatch-free): each perf lever leaves a
  *     named artifact in emitted WAT; deleting or breaking a lever fails these
  *     even on the noisiest machine.
@@ -41,8 +34,6 @@ installNativeArena()
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH = join(ROOT, 'bench')
 
-// ── Layer 1: structural lever pins (no stopwatch) ───────────────────────────
-
 test('perf-pin: SSO fast-hash mix present in __str_hash', () => {
   // The 7-op multiplicative mix (62452a5). Its magic constants only appear when
   // the SSO branch is the mix, not the old per-char FNV loop.
@@ -70,11 +61,8 @@ test('perf-pin: __dyn_props membership filter present and gating __dyn_move', ()
 // (The proven-decode lever — __arr_grow_known's inline offset extract — is
 // WAT-shape-pinned in test/feature-gating.js alongside its feature gates.)
 
-// ── Layer 2: ratio gates (paired wall-clock) ──────────────────────────────
-
 // Warm-safe subset of the bench corpus (tokenizer/json excluded until the
-// watr-internal warm-recompile bug is fixed — see groundtruth). Spans math,
-// arrays, strings-lite, closures, integer kernels.
+// watr-internal warm-recompile bug is fixed — see groundtruth).
 const CASES = ['mat4', 'fft', 'biquad', 'sort', 'crc32', 'mandelbrot']
 // Repeated paired level: warm ~1.00–1.02×, fresh ~0.71–0.78×.
 // These are HARD gates: loosening them requires a justified re-baseline.
@@ -83,27 +71,9 @@ const CASES = ['mat4', 'fft', 'biquad', 'sort', 'crc32', 'mandelbrot']
 // where the release discipline runs; on CI's shared 2-core runner (different
 // V8 tiering balance) a miss prints informational instead of failing.
 //
-// WARM_CAP RE-BASELINED 0.99 → 1.03 (2026-08-01, the sanctioned justified
-// path — this is the ring-ratchet precedent, not a silent loosening). The
-// 0.99 strict-win era (0.965–0.973, "WARM CAP ATTAINED 2026-07-28") predates
-// ~90 commits of correctness machinery: the BOOL-merge carrier invariant
-// (hasAmbiguousBoolMerge at 50+ emission sites), the dict campaign's
-// census/classification passes, the error-code registry, member-desugar.
-// The warm-margin hunt (ledger 2026-08-01) profiled the cost (str_hash
-// +174%, map_hash/dyn_get newly top-tier — the compiler's own Map probes
-// hash-priced in-kernel, slot-cheap on V8) and FOUR measured interventions
-// recovered part of it (1.084–1.108 pre-solver-refactor → 1.003–1.015 at
-// re-baseline: context hoists, predicate alloc elimination, overlay-tier
-// size guard — each landed, each byte-identity-verified). The residual
-// ~1–1.5% is the DIFFUSE price of the correctness waves; miscompile fixes
-// outrank warm-compile speed (ring precedent: "a silent corruption class
-// outweighs 0.53% loop-body ops"). Honest claim at this cap: warm PARITY
-// (~1.00–1.02×), fresh strict win (0.78×). Banked recovery levers if the
-// strict win is wanted back: lookupValType full flatten (option (a),
-// refinements/overlay folded into localReps at write time), VT-dispatch
-// rest-destructure removal (kind.js 62/599/645/778 — a VT-table API
-// refactor), dict-pass upfront skip-guard. Tightening back to 0.99 after
-// landing those requires only deleting this block.
+// Honest claim at this cap: warm PARITY (~1.00–1.02×), fresh strict win
+// (0.78×). Tightening back to 0.99 after landing those requires only
+// deleting this block.
 const okTiming = (cond, msg) => process.env.CI
   ? (cond || console.log(`  timing (informational on CI): ${msg}`))
   : ok(cond, msg)
@@ -121,9 +91,8 @@ const sourceFor = (name) => {
 
 const timed = (fn) => { const t = performance.now(); fn(); return performance.now() - t }
 const pairedRatio = (jsFn, prepareWasm) => {
-  // Pair and alternate substrate order so suite heat / CPU-frequency drift
-  // cannot consistently favor the runner measured second. Fresh setup happens
-  // outside the timed window, matching the old startup-state contract.
+  // Fresh setup happens outside the timed window, matching the old
+  // startup-state contract.
   for (let i = 0; i < WARMUP; i++) { jsFn(); prepareWasm()() }
   const ratios = []
   for (let r = 0; r < RUNS; r++) {
@@ -157,11 +126,8 @@ test('perf-pin: warm-instance self-compile stays within V8 parity band', () => {
     }
     return { g: geo(ratios), ratios }
   }
-  // SEQUENTIAL verdict, strict cap UNCHANGED: single-shot geomeans near the
-  // cap flip on suite heat / CPU-frequency drift (measured 0.97–1.04 across
-  // identical builds). A genuine regression sits above the cap on EVERY
-  // independent round; boundary noise does not. Fail only when up to three
-  // full measurements ALL exceed the cap — no loosening, repeatable verdict.
+  // Fail only when up to three full measurements ALL exceed the cap — no
+  // loosening, repeatable verdict.
   const rounds = []
   for (let attempt = 0; attempt < 3; attempt++) {
     const m = measure()
