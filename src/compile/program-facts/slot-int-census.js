@@ -1,4 +1,9 @@
-/** Whole-program integer range proofs for schema slots. */
+/** Whole-program integer range proofs for schema slots.
+ *
+ * A slot's raw i32 load still needs the summary's field kind to be a number: the per-schema census
+ * marks certainty from the sites it registers, and a literal it did not register (one assigned to a
+ * parameter inside a closure) can store a string under the same schema.
+ */
 import { DBG_INVARIANTS } from '../../debug.js'
 import { MUTATE_OPS, walkAst, isTdzValue, someDeep } from '../../ast.js'
 

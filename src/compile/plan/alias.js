@@ -30,6 +30,9 @@
  *     or `&&` read as a test over a value that decides it, and the `if` or `?:`
  *     of a decided test are their answers, and the arm ruled out is no code.
  *
+ * Prefix flattening likewise keeps a binding captured by its result: a closure may write it or read
+ * it after the initializer's source changes.
+ *
  * @module compile/plan/alias
  */
 import { ctx } from '../../ctx.js'

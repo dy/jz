@@ -12,6 +12,9 @@
  * (`ctx.funcs.runtimeRoots`): address-taken, so they keep the boxed ABI the
  * kernels call with.
  *
+ * Implicit coercions retain surrounding catches, since method calls only become explicit during
+ * emission.
+ *
  * @module compile/emit/to-primitive
  */
 import { ctx, inc, PTR } from '../../ctx.js'

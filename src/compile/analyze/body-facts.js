@@ -5,6 +5,32 @@
  * header for the full split rationale and `.work/archive/analyze-traversals.md` for
  * the traversal inventory.
  *
+ * Captured cells also require every write to fit signed i32 exactly; integer arithmetic alone can
+ * overflow or produce -0. Arithmetic reads preserve the original Number magnitude, including
+ * through assignment and copy chains whose only final use is a word conversion. An unbounded
+ * recurrence can cross 2^53 and round before that conversion; wrapping its storage early changes
+ * the answer.
+ *
+ * `analyzeBody` caches observations, not an immutable semantic snapshot. Its signature fingerprint
+ * covers only the current function signature. Every other dependency has an explicit invalidation
+ * owner:
+ *
+ * | Dependency changed | Invalidation before the next dependent read | Owner |
+ * |---|---|---|
+ * | Function body or specialization AST | `setFuncBody` / `reanalyzeBody` | Source rewrite and specialization passes |
+ * | Current parameter/result signature | Live fingerprint; explicit seams during solving | `body-facts.js`, `narrow/results.js`, `narrow/param-abi.js` |
+ * | Function value/type/length overlays and caller facts | `reanalyzeBody`; `clearBodyFacts` for affected callers | `narrow/caller-ctx.js`, `narrow/results.js`, `narrow/param-abi.js` |
+ * | Summary, global types/lengths, schema integer census | `clearBodyFacts` at publication/phase boundaries | `plan/index.js`, `compile/index.js` |
+ * | Compile session | New fact store | `session.js` |
+ *
+ * Every rewriting seam, and every plan sweep that reports a change, also advances one program
+ * revision. The summary is keyed by it and by the contents of the registries beside the program
+ * (schemas, functions, globals, binding schemas), and is rebuilt only when the key moved
+ * (`summarizeProgram`, `src/compile/index.js`). `JZ_DEBUG_INVARIANTS=1` checks each reuse against
+ * the summary's full inputs, so a rewrite that bypasses the seams fails there. Signature checking
+ * does not authorize stale overlay reads. New passes use these existing seams; they must not add
+ * another cache or rely on ambient facts staying unchanged accidentally.
+ *
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
@@ -49,7 +75,7 @@ import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
  * type/length facts, function overlays and schema numeric facts. Signature
  * changes are checked on cache hits. Other changes invalidate at their owning
  * mutation/phase seam before a dependent read; the fingerprint is not a proof
- * that ambient facts are unchanged. See CONTRIBUTING.md's freshness table.
+ * that ambient facts are unchanged. See the freshness table in this file's header.
  * Use reanalyzeBody for a changed overlay, setFuncBody for AST replacement,
  * invalidateBodies for semantic input changes, and clearBodyFacts when
  * representation facts settle or the phase changes. Returned maps are

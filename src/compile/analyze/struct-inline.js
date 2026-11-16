@@ -5,6 +5,11 @@
  * full split rationale and `.work/archive/analyze-traversals.md` for the traversal
  * inventory.
  *
+ * An uncertain index carries boxed undefined until a field projection checks presence; layout
+ * admission alone never authorizes a raw pointer local. Receiver captures retain the packed slot
+ * layout, including common fields of admitted unions, so bounds checks cannot redirect packed cells
+ * through ordinary object loads.
+ *
  * @module compile/analyze/struct-inline
  */
 import { ASSIGN_OPS, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'

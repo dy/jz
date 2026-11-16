@@ -1,6 +1,11 @@
 /**
  * The Tarjan-verified 15-member SCC (emit/emitDecl/liftOptionalChain/toBool/emitIdentitySafe/emitIdentitySafeArms/argIR/emitCallArgs/emitBoolStr/tryConcatChain/tryConcatBufferDecl/tryI32Index + the 2-member emitVoid⇄emitBlockBody SCC) plus every small helper whose only caller lives inside that SCC. emit() dispatches via ctx.core.emit[op], never a direct call into any family module - this is why every other family module can import from here without a back-edge.
  *
+ * The right operand is asked under what the left proved, as the value form did, so a guard's `x < W
+ * && a[x]` indexes in bounds; a loop test's facts merge into the counter's own hull rather than
+ * replacing it (a second refinement map for the same name dropped its lower bound and with it the
+ * single-digit rendering of `'x' + i`).
+ *
  * @module compile/emit/dispatch
  */
 

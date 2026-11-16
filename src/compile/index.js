@@ -1,3 +1,7 @@
+// Runtime helper templates may emit string literals. Shared string-pool setup runs after their
+// realization, before reachability; otherwise the pool's copy length can omit constants that the
+// linked helpers read.
+
 import { DBG_INVARIANTS, assertCtxInvariants, phaseCheckpointEmulation } from '../debug.js'
 import { jsonShapeStrings } from '../kind/shape.js'
 import { warn, OPTF } from '../ctx.js'

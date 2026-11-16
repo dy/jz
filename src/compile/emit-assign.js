@@ -1,3 +1,7 @@
+// An accepted in-place element replacement also contributes its field writes to the existing
+// property-mutation census. Constant object factories of that shape must allocate per evaluation;
+// sharing their static payload would retain a prior call's replacements.
+
 import { OPTF } from '../ctx.js'
 /**
  * Assignment IR helpers — element writes (`arr[i] = v`), property writes

@@ -26,6 +26,9 @@
  * when the caller only reads its result. Reassigned bindings, module bindings
  * and guards inside loops keep their original reads.
  *
+ * Fixed-memory modules disable this specialization because its view descriptor allocates; their
+ * checked receiver accesses retain the final no-allocation proof.
+ *
  * @module compile/plan/guard-views
  */
 import { ctx } from '../../ctx.js'

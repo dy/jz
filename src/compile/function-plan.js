@@ -7,6 +7,10 @@
  * same collections on a fresh ActiveFunction frame. No mutable collection is
  * exposed through the public handle; cross-function readers use detached field
  * projections below.
+ *
+ * Function-local layouts belong in `localReps`, carried by the function plan. Do not publish
+ * inferred local or parameter schemas in `ctx.schema.vars`: specialized variants reuse source
+ * binding names but can require different layouts.
  */
 
 export function createFunctionPlan(ctx, facts) {

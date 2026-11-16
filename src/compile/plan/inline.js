@@ -25,6 +25,20 @@
  * post-emission to expose arithmetic to the vectorizer/narrower/const-folder
  * — documented at optimize/vectorize.js's `inlinePureFnsInFn`/`inlinePureCallExpr`.
  *
+ * Inlining never moves initializers out of branches or loops; the IR optimizer owns motion.
+ *
+ * So does a method a loop already calls directly: a second direct site costs the first its sole
+ * splice, and the method left binds its parameters with the kinds of both (three's frustum cull
+ * beside a scene update, test/three/kernels.js: the elements of a matrix that `setPosition` may
+ * leave undefined became every matrix's, and each read of a plane a test). Eligibility is checked
+ * before normalization so an outlined function does not acquire control flow or locals.
+ *
+ * Lifting a call preserves preceding reads and effects, including user code run implicitly by
+ * getters or primitive conversion.
+ *
+ * The cost is bytes: stdlib's special functions as one module (`bench/stdlib-special`) are 23%
+ * larger at the speed tier, and 8% smaller at level 2 and at the size tier.
+ *
  * @module compile/plan/inline
  */
 

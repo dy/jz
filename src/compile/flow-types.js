@@ -14,6 +14,10 @@
  * Read side: lookupValType (src/reps.js) checks ctx.func.refinements first —
  * see its lookup-priority docs.
  *
+ * Every variable write invalidates its earlier flow kind immediately, including assignments nested
+ * in expressions. The next operand cannot read a stale kind. Captured mutable cells keep their
+ * joined kind because a call can change them between operands.
+ *
  * @module compile/flow-types
  */
 

@@ -17,6 +17,17 @@
  * otherwise; a retraction walks again what read it. A function no call
  * reaches proves nothing.
  *
+ * An i32 parameter ABI can supply integrality, but its incoming magnitude is reused only within
+ * signed-word bounds and while the parameter is never reassigned, including through a nested
+ * closure. Wider source magnitudes cannot describe a word-converted payload.
+ *
+ * A mutable parameter uses an i32 carrier only when the shared integer lattice proves every write
+ * fits signed width and excludes negative zero. Integer-valued arithmetic alone does not prove
+ * that: increments, multiplication, negation and unsigned shifts can leave the signed range. The
+ * mutation census includes nested closure writes; callers agreeing on i32 entry values cannot bound
+ * later updates. Recursive arithmetic does not inherit signed width from an integer entry; each
+ * incoming call must fit.
+ *
  * @module compile/narrow/int-params
  */
 import { ctx } from '../../ctx.js'
