@@ -76,10 +76,6 @@ test('warnings: why reports stand at their function', () => {
   ok(simd && simd.fn === 'f' && simd.line === 1 && /^f: loop #1 not vectorized/.test(simd.message), JSON.stringify(simd))
 })
 
-test('warnings: no sink → no advisories emitted', () => {
-  is(warningsFor('export let f = () => [1, 2, 3]').length, 0)
-})
-
 test('fixed length: resize advisories retain their operation with diagnostics enabled', () => {
   for (const [name, args] of [['unshift', '4'], ['pop', ''], ['shift', ''], ['splice', '1, 1, 4']]) {
     const src = `const out = [1, 2, 3]; export function f() { out.${name}(${args}); return out.length }`

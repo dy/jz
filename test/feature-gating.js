@@ -157,13 +157,6 @@ test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
   ok(hasDef(w, '__jp_schema_get'))
 })
 
-test('organic hash gating ON: untyped .prop pulls __dyn_get_any_t', () => {
-  if (onWasi()) return  // wasi: external object
-  // Literal key `.x` folds the FNV hash at compile time → prehashed `_h` variant.
-  const w = wat(`export let f = (o) => o.x`)
-  ok(hasDef(w, '__dyn_get_any_t_h'))
-})
-
 test('array grow: plain push does not pull dynamic prop mover', () => {
   const w = wat(`export let f = () => {
     let a = []

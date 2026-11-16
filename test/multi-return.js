@@ -5,13 +5,6 @@ import { belowOpt, levels } from './_matrix.js'
 import parseWat from 'watr/parse'
 
 
-// Multi-value just works — no profile needed
-
-test('multi-return: just works', () => {
-  const { f } = run('export let f = (a, b) => [a, b]')
-  ok(f)
-})
-
 // Expression body multi-return
 
 test('multi: 2-value return', () => {

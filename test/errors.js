@@ -389,34 +389,11 @@ test('error: invalid host option', () => {
   ok(error instanceof TypeError && error.message === "host takes 'js' or 'wasi'; got 'edge'", `expected the host's TypeError, got "${error?.message}"`)
 })
 
-test('error: circular import detected', () => {
-  let error
-  try {
-    compile('export let a = 1', {
-      modules: {
-        'a.js': 'import { b } from "./b.js"; export let a = b',
-        'b.js': 'import { a } from "./a.js"; export let b = a'
-      }
-    })
-  } catch (e) { error = e }
-  // Circular imports may or may not error depending on resolution strategy.
-  // If they error, the message should be useful.
-  if (error) ok(error.message.length > 0, 'error message should be non-empty')
-})
-
 test('error: compiler internal name conflict', () => {
   let error
   try { compile('let __heap = 5; let a = [1]; export let f = () => __heap') } catch (e) { error = e }
   ok(error, 'should throw')
   ok(error.message.includes('compiler internal') || error.message.includes('internal'), `message should mention internal: ${error.message}`)
-})
-
-test('error: spread on non-variadic function', () => {
-  let error
-  try { compile('let g = (a, b) => a + b; export let f = (...args) => g(...args)') } catch (e) { error = e }
-  // This may or may not error depending on whether g is known-arity
-  // If it errors, the message should be useful
-  if (error) ok(error.message.length > 0, 'error message should be non-empty')
 })
 
 // Error message precision — compiler must locate where in source the error is

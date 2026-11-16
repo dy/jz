@@ -496,18 +496,6 @@ test('minimal: module numeric table narrowing stays sound under non-numeric writ
   is(jz('const C=[[1,2],[3,4]]\nexport let f=()=>{C[0][0]=null;return C[0][0]*2}').exports.f(), 0, 'nested null write → 0 (ToNumber, not NaN-box)')
 })
 
-// KNOWN REDUNDANCY (targets, not yet minimal)
-// `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
-// memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —
-// `a[0]` is a polymorphic array/string index and `+` a polymorphic add/concat, so its
-// allocator is genuinely reachable, not redundant.)
-test('minimal [known-gap]: new Date still drags in the allocator', () => {
-  if (skip) return
-  const over = hasAllocator('export const d = new Date(0)')
-  if (!over) ok(true, 'new Date no longer pulls the allocator — promote this to a positive assertion')
-  else ok(true, 'KNOWN: new Date(0) pulls the full allocator/memgrow for a single pointer')
-})
-
 // buildErrorObject/toStrI64's Error-schema arm are gated on the Error-class
 // emit handlers and ctx.features.error (prepare's whole-program scan) firing —
 // a program that never constructs an Error must be byte-identical to what it

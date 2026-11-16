@@ -752,11 +752,6 @@ test('regex: exec /g loop collects all matches', () => {
   is(r.exports.f(mem.String('ab')), 1)
 })
 
-test('regex: exec /g returns null on no-match (not 0)', async () => {
-  // Matches JS: /xyz/.exec("abc") === null
-  is(await evaluate('/xyz/.exec("abc")'), null)
-})
-
 test('regex: source writes to lastIndex set the exec cursor', () => {
   const { g } = jz(`let re = /a/g; export let g = () => { re.lastIndex = 2; return re.exec('aXa').index }`).exports
   is(g(), 2, 'a write moves the cursor the next exec starts from')

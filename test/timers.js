@@ -27,16 +27,6 @@ test('setTimeout: a program of top-level code drains its timers as a command', {
   ok(/top\nfired/.test(out), `output: ${out}`)
 })
 
-test('setTimeout: fires callback', { skip }, () => {
-  const out = nativeRun(`
-    let x = 0
-    setTimeout(() => { x = 1 }, 10)
-    export let _start = () => { return 0 }
-  `)
-  // Timer fires in __start after _start runs; _start returns 0 (success)
-  ok(true) // If we got here without crash, timer loop completed
-})
-
 test('setTimeout: callback executes code', { skip }, () => {
   const out = nativeRun(`
     let msg = "before"

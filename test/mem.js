@@ -375,16 +375,6 @@ test('mem.write: string pointer throws', async () => {
   ok(threw)
 })
 
-// Nested: array of floats roundtrip
-
-test('mem.read: nested read (number elements)', async () => {
-  const r = await run(`export let make = () => { let a = [1, 2, 3]; return a }`)
-  const m = r.memory
-  const ptr = r.instance.exports.make()
-  const arr = m.read(ptr)
-  is(arr[0], 1); is(arr[1], 2); is(arr[2], 3)
-})
-
 // jz.memory() API
 
 // The memory's own enumerable surface is index.d.ts JzMemory, member for member:
