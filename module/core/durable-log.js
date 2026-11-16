@@ -146,6 +146,8 @@ export const registerDurableLog = () => {
   // and sets its own.
   declGlobal('__durable_arr_seen', 'i32')
   declGlobal('__durable_arr_log', 'i32')
+  // the table saved last this round (module/collection/durable.js durableTblSnapIR)
+  declGlobal('__durable_tbl_last', 'i32')
   // the stub log's table (module/core/stub-log.js), made first as the module
   // starts: no durable array lies in it, so the bitmaps skip its addresses
   // (`__durable_skip` bytes from `__durable_lo` down; both 0 without one):
@@ -219,6 +221,7 @@ export const registerDurableLog = () => {
   // left a delete, a clear and a store of a number or of a string of the
   // static data or inline in the round.
   ctx.core.stdlib['__durable_tbl_snap'] = `(func $__durable_tbl_snap (param $off i32) (param $bytes i32)
+    (global.set $__durable_tbl_last (local.get $off))
     (call $__durable_words_snap (i32.sub (local.get $off) (i32.const 8))
       (i32.shr_u (i32.add (local.get $bytes) (i32.const 15)) (i32.const 3))))`
   // An object field's undo record shares the array log and address bitmap.
@@ -281,7 +284,8 @@ export const registerDurableLog = () => {
       (local.set $rec (i32.load (local.get $rec)))
       (br $l)))
     (global.set $__durable_arr_log (i32.const 0))
-    (global.set $__durable_arr_seen (i32.const 0)))`
+    (global.set $__durable_arr_seen (i32.const 0))
+    (global.set $__durable_tbl_last (i32.const 0)))`
 
   // Durable SLOT log — the value-write sibling of the relocation log above. A
   // collection whose storage is DURABLE (init-created dict, off < __heap_reset)

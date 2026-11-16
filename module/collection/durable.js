@@ -296,15 +296,19 @@ export const durableMaskSnapIR = (off, idx = null) => {
         (call $__durable_words_snap (i32.sub (local.get $${off}) (i32.const 8)) (i32.const 1))))`
 }
 
-// A Map's or a Set's table (module/collection/ordered.js) at `off` of `bytes`
-// is saved whole at the round's first mutation (core/durable-log.js
-// `__durable_tbl_snap`): a table the call made pays this compare, one saved
-// this round the call and its bit's test.
+// A table (a Set's or a Map's, module/collection/ordered.js; a dictionary's,
+// module/collection/upsert.js) at `off` of `bytes` is saved whole at the
+// round's first write (core/durable-log.js `__durable_tbl_snap`). A table the
+// call made pays the compare with the reset mark; the table saved last, the
+// one a module's writes keep coming back to, a second compare with
+// `__durable_tbl_last`, which the save sets and the reset clears; any other
+// durable table the call, whose body tests its bit.
 export const durableTblSnapIR = (off, bytes) => {
   if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${off}) ${heapResetWat()})
-      (then (call $__durable_tbl_snap (local.get $${off}) ${bytes})))`
+      (then (if (i32.ne (local.get $${off}) (global.get $__durable_tbl_last))
+        (then (call $__durable_tbl_snap (local.get $${off}) ${bytes})))))`
 }
 
 // Value-write sibling of durableFwdLogIR: an EPHEMERAL boxed value stored into a
