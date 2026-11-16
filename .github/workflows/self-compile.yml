@@ -27,7 +27,9 @@ concurrency:
 jobs:
   self-compile:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # The hosted suite passed four hours on this runner (run 43869637359 was cancelled at
+    # 240 minutes): the most a hosted runner gives until the suite is split over jobs.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

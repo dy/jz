@@ -372,3 +372,24 @@ counter's bound tier) is still not landed and not ruled on.
 The pins: watr 5.13.7 and subscript 10.8.4, both published 2026-11-16; the main
 checkout's `node_modules` holds them once `npm install` is run there (worktrees of this
 session linked a directory of links to the two checkouts meanwhile).
+
+## Branches of the land-d landing (2026-11-16), tips before deletion
+
+```
+e521f93b8 land-d                             7b and 7c, the tests' part of phase 10, the reset of a shift, shifts as the module starts and the store through a binding the call made, 29 commits on 9d0bf1ec2
+9d0bf1ec2 land-c                             main as the land-c landing left it
+2d83eb5a6 worktree-agent-a0535e0f76860e45e   7b, 7c and the counted copy's writer, landed as dcd903159 to 650e3f5b9 and b2dcc75c8 to 4f8e40cd1
+d43bd2d0b worktree-agent-a8c9abf4b664de951   the tests' writer, landed as 185dbcd8e to 147558ec2
+```
+
+At work when this was written, each on the tree after this one:
+`worktree-agent-a29e352754b8f20da` (the reset's writer): f5537a47b, five commits on
+e521f93b8 (a Map's, a Set's and a dictionary's table and an object's field made at start
+read as they started; the slot log deleted), checked and waiting for its battery; now on
+a Map's lookups (phase 11, class C). `worktree-agent-ac3852370d29a350c` (the array
+store's writer): dba289f85, nine commits on e521f93b8, checked; rebasing onto f5537a47b,
+then on what an array holds (class B). The briefs for three more writers are session
+scratch (`brief-gate.md`, the data-form gate; `brief-forin.md`, the for-in fact the
+fixed subscript loses; `brief-ci.md`, the hosted suite split over CI jobs).
+`worktree-agent-a4519a2dc39ff972e` (238aedd6e, the counter's bound tier) is still not
+landed and not ruled on.
