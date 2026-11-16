@@ -6,13 +6,9 @@
 // `o` in the finalizer; `main` calls it without a throw, with one, and without again, each
 // with other arguments, so a value left over from another copy or another call shows.
 //
-// Guards the class "a block's end a `try_table`'s catch clause branches to is a join". Two
-// walkers read `br`, `br_if` and `br_table` as the only branches: optimize/forward-checked.js
-// (v1.0.0 to v1.0.3) gave the handler's copy the word the normal copy loaded, the round
-// before's in a loop, at `size` (`a word read once` and `the bytes of a word` in a finalizer
-// in a loop fail with its fix taken out); 7c's numbering, before it landed, a typed
-// subscript's address the same way. The try population has finalizers too, of parameters
-// of two kinds; here each parameter is of one kind, as the values the optimizer shares are.
+// Guards the class "a block's end a `try_table`'s catch clause branches to is a join". The
+// try population has finalizers too, of parameters of two kinds; here each parameter is of
+// one kind, as the values the optimizer shares are.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'

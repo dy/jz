@@ -3,12 +3,9 @@
 // size and speed: the loop's bound (inline, less and plus one, halved, a mirrored index, a
 // `while`, an outer and an inner bound of a nest), a bound counted down to and from, the
 // counter's start, a stride, six offsets of the index, a cursor started or stepped by it; read,
-// tested for presence, stored, read and stored; four array types. Past 2^31 a uint32's bits are
-// a negative word, and the guard sign-extended each into its i64 sums, so `B - 1 < length` held
-// for a bound no array reaches and the unchecked arm read and wrote outside the array, at levels
-// 2, 3 and speed in every tag from v0.9.1 (.work/architecture.md, "A uint32 read as a signed
-// word in the extent guard"; 33690d097). Every loop is capped by its own count, so any argument
-// ends; each store past the end is no store in Node and each read there undefined.
+// tested for presence, stored, read and stored; four array types. Every loop is capped by its
+// own count, so any argument ends; each store past the end is no store in Node and each read
+// there undefined.
 import test from 'tst'
 import { population } from './_population.js'
 

@@ -5,14 +5,11 @@
 // and by a name, from 0, a literal near 2^31 and an argument, the bound a parameter, a word, a
 // uint32, a module binding, a field and a derived Number; a counter no test names; names the
 // loop writes (a step that grows, a counter recomputed, a jump out of the word and back); two
-// counters, a counter of the module, a callee that moves the bound or the counter; counters
-// past 2^52, where a Number's step rounds; labels, do-while, returns, switches, closures over
-// each trip's counter. A capped program leaves by `if (++c > CAP) break` whatever its arguments;
-// an uncapped one is called only with arguments that end it in a few trips. Observed: trips, a
-// sum of the counter, reads through it (a missing element counted), the counter after the loop.
-// It found the extent guard's uint32 (.work/architecture.md, "A uint32 read as a signed word in
-// the extent guard"; 33690d097): 13 programs wrong at levels 2, 3 and speed, each bounded by
-// `b >>> 0`.
+// counters, a counter of the module, a callee that moves the bound or the counter; counters past
+// 2^52, where a Number's step rounds; labels, do-while, returns, switches, closures over each
+// trip's counter. A capped program leaves by `if (++c > CAP) break` whatever its arguments; an
+// uncapped one is called only with arguments that end it in a few trips. Observed: trips, a sum
+// of the counter, reads through it (a missing element counted), the counter after the loop.
 import test from 'tst'
 import { population } from './_population.js'
 
@@ -133,7 +130,6 @@ prog('side: a count beside a word counter', '', `const B = b | 0; let k = s\n  f
 prog('side: a count that doubles', '', `const B = b | 0; let k = 1\n  for (let i = 0; i < (B & 63); i++) { k *= 2; c += x8[k] === undefined ? 1 : 0 }\n  return [k, c]`, noBig(sideArgs).concat([[40, 0, 1], [63, 0, 1], [31, 0, 1], [32, 0, 1], [30, 0, 1]]))
 prog('side: a count stepped by the start', '', `const B = b | 0; let k = 0\n  for (let i = 0; i < (B & 15); i++) k += s\n  return [k, x8[k] === undefined ? -1 : x8[k]]`, noBig(capped))
 
-// ---- D. names the loop writes: a step that grows, a counter recomputed, a jump out of the word and back
 const geoArgs = [0, 1, 5, 100, 2147483646, 2147483647, 2147483648, 4294967295, 4294967296, 1e12, 1e300, Infinity, NaN, -1, 8.5, 1610612734, 1610612735, 536870912, 268435456].map(b => [b, 0, 4])
 prog('geo: id *= 4, ix recomputed', '', `let ix = 0, id = 4\n  while (ix < b) { if (++c > 80) break; if (x8[id] === undefined) u++; x8[c & 7] = c; ix = 2 * (id - 1); id *= 4 }\n  return [c, u, ix, id, ${SUM8}]`, geoArgs)
 prog('geo: id <<= 2, ix a difference of words', '', `let n2 = 4, ix = 0, id = n2 << 1\n  while (ix < b) { if (++c > 80) break; if (x8[ix] === undefined) u++; ix = (id << 1) - n2; id = id << 2 }\n  return [c, u, ix, id]`, geoArgs)
@@ -179,7 +175,6 @@ prog('a countdown by --', '', `let k = s, sum = 0\n  while (--k) { if (++c > ${C
 prog('a loop in a loop, the inner bound the outer counter', '', `let sum = 0\n  for (let i = s; i < b; i += t) { if (++c > 12) break; for (let j = i - 3; j < i; j++) { sum += j; if (x8[j] === undefined) u++ } }\n  return [c, sum, u]`, capped)
 prog('a loop in a loop, the inner step the outer counter', '', `let sum = 0\n  for (let i = s; i < b; i += t) { if (++c > 12) break; let k = 0; for (let j = 0; j < 4; j++) { k += i; sum += k; if (x8[k] === undefined) u++ } }\n  return [c, sum, u]`, capped)
 
-// ---- F. past 2^52, where a Number's step rounds and a counter held as an integer would not
 const farArgs = []
 for (const S of [2 ** 52 - 20, 2 ** 52 - 3, 2 ** 53 - 20, 2 ** 53 - 3, 2 ** 53, -(2 ** 53) + 3, 2 ** 62, 1e17, 2 ** 31 - 3, 2 ** 32 - 3])
   for (const T of [1, 2, 3, 7, 1024, 0.5]) farArgs.push([S + 50 * T, S, T], [S + 5 * T + 1, S, T], [S, S + 30 * T, T])

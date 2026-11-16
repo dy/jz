@@ -8,12 +8,7 @@
 // Guards the class "a definition moved to its use commutes with what runs between": two views
 // of one buffer at one index are the same bytes in the same iteration, which the dependence
 // test admits (vectorize/alias.js `apart`, a distance of 0) only as long as the lift keeps
-// each element's statements in order. The lane-local rewrites of the map (vectorize/map.js:
-// a narrowing store's conversion, a sum of two conversions, a sign) sank a definition into a
-// later statement, a load with it, past the stores between them (in v1.0.3: the swap
-// `const t = d[i]; d[i] = s[i]; s[i] = t` through a Float32Array and an Int32Array of one
-// buffer left float bits where the swap leaves 0, at levels 2, 3 and speed), which the swaps
-// of a Float32Array and a word view fail with its fix taken out.
+// each element's statements in order.
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
@@ -27,8 +22,7 @@ const PAIRS = [
 ]
 const DISTANCES = [-1, 0, 1]
 // Two loads and two stores, the swap's: `p` and `q` load A[i] and B[j] (j is i and a distance),
-// A[i] takes `q` and B[j] takes `p`. In each order of the four a store that runs before its
-// value's load reads the element itself (`A[i] = B[j]`), the load's own statement left out.
+// A[i] takes `q` and B[j] takes `p`.
 const ORDERS = (() => {
   const perms = [[]]
   for (let k = 0; k < 4; k++) perms.splice(0, perms.length, ...perms.flatMap(p => [0, 1, 2, 3].filter(x => !p.includes(x)).map(x => [...p, x])))

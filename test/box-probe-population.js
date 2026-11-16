@@ -5,11 +5,8 @@
 // writes, a loop with no braces, the state the copy hands over; a held name the declaring
 // statement writes again; and a copy that leaves for the loop as written, which must start where
 // the copy stopped (the DP row of test/integral-loops.js, its inner loop spelled six ways, alone
-// and as a `for` whose init is an assignment). Two defects of the box, found reading it and fixed
-// with ef327b4e8 (.work/architecture.md, "Counter widths built"): a `for (z += 5; ...)` left at a
-// sum ran its init again, and a word of the box that is -0 passed the box's range test.
-// test/integral-loops.js pins the DP row and five of the `for` spellings at levels 0, 2, 3 and
-// speed. Each scratch population is a block of its own below, its names its own.
+// and as a `for` whose init is an assignment). Each scratch population is a block of its own
+// below, its names its own.
 //
 // One program meets a divergence the README documents ("Numeric export parameters": a parameter
 // an exported function never uses as a string is compiled as a number and converted at the
@@ -21,7 +18,6 @@ import { population } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
-// ---- the entry, -0 among the names of the box, the loop's shape, the state handed over, arguments of other kinds
 {
 const P = []
 const E31 = 2 ** 31, E30 = 2 ** 30, E29 = 2 ** 29
@@ -93,7 +89,6 @@ prog('a held name written only in one round', 'let i = s, q = 1', `while (i < n)
 prog('a float sum across the hand-over', 'let i = s, w = 0.1', `while (i < n) { ${cap}; w = w * 1.25 + x[i % 8]; i = i * 2 + t }`, 'i, w')
 prog('a store across the hand-over', 'let i = s', `while (i < n) { ${cap}; x[c % 8] = x[c % 8] * 1.5 + i; i = i * 2 + t }`)
 prog('names declared in the round across the hand-over', 'let i = s, keep = 0', `while (i < n) { ${cap}; const a = i * 3, b = a + t; keep = keep + b % 7; x[i] = b; i = i * 2 + t }`, 'i, keep')
-// ---- arguments that are no Numbers (what the base answers is the reference here, where the host's passing differs)
 const ODD = cross([40, E31, '40', undefined, null, true], [0, 5, '5', undefined, null, true, false], [1, '2', undefined, null, true])
 prog('arguments of other kinds', 'let i = s', `while (i < n) { ${cap}; ${round} }`, 'i', ODD)
 prog('arguments of other kinds, a geometric pair', 'let ix = 0, id = s', `while (ix < n) { ${cap}; x[ix] = c; ix = 2 * (id - 1); id *= 4 }`, 'ix, id', ODD)
@@ -103,7 +98,6 @@ test(`box probe population: ${P.length} probes of the box's entry, -0 and shape,
   population('box probe', P, { configs: CONFIGS, own: ['Z', 'ZERO', 'run'] }))
 }
 
-// ---- what a held name enters with where the statement that declares it writes it again
 {
 const P = []
 const E31 = 2 ** 31, E30 = 2 ** 30, E29 = 2 ** 29
@@ -149,7 +143,6 @@ test(`box probe population: ${P.length} held names written again as declared, ${
   population('box entry', P, { configs: CONFIGS }))
 }
 
-// ---- the DP row, its inner loop spelled six ways, under an outer for and while
 {
 const INNER = {
   'for let': ['', 'for (let j = 1; j <= LB; j++) {', '}'],
@@ -238,7 +231,6 @@ test(`box probe population: ${P.length} single rows left at a cell, ${CONFIGS.le
   population('box resume alone', P, { configs: CONFIGS, own: ['LB'] }))
 }
 
-// ---- a `for` whose init is an assignment, its copy leaving at a sum
 {
 const P = []
 const prog = (name, decl, head, tail, after) => P.push({ name, src: `const LB = 16

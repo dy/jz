@@ -9,12 +9,10 @@
 // throws it is emitted once for each way out, and the handler's copy runs where the
 // other did not.
 //
-// A prepared try is `['catch', body, param, handler]` and `['finally', inner, cleanup]`
-// (the parser's shape is another), and the summary's walk clears nothing at its head. Four
-// defects of 1.0.3 fail here, each with its fix taken out: a reader of the other layout,
-// a parameter's incoming kind and a proof's saved mask left standing past an assignment
-// on a path the walk does not follow, and the binding split reading a statement folded
-// away (.work/architecture.md, "A bundle with a CommonJS module").
+// Four defects of 1.0.3 fail here, each with its fix taken out: a reader of the other
+// layout, a parameter's incoming kind and a proof's saved mask left standing past an
+// assignment on a path the walk does not follow, and the binding split reading a statement
+// folded away (.work/architecture.md, "A bundle with a CommonJS module").
 //
 // Every program has its own `f`, `show` and state, 56 to a module: what a callee is told
 // of its arguments is the program's own, as in a module of one.
@@ -24,7 +22,6 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
 
-// (levels 1 and 3 and size agree too, 2026-11-15: twice the time for no program more)
 const CONFIGS = [0, 2, 'speed']
 const KINDS = {
   obj: `{ x: 1 }`, obj2: `{ y: 2, x: 3 }`, arr: `[1, 2]`, num: `7`, str: `'s'`, nul: `null`,

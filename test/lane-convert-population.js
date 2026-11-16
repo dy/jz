@@ -7,12 +7,7 @@
 //
 // Guards the class "a lane's conversion is signed or unsigned as the scalar's conversion is":
 // an element's load says only how it widens to a word (`i32.load8_u` zero-extends), and the
-// conversion of that word to a float says how its top bit reads (`f64.convert_i32_u`). The
-// f32 map took the sign from the load (in v1.0.3: a Uint32Array copied to a
-// Float32Array read 2^32 - 1 as -1 at levels 3 and speed, and `a[i] >>> 0` read a signed
-// element signed, an Int8Array's or an Int16Array's at levels 2, 3 and speed, an Int32Array's
-// at 3 and speed), which `a copy` of a Uint32Array and `an unsigned read` of a Uint32Array or
-// a signed source into a Float32Array fail with its fix taken out.
+// conversion of that word to a float says how its top bit reads (`f64.convert_i32_u`).
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'

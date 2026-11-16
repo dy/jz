@@ -1,32 +1,19 @@
-// Host imports that call an export back, each program answering what Node answers at levels 0
-// to 3, size and speed. A host function is JavaScript: while it runs it may call an export that
+// Host imports that call an export back, each program answering what Node answers at levels 0 to
+// 3, size and speed. A host function is JavaScript: while it runs it may call an export that
 // writes a global of the module or replaces what the global holds, so a copy of the global kept
-// across the call (in a local, a typed array's base) reads stale. The write closure answered
-// that a callee outside the module writes no global, wrong at the default level and at speed in
-// released 1.0.0 to 1.0.3 (.work/architecture.md, "A host import that calls an export back";
-// c835d2aac, then src/optimize/effects.js: a name outside the module is the host and does
-// everything a function of the module can). The phase 7 scout's three reaches and its control
-// (the export called directly), and re-entry through a closure the host is handed and calls: a
-// captured local, an array element and its length, an object's fields, a typed array element,
-// a module global, the closure's result read after. The programs share a module, each with its
-// own names: what an import may write is every global of the module, the same for one program
-// as for twelve.
+// across the call (in a local, a typed array's base) reads stale. The programs share a module,
+// each with its own names: what an import may write is every global of the module, the same for
+// one program as for twelve.
 //
-// Beside them a generated population (the scratch reentrypop): one to four globals of seven
-// kinds (numbers, Float64Array, Int32Array, an array, an object, a string), one to three exports
-// that write or replace them, one or two imports each calling one export; `f(k)` reads the
-// globals around the imports' calls, straight, in loops, under a test, behind a function of the
-// module and beside a shim of the runtime's own (`Math.random()`, `Date.now()`: they call
-// nothing back). 400 programs from each of three seeds, each called with 0 to 3. A seed's
-// programs share one module and, for each argument, one instance, called in order: what one
-// program's calls leave in the heap the next one's meet. That form, which no program alone can
-// reach, found a hang at levels 2, 3 and speed in 1.0.3 too: a call's first in-place store of a
-// number into an array made as the module started logged the round's undo record in its own
-// frame and the frame gave it back at its return, so the log named freed memory and a later
-// frame's walk of it (module/core/reach.js `__survive`) never ended (the snapshot,
-// module/collection/durable.js durableArrSnapNode, now lowers the escape flag to the array as the
-// record is made). Each seed runs in a worker the test stops at a limit, so a hang is a failed
-// assertion (test/_bounded.js).
+// Beside them a generated population (the scratch reentrypop): one to four globals of seven kinds
+// (numbers, Float64Array, Int32Array, an array, an object, a string), one to three exports that
+// write or replace them, one or two imports each calling one export; `f(k)` reads the globals
+// around the imports' calls, straight, in loops, under a test, behind a function of the module
+// and beside a shim of the runtime's own (`Math.random()`, `Date.now()`: they call nothing back).
+// 400 programs from each of three seeds, each called with 0 to 3. A seed's programs share one
+// module and, for each argument, one instance, called in order: what one program's calls leave in
+// the heap the next one's meet. Each seed runs in a worker the test stops at a limit, so a hang
+// is a failed assertion (test/_bounded.js).
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
@@ -38,7 +25,6 @@ const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const show = v => Object.is(v, -0) ? '-0' : String(v)
 const call = (fn, ...a) => { try { return show(fn(...a)) } catch (e) { return `throws: ${String(e.message).split('\n')[0]}` } }
 
-// ---- the generated programs (xorshift32, so a seed gives the same 400 programs on every run)
 const generate = (seed, count) => {
   let state = seed >>> 0 || 1
   const rnd = () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296 }
@@ -115,10 +101,7 @@ const OWN = /\b(g\d|m\d|h|f|cb\d)\b/g
 
 // A seed's programs as one module: Node evaluates it afresh for each argument, as jz
 // instantiates it afresh, and calls every program in order; a program Node throws on is left
-// out, as the scratch population did. One assertion a differing call, one a hang. Not on the
-// leg of the compiler compiled by jz: there the worker compiles a seed's 400 programs in that
-// compiler, which frees nothing within a compile (not measured; modules of 683 and 1,000
-// programs of other populations ran out of its memory, 2026-11-15).
+// out, as the scratch population did. One assertion a differing call, one a hang.
 const population = (label, progs) => {
   if (onKernel()) return
   const part = progs.map(({ text, cbOf }, j) => ({ j, text, src: text.replace(OWN, `$1_${j}`), cbs: cbOf.map((m, i) => [`cb${i}_${j}`, `m${m}_${j}`]) }))
@@ -149,8 +132,6 @@ const population = (label, progs) => {
 for (const seed of [1, 2, 3])
   test(`reentry population: seed ${seed}, 400 generated programs on one instance an argument, ${GENERATED.length} configurations`, () => population(`seed ${seed}`, generate(seed, 400)))
 
-// The phase 7 scout's reaches: [name, the program, the export its import `cb` calls (none: the
-// control, the export called directly), f's arguments].
 const SCOUT = [
   ['a global read, the import bumps it, read again', `let g = 0
 export let bump = () => { g = g + 1 }

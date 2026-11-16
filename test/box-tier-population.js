@@ -18,7 +18,6 @@ const E31 = 2 ** 31, E30 = 2 ** 30
 const cross = (...lists) => lists.reduce((acc, l) => acc.flatMap(a => l.map(v => [...a, v])), [[]])
 const HASH = (a, n) => `let h = 0; for (let q = 0; q < ${n}; q++) h = (h * 31 + ${a}[q]) | 0`
 
-// ---- a line walk stepped by a stride of either sign: f(x0, y0, x1, y1, W, H)
 const LINES = [[1, 1, 6, 5], [6, 5, 1, 1], [1, 5, 6, 1], [6, 1, 1, 5], [-3, 2, 6, 4], [2, -2, 5, 7], [7, 7, 7, 7], [0, 0, 11, 7], [11, 7, 0, 0], [5, 3, -4, 3],
   [3, 0, 3, 9], [E30, E30, E30 + 3, E30 + 2], [-E31, 0, -E31 + 4, 3], [E31 - 4, 1, E31 - 1, 3], [1.5, 2.5, 6.5, 4.5], [0, 7, 40, 0]]
 const WS = [12, 8, 0, 1, 3, 46341, 65536, E30 - 1, E30, E31 - 1, E31, 2 ** 32, -1, -12, 0.5, NaN]
@@ -102,7 +101,6 @@ P.push({ name: 'line: a stride that flips', args: cross([0, 3, 7, -2, 40], [1, -
   return [x, y, c, sx, h]
 }` })
 
-// ---- a held name times a name the loop only reads, by doubling steps: f(n, s, t, W)
 const NS = [0, 1, 7, 8, 8.5, 40, 1000, 65536, 2 ** 28, E30 - 1, E30, E30 + 1, E31 - 1, E31, 2 ** 32, 1e12, -1, -0, NaN]
 const SS = [0, 1, 2, 5, -1, -0, 3.5, E30 - 1, E30, E31 - 1, NaN]
 const TS = [1, 2, 0, -1, 0.5, E30]
@@ -127,13 +125,11 @@ for (const [name, ix] of [['i * W', 'i * W'], ['W * i', 'W * i'], ['i * W + 1', 
   nprog(`product stored: ${name}`, 'let i = s', `while (i < n) { ${cap()}; x[${ix}] = c; ${R} }`)
   nprog(`product under the loop's width: ${name}`, 'let i = s', `while (i < n) { ${cap()}; if (i < W) x[${ix}] = c; ${R} }`)
 }
-// ---- a round that leaves the box in its middle, the other copy below
 nprog('leaves by a square', 'let i = s', `while (i < n) { ${cap()}; x[i] = c; i = i * i + t }`)
 nprog('leaves and is read before the head', 'let i = s, last = 0', `while (i < n) { ${cap()}; x[i] = c; ${R}; last = i * W; ${RD('last')} }`, 'i, last')
 nprog('leaves downward', 'let i = s', `while (i < n) { ${cap()}; x[i] = c; i = i * 2 - t * 3 }`)
 nprog('enters below zero and climbs', 'let i = s - 6', `while (i < n) { ${cap()}; if (i >= 0) x[i] = c; i = i + (c & 3) + t }`)
 nprog('enters above and descends', 'let i = s + 9', `while (i > n) { ${cap()}; x[i] = c; i = i - t - (c & 1) }`)
-// ---- a tier inside a counted loop, inside another box, inside an inlined call
 for (const [name, head] of [['a literal count', 'for (let k = 0; k < 5; k++)'], ['a count by a Number', 'for (let k = 0; k < t; k++)'], ['a count down', 'for (let k = 4; k >= 0; k--)'],
   ['a box around', 'let k = 1; while (k < n) { k = k * 2 + 1; if (++c > 60) break;'], ['a signed walk around', 'let k = s | 0, sk = t < 0 ? -1 : 1; while (k < 9 && k > -9) { k += sk; if (++c > 60) break;']]) {
   const open = head.endsWith(';') ? head : head + ' {'

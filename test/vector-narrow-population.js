@@ -1,12 +1,9 @@
 // A population of arithmetic on narrow typed-array elements, each answering what Node answers
-// at levels 0, 2 and speed: JS computes in Numbers (an int32 where the operators say
-// so) and the store keeps the low bits, and a lane of the element's width must give the same.
-// 48 expressions `b[i] = E(a[i], c[i])` over each of seven integer element types and twelve
-// mixed triples (narrow into wide, wide into narrow, signed against unsigned, into and from
-// floats), and eleven reductions over eight types; trip counts around a strip of each lane
-// width. It found a comparison in a narrow lane, `b[i] = a[i] & c[i]` into a Uint8ClampedArray
-// storing 0 past 127 (dc4858fbc, lift.js laneCompare), and a uint32 divided as a signed word
-// (cdc3b0711): .work/architecture.md, "Found reviewing 6a".
+// at levels 0, 2 and speed: JS computes in Numbers (an int32 where the operators say so) and
+// the store keeps the low bits, and a lane of the element's width must give the same. 48
+// expressions `b[i] = E(a[i], c[i])` over each of seven integer element types and twelve mixed
+// triples (narrow into wide, wide into narrow, signed against unsigned, into and from floats),
+// and eleven reductions over eight types; trip counts around a strip of each lane width.
 //
 // Two programs meet a divergence the README documents ("Bitwise operands under 2^63": an
 // operand of magnitude 2^63 or more reads as -1, as 0 when negative, where JS takes it modulo
@@ -16,8 +13,6 @@ import test from 'tst'
 import { population } from './_population.js'
 import { onKernel } from './_matrix.js'
 
-// (levels 1, 3 and size agree too, 2026-11-15: 266 s of one core for the six levels at load 20;
-// with either fix above taken out, level 2 is the first to differ)
 const CONFIGS = [0, 2, 'speed']
 
 const TYPES = {
@@ -76,8 +71,6 @@ for (const p of progs) p.args = TRIPS.map(n => [n])
 const R63 = '((v) => v >= 2 ** 63 ? -1 : v <= -(2 ** 63) ? 0 : v)'
 for (const p of progs) if (p.name === 'u32 fixed mul' || p.name === 'u32 fixed mul 15') p.node = p.src.replace('b[i] = (a[i] * c[i]) >>', `b[i] = ${R63}(a[i] * c[i]) >>`)
 
-// (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
-// out of memory on the whole module, 2026-11-15)
 test(`vector narrow population: ${progs.length} loops of narrow-element arithmetic, ${CONFIGS.length} configurations`, () => {
   if (onKernel()) return
   population('vector narrow', progs, { configs: CONFIGS, own: ['a', 'b', 'c'] })

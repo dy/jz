@@ -60,7 +60,6 @@ let rot = 0
 const body = (ix) => BODIES[rot++ % BODIES.length](ix)
 const TESTS = ['ix < n', 'ix <= n', 'n > ix', 'n >= ix', 'ix !== n']
 
-// ---- A. rfft's first pass: a stride that grows by a product and the counter written from it
 for (const mul of ['id *= 4', 'id *= 2', 'id = id * 8', 'id *= 3', 'id = id * 4 + 1', 'id += id', 'id = id * id', 'id = id * 1024'])
   for (const ixw of ['ix = 2 * (id - 1)', 'ix = id * 2 - 2', 'ix += id', 'ix = ix + id + 1', 'ix = id - 1']) {
     const k = rot
@@ -216,13 +215,11 @@ for (const [name, decl, test, round, names = 'i'] of [
   ['negative and growing', 'let i = -s', 'i > -n', `${RD('-i')}; i = i * 2 - t`],
 ]) for (const k of [0, 1]) prog({ name: `E ${name}${k ? ', inclusive' : ''}`, decl, names, loop: `while (${k ? test.replace('>', '>=').replace('<', '<=').replace('>==', '>=') : test}) { ${cap()}; ${round} }` })
 
-// ---- F. the stage loops of rfft: a stride by shifts, a counter a difference of two words (caps keep every operand under 2^63)
 for (const [name, ixw, idw] of [['shifts', 'ix = (id << 1) - n2', 'id = id << 2'], ['products', 'ix = id * 2 - n2', 'id = id * 4'], ['mixed', 'ix = (id << 1) - n2', 'id *= 4']])
   for (const inner of ['while (i0 < n) { ' + cap(64) + '; ' + NX('i0') + '; i0 += id }', 'for (; i0 < n; i0 += id) { ' + cap(64) + '; ' + ST('i0') + ' }'])
     prog({ name: `F stages by ${name}, inner ${inner.slice(0, 5)}`, decl: 'let n2 = 2, nn = n >>> 1, stages = 0', names: 'stages, n2', uses: 'n', bits: 'n',
       loop: `while ((nn = nn >>> 1)) { n2 = n2 << 1; let ix = 0, id = n2 << 1; while (ix < n) { let i0 = ix; ${inner}; ${ixw}; ${idw}; if (c > 64) break }; stages++; if (stages > 40) break }` })
 
-// ---- G. the loop in a function called with different arguments, in a loop and beside one
 for (const [name, call] of [['called twice', 'sum = run(x, n, s, t) + run(x, n, t, s)'], ['called in a loop', 'for (let k = 0; k < 3; k++) sum += run(x, n, s + k, t)'], ['called from a counter', 'for (let k = 0; k < 5; k++) sum += run(x, n, k, k + 1)']])
   prog({ name: `G ${name}`, pre: `const run = (x, n, s, t) => { let i = s, c = 0; while (i < n) { if (++c > 30) break; x[i] = c; i = i * 2 + t }; return i }`, names: 'c', loop: call })
 

@@ -1,17 +1,14 @@
 // A population of loops over typed arrays in every order their statements read and write one
-// array, each answering what Node answers at levels 0, 2 and speed (the integrator's
-// population for phase 6a's review, written without reading the writer's tests): two sites of
-// one base in either statement order at distances around a strip of each lane width, stencils
-// and records in place, what a loop leaves in a local or a global, ramps and narrow lanes,
-// shifts, arms, exits and counts, outer loops over inner ones, straight lines, and one function
-// over its arrays apart or one. Module arrays a, b, c and a global g; `n` the trip count; `ret`
-// and g join the hash of the three arrays. The base before 6a's legality (6ae8ff1f1 to
-// 07da84014, .work/architecture.md "6a landed" and "Found reviewing 6a") answered 16 of them
-// wrongly. test/vector-dependence.js holds the writer's population of the same class.
-// Beside them the nine programs of the vectorizer census whose answer differed from Node's ("6a
-// landed": W7 to W9 the dependence test, W1, W2 and W6 the account of locals, W3 and W5 a store
-// under a condition, W4 a shift in a narrow lane), which test/vector-legality.js pins at levels
-// 2 and 3.
+// array, each answering what Node answers at levels 0, 2 and speed (the integrator's population
+// for phase 6a's review, written without reading the writer's tests): two sites of one base in
+// either statement order at distances around a strip of each lane width, stencils and records
+// in place, what a loop leaves in a local or a global, ramps and narrow lanes, shifts, arms,
+// exits and counts, outer loops over inner ones, straight lines, and one function over its
+// arrays apart or one. Module arrays a, b, c and a global g; `n` the trip count; `ret` and g
+// join the hash of the three arrays. Beside them the nine programs of the vectorizer census
+// whose answer differed from Node's ("6a landed": W7 to W9 the dependence test, W1, W2 and W6
+// the account of locals, W3 and W5 a store under a condition, W4 a shift in a narrow lane),
+// which test/vector-legality.js pins at levels 2 and 3.
 import test from 'tst'
 import { population } from './_population.js'
 import { onKernel } from './_matrix.js'
@@ -70,7 +67,6 @@ const add = (name, most, body, types = ALL, make = program) => {
   }
 }
 
-// --- one base, two sites, the order the statements run them; distances around a strip
 for (const t of ALL) {
   const L = TYPES[t][3]
   for (const d of [...new Set([1, L - 1, L, L + 1])]) {
@@ -199,8 +195,6 @@ add('P cond store ahead', 64, `for (let i = 0; i < n; i++) if (s[i] > 0) d[i + 1
 add('P stencil', 64, `for (let i = 1; i < n; i++) d[i] = s[i - 1] + s[i] + t[i + 1]`, ALL, programP)
 add('P first element', 64, `for (let i = 0; i < n; i++) d[i] = s[0] + t[i]`, ALL, programP)
 
-// (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
-// out of memory on the whole module, 2026-11-15)
 test(`vector order population: ${progs.length} loops over typed arrays one may alias, ${CONFIGS.length} configurations`, () => {
   if (onKernel()) return
   population('vector order', progs, { configs: CONFIGS, own: ['a', 'b', 'c', 'kern', 'fill', 'hash'] })

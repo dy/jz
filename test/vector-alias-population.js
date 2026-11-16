@@ -4,11 +4,9 @@
 // earlier one reads it), made by `subarray`, by the constructor over the buffer, or the same view
 // twice; 28 kernels (copies, maps, stencils, prefix sums, reductions, swaps, conditional stores,
 // reversed and strided walks, a cursor, a wrap) over five element types, and five kernels over
-// one array with the store a run-time distance from the load, a plain array among them. `off`
-// and `n` arrive at run time, the trip count around a strip of lanes, and the function reads
-// what the loop leaves in its locals. The legality every vector lift asks (6ae8ff1f1 to
-// 07da84014, src/optimize/vectorize/legality.js, .work/architecture.md "6a landed") holds a
-// distance to the order a strip runs its sites in and takes the run-time test of two bases.
+// one array with the store a run-time distance from the load, a plain array among them. `off` and
+// `n` arrive at run time, the trip count around a strip of lanes, and the function reads what the
+// loop leaves in its locals.
 import test from 'tst'
 import { population } from './_population.js'
 

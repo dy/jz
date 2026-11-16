@@ -7,8 +7,7 @@
 // `push` and read at its end, and loops that read and write through a cursor. `f(s)` is called
 // with 0 to 3 in order on one instance, the state carried from call to call, and returns a hash
 // of the locals and of every store. A program Node throws on, or whose answers hold NaN or an
-// infinity, is left out, as the scratch population left it. The programs share a module (each
-// with its own names), one compile a configuration.
+// infinity, is left out, as the scratch population left it.
 import test from 'tst'
 import { population } from './_population.js'
 
