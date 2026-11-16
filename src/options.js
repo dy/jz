@@ -6,7 +6,7 @@
  * does. `foldOptions` alone is the internal entry's (compiler.js
  * compileInternal): the `memory` and `optimize` objects onto the flags the
  * pipeline reads, beside the internal flags the CLI, the tests, the bench and
- * the tools pass (README.md, Public contract and ABI).
+ * the tools pass (CONTRIBUTING.md, Public contract and ABI).
  *
  * @module options
  */

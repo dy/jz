@@ -248,7 +248,95 @@ the corpus *is* the guarantee, so widen it toward the code you actually ship.
 
 ## Public contract and ABI
 
-The contract (the public surface and options, the semantics, host memory and ABI promises, the known limitations) is README.md's [Public contract and ABI](README.md#public-contract-and-abi) section; a change to it is a change to the product.
+The public surface is deliberately small (README owns it): the root exports
+`jz` (default, with `jz.memory`), `compile` and `instantiate`; the `jz/interop` subpath with
+`instantiate` (instantiate.js over the interop.js runtime); the compile options in `index.d.ts`; and the
+CLI flags in `jz --help`. Everything else is internal and may change without a
+major version: `pool.js` (experimental SPMD worker pool, node only, not
+exported), `setCompileTarget` in src/compiler.js (the test harness's compiler
+switch) and `compileInProcess` in test/util.js (the in-process compiler for
+tests that read analysis state).
+
+The public options are a closed set: `normalizeOptions` (src/options.js) checks every key and value of `compile()`'s and `jz()`'s options before the pipeline runs, throws a `TypeError` naming any other key (with the public key a typo likely meant), and folds the `memory` and `optimize` objects onto the internal flags.
+
+Advisories reach the `warnings` callback, one per site (the source offset when the node kept one, else the message): `heap-return`, `heap-loop`, `deopt-generic`, `deopt-dyn-read`, `deopt-dyn-write`, `deopt-method`, `deopt-prop-read` (how the read lowered and the receiver's candidate shapes), `class-generic` (a class kept as closures and why), `shape-lost` (the first cause the summary lost an object layout by, with the function and statement), `host-global`, `jsstring-declined`; `simd-why-not` and `rewind-why-not` need `why`. Warnings are delivered after the pipeline returns, so a warning callback may compile again; a compile attempted while the pipeline is active is rejected.
+
+### Semantics contract
+
+Outside the dialect differences the README lists, accepted programs must preserve JavaScript values, exceptions, operand order and effects at every optimization level. Unsupported representations must reject. An unlisted silent wrong value or an accepted invalid-parse case blocks release. Early-error validation runs before lowering in both the JS and Wasm compiler; `test/test262-neg-accepts.json` gates the accepted-invalid ledger; an early error throws SyntaxError. Error classes are stable within a major; message text may change. A value a call throws reaches the host as JavaScript throws it: a value of the program as itself, its Error as the host's Error of its class (`jz:errcls`) with its message, a name it set and its other own properties, an error the runtime raises (err-codes.js, its code private) as the class and message its site models.
+
+### Host memory contract
+
+Strings use UTF-16 code units; UTF-8 belongs at encoding and I/O boundaries.
+`memory.Object()` and `memory.write()` enforce compiled field kinds, typed
+storage, nested schemas, integer refinements and discriminants used by lowering.
+Incompatible replacements throw `TypeError`. Nullable fields admit their value
+family and nullish values. Modules sharing memory must agree on existing schema
+contracts and bind their schemas at the same ids: a pointer carries the id its
+module compiled with, so a module whose schema would bind at another id in the
+memory is rejected before it is instantiated: its tables are read from its
+custom sections and merged on copies, committed whole once every id, brand
+and field contract agrees, and the module's start function and data never
+reach a memory that rejects it (one compilation, or the same module again,
+shares; the host references of a memory are one table for every module in
+it). A class layout carries its brand
+(`jz:brand`, `Name#id`), so two classes with one field list are two schemas,
+and a host object matching such a layout by keys alone is ambiguous rather
+than silently bound. Booleans preserve their identity; exposed BigInt fields are tagged,
+including shapes shared by BigInts and numbers. Returned object literals have
+independent storage, so mutating one result cannot change a later result.
+
+Plain arrays retained by the host have open element types. Typed arrays retain
+their storage policy; fresh arrays can specialize while being constructed.
+An indexed store through a host object's array-valued field commits the copied
+container back to its captured owner. Reference staging retains that owner with
+the receiver temporary; only the actual store performs the write-back, so a
+short-circuited logical assignment or a thrown operand does not invoke a setter.
+Native containers already share storage and require no write-back.
+Allocations round upward to eight-byte alignment without signed address
+truncation. Allocation may grow memory and invalidate views: retain handles and
+reacquire views through `memory.read()`.
+
+Array/object writes stage replacement values before committing contents and
+length. If staging throws, the destination is unchanged; allocations remain
+until reset and user getter effects are not rolled back. `memory.reset()`
+invalidates handles allocated after the reset base. Owned memory retains
+module-initialized state. Imported/shared memory resets the entire arena and
+requires re-instantiation before calling the module again. Direct writes and
+forged pointers bypass these checks.
+
+### Experimental ABI
+
+Every export the program does not declare is the module's ABI: `memory`,
+`_initialize` (the init of a module that reaches the host from it) and the names
+under `__jz_`: the allocator (`__jz_alloc`, `__jz_clear`, `__jz_heap`), the
+closure table (`__jz_table`), the release and compaction handles, the async
+boundary, a class's members, a kernel's kind variants. A program export never
+takes `memory` or a `__jz_` name (`compile` rejects it at the export); its own
+`_initialize` or `_start` is the WASI entry, after jz's init. `instantiate()`'s
+`exports` holds the program's exports alone; the ABI stays on `instance.exports`.
+
+A prebuilt module loads with the interop of the jz that built it; nothing marks or
+checks the pairing. A box crosses as its i64 bits only: no f64 NaN-box carrier,
+no `__ext_prop`/`__ext_call`.
+
+The raw ABI is not frozen across versions: NaN-box layouts, the `__jz_` exports, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`, `jz:errcls`, `jz:brand`, `jz:class`, `jz:values` and its getters, schema IDs, `jz:symbols` and `jz:symbol-slots` with the identity layout they decode, and the field contracts are all current-toolchain policy, regression-tested in `test/abi.js` but not cross-release-stable. Use `jz/interop`'s `instantiate()` or pin the exact compiler version when implementing a raw host. BigInt arguments require compiler-emitted slot evidence when the slot is used; unsupported slots throw `TypeError`. Kernel byte identity is not promised across releases. The runtime's other exports (`memory`, `wrap`, `coerce`, bit conversions, pointer/tag accessors, NaN constants, `toModule`, `codecOf`) serve index.js and the tests; `jz/interop` does not expose them.
+
+### Known limitations
+
+- DataView indexed own properties are unsupported; indexed writes reject.
+  Unextended views have no `.length` or indexed elements.
+- Used rest-parameter BigInt elements lack boundary evidence and reject.
+- Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
+  early completion or binding errors. Native Map/Set views are snapshots.
+  Indexed values cannot override their iterator.
+- `ArrayBuffer.prototype.transfer`/`transferToFixedLength` and growable
+  `SharedArrayBuffer` are unsupported. A resizable buffer reaches the host as a
+  copy (resizable to the same maximum), and one the host passes in arrives as
+  a fixed copy. A typed array out of bounds of its resizable buffer converts to
+  an empty string (`String(view)`, `view.toString()`) where JavaScript throws a
+  TypeError.
+- Async generator functions work; async generator methods reject.
 
 ## Commits
 

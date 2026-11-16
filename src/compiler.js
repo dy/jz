@@ -170,7 +170,7 @@ const run = (code, flags, jzify) => compileTarget ? compileTarget(code, flags) :
 export const compileSource = (code, opts, jzify = null) => run(code, normalizeOptions(opts), jzify)
 
 /** The internal entry, which index.js does not export: the internal flags beside
- *  the public options (README.md, Public contract and ABI), for the CLI,
+ *  the public options (CONTRIBUTING.md, Public contract and ABI), for the CLI,
  *  the tests, the bench and the tools. */
 export const compileInternal = (code, opts, jzify = null) => run(code, foldOptions(opts), jzify)
 
