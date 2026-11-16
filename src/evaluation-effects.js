@@ -1,6 +1,10 @@
 /** Whether evaluating a prepared expression invokes user code implicitly, or
  * throws where no call or `throw` stands. Shared by frame-effect and bounds
- * proofs and the catch emitter; imports no IR emitters. */
+ * proofs and the catch emitter; imports no IR emitters.
+ *
+ * Method effects require a proven receiver and no own override, not just a name matching a
+ * built-in.
+ */
 import { RELATIONAL_OPS, ASSIGN_OPS } from './ast.js'
 import { ctx } from './ctx.js'
 import { COMPOUND_NUMERIC_OPS } from './kind-traits.js'

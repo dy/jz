@@ -1,4 +1,8 @@
-/** Read-only summary queries. This module has no access to solver transfers. */
+/** Read-only summary queries. This module has no access to solver transfers.
+ *
+ * A parameter assigned anywhere, including by a closure, cannot supply its incoming hull to another
+ * call.
+ */
 import { ACCESSOR_GET, ACCESSOR_SET, EXACT_MATH, CLASS_T, STATIC_BASE, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'

@@ -46,6 +46,16 @@
  * builtin not known to be pure) may store into an object it receives, so
  * that object's schema goes to ANY.
  *
+ * Flow-sensitive assignment and refinement facts use those same IDs in sparse collections, reset
+ * per function; branch rollback stores IDs as well. Dense arrays for these sparse facts increased
+ * allocation without improving throughput.
+ *
+ * The semantic summary is a snapshot stored on `ctx.summary`; it does not own the mutable emission
+ * state beside it. Source rewrites require a fresh summary.
+ *
+ * A rule that reads a member of no kind yet (a round before its binder ran) contributes nothing
+ * rather than taking the absence as a fact; only the nullish kinds mean absent.
+ *
  * @module summary
  */
 import { SPAN_BINARY, spanBinary } from './span.js'

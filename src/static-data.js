@@ -1,4 +1,9 @@
-/** Static data and shared string pools contain bytes, never JS text. */
+/** Static data and shared string pools contain bytes, never JS text.
+ *
+ * Keep `__static_str` outlined until late dead-data removal: the helper call retains the ownership
+ * edge for sentinel strings. Inlining it earlier leaves raw addresses that the helper-based
+ * liveness check cannot recognize. Never use `String.fromCharCode` as a binary serialization layer.
+ */
 import { ctx } from './ctx.js'
 import { LAYOUT, PTR } from '../layout.js'
 

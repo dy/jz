@@ -1,5 +1,9 @@
 /**
  * Class and object-method `this` lowering.
+ * Nothing downstream may read a member's shape from its body: the parser used to spell methods as
+ * arrows, and a one-statement body that was not a `return` or a control statement was taken for the
+ * arrow (`{ m() { this.x = 5 } }` failed, an `async m() { return 2 }` resolved a NaN-box leak).
+ *
  * @module jzify/classes
  */
 

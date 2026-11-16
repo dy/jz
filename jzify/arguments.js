@@ -1,5 +1,7 @@
 /**
  * `arguments` object + destructuring-param lowering for function→arrow conversion.
+ * Keep parameter effects outside the state machine.
+ *
  * @module jzify/arguments
  */
 

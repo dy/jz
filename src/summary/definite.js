@@ -15,6 +15,14 @@
  * includes one a read can find unassigned. It walks prepared bodies: patterns,
  * `switch`, `do` and for-of/in heads are already lowered.
  *
+ * A bare `let` assigned before every read declares empty, not absent (`summary/definite.js`), and
+ * its local stores nothing where it is declared (compile/emit/dispatch.js): its writes alone type
+ * it, so a word a library returns through a scratch array, `W[ 0 ] = U[ 1 ]`, holds in an integer
+ * register (int-narrow.js), where the `undefined` it was declared with kept it a Number truncated
+ * back at each read (stdlib's `pow`, 0.90x the time); a condition carries what each outcome
+ * assigned, a true `&&` and a false `||` having run every operand (`if (a && (r = a[0]) != null &&
+ * r !== b)` reads `r` assigned).
+ *
  * @module summary/definite
  */
 import { MUTATE_OPS, extractParams } from '../ast.js'

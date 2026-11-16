@@ -7,6 +7,14 @@
  * proofs through intervalProvenIdx/intervalIdxRanges; parameter analysis
  * supplies entry ranges and collects argument/store hulls.
  *
+ * Its call hulls may authorize integer parameter storage, so negative-zero literals and
+ * sign-changing transfers that can produce negative zero also become unknown; a magnitude bound
+ * alone cannot preserve that value.
+ *
+ * No source-size threshold or special compiler-input policy controls these proofs. This proves
+ * parameter width, not a bound on recursive result accumulation. This can remove a ToInt32
+ * magnitude guard but never authorizes i32 storage.
+ *
  * @module type/interval-proof
  */
 import {

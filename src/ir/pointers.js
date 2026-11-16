@@ -4,6 +4,10 @@
  * ir/numeric.js's asF64 can reach it — not part of the barrel's public
  * re-export list, since it wasn't part of the original public API.
  *
+ * IR clones retain schema-liveness tags on every copied producer. Method dispatch can replace a
+ * constructor's original tree with its clone; losing that tag makes the linker omit live object
+ * fields and Error brands from host metadata.
+ *
  * @module ir/pointers
  */
 

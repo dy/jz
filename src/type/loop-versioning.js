@@ -8,6 +8,9 @@
  * `loop-versioning-nest.js` (a one-directional dependency — see
  * `.work/archive/type-split.md` for why the rest stays one file).
  *
+ * Other written locals of fixed nonnumeric kinds keep their original binding in both arms; loop
+ * versioning must not create aliases of a private string builder.
+ *
  * @module type/loop-versioning
  */
 import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs, nodeKey, nodeEqual } from '../ast.js'

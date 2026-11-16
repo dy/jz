@@ -3,6 +3,8 @@
  *
  * Cycle-free: no ctx/analyze/ir imports. Shared with abi/* and ir.js.
  *
+ * Delimiter characters inside valid JS string keys must never merge unrelated layouts.
+ *
  * @module ast
  */
 

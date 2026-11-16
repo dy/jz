@@ -13,6 +13,10 @@
  * handlers.js and handler-helpers.js" plan) this file carries the whole cluster — the
  * doc's own stated fallback for exactly this case.
  *
+ * Prepared computed deletes keep receiver and key as separate operands. Binding, numeric-buffer and
+ * frame-effect scans must visit both; key conversion can call user code, throw, and publish
+ * storage.
+ *
  * @module prepare/handlers
  */
 

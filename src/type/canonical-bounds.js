@@ -8,6 +8,10 @@
  * original position beside `typedIdxProven`) so `loop-versioning.js` and
  * `interval-proof.js` can both depend on it without depending on each other.
  *
+ * Loop seeds reject module counters and mutable module bounds: a callee, getter or coercion can
+ * write them without a write node in the current body. Canonical loop proofs refer to exact access
+ * nodes, so an access outside the loop cannot borrow their bounds.
+ *
  * @module type/canonical-bounds
  */
 import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS, nodeKey, nodeEqual } from '../ast.js'

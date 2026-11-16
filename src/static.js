@@ -1,5 +1,9 @@
 /**
  * Compile-time static evaluation — literals, property keys, schema ids.
+ * The shared `intExprRange` query accepts the emitter's carrier bounds for names, and every
+ * intermediate must stay within exact Number integers; a large rounded product cannot cancel into a
+ * small index and borrow this proof (`test/index-key.js`).
+ *
  * @module static
  */
 import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned, nodeKey } from './ast.js'

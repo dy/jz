@@ -19,6 +19,10 @@
  *
  * Runs on prepared bodies: every local is named apart, so a name is its binding.
  *
+ * It is a normal form of the source, not a pass of a level: what an exported parameter is used as
+ * is read off it, and the answer may not differ by level. Rewriting the remaining suffix after
+ * every assignment made both traversal and temporary AST allocation quadratic.
+ *
  * @module prepare/split-bindings
  */
 import { T, noted, copyNode } from '../ast.js'

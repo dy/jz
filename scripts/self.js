@@ -9,6 +9,11 @@
  * imports/memory/profiling/interop, none of which the self-compile wasm needs (or can
  * run); this is why the self-compile entry is its own minimal, interop-free module and
  * lives in the build layer rather than in the sealed compiler source.
+ *
+ * The compaction walks the layouts a module that compacts lays out (`compactOn`): the self build
+ * turns the rewind and the compaction on and leaves a loop's own compaction off (`loopCompact`,
+ * scripts/build-profile.mjs SELF_OPTIMIZE): on, the compiler's code grew from 29 to 46 MB and its
+ * own compile held more memory, not less.
  */
 import { DBG_INVARIANTS, assertCtxInvariants } from '../src/debug.js'
 import { parse } from '../src/parse.js'

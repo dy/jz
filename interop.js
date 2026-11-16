@@ -8,6 +8,12 @@
  * typed arrays, objects), fixed-shape objects by schema, host objects by
  * reference. A module picks its host shape at compile time (`opts.host`).
  *
+ * High-level pointer inputs use bigint handles; a JavaScript Number never selects a typed
+ * allocation by its payload.
+ *
+ * Host `memory.reset()` calls the compiled reset so heap rewind, cache invalidation and
+ * durable-state healing have one owner; JS-only memory retains its fallback.
+ *
  * @module interop
  */
 

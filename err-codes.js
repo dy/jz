@@ -191,6 +191,9 @@ export const ERR_INFO = {
 
 /** Internal exception transport. Reserved atom 3 carries a code in its low word;
  *  catch materializes an ordinary branded Error before source can observe it.
- *  User-thrown numbers remain numbers, including values equal to these codes. */
+ *  User-thrown numbers remain numbers, including values equal to these codes.
+ *
+ * Generated Wasm and interop must be rebuilt together when this internal transport changes.
+ */
 export const ERROR_CODE_HI = 0x7ff80003
 export const errorCodeLiteral = code => 'nan:0x80003' + code.toString(16).padStart(8, '0')
