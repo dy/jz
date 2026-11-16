@@ -220,9 +220,10 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   // `a·i + d`, literal a ≥ 1 and d ≥ 0, through the body's constants: `const o =
   // i * 6; sol[o + 5]`), each receiver's most d for each a: those the bound does
   // not already hold the counter below, nor a length the program fixes (a
-  // literal never resized) at or past it
-  // (or the length a module binding's array keeps after its init, summary/query.js frozenLenOf, which the read proves by)
-  const fixedPast = (r) => intBound && Math.max(view.fixedLenOfExpr?.(r) ?? -1, view.frozenLenOf?.(r) ?? -1) >= constIntExpr(B)
+  // literal never resized, or the length a module binding's array keeps after
+  // its init, summary/query.js frozenLenOf, which the access proves by) past
+  // every index a constant bound gives it, `a·(B − 1) + d`
+  const fixedPast = (r, a, d) => intBound && Math.max(view.fixedLenOfExpr?.(r) ?? -1, view.frozenLenOf?.(r) ?? -1) > a * (constIntExpr(B) - 1) + d
   const bodyConsts = new Map()
   walkAst(body, { enter: n => {
     if (n[0] === '=>') return false
@@ -241,7 +242,7 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
     // (a module binding the loop only reads has its hop out of the loop already, optimize/licm.js:
     // the split pays where it stores, whose growth call rebinds it in the loop and keeps every hop in)
     if (stable(n[1]) === MODULE && !storesInto(body, n[1])) return
-    if (f[0] === 1 && f[1] === 0 && (boundRecvs.includes(n[1]) || fixedPast(n[1]))) return
+    if (f[0] === 1 && f[1] === 0 && boundRecvs.includes(n[1]) || fixedPast(n[1], f[0], f[1])) return
     const at = forms.get(n[1]) ?? forms.set(n[1], new Map()).get(n[1])
     at.set(f[0], Math.max(at.get(f[0]) ?? 0, f[1]))
   } })
