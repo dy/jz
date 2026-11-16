@@ -200,7 +200,7 @@ const STR_BOX_HI = ((LAYOUT.NAN_PREFIX << 16) | (PTR.STRING << (LAYOUT.TAG_SHIFT
 const TAG_HI = (LAYOUT.TAG_MASK << (LAYOUT.TAG_SHIFT - 32)) | 0
 const isStrHi = (hi) => `(i32.eq (i32.and ${hi} (i32.const ${BOX_TAG_HI_FORM})) (i32.const ${STR_BOX_HI}))`
 const formParams = (form) => `${form.recv === 'off' ? '(param $o i32)' : '(param $coll i64)'} (param $key i64)`
-const formLocals = (form) => lean() && form.key === 'bits' ? '' : form.key === 'bits' ? ' (local $kw i64) (local $kn i32)' : form.key === 'str' ? ' (local $kw i64) (local $ks i32)' : ''
+const formLocals = (form) => lean() && form.key === 'bits' || form.key === 'ref' ? '' : form.key === 'bits' ? ' (local $kw i64) (local $kn i32)' : form.key === 'str' ? ' (local $kw i64) (local $ks i32)' : ''
 const formResolve = (form) => form.recv === 'off' ? liveTable('(local.get $o)') : resolve('$coll')
 // The size tier calls each form's pair once (`$__hash_bits`, `$__eq_bits`,
 // `$__hash_str`, `$__eq_str` below), where the speed tier writes it out in each probe.
@@ -217,6 +217,12 @@ const formHash = (form, hashFn) => form.key === 'bits' && lean() ? '(local.set $
         (if (i32.and (i32.eq (i32.and (local.get $hi) (i32.const ${PREFIX_HI})) (i32.const ${BOX_HI})) (i32.ne (i32.and (local.get $hi) (i32.const ${TAG_HI})) (i32.const 0)))
           (then ${mixInto})
           (else (local.set $kn ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$key']]))})))))`
+  // a reference (an object, a closure, a table, a typed array, a date) or an atom
+  // (undefined, null, a boolean), never a number, string or array: a reference's
+  // bits mixed, as `$__map_hash`'s reference arm hashes them; an atom (tag 0) 3, as there
+  : form.key === 'ref' ? `${mixInto}
+    (if (i32.eqz (i32.and (i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32))) (i32.const ${TAG_HI})))
+      (then (local.set $h (i32.const 3))))`
   : form.key === 'str' ? `(local.set $h (i32.const 3))
     (if (local.tee $ks ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32)))')})
       (then (local.set $h (call $__str_hash (local.get $key)))))`
@@ -226,6 +232,7 @@ const formEq = (form, eqExpr) => form.key === 'bits' && lean() ? '(call $__eq_bi
   : form.key === 'bits'
   ? `(i32.or (i64.eq (local.tee $kw (i64.load offset=8 (local.get $slot))) (local.get $key))
               (i32.and (local.get $kn) ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$kw']]))}))`
+  : form.key === 'ref' ? '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
   : form.key === 'str' ? `(if (result i32) (i64.eq (local.tee $kw (i64.load offset=8 (local.get $slot))) (local.get $key))
               (then (i32.const 1))
               (else (if (result i32) (i32.and (local.get $ks) ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $kw) (i64.const 32)))')})
@@ -385,15 +392,18 @@ export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue =
 /** A statement's probe that may store (compile/emit/fuse-probes.js): the key's
  *  entry address, or 0 with the empty bucket the probe ended at and the key's
  *  hash left in `$__find_b`/`$__find_h` for `__ord_put_at`, which inserts there
- *  with no second probe. The receiver is a present table of `expectedType`. */
-export function genOrdFind(name, es, hashFn, eqExpr, prologue = '') {
-  return `(func $${name} (param $coll i64) (param $key i64) (result i32)
-    ${probeLocals}
-    ${resolve('$coll')}${prologue}
+ *  with no second probe. The receiver is a present table of `expectedType`;
+ *  `form` its operands' forms where the summary proves them, as the methods'
+ *  probes take them (formParams): the table's offset, the key's hash and
+ *  equality by its kind. */
+export function genOrdFind(name, es, hashFn, eqExpr, prologue = '', form = null) {
+  return `(func $${name} ${form ? formParams(form) : '(param $coll i64) (param $key i64)'} (result i32)
+    ${probeLocals}${form ? formLocals(form) : ''}
+    ${form ? formResolve(form) : resolve('$coll')}${prologue}
     ${saveTable(es)}
-    ${keyHash(hashFn)}
+    ${form ? formHash(form, hashFn) : keyHash(hashFn)}
     ${geometry(es)}
-    ${probe(es, eqExpr, '(return (local.get $slot))')}
+    ${probe(es, form ? formEq(form, eqExpr) : eqExpr, '(return (local.get $slot))')}
     (global.set $__find_b (local.get $b))
     (global.set $__find_h (local.get $h))
     (i32.const 0))`

@@ -312,6 +312,45 @@ test('collection: number keys probe by the hash their store took', () => {
   ok(/call \$__set_has_ob\b/.test(wat) && !/call \$__set_has\s/.test(wat), 'a counter probes by the bits form')
 })
 
+// A statement that asks a Map or a Set about a key and stores it finds the key
+// once (compile/emit/fuse-probes.js); the find takes the key's form as the
+// methods' probes do (collection/forms.js keyForm): a number's bits, a
+// reference's or an atom's bits alone (`_or`: no NaN or zero to fold), a
+// string's content, the table's offset. Keys of every kind meet in one table.
+test('collection: a statement\'s find takes its key\'s form', () => {
+  const src = `export function f(n, k) {
+    const objs = [], strs = [], nums = [0, -0, NaN, 1.5, -1, 2 ** 40, k, k + 0.5]
+    for (let i = 0; i < 12; i++) { objs.push({ id: i }); strs.push('s' + (i % 7) + (i > 9 ? 'x' : '')) }
+    const atoms = [undefined, null, true, false]
+    const mo = new Map(), ms = new Map(), mn = new Map(), so = new Set(), mix = new Map()
+    let out = 0
+    for (let r = 0; r < n; r++) for (let i = 0; i < 12; i++) {
+      const o = objs[(i * 5 + r) % 12], s = strs[(i * 3 + r) % 12], x = nums[(i + r) % 8], a = atoms[(i + r) % 4]
+      if (!mo.has(o) || mo.get(o) < i) mo.set(o, i)
+      let c = ms.get(s)
+      if (c === undefined) { c = i; ms.set(s, c) }
+      mn.set(x, (mn.get(x) || 0) + 1)
+      if (!so.has(o)) { so.add(o); out += o.id }
+      if (!mix.has(a)) mix.set(a, i)
+      const key = i % 4 === 0 ? o : i % 4 === 1 ? s : i % 4 === 2 ? x : a
+      if (!mix.has(key)) mix.set(key, r)
+      if (i % 5 === r % 5) { mo.delete(objs[i]); mn.delete(nums[i % 8]); so.delete(objs[(i + 1) % 12]) }
+    }
+    const fold = (m) => { let h = m.size; for (const [key, v] of m) h = (h * 31 + (typeof key === 'object' && key ? key.id : typeof key === 'string' ? key.length : typeof key === 'number' ? (key === key ? key * 3 : 7) : String(key).length) + v) % 1000003; return h }
+    return [fold(mo), fold(ms), fold(mn), so.size, fold(mix), out]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const f = run(src, { optimize }).f
+    for (const [n, k] of [[1, 0], [3, 2], [9, -0], [20, 3.5]]) is(f(n, k), js(n, k), `O${optimize}, n ${n}, k ${k}`)
+  }
+  if (belowOpt(2)) return
+  const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
+  ok(/call \$__map_find_or\b/.test(wat) && /call \$__map_find_os\b/.test(wat) && /call \$__set_find_or\b/.test(wat), 'an object\'s, a string\'s and a Set\'s object\'s find by their forms')
+  const ints = compile(`export let f = (n) => { const m = new Map(); let c = 0; for (let i = 0; i < n; i++) { const k = i * 7 % 13; if (!m.has(k)) { m.set(k, i); c++ } } return c + m.size }`, { wat: true, optimize: { level: 2, watr: false } })
+  ok(/call \$__map_find_ob\b/.test(ints) && !/call \$__map_find\b/.test(ints), 'a number\'s find by the bits form')
+})
+
 // The speed tier lays a Set's and a Map's table a quarter full (collection/ordered.js
 // load): its index holds four buckets an entry, so a find walks a shorter run; a new
 // table starts with the entries a half-full one of eight buckets holds. A Set's block

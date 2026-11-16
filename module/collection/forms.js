@@ -27,8 +27,17 @@ export const provenTable = (recv, vt) => {
 }
 const NOT_BITS = bitOf(KIND.STRING) | bitOf(KIND.BIGINT) | bitOf(KIND.ARRAY)
 const STR_OR_ATOM = bitOf(KIND.STRING) | bitOf(KIND.NULLISH) | bitOf(KIND.ABSENT) | bitOf(KIND.BOOL)
+// a key one with another exactly where their bits are: a reference (keyed by its
+// identity) or an atom (undefined, null, a boolean), hashed as `$__map_hash`
+// hashes them (a reference's bits mixed, an atom 3), its equality its bits (no
+// number, whose zeros and NaNs are each one key; no string, BigInt or array, each
+// of which is compared or kept apart)
+const REF = [KIND.OBJECT, KIND.CLOSURE, KIND.MAP, KIND.SET, KIND.TYPED, KIND.DATE, KIND.REGEX, KIND.HASH, KIND.BUFFER,
+  KIND.NULLISH, KIND.ABSENT, KIND.BOOL].reduce((a, t) => a | bitOf(t), 0)
 export const keyForm = (key) => {
   let tags = 0
   try { tags = tagsOf(ctx.summary.at(ctx.func.current).kindOfExpr(key)) } catch {}
-  return !tags ? '' : !(tags & NOT_BITS) ? 'b' : (tags & bitOf(KIND.STRING)) && !(tags & ~STR_OR_ATOM) ? 's' : ''
+  // (the size tier keeps two forms: a reference takes the bits one)
+  return !tags ? '' : !(tags & ~REF) && !ctx.transform.optimize?.leanRuntime ? 'r'
+    : !(tags & NOT_BITS) ? 'b' : (tags & bitOf(KIND.STRING)) && !(tags & ~STR_OR_ATOM) ? 's' : ''
 }

@@ -1049,16 +1049,20 @@ export default (ctx) => {
     return s
   }
   ctx.core.emit['__slot_open'] = (m, k, id, es) => {
-    const s = slotOf(id), find = entryBytes(es) === MAP_ENTRY ? '__map_find' : '__set_find'
-    s.map = find === '__map_find'
+    const s = slotOf(id), base = entryBytes(es) === MAP_ENTRY ? '__map_find' : '__set_find'
+    s.map = base === '__map_find'
     s.key0 = k
     // its store may insert the key, as `.set`/`.add` would: an array key keeps an identity (collection/identity.js)
     noteKeys(k)
+    // a key of a known kind takes its form's hash and equality, the table its offset, as a method's probe does (tableProbe)
+    const form = provenTable(m, s.map ? VAL.MAP : VAL.SET) ? keyForm(k) : ''
+    const find = form ? `${base}_o${form}` : base
     inc(find)
+    const recv = ['i64.reinterpret_f64', ['local.get', `$${s.recv}`]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s.recv}`, asF64(emit(m))],
       ['local.set', `$${s.key}`, asI64(storedValue(k))],
-      ['local.set', `$${s.entry}`, ['call', `$${find}`, ['i64.reinterpret_f64', ['local.get', `$${s.recv}`]], ['local.get', `$${s.key}`]]],
+      ['local.set', `$${s.entry}`, ['call', `$${find}`, form ? ['i32.wrap_i64', recv] : recv, ['local.get', `$${s.key}`]]],
       ['local.set', `$${s.b}`, ['global.get', '$__find_b']],
       ['local.set', `$${s.h}`, ['global.get', '$__find_h']],
       ['f64.const', 0]], 'f64')
@@ -1478,9 +1482,10 @@ export default (ctx) => {
   ctx.core.stdlib['__map_delete'] = () => genOrdDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
 
   // The probes of a table the summary proves present (tableProbe below), by its
-  // key's form (collection/ordered.js formParams): `_o` any key, `_oi` an
-  // integer word, `_or` a reference, `_os` a string. Each links the hash and the
-  // equality of its own form alone, and none tests the receiver's tag.
+  // key's form (collection/ordered.js formParams, collection/forms.js keyForm):
+  // `_o` any key, `_ob` no string, BigInt or array, `_or` a reference or an atom,
+  // `_os` a string. Each links the hash and the equality of its own form alone,
+  // and none tests the receiver's tag.
   ctx.core.stdlib['__ord_probe'] = () => genOrdProbe('__ord_probe', sameValueZeroEqG)
   ctx.core.stdlib['__ord_probe_b'] = () => genOrdProbeForm('bits')
   ctx.core.stdlib['__ord_probe_s'] = () => genOrdProbeForm('str')
@@ -1512,10 +1517,17 @@ export default (ctx) => {
     reg('__map_delete', n => genOrdDelete(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, form), deleteDeps)
     reg('__set_delete', n => genOrdDelete(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, form), deleteDeps)
     reg('__map_slot', n => genOrdUpsert(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, { slotOnly: true, prologue: pin(), form }), upsertDeps)
+    // a statement's one find (`__slot_open` below) of a table the summary proves present
+    if (k) {
+      const findDeps = () => [...keyDeps(), '__ptr_offset_fwd', ...tblSnapDeps()]
+      reg('__map_find', n => genOrdFind(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, '', form), findDeps)
+      reg('__set_find', n => genOrdFind(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, '', form), findDeps)
+    }
   }
   probeForms('', undefined)
   probeForms('b', 'bits')
   probeForms('s', 'str')
+  probeForms('r', 'ref')
   // The size tier links one probe a table operation: two key forms reached
   // become the general key's, and a program that reaches the general probe of a
   // boxed receiver anyway passes the proven ones' tables boxed (stdlib-pull.js
