@@ -588,9 +588,9 @@ test('catchable throw keeps the exceptions runtime (try/catch needs the tag)', (
   ok(wat.includes('(try_table'), 'try/catch lowers to try_table')
 })
 
-// Host decode of a trap-lowered internal throw (audit #7 P1) — the trap above is
-// decoded at the host boundary into the real ECMAScript error class the throw
-// site models, with its message (src/err-codes.js).
+// Host decode of a trap-lowered internal throw — the trap above is decoded at the
+// host boundary into the real ECMAScript error class the throw site models, with
+// its message (err-codes.js).
 
 test('host decode: trap-lowered JSON.parse throw resolves to a real SyntaxError', () => {
   let error
@@ -906,16 +906,7 @@ test('errors: Error ctor message coercion (ES 20.5.1.1, audit-#9 P1)', () => {
   is(jz(`export let f = (x) => new Error(x).message`, { optimize: 0 }).exports.f(undefined), '', 'dynamic undefined argument')
 })
 
-// The GENERAL ES 20.5.1.1 invariant — ToString(message) for ANY non-undefined message,
-// not just a literal — was already routing through toStrI64 (the same chokepoint
-// String()/template literals use) for the non-special-cased case; the gap was narrower
-// than "absent": a BOUND name pointing at a closed-schema object (no toString/valueOf, no
-// dyn/out-of-schema writes) didn't get the literal's short-circuit, so it fell into
-// toStrI64's generic OBJECT path — which has a real, pre-existing, general,
-// Error-unrelated bug for non-Array objects (confirmed live: `String(o)` for a bound
-// plain object returns typeof "object", not a string at all — .work/archive/todo.md
-// §deletion-sweep's own "Consequence" section already flags `${anyDynamicObject}` as
-// broken, out of scope for this design).
+// ES 20.5.1.1: ToString(message) for ANY non-undefined message, not just a literal.
 test('errors: Error ctor message coercion — bound closed-schema object (audit-#10 finding-2)', () => {
   const j = (code) => jz(code, { jzify: true }).exports.f()
   is(j(`export let f = () => { let o = {x: 1}; return new Error(o).message }`), '[object Object]', 'bound non-empty closed-schema object now gets the same short-circuit as the literal')

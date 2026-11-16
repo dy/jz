@@ -4,9 +4,10 @@
 //     recursively for nested chains (src/optimize/index.js).
 //   • `?:` lowered to a branchless `select` with two distinct arms: liftExprV lifts
 //     the general select → v128.bitselect for EVERY lane type, not just float
-//     (src/optimize/vectorize.js). (Clamp/abs shapes fold to specialized i32x4 ops.)
-// The pin is bit-exactness across opt0 / noSimd / speed AND that the speed build
-// vectorizes as i32x4 (the narrowing held — an f64x2 body would be a lost narrowing).
+//     (src/optimize/vectorize/). (Clamp/abs shapes fold to specialized i32x4 ops.) The
+//     pin is bit-exactness across opt0 / noSimd / speed AND that the speed build
+//     vectorizes as i32x4 (the narrowing held — an f64x2 body would be a lost
+//     narrowing).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { jz, compile } from './util.js'

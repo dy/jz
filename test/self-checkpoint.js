@@ -299,8 +299,8 @@ test('checkpoint: WAT literals (empty, quotes, backslashes, NUL, UTF-8, escaped 
 // import (`print`). jz's parser takes ASCII identifiers only: UTF-8 export and
 // import names are the WAT test's above. The escapes are the `\u{…}` form: the
 // kernel decodes `\xHH` and `\uHHHH` above 0x7f through the runtime's
-// String.fromCharCode, which writes one byte (test/kernel-differential.js), and
-// that is not the checkpoint's concern.
+// String.fromCharCode, which writes one byte, and that is not the checkpoint's
+// concern.
 const L = `export let e = () => ""
 export let q = () => 'a"b\\\\c'
 export let nul = () => "\\0x\\0"

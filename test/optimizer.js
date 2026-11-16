@@ -2010,9 +2010,9 @@ test('array shift stays O(1)', () => {
 })
 
 test('array map/filter reuse receiver pointer for sizing and iteration', () => {
-  // Float literals keep the array ARRAY-shaped (int-only would auto-promote
-  // to TYPED via plan.js's promoteIntArrayLiterals and route through .typed:map
-  // / .typed:filter, which DO call $__len).
+  // Float literals keep the array ARRAY-shaped (int-only would auto-promote to
+  // TYPED via plan/literals.js's promoteIntArrayLiterals and route through
+  // .typed:map / .typed:filter, which DO call $__len).
   const wat = compile(`
     export const main = () => {
       const a = [1.5, 2.5, 3.5, 4.5]
@@ -3232,8 +3232,8 @@ test('dead-store elimination (watr): side-effecting RHS of an overwritten local 
   is(main(), 5)
 })
 
-// plan.js's `inlineHotInternalCalls` walks non-exported function bodies and
-// passes them to `inlineInStmt`.
+// plan/inline.js's `inlineHotInternalCalls` walks non-exported function bodies
+// and passes them to `inlineInStmt`.
 
 test('inliner preserves return value of an expr-bodied arrow whose entire body is a candidate call', () => {
   const { entry } = jz(`

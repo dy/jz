@@ -1,12 +1,11 @@
 /**
  * That fix is necessary for region-arena correctness, but it only holds the compiler's
  * OWN observable behavior steady if loading a module has NO effect beyond registering
- * its ctx.core.emit/ ctx.core.stdlib entries — the moment some module's init(ctx) does
+ * its ctx.core.emit/ctx.core.stdlib entries — the moment some module's init(ctx) does
  * anything else unconditionally (write ctx.closure/ctx.types/ctx.scope state, call
  * hostImport/inc/declGlobal outside a lazily-invoked emit handler), eager loading
- * changes emitted bytes for programs that never asked for that module's feature at all
- * (.work/archive/region-release-notes.md "Class 1"), or worse, changes which dispatch
- * tier a method call resolves through ("Class 2").
+ * changes emitted bytes for programs that never asked for that module's feature at all,
+ * or worse, changes which dispatch tier a method call resolves through.
  *
  * This file proves the invariant NATIVELY — no region-arena mark/exit
  * machinery needed. `opts._eagerStdlib` (src/front.js, index.js) forces the

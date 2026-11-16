@@ -624,9 +624,9 @@ if (!skip) {
 }
 
 // The compact prototype's bench rows, kept as a production size ratchet now that
-// the prototype is retired (prototype/compact/README.md's correction, 2026-09-02).
-// Each row's byte count at `optimize: 'size'` may only fall; the recorded value is
-// production's, with the prototype's own figure alongside for the record.
+// the prototype is retired. Each row's byte count at `optimize: 'size'` may only
+// fall; the recorded value is production's, with the prototype's own figure
+// alongside for the record.
 test('minimal: the compact-prototype bench rows stay at or below their recorded bytes', () => {
   if (skip) return
   const DSP = `const a=new Float64Array(64);const b=new Float64Array(64);export let f=(x)=>{

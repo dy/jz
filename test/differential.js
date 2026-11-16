@@ -69,12 +69,12 @@ for (const { name, src, args } of PROGRAMS) {
 // shape that actually engages SLP — a local array stays scalar) with FLOAT arithmetic over
 // INTEGER-VALUED data (×100.0): the value stays f64 so the packer fires, yet every partial
 // sum stays < 2^53, so a POSITION-WEIGHTED sum is exact regardless of addition order — the
-// lane vectorizer's accepted f64-reduction reassociation (1–2 ULP, see vectorize.js) can't
-// move it, but a wrong/duplicated/stale ELEMENT does (verified: with the RAW guard
-// removed, "forward shift" diverges 7/7 by ~1.5e5, not a ULP). `(seed*i)|0` is avoided —
-// the i32 store path skips SLP. Run at the default level (SLP + vectorizer on) and 'speed'
-// (adds the 4-accumulator reduce). `weight (i+1)` is order-sensitive, so a permutation
-// that preserves the multiset still trips it.
+// lane vectorizer's accepted f64-reduction reassociation (1–2 ULP) can't move it, but a
+// wrong/duplicated/stale ELEMENT does (verified: with the RAW guard removed, "forward
+// shift" diverges 7/7 by ~1.5e5, not a ULP). `(seed*i)|0` is avoided — the i32 store path
+// skips SLP. Run at the default level (SLP + vectorizer on) and 'speed' (adds the
+// 4-accumulator reduce). `weight (i+1)` is order-sensitive, so a permutation that
+// preserves the multiset still trips it.
 const sval = () => (rng() * 200 | 0) - 100
 const MEM_PROGRAMS = [
   { name: 'forward shift (SLP RAW)',

@@ -1,9 +1,9 @@
 // Feature gating: verify ctx.linkDemand.* (the DEMAND stratum — external,
-// typedarray, set, map, closure, f16, clamped; .work/evidence.md §FeaturePlan
-// freeze) flips on iff usage/producer site fires, and off-state code omits the
-// gated imports/branches. WAT-level inspection — each probe asserts specific
-// symbols present/absent. Test names below keep the pre-extraction
-// "features.X" label — same behavior, same gate, just relocated on ctx.
+// typedarray, set, map, closure, f16, clamped) flips on iff usage/producer site
+// fires, and off-state code omits the gated imports/branches. WAT-level
+// inspection — each probe asserts specific symbols present/absent. Test names
+// below keep the pre-extraction "features.X" label — same behavior, same gate,
+// just relocated on ctx.
 import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
 import { onWasi, onKernel } from './_matrix.js'

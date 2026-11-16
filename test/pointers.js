@@ -226,9 +226,10 @@ test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt
     "boxPtrIR's re-box template at the export must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
 })
 
-// representation-design.md §7) — dormant primitives, unit-level pins.
-// __box_bigint/__unbox_bigint are test-only jz-source intrinsics (module/
-// core.js, mirroring __mkptr/__ptr_type/__ptr_offset above) exposing ir.js's
+//
+// Dormant primitives, unit-level pins. __box_bigint/__unbox_bigint are
+// test-only jz-source intrinsics (module/core.js, mirroring
+// __mkptr/__ptr_type/__ptr_offset above) exposing ir.js's
 // boxBigInt/unboxBigInt directly.
 
 const f64BitsBig = (f64) => {

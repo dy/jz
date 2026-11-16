@@ -519,7 +519,7 @@ test('HOF: top-level function with args', async () => {
 })
 
 // `o.m(args)` where `m` is a closure-valued property goes through schema-known
-// slot read + closure.call (src/emit.js) for fixed-shape objects.
+// slot read + closure.call for fixed-shape objects.
 
 test('method: inline arrow called as o.m(args)', () => {
   is(runHost(`

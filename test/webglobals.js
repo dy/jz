@@ -118,9 +118,9 @@ test('TextDecoder: view-safe decode, UTF-8-only label', () => {
   // a subarray VIEW decodes its data, not its descriptor (pre-existing bug pin)
   is(c0(), 'hi!')
   is(c1(), 'ok')
-  // a non-UTF-8 label is a compile-time reject (module/webio.js validates the
-  // literal label statically) — batching it with the passing calls above would
-  // fail the WHOLE shared module's compile, so it keeps its own compile.
+  // a non-UTF-8 label is a compile-time reject (the literal label is validated
+  // statically) — batching it with the passing calls above would fail the WHOLE
+  // shared module's compile, so it keeps its own compile.
   throws(() => run(`export let f = () => new TextDecoder('utf-16').decode(new Uint8Array(2))`))
 })
 

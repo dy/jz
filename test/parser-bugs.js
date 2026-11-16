@@ -409,16 +409,14 @@ test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function co
     is(jz('export let f = (x, c) => { if (c) return x; return (x * 1000) | 0 }').exports.f(3.5, 1), 3.5)
     // NOTE: a bare `return;` on one path (hasBareReturn) ALSO blocks narrowing the same way,
     // and is fixed the same way through THIS handler — but `export let f = (x, c) => { if
-    // (c) return; return (x*1000)|0 }` still traps ("memory access out of bounds") through
-    // the kernel at runtime level 2, on the untouched pre-fix kernel too (confirmed via a
-    // clean A/B) — a separate, deeper, PRE-EXISTING self-compile bug in the level-2 inliner's
-    // interaction with the boundary i64-carrier wrapper for a 2nd exported param, not this
-    // session's fix or regression. Left OPEN — tracked in .work/archive/todo.md (self-compile groundtruth archive).
-    // charter repro: minimally reduced from bench/mat4 + bench/_lib/benchlib.js's `medianUs`/
-    // `printResult` pair — a same-named PARAMETER elsewhere in the program (`printResult`'s
-    // `medianUs` param, used in a template literal) marks the top-level `medianUs` function
-    // the address-taken census (scope-blind name match, a separate harmless pessimization),
-    // so its `(expr) | 0` tail stays unnarrowed exactly like the mixed-tail case above.
+    // (c) return; return (x*1000)|0 }` still traps ("memory access out of bounds") through the kernel at runtime
+    // level 2, on the untouched pre-fix kernel too (confirmed via a clean A/B) — a separate, deeper, PRE-EXISTING
+    // self-compile bug in the level-2 inliner's interaction with the boundary i64-carrier wrapper for a 2nd exported
+    // param, not this session's fix or regression. Left OPEN. charter repro: minimally reduced from bench/mat4 +
+    // bench/_lib/benchlib.js's `medianUs`/ `printResult` pair — a same-named PARAMETER elsewhere in the program
+    // (`printResult`'s `medianUs` param, used in a template literal) marks the top-level `medianUs` function the
+    // address-taken census (scope-blind name match, a separate harmless pessimization), so its `(expr) | 0` tail
+    // stays unnarrowed exactly like the mixed-tail case above.
     is(jz(`
         const medianUs = (samples) => { return samples[0] | 0 }
         const printResult = (medianUs) => String(medianUs)
