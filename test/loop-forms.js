@@ -4,7 +4,7 @@
 // counting down (`i >= 0`, `i > lo`), a lane local every pass writes, read after the loop, and
 // two counters at 'speed'. Each lifts at the levels this leg owns and answers what Node
 // answers, in its result and in the arrays it writes; the forms the scout's census found
-// refused (.work/maps/loop-refused.md) are named by their row. Beside them, a true dependence
+// refused (`git show df1f0a143:.work/maps/loop-refused.md`) are named by their row. Beside them, a true dependence
 // that no lift may take.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'

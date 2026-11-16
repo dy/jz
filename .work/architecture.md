@@ -2,9 +2,12 @@
 
 Started 2026-11-09. The owner's brief: a clean, minimal architecture whose optimizations
 are general, so that ordinary numeric JS compiles well however it is written. This file
-is the plan and its state. Maps of what exists are in `.work/maps/` (scout reports: read
-them as leads, each claim there is marked verified or inferred). The handover of the
-earlier work is `.work/handover.md`.
+is the plan and its state. The handover of the earlier work is `.work/handover.md`.
+
+The briefs this record names (`.work/phase-*.md` but 9b's, `counter-widths.md`,
+`node-keys.md`, `exception-edges.md`, `populations-port.md`) and the scouts' maps
+(`.work/maps/`) were deleted on 2026-11-16, on the owner's word, their work landed or
+dropped: `git show df1f0a143:.work/<name>` reads one as it last stood.
 
 ## What is wrong (measured)
 

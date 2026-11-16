@@ -393,3 +393,7 @@ scratch (`brief-gate.md`, the data-form gate; `brief-forin.md`, the for-in fact 
 fixed subscript loses; `brief-ci.md`, the hosted suite split over CI jobs).
 `worktree-agent-a4519a2dc39ff972e` (238aedd6e, the counter's bound tier) is still not
 landed and not ruled on.
+
+The briefs and the scouts' maps named above (`.work/phase-*.md` but 9b's, `.work/maps/`,
+`counter-widths.md`, `node-keys.md`, `exception-edges.md`, `populations-port.md`) are
+deleted: `git show df1f0a143:.work/<name>`.

@@ -18,7 +18,7 @@ const agreeOff = (name, src, args = []) => {
   for (const optimize of levels(2, 3)) is(jz(src, { optimize }).exports.f(...args), want, `${name} at ${optimize}`)
 }
 
-// The nine programs of phase 6's census (.work/maps/vectorize-leads.md), W1 to W9.
+// The nine programs of phase 6's census (`git show df1f0a143:.work/maps/vectorize-leads.md`), W1 to W9.
 test('vector legality: nine', () => {
   agree("W1 reduce lane local read after", `const a = new Float64Array(64)
 export let f = () => { for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) - 5.75
