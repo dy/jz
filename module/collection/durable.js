@@ -76,16 +76,12 @@ export const heapResetWat = () => hasDurableReset() ? '(global.get $__heap_reset
 // common case).
 //
 // Checks BOTH ends, not just "is off durable": a fresh `__alloc_hdr`/`__alloc_hdr_n`
-// target (grow, genUpsert/genUpsertGrow) is unconditionally ephemeral whenever the
+// target (genUpsert/genUpsertGrow) is unconditionally ephemeral whenever the
 // source-durable check can even fire (any allocation live past `__start`'s tail-
 // capture is by construction >= the now-final `__heap_reset`), so newOff's own check
-// is redundant there — but `.shift()`'s "new" header is just `off + 8`, a position
-// INSIDE the same block, not a fresh allocation: ordinarily still durable (shifting a
-// durable array is legitimate, persistent state and must NOT be undone at `_clear`),
-// and only crosses into ephemeral in the one-in-8-bytes edge case where `off` sits
-// exactly at `__heap_reset - 8`. Requiring both conditions everywhere makes the
-// invariant self-evidently correct at every call site instead of relying on a
-// per-caller argument about what its "new" offset can be.
+// is redundant there; requiring both keeps the invariant correct at every call site
+// without a per-caller argument about what its "new" offset can be. (An array's
+// shift and grow save the array whole instead: durableArrSnapIR, durableArrSnapBaseIR.)
 // Emits nothing at all (not even a call site) when there's no `__heap_reset` to compare
 // against — shared memory's `__clear` is a plain rewind-to-HEAP.START with no high-water
 // mark (core.js), so EVERYTHING resets uniformly there and no state is ever "durable" to
@@ -152,10 +148,10 @@ export const durableLenLogIR = (base) => {
 // element-changing — `__durable_arr_snap`'s own idempotent-per-`off` scan, mirroring
 // `__durable_fwd_log`'s, makes call ORDER irrelevant: whichever site touches this
 // array first this round does the real work, every later site this round is a cheap
-// no-op) memcpy's its CURRENT `len*8` live bytes into a fresh shadow buffer and logs
-// (off, len, cap, shadow) — ONE bounded copy per touched durable array per round,
-// not one log call per element write. `_clear()`'s `__durable_arr_heal` (core.js)
-// restores the header words from the log AND memcpy's the shadow back — exact
+// no-op) copies its CURRENT header and `len*8` live bytes (a shifted array's from
+// its base, core/durable-log.js) into a record, ONE bounded copy per touched
+// durable array per round, not one log call per element write. `_clear()`'s
+// `__durable_arr_heal` (core/durable-log.js) copies the record back: exact
 // byte-for-byte data recovery (unlike durableSlotLogIR's collection-value heal,
 // which only guarantees "not a dangling pointer" and gives up the true prior value
 // as unrecoverable; arrays need the true value back, not just a safe substitute, to
@@ -165,11 +161,8 @@ export const durableLenLogIR = (base) => {
 // round, however it got there, is protected by an ALREADY-correct snapshot.
 // ARRAY-only by design: replaces durableLenLogIR/durableFwdLogIR at every array.js
 // call site (arrGrow's relocation, __arr_set_idx_ptr, __arr_push1, __arr_set_length,
-// __arr_unshift, __arr_splice, __arr_fill, __arr_copyWithin, .reverse, .sort) except
-// __arr_shift (left on the old header-only mechanism — see that function's own
-// comment: an in-place shift's rebasing is documented as legitimate persistent
-// state, a header-identity choice orthogonal to per-element data corruption, not
-// touched by this fix) and __set_len's non-ARRAY branch (TYPED/HASH/SET/MAP share
+// __arr_unshift, __arr_splice, __arr_fill, __arr_copyWithin, .reverse, .sort, and
+// __arr_shift through durableArrSnapBaseIR) except __set_len's non-ARRAY branch (TYPED/HASH/SET/MAP share
 // __set_len's generic tag dispatch but have different entry strides — this helper's
 // `len*8`-byte-cell assumption is array-specific; __set_len keeps durableLenLogIR
 // for those). Collections keep durableFwdLogIR/durableLenLogIR unchanged for their
@@ -189,6 +182,25 @@ export const durableArrSnapIR = (base, ptr = null) => {
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
       (then (call $__durable_arr_snap ${off})))`
+}
+// A shift moves the live header and keeps the base (layout.js arrBaseWat):
+// the record of a shifted array is made from its base, whose bit marks it
+// saved (core/durable-log.js `__durable_arr_snap`), so the shift tests the
+// base's bit, the one address that stays as its header moves. The test is
+// inline, as a queue drained by shift() runs it once an element: storage
+// the call made itself pays the compare with the reset mark, a durable
+// array saved this round the byte test, and only the round's first shift
+// of a durable array the call.
+export const durableArrSnapBaseIR = (base, off, ptr) => {
+  if (!hasDurableReset()) return ''
+  const b = `(local.get $${base})`, seen = '(global.get $__durable_arr_seen)'
+  const at = numericArraysOn() ? `(i32.or (local.get $${off}) ${rawSnapBitWat(`(local.get $${ptr})`)})` : `(local.get $${off})`
+  return `
+    (if (i32.lt_u ${b} ${heapResetWat()})
+      (then (if (i32.or (i32.eqz ${seen})
+            (i32.eqz (i32.and (i32.load8_u (i32.add ${seen} ${seenCellWat(b)}))
+              (i32.shl (i32.const 1) (i32.and (i32.shr_u ${b} (i32.const 3)) (i32.const 7))))))
+        (then (call $__durable_arr_snap ${at})))))`
 }
 // Bit 1 where the pointer's aux is ARRAY_RAW (layout.js): the aux's low bit is the pointer's bit 32.
 const rawSnapBitWat = (bits) => `(i32.and (i32.wrap_i64 (i64.shr_u ${bits} (i64.const 31))) (i32.const 2))`

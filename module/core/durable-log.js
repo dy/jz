@@ -27,7 +27,7 @@
 import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, declGlobal, PTR, LAYOUT } from '../../src/ctx.js'
 import { UNDEF_NAN, TOMB_NAN } from '../../src/ir.js'
-import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex } from '../../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, arrBaseWat } from '../../layout.js'
 import { seenCellWat } from '../collection/durable.js'
 
 export const registerDurableLog = () => {
@@ -127,11 +127,23 @@ export const registerDurableLog = () => {
   // durable arrays and writes every one of them each step, thousands of vec3
   // in one round. `__durable_arr_seen` holds one bit per durable 8-byte
   // address, so "already saved this round" is a load and a test on every later
-  // store; `__durable_arr_log` heads a list of records [next, off, len, cap,
-  // cells], one allocation each. Both live in the round's arena and die with
-  // it. The heal walks the list newest first, as an undo log does: a header a
-  // shift rebased onto another record's cells is overwritten by the older
-  // record that owns them.
+  // store; `__durable_arr_log` heads a list of records [next, at, n, 0,
+  // words], one allocation each: the `n` words from `at` as they stood, the
+  // array's header and cells. Both live in the round's arena and die with
+  // it. The heal walks the list newest first, as an undo log does: a word
+  // two records hold takes the older's, which holds it as the round found it.
+  //
+  // A shifted array (layout.js arrBaseWat) is saved from its base: its
+  // storage is the base's header, which forwards to the live one, the slots
+  // its shifts left and the live header and cells. A shift rewrites the
+  // base's forward, the live header's words and the slot after them, so a
+  // record from the live header alone left the forward to the round: an
+  // array shifted as the module started read wrong after a reset, and some
+  // later calls never returned (test/reset-population.js with it so). The
+  // base's bit marks the array saved: a later shift, whose
+  // live header moved, tests that bit (module/collection/durable.js
+  // durableArrSnapBaseIR), and a store at the moved header finds it here
+  // and sets its own.
   declGlobal('__durable_arr_seen', 'i32')
   declGlobal('__durable_arr_log', 'i32')
   // the stub log's table (module/core/stub-log.js), made first as the module
@@ -142,27 +154,41 @@ export const registerDurableLog = () => {
   declGlobal('__durable_skip', 'i32')
   // Bit 1 of \`off\` marks an array whose elements are raw Numbers (layout.js
   // ARRAY_RAW): its record keeps the bit, and no walk reads its cells for pointers.
-  ctx.core.stdlib['__durable_arr_snap'] = () => `(func $__durable_arr_snap (param $off i32)
-    (local $cell i32) (local $bit i32) (local $len i32) (local $rec i32)${numericArraysOn() ? ` (local $raw i32)
+  ctx.core.stdlib['__durable_arr_snap'] = () => {
+    // the bit of an address in the bitmap: tested, the call returns; else set
+    const mark = (a) => `
+    (local.set $cell (i32.add (global.get $__durable_arr_seen) ${seenCellWat(a)}))
+    (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u ${a} (i32.const 3)) (i32.const 7))))
+    (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
+    (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))`
+    // where no shift is linked, every array's base is its header
+    const shifts = ctx.core.includes.has('__arr_shift')
+    return `(func $__durable_arr_snap (param $off i32)
+    (local $cell i32) (local $bit i32) (local $n i32) (local $rec i32) (local $at i32)${shifts ? ' (local $base i32)' : ''}${numericArraysOn() ? ` (local $raw i32)
     (local.set $raw (i32.and (local.get $off) (i32.const 2)))
     (local.set $off (i32.xor (local.get $off) (local.get $raw)))` : ''}
     (if (i32.eqz (global.get $__durable_arr_seen))
       (then
-        (local.set $len (i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1)))
-        (global.set $__durable_arr_seen (call $__alloc (local.get $len)))
-        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $len))))
-    (local.set $cell (i32.add (global.get $__durable_arr_seen) ${seenCellWat('(local.get $off)')}))
-    (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
-    (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
-    (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
-    (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $len) (i32.const 3)))))
+        (local.set $n (i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1)))
+        (global.set $__durable_arr_seen (call $__alloc (local.get $n)))
+        (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $n))))
+    ${mark('(local.get $off)')}
+    (local.set $at (i32.sub (local.get $off) (i32.const 8)))${shifts ? `
+    ;; a shifted array: saved from its base, once a round
+    ${arrBaseWat('$off', '$base')}
+    (if (i32.ne (local.get $base) (local.get $off))
+      (then ${mark('(local.get $base)')}
+        (local.set $at (i32.sub (local.get $base) (i32.const 8)))))` : ''}
+    ;; the words from the first saved to the last cell
+    (local.set $n (i32.add (i32.shr_u (i32.sub (local.get $off) (local.get $at)) (i32.const 3)) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
+    (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $n) (i32.const 3)))))
     (i32.store (local.get $rec) (global.get $__durable_arr_log))
-    (i32.store offset=4 (local.get $rec) ${numericArraysOn() ? '(i32.or (local.get $off) (local.get $raw))' : '(local.get $off)'})
-    (i32.store offset=8 (local.get $rec) (local.get $len))
-    (i32.store offset=12 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    (i32.store offset=4 (local.get $rec) ${numericArraysOn() ? '(i32.or (local.get $at) (local.get $raw))' : '(local.get $at)'})
+    (i32.store offset=8 (local.get $rec) (local.get $n))
+    (i32.store offset=12 (local.get $rec) (i32.const 0))
+    (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $at) (i32.shl (local.get $n) (i32.const 3)))
     (global.set $__durable_arr_log (local.get $rec)))`
+  }
   // An object field's undo record shares the array log and address bitmap.
   // Only a store of an ephemeral pointer needs one. Recording that field,
   // rather than scanning the whole object, never interprets a neighboring
@@ -217,11 +243,8 @@ export const registerDurableLog = () => {
                   (select (i64.const ${UNDEF_NAN}) (local.get $was) (call $__is_eph_bits (local.get $was))))))
             (br $slot)))` : ''})
         (else
-          ;; an array: its header and cells as they stood${numericArraysOn() ? ` (bit 1, raw cells, is no part of the offset)
-          (local.set $off (i32.and (local.get $off) (i32.const -3)))` : ''}
-          (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
-          (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=12 (local.get $rec)))
-          (memory.copy (local.get $off) (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $len) (i32.const 3)))))
+          ;; an array: its words as they stood${numericArraysOn() ? ` (bit 1, raw cells, is no part of the address)` : ''}
+          (memory.copy (i32.and (local.get $off) (i32.const -8)) (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $len) (i32.const 3)))))
       (local.set $rec (i32.load (local.get $rec)))
       (br $l)))
     (global.set $__durable_arr_log (i32.const 0))

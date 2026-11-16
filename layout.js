@@ -363,6 +363,26 @@ export const followForwardingWat = (off = '$off', { lowGuard = true } = {}) =>
     (then (if (i32.eq (i32.load (i32.sub (local.get ${off}) (i32.const 4))) (i32.const -1))
       (then (local.set ${off} (call $__ptr_offset_fwd (local.get ${off})))))))`
 
+/** A shifted array. `__arr_shift` (module/array.js) moves the header up one
+ *  slot instead of moving the elements: the vacated slot holds the new
+ *  header's len/cap, and its props word (the old header's len/cap words)
+ *  holds the mark [base, -1], the storage's base (for the first shift the
+ *  base's own record, whose target is the header itself). The base's record
+ *  [live, -1] always forwards to the live header (every shift rewrites it), a
+ *  relocated block's records forward to the new block's base, and every
+ *  pointer a binding holds is a base: nothing refers to the slots between the
+ *  base and the live header, so a grow may reuse them. An array below the
+ *  reset mark keeps its slots, and its round's record holds them from the
+ *  base (module/core/durable-log.js `__durable_arr_snap`). Sets local `base`
+ *  to the base of the live header at local `off`. */
+export const arrBaseWat = (off, base) => `
+    (local.set ${base} (local.get ${off}))
+    (if (i32.and (i32.eq (i32.load (i32.sub (local.get ${off}) (i32.const 12))) (i32.const -1))
+                 (i32.ne (i32.load (i32.sub (local.get ${off}) (i32.const 16))) (i32.const -1)))
+      (then
+        (local.set ${base} (i32.load (i32.sub (local.get ${off}) (i32.const 16))))
+        (local.set ${base} (select (i32.sub (local.get ${off}) (i32.const 8)) (local.get ${base}) (i32.eq (local.get ${base}) (local.get ${off}))))))`
+
 /** The cold forwarding-chase loop behind followForwardingWat — the only body
  *  allowed to loop. Re-checks the sentinel each hop (first re-check is
  *  redundant with the caller's guard; the cold path doesn't care). */

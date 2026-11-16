@@ -23,7 +23,7 @@
  *     and a record turned dictionary starts with (record.js `__rec_hash`);
  *   - a record's own offset names it: a record moves only in a compaction,
  *     which rehashes the Sets and Maps after;
- *   - a shifted array's word is its base's mark (array.js arrBaseWat): the
+ *   - a shifted array's word is its base's mark (layout.js arrBaseWat): the
  *     base's header keeps the word, which its first shift leaves as the
  *     identity word or zero (array.js `__arr_shift`).
  *

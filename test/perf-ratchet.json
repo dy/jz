@@ -17,24 +17,24 @@
       "entered": 581
     },
     "buf": {
-      "total": 31463,
-      "entered": 2820
+      "total": 31418,
+      "entered": 2775
     },
     "nest": {
       "total": 5545,
       "entered": 2034
     },
     "slice": {
-      "total": 229468,
-      "entered": 30144
+      "total": 229108,
+      "entered": 29784
     },
     "ring": {
       "total": 30720,
       "entered": 4720
     },
     "condref": {
-      "total": 201475,
-      "entered": 7441
+      "total": 201115,
+      "entered": 7081
     },
     "fgather": {
       "total": 18800,
@@ -59,24 +59,24 @@
       "entered": 581
     },
     "buf": {
-      "total": 24683,
-      "entered": 2820
+      "total": 24638,
+      "entered": 2775
     },
     "nest": {
       "total": 5545,
       "entered": 2034
     },
     "slice": {
-      "total": 165804,
-      "entered": 28448
+      "total": 165444,
+      "entered": 28088
     },
     "ring": {
       "total": 30720,
       "entered": 4720
     },
     "condref": {
-      "total": 147298,
-      "entered": 7441
+      "total": 146938,
+      "entered": 7081
     },
     "fgather": {
       "total": 18800,

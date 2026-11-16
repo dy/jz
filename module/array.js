@@ -31,14 +31,14 @@ import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, may
 import { structInline } from '../src/abi/index.js'
 import { stubLogIR } from './core/stub-log.js'
 import { ctx, inc, err, strictCode, warnDeopt, holds, exprText, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
-import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
-import { hasDurableReset, heapResetWat } from './collection/durable.js'
+import { strHashLiteral, dynPropsFilterSetIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
+import { hasDurableReset, heapResetWat, durableArrSnapBaseIR } from './collection/durable.js'
 import { isRecordWat, orRecordWat } from './collection/record.js'
 import { recordsOn } from '../src/compile/array-records.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
 import { runsAccessor, runsConversion } from '../src/evaluation-effects.js'
-import { DATA_VIEW_FLAG, nanPrefixHex, ATOM, atomNanHex, numTypedElemWat, ptrIsWat } from '../layout.js'
+import { DATA_VIEW_FLAG, nanPrefixHex, ATOM, atomNanHex, numTypedElemWat, ptrIsWat, arrBaseWat } from '../layout.js'
 
 const NAN_BITS = nanPrefixHex()
 import { withRefinements } from '../src/compile/flow-types.js'
@@ -112,15 +112,13 @@ const needsArrayDynMove = () => (ctx.core.includes.has('__dyn_set') || ctx.core.
 // Head slack exists only where a shift can make it (see arrBaseWat): a program
 // without one links a grow that never looks for it.
 const needsHeadSlack = () => ctx.core.includes.has('__arr_shift')
-// Whether durableFwdLogIR/durableArrSnapIR emit a real call (vs '' — see either's own
-// comment): only when __heap_reset exists (owned-memory builds; shared memory never
+// Whether durableArrSnapIR and its siblings emit a real call (vs '': see their own
+// comments): only when __heap_reset exists (owned-memory builds; shared memory never
 // declares it — core.js). Gates the deps() edges below the SAME way, so a shared-memory
 // build (where core.js never registers the durable-heal stdlib names) never requests a
 // name nothing delivers — see collection.js's durableFwdLogIR/durableArrSnapIR comments
-// for the full rationale. Name kept (not renamed to something array-snap-specific): still
-// gates __arr_shift's OWN continued use of durableFwdLogIR (the one array.js call site NOT
-// migrated to durableArrSnapIR — see that function's comment), so it remains an accurate
-// name for what it tests, just no longer the ONLY durable-heal gate in this file.
+// for the full rationale. The name is collection.js's, which gates its tables' own
+// relocation log by it.
 const needsDurableFwdLog = hasDurableReset
 // The size tier links each headed helper as its one whole body (the head is speed for size).
 const leanRuntime = () => !!ctx.transform.optimize?.leanRuntime
@@ -262,7 +260,7 @@ export default (ctx) => {
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
       '__ptr_offset', '__arr_value',
-      ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),  // explicit edge — see arrayGrowDeps's comment
+      ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : []),  // explicit edge: see arrayGrowDeps's comment
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local', ...(recordsOn() ? ['__rec_hash'] : [])] : []),
       ...(arrayKeysOn() ? ['__arr_ident_word'] : []),
     ],
@@ -513,23 +511,6 @@ export default (ctx) => {
   // forwarding chase (mirrors __arr_idx_known) instead of paying __ptr_offset's
   // tag-extract + FORWARDING_MASK dispatch — ARRAY always needs the chase (it's
   // forwarding-capable) but never needs the re-check this variant would otherwise repeat.
-  // A shifted array. `__arr_shift` moves the header up one slot instead of
-  // moving the elements: the vacated slot holds the new header's len/cap, and
-  // its props word (the old header's len/cap words) holds the mark [base, -1],
-  // the storage's base (for the first shift the base's own record, whose
-  // target is the header itself). The base's record [live, -1] always
-  // forwards to the live header (every shift rewrites it), a relocated block's
-  // records forward to the new block's base, and every pointer a binding
-  // holds is a base: nothing refers to the slots between the base and the
-  // live header, so a grow may reuse them. An array below the reset mark
-  // keeps its slots (the durable heal restores headers by their offset).
-  const arrBaseWat = (off, base) => `
-    (local.set ${base} (local.get ${off}))
-    (if (i32.and (i32.eq (i32.load (i32.sub (local.get ${off}) (i32.const 12))) (i32.const -1))
-                 (i32.ne (i32.load (i32.sub (local.get ${off}) (i32.const 16))) (i32.const -1)))
-      (then
-        (local.set ${base} (i32.load (i32.sub (local.get ${off}) (i32.const 16))))
-        (local.set ${base} (select (i32.sub (local.get ${off}) (i32.const 8)) (local.get ${base}) (i32.eq (local.get ${base}) (local.get ${off}))))))`
   // The grown array's pointer: where the program keeps an array's elements raw
   // (compile/numeric-arrays.js) it keeps the high word the pointer had, its aux
   // ARRAY_RAW included, every pointer to one array carrying the same.
@@ -2120,20 +2101,13 @@ export default (ctx) => {
   ctx.core.emit['.shift'] = (arr) => (inc('__arr_shift'),
     typed(['call', '$__arr_shift', asI64(emit(arr))], 'f64'))
 
-  // .shift moves the header up one slot (see arrBaseWat above the grow):
-  // the vacated slot takes the new header's len/cap, the old header's words
-  // take the mark [base, -1], and the base's record forwards to the new
-  // header. durableFwdLogIR on the off->newOff mark below: unlike grow (whose
-  // newOff is always a FRESH allocation, unconditionally ephemeral whenever
-  // off reads durable), shift's newOff is just off+8 — normally still in the
-  // SAME durability class as off, so a shift of a durable array is ordinarily
-  // legitimate persistent state that must survive `_clear`. It only crosses
-  // into ephemeral in the one-in-8-bytes edge case where off sits exactly at
-  // __heap_reset-8, which durableFwdLogIR's two-sided check (source durable
-  // AND target ephemeral) catches without misfiring on the common case. The
-  // base's record needs no log of its own: a durable base's header already
-  // holds a forward, restored wholesale by whichever earlier relocation
-  // logged it.
+  // .shift moves the header up one slot (layout.js arrBaseWat): the vacated
+  // slot takes the new header's len/cap, the old header's words take the
+  // mark [base, -1], and the base's record forwards to the new header. Of a
+  // durable array (its base below the reset mark) that is the round's state,
+  // as any store is: the round's first shift saves the array from its base
+  // before a word changes (collection/durable.js durableArrSnapBaseIR), and
+  // the reset puts the forward, the headers and the cells back.
   ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr i64) (result f64)
     (local $off i32) (local $base i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
     ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
@@ -2149,6 +2123,7 @@ export default (ctx) => {
             (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
             (local.set $newOff (i32.add (local.get $off) (i32.const 8)))
             ${arrBaseWat('$off', '$base')}
+            ${durableArrSnapBaseIR('base', 'off', 'arr')}
             ${headerPropsToGlobalIR()}${arrayKeysOn() ? `
             ;; the first shift above the reset mark: the base's word, which a
             ;; pinned array's identity is read from (collection/identity.js), holds
@@ -2161,8 +2136,7 @@ export default (ctx) => {
             (i32.store (i32.add (local.get $off) (i32.const 4))
               (select (i32.sub (local.get $cap) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $cap) (i32.const 0))))
             ${maybeDynMoveIR()}
-            ${durableFwdLogIR('off', 'newOff', 'len', 'cap')}
-            ;; the old header's words: the new header's mark (see arrBaseWat)
+            ;; the old header's words: the new header's mark (layout.js arrBaseWat)
             (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $base))
             (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
             ;; the base forwards to the live header

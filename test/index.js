@@ -289,6 +289,7 @@ const TESTS = [
   'lane-convert-population',
   'view-order-population',
   'handler-population',
+  'reset-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',

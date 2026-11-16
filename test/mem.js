@@ -1043,26 +1043,31 @@ test('_clear() heals thousands of durable arrays written in one round', () => {
   }
 })
 
-// .shift()'s in-place rebasing is documented (module/array.js, __arr_shift's own
-// comment) as INTENTIONALLY surviving `_clear()` — a durable array's header pointer
-// permanently advances, treated as legitimate persistent state, not a per-round
-// mutation to undo. This is a deliberate, narrower design choice than the element-data
-// heal above: shift never corrupts any surviving element's VALUE (every element that
-// survives a shift keeps its true original content, byte-for-byte — nothing here is a
-// data-corruption bug), it only changes which physical cells count as "the array" —
-// pinning the KNOWN, ACCEPTED behavior (compounds across rounds) so a future change
-// to this design is a deliberate, visible diff here, not a silent regression.
-test('_clear() does NOT heal .shift()\'s header rebasing (documented intentional, not a per-element data bug)', () => {
-  const { exports, memory } = jz(`
-    let a = [1,2,3,4,5]
-    export let f = () => a.shift()
-    export let dump = () => a.join(',')`,
-    { optimize: false })
-  is(exports.f(), 1, 'round 1: shift returns the first element')
-  is(exports.dump(), '2,3,4,5', 'round 1: remaining elements, in place')
-  memory.reset()
-  is(exports.f(), 2, 'round 2: NOT healed back to 1 — the rebasing persisted through _clear()')
-  is(exports.dump(), '3,4,5', 'round 2: one element shorter than round 1 — compounds, by design')
+// An array made at start that a call shifts reads as it started after a reset (README,
+// Memory). A shift moves the live header up a slot and forwards the base to it
+// (layout.js arrBaseWat): the round's state, as a store is. This test pinned the shift
+// persisting through the reset, a round shorter each time, until 2026-11. The array
+// shifted as the module started is saved from its base: its forward is one a call's
+// shift rewrites (module/core/durable-log.js `__durable_arr_snap`).
+test('reset: an array made at start that a call shifts reads as it started', () => {
+  for (const optimize of levels(false, 2, 3)) {
+    const { exports, memory } = jz(`
+      let a = [1, 2, 3, 4, 5]
+      const c = [0, 1, 2, 3]
+      c.shift()
+      export let f = () => a.shift()
+      export let g = () => { c.shift(); c.shift(); return c.length }
+      export let dump = () => a.join(',') + ' ' + c.join(',')`,
+      { optimize })
+    is(exports.f(), 1, 'round 1: shift returns the first element')
+    is(exports.dump(), '2,3,4,5 1,2,3', 'round 1: the rest')
+    memory.reset()
+    is(exports.dump(), '1,2,3,4,5 1,2,3', 'after the reset: as the module started')
+    is(exports.f(), 1, 'round 2: the first element again')
+    is(exports.g(), 1, 'round 2: the array shifted as the module started, shifted twice more')
+    memory.reset()
+    is(exports.dump(), '1,2,3,4,5 1,2,3', 'after the second reset: both as the module started')
+  }
 })
 
 // Relocation-forwarding bound check (layout.js followForwardingWat/ptrOffsetFwdWat):
