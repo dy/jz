@@ -2406,9 +2406,9 @@ test('devirt schema-slot: recursive OBJECT param keeps its real schema id, not s
 })
 
 test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
-  // The dictionary-mode `{}` (computed keys only → real HASH) plus the
-  // `o[k] = f(o[k])` single-probe fusion (tryHashRmwFusion). Values pinned at
-  // both levels: a fused miscount (e.g. a re-inserting probe) shows here.
+  // The dictionary-mode `{}` (computed keys only → real HASH) plus the `o[k]
+  // = f(o[k])` single-probe fusion. Values pinned at both levels: a fused
+  // miscount (e.g. a re-inserting probe) shows here.
   const src = `
   const words = ['aaa', 'bbb', 'ccc']
   export let go = (n) => {

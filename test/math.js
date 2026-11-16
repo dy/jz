@@ -606,7 +606,7 @@ test('Number.isNaN: dynamic/polymorphic argument (not statically NUMBER)', () =>
   is(f(4), false, 'undefined')
 })
 
-test('Number.isNaN: dict/map value-census absent-key argument (maybeUndefined gate, Slice 2)', () => {
+test('Number.isNaN: dict/map value-census absent-key argument (the may-be-undefined gate)', () => {
   const mapAbsent = `const m = new Map(); m.set("a", 1); export let f = () => Number.isNaN(m.get("zz"))`
   const mapPresentReal = `const m = new Map(); m.set("a", 1); export let f = () => Number.isNaN(m.get("a"))`
   const mapPresentNaN = `const m = new Map(); m.set("a", NaN); export let f = () => Number.isNaN(m.get("a"))`

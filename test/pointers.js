@@ -443,22 +443,22 @@ test('carrier: PTR.BIGINT (5) is disjoint from every other pointer tag', () => {
   is(new Set(liveTags).size, liveTags.length)
 })
 
-test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullish-BIGINT-arm ternary (.work/archive/carrier-representation-design.md §13/§14)', () => {
+test('carrier: a ternary of two non-nullish BigInt arms keeps its value through a spliced call under JZ_CARRIER_BOX', () => {
   // Found live compiling watr/src/optimize.js's own `_i64Canon` (`neg ?
   // -BigInt(mag) : BigInt(mag)`, non-simple so jz's own inliner
   // (compile/plan/inline.js) binds it to a fresh temp DECL when splicing
   // `_i64Hex16`'s call — that decl is exactly the shape this test pins) under
   // JZ_CARRIER_BOX=1 at O3: `fold()` returned 5.826595490514274e+252 instead
   // of 2.000000000000001. Off-flag (CARRIER_BOX is a compile-time env-read
-  // const, ir.js/ctx.js), ternaryBoxedNames is never populated at all — this
-  // shape is a no-op there, so the assertion is meaningful specifically under
-  // JZ_CARRIER_BOX=1 and merely non-regressing (never crashes) otherwise —
-  // the failure mode observed here was OFTEN a trap (`memory access out of
-  // bounds`), not just a wrong value, so running this compiled+called
-  // unconditionally (regardless of which flag state the test process itself
-  // was started under) still catches a crash-class regression either way. A
-  // WASI export named `run` is the reserved void command entry; use a normal
-  // export so this carrier assertion remains meaningful on that leg.
+  // const) this shape is a no-op, so the assertion is meaningful specifically
+  // under JZ_CARRIER_BOX=1 and merely non-regressing (never crashes)
+  // otherwise — the failure mode observed here was OFTEN a trap (`memory
+  // access out of bounds`), not just a wrong value, so running this
+  // compiled+called unconditionally (regardless of which flag state the test
+  // process itself was started under) still catches a crash-class regression
+  // either way. A WASI export named `run` is the reserved void command entry;
+  // use a normal export so this carrier assertion remains meaningful on that
+  // leg.
   const src = `
     const hex16 = (v) => v.toString(16)
     const canon = (mag, neg) => hex16(neg ? -BigInt(mag) : BigInt(mag))
@@ -472,18 +472,10 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 })
 
 // Reproduces (pre-fix) with the REAL layout.js (a hand-mimicked single-call-site shape does NOT
-// reproduce — layout.js's i64Hex is called from ~9 sites, forcing its own param bigintBoxed=true per
-// the box-site census, and LAYOUT needs a dynamic shadow — some site elsewhere reads it via bracket
-// access — so its NAN_PREFIX_BITS field is written through the WIDE storedValue/carrierF64 path, a real
-// box). §16's fix: a per-schema-slot fact (ctx.schema.slotBigintBoxed/slotBigintProven,
-// module/schema.js — the slotI32Certain idiom's BIGINT twin) pairs the write side's boxing decision
-// (module/object.js literal/spread construction, src/compile/ emit-assign.js field-assign +
-// structInline element-store) with emitSchemaSlotRead's read side at SCHEMA granularity, so a
-// proven-BIGINT slot unboxes unconditionally instead of handing every consumer the box's raw pointer
-// bits. Under Slice 1's flip, this residual "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a
-// compile-time refusal instead of a box — the CONSERVATIVE PAIRING read-side machinery this test
-// verified has no remaining input to exercise (nothing ever reaches a real box for it to correctly
-// unbox).
+// reproduce — layout.js's i64Hex is called from ~9 sites). Under Slice 1's flip, this residual
+// "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a compile-time refusal instead of a box —
+// the CONSERVATIVE PAIRING read-side machinery this test verified has no remaining input to exercise
+// (nothing ever reaches a real box for it to correctly unbox).
 test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and decode raw-exact (.work/archive/carrier-representation-design.md §15/§16 → decl-literal raw slots + const-field staticValue fold)', () => {
   if (onKernel()) return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })

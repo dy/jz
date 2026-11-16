@@ -223,9 +223,9 @@ test('self-compile: lazy arithmetic survives repeated speed and baseline compile
 })
 
 // The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON), so
-// they never reach watr's single-call inliner. The fix extracts inlBuildPinned to a small
-// scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-call
-// helper inlineOnce lifts, so this routes straight through the once-trapping path.
+// they never reach watr's single-call inliner. A future re-inline would re-break this.
+// forEach's `x=>s+=x` is the single-call helper inlineOnce lifts, so this routes straight
+// through the once-trapping path.
 test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
   const s = instantiate(selfBytes())  // fresh instance of this run's build
   const src = 'export let main = () => { let s = 0; [1,2,3,4].forEach(x => s += x); return s }'

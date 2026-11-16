@@ -3737,7 +3737,7 @@ test('captureIntCertain: float capture does NOT enable elision', () => {
 
 // Workstream #3c: schema field intCertain
 
-test('schemaSlotIntCertain: Math.floor elides on intCertain slot', () => {
+test('schema slot integer certainty: Math.floor elides on intCertain slot', () => {
   // `{ x: n | 0, y: (n * 2) | 0 }` — every observed write to slot x and y is
   // integer-shaped (bitwise op result). Math.floor(p.x) / Math.floor(p.y)
   // should drop the f64.floor op.
@@ -3754,7 +3754,7 @@ test('schemaSlotIntCertain: Math.floor elides on intCertain slot', () => {
   is(run(src).main(3.7), 10) // floor(3) + floor(7) = 10
 })
 
-test('schemaSlotIntCertain: float slot keeps f64.floor', () => {
+test('schema slot integer certainty: float slot keeps f64.floor', () => {
   // Counterpoint: slot is written with a non-int value → not intCertain.
   const src = `
     export const main = (n) => {
@@ -3769,7 +3769,7 @@ test('schemaSlotIntCertain: float slot keeps f64.floor', () => {
   is(run(src).main(3.0), 3)
 })
 
-test('schemaSlotIntCertain: later non-int assign poisons slot', () => {
+test('schema slot integer certainty: later non-int assign poisons slot', () => {
   // `p.x = n | 0` then `p.x = 1.5` — the second write makes the slot
   // polymorphic. `p.x` could be 1.5 at the read site, so Math.floor must
   // stay. Global poison: even though the literal seed was int, one non-int
@@ -3791,7 +3791,7 @@ test('schemaSlotIntCertain: later non-int assign poisons slot', () => {
   is(run(src).main(7), 1)
 })
 
-test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
+test('schema slot integer certainty: int slot via local intCertain binding', () => {
   // Slot fed by a local `k` that the per-body intCertain fixpoint marks as
   // integer-shaped (`let k = n | 0`).
   const src = `
@@ -4679,9 +4679,9 @@ test('truthiness: BigInt origins without literals share runtime and optimized pr
     'scalar boolean exports retain the memory-free path')
 })
 
-// dropEffects — dead-value-drop simplification (drop of a pure op over a tee
-// collapses to the bare store; drop of a control-flow value stays whole).
-test('dropEffects: comma-update loop (j++, k+=step) stays correct', () => {
+// Dead-value drop simplification (drop of a pure op over a tee collapses to
+// the bare store; drop of a control-flow value stays whole).
+test('a dropped value: comma-update loop (j++, k+=step) stays correct', () => {
   // The discarded old value of `j++` is dead; eliminating it must not change the
   // loop. j:0..7, k=3j → sum += 1003j → 1003·28 = 28084.
   const { main } = run(`export let main = () => {
@@ -4692,9 +4692,10 @@ test('dropEffects: comma-update loop (j++, k+=step) stays correct', () => {
   is(main(), 28084)
 })
 
-test('dropEffects: dropped ternary runs exactly one branch', () => {
-  // A ternary whose value is discarded must execute ONE arm — dropEffects must
-  // not flatten an `if`/ternary's branches into both side effects.
+test('a dropped value: dropped ternary runs exactly one branch', () => {
+  // A ternary whose value is discarded must execute ONE arm — the drop
+  // simplification must not flatten an `if`/ternary's branches into both side
+  // effects.
   const { main } = run(`export let main = () => {
     let x = 0, y = 0
     for (let i = 0; i < 10; i++) (i & 1) ? (x = x + 1) : (y = y + 1)
@@ -4703,10 +4704,7 @@ test('dropEffects: dropped ternary runs exactly one branch', () => {
   is(main(), 505)   // 5·100 + 5, NOT 1010 (both arms)
 })
 
-test('dropEffects: dropped ternary-in-condition compiles (seed 192 regression)', () => {
-  // Regressed to "not enough arguments on the stack for drop" when dropEffects
-  // recursed into an `if`'s arms (unbalancing the stack) instead of keeping the
-  // control-flow value whole under a drop.
+test('a dropped value: dropped ternary-in-condition compiles (seed 192 regression)', () => {
   for (const opt of levels(2, 'speed')) {
     const { main } = run(`export let main = () => {
       let r = 0
@@ -6552,9 +6550,8 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
   // just exprType's magnitude-blind `+`) → (dq/65536)|0, dq also feeding a second, real
   // (non-`|0`) division for the fractional part. Mirrors the real file's shape exactly
   // (module-level named consts, dual dq use, loop-scoped decls) — a same-looking
-  // single-use/literal-only variant reaches a DIFFERENT, still-open bare-escape gap
-  // (intLevelMap/collectBareEscapes, not touched by this fix) and must not be conflated
-  // with what this pin covers.
+  // single-use/literal-only variant reaches a DIFFERENT, still-open bare-escape gap and
+  // must not be conflated with what this pin covers.
   const src = `
     const DMIN = 96
     const DSPAN = 2000

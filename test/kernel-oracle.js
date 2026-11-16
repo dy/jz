@@ -395,7 +395,7 @@ export let f = (s) => g(s) === false`
 
 // Both legs then hit the decl-STORAGE WALL directly (previous paragraph):
 // `v`'s own storage is the raw carrier, `return v` is a bare name with no
-// expression shape for hasAmbiguousBool-Merge to see, so both compilers return
+// expression shape for hasAmbiguousBoolMerge to see, so both compilers return
 // the raw 0/number where JS returns the coerced-false atom — agreeing with
 // EACH OTHER, disagreeing with the oracle.
 test('kernel oracle: ambiguous BOOL|NUMBER local storage keeps its identity through a capturing closure', () => {
@@ -467,7 +467,7 @@ test('kernel oracle: console.log string constants — AGREE (closed incidentally
 })
 
 // Both a small (1n) and a near-2^62 magnitude are pinned.
-test('kernel oracle: bare BigInt array-element return — AGREE (re-audit #6 finding 2, closed by installArrElemReps)', async () => {
+test('kernel oracle: bare BigInt array-element return — AGREE', async () => {
   if (onWasi()) return
   const cases = [
     { name: 'array-elem bigint (small)', src: `export let f = () => { let a = [1n]; return a[0] }` },

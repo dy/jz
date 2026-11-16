@@ -1280,12 +1280,7 @@ test('SIMD i32x4 - map bitwise still takes the SIMD lane path (unaffected by the
 // `Infinity`, `-Infinity`) isn't even valid WAT integer syntax — `new
 // Int32Array(4).map(x => x & 1.5)` used to throw "Bad int 1.5" at compile time,
 // a spurious REJECT of valid JS (ECMAScript ToInt32: `x & 1.5` ≡ `x & 1`).
-// genSimdMap now normalizes `c` via toI32Const — the same `Number.isFinite(v) ?
-// v | 0 : 0` fold src/ir.js's toI32 applies to a literal f64.const — for BOTH
-// the value family (and/or/xor) and the shift-count family (shl/shr/shru: no
-// separate `&31` needed, WASM's own shl/shr_s/shr_u — scalar and i32x4 lane-wise
-// alike — already reduce the shift-count operand modulo 32 at the instruction
-// level). Differential against the host's own TypedArray.prototype.map (the
+// Differential against the host's own TypedArray.prototype.map (the
 // authoritative oracle) at O0/O2/O3, element-by-element.
 const INT_BW_CONSTS = [1.5, -0, 33, 0.9, 2147483648.7, NaN, Infinity, -1.5]
 const INT_BW_ELEMS = {
@@ -1361,10 +1356,10 @@ test('SIMD map arithmetic decline - Int32Array/Uint32Array fractional constant (
 })
 
 test('SIMD map i32x4 - WAT-shape control: integer constants still vectorize, fractional-arithmetic constants decline', () => {
-  // Positive: an INTEGER constant (unchanged by toI32Const) keeps taking the
-  // SIMD lane path for every recognized op family, on both Int32Array and
-  // Uint32Array — this fix's normalization/decline gates must not spill onto
-  // the ordinary, already-correct integer-constant case.
+  // Positive: an INTEGER constant keeps taking the SIMD lane path for every
+  // recognized op family, on both Int32Array and Uint32Array — this fix's
+  // normalization/decline gates must not spill onto the ordinary,
+  // already-correct integer-constant case.
   for (const Kind of ['Int32Array', 'Uint32Array']) {
     ok(/v128\.and/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x & 255) }`, { optimize: 0 })), `${Kind} x&255: v128.and present`)
     ok(/i32x4\.mul/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x * 3) }`, { optimize: 0 })), `${Kind} x*3: i32x4.mul present`)
@@ -3974,13 +3969,13 @@ test('SIMD multi-pixel - vertical box blur (outer-loop peel + 4-pixel SIMD)', ()
 })
 
 test('SIMD channel order - permuted RGBA channels stay positionally correct', () => {
-  // Both channel-SIMD lifts (1-pixel tryChannelReduce and 4-pixel tryBlurMultiPixel) map
-  // v128 lane c to the accumulator that summed SOURCE byte-offset c. They coincide for an
-  // identity-order blur, so a permutation-insensitive SUM checksum can't see a mis-map.
-  // This program permutes which channel each accumulator reads/stores and checks a
-  // POSITION-SENSITIVE rolling hash, so a lane mis-map diverges. Oracle = the unoptimized
-  // (no-SIMD) compile. rp[off] = accumulator (0..3) fed by source offset `off`; sp[m] =
-  // accumulator stored at output offset m. acc names a0..a3.
+  // Both channel-SIMD lifts (1-pixel and 4-pixel) map v128 lane c to the accumulator that
+  // summed SOURCE byte-offset c. They coincide for an identity-order blur, so a
+  // permutation-insensitive SUM checksum can't see a mis-map. This program permutes which
+  // channel each accumulator reads/stores and checks a POSITION-SENSITIVE rolling hash, so
+  // a lane mis-map diverges. Oracle = the unoptimized (no-SIMD) compile. rp[off] =
+  // accumulator (0..3) fed by source offset `off`; sp[m] = accumulator stored at output
+  // offset m. acc names a0..a3.
   const rd = (acc, off) => `${acc}+=src[${off === 0 ? 'p' : 'p+' + off}]`
   const wr = (off, acc) => `dst[${off === 0 ? 'o' : 'o+' + off}]=(${acc}/win)|0`
   const blur = (w, r, rp, sp) => `export let main = () => {
@@ -4462,9 +4457,6 @@ test('SIMD mirror store - symmetric log fill vectorizes with swapped lanes, bit-
   is(von.fill(), voff.fill(), 'odd-tail trip bit-exact')
 })
 
-// Runs LAST in the dispatch chain, after every idiom recognizer above (including tryVectorize/
-// tryMemCopyFill/tryRampMap/tryToneMap/tryStencil/tryButterfly).
-//
 // Each case below asserts BOTH that the loop actually vectorizes (`hasV128`, scoped by op
 // signature so it can't be satisfied by an unrelated fill/ramp loop elsewhere in the program)
 // and that the result is bit-exact against the same source compiled with vectorization off —

@@ -98,9 +98,9 @@ test('determinism: α-renamed source compiles byte-identical', () => {
 
 test('determinism: warm-process recompile is text-identical (per-compile counters/caches)', () => {
   // A module-level counter or cache surviving between compile() calls makes the
-  // SECOND compile of the same program differ — the __cseCtr class (cse0/1 →
-  // cse2/3 on recompile) and the analyzeBody cache lifetime. WAT text (not just
-  // bytes: local names aren't encoded into binaries) must be history-free.
+  // SECOND compile of the same program differ — a CSE counter (cse0/1 → cse2/3
+  // on recompile) and the analyzeBody cache lifetime. WAT text (not just bytes:
+  // local names aren't encoded into binaries) must be history-free.
   const src = `
     const N = 64
     export let f = (a) => {

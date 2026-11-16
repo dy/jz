@@ -2076,16 +2076,7 @@ test('Set/Map: grow past capacity + delete', () => {
 })
 
 // Set/Map has/delete boundary: real JS booleans, not 1/0
-// Regression for the banked ".has()/.delete() boundary returns 1/0, not boolean"
-// deviation (.work/archive/todo.md, 2026-08-19): ECMA-262 Map.prototype.has/
-// Set.prototype.has/delete return a genuine boolean. kind-traits.js' methodValType
-// already claimed VAL.BOOL for these on a proven Map/Set receiver, and the boundary
-// wrapper's own resultBool/boolBoxIR mechanism (src/compile/index.js
-// synthesizeBoundaryWrappers) already boxes a proven-BOOL result correctly — but the
-// whole-function return-kind passes (narrowValResults/narrowBoolResults,
-// src/compile/narrow.js) couldn't see a body-local receiver's kind through a compound
-// return tail (`return m.has(k)`), so func.valResult never got set and the boxing
-// never fired.
+// ECMA-262 Map.prototype.has/Set.prototype.has/delete return a genuine boolean.
 test('Map/Set: has/delete cross the JS boundary as real booleans (proven receiver), every optimize level', () => {
   for (const optimize of levels(false, 2, 3)) {
     const o = `O${optimize || 0}`
@@ -4341,10 +4332,10 @@ test('object mutated via a parameter: the real watr-shaped repro (makeByteBuf/wr
 test('object passed as a parameter: a param that is only READ keeps its direct (non-shadow-probed) codegen — WAT shape', () => {
   // Negative control for the fix above: a parameter proven ARRAY through a
   // real construction/call-site proof (a literal array argument, resolved
-  // by the cross-function paramReps fixpoint — never through the removed
-  // methodEvidence guess) and used only for `.length`/index READS must
-  // keep the direct, fast array-header codegen — no own-property shadow
-  // probe, no dynamic dispatch.
+  // by the cross-function paramReps fixpoint — never through a method
+  // name) and used only for `.length`/index READS must keep the direct,
+  // fast array-header codegen — no own-property shadow probe, no dynamic
+  // dispatch.
   const src = `
     function sumArr(a) {
       let s = 0
@@ -4592,7 +4583,7 @@ test('closed computed-dispatch table: a member reached by a SHORT outer call dec
     is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
 })
 
-// inferValAtSite: `.`-property-read call arguments (narrow.js)
+//
 
 test('RepresentationPlan: a param fed only a `.`-property read of a proven-schema ARRAY field gets direct array codegen (positive)', () => {
   // CTX is a genuine `{}`-literal schema (unlike watr's own real ctx, which
@@ -4814,13 +4805,8 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
 })
 
 test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the same way as an object-literal table (positive, watr\'s real build[] shape)', () => {
-  // resolveComputedSourceIds (program-index.js) resolves only object-literal
-  // tables (its own header: property writes are `{}`-literal only) — watr's
-  // real `build[SECTION.code](item, ctx)` is a numerically-indexed ARRAY of
-  // arrows instead (needed for a real WASM call_indirect), which this file's
-  // own sibling resolver (constArrayMembers) covers. Two members, deliberately
-  // different arity, to also exercise arrowParamNameAt's "extra argument
-  // beyond a member's own declared arity is provably unreachable, not
+  // Two members, deliberately different arity, to also exercise the "extra
+  // argument beyond a member's own declared arity is provably unreachable, not
   // ambiguous" rule (the first member never even declares a 2nd parameter).
   const src = `
     function id(nm, list) { return list[nm] }

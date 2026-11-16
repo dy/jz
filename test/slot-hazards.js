@@ -268,12 +268,6 @@ export let main = () => step(init())`
 })
 
 test('slot-hazards: miss-capable reads keep their undefined guards (no sentinel fold)', () => {
-  // emit's strictSentinel fold trusts kind + non-nullable; the value-kind
-  // inference types `.get()` results / element reads from container kinds, so
-  // mayBeNullish must flag them (fail-closed) or the guard folds away — the
-  // self-compile kernel's own `autoCache.get(name) !== undefined` cache probe
-  // folded TRUE and every call returned the miss sentinel (the byte-parity
-  // root).
   const src = `
 const cache = new Map()
 const compute = (k) => k * 2 + 1

@@ -2227,8 +2227,8 @@ test('Slice 5: bare Map/dict .get()/[] read materializes the true BigInt across 
 test('Slice 5: negative controls — mixed-kind Map falls back to documented (unfixed) behavior; a statically-proven BigInt export is untouched', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })), /BigInt value at this collection/)
-  // A statically-proven BigInt export (no census, no Map/dict) keeps taking
-  // the ORIGINAL unmarked resultBigint lane, unaffected by this retirement —
+  // A statically-proven BigInt export (no census, no Map/dict) keeps taking the
+  // ORIGINAL unmarked BigInt result lane, unaffected by this retirement —
   // structural pin against the new diagnostic over-firing on an already-sound case.
   is(jz(`export let f = () => 5n`).exports.f(), 5n)
   is(jz(`export let f = () => -5n`).exports.f(), -5n)
@@ -2268,12 +2268,11 @@ test('§14 point 4: full presence×domain matrix over all 9 binary ops, differen
 // the number 0.0" exemption is the SAME class): the bitwise family's "both absent"
 // cell ToInt32(NaN)=0 on both sides, giving the NUMBER 0 in real JS — but 0's raw
 // i64/f64 bit pattern is IDENTICAL to a genuine BigInt 0n's carrier, so the export
-// lane (kind.js censusBigintSentinelKind kind 4, no sentinel exists or safely CAN
-// exist for this specific value) cannot distinguish them and passes the bits
-// through as a raw BigInt. The VALUE is numerically correct (0n == 0); only the
-// TYPE tag is wrong. A real, documented divergence, not silently dropped — this
-// codebase already accepts the identical ambiguity class elsewhere (0-literal
-// BigInt/Number mixing).
+// lane (no sentinel exists or safely CAN exist for this specific value) cannot
+// distinguish them and passes the bits through as a raw BigInt. The VALUE is
+// numerically correct (0n == 0); only the TYPE tag is wrong. A real, documented
+// divergence, not silently dropped — this codebase already accepts the identical
+// ambiguity class elsewhere (0-literal BigInt/Number mixing).
 test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n, not Number 0 (carrier collision, permanent) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['&', '|', '^', '<<', '>>'])
@@ -2371,13 +2370,8 @@ test('audit #10: proven (non-census, statically-typed) receivers are unaffected 
 // audit-#11 P0-3: the five nullish-receiver checks above were themselves
 // gated on host:'wasi' being run via env-only (`test:wasi`'s JZ_TEST_HOST
 // default), a real but indirect pin — explicit host:'wasi' compiles here so
-// the parity holds regardless of how the suite is invoked. Fixed by hoisting
-// censusMaybeUndefined/isNullish to run BEFORE the envImports branch
-// (RequireObjectCoercible precedes any dispatch-strategy choice, ES 13.3) —
-// the other four families (emitLengthAccess, tryRuntimeStringFork,
-// emitGenericClosureCall, and tryRuntimeNumberMethod's own internal check)
-// never had a capability-nested check to begin with, so they were already
-// host-neutral; audited here to confirm, not just assumed.
+// the parity holds regardless of how the suite is invoked.
+// RequireObjectCoercible precedes any dispatch-strategy choice (ES 13.3).
 test('audit #11 P0-3: js/wasi host parity — the five nullish-receiver TypeError checks hold under host:wasi too', () => {
   const src = {
     length: `export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }`,
@@ -2422,7 +2416,7 @@ test('Object.assign onto a literal (unbound) Error instance mutates it in place,
 test('Slice 3: bigintMixReject / `+` STRING-concat — negative controls (fix is representationally live, behaviorally inert pre-Slice-4)', () => {
   // genuine BigInt/Number literal mix still throws (bigintMixReject unaffected
   // for a PROVEN, non-census BIGINT operand — the new guard only excuses a
-  // maybeUndefined-flagged claim, never a real one).
+  // may-be-undefined claim, never a real one).
   let threw = false
   try { run(`return 1n + 1`) } catch (e) { threw = true }
   is(threw, true)
@@ -2562,7 +2556,7 @@ test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads c
   throws(() => withBigintStrict(() => jz(`export let f = (k, j) => { const d = {}; d[k] = 5n; d[j] = 3n; let x = d[k]; let y = d[j]; return x + y }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// The genuine literal BigInt/Number mix (bigIntMixReject, arithmetic-core,
+// The genuine literal BigInt/Number mix (bigintMixReject, arithmetic-core,
 // a different mechanism) and genuine BigInt+BigInt arithmetic (no Map/dict
 // involved at all) are unaffected — kept as-is.
 test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine literal mixes are unaffected', () => {

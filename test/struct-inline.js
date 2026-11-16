@@ -328,8 +328,7 @@ test('union inline: eligibility verdicts (positive + fail-closed negatives)', ()
   is(elig(BODY(`h = (h + o.x) | 0`)).join(';'), '', 'unguarded variant read fails closed')
   is(elig(BODY(`h = (h + o.k) | 0`)).join(';'), '0,1,2,3', 'union-agreeing tag read eligible')
   // Exported return crosses to the HOST — memory.read would decode packed
-  // cells as a plain array. narrowReturnArrayElems never sets the fact on
-  // exported functions, so the return sanction must fail closed.
+  // cells as a plain array, so the return sanction must fail closed.
   const exp = `
     export let make = () => {
       const rows = []

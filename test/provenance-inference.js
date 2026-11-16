@@ -1,11 +1,7 @@
 // Typed-array kind provenance — per-edge pins (bench/provenance's edges in
 // miniature). Each edge differs ONLY in how the Float64Array reaches the hot
 // loop; the kernel must stay on the typed path (no __typed_idx/__dyn_get/__len
-// dispatch inside `go`). The inference chain under test: observeProgramSlots'
-// slotTypedCtors census + slotTypedCtorAt/BySid (never-written gate) + the
-// module-let fixpoint's field-read evidence (late run) + refineFieldProvenance
-// (module-const sids from ABI-backed return schemas) + narrow's per-caller and
-// module-seeded sid maps feeding the typed-param arg lattice.
+// dispatch inside `go`).
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import {

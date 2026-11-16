@@ -770,31 +770,18 @@ const EXPECTED_FAIL_FILES = new Map([
   // tag can recover "this was a regex" after that degradation.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
-  // Fixed by guarding each slot's call behind a PTR.CLOSURE check (GetMethod, ES
-  // 7.3.11: a non-callable method value is treated as absent, not invoked) —
-  // restructured around `br` instead of `br_if` inside the guard (a non-taken `br_if`
-  // leaves its value on the stack, which doesn't balance inside a void `if`; an
-  // unconditional `br` has no not-taken path to leave anything on).
-  // position-tointeger.js's remaining "valueOf never invoked" symptom was a SEPARATE,
-  // sibling bug in src/prepare/pre-eval.js's evalStringMethod: `indexOf`'s
-  // constant-fold used `args[1]?.v` directly (unlike its slice/charAt siblings just
-  // above it in that file, already guarded by isNumOrAbsent from an earlier fix) — an
-  // unfoldable position argument (an object, evalConst → null) and a genuinely
-  // OMITTED one (undefined) both read as `undefined` through optional chaining, so
-  // the fold silently treated "present but unfoldable" as "absent", masking the real
-  // runtime coercion path (which the toPrimitiveChain fix above now computes
-  // correctly) from ever running. Left open — no flagged entry in either corpus
-  // exercises it, and implementing an inherited-toString fallback is a materially
-  // bigger feature than a per-call-site coercion fix. audit-#11 item 7 sub-3 (gate
-  // honesty pass): three PRE-EXISTING real fails, A1_T9 is the one PRE-EXISTING fail
-  // from that trio that's still genuinely out of scope (not a bug — see the
-  // String/indexOf entries above for the same class): A1_T9: `new
-  // String(obj).slice(...)` where obj has a custom valueOf/toString — same
-  // ToPrimitive-coercion-on-a-wrapped-object class as the String/indexOf entries just
-  // above (out of scope, not new). Fixed by routing every ToIntegerOrInfinity
-  // position/index argument in module/string.js (`.slice`'s start/end,
-  // `.indexOf`/`.includes`'s shared `posIndex`, `.lastIndexOf`'s explicit `from`)
-  // through the new `asI32Sat` (src/ir.js) instead.
+  // GetMethod, ES 7.3.11: a non-callable method value is treated as absent, not
+  // invoked. Left open — no flagged entry in either corpus exercises it, and
+  // implementing an inherited-toString fallback is a materially bigger feature than a
+  // per-call-site coercion fix. audit-#11 item 7 sub-3 (gate honesty pass): three
+  // PRE-EXISTING real fails, A1_T9 is the one PRE-EXISTING fail from that trio that's
+  // still genuinely out of scope (not a bug — see the String/indexOf entries above
+  // for the same class): A1_T9: `new String(obj).slice(...)` where obj has a custom
+  // valueOf/toString — same ToPrimitive-coercion-on-a-wrapped-object class as the
+  // String/indexOf entries just above (out of scope, not new). Fixed by routing every
+  // ToIntegerOrInfinity position/index argument in module/string.js (`.slice`'s
+  // start/end, `.indexOf`/`.includes`'s shared `posIndex`, `.lastIndexOf`'s explicit
+  // `from`) through the new `asI32Sat` (src/ir.js) instead.
   ['built-ins/Promise/prototype/then/resolve-pending-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/prototype/then/resolve-pending-rejected-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/prototype/then/resolve-settled-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],

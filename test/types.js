@@ -715,8 +715,8 @@ test('typed-narrow: Int32Array helper — distinct elemType preserved', () => {
 })
 
 test('typed-narrow: chain — outer helper forwards inner narrowed result', () => {
-  // Fixpoint: outer narrows only after inner; outer's typedAuxOfReturn reads
-  // inner's f.sig.ptrAux to confirm same elem aux across all returns.
+  // Fixpoint: outer narrows only after inner; outer reads inner's
+  // f.sig.ptrAux to confirm same elem aux across all returns.
   const { f } = runHost(`
     let inner = () => new Float64Array([7.5, 8.5])
     let outer = () => inner()
@@ -738,8 +738,8 @@ test('typed-narrow: ?: with two same-elemType arms narrows', () => {
 })
 
 test('typed-narrow: ?: with mixed elemType does NOT narrow (still correct)', () => {
-  // Polymorphic typed-array result — typedAuxOfReturn sees aux mismatch and
-  // bails. Result stays f64 NaN-boxed; runtime kind dispatch resolves both.
+  // Polymorphic typed-array result — the elem aux disagrees, so it bails.
+  // Result stays f64 NaN-boxed; runtime kind dispatch resolves both.
   const { f } = runHost(`
     let mk = (w) => w == 0 ? new Float64Array([1.5, 2.5]) : new Int32Array([10, 20])
     export let f = (w, i) => { let a = mk(w); return a[i] }
@@ -875,7 +875,7 @@ test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
 
 test('typed-narrow: chained .map preserves elem type', () => {
   // a.map(...).map(...) — first .map's result is locally TYPED with same elem
-  // ctor (propagateTyped strips .view).
+  // ctor.
   const { f } = runHost(`
     let mk = () => new Float64Array([1.0, 2.0, 3.0])
     export let f = (i) => {
@@ -1141,8 +1141,7 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
 // `presentVal` differs from `mayBeUndefined` in one load-bearing way this
 // section exists to pin — it is an exact KIND claim, not a monotonic boolean,
 // so it must POISON (not merely stay true) the moment any write to the same
-// binding disagrees, exactly like `val` itself already does (reps.js
-// `presentVal` doc comment, analyze.js `setPresentVal`).
+// binding disagrees, exactly like `val` itself already does.
 function runAnalyzePresentVal(code, dynWriteVarNames) {
   reset(emitter, GLOBALS, emissionHooks())
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
@@ -1367,7 +1366,7 @@ test('mayBeUndefined closure capture: an ordinary captured binding is not flagge
   is(cb.mayBeUndefineds, null)  // fixed-shape closure record: absent facts use null
 })
 
-// narrowValResults' own OR-join: honest boundary
+//
 // The mechanism itself (the `exprs.some(e => exprMayBeUndefinedIn(e, body))`
 // OR-fold) is still landed and correct — pinned here as a negative control
 // so a future change to bodyFacts.valTypes' settling rule that DOES make

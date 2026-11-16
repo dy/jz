@@ -47,7 +47,7 @@ test('static locals: a table and a buffer handed to helpers are static blocks re
 
 test('static locals: a loop over static arrays at constant addresses is vectorized as one over parameters is', () => {
   // the address is a constant base the memarg fold moves into `offset=`; the
-  // vectorizer reads it back as the base (vectorize/index.js constBaseForm)
+  // vectorizer reads it back as the base
   const src = `const N = 8192
     const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s }
     const fill = (a, b) => { for (let i = 0; i < N; i++) { a[i] = (i % 13) - 6; b[i] = ((i * 7) % 11) - 5 } }

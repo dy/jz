@@ -48,7 +48,7 @@ test('deopt D1: all sized kinds narrow — typed/plain .length in +', () => {
   is(count(plain, /\$__str_concat/g), 0, 'plain-array .length + : no concat')
 })
 
-test('deopt D1: SOUNDNESS — an unproven string-shaped param keeps .length + conservative (methodEvidence retired)', () => {
+test('deopt D1: SOUNDNESS — an unproven string-shaped param keeps .length + conservative (a method name proves no kind)', () => {
   if (belowOpt(1)) return
   const str = compile('export let f=(s)=>{let n=0;for(let i=0;i<s.length;i++)n+=s.charCodeAt(i)+s.length;return n}', { wat: true })
   ok(count(str, /\$__str_concat/g) >= 1, 'unproven param: .length + stays on the string-capable dispatch, not falsely narrowed to NUMBER')

@@ -1140,8 +1140,8 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
 
 test('builtin as first-class value: Array.isArray callback (self-compile kernel shape)', () => {
   // watr's optimizer passes the bare builtin to .filter (`kids.filter(Array.isArray)`),
-  // so the self-compile kernel must compile it — builtinFunctionValue mints a
-  // ordinary lifted wrapper for it (prepare/entry.js).
+  // so the self-compile kernel must compile it — prepare/entry.js mints an ordinary
+  // lifted wrapper for it.
   const { run } = runHost(`
     export let run = (z) => {
       let xs = [[1,2], 3, [4], 's', 7]
@@ -1156,7 +1156,7 @@ test('closure-unbox: trivial closure-call program stays compact (post-watr fused
   if (belowOpt(2)) return  // size pin: the pass under test runs at optimize >= 2
   if (onWasi()) return  // wasi: size pin / wasi module larger due to extra imports
   if (onKernel()) return  // kernel: bytes path is unoptimized (no post-watr fusedRewrite); size pin assumes level-2
-  // Pin the post-watrOptimize fusedRewrite pass — without it watr's inliner
+  // Pin the post-watr fusedRewrite pass — without it watr's inliner
   // re-introduces a rebox/unbox roundtrip across the closure-body inline
   // boundary. Threshold tracks the ≤252b figure with small headroom.
   const src = `
@@ -1168,9 +1168,9 @@ test('closure-unbox: trivial closure-call program stays compact (post-watr fused
 })
 
 test('closure-unbox: no reinterpret/wrap_i64 roundtrip in inlined closure call', () => {
-  // After watrOptimize inlines the closure body, the call-site
-  // `asF64(local.get $g)` (rebox to f64) immediately meets the body's
-  // `i32.wrap_i64 (i64.reinterpret_f64 …)` (unbox back to envPtr).
+  // After watr inlines the closure body, the call-site `asF64(local.get
+  // $g)` (rebox to f64) immediately meets the body's `i32.wrap_i64
+  // (i64.reinterpret_f64 …)` (unbox back to envPtr).
   const w = wat(`
     let g = (x) => x + 1
     export let f = () => g(41)
@@ -2247,8 +2247,6 @@ export let f = () => [o.m(5), o.m(0)]`)
 })
 
 test('closures: mutually-recursive const arrows inside a CLOSURE-compiled function (preboxed cell order)', () => {
-  // Fixed by mirroring the top-level order (populateBoxedSets before emitBlockBody);
-  // pinned here at the exact trigger shape.
   const { f } = runHost(`export let f = () => {
     const outer = () => {
       const tag = new Set(['x'])
@@ -2276,7 +2274,7 @@ test('closures: i32-narrowed param coerces with ES ToInt32 WRAP, not saturation'
   is(f(), 'bff000000')
 })
 
-// audit-#18: staticClosureEnv must not fire when the enclosing function can
+// A static closure environment must not stand when the enclosing function can
 // re-enter between two closure calls — the recursive activation overwrites the
 // shared static capture slot (outer(2) read 6 instead of 12 at O2/O3).
 test('static closure env: re-entrant enclosing function with two call sites reads its own captures', async () => {
@@ -2505,6 +2503,9 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
   }
 })
 
+// The same blind spot in a binding's own integer certainty: an integer-initialized binding a closure reassigns
+// read back raw, so `v * 2` skipped ToNumber on the string or Boolean the closure stored ('x' came back as
+// itself, true as the atom).
 test('closure: a value a closure writes into an integer binding converts at a numeric read', () => {
   const src = `export let f = (k) => { let v = 0; let set = () => { v = k > 1 ? 'x' : k > 0 ? true : 3 }; set(); return v * 2 }`
   const want = oracle(src).f

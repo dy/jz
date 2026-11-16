@@ -125,14 +125,14 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length when stringy disqualifies')
 })
 
-test('methodEvidence STRING: charCodeAt usage alone no longer proves STRING (unproven param stays runtime-dispatched, still correct for a real string)', () => {
+test('a method name proves no kind, STRING: charCodeAt usage alone no longer proves STRING (unproven param stays runtime-dispatched, still correct for a real string)', () => {
   const src = `export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }`
   for (const optimize of levels(false, 2, 3)) {
     is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: "AB".charCodeAt(0)=65 + "AB".length=2`)
   }
 })
 
-test('methodEvidence STRING: expression-bodied arrow — same retirement, same correctness floor', () => {
+test('a method name proves no kind, STRING: expression-bodied arrow — same retirement, same correctness floor', () => {
   const src = `export const hd = (s) => s.charCodeAt(0) + s.length`
   for (const optimize of levels(false, 2, 3)) {
     is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: expr-body — "AB".charCodeAt(0)=65 + "AB".length=2`)
@@ -156,7 +156,7 @@ test('Array.isArray flow refinement outranks an unrelated durable rep for .lengt
   is(count(branch, /\$__length\b/g), 0, 'positive branch uses the proven ARRAY header')
 })
 
-test('methodEvidence ARRAY: .push proves NOT-STRING but must NOT induce VAL.ARRAY (fix/param-mutation-propagation)', () => {
+test('a method name proves no kind, ARRAY: .push proves NOT-STRING but must NOT induce VAL.ARRAY (fix/param-mutation-propagation)', () => {
   // An unresolved receiver (no call-site proof — `tail` is exported, so no
   // argument evidence exists) must stay on the fully-polymorphic runtime
   // dispatch: `.push` still proves the receiver ISN'T a string
@@ -306,7 +306,7 @@ test('default-param narrowing: runtime stays JS-correct across arg shapes', () =
   is(h([9, 8]), 2, 'array forwarded reads array length')
 })
 
-test('inferValType (audit-#4): compound BigInt-local call-site arg no longer folds a strict-eq to a wrong constant', () => {
+test('call-site argument kind: compound BigInt-local call-site arg no longer folds a strict-eq to a wrong constant', () => {
   // Pre-fix: paramReps val=NUMBER let emitStrictEq's differing-primitive-class
   // fold constant-fold `n === 8n` to `false` at COMPILE TIME — wrong, since `n`
   // is genuinely 8n at runtime.
@@ -323,7 +323,7 @@ test('inferValType (audit-#4): compound BigInt-local call-site arg no longer fol
   is(main(5, 3), true, '8n === 8n must be true, not a miscompiled false')
 })
 
-test('inferValType (audit-#4): compound BigInt-local call-site arg keeps .toString(16) on the BigInt path', () => {
+test('call-site argument kind: compound BigInt-local call-site arg keeps .toString(16) on the BigInt path', () => {
   // Pre-fix: val=NUMBER on the callee's param routed .toString(16) through the
   // NUMBER radix formatter ($__num_radix) applied to the raw i64 bit pattern —
   // BIGINT has no runtime tag, so those bits read back as a near-zero f64
@@ -335,7 +335,7 @@ test('inferValType (audit-#4): compound BigInt-local call-site arg keeps .toStri
   is(main(5, 3), '8', 'BigInt(5) + BigInt(3) formatted as hex must read "8", not a NUMBER-lane denormal')
 })
 
-test('inferValType (audit-#4) soundness floor: a compound arg with NO local/global evidence keeps the historical optimistic-NUMBER fast path', () => {
+test('call-site argument kind, soundness floor: a compound arg with NO local/global evidence keeps the historical optimistic-NUMBER fast path', () => {
   // The fix must be strictly additive — it must not turn a compound expr that
   // was already an unresolvable optimistic-NUMBER guess (neither operand has
   // ANY local or global fact) into something MORE conservative. `p - q` over
@@ -350,9 +350,6 @@ test('inferValType (audit-#4) soundness floor: a compound arg with NO local/glob
 })
 
 test('intConst: unanimous int-literal arg folds local.get to i32 const', () => {
-  // Every caller passes k=7 → narrow.js D-phase sets paramReps[scale][1]
-  // .intConst=7. compile.js seeds localReps.intConst; emitLocalGet sees it
-  // and emits the literal instead of a local read.
   // sourceInline off: the fixture observes the narrowing through $scale's
   // body, and the leaf inliner would otherwise (correctly) dissolve it.
   const wat = compile(`
@@ -392,11 +389,8 @@ test('intConst: body write to param clears intConst (validateIntConstParams)', (
   ok(/local\.get \$k/.test(body[0]), 'body-write should keep local.get $k')
 })
 
-test('inferArrElemSchema: consistent caller schemas → direct slot load', () => {
+test('array element schema from callers: consistent caller schemas → direct slot load', () => {
   if (belowOpt(1)) return  // asserts schema-aware slot load eliminated __dyn_get (optimize >= 1)
-  // initRows builds an array of `{x,y}` objects via .push. narrowReturnArrayElems
-  // sets initRows.arrayElemSchema; runArrFixpoint propagates to runKernel's param
-  // via inferArrElemSchema.
   const wat = compile(`
     const initRows = () => {
       const xs = []
@@ -421,7 +415,7 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
   ok(/(f64|i32)\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
 })
 
-test('inferArrElemSchema: inline array-literal arguments retain boxed record layout', () => {
+test('array element schema from callers: inline array-literal arguments retain boxed record layout', () => {
   if (belowOpt(1)) return
   // subscript's register(d) → dispatch([d, ...]) shape, minus the spread: an
   // array literal built AND passed in one expression (never bound to a local
@@ -438,7 +432,7 @@ test('inferArrElemSchema: inline array-literal arguments retain boxed record lay
   is(jz(src).exports.main(), 6, 'runtime value is JS-correct: build({x:1,y:2})=2, build({x:3,y:4})=4, sum=6')
 })
 
-test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
+test('array element schema from callers: heterogeneous literal elements stay generic', () => {
   if (belowOpt(1)) return
   // Negative: build's two call sites pass DIFFERENT shapes ({x,y} vs {y,z}),
   // `y` in a different slot of each → no common slot, so the read tests the
@@ -456,7 +450,7 @@ test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
   ok(count(wat, /\$__dyn_get_/g) > 0, 'heterogeneous element shapes must stay generic')
 })
 
-test('inferArrElemSchema: spread records retain their values across empty and nonempty inputs', () => {
+test('array element schema from callers: spread records retain their values across empty and nonempty inputs', () => {
   if (belowOpt(1)) return
   // The register/dispatch pattern rebuilds an array of boxed records. The
   // summary may resolve their schema; it must still use their object layout.
@@ -472,12 +466,8 @@ test('inferArrElemSchema: spread records retain their values across empty and no
   for (const full of [1, 1, 0, 1]) is(main(full), full ? 15 : 6, `boxed spread records, full=${full}`)
 })
 
-test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
+test('typed-array kind from callers: Float64Array arg unlocks SIMD vectorization', () => {
   if (belowOpt(2)) return  // asserts SIMD emission — requires the vectorizer (optimize >= 2)
-  // Caller passes new Float64Array(...) → inferTypedCtor resolves the elem
-  // ctor → paramReps[sumArr][0].typedCtor → compile.js seeds val=TYPED + the
-  // elem ctor → ptrUnboxable narrows param to i32 + len becomes a direct
-  // typed-header read + the loop vectorizes to f64x2 SIMD.
   const src = `
     const sumArr = (a) => {
       let s = 0
@@ -496,7 +486,7 @@ test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
   is([m1(), m1(), m2(), m1()], [10, 10, 18, 10], 'distinct extents and repeated calls')
 })
 
-test('inferTypedCtor: typed-array GLOBAL arg types the callee param (direct loads)', () => {
+test('typed-array kind from callers: typed-array GLOBAL arg types the callee param (direct loads)', () => {
   // A module-global typed array passed as an arg must resolve its ctor the same as
   // a local would — the caller-side typed-elem context layers the module's typed
   // globals under its body locals.
@@ -517,7 +507,7 @@ test('inferTypedCtor: typed-array GLOBAL arg types the callee param (direct load
   ok(/f64\.load\b/.test(wat), 'expected direct f64.load on the global-typed buffer')
 })
 
-test('inferTypedCtor: a caller LOCAL shadowing a typed global is not mistyped', () => {
+test('typed-array kind from callers: a caller LOCAL shadowing a typed global is not mistyped', () => {
   // Soundness guard for the global layer: if the caller declares its own binding
   // with a global's name, that local — not the typed global — is the arg. Here the
   // local `g` is a plain Number, so `take(g)` must NOT inherit Float64Array; the
@@ -532,7 +522,7 @@ test('inferTypedCtor: a caller LOCAL shadowing a typed global is not mistyped', 
     'shadowing local (a Number) must keep polymorphic access — global ctor must not leak')
 })
 
-test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch', () => {
+test('typed-array kind from callers: typed + array caller disagreement keeps runtime dispatch', () => {
   // Float64Array + plain array → typedCtor sticky-null: the ORIGINAL function
   // must keep runtime dispatch (no unsound direct loads). Since the guarded
   // speculation pass (speculateTypedParams), the typed caller's evidence may
@@ -784,7 +774,7 @@ const forkOutsideInit = (src, initRe = /^\$(init|setup)$/) =>
   callsOutside(watTree(src, { level: 2, watr: false }), FORK_CALL, initRe)
 const noForkHot = (src, msg) => is(forkOutsideInit(src), 0, msg)
 
-test('inferModuleLetTypes: double-buffer swap keeps typed loads (waves regression)', () => {
+test('module let typed-array kind: double-buffer swap keeps typed loads (waves regression)', () => {
   // `let tmp = a; a = b; b = tmp` — the canonical ping-pong swap.
   const src = `
     let a, b
@@ -799,7 +789,7 @@ test('inferModuleLetTypes: double-buffer swap keeps typed loads (waves regressio
   ok(/f64\.load\b/.test(compile(src, { wat: true })), 'expected direct f64.load over the swapped buffers')
 })
 
-test('inferModuleLetTypes: 3-buffer rotation keeps typed loads', () => {
+test('module let typed-array kind: 3-buffer rotation keeps typed loads', () => {
   noForkHot(`
     let a, b, c
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n); c = new Float64Array(n) }
@@ -810,7 +800,7 @@ test('inferModuleLetTypes: 3-buffer rotation keeps typed loads', () => {
     }`, 'rotated typed globals stay typed')
 })
 
-test('inferModuleLetTypes: global aliased from a typed-returning user fn', () => {
+test('module let typed-array kind: global aliased from a typed-returning user fn', () => {
   if (belowOpt(1)) return  // codegen-SHAPE pin (no dispatch fork) — the fork legitimately remains at O0
   // `a = mk(n)` — globals are typed before inlining runs, so the call is opaque to
   // the forward pass.
@@ -830,7 +820,7 @@ test('inferModuleLetTypes: global aliased from a typed-returning user fn', () =>
   noFork(blockBody, 'global from block-body typed fn must be typed')
 })
 
-test('inferModuleLetTypes: global aliased from a ctor-preserving typed method', () => {
+test('module let typed-array kind: global aliased from a ctor-preserving typed method', () => {
   if (belowOpt(1)) return  // codegen-SHAPE pin — see above
   // `.subarray()` / `.slice()` return the receiver's typed-array kind.
   const src = `
@@ -853,7 +843,7 @@ test('inferModuleLetTypes: global aliased from a ctor-preserving typed method', 
   is(f(1), -2, 'replacement view uses its new source')
 })
 
-test('inferModuleLetTypes: alias to a NON-typed value stays polymorphic (soundness)', () => {
+test('module let typed-array kind: alias to a NON-typed value stays polymorphic (soundness)', () => {
   // The fixpoint must not over-promote: if any assignment yields a non-typed value,
   // the global must keep dynamic dispatch (else a raw f64.load on a string traps).
   const wat = compile(`
@@ -864,7 +854,7 @@ test('inferModuleLetTypes: alias to a NON-typed value stays polymorphic (soundne
   ok(count(wat, FORK) > 0, 'a mixed typed/string global must keep its dynamic read path')
 })
 
-test('inferModuleLetTypes: swap-temp name colliding with a numeric local stays typed (lbm regression)', () => {
+test('module let typed-array kind: swap-temp name colliding with a numeric local stays typed (lbm regression)', () => {
   // The swap temp `s` in `step` (aliases typed `a`) shares its NAME with the loop
   // counter `s` in `frame` (a number, mutated by `s++`). Scope-qualified keys keep
   // the two `s` apart.
@@ -890,7 +880,7 @@ const TYPE_FORK = /\$__typed_idx(?:_tagged)?\b/g
 const noTypeFork = (wat, msg) => is(count(wat, TYPE_FORK), 0, msg)
 const keepsTypeFork = (wat, msg) => ok(count(wat, TYPE_FORK) > 0, msg)
 
-test('inferModuleGlobalValTypes: global assigned STRING only inside a function body proves STRING (subscript cur shape)', () => {
+test('module global value kind: global assigned STRING only inside a function body proves STRING (subscript cur shape)', () => {
   // Mirrors subscript/parse.js exactly: a module global (`cur`) written only
   // inside a non-exported helper's body, from that helper's OWN parameter —
   // whose type in turn comes from a call-site argument (`buildSrc()`'s proven
@@ -918,7 +908,7 @@ test('inferModuleGlobalValTypes: global assigned STRING only inside a function b
   is(ex.scan(), want, 'values bit-exact vs plain JS')
 })
 
-test('inferModuleGlobalValTypes: conflicting STRING/NUMBER writes across functions → no claim (fail closed)', () => {
+test('module global value kind: conflicting STRING/NUMBER writes across functions → no claim (fail closed)', () => {
   const src = `
     let g
     export let setStr = () => { g = 'x' }
@@ -933,7 +923,7 @@ test('inferModuleGlobalValTypes: conflicting STRING/NUMBER writes across functio
   ex.setNum(); is(ex.get(), 5, 'numeric value round-trips — no false claim corrupted it')
 })
 
-test('inferModuleGlobalValTypes: a local shadowing the global name does not pollute its kind', () => {
+test('module global value kind: a local shadowing the global name does not pollute its kind', () => {
   // `unrelated`'s `g` is a DIFFERENT, locally-scoped binding (`let g = 0`) that
   // happens to share the module global's name. Its NUMBER-ish writes must not
   // be attributed to the real global, whose only genuine write (in `setG`) is STRING.
@@ -951,7 +941,7 @@ test('inferModuleGlobalValTypes: a local shadowing the global name does not poll
   is(ex.unrelated(), 1, 'the shadowing local computes independently')
 })
 
-test('inferModuleGlobalValTypes: a write from a nested closure counts (poisons on conflict)', () => {
+test('module global value kind: a write from a nested closure counts (poisons on conflict)', () => {
   // If the closure body were invisible to the scan (treated as an opaque `=>`
   // boundary, the way analyzeBody's OWN per-function walk deliberately is),
   // `g` would wrongly resolve STRING from `setStr` alone.
@@ -965,7 +955,7 @@ test('inferModuleGlobalValTypes: a write from a nested closure counts (poisons o
     'a NUMBER write buried inside a closure must still conflict with the STRING evidence elsewhere')
 })
 
-test('inferModuleGlobalValTypes: a global written only inside a closure resolves (positive)', () => {
+test('module global value kind: a global written only inside a closure resolves (positive)', () => {
   // The mirror of the pin above: when the closure's write IS the only, provable
   // (literal) evidence, the closure must not be skipped as an opaque boundary —
   // the global should resolve cleanly.
@@ -1359,15 +1349,7 @@ test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its com
 // (module-init AST + every function body concatenated) — a global's relevant
 // scope for the "does every read re-apply the same ToInt32 the writes did" proof
 // is the WHOLE PROGRAM, not one function, since its storage outlives any one
-// function. Two-tier, mirroring intLevelMap's own lattice (Pass D's local
-// exemption, generalized to program scope via `intLevelMap` over the SAME
-// synthetic body): a candidate whose every write is level-2 STRICT (int32-range
-// literal, bitwise/comparison result, Math.imul/clz32 — provably fits i32
-// regardless of where it's read) skips the escape check entirely; a level-1
-// (integral, unbounded) candidate needs collectBareEscapes' full proof —
-// index-positioned, ToInt32-rooted, statically in-range, or governed by SOME
-// comparison anywhere in the whole-program scan (SAME loop-counter tolerance the
-// local fix already accepts, generalized program-wide).
+// function.
 test('module-global i32-narrowing no longer wraps a bare-escaped compound-assign counter (inferModuleIntGlobals sibling, 2026-08-03)', () => {
   const srcMul = `let counter = 4; export let bump = () => { counter *= 100000; return counter }`
   const mMul = run(srcMul)
@@ -1422,7 +1404,7 @@ test('module-global counter widths distinguish Number growth from explicit words
   is(eAcc.bump5(2000000000), ((2000000000 | 0) + (2000000000 | 0)) | 0)
 })
 
-test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
+test('array element schema from callers: caller disagreement keeps polymorphic dispatch', () => {
   // initA pushes `{x,y}`, initB pushes `{a,b}` — disagreeing schemas at the
   // lattice → paramReps[runKernel][0].arrayElemSchema sticky-nulls → callee
   // falls back to polymorphic dispatch.
@@ -1481,7 +1463,7 @@ test('extractRefinements: instanceof Float64Array → __typed_idx dispatch', () 
   ok(!/\$__arr_idx\b/.test(probe), 'should not fall back to __arr_idx')
 })
 
-test('staticInstanceofFold: [..] instanceof Array folds to constant true at jzify', () => {
+test('static instanceof fold: [..] instanceof Array folds to constant true at jzify', () => {
   // No runtime check — dead-code elim collapses the whole branch.
   const wat = compile(`
     export const probe = () => ([1,2,3] instanceof Array) ? 1 : 0
@@ -1491,7 +1473,7 @@ test('staticInstanceofFold: [..] instanceof Array folds to constant true at jzif
   ok(!/\$__is_/.test(probe), 'should not emit __is_* helper call')
 })
 
-test('staticInstanceofFold: primitive literal instanceof X folds to false', () => {
+test('static instanceof fold: primitive literal instanceof X folds to false', () => {
   // Per JS spec, primitives are never instances. jzify folds at AST time.
   const wat = compile(`
     export const probe = () => ('hello' instanceof Map) ? 1 : 0
@@ -1504,7 +1486,7 @@ test('staticInstanceofFold: primitive literal instanceof X folds to false', () =
 
 // runtime sanity
 
-test('inference runtime sanity: notString + intConst + arrElemSchema', () => {
+test('inference runtime sanity: notString + intConst + array element schema', () => {
   // Cross-check: facts that elide dispatch must not change observed semantics.
   const { main } = run(`
     const initRows = () => {
@@ -2015,9 +1997,8 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 })
 
 // BIGINT is the one kind with no runtime tag — raw i64 bits ride the f64 slot — so `c ?
-// BigInt(x) : null` must CARRY the kind through the nullish arm (VT['?:'], kind.js) or the
-// receiver falls to tryRuntimeStringFork's non-NaN arm and `.toString(16)` formats the bits as a
-// NUMBER denormal ("0.000…").
+// BigInt(x) : null` must CARRY the kind through the nullish arm or `.toString(16)` formats the
+// bits as a NUMBER denormal ("0.000…").
 test('bigint∪null: kind carries through the nullish ternary arm, guards stay live — BigInt-or-null ternary merge strict-mode (opt-in) ternary-nullish diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`
@@ -2282,7 +2263,7 @@ test('val-kind dichotomy: a number-or-object parameter is cloned per kind, and a
     is((text.match(/__to_num|__add_slow|__is_str_key/g) || []).length, 0, 'the array element stays a number: no conversion or string dispatch')
 })
 
-test('narrowMutatedParams: every write must preserve signed width', () => {
+test('a parameter the body writes: every write must preserve signed width', () => {
   // A cursor threaded through a helper may outgrow its array.
   for (const bounded of [false, true]) {
     const src = `
@@ -2317,7 +2298,7 @@ test('narrowMutatedParams: every write must preserve signed width', () => {
   }
 })
 
-test('narrowMutatedParams: boundary writes retain full Numbers and negative zero', () => {
+test('a parameter the body writes: boundary writes retain full Numbers and negative zero', () => {
   const bodies = [
     'const old = i++; return [old, i]',
     'const old = i--; return [old, i]',
@@ -2347,7 +2328,7 @@ test('narrowMutatedParams: boundary writes retain full Numbers and negative zero
   }
 })
 
-test('narrowMutatedParams: default and throwing writes recover on the next call', () => {
+test('a parameter the body writes: default and throwing writes recover on the next call', () => {
   const src = `
     function step(i, fail = false) {
       i += 1
@@ -2371,7 +2352,7 @@ test('narrowMutatedParams: default and throwing writes recover on the next call'
   }
 })
 
-test('narrowMutatedParams: float-mutated param stays f64', () => {
+test('a parameter the body writes: float-mutated param stays f64', () => {
   // Same cursor-through-helper shape as above, but the mutation itself (`i =
   // i + 0.5`) isn't integer-valued, so it cannot meet the strict signed-word
   // requirement.
@@ -2438,13 +2419,8 @@ test('convergence caps: 150-deep self-referential schema domino compiles (domain
   is(result, 1, 'domino still resolves to the seed value')
 })
 
-// It round-tripped correctly native but diverged self-compiled
-// (JZ_TEST_TARGET=jz.wasm) specifically when a typeof guard was involved —
-// reproduced identically across two independent implementations, so left OUT
-// rather than shipped uncertain (self-compiling correctness is load-bearing
-// here — see narrow.js's narrowValResults doc for the trail). `return
-// parse(v)` as a function's OWN tail therefore still fails open (unproven,
-// same as any not-yet-provable callee) — pinned below.
+// `return parse(v)` as a function's OWN tail therefore still fails open
+// (unproven, same as any not-yet-provable callee) — pinned below.
 
 test('closure return-kind: direct-dispatched closure call skips __to_num at the call site (typeof-guarded)', () => {
   // watr's own uleb/limits shape: a local closure whose return is guarded by
