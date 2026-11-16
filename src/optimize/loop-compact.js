@@ -53,6 +53,16 @@
  * memory below the floor, and reaches above it only through a logged stub.
 
  *
+ * A loop whose iterations are released as well (emit/control-flow.js iterationRelease) asks the
+ * compaction epoch past one comparison of the heap with its mark, and afresh: the site's kernels
+ * are calls a later pass puts in the function, which the effects' solve (optimize/effects.js) takes
+ * as `later`, and promoteGlobals asks the function's own row of it, so the epoch is never a local
+ * read as the function is entered (it was, and a release after a compaction of the loop's own
+ * walked the log the move had emptied and freed what an escape before it had kept,
+ * test/iteration-release.js). The escape log names addresses the move changed and is emptied; a
+ * phase's compaction (`__gc_phase`) then sets it full, so the frames around the phase keep all
+ * rather than read an empty log as nothing escaped and release what the move kept.
+ *
  * @module optimize/loop-compact
  */
 import { T as MARK } from '../ast.js'

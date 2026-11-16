@@ -67,6 +67,11 @@
  * back), and appends the new functions after every existing one, so no
  * function index changes.
  *
+ * - The bench measures the first call of a fresh process, so a large speed-tier module pays Liftoff
+ *   until TurboFan lands. watr's ratio is that tier-up (`CLAIM_UNMET` in bench/claims.mjs has the
+ *   measure). The lever is a smaller hot module (cold paths out of line, a size-aware
+ *   branch-speculation budget), not a different steady state.
+ *
  * @module optimize/split-funcs
  */
 

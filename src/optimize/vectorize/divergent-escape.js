@@ -1,3 +1,6 @@
+// Escape-loop vectorization preserves the iterator's scalar Number or word type through pair
+// execution and scalar tails; f64x2 lane counters do not justify truncating a Number counter.
+
 import { walkAst } from '../../ast.js'
 import { hasSideEffect, isLocalGet } from './addr-model.js'
 import { LANE_PURE } from './lane-tables.js'

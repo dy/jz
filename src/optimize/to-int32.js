@@ -36,6 +36,11 @@
 // within ±2^51 that is never NaN takes the add with no test (a saturating
 // truncation too, where its interval keeps it inside the word), and an integer
 // takes it with no truncation.
+//
+// ToInt32 of a value whose range is proven finite and below 2^63 (`f64Range`: literals, counters,
+// `Math.floor` of a bounded product, a checked byte read) is `i32.wrap_i64(i64.trunc_sat_f64_s)`
+// with no ±∞ guard: V8's arm64 lowering of `i32.trunc_sat_f64_s` adds a float round-trip and range
+// checks (bytebeat 1521 → 1370 µs; a 5e7-iteration micro 294 ns against 446).
 
 import { intRanges } from './int-range.js'
 

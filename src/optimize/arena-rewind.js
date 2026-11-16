@@ -83,6 +83,13 @@
  * (6.9 GB under V8), more than a wasm32 heap holds; its records and the
  * tape are what outlive a sweep.
  *
+ * Every frame still takes the lower of its mark and the base as it is entered: the base a frame
+ * finds can stand above its mark (leaving it as it stood freed a string a module binding held,
+ * test/number.js under `alloc: false`).
+ *
+ * Truly shared memory (`sharedMemory`) rewinds nothing: one thread's restore would discard every
+ * other thread's allocations.
+ *
  * @module optimize/arena-rewind
  */
 import { T, NONE, OP_NUM, intern, text, walk, node, str, num, push, insertAfter, remove, fromWat } from '../ir/tape.js'

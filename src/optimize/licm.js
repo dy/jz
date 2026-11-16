@@ -7,6 +7,9 @@
  * entry-hoisted pointer-offset snapshot (hoistInvariantPtrOffset), and straight-line
  * scalar-load CSE (cseScalarLoad).
  *
+ * Allocating helpers cannot be speculated before zero-trip loops or crossed by allocator-global
+ * reads.
+ *
  * @module optimize/licm
  */
 import { LAYOUT, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'

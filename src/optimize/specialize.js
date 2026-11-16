@@ -53,6 +53,9 @@
 // them by the copy's values alone. A copy that narrows nothing is dropped.
 //
 // Runs where a versioned loop may keep its original beside it (speed tiers).
+//
+// Loops rewind by the label as written, so a copy rewinds with its original
+// (`optimize/loop-rewind.js`).
 
 import { integerPlan } from './int-narrow.js'
 import { plainNaN, conditional, boundOf, boxBits, constBits, LIMIT } from './int-range.js'

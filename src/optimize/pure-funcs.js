@@ -3,6 +3,13 @@
  * coercions that ordinary calls still need. (Read-only user functions are watr's to
  * find, from call effects.)
  *
+ * A scalar math kernel (`optimize/pure-funcs.js`) of at most 300 nodes (`kernelNodes`) joins each
+ * call such a loop makes, in an arm of an `if` too, through a copy of its own that watr's
+ * single-caller inliner dissolves, while the caller stays within `IR_FULL` (`src/growth.js`): a
+ * sine is 282 bytes and an acos 578, past what V8 adds to a loop of 640 bytes or more, and the
+ * kernel's work is the loop's where the arm runs (three's `slerpFlat`, an acos and three sines in
+ * an arm, 0.76x the time spliced).
+ *
  * @module optimize/pure-funcs
  */
 import { findBodyStart, cloneIR } from '../ir.js'

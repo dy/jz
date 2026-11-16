@@ -1,3 +1,14 @@
+// What no gate sees stays each lift's own: a store under a condition is stored under it, a lane
+// narrower than the scalar's word means what the word meant (a shift by its width, an unsigned byte
+// product), an address the lift keeps reads no value only lane 0 holds, and an outer strip's two
+// pixels share an inner loop only where its bound, its start and its splatted loads are no pixel's
+// own (`pixelShared`, `outer-scaffold.js`). `test/vector-legality.js` pins a program for each class
+// a lift got wrong; `test/vector-dependence.js`, in the generated suite, sweeps dependence-shaped
+// loops, those counting down and those with a shifted or inclusive test among them;
+// `test/loop-forms.js` pins each form the strips' scaffold lifts; `test/vector-coverage.js`, beside
+// the spelling gate, holds which loops of the alias battery a lift takes as a table that only
+// grows.
+
 import { cloneNode, walkAst } from '../../ast.js'
 import { isLocalGet, laneAccess, readExit, readStep, stepsByOneVia } from './addr-model.js'
 import { gateStrips } from './alias.js'
