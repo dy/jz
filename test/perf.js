@@ -91,7 +91,7 @@ function functionNames(wasm) {
   return names
 }
 
-// === Correctness + codegen quality tests ===
+// Correctness + codegen quality tests
 
 test('perf: fib(30) — WASM faster than JS', () => {
   const { exports: { fib } } = jz('export let fib = (n) => n <= 1 ? n : fib(n-1) + fib(n-2)')
@@ -183,7 +183,7 @@ test('perf: typed array sum — WASM competitive', () => {
 
   pin(`typed sum (${N})`, () => jsSum(data), () => sum(wasmArr), 500)
 })
-// === Bench-case pins ===
+// Bench-case pins
 // Each test mirrors a bench/<case> kernel. Allocations + work happen inside
 // the wasm function so jz fully narrows types (matching how `bench/<case>` is
 // compiled with `main()` as the export). Pin: WASM < JS * 1.2.
@@ -511,7 +511,7 @@ test('perf: aos object rows — WASM faster than JS', () => {
 
   pin(`aos (${N}x${INNER})`, jsRun, run, 3)
 })
-// === Codegen quality assertions ===
+// Codegen quality assertions
 
 test('codegen: boolean propagation — no __is_truthy on comparisons', () => {
   const wat = compile('export let f = (a, b) => { while (a < b && b > 0) { a++; b-- } return a }', { wat: true })
@@ -1697,7 +1697,7 @@ test('codegen: statement array push skips dropped return length reload', () => {
     '__arr_push1 should still use the shared cold forwarding chase')
 })
 
-// === JSON shape inference (shapeStrs) ===
+// JSON shape inference (shapeStrs)
 //
 // Bench convention writes `let SRC = '{...}'` to defeat compile-time JSON.parse
 // folding. shapeStrs preserves shape knowledge across that boundary so the walk
@@ -1961,7 +1961,7 @@ test('codegen: .length hoisted out of for-loop', () => {
   }
 })
 
-// === Golden size tests ===
+// Golden size tests
 // Snapshot WASM byte count for representative shapes. Catches accidental stdlib
 // or feature-gate regressions. On improvement, update the baseline; the printed
 // "actual N" makes drift visible.

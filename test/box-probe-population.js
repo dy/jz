@@ -37,7 +37,7 @@ const prog = (name, decl, loop, names = 'i', args = NUM, pre = '') => P.push({ n
 const cap = 'if (++c > 44) break'
 const round = 'x[i] = c; i = i * 2 + t'
 
-// ---- the entry: the statement before the loop
+// the entry: the statement before the loop
 prog('a swap before the loop', 'let i = 0, j = s\n  ;[i, j] = [j, i]', `while (i < n) { ${cap}; ${round} }`, 'i, j')
 prog('a literal, then a write in an arm', 'let i = 0\n  if (s > 5) i = s', `while (i < n) { ${cap}; ${round} }`)
 prog('a literal, then a write in a block', 'let i = 4\n  { i = s }', `while (i < n) { ${cap}; ${round} }`)
@@ -55,7 +55,7 @@ prog('a word that is negative', 'let i = s | -8', `while (i < n) { ${cap}; ${rou
 prog('a parameter written by the loop', '', `while (s < n) { ${cap}; x[s] = c; s = s * 2 + t }`, 's')
 prog('the bound a parameter written before', 'let i = s\n  n = n * 2', `while (i < n) { ${cap}; ${round} }`, 'i, n')
 prog('the stride a parameter written before', 'let i = s\n  t = t + 0.5', `while (i < n) { ${cap}; ${round} }`, 'i, t')
-// ---- -0 among the names of the box
+// -0 among the names of the box
 prog('a stride that is -0, a literal', 'let i = s\n  const z = -0', `while (i < n) { ${cap}; x[i] = c; i = (i + 1) * z }`, 'i, 1 / i')
 prog('a stride that is -0, computed', 'let i = s\n  const z = 0 * -1', `while (i < n) { ${cap}; x[i] = c; i = (i + 1) * z }`, 'i, 1 / i')
 prog('a stride that is the parameter, -0 among its values', 'let i = s', `while (i < n) { ${cap}; x[i] = c; i = (i + 1) * t }`, 'i, 1 / i')
@@ -74,7 +74,7 @@ prog('a stride that is -0, a negated zero argument', 'let i = 0', `sum = run(x, 
   NUM, 'const ZERO = 0\nconst run = (x, n, s, z) => { const Z = z; let i = s, c = 0, w = 0; while (i < n) { if (++c > 30) break; x[i] = c; w += x[c % 8]; i = (i + 1) * Z }; return 1 / i + w }')
 prog('a bound that is -0', 'let i = s\n  const z = -0', `while (i <= z) { ${cap}; x[i] = c; i = (i + 1) * (z + t) }`, 'i, 1 / i')
 prog('a held name entering as -0 from a literal', 'let i = -0', `while (i < n) { ${cap}; x[i] = c; i = i * 2 * t }`, 'i, 1 / i')
-// ---- the loop's shape
+// the loop's shape
 prog('no braces', 'let i = s', 'while (i < n) i = i * 2 + 1 + (x[i] > 100 ? 1 : 0)', 'i', NUM.filter(([n, s]) => s >= 0 || Number.isNaN(s)))
 prog('the test in parentheses', 'let i = s', `while ((i < n)) { ${cap}; ${round} }`)
 prog('a constant test', 'let i = s', `while (1) { if (!(i < n)) break; ${cap}; ${round} }`)
@@ -85,7 +85,7 @@ prog('the cap in the test', 'let i = s', `while (i < n && c < 44) { c++; ${round
 prog('a held name read after by an expression', 'let i = s', `while (i < n) { ${cap}; ${round} }\n  sum = sum + i * 0.5`, 'i')
 prog('held names declared apart', 'let i = s\n  let id = 4\n  let w = 0', `while (i < n) { ${cap}; x[i] = c; w = i + id; i = 2 * (id - 1); id *= 4 }`, 'i, id, w')
 prog('a held name written only in one round', 'let i = s, q = 1', `while (i < n) { ${cap}; x[i] = c; if (c === 3) q = q * 1000; i = i * 2 + q }`, 'i, q')
-// ---- the loop the copy leaves to: its state
+// the loop the copy leaves to: its state
 prog('a float sum across the hand-over', 'let i = s, w = 0.1', `while (i < n) { ${cap}; w = w * 1.25 + x[i % 8]; i = i * 2 + t }`, 'i, w')
 prog('a store across the hand-over', 'let i = s', `while (i < n) { ${cap}; x[c % 8] = x[c % 8] * 1.5 + i; i = i * 2 + t }`)
 prog('names declared in the round across the hand-over', 'let i = s, keep = 0', `while (i < n) { ${cap}; const a = i * 3, b = a + t; keep = keep + b % 7; x[i] = b; i = i * 2 + t }`, 'i, keep')
@@ -189,7 +189,7 @@ test(`box probe population: ${P.length} DP rows whose copy leaves for the loop a
   population('box resume', P, { configs: CONFIGS, own: ['LB', 'scan'] }))
 }
 
-// ---- the row as one loop standing alone, left at the cell `at`
+// the row as one loop standing alone, left at the cell `at`
 {
 const LOOP = {
   'for let': ['', 'for (let j = 1; j <= LB; j++) {', '}', ''],

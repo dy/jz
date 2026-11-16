@@ -171,12 +171,8 @@ const TRACKED_BUILTIN_PATHS = [
   'NaN',
   'undefined',
   'Symbol',
-  // Implemented-but-untracked pools wired 2026-07-10 (extension-surface plan):
-  // typed arrays are jz's flagship type — its full prototype surface has real
-  // implementations (module/typedarray.js incl. the ES2023 change-by-copy trio
-  // plain Array still lacks); WeakMap/WeakSet fold to Map/Set (documented);
-  // RegExp beyond exec: literal-based flags/source/test surfaces. Tests using
-  // harness helpers (testTypedArray.js etc.) absorb as not-in-scope skips.
+  // Tests using harness helpers (testTypedArray.js etc.) absorb as
+  // not-in-scope skips.
   'TypedArray/prototype/at',
   'TypedArray/prototype/copyWithin',
   'TypedArray/prototype/every',
@@ -706,6 +702,7 @@ const DATE_UNSUPPORTED_TESTS = new Map([
   ['built-ins/Date/UTC/coercion-order.js', 'object ToPrimitive coercion'],
 ])
 
+// Expected failures
 // Built-ins tests that COMPILE and RUN but assert-fail because they exercise a
 // feature jz deliberately does not implement (out of scope for the distilled-JS
 // subset) or a documented representation divergence. Compile-time fails ("… is
@@ -817,7 +814,6 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
-  // 'instanceof' handler gained a function-shape probe — `typeof
 ])
 
 function expectedFailReason(rel) {
@@ -1021,6 +1017,7 @@ function runTest(src, isAsync) {
 
 const builtinsDir = join(TEST262, 'test', 'built-ins')
 
+// Work collection (main thread)
 // Walk the tracked built-in paths once, applying the --filter, and produce a
 // flat work list — one entry per test file. Content-level skip classification
 // and compile/run happen later, in parallel workers.
@@ -1082,6 +1079,7 @@ if (!isMainThread) {
   // Spawned worker: run the assigned slice and report tallies back.
   runChunk(workerData.items).then(r => parentPort.postMessage(r))
 } else {
+  // Main: collect work, fan out to a worker pool, aggregate
   const allBuiltinsFiles = countJs(builtinsDir)
   const work = collectWork()
 

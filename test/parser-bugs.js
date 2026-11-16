@@ -89,7 +89,7 @@ test('bracketless nested conditionals with trailing statements', () => {
     is(exports.f(0, 0), 4);
 });
 
-// --- valid-jz = valid-JS guards (re-audit pass 4) ---
+// valid-jz = valid-JS guards (re-audit pass 4)
 
 const rejects = (src, match) => {
     let err
@@ -257,6 +257,7 @@ test('unparenthesized unary base of ** rejected (PARSE-2, ES2016 §13.6)', () =>
     is(jz('export let f = (x) => -(x ** 2)').exports.f(3), -9)
 })
 
+// subscript-10.5.0 parser-core shapes
 // Each pin below is the ddmin-reduced shape; the kernel build
 // (test/self-compile.js) is the integration-level pin for the same set.
 

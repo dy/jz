@@ -32,7 +32,7 @@ const prog = (name, decl, loop, names = 'i', { pre = '', arr = 'new Float64Array
 const cap = (k = 44) => `if (++c > ${k}) break`
 const R = 'i = i * 2 + t'
 
-// ---- a counted loop around the box
+// a counted loop around the box
 for (const [name, head] of [['a literal count', 'for (let k = 0; k < 5; k++)'], ['a count by the parameter', 'for (let k = 0; k < (s & 7); k++)'], ['a count by a Number', 'for (let k = 0; k < t; k++)'],
   ['a count down', 'for (let k = 4; k >= 0; k--)'], ['a while around', 'let k = 0; while (k++ < 4)']]) {
   prog(`around: ${name}, entering from the counter`, 'let last = 0', `${head} { ${cap(60)}; let i = k; while (i < n) { ${cap(60)}; x[i] = c; ${R} }; last += i }`, 'last')
@@ -41,7 +41,7 @@ for (const [name, head] of [['a literal count', 'for (let k = 0; k < 5; k++)'], 
   prog(`around: ${name}, the stride the counter's`, 'let last = 0', `${head} { ${cap(60)}; let i = s; while (i < n) { ${cap(60)}; x[i] = c; i = i * 2 + k }; last += i }`, 'last')
   prog(`around: ${name}, the bound the counter's`, 'let last = 0', `${head} { ${cap(60)}; let i = s; while (i < k * 1000) { ${cap(60)}; x[i] = c; ${R} }; last += i }`, 'last')
 }
-// ---- a sum the copy tests and leaves at, in the same round
+// a sum the copy tests and leaves at, in the same round
 for (const [name, round, names = 'i, m'] of [
   ['before the held write', `const up = big[c & 7]; m = up + 1; sum += m; x[i] = c; ${R}`],
   ['after the held write', `${R}; const up = big[c & 7]; m = up + 1; sum += m; x[i % 8] = c`],
@@ -53,7 +53,7 @@ for (const [name, round, names = 'i, m'] of [
   prog(`sum ${name}`, 'let i = s, m = 0', `while (i < n) { ${cap()}; ${round} }`, names)
   prog(`sum ${name}, the bound literal`, 'let i = s, m = 0', `while (i < 100000) { ${cap()}; ${round} }`, names)
 }
-// ---- a cursor stepped by literals, a ring, in the same round
+// a cursor stepped by literals, a ring, in the same round
 for (const [name, decl, round, names] of [
   ['a cursor by two', 'let i = s, p = 0', `x[p & 7] = i % 5; p += 2; ${R}`, 'i, p'],
   ['a cursor entering from the parameter', 'let i = s, p = t', `x[p] = c; p += 3; ${R}`, 'i, p'],
@@ -64,10 +64,10 @@ for (const [name, decl, round, names] of [
   ['a cursor stepped by the held name', 'let i = s, p = 0', `x[p] = c; p += i; ${R}`, 'i, p'],
   ['a cursor reset to the held name', 'let i = s, p = 0', `x[p] = c; p++; if (p > 5) p = i; ${R}`, 'i, p'],
 ]) prog(`cursor: ${name}`, decl, `while (i < n) { ${cap()}; ${round} }`, names)
-// ---- a walk over links in the same round
+// a walk over links in the same round
 prog('links: a walk beside a held name', 'let i = s, j = 3', `while (i < n && j >= 0) { ${cap()}; x[j] = c; j = nx[j]; ${R} }`, 'i, j')
 prog('links: a walk fed to the held name', 'let i = s, j = 3', `while (i < n) { ${cap()}; if (j >= 0) j = nx[j]; x[i] = c; i = i * 2 + (j > 0 ? j : 1) }`, 'i, j')
-// ---- derived indices of the held name
+// derived indices of the held name
 for (const [name, round, names = 'i', decl = 'let i = s'] of [
   ['a row base', `const b = i * 3 + 1; x[b] = c; x[b + 1] = c; ${R}`],
   ['a row base in a loop', `const b = i * 2; for (let k = 0; k < 3; k++) x[b + k] += k; ${R}`],
@@ -82,13 +82,13 @@ for (const [name, round, names = 'i', decl = 'let i = s'] of [
   ['an index past the word', `x[i * 4] = c; x[i * 1024] = c; x[i + 2147483647] = c; ${R}`],
   ['an index below zero', `x[i - 1] = c; x[i - t] = c; ${R}`],
 ]) prog(`index: ${name}`, decl, `while (i < n) { ${cap()}; ${round} }`, names)
-// ---- receivers of every width, stores of the held name itself
+// receivers of every width, stores of the held name itself
 for (const ctor of ['Uint8Array', 'Int8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array']) {
   prog(`receiver ${ctor}: a store of the held name`, 'let i = s', `while (i < n) { ${cap()}; x[c & 7] = i; ${R} }`, 'i', { arr: `new ${ctor}(8)` })
   prog(`receiver ${ctor}: a store at the held name`, 'let i = s', `while (i < n) { ${cap()}; x[i] = c + i; ${R} }`, 'i', { arr: `new ${ctor}(8)` })
   prog(`receiver ${ctor}: a read fed back`, 'let i = s', `while (i < n) { ${cap()}; i = i * 2 + x[i & 7] + t }`, 'i', { arr: `new ${ctor}(8)` })
 }
-// ---- where the loop stands
+// where the loop stands
 prog('under an if', 'let i = s', `if (s !== 3) { while (i < n) { ${cap()}; x[i] = c; ${R} } } else { i = 1 }`)
 prog('under an else', 'let i = s', `if (s === 3) i = 9; else while (i < n) { ${cap()}; x[i] = c; ${R} }`)
 prog('under an if, no braces', 'let i = s', `if (s !== 3) while (i < n) { ${cap()}; x[i] = c; ${R} }`)

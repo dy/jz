@@ -62,6 +62,7 @@ const freshAnchoredCopy = () => {
   return scratch
 }
 
+// --merge: byte-preservation + provenance
 test('bench --merge: unmeasured case is byte-preserved', () => {
   const scratch = freshCopy()
   run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
@@ -162,6 +163,7 @@ test('bench: without --merge, a full --json run is schema-identical to the pre-m
   ok(out.cases.mat4.targets.jz.measuredAt === undefined, 'measuredAt should not appear without --merge')
 })
 
+// --verify-anchors: pass path
 // Build the baseline through the real CLI using controlled anchor timings.
 const freshAnchorBaseline = () => {
   const scratch = freshCopy()
@@ -224,6 +226,7 @@ test('bench --verify-anchors: a wrong stored checksum row cannot certify timing'
   ok(pair.pass === false && pair.ratio == null, `wrong-result anchor produced a ratio: ${JSON.stringify(pair)}`)
 })
 
+// --verify-anchors: fail path (perturbed scratch copy)
 test('bench --verify-anchors: detects drift, exits nonzero, and now REFUSES the write (audit-#13 hygiene item 2a)', () => {
   // Start from a just-measured baseline (see freshAnchorBaseline above) so the
   // TWO pairs we don't perturb stay reliably within tolerance — only the one

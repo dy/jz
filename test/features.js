@@ -33,7 +33,7 @@ test('optional chains: grouping preserves chain boundaries, receivers and argume
 })
 
 
-// === Object destruct alias ===
+// Object destruct alias
 
 test('destruct: {x: a, y: b} = obj', () => {
   is(run(`export let f = () => {
@@ -43,7 +43,7 @@ test('destruct: {x: a, y: b} = obj', () => {
   }`).f(), 30)
 })
 
-// === Array spread ===
+// Array spread
 
 test('spread: [...a, ...b] values', () => {
   const { f } = run(`export let f = () => {
@@ -156,7 +156,7 @@ test('callbacks: captured arrays support computed dynamic keys', () => {
   is(f(), 111)
 })
 
-// === TypedArrays ===
+// TypedArrays
 
 test('Float64Array: create + length', () => {
   const { f } = run(`export let f = () => {
@@ -174,7 +174,7 @@ test('Int32Array: create', () => {
   ok(isNaN(f()))
 })
 
-// === Set ===
+// Set
 
 test('Set: create + add + has', () => {
   const { f } = run(`export let f = () => {
@@ -225,7 +225,7 @@ test('Set: delete returns 1 if found', () => {
   is(f(), 1)  // delete=1, has=0
 })
 
-// === Map ===
+// Map
 
 test('Map: set + get', () => {
   const { f } = run(`export let f = () => {
@@ -363,7 +363,7 @@ test('Map: size', () => {
   is(f(), 3)
 })
 
-// === instanceof ===
+// instanceof
 
 function runJzify(code) {
   return jz(code, { jzify: true }).exports
@@ -489,9 +489,8 @@ test('instanceof jzify: nested expression', () => {
   is(f(), 2)
 })
 
-// === jzify normalizations (test262) ===
-// jzify rewrites pre-let JS into the lex-only subset jz accepts. These cases
-// were flagged by test262 surface scans before each lowering existed.
+// jzify normalizations (test262)
+// jzify rewrites pre-let JS into the lex-only subset jz accepts.
 
 test('jzify: var initializer compiles as assignment to the declared name', () => {
   const exports = runJzify(`export let _run = () => { var x = 1; return x }`)

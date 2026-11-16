@@ -136,7 +136,7 @@ test('TextEncoder.encodeInto: {read, written}, UTF-8 boundary safe', () => {
   is(c2(), 4)
 })
 
-// === crypto ===
+// crypto
 
 test('crypto.getRandomValues: fills, guards, returns receiver', () => {
   const [c0, c1, c2, c3] = runMany([
@@ -160,7 +160,7 @@ test('crypto.randomUUID: v4 shape; randomSeed reproducible', () => {
   is([...a].join(','), [...b].join(','))
 })
 
-// === queueMicrotask ===
+// queueMicrotask
 
 test('queueMicrotask: drains at export boundary, orders with promise jobs', async () => {
   if (onKernel()) return // async-runtime class (see async.js kernel guards)
@@ -202,7 +202,7 @@ test('web builtin shadows do not suppress lowering in sibling scopes', async () 
   is(exports.scheduled(), 11, 'the sibling queueMicrotask drains at the export boundary')
 })
 
-// === requestAnimationFrame ===
+// requestAnimationFrame
 
 test('requestAnimationFrame: fires with timestamp; cancel works', async () => {
   if (onWasi()) return // rAF is JS-host-only (the wasi build rejects it with the curated error — pinned below)
@@ -231,7 +231,7 @@ test('requestAnimationFrame: clean error under wasi', () => {
   throws(() => jz(`export let f = () => requestAnimationFrame(() => 1)`, { host: 'wasi' }))
 })
 
-// === URLSearchParams ===
+// URLSearchParams
 
 test('URLSearchParams: parse, get/getAll/has/set/append/delete, size', () => {
   const [c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11] = runMany([
@@ -283,7 +283,7 @@ test('URLSearchParams: sort, escaping, inits, iteration', () => {
   is(c7(), 'a=1;b=2;')
 })
 
-// === navigator.hardwareConcurrency ===
+// navigator.hardwareConcurrency
 
 test('navigator.hardwareConcurrency: ≥1 on js host; wasi warns + folds to 1', () => {
   if (onKernel()) return // warnings-sink channel class (KERNEL_EXCLUDE 'warnings')
@@ -293,7 +293,7 @@ test('navigator.hardwareConcurrency: ≥1 on js host; wasi warns + folds to 1', 
   ok(w.some(e => /hardwareConcurrency/.test(e.message)), 'wasi warns about the fold')
 })
 
-// === Float16Array ===
+// Float16Array
 // Host-parity tests: they differentially compare against the host's own
 // Float16Array (Node ≥ 24 / modern browsers). On older hosts there is nothing
 // to compare against — skip, mirroring the runtime's own decode guard.
@@ -370,7 +370,7 @@ test('Float16Array: marshals both directions', skipF16, () => {
   is(memory.read(exports.bump(memory.Float16Array(new Float16Array(2))))[0], f16(0.1))
 })
 
-// === Uint8ClampedArray ===
+// Uint8ClampedArray
 
 test('Uint8ClampedArray: ToUint8Clamp semantics', () => {
   const [c0, c1, c2] = runMany([
@@ -409,7 +409,7 @@ test('method chains on fresh typed ctors resolve the element kind', () => {
   if (!skipF16.skip) is(c3(), f16(3 * 0.1))
 })
 
-// === clean errors for the ext-dispatch class ===
+// clean errors for the ext-dispatch class
 
 test('unknown builtin method fails with a named error, not a host TypeError', () => {
   if (onWasi()) return // ext-dispatch is the JS-host bridge — no host to dispatch to under wasi

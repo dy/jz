@@ -116,7 +116,7 @@ test('node keys: every JSON.stringify of the compiler is of no node, by a reason
   ok(!stale.length, `entries no use matches:\n${stale.map(e => e.slice(0, 2).join(': ')).join('\n')}`)
 })
 
-// ---- what the comparisons took for one ----
+// what the comparisons took for one
 const agree = (src, args, optimizes) => {
   const host = oracle(src)
   for (const optimize of optimizes) {

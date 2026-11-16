@@ -145,7 +145,7 @@ test('invariant: runtime helper IR belongs to each compilation', () => {
     is(instantiate(coldB).exports.getValue(), '{"different":[null,false,9]}', 'earlier output remains valid')
   }
 })
-// === Helper: compile with WAT output for structural inspection ===
+// Helper: compile with WAT output for structural inspection
 
 test('invariant: shared power generator reconstructs every decimal entry exactly', () => {
   if (onKernel()) return  // native helper inspection; bootstrap decimal semantics have a separate full-range pin

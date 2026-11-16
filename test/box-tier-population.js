@@ -143,7 +143,7 @@ nprog('an inlined walk in a doubling loop', 'let i = s, r = 0', `while (i < n) {
   `let walk = (x, from, d, W) => { let p = from | 0, sp = d < 0 ? -1 : 1, g = 0; while (g < 6) { if (p >= 0 && p < W) x[p * W] = g; p += sp; g++ } return p }`)
 nprog('an inlined doubling in a signed walk', 'let p = s | 0, sp = t < 0 ? -1 : 1, r = 0', `while (c < 12) { c++; r += dbl(x, p, n, W); p += sp }`, 'p, r',
   `let dbl = (x, from, n, W) => { let i = from, g = 0; while (i < n) { if (++g > 20) break; x[i * W] = g; i = i * 2 + 1 } return i }`)
-// ---- a head read in another form
+// a head read in another form
 nprog('a for with an init', 'let i = 0', `for (i = s; i < n; ) { ${cap()}; x[i * W] = c; ${R} }`)
 nprog('a for with an update', 'let i = s', `for (; i < n; i = i * 2 + t) { ${cap()}; x[i * W] = c }`)
 nprog('a negated test', 'let i = s', `while (!(i >= n)) { ${cap()}; x[i * W] = c; ${R} }`)

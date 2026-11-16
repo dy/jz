@@ -12,6 +12,8 @@ import { HEAP, symbolCountMax } from '../layout.js'
 import { oracle, jz, compile } from './util.js'
 import { compile as wasm } from 'watr'
 
+// subpath surface
+
 test('interop: host throws enter source catch without changing their values', () => {
   const src=`import {fail} from 'host';let calls=0;
     export function caught(){try{return fail()}catch(e){return e}finally{calls++}}
@@ -392,6 +394,7 @@ test('interop: subpath stays compiler-free with only host and codec dependencies
   }
 })
 
+// prebuilt-wasm round-trip
 // Compile once via the full pipeline, then drive the resulting bytes through
 // the subpath alone. Mirrors what a downstream "ship the .wasm" consumer does.
 
@@ -609,6 +612,8 @@ test('interop: computed host reads preserve empty keys, errors and optional rece
     }
   }
 })
+
+// NaN-box codec helpers (used by tooling around prebuilt wasm)
 
 test('interop: ptr/offset/type/aux codec round-trips', () => {
   // type=4 (string), aux=0, offset=128
@@ -831,6 +836,7 @@ test('interop: a typed array constructor takes a length as its host constructor 
   is(memory.read(memory.BigInt64Array([1n, -2n])), new BigInt64Array([1n, -2n]), 'BigInt64Array(data)')
 })
 
+// numeric export boundary
 // A proven-numeric param is an f64 slot; every box-capable param takes the i64
 // lane (jz:i64exp). The wrapper hands an f64 slot the host value untouched, so the
 // WebAssembly JS-API's ToNumber at the call is the exact JS coercion.
@@ -856,9 +862,8 @@ test('interop: an f64 slot receives the host value raw — ToNumber semantics of
 })
 
 test('interop: the `x = +x` guard on a numeric export is free', () => {
-  // The guard used to route through __to_num on the raw bits and pull the whole
-  // ToNumber string-parse runtime (~18 KB) into a 40-byte kernel. The unary plus on a
-  // proven number is identity; the host already applied ToNumber at the f64 slot.
+  // The unary plus on a proven number is identity; the host already applied ToNumber
+  // at the f64 slot.
   const guarded = compile(`export let f = x => { x = +x; return x * x * 0.5 + 3 }`)
   const bare = compile(`export let f = x => x * x * 0.5 + 3`)
   ok(guarded.length <= bare.length + 8, `guarded ${guarded.length} B vs bare ${bare.length} B`)
@@ -885,6 +890,7 @@ test('interop: a box-capable export param never rides the f64 lane', () => {
   is(exports.f('10'), false)
 })
 
+// numeric array-like export parameters
 // A parameter the body only indexes, measures, writes by element, forwards to
 // a function that does the same, or returns, is a numeric array-like: the
 // wrapper normalizes the host value to a Float64Array copy at entry and, when

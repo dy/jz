@@ -77,7 +77,7 @@ for (const [mul, ixw] of [['id *= 4', 'ix = 2 * (id - 1)'], ['id *= 2', 'ix += i
     prog({ name: `A no cap, ${mul}; ${ixw}; while (${test})`, decl: 'let ix = 0, id = 4', names: 'ix, id', uses: test === 'ix <= n' ? 'nfinite' : 'n',
       loop: `while (${test}) { c++; ${body('ix')}; ${ixw}; ${mul} }` })
 
-// ---- B. what a held name enters with
+// B. what a held name enters with
 const ENTRY = [['0'], ['1'], ['5'], ['1073741823'], ['1073741824'], ['2147483647'], ['2147483648'], ['-5'], ['-0'], ['0.5'], ['s'], ['s | 0', 's'], ['s >>> 0', 's'], ['s << 1', 's'],
   ['s >>> 1', 's'], ['s & 65535', 's'], ['s >> 2', 's'], ['s ^ 5', 's'], ['~s', 's'], ['s * 2'], ['s + 0.5'], ['Math.floor(s)'], ['x.length'], ['u8[s % 8]'], ['nx[s % 8]'], ['-s'], ['s - 1'], ['s * s'], ['s | t', 'st'], ['t << 3', 't']]
 const REC = ['i = i * 2 + t', 'i = i * 2 + 1', 'i = i + i + t', 'i = i * 3 - t', 'i = (i + t) * 2', 'i = i * t', 'i = i * t + 1', 'i = i + t * t']
@@ -90,7 +90,7 @@ ENTRY.forEach(([e, bits = ''], k) => {
   prog({ name: `B assigned ${e}`, decl: `let i = 0, z = 0\n  i = ${e}\n  z = t + 1`, bits, names: 'i, z', loop: `while (i < n) { ${cap()}; ${body('i')}; i = i * 2 + z }` })
 })
 
-// ---- C. the bound: where it comes from and where it lies
+// C. the bound: where it comes from and where it lies
 const BOUNDS = [
   { name: 'a parameter', test: 'i < n' },
   { name: 'n | 0', decl: 'const N = n | 0', test: 'i < N', bits: 'n' },
@@ -127,7 +127,7 @@ for (const b of BOUNDS) for (const r of b.q ? ['i = i + q; q = q * 2', 'q = q * 
   prog({ name: `C bound ${b.name}; ${r}`, pre: b.pre, decl: `${b.decl ? b.decl + '\n  ' : ''}let i = s${b.q ? ', q = 1' : ''}`, bits: b.bits, names: b.q ? 'i, q' : 'i',
     loop: `while (${b.test}) { ${cap(b.cap)}; ${body('i')}; ${r} }` })
 
-// ---- D. what a round is made of
+// D. what a round is made of
 const D = [
   ['a write in each arm', 'if (c & 1) i = i * 2 + t; else i = i + t'],
   ['a write in one arm', 'if (c & 1) i = i * 2 + t'],
@@ -204,7 +204,7 @@ prog({ name: 'D a held name captured after', decl: 'let i = s', names: 'i, g()',
 prog({ name: 'D a box in a box', decl: 'let i = s, q = 1', names: 'i, q',
   loop: `while (i < n) { ${cap()}; let j = q; while (j < i) { ${cap(60)}; ${ST('j')}; j = j * 2 + 1 }; i = i * 2 + t; q = q * 3 }` })
 
-// ---- E. downwards and below zero
+// E. downwards and below zero
 for (const [name, decl, test, round, names = 'i'] of [
   ['a stride that grows, down', 'let i = s, q = 1', 'i > n', `${RD('i')}; i = i - q; q = q * 2`, 'i, q'],
   ['a halving by a product', 'let i = s', 'i > n', `${RD('i')}; i = (i - i % 2) / 2 - t`],

@@ -51,6 +51,7 @@ const oracle = (src) => import(`data:text/javascript,${encodeURIComponent(src)}`
 const runKernel = (src, opt) => instantiate(compileViaKernel(src, { optimize: opt })).exports
 const runNative = (src, opt) => jz(src, { optimize: opt }).exports
 
+// AGREE tier
 // Reuses kernel-parity.js's own CORPUS (same source text — one corpus, two
 // questions asked of it: "same bytes?" there, "correct execution?" here) plus
 // a handful of new rows for mechanisms the byte-identity CORPUS doesn't touch

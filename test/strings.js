@@ -174,7 +174,7 @@ test('string split: evaluate arguments before limit and separator conversions', 
 
 // STRING METHODS
 
-// === String.fromCharCode ===
+// String.fromCharCode
 
 test('String.fromCharCode: A', () => {
   is(run('export let f = () => String.fromCharCode(65).length').f(), 1)
@@ -194,7 +194,7 @@ test('encodeURIComponent: dynamic value compiles without JS host imports under W
   ok(!wat.includes('(import "env"'), 'encodeURIComponent should not import JS host helpers')
 })
 
-// === decodeURIComponent ===
+// decodeURIComponent
 
 test('decodeURIComponent: decodes escaped component bytes', () => {
   const mod = run('export let f = () => decodeURIComponent("%3B%2F%3F%3A%40%26%3D%2B%24%2C%23")')
@@ -221,7 +221,7 @@ test('decodeURIComponent: malformed escape throws', () => {
   throws(() => mod.f())
 })
 
-// === TextEncoder ===
+// TextEncoder
 
 // The Uint8Array returned by TextEncoder.encode must support indexed and spread
 // access, not just `.length`/`for-of`.
@@ -256,7 +256,7 @@ test('TextEncoder: repeated mid-loop spread-flush keeps bytes (str() shape)', ()
   is(f(), '97,34,98,34,99')
 })
 
-// === + operator on strings ===
+// + operator on strings
 
 test('string +: concat', () => {
   is(run('export let f = () => ("hello" + " world").length').f(), 11)
@@ -340,10 +340,7 @@ test('string equality: UTF-16 word boundaries and unaligned views', () => {
   }
 })
 
-// === string ordering: < > <= >= ===
-// Pre-fix, NaN-boxed string pointers fell into f64.lt/gt which always returns 0
-// (NaN comparisons in IEEE 754 are false). cmpOp now routes both-STRING operands
-// through __str_cmp's three-way result.
+// string ordering: < > <= >=
 
 test('string <: lex order', () => {
   is(run('export let f = () => "a" < "b"').f(), true)
@@ -440,7 +437,7 @@ test('.localeCompare', () => {
   ])
 })
 
-// === parseInt ===
+// parseInt
 
 test('parseInt', () => {
   // parseInt must preserve rounding for hex integers beyond f64 exact range.
@@ -472,7 +469,7 @@ test('parseInt: round-once past 2^53 matches JS (exact i64 accumulation)', () =>
      parseInt('0x100000000000008000000000', 16))
 })
 
-// === .concat ===
+// .concat
 
 test('string: .concat', () => {
   cases([
@@ -560,7 +557,7 @@ test('fused concat: i32-proven parts render digits at the cursor — no temp str
   for (const a of edges) is(t.memory.read(t.exports.f(a)), '[' + (a | 0) + ']')
 })
 
-// === .slice ===
+// .slice
 
 test('string: .slice', () => {
   cases([
@@ -730,7 +727,7 @@ test('slice-view: no view when receiver type is unknown', () => {
   ok(!wat.includes('__str_slice_view'), 'unprovable string receiver must stay on the safe path')
 })
 
-// === .substring ===
+// .substring
 
 test('string: .substring / .indexOf', () => {
   cases([
@@ -738,7 +735,7 @@ test('string: .substring / .indexOf', () => {
       let s = "hello"
       return s.substring(1, 4).length
     }`, 3],
-    // === .indexOf ===
+    // .indexOf
     ['.indexOf found', `() => "hello".indexOf("l")`, 2],
     ['.indexOf not found', `() => "hello".indexOf("x")`, -1],
   ])
@@ -788,36 +785,36 @@ test('string index: out-of-range returns undefined', () => {
 
 test('string: methods', () => {
   cases([
-    // === .includes ===
+    // .includes
     ['.includes found', `() => "hello".includes("ell")`, true],
     ['.includes not found', `() => "hello".includes("xyz")`, false],
-    // === .startsWith ===
+    // .startsWith
     ['.startsWith true', `() => "hello".startsWith("hel")`, true],
     ['.startsWith false', `() => "hello".startsWith("lo")`, false],
-    // === .endsWith ===
+    // .endsWith
     ['.endsWith true', `() => "hello".endsWith("lo")`, true],
     ['.endsWith false', `() => "hello".endsWith("hel")`, false],
-    // === .toUpperCase ===
+    // .toUpperCase
     ['.toUpperCase', `() => "hello".toUpperCase()`, 'HELLO'],
     // only ASCII letters change; digits/punctuation/already-upper pass through.
     ['.toUpperCase: digits/punctuation pass through', `() => "aB3z!".toUpperCase()`, 'AB3Z!'],
-    // === .toLowerCase ===
+    // .toLowerCase
     ['.toLowerCase', `() => "HELLO".toLowerCase()`, 'hello'],
     ['.toLowerCase: digits/punctuation pass through', `() => "Ab3Z!".toLowerCase()`, 'ab3z!'],
     ['.toLocaleLowerCase', `() => "HELLO".toLocaleLowerCase().length`, 5],
     ['.toLocaleLowerCase ignores locale args', `() => "HELLO".toLocaleLowerCase("tr").length`, 5],
-    // === .trim ===
+    // .trim
     ['.trim', `() => " hello ".trim().length`, 5],
     ['.trimStart', `() => " hello ".trimStart().length`, 6],
     ['.trimEnd', `() => " hello ".trimEnd().length`, 6],
-    // === .repeat ===
+    // .repeat
     ['.repeat', `() => "ab".repeat(3).length`, 6],  // "ababab"
-    // === .replace ===
+    // .replace
     ['.replace first only', `() => "hello hello".replace("hello", "hi").length`, 8],  // "hi hello"
-    // === .replaceAll ===
+    // .replaceAll
     ['.replaceAll', `() => "a_b_c".replaceAll("_", "-").length`, 5],  // "a-b-c"
     ['.replaceAll removes all', `() => "a__b__c".replaceAll("__", "").length`, 3],  // "abc"
-    // === .split ===
+    // .split
     ['.split basic', `() => {
       let a = "a,b,c".split(",")
       return a.length
@@ -836,16 +833,16 @@ test('string: .split("") splits into chars', () => {
 
 test('string: pad / chain', () => {
   cases([
-    // === .padStart ===
+    // .padStart
     ['.padStart', `() => "5".padStart(3, "0").length`, 3],
-    // === .padEnd ===
+    // .padEnd
     ['.padEnd', `() => "5".padEnd(3, "0").length`, 3],
-    // === Chaining ===
+    // Chaining
     ['chain .toUpperCase.slice', `() => "hello".toUpperCase().slice(0, 2)`, 'HE'],
   ])
 })
 
-// === Tagged template literals ===
+// Tagged template literals
 
 test('tagged template', () => {
   cases([
@@ -872,7 +869,7 @@ test('tagged template', () => {
   ])
 })
 
-// === charAt, charCodeAt, at ===
+// charAt, charCodeAt, at
 
 test('String: charAt / charCodeAt / at', () => {
   cases([

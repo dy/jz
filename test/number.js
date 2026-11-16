@@ -113,7 +113,7 @@ test('number formatting: scratch reuse preserves retained strings and error reco
   }
 })
 
-// === toString ===
+// toString
 
 test('integer formatting: exact UTF-16 writes at decimal and memory boundaries', () => {
   // The fused concat renders at a width __ilen took (__itoa_sn); a ToString renders
@@ -268,7 +268,7 @@ test('number formatting: shared memories retain independent results across insta
   }
 })
 
-// === toFixed ===
+// toFixed
 
 test('Number: toFixed', () => {
   cases([
@@ -278,7 +278,7 @@ test('Number: toFixed', () => {
   ])
 })
 
-// === toExponential ===
+// toExponential
 
 test('Number: toExponential', () => {
   cases([
@@ -288,7 +288,7 @@ test('Number: toExponential', () => {
   ])
 })
 
-// === toPrecision ===
+// toPrecision
 
 test('Number: toPrecision', () => {
   cases([
@@ -338,7 +338,7 @@ test('Number: a short string of digits converts by its units, any other by the g
   ok(/0xFFFFC00000000000/i.test(funcWat(wat(src, { optimize: 'speed' }), '__to_num')), 'the speed tier tests for an inline string first')
 })
 
-// === Template literal coercion ===
+// Template literal coercion
 
 test('Template:', () => {
   cases([

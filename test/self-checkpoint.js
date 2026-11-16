@@ -250,6 +250,7 @@ test('checkpoint: _clear() keeps its meaning beside the checkpoint; retained byt
   is(reinstantiated.exports.main(), A_OUT, 'and reinstantiate')
 })
 
+// parsed WAT literals through the actual checkpoint
 // Why parkValue may call valueOf on an array: the transport domain is watr's IR,
 // the compiler's own output, whose arrays are exactly two kinds.
 const utf8 = s => [...new TextEncoder().encode(s)]
@@ -327,6 +328,7 @@ test('checkpoint: a program\'s own literals through the forced kernel are the fr
   is(instantiate(l).exports.u(), 'héllo ✓ 😀', 'the retained bytes still carry the literal')
 })
 
+// recording after the real rewind; capacity across checkpoints
 test('checkpoint: recording after the rewind allocates nothing, first and repeated; capacity zero, overflow and reset hold across checkpoints', () => {
   const { normal, forced } = kernels()
   const aFresh = compileOn(normal, A), bFresh = compileOn(normal, B)
@@ -368,6 +370,7 @@ test('checkpoint: recording after the rewind allocates nothing, first and repeat
   is(readMarks(forced).phaseCapacity ?? PHASE_RECORDS, PHASE_RECORDS)
 })
 
+// a failure after the unpark, inside the encoder
 const FAIL = 'export let __fail_after_unpark = () => 1\nexport let main = () => 2'
 
 test('checkpoint: a failure in the encoder after the unpark is attributed past the checkpoint stage; diagnostics and earlier output hold; the next compile recovers', () => {

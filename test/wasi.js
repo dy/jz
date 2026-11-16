@@ -93,7 +93,7 @@ test('TargetProfile: beginSession wires ctx.transform.targetProfile from host', 
   is(ctx.transform.targetProfile, targetProfileFor('wasi'), 'host:wasi compile installs the wasi profile')
 })
 
-// === console.log ===
+// console.log
 
 test('console.log: string', () => {
   is(run(`export let f = () => { console.log("ok"); return 1 }`).f(), 1)
@@ -538,7 +538,7 @@ test('WASI: non-callable own methods throw TypeError', () => {
   is(exps.f(), 1)
 })
 
-// === WASI native runtime tests ===
+// WASI native runtime tests
 
 function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true } catch { return false } }
 

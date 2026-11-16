@@ -413,7 +413,7 @@ test('array callbacks: observing the receiver prevents typed promotion and unsaf
   }
 })
 
-// === .map ===
+// .map
 
 test('.map: double', () => {
   const { f } = run(`export let f = () => {
@@ -440,7 +440,7 @@ test('.map: preserves length', () => {
   }`).f(), 5)
 })
 
-// === .filter ===
+// .filter
 
 test('.filter: basic', () => {
   is(run(`export let f = () => {
@@ -461,7 +461,7 @@ test('.filter: none match', () => {
   is(run(`export let f = () => [1, 2, 3].filter((x) => x > 10).length`).f(), 0)
 })
 
-// === .reduce ===
+// .reduce
 
 test('.reduce', () => {
   cases([
@@ -543,7 +543,7 @@ test('.filter: an index past what it kept is undefined', () => {
   }
 })
 
-// === .forEach ===
+// .forEach
 
 test('.forEach: its value is undefined on every receiver, and its callback writes what it captures', () => {
   const src = `const each = (a) => a.forEach(v => v)
@@ -667,7 +667,7 @@ test('typed store: an element store\'s value in a loop test compares what it sto
   }
 })
 
-// === .find ===
+// .find
 
 test('.find: found', () => {
   is(run(`export let f = () => [10, 20, 30].find((x) => x > 15)`).f(), 20)
@@ -677,7 +677,7 @@ test('.find: not found', () => {
   is(run(`export let f = () => [1, 2, 3].find((x) => x > 10)`).f(), UNDEF_NAN)
 })
 
-// === .indexOf ===
+// .indexOf
 
 test('.indexOf', () => {
   cases([
@@ -709,7 +709,7 @@ test('.lastIndexOf: string receiver still works (via the runtime fork)', () => {
   is(run(`export let f = () => "hello".lastIndexOf("l")`).f(), 3)
 })
 
-// === .includes ===
+// .includes
 
 // `.includes` returns a boolean — surfaced as a real true/false at the export
 // boundary (runHost decodes the NaN-boxed atom; the raw `run` instance can't).
@@ -729,7 +729,7 @@ test('.includes: string via variable still matches', () => {
   is(runHost(`export let f = () => { let x = "B"; return ["A","B","C"].includes(x) }`).f(), true)
 })
 
-// === .join ===
+// .join
 
 test('.join: default separator', () => {
   is(runHost(`export let f = () => ["A", "B", "C"].join()`).f(), 'A,B,C')
@@ -846,7 +846,7 @@ test('.join: a program with no string of its own', () => {
   }
 })
 
-// === .sort ===
+// .sort
 
 test('.sort: numeric', () => {
   cases([
@@ -925,7 +925,7 @@ test('.sort: default string sort on numbers (lexicographic)', () => {
   }`).f(), 202)
 })
 
-// === .shift ===
+// .shift
 
 test('.shift', () => {
   cases([
@@ -1017,7 +1017,7 @@ test('.shift then .push: the head slack is reused, aliases and properties follow
     is(jz(src, { optimize }).exports.run(new Float64Array(ops), new Float64Array(xs), ops.length), want, `O${optimize}`)
 })
 
-// === .unshift ===
+// .unshift
 
 test('.unshift: prepends and pulls grow helper', () => {
   is(run(`export let f = () => {
@@ -1027,7 +1027,7 @@ test('.unshift: prepends and pulls grow helper', () => {
   }`).f(), 221)
 })
 
-// === .slice ===
+// .slice
 
 test('.slice: middle', () => {
   const { f } = run(`export let f = () => {
@@ -1053,7 +1053,7 @@ test('.slice: negative and omitted bounds', () => {
   is(f(), 6450)
 })
 
-// === .join ===
+// .join
 
 test('.join: comma sep', () => {
   const { f } = run(`export let f = () => {
@@ -1063,9 +1063,9 @@ test('.join: comma sep', () => {
   ok(boxed(f()))  // a string pointer's box
 })
 
-// === Chained ===
+// Chained
 
-// === .flat ===
+// .flat
 
 test('.flat', () => {
   cases([
@@ -1088,7 +1088,7 @@ export let dyn = (d) => { const r = [[[1, 2]], [[3]]].flat(d); return typeof r[0
     is(exports[name](...args), host[name](...args), `${name}(${args.map(String)})`)
 })
 
-// === .flatMap ===
+// .flatMap
 
 test('.flatMap', () => {
   cases([
@@ -1098,7 +1098,7 @@ test('.flatMap', () => {
   ])
 })
 
-// === Chained ===
+// Chained
 
 test('chain: map + reduce', () => {
   is(run(`export let f = () => [1, 2, 3].map((x) => x * x).reduce((s, x) => s + x, 0)`).f(), 14)
@@ -1560,7 +1560,7 @@ test('for…of: reads the array it walks, as JS answers', () => {
   }
 })
 
-// === .length assignment ===
+// .length assignment
 
 test('.length =: plain array resizes (grow & shrink), even when scalarization-eligible', () => {
   is(run('export let f = () => { let a = [1, 2]; a.length = 5; return a.length }').f(), 5)

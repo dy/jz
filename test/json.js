@@ -5,7 +5,7 @@ import { instantiate, aux } from '../interop.js'
 import { run, cases, oracle, jz, compile } from './util.js'
 import { levels } from './_matrix.js'
 
-// === JSON.stringify ===
+// JSON.stringify
 
 // A typed array's own keys are its indices; a Map, a Set, an ArrayBuffer and a
 // DataView have none. Each was null (a Map wrote its entries). A BigInt element
@@ -31,7 +31,7 @@ test('JSON.stringify', () => {
   ])
 })
 
-// === JSON.parse ===
+// JSON.parse
 
 test('JSON.parse', () => {
   cases([
@@ -89,7 +89,7 @@ test('JSON.parse', () => {
   cases([
     ['nested array', `() => JSON.parse("[[1,2],[3]]")[0][1]`, 2],
     ['roundtrip', `() => JSON.stringify(JSON.parse("[1,2,3]")).length`, 7],
-    // === JSON.parse objects (HASH type) ===
+    // JSON.parse objects (HASH type)
     ['object dot access', `() => { let o = JSON.parse('{"x":42}'); return o.x }`, 42],
   ])
 })
@@ -315,7 +315,7 @@ test('JSON.parse: HASH bracket misses return undefined', () => {
   ok(v === null || v === undefined)
 })
 
-// === JSON.stringify: objects ===
+// JSON.stringify: objects
 
 test('JSON.stringify: objects', () => {
   cases([

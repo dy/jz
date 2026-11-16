@@ -496,6 +496,8 @@ test('numeric domains: normalized postfix recovery retains its BigInt producer',
   }
 })
 
+// canonical uint32 boundary
+
 test('(x >>> 0) reboxes as uint32 across the export boundary', async () => {
   const { main } = run(scalarCase('unsigned-export-boundary').source)
   is(main(-1), 4294967295)
@@ -509,6 +511,8 @@ test('(x >>> 0) / 2^32 — canonical PRNG unit-interval idiom', () => {
   is(main(-1), 4294967295 / 4294967296) // 0.9999999997671694
   is(main(0), 0)
 })
+
+// unsignedResult call-chain propagation
 
 test('unsignedResult propagates through a tail-call helper', () => {
   const { main } = run(scalarCase('unsigned-tail-helper').source)
@@ -525,6 +529,8 @@ test('unsigned result used in arithmetic at the call site widens (no wrap)', () 
   is(main(-1), 4294967296)
 })
 
+// mixed-tail sign consistency
+
 test('mixed signed/unsigned return tails do NOT narrow to unsigned', () => {
   // One tail is `x | 0` (signed), the other `x >>> 0` (unsigned). Narrowing the
   // whole function to unsigned would corrupt the signed branch — so it must not.
@@ -532,6 +538,8 @@ test('mixed signed/unsigned return tails do NOT narrow to unsigned', () => {
   is(main(-1), -1)        // signed branch preserved
   is(main(5), 5)          // unsigned branch (small) unaffected
 })
+
+// arithmetic with an unsigned operand
 
 test('`+` / `-` with an unsigned operand widen to f64 (no i32 wrap)', () => {
   is(run('export let main = (x) => (x >>> 0) + 1').main(-1), 4294967296)
@@ -549,6 +557,8 @@ test('`%` with an unsigned operand uses true uint32 value (not signed rem)', () 
   is(run('let u = (x) => x >>> 0; export let main = (x) => u(x) % 7').main(-1), 3)
 })
 
+// relational comparison with unsigned
+
 test('relational comparisons treat an unsigned operand by its true magnitude', () => {
   is(run('export let main = (x) => (x >>> 0) < 5').main(-1), false)   // 4294967295 < 5 → false
   is(run('export let main = (x) => (x >>> 0) > 5').main(-1), true)
@@ -562,6 +572,8 @@ test('relational comparisons on small unsigned values still correct', () => {
   is(run('export let main = (x) => (x >>> 0) < 5').main(3), true)
   is(run('export let main = (x) => (x >>> 0) > 5').main(3), false)
 })
+
+// constant folding of unsigned
 
 test('constant-folded `>>>` ≥ 2^31 keeps its uint32 value', async () => {
   is(await evaluate('(-1 >>> 0)'), 4294967295)
@@ -581,6 +593,8 @@ test('arithmetic / comparison over a constant uint32 is spec-correct', async () 
 test('const-folded uint32 through an unsignedResult helper', () => {
   is(run('let u = (x) => x >>> 0; export let main = () => u(-1)').main(), 4294967295)
 })
+
+// signed i32 fast-paths unaffected
 
 test('signed i32 operands keep their fast-path semantics', async () => {
   // `| 0` produces a signed i32; none of the unsigned guards should perturb it.
@@ -612,6 +626,8 @@ test('uint32: Uint32Array element reads keep full unsigned range across all uses
   is(e.div(), 268435455.9375)     // f64 convert is unsigned
 })
 
+// local-binding unsigned reads
+
 test('unsignedness survives a local binding read outside a >>> sink', () => {
   // ToUint32 is idempotent (re-masking an already-masked value is a no-op), so
   // that write invariant alone guarantees the stored bits always equal the true
@@ -635,20 +651,9 @@ test('unsigned accumulator: magnitude-boundary pins (ECMA-262 §7.1.8 ToUint32)'
   is(wrapped, 4)   // 4294967290 + 10 = 4294967300 ≡ 4 (mod 2^32)
 })
 
+// identity-preserving tail positions
+
 test('unsignedness threads through `u+` and a same-arm `?:` tail (ECMA-262 §7.1.8 ToUint32)', () => {
-  // ROOT CAUSE (fixed): narrowI32Results' isUnsignedTail (src/compile/narrow.js)
-  // proved a tail unsigned via a SYNTACTIC allowlist that stopped at the
-  // OUTERMOST node — top-level `>>>`, an unsignedResult call, or a bare
-  // unsignedLocals name — while exprType (src/type.js) already treats `u+` as
-  // type-preserving (ToNumber is identity on a number, its own `op === 'u+'`
-  // comment) and a '?:' whose both branches are i32 as i32-representable. The
-  // SAME semantic fact — this tail's runtime value is h, a narrowUint32-proven
-  // [0, 2^32) magnitude — was proven once by exprType (as a STORAGE type) and
-  // re-derived separately by isUnsignedTail (as a SIGN); for `+h` and
-  // `c ? h : h` the latter's allowlist never looked past the outer `u+`/`?:`
-  // node, so both narrowed to a SIGNED i32 result — the boundary reboxed via
-  // f64.convert_i32_s and silently flipped h ≥ 2^31 negative (the exact bit
-  // pattern ToUint32 reads as 3000000000, ToInt32 reads as -1294967296).
   const acc = (v) => `let h = 0; h = (h + ${v}) >>> 0;`
   is(run(`export let f = () => { ${acc(3000000000)} return +h }`).f(), 3000000000)
   is(run(`export let f = (c) => { ${acc(3000000000)} return c ? h : h }`).f(true), 3000000000)
@@ -683,6 +688,8 @@ test('a mixed-sign `?:` tail must NOT claim unsigned (ECMA-262 §7.1.8 ToUint32 
   is(f(true, -5), 3000000000)
   is(f(true, 5), 3000000000)
 })
+
+// '?:' select-join per-arm sign (emit.js)
 
 test('mixed-sign `?:` ternary: each arm widens by its OWN sign at O0/O2/O3 (regression for the select-join gap above)', () => {
   // The exact shape the mixed-sign-tail test above documented as a known,

@@ -17,7 +17,7 @@ function nativeRun(code, runtime = 'wasmtime') {
   return execSync(`${runtime} ${path} 2>/dev/null`, { encoding: 'utf-8' })
 }
 
-// === setTimeout ===
+// setTimeout
 
 test('setTimeout: a program of top-level code drains its timers as a command', { skip }, () => {
   const out = nativeRun(`
@@ -56,7 +56,7 @@ test('clearTimeout: cancels timer', { skip }, () => {
   ok(!out.includes('nope'), `should not contain "nope": ${out}`)
 })
 
-// === setInterval ===
+// setInterval
 
 test('setInterval: repeats and clearInterval stops it', { skip }, () => {
   const out = nativeRun(`
@@ -72,7 +72,7 @@ test('setInterval: repeats and clearInterval stops it', { skip }, () => {
   ok(ticks >= 3, `expected >=3 ticks, got ${ticks}`)
 })
 
-// === Multiple timers ===
+// Multiple timers
 
 test('multiple timers: all fire', { skip }, () => {
   const out = nativeRun(`

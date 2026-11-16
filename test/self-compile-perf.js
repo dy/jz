@@ -34,6 +34,8 @@ installNativeArena()
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH = join(ROOT, 'bench')
 
+// Layer 1: structural lever pins (no stopwatch)
+
 test('perf-pin: SSO fast-hash mix present in __str_hash', () => {
   // The 7-op multiplicative mix (62452a5). Its magic constants only appear when
   // the SSO branch is the mix, not the old per-char FNV loop.
@@ -60,6 +62,8 @@ test('perf-pin: __dyn_props membership filter present and gating __dyn_move', ()
 
 // (The proven-decode lever — __arr_grow_known's inline offset extract — is
 // WAT-shape-pinned in test/feature-gating.js alongside its feature gates.)
+
+// Layer 2: ratio gates (paired wall-clock)
 
 // Warm-safe subset of the bench corpus (tokenizer/json excluded until the
 // watr-internal warm-recompile bug is fixed — see groundtruth).

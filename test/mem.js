@@ -256,7 +256,7 @@ test('mem.write: boxed BigInt (mem.BigInt) object property round-trips', async (
   is(m.read(ptr).x, 9n, 'isBox BigInt property round-trips through mem.read')
 })
 
-// === Null through mem bridge ===
+// Null through mem bridge
 
 test('mem.Array: null elements preserved', async () => {
   const r = await run('export let f = (a) => a[0]')
@@ -267,7 +267,7 @@ test('mem.Array: null elements preserved', async () => {
   is(m.read(result), null, 'null element reads back null')
 })
 
-// === Shared memory: no data collision ===
+// Shared memory: no data collision
 
 test('shared memory: no static string collision', async () => {
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile

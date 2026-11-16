@@ -337,7 +337,7 @@ test('minimal: failed static aggregate candidates emit each element once', () =>
   }
 })
 
-// === Never-relocated arrays skip the realloc-forwarding follow ===
+// Never-relocated arrays skip the realloc-forwarding follow
 // A fresh array literal whose every use is a pure read (`a[i]` / `a.length`) can never
 // be grown, so its index reads derive the base directly — no `__ptr_offset` forwarding
 // chase. The SAFETY INVARIANT is the converse: any array that COULD be relocated must
@@ -493,7 +493,7 @@ test('minimal: module numeric table narrowing stays sound under non-numeric writ
   is(jz('const C=[[1,2],[3,4]]\nexport let f=()=>{C[0][0]=null;return C[0][0]*2}').exports.f(), 0, 'nested null write → 0 (ToNumber, not NaN-box)')
 })
 
-// === KNOWN REDUNDANCY (targets, not yet minimal) ===
+// KNOWN REDUNDANCY (targets, not yet minimal)
 // `new Date()` (and other single heap-pointer constructors) drag in the full allocator +
 // memgrow for one pointer. (`(a) => a[0] + a[1]` on an *untyped* param is NOT a gap —
 // `a[0]` is a polymorphic array/string index and `+` a polymorphic add/concat, so its
@@ -652,7 +652,7 @@ test('minimal: the compact-prototype bench rows stay at or below their recorded 
   }
 })
 
-// === Size-tier codegen classes closed against the v1 ledger ===
+// Size-tier codegen classes closed against the v1 ledger
 // Each pins one lowering with a differential run and a byte ratchet at
 // `optimize: 'size'` (the recorded value may only fall).
 // (a raw host: a result that may be undefined or null crosses as its i64 bits, jz:i64exp `r`)

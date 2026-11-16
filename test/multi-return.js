@@ -12,7 +12,7 @@ test('multi-return: just works', () => {
   ok(f)
 })
 
-// === Expression body multi-return ===
+// Expression body multi-return
 
 test('multi: 2-value return', () => {
   const { f } = run('export let f = (a, b) => [a + 1, b * 2]')
@@ -36,7 +36,7 @@ test('multi: identity', () => {
   is(y, 99)
 })
 
-// === Block body multi-return ===
+// Block body multi-return
 
 test('multi: block body return', () => {
   const { f } = run(`export let f = (x) => {
@@ -61,7 +61,7 @@ test('multi: block body with if', () => {
   is(d, -1)
 })
 
-// === Color-space pattern ===
+// Color-space pattern
 
 test('multi: rgb2xyz pattern', () => {
   const { rgb2xyz } = run(`export let rgb2xyz = (r, g, b) => [
@@ -76,7 +76,7 @@ test('multi: rgb2xyz pattern', () => {
   ok(Math.abs(z - 1.089) < 0.001)
 })
 
-// === Single-value still works in multi profile ===
+// Single-value still works in multi profile
 
 test('multi profile: single return still works', () => {
   const { f } = run('export let f = (a, b) => a + b')

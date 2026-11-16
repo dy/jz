@@ -7,7 +7,7 @@ import { belowOpt, levels } from './_matrix.js'
 import { oracle, funcWat, jz, compile, compile as _compile } from './util.js'
 import encodeWat from 'watr/compile'
 
-// === Allocation + byteLength ===
+// Allocation + byteLength
 
 test('DataView BigInt setters apply ToBigInt before bounds and retain payloads', () => {
   for (const signed of [true, false]) {
@@ -157,7 +157,7 @@ test('ArrayBuffer .byteOffset is 0', () => {
   is(exports.main(), 0)
 })
 
-// === JS → JZ round-trip ===
+// JS → JZ round-trip
 
 test('JS ArrayBuffer → JZ — passed in, read byteLength', () => {
   const { exports } = jz(`export let check = (buf) => buf.byteLength`)
@@ -172,7 +172,7 @@ test('JS DataView → JZ — retains view length', () => {
   is(exports.check(dv), 12)
 })
 
-// === JZ → JS round-trip ===
+// JZ → JS round-trip
 
 test('JZ ArrayBuffer → JS — returns native ArrayBuffer', () => {
   const { exports } = jz(`export let make = () => new ArrayBuffer(40)`)
@@ -181,7 +181,7 @@ test('JZ ArrayBuffer → JS — returns native ArrayBuffer', () => {
   is(out.byteLength, 40)
 })
 
-// === Subview: new TypedArray(buf, offset, length) ===
+// Subview: new TypedArray(buf, offset, length)
 
 test('subview — reads aliased bytes from parent at offset', () => {
   // new TypedArray(buf, off, len) is a true view: reads alias the parent buffer.
@@ -299,7 +299,7 @@ test('subview — stride respected for non-byte element types', () => {
   is(exports.main(), 68 * 1000 + 136)  // 0x44=68, 0x88=136
 })
 
-// === new TypedArray(source, byteOffset) ===
+// new TypedArray(source, byteOffset)
 
 test('a buffer and an offset view the buffer from the offset; any other source ignores it', () => {
   const src = `const tryIt = (f) => { try { return f() } catch (e) { return e.name } }
@@ -326,7 +326,7 @@ test('a buffer and an offset view the buffer from the offset; any other source i
   }
 })
 
-// === Reinterpret: new TypedArray(buf) ===
+// Reinterpret: new TypedArray(buf)
 
 test('reinterpret — Uint8Array from fresh ArrayBuffer', () => {
   const { exports } = jz(`
@@ -361,7 +361,7 @@ test('reinterpret — Float64Array length = byteLength / 8', () => {
   is(exports.main(), 4)
 })
 
-// === .buffer accessor ===
+// .buffer accessor
 
 test('.buffer — from typed array returns an ArrayBuffer', () => {
   const { exports } = jz(`
@@ -386,7 +386,7 @@ test('.buffer — from DataView is the underlying BUFFER', () => {
   is(exports.main(), 24)
 })
 
-// === ArrayBuffer.isView ===
+// ArrayBuffer.isView
 
 test('ArrayBuffer.isView — typed array is a view', () => {
   const { exports } = jz(`
@@ -418,7 +418,7 @@ test('ArrayBuffer.isView — plain array is NOT a view', () => {
   is(exports.main(), false)
 })
 
-// === buf.slice ===
+// buf.slice
 
 test('buf.slice(begin, end) — basic byte-range copy', () => {
   const { exports } = jz(`
@@ -464,7 +464,7 @@ test('buf.slice — modifying copy does not affect original', () => {
   is(exports.main(), 42)
 })
 
-// === DataView aliasing (retains byte-level aliasing) ===
+// DataView aliasing (retains byte-level aliasing)
 
 test('DataView — reads typed array bytes from same buffer', () => {
   // DataView is a passthrough of BUFFER, so aliasing works via shared memory.
@@ -481,7 +481,7 @@ test('DataView — reads typed array bytes from same buffer', () => {
   is(exports.main(), 4)
 })
 
-// === Zero-copy aliasing: reinterpret shares underlying storage ===
+// Zero-copy aliasing: reinterpret shares underlying storage
 
 test('aliasing — typed array view writes visible through DataView', () => {
   // new Uint8Array(buf) is a zero-copy reinterpret. Writes to the view must
@@ -630,7 +630,7 @@ test('subview — Float64Array aliases parent', () => {
   is(exports.main(), 7.5)
 })
 
-// === Subview: runtime dispatch (view passed as function argument) ===
+// Subview: runtime dispatch (view passed as function argument)
 
 test('generic typed indexing: one layout decode across owned, view and empty storage', () => {
   const ctors = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array',
@@ -711,7 +711,7 @@ test('subview — runtime .length on view argument', () => {
   is(exports.main(), 2)
 })
 
-// === Subview: view.map() — SIMD + scalar paths ===
+// Subview: view.map() — SIMD + scalar paths
 
 test('subview — scalar .map() on view source', () => {
   const { exports } = jz(`
@@ -755,7 +755,7 @@ test('subview — SIMD .map() on Int32Array view', () => {
   is(exports.main(), 2 + 16)
 })
 
-// === Subview: for-loop iteration via .length ===
+// Subview: for-loop iteration via .length
 
 test('subview — for-loop accumulation over view', () => {
   const { exports } = jz(`
@@ -772,7 +772,7 @@ test('subview — for-loop accumulation over view', () => {
   is(exports.main(), 36)
 })
 
-// === Subview: ArrayBuffer.isView ===
+// Subview: ArrayBuffer.isView
 
 test('subview — ArrayBuffer.isView returns true', () => {
   const { exports } = jz(`
@@ -785,7 +785,7 @@ test('subview — ArrayBuffer.isView returns true', () => {
   is(exports.main(), true)
 })
 
-// === Subview: multiple disjoint views on same buffer ===
+// Subview: multiple disjoint views on same buffer
 
 test('subview — two disjoint views into same buffer', () => {
   const { exports } = jz(`
@@ -802,7 +802,7 @@ test('subview — two disjoint views into same buffer', () => {
   is(exports.main(), 100)
 })
 
-// === Subview: overlapping views alias correctly ===
+// Subview: overlapping views alias correctly
 
 test('subview — overlapping views share bytes', () => {
   const { exports } = jz(`
@@ -817,7 +817,7 @@ test('subview — overlapping views share bytes', () => {
   is(exports.main(), 4299)
 })
 
-// === Subview: out-of-range index returns undefined ===
+// Subview: out-of-range index returns undefined
 
 test('subview — out-of-range index is undefined', () => {
   // Pins the DYNAMIC-dispatch read path (unknown receiver → generic arr[i]),
@@ -835,7 +835,7 @@ test('subview — out-of-range index is undefined', () => {
   is(exports.main(), undefined)
 })
 
-// === Subview of subview via .buffer ===
+// Subview of subview via .buffer
 
 test('subview — view-of-view via .buffer reconstructs root', () => {
   const { exports } = jz(`

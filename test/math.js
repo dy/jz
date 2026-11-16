@@ -933,6 +933,7 @@ test('Math.hypot/min/max: spread and mixed scalar-spread arguments', () => {
   is(exports.mx0(), 7)
 })
 
+// The exponential table kernels
 // $math.exp2 / $math.exp reduce to 2^(j/64) × a short remainder polynomial
 // (module/math/trig-tables.js EXP2_TAB, EXP2_Q, EXP_Q): the table is re-derived
 // here at 200 bits, and both kernels are held within 0.75 ulp of that reference

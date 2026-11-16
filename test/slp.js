@@ -49,7 +49,7 @@ test('slp: multi-array map (a+b) packs + bit-exact', () => {
   bitExact('multi-array', src)
 })
 
-// === Soundness pins: SLP MUST bail when a typed-array view exists ===
+// Soundness pins: SLP MUST bail when a typed-array view exists
 // The two statements of each pair differ: an unrolled body of two equal
 // statements is rolled back to one (plan/counted-loops.js) and taken by the
 // lane vectorizer, which versions on aliasing itself; SLP is what these pin.

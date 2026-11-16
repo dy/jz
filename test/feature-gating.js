@@ -19,7 +19,7 @@ const hasImport = (w, name) => new RegExp(`\\(import [^)]*"${name}"`).test(w)
 const hasDef = (w, name) => new RegExp(`\\(func \\$${name}\\b`).test(w)
 const hasCall = (w, name) => new RegExp(`\\(call \\$${name}\\b`).test(w)
 
-// === features.external ===
+// features.external
 
 test('features.external OFF: pure scalar — no __ext_* imports', () => {
   const w = wat(`export let f = (x) => x + 1`)
@@ -113,7 +113,7 @@ test('features.external ON: HOST_GLOBALS reference — __ext_get import present'
   is(hasImport(w, '__ext_get'), true)
 })
 
-// === Stdlib factory collapse (EXTERNAL off → shorter bodies) ===
+// Stdlib factory collapse (EXTERNAL off → shorter bodies)
 
 test('features.external OFF: __dyn_get_any factory collapses (no __ext_get call in body)', () => {
   // Need __dyn_get_any in output but without EXTERNAL arm — force via `?.prop` on dyn-type var
@@ -331,7 +331,7 @@ test('features.closure ON: first-class function — closure table present', () =
   ok(/\(table[\s\S]*?funcref/.test(w))
 })
 
-// === Runtime autowiring: passing a JS object to exported fn ===
+// Runtime autowiring: passing a JS object to exported fn
 
 test('autowire: JS object passed to exported fn reads via EXTERNAL', async () => {
   if (onWasi()) return  // wasi: external object / js-object arg

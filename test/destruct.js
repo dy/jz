@@ -757,10 +757,6 @@ test('destruct: renamed multi-prop object patterns keep property keys', () => {
 })
 
 test('for-in destructuring head: key string destructures with per-iteration bindings', () => {
-  // jzify pre-lowers `for (let [x, y = d] in o)` (key → temp + body-top let-
-  // pattern); prepare's for-in lowering synthesized a raw `let PATTERN = key`
-  // nothing destructured — every pattern head failed with "'x' is not in
-  // scope" (test262 for-in scope-body-lex-*).
   const { exports } = jz(`export let t = () => {
     let pd, pb
     for (let [x, _ = pd = () => x] in { i: 0 }) pb = () => x

@@ -7,7 +7,7 @@ import jz, { compile } from '../index.js'
 
 // REST PARAMS
 
-// === Basic rest params ===
+// Basic rest params
 
 test('rest: (...args) => args.length', () => {
   const { f } = run(`export let f = (...args) => args.length`)
@@ -49,7 +49,7 @@ test('rest: reduce over rest', () => {
   is(f(10, 20, 30), 60)
 })
 
-// === Mixed rest with fixed params ===
+// Mixed rest with fixed params
 
 test('rest: (a, ...rest) => a + rest.length', () => {
   const { f } = run(`export let f = (a, ...rest) => a + rest.length`)
@@ -101,7 +101,7 @@ test('rest: fixed-arity internal calls specialize rest array away', () => {
 
 // VARIADIC METHODS
 
-// === String.concat with multiple args ===
+// String.concat with multiple args
 
 test('string.concat: multiple', () => {
   is(run(`export let f = () => "a".concat("b", "c").length`).f(), 3)
@@ -119,7 +119,7 @@ test('string.concat: chaining', () => {
   is(f(), 4)
 })
 
-// === Array.push with multiple args ===
+// Array.push with multiple args
 
 test('array.push: single', () => {
   const { f } = run(`export let f = () => {
@@ -157,7 +157,7 @@ test('array.push: many values', () => {
   is(f(), 10)
 })
 
-// === Object.assign: same-schema copies ===
+// Object.assign: same-schema copies
 
 test('Object.assign: overwrite prop', () => {
   const { f } = run(`export let f = () => {
@@ -191,7 +191,7 @@ test('Object.assign: last source wins', () => {
   is(f(), 3)
 })
 
-// === Object.assign: schema extension ===
+// Object.assign: schema extension
 
 test('Object.assign: extend from variable', () => {
   const { f } = run(`export let f = () => {
@@ -221,7 +221,7 @@ test('Object.assign: original props unchanged', () => {
   is(f(), 10)
 })
 
-// === Boxed primitives: Object.assign on arrays ===
+// Boxed primitives: Object.assign on arrays
 
 test('Object.assign: boxed array prop', () => {
   const { f } = run(`export let f = () => {
@@ -260,7 +260,7 @@ test('Object.assign: boxed array indexing', () => {
   is(f(), 60)
 })
 
-// === Object.assign in conditionals ===
+// Object.assign in conditionals
 
 test('Object.assign: conditional', () => {
   const { f } = run(`export let f = (x) => {
@@ -273,7 +273,7 @@ test('Object.assign: conditional', () => {
   is(f(1), 10)
 })
 
-// === Array.concat ===
+// Array.concat
 
 test('array.concat: two arrays', () => {
   const { f } = run(`export let f = () => {
@@ -295,7 +295,7 @@ test('array.concat: preserves values', () => {
   is(f(), 60)
 })
 
-// === Public API: jz wraps rest params ===
+// Public API: jz wraps rest params
 
 test('jz: rest-only params', () => {
   const { exports } = jz(`export let sum = (...args) => {

@@ -878,7 +878,7 @@ test('logical member: an absent array slot in a returned closure takes the RHS',
     is(jz(source, {optimize}).exports.f(), [7,7], `O${optimize || 0}`)
 })
 
-// --- BigInt return boundary ---
+// BigInt return boundary
 
 test('bigint: a returned bigint crosses to JS as a real, lossless BigInt', () => {
   // Internally bigint rides an i64 reinterpreted into the f64 carrier; the export thunk exposes
@@ -1459,7 +1459,7 @@ test('bigint: internal calls keep the i64 carrier (only the JS boundary surfaces
   is(run('export let g = () => 5n; export let f = () => g() * 2n + 1n').f(), 11n)
 })
 
-// --- Literals & indexing ---
+// Literals & indexing
 
 test('array: literals & indexing', () => {
   cases([
@@ -1481,7 +1481,7 @@ test('array: float elements', () => {
 test('array: values & length', () => {
   cases([
     ['negative values', '() => { let a = [-1, -2, -3]; return a[0] + a[1] + a[2] }', -6],
-    // --- .length ---
+    // .length
     ['.length 0', '() => [].length', 0],
     ['.length 1', '() => { let a = [99]; return a.length }', 1],
     ['.length 5', '() => { let a = [1,2,3,4,5]; return a.length }', 5],
@@ -1593,7 +1593,7 @@ test('array: growth inside helper preserves nested aliases', () => {
   is(f()[2], 4)
 })
 
-// --- Loops ---
+// Loops
 
 test('array: sum via loop', () => {
   is(run(`export let f = () => {
@@ -1624,7 +1624,7 @@ test('array: dot product', () => {
   `).f(), 32)
 })
 
-// --- Pass & return ---
+// Pass & return
 
 test('array: pass as param', () => {
   is(run(`
@@ -1644,7 +1644,7 @@ test('array: return pointer', () => {
   is(get(ptr, 2), 15)
 })
 
-// --- Multi-value vs pointer ---
+// Multi-value vs pointer
 
 test('array: literal return ≤8 = multi-value', () => {
   const r = run('export let f = (a, b) => [a + 1, b + 2]').f(10, 20)
@@ -1686,7 +1686,7 @@ test('array: >8 elements = pointer', () => {
   is(g(f()), 9)
 })
 
-// --- Literals & read ---
+// Literals & read
 
 test('object: properties', () => {
   cases([
@@ -1714,7 +1714,7 @@ test('object: flat-object facts stay scoped per function', () => {
   is(f(), 7)
 })
 
-// --- Write ---
+// Write
 
 test('object: writes', () => {
   cases([
@@ -1735,7 +1735,7 @@ test('object: writes', () => {
   ])
 })
 
-// --- Pass & return ---
+// Pass & return
 
 test('object: pass to function', () => {
   is(run(`
@@ -1787,7 +1787,7 @@ test('object: param schema default resolves ambiguity', () => {
   `).f(), 7)
 })
 
-// --- SSO (short string, ≤4 ASCII chars) ---
+// SSO (short string, ≤4 ASCII chars)
 
 test('string: SSO creation', () => {
   const ptr = run('export let f = () => { let s = "hi"; return s }').f()
@@ -1803,7 +1803,7 @@ test('string: SSO', () => {
   ])
 })
 
-// --- Heap strings (>4 chars) ---
+// Heap strings (>4 chars)
 
 test('string: heap creation', () => {
   const ptr = run('export let f = () => { let s = "hello world"; return s }').f()
@@ -1818,7 +1818,7 @@ test('string: heap', () => {
   ])
 })
 
-// --- String as parameter ---
+// String as parameter
 
 test('string: pass SSO to function', () => {
   is(run(`

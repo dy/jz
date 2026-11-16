@@ -214,7 +214,7 @@ test('SIMD gather map: shared addresses require an unconditional definition and 
   }
 })
 
-// === General map: counter gathers and joined tests ===
+// General map: counter gathers and joined tests
 // A Newton step per point of a stroke stored as (x, y) pairs (Schneider's curve fit): the
 // fields read at 2(o+i) and 2(o+i)+1 gather lane by lane, and the update lands only where
 // the derivative is away from zero, a test of two comparisons joined by `||`.
@@ -399,7 +399,7 @@ test('SIMD strip: a weight the strip never moves is broadcast where the strip op
   ok(/i16x8\.splat/.test(w), 'the weights are broadcast before it')
 })
 
-// === Array.from ===
+// Array.from
 
 test('Array.from - shallow copy', () => {
   is(run('export let main = () => { let a = [1,2,3]; let b = Array.from(a); return b[0]+b[1]+b[2] }').main(), 6)
@@ -413,7 +413,7 @@ test('Array.from - length preserved', () => {
   is(run('export let main = () => { let a = [10,20,30,40]; return Array.from(a).length }').main(), 4)
 })
 
-// === SIMD Float64Array (f64x2 — 2 elements per vector) ===
+// SIMD Float64Array (f64x2 — 2 elements per vector)
 
 test('SIMD f64x2 - map multiply', () => {
   is(run(`export let main = () => {
@@ -1061,7 +1061,7 @@ test('SIMD narrowing - integer stores retain wrapping, infinities and scalar tai
     }
 })
 
-// === SIMD Float32Array (f32x4 — 4 elements per vector) ===
+// SIMD Float32Array (f32x4 — 4 elements per vector)
 
 test('SIMD f32x4 - map multiply', () => {
   is(run(`export let main = () => {
@@ -1232,7 +1232,7 @@ for (const Kind of ['Float64Array', 'Float32Array']) {
   }
 }
 
-// === SIMD Int32Array (i32x4 — 4 elements per vector) ===
+// SIMD Int32Array (i32x4 — 4 elements per vector)
 
 test('SIMD i32x4 - map multiply', () => {
   is(run(`export let main = () => {
@@ -1751,7 +1751,7 @@ test('SIMD i32x4 - with remainder', () => {
   }`).main(), 210)
 })
 
-// === SIMD Uint32Array ===
+// SIMD Uint32Array
 
 test('SIMD u32x4 - map multiply', () => {
   is(run(`export let main = () => {
@@ -1969,7 +1969,7 @@ test('SIMD per-pixel-color - guarded assign into a transcendental stays bit-exac
   }
 })
 
-// === TypedArray type-aware indexing ===
+// TypedArray type-aware indexing
 
 test('Int32Array - type-aware read/write', () => {
   is(run(`export let main = () => {
@@ -2003,7 +2003,7 @@ test('TypedArray - polymorphic indexed write dispatches by runtime element type'
   }`).main(0), 128)
 })
 
-// === TypedArray.from ===
+// TypedArray.from
 
 test('Uint8Array.from: basic', () => {
   is(run(`export let main = () => {
@@ -2067,7 +2067,7 @@ test('Float64Array.from: preserves values', () => {
   ok(Math.abs(r - 5) < 0.01)
 })
 
-// === Uint32Array full range ===
+// Uint32Array full range
 
 test('Uint32Array - large values (> 2^31)', () => {
   is(run(`export let main = () => {
@@ -2078,7 +2078,7 @@ test('Uint32Array - large values (> 2^31)', () => {
   }`).main(), 3000000000)
 })
 
-// === TypedArray.map scalar fallback (non-SIMD types) ===
+// TypedArray.map scalar fallback (non-SIMD types)
 
 test('Int16Array.map scalar fallback', () => {
   is(run(`export let main = () => {
@@ -2098,7 +2098,7 @@ test('Uint8Array.map scalar fallback', () => {
   }`).main(), 100)  // 20+80
 })
 
-// === Chained typed-array indexing (expression, not named var) ===
+// Chained typed-array indexing (expression, not named var)
 
 test('Int16Array.map chained index', () => {
   is(run(`export let main = () => {
@@ -2128,7 +2128,7 @@ test('SIMD - generates v128 instructions', () => {
 //     stencils, varying bound) must NOT lift.
 //   • Tail correctness: lengths that aren't a multiple of LANES still work.
 
-// ---- positive cases ------------------------------------------------------
+// positive cases
 
 test('vectorize: bitwise lane-local matches and produces identical checksum', () => {
   const src = `
@@ -2264,7 +2264,7 @@ test('vectorize: f64x2 small-N boundary sweep (0,1,2,3) vs JS oracle', () => {
   }
 })
 
-// ---- hand-written SoA shape (3+ arrays, same induction var) --------------
+// hand-written SoA shape (3+ arrays, same induction var)
 // Documents the supported migration path: code that already separates fields
 // into distinct typed arrays (xs / ys / zs … rather than one interleaved
 // AoS buffer) vectorizes today without any compiler-side struct splitting.
@@ -2315,7 +2315,7 @@ test('vectorize: SoA-4 channel blend (rgba luminance)', () => {
   ok(/f64x2\./.test(wat(src, SIMD_OPT)), 'expected f64x2 ops for the SoA-4 blend')
 })
 
-// ---- AoS counterpart documents the boundary ------------------------------
+// AoS counterpart documents the boundary
 // Interleaved {x,y,…} in one buffer reads as `a[i*stride + offset]` —
 // strided, not contiguous, so the recognizer can't lift to v128.load. This
 // negative test pins the boundary so future changes don't accidentally
@@ -2350,7 +2350,7 @@ test('vectorize: sibling lifts dedupe lane locals (fft kernel @ speed)', () => {
   ok(err === null, `fft must compile at the speed preset (no duplicate lane locals); got: ${err}`)
 })
 
-// ---- negative cases ------------------------------------------------------
+// negative cases
 
 test('vectorize: loop-carried scalar (s ^= s << 13) must NOT lift', () => {
   const src = `
@@ -2508,7 +2508,7 @@ test('vectorize: Uint8Array right shift lifts via the i16x8 widening path (bit-e
     'expected the in-place byte shift to lift via i16x8 widen + narrow')
 })
 
-// ---- reduction (horizontal fold) cases -----------------------------------
+// reduction (horizontal fold) cases
 
 test('vectorize: i32 xor reduction lifts to v128.xor + lane extracts', () => {
   const src = `
@@ -2919,7 +2919,7 @@ test('vectorize: Math.max(m, a[i]) int reduction stays scalar (computes in f64)'
   ok(!/i32x4\.max_s/.test(wat(src, SIMD_OPT)), 'Math.max int reduction not lifted to i32x4 (f64 path)')
 })
 
-// ---- conditional (ternary) maps → v128.bitselect ---------------------------
+// conditional (ternary) maps → v128.bitselect
 // jz lowers `cond ? X : Y` to `(if (result f64) COND (then X)(else Y))`; the
 // vectorizer lifts it to `v128.bitselect(X, Y, mask)`, mask = COND as a lane
 // comparison. NOVEC (defined up top) re-runs the same source with vectorization OFF
@@ -4117,6 +4117,7 @@ test('SIMD reduce - offset-indexed dot (matmul A[off+i]*B[off+i]) folds the inva
   ok(hasV128(wat(mm(16), ON)), 'offset-indexed dot must vectorize (INV folded into base)')
 })
 
+// Stencil vectorizer (tryStencil, experimental)
 // Neighbour loads `a[i±1]` / 2-D `a[c±1]`, a[rn+x] (c = rc+x derived IV). The lift is
 // address-preserving (each f64.load → v128.load at the SAME address ⇒ the δ-shifted
 // pair), so it's BIT-EXACT vs the scalar oracle (a lane-parallel map reorders nothing
@@ -4207,6 +4208,7 @@ test('SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried: bails, stays c
   ok(!/v128\.store/.test(wat(src, STENCIL)), 'in-place stencil not vectorized (no v128 store-back)')
 })
 
+// Per-pixel-color vectorizer (tryPerPixelColor)
 // Achievement pin: a pixel loop that computes an f64 value from the index (cos/sin/sqrt…), packs
 // it to a u32 colour and stores it — no inner loop — lifts two adjacent pixels into f64x2 lanes
 // (transcendentals → the bit-exact $math.*2 mirrors, the pack runs scalar per lane). Wall-clock
@@ -4289,6 +4291,7 @@ test('per-pixel-color f64x2 - sin+sqrt+pow kernel (interference shape: bit-exact
   ok(!/call \$math\.log_v/.test(w) && !/call \$math\.exp_v/.test(w), 'no 2-wide exp∘log second algorithm')
 })
 
+// Multi-caller SIMD-helper inlining
 // A hand-vectorized hot loop's per-step helper (e.g. a raymarcher's SDF) is called every
 // iteration but never inlined by V8's wasm JIT, so the call overhead is pure tax.
 const INLINE_SRC = `

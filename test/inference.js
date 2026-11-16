@@ -88,6 +88,8 @@ const count = (wat, re) => (wat.match(re) || []).length
 // The negative length-dispatch pins keep helpers outlined so they inspect
 // inference independently of the final inliner. Runtime parity is pinned below.
 
+// body-walk evidence
+
 test('notStringEvidence: index-write does not erase ordinary object .length', () => {
   // An index write excludes primitive String, but not OBJECT/HASH/EXTERNAL
   // array-likes. The general property Get must remain.
@@ -182,6 +184,8 @@ test('extractRefinements: post-typeof-string still permits object .length', () =
   if (!onKernel()) ok(count(wat, /\$__length\b/g) >= 1, 'flow narrowing keeps general property dispatch')
 })
 
+// soundness boundary: non-exclusive use ≠ type
+//
 // The evidence ladder narrows from *type-exclusive* signals only: a method that
 // throws on the wrong receiver (`.charCodeAt`, `.push`) proves its type on every
 // non-trapping run. Signals that are DEFINED for primitives prove nothing and must
@@ -232,6 +236,8 @@ test('boundary: string-key index does not imply OBJECT → string receiver stays
   is(ex.f('hi'), undefined, 'string arg, string key → undefined (string key ≠ object proof)')
   is(ex.f(42), undefined, 'number arg, string key → undefined')
 })
+
+// call-site lattice (paramReps)
 
 test('paramReps val: consistent ARRAY callers fold to direct header read', () => {
   // Both callers pass array literals → val=ARRAY consensus → callee's
@@ -760,6 +766,8 @@ test('recordGlobalRep: module-level Float64Array enables SIMD in consumers', () 
   is(count(wat, /\$__length\b/g), 0, 'no poly length over typed global')
 })
 
+// inferModuleLetTypes: alias-graph fixpoint
+//
 // A module `let` typed-array global must keep its kind across aliasing — a single
 // forward pass can't resolve a value that flows through a cycle or a not-yet-seen
 // sibling. The shared probe: two/more Float64Array globals, summed in a loop —
@@ -872,6 +880,8 @@ test('inferModuleLetTypes: swap-temp name colliding with a numeric local stays t
   ok(/f64\.load\b/.test(compile(src, { wat: true })), 'expected direct f64.load over the swapped buffers')
 })
 
+// inferModuleGlobalValTypes: all-writers global scan
+//
 // recordGlobalRep only observes depth-0 (module-init-time) assignments. The
 // `[]`-index read is the cleanest probe — a receiver with a proven kind drops
 // straight to `$__str_idx` with no runtime dispatch; an unclaimed one forks between
@@ -1430,6 +1440,8 @@ test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () =>
   ok(count(wat, /\$__dyn_get_/g) > 0, 'disagreement should keep __dyn_get fallback')
 })
 
+// instanceof B1
+
 test('extractRefinements: instanceof Map → __map_has dispatch (not default __set_has)', () => {
   // Without refinement the .has fallback picks __set_has by default. Pre-watr:
   // the dispatch CHOICE is what's pinned; watr may inline the helper.
@@ -1490,6 +1502,8 @@ test('staticInstanceofFold: primitive literal instanceof X folds to false', () =
   ok(/f64\.const 0/.test(probe))
 })
 
+// runtime sanity
+
 test('inference runtime sanity: notString + intConst + arrElemSchema', () => {
   // Cross-check: facts that elide dispatch must not change observed semantics.
   const { main } = run(`
@@ -1510,6 +1524,8 @@ test('inference runtime sanity: notString + intConst + arrElemSchema', () => {
   // (1 + 10 + 100) * 3 = 333
   is(main(), 333)
 })
+
+// i32 narrow range-safety
 
 // jz narrows a local to i32 only on an i32 *signal* — an i32-literal init plus
 // i32-only operands (or `x|0`, bitwise, Int32Array reads). A binding fed by any
@@ -1550,6 +1566,8 @@ test('i32 range-safety: f64-fed accumulator declared f64 in WAT (never i32-narro
   ok(/\(local \$i i32\)/.test(body), 'the i32-bounded counter still narrows independently')
 })
 
+// integer-global inference
+//
 // Purpose-focused numeric module globals (sizes, strides, indices, counters) are
 // integers; demanding `x | 0` annotations defeats clean code.
 
@@ -1594,6 +1612,8 @@ test('integer-global inference: numeric-init global reassigned to a string stays
   ex.setStr()
   is(ex.get(), 'hello', 'string value round-trips — global was not narrowed to i32')
 })
+
+// hoisted integer index offset → i32
 
 test('i32-offset: hoisted row offset `let o = y*n` narrows to i32 for a typed-array index', () => {
   // `let o = y*n` is f64-typed (variable-stride product) but integer-valued and
@@ -2499,6 +2519,8 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
   is(fStr('hi'), 'hiz', 'string capture still concatenates correctly with no kind claim — proves no false NUMBER claim was made')
 })
 
+// dict-value-type census (global half)
+
 test('dictionary summary: module-global dict-mode value kind tracks module-global values', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps is host-only (see section note above)
   const src = `
@@ -2943,6 +2965,8 @@ test('dict-mode alloc: statically-provable domain still sizes the preallocation 
     'sized preallocation cap (12*4=48) present in WAT — the arrayLen fast path still fires')
 })
 
+// receiver-HASH global classification
+
 test('receiver-HASH: module-global dict receiver (subscript\'s prec shape) gets VAL.HASH on globalValTypes', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalValTypes (see section note above)
   const src = `
@@ -2995,6 +3019,8 @@ test('receiver-HASH: a module literal whose keys functions add is a dictionary, 
     is([before[1], got.view()], [before[0], want.view()], `${name} reads as JavaScript's object before and after the dot-write`)
   }
 })
+
+// constIntExpr: i32 boundary clamp
 
 test('constIntExpr: i32 boundary — MAX/MIN fold exactly, MAX+1/MIN-1 refuse (no unclamped re-derivation)', () => {
   const cases = [

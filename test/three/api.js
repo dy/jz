@@ -40,7 +40,7 @@ const M4 = () => new Matrix4().set(2, 0.5, -1, 3, 0.25, 1.5, 0.75, -2, -0.5, 1, 
 const M3 = () => new Matrix3().set(2, 0.5, -1, 0.25, 1.5, 0.75, -0.5, 1, 3)
 const Q = () => new Quaternion(0.18257418583505536, 0.3651483716701107, 0.5477225575051661, 0.7302967433402214)
 
-// ---- Vector2
+// Vector2
 export const v2_arith = () => { const a = V2(1.5, -2), c = V2(-4, 0.5)
   return s2(a.clone().add(c)) + s2(a.clone().addScalar(3)) * 2 + s2(V2().addVectors(a, c)) * 3 + s2(a.clone().addScaledVector(c, 0.25)) * 5
     + s2(a.clone().sub(c)) * 7 + s2(a.clone().subScalar(1)) * 11 + s2(V2().subVectors(a, c)) * 13 + s2(a.clone().multiply(c)) * 17
@@ -57,7 +57,7 @@ export const v2_access = () => { const a = V2().set(1, 2).setX(5).setY(7).setCom
   return s2(a) + a.getComponent(1) * 3 + arr[0] * 5 + arr.length * 7 + s2(c) * 11 + s2(V2().setScalar(2.5)) * 13 + s2(V2().copy(a)) * 17 + [...a].length * 19 }
 export const v2_angle_t = () => s2(V2(1, 2).rotateAround(V2(0.5, -0.5), 0.7)) + V2(1, 2).angle() * 3 + V2(1, 2).angleTo(V2(-3, 0.5)) * 5
 
-// ---- Vector3
+// Vector3
 export const v3_arith = () => { const a = V3(1.5, -2, 3), c = V3(-4, 0.5, 0.25)
   return s3(a.clone().add(c)) + s3(a.clone().addScalar(3)) * 2 + s3(V3().addVectors(a, c)) * 3 + s3(a.clone().addScaledVector(c, 0.25)) * 5
     + s3(a.clone().sub(c)) * 7 + s3(a.clone().subScalar(1)) * 11 + s3(V3().subVectors(a, c)) * 13 + s3(a.clone().multiply(c)) * 17
@@ -80,7 +80,7 @@ export const v3_angle_t = () => s3(V3(1, 2, 3).applyEuler(new Euler(0.1, 0.2, 0.
   + s3(V3().setFromSphericalCoords(2, 0.4, 0.9)) * 7 + s3(V3().setFromCylindricalCoords(2, 0.4, 0.9)) * 11 + s3(V3().setFromSpherical(new Spherical(1.5, 0.3, 0.2))) * 13
   + s3(V3().setFromCylindrical(new Cylindrical(1.5, 0.3, 0.2))) * 17
 
-// ---- Vector4
+// Vector4
 export const v4_arith = () => { const a = V4(1.5, -2, 3, 0.5), c = V4(-4, 0.5, 0.25, 2)
   return s4(a.clone().add(c)) + s4(a.clone().addScalar(3)) * 2 + s4(V4().addVectors(a, c)) * 3 + s4(a.clone().addScaledVector(c, 0.25)) * 5 + s4(a.clone().sub(c)) * 7
     + s4(a.clone().subScalar(1)) * 11 + s4(V4().subVectors(a, c)) * 13 + s4(a.clone().multiply(c)) * 17 + s4(a.clone().multiplyScalar(-2)) * 19 + s4(a.clone().divide(c)) * 23
@@ -94,7 +94,7 @@ export const v4_products = () => { const a = V4(3, -4, 12, 1), c = V4(-1, 2, 0.5
     + a.toArray()[3] * 37 + a.getComponent(2) * 41 + s4(V4().set(1, 2, 3, 4).setW(9).setComponent(0, 7)) * 43 }
 export const v4_angle_t = () => s4(V4().setAxisAngleFromQuaternion(Q())) + s4(V4().setAxisAngleFromRotationMatrix(new Matrix4().makeRotationFromQuaternion(Q()))) * 3
 
-// ---- Quaternion
+// Quaternion
 export const quat_algebra = () => { const a = Q(), c = new Quaternion(-0.5, 0.5, 0.5, 0.5)
   return s4(a.clone().multiply(c)) + s4(a.clone().premultiply(c)) * 2 + s4(new Quaternion().multiplyQuaternions(a, c)) * 3 + s4(a.clone().invert()) * 5 + s4(a.clone().conjugate()) * 7
     + a.dot(c) * 11 + a.lengthSq() * 13 + a.length() * 17 + s4(new Quaternion(1, 2, 3, 4).normalize()) * 19 + s4(new Quaternion().identity()) * 23 + b(a.equals(Q())) * 29
@@ -112,7 +112,7 @@ export const quat_angle_t = () => { const a = Q(), c = new Quaternion(-0.5, 0.5,
   return s4(new Quaternion().setFromEuler(new Euler(0.1, 0.2, 0.3, 'YXZ'))) + s4(new Quaternion().setFromAxisAngle(V3(0, 0.6, 0.8), 1.1)) * 3 + a.angleTo(c) * 5
     + s4(a.clone().rotateTowards(c, 0.2)) * 7 + s4(a.clone().slerp(c, 0.3)) * 11 + s4(new Quaternion().slerpQuaternions(a, c, 0.6)) * 13 + (dst[0] + dst[1] * 3 + dst[2] * 7 + dst[3] * 11) * 17 }
 
-// ---- Euler
+// Euler
 export const euler_access = () => { const e = new Euler(0.1, 0.2, 0.3), a = e.toArray(), f = new Euler().fromArray([0.5, 0.25, 0.125, 'ZXY'])
   e.x = 1; e.y = e.y + 1; e.order = 'YZX'
   return e.x + e.y * 3 + e.z * 7 + e.order + a.length + a[3] + f.x + f.order + b(e.equals(f)) + b(new Euler().copy(f).equals(f)) + new Euler().set(1, 2, 3).order + new Euler().set(1, 2, 3, 'XZY').order + e.clone().order }
@@ -132,7 +132,7 @@ export const m3_algebra = () => { const a = M3(), c = new Matrix3().set(1, 2, 3,
     + sm(new Matrix3().makeScale(2, 3), 9) * 67 + sm(new Matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9), 9) * 71 }
 export const m3_angle_t = () => sm(M3().rotate(0.4), 9) + sm(new Matrix3().makeRotation(0.4), 9) * 3 + sm(new Matrix3().setUvTransform(0.1, 0.2, 2, 3, 0.4, 0.5, 0.5), 9) * 7
 
-// ---- Matrix4
+// Matrix4
 export const m4_algebra = () => { const a = M4(), c = new Matrix4().set(1, 2, 3, 4, 0, 1, 4, 2, 5, 6, 0, 1, 0, 0, 0, 1), x = V3(), y = V3(), z = V3()
   a.extractBasis(x, y, z)
   return sm(a.clone().multiply(c), 16) + sm(a.clone().premultiply(c), 16) * 2 + sm(new Matrix4().multiplyMatrices(a, c), 16) * 3 + sm(a.clone().multiplyScalar(0.5), 16) * 5 + a.determinant() * 7
@@ -195,7 +195,7 @@ export const frustum_all = () => { const f = new Frustum().setFromProjectionMatr
   return s + b(f.intersectsSphere(new Sphere(V3(0, 0, -50), 1))) * 3 + b(f.intersectsSphere(new Sphere(V3(0, 0, 500), 1))) * 5 + b(f.containsPoint(V3(0, 0, -50))) * 7 + b(f.containsPoint(V3(0, 0, 500))) * 11
     + b(f.intersectsBox(new Box3(V3(-1, -1, -60), V3(1, 1, -50)))) * 13 + b(f.intersectsBox(new Box3(V3(900, 900, 900), V3(901, 901, 901)))) * 17 + b(new Frustum().copy(f).clone().containsPoint(V3(0, 0, -2))) * 19 }
 
-// ---- Color
+// Color
 export const color_linear = () => { const a = new Color(0.25, 0.5, 0.75), c = new Color(0.5, 0.125, 1), sc = (q) => q.r + q.g * 3 + q.b * 7
   return sc(a.clone().add(c)) + sc(new Color().addColors(a, c)) * 2 + sc(a.clone().addScalar(0.125)) * 3 + sc(a.clone().sub(c)) * 5 + sc(a.clone().multiply(c)) * 7 + sc(a.clone().multiplyScalar(0.5)) * 11
     + sc(a.clone().lerp(c, 0.25)) * 13 + sc(new Color().lerpColors(a, c, 0.75)) * 17 + b(a.equals(new Color().copy(a))) * 19 + sc(new Color().fromArray([0, 0.5, 0.25, 0.125], 1)) * 23 + a.toArray([0, 0, 0, 0], 1)[3] * 29
@@ -220,7 +220,7 @@ export const sh3_all = () => { const a = new SphericalHarmonics3(), c = new Sphe
     + s3(a.clone().lerp(c, 0.25).coefficients[7]) * 11 + b(a.equals(new SphericalHarmonics3().copy(a))) * 13 + s * 17 + arr.length * 19 + arr[26] * 23 + s3(new SphericalHarmonics3().fromArray(arr).coefficients[8]) * 29
     + s3(a.clone().zero().coefficients[3]) * 31 + s3(new SphericalHarmonics3().set(c.coefficients).coefficients[2]) * 37 }
 
-// ---- MathUtils
+// MathUtils
 export const mathutils_exact = () => MathUtils.clamp(5, -1, 3) + MathUtils.clamp(-5, -1, 3) * 2 + MathUtils.euclideanModulo(-7, 3) * 3 + MathUtils.mapLinear(0.25, 0, 1, 10, 20) * 5 + MathUtils.inverseLerp(10, 20, 12.5) * 7
   + MathUtils.lerp(10, 20, 0.3) * 11 + MathUtils.pingpong(7.5, 2) * 13 + MathUtils.smoothstep(0.3, 0, 1) * 17 + MathUtils.smootherstep(0.3, 0, 1) * 19 + MathUtils.degToRad(90) * 23 + MathUtils.radToDeg(1) * 29
   + b(MathUtils.isPowerOfTwo(64)) * 31 + b(MathUtils.isPowerOfTwo(65)) * 37 + MathUtils.seededRandom(7) * 41 + MathUtils.seededRandom() * 43
@@ -230,7 +230,7 @@ export const mathutils_t = () => { const q = new Quaternion(); MathUtils.setQuat
   return MathUtils.damp(1, 5, 2, 0.016) + MathUtils.ceilPowerOfTwo(100) * 3 + MathUtils.floorPowerOfTwo(100) * 5 + s4(q) * 7 }
 export const mathutils_uuid = () => { const u = MathUtils.generateUUID(); return u.length * 100 + u.split('-').length * 10 + b(u === u.toLowerCase()) }
 
-// ---- Interpolants
+// Interpolants
 export const interpolants = () => { const times = new Float32Array([0, 1, 2, 4]), vals = new Float32Array([0, 10, 1, 20, 4, 40, 9, 80]), sum = (r) => r[0] + r[1] * 3
   const lin = new LinearInterpolant(times, vals, 2), dis = new DiscreteInterpolant(times, vals, 2), cub = new CubicInterpolant(times, vals, 2), out = new Float64Array(2), own = new LinearInterpolant(times, vals, 2, out)
   let s = 0, k = 1

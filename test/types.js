@@ -32,7 +32,7 @@ const fnBody = (w, name) => {
 const countCalls = (text, fn) =>
   (text.match(new RegExp(`call \\$${fn}\\b`, 'g')) || []).length
 
-// === Integer preservation ===
+// Integer preservation
 
 test('type', () => {
   cases([
@@ -46,7 +46,7 @@ test('type', () => {
   ])
 })
 
-// === Bitwise operators ===
+// Bitwise operators
 
 test('bitwise: & / | / ^ / ~', () => {
   cases([
@@ -76,7 +76,7 @@ test('bitwise: << / >> / >>> / floatbeat', () => {
   ])
 })
 
-// === ToInt32 string coercion (ECMA-262 7.1.6) ===
+// ToInt32 string coercion (ECMA-262 7.1.6)
 // Bitwise ops first ToNumber-coerce non-numeric operands; for strings, that
 // parses StringNumericLiteral (decimal, hex, sign, leading whitespace), with
 // invalid strings → NaN → ToInt32(NaN) = 0.
@@ -141,7 +141,7 @@ test('bitwise: numeric fast path emits no __to_num call', () => {
   is((wat.match(/\$__to_num/g) || []).length, 0, 'numeric-only operands skip __to_num wrapper')
 })
 
-// === Named constants ===
+// Named constants
 
 test('constant: true', () => {
   // Real-boolean carrier: the inner function keeps the cheap 0/1 i32 carrier;
@@ -180,7 +180,7 @@ test('comparison result in bitwise', () => {
   ])
 })
 
-// === Nullish coalescing ===
+// Nullish coalescing
 
 test('??: truthy / zero / null', () => {
   cases([
@@ -190,13 +190,13 @@ test('??: truthy / zero / null', () => {
   ])
 })
 
-// === void ===
+// void
 
 test('void: returns undefined', () => {
   is(jz('export let f = (x) => void x').exports.f(42), undefined)
 })
 
-// === typeof ===
+// typeof
 
 test('typeof: number literal', () => {
   is(jz('export let f = () => typeof 5').exports.f(), 'number')
@@ -224,7 +224,7 @@ test('typeof: comparison still works', () => {
   is(jz('export let f = (x) => typeof x === "number"').exports.f(5), true)
 })
 
-// === Unary + ===
+// Unary +
 
 test('unary +: number literal stays number', () => {
   is(jz('export let f = () => +5').exports.f(), 5)
@@ -243,7 +243,7 @@ test('unary +: numeric variable returns same value', () => {
   is(jz('export let f = (x) => +x').exports.f(7), 7)
 })
 
-// === !! drop in boolean position ===
+// !! drop in boolean position
 
 test('logical: !!x in a condition drops to plain truthiness', () => {
   // `if/while/for/?:` read only truthiness, so `!!e` ≡ `e` — the double-eqz folds out.
@@ -261,7 +261,7 @@ test('logical: !! in value position is preserved (still a 0/1 boolean)', () => {
   is(f(9), 100)
 })
 
-// === Optional call ?.() ===
+// Optional call ?.()
 
 test('?.(): non-null callable returns value', () => {
   const { f } = jz(`export let f = () => {
@@ -288,7 +288,7 @@ test('?.(): with arguments', () => {
   is(f(), 7)
 })
 
-// === switch ===
+// switch
 
 test('switch: with default', () => {
   const { f } = run(`export let f = (x) => {
@@ -440,7 +440,7 @@ test('switch: string discriminant matches by value (no temp mis-fold)', () => {
   is(f(2), 0)
 })
 
-// === Default params ===
+// Default params
 
 test('default param: used when arg missing', () => {
   const { f } = run('export let f = (x = 5) => x')
@@ -1233,7 +1233,7 @@ test('presentVal and val are mutually exclusive by construction — never both n
   is(r2.x, VAL.BIGINT)
 })
 
-// --- shared structural predicates (kind.js) ---
+// shared structural predicates (kind.js)
 
 test('censusShapedNode: recognizes dict [] / . reads and Map .get() calls; rejects everything else', () => {
   is(censusShapedNode(['[]', 'd', 'k']), true)

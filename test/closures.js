@@ -278,7 +278,7 @@ test('dynamic method arms share a block callback body and its nested closures', 
     'one callback body and one nested body, shared across dispatch arms')
 })
 
-// === Basic closure (capture outer variable) ===
+// Basic closure (capture outer variable)
 
 test('closure: capture param', () => {
   is(run(`
@@ -301,7 +301,7 @@ test('closure: capture multiple values', () => {
   `).test(), 33)
 })
 
-// === Currying ===
+// Currying
 
 test('closure: currying', () => {
   const { test } = run(`
@@ -325,7 +325,7 @@ test('closure: curried mul', () => {
   `).test(), 25)  // 10 + 15
 })
 
-// === Callbacks ===
+// Callbacks
 
 test('closure: pass function as callback', () => {
   is(run(`
@@ -348,7 +348,7 @@ test('closure: callback with capture', () => {
   `).test(), 105)
 })
 
-// === No captures (function reference) ===
+// No captures (function reference)
 
 test('closure: no-capture function reference', () => {
   is(run(`
@@ -359,7 +359,7 @@ test('closure: no-capture function reference', () => {
   `).test(), -42)
 })
 
-// === Closure preserves value at creation time ===
+// Closure preserves value at creation time
 
 test('closure: mutable capture (by reference)', () => {
   is(run(`
@@ -470,7 +470,7 @@ test('closure: integer const capture folds into closure body', () => {
   ok(/\(i32\.const 255\)/.test(body), 'const capture should become an immediate')
 })
 
-// === Multiple closures from same factory ===
+// Multiple closures from same factory
 
 test('closure: multiple instances', () => {
   const { test } = run(`
@@ -485,7 +485,7 @@ test('closure: multiple instances', () => {
   is(test(), 75)  // 10 + 15 + 50
 })
 
-// === Expression-valued closures ===
+// Expression-valued closures
 
 test('closure: returned closure with default', () => {
   is(run(`
@@ -508,7 +508,7 @@ test('closure: returned closure with rest', () => {
   `).test(), 3)
 })
 
-// === Top-level higher-order functions ===
+// Top-level higher-order functions
 
 test('HOF: top-level function as argument', async () => {
   is(jz('let k = () => 7; let use = (g) => g(); export let f = () => use(k)').exports.f(), 7)
@@ -704,7 +704,7 @@ test('arity ok: top-level func with 8 params used as value', () => {
   is(f(), 36)
 })
 
-// === argc-aware rest packing ===
+// argc-aware rest packing
 
 test('rest closure: argc=0', () => {
   const { f } = runHost(`export let f = () => {
@@ -758,7 +758,7 @@ test('rest closure: fixed + rest, indexing into rest', () => {
   is(f(), 106)
 })
 
-// === Defaults via UNDEF inline-slot padding ===
+// Defaults via UNDEF inline-slot padding
 
 test('defaults closure: omit arg → default fires', () => {
   const { f } = runHost(`export let f = () => {
@@ -820,7 +820,7 @@ test('defaults closure: writes in defaults capture the enclosing binding by cell
   }
 })
 
-// === Mixed fixed + rest + defaults ===
+// Mixed fixed + rest + defaults
 
 test('closure mixed: fixed + default + rest', () => {
   const { f } = runHost(`export let f = () => {
@@ -838,7 +838,7 @@ test('closure mixed: fixed + default + rest with args', () => {
   is(f(), 23)  // 1+20+2
 })
 
-// === Spread path: prebuiltArray decode into inline slots ===
+// Spread path: prebuiltArray decode into inline slots
 
 test('spread into closure: small array', () => {
   const { f } = runHost(`export let f = () => {
@@ -958,7 +958,7 @@ export let f = (o, i) => o.push(i) + o.push(1, 2, 3) + out.n`)
   ok(/local\.get \$__a0/.test(body), 'the view reads the argument slots')
 })
 
-// === HOF + spread combinations ===
+// HOF + spread combinations
 
 test('HOF: callback with defaults', () => {
   const { f } = runHost(`
@@ -1399,7 +1399,7 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   is((w.match(/call_indirect/g) || []).length, 1, 'only keep() generic dispatch remains indirect')
 })
 
-// === call_indirect devirtualization ===
+// call_indirect devirtualization
 // `let f = c ? a : b; f(x)`: a local holding one of two functions and only
 // called holds the chosen one's number instead, and each call is the choice
 // of direct calls (plan/chosen-calls.js): no table entry, no nullish guard on
@@ -1485,6 +1485,7 @@ test('capture nullable: strict ===null guard inside plain closure', () => {
   is(r.go(), 7)
 })
 
+// IIFE lambda-lifting (liftIIFEs)
 // `(params => body)(args)` is hoisted to a top-level function with its free variables
 // appended as params and replaced by a DIRECT call — so it never rides the f64-only
 // closure ABI (SIMD flows through) and pays no closure alloc/indirect call.
@@ -1687,22 +1688,7 @@ export let f = () => { A[0] = 9; return T[0] }`)
 
 test('const fn-table: element-as-value alias and arity variance stay exact', () => {
   // `ops[1]` read as a VALUE flows to a call site the devirt'd dispatch never sees —
-  // the alias route must agree with the table route. (A closure-table call-site
-  // PARAM lattice — narrow.js's direct-call lattice extended to indexed table
-  // dispatch — was built and REVERTED once already at this exact shape: it
-  // trusted the table's OWN safety notion, which only proves funcIdx IDENTITY
-  // (any bare element read is harmless there), not the stronger "no untracked
-  // caller can reach this body" a PARAM-kind proof needs. `let pick = ops[1]`
-  // is exactly that untracked path: pick reaches the identical compiled body
-  // through a call site the table's own sites never see. The current
-  // implementation (dyn-closure-tables.js scanClosureTableLatticeCandidates)
-  // disqualifies `ops`/`t` here on exactly this shape — a bare element read
-  // that isn't itself an immediate call's callee — so neither table gains the
-  // lattice below and both bodies keep their runtime dispatch. This test is
-  // now also the FAIL-OPEN pin for that scan: see the WAT assertions below.
-  // NOTE pre-existing, control-verified gap: a STRING arg through this alias
-  // skips the ToNumber parse — pick("3",1) gives 1, not JS's 2 — same family
-  // as the untyped generic-call coercion gaps; not pinned here.)
+  // the alias route must agree with the table route.
   const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k]
 let pick = ops[1]
 export let f = (n) => {
@@ -2519,10 +2505,6 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
   }
 })
 
-// The same blind spot in a binding's own integer certainty (once analyze/val-types.js
-// analyzeIntCertain's, the interval proof's lifetime value now): an integer-initialized binding a closure reassigns read
-// back raw, so `v * 2` skipped ToNumber on the string or Boolean the closure
-// stored ('x' came back as itself, true as the atom).
 test('closure: a value a closure writes into an integer binding converts at a numeric read', () => {
   const src = `export let f = (k) => { let v = 0; let set = () => { v = k > 1 ? 'x' : k > 0 ? true : 3 }; set(); return v * 2 }`
   const want = oracle(src).f

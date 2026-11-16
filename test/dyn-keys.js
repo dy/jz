@@ -2829,6 +2829,7 @@ test('written literal keys: a literal-key write outside a literal-bound layout d
   ok(len.includes('$__str_length') && !len.includes('$__length') && !len.includes('$__dyn_get'), 'a definitely stored key reads as a string')
 })
 
+// Declared keys across calls that cannot reach the literal
 // A literal-key store after registration calls (a bundled parser's
 // `parse.comment ??= {…}` … `binary('+', 10)` … `parse.comment['#!'] = …`) is
 // still definite when every call between is a direct call to a module function

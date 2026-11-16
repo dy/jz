@@ -61,7 +61,7 @@ test('Symbol: a fresh identity never equals an interned one and exhaustion never
   }
 })
 
-// === Basic Symbol creation ===
+// Basic Symbol creation
 
 test('Symbol: description conversion follows argument evaluation and preserves throws', () => {
   const src=`export function f(mode){
@@ -102,7 +102,7 @@ test('Symbol: self-equality', () => {
   is(f(), true)
 })
 
-// === Symbol.for interning ===
+// Symbol.for interning
 
 test('Symbol.for: reuses same interned atom', () => {
   const { f } = jz(`export let f = () => {
@@ -122,7 +122,7 @@ test('Symbol.for: different names are different', () => {
   is(f(), false)
 })
 
-// === typeof Symbol ===
+// typeof Symbol
 
 test('typeof Symbol anonymous', async () => {
   const { exports: { f } } = await jz(`export let f = () => {
@@ -140,7 +140,7 @@ test('typeof Symbol.for', async () => {
   is(f(), 'symbol')
 })
 
-// === Object property access with Symbol keys ===
+// Object property access with Symbol keys
 
 test('Symbol as object key (compile-time object)', () => {
   const { f } = run(`export let f = () => {
@@ -151,7 +151,7 @@ test('Symbol as object key (compile-time object)', () => {
   is(f(), 10)  // Objects work normally
 })
 
-// === Nullish coalescing uses symbol comparison ===
+// Nullish coalescing uses symbol comparison
 
 test('Nullish coalescing: regular value vs symbol', () => {
   const { f } = run(`export let f = () => {

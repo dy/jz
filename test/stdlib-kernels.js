@@ -19,6 +19,8 @@ const takesF64 = (src) => {
   try { return typeof raw.f(0.5) === 'number' } catch { return false }
 }
 
+// Values
+
 // A boolean returned through a function VALUE (an alias, or a default export
 // re-exported by another module) arrives as the number 0/1: `=== false` and
 // `typeof` both miss.
@@ -181,6 +183,8 @@ test('stdlib: namespace introspection preserves booleans, aliases and user bindi
     { './value.js': 'export const Math = []' }), true, 'an imported binding keeps its own identity')
 })
 
+// Numeric proof
+
 // A parameter returned as itself keeps its identity for the host (`fib('1')` is
 // '1', test/audit-regressions.js), so the export boxes it. A return under a
 // guard only a number passes (`x !== x`, `x === 0.0`, `isnan( x )`, `isInfinite(
@@ -299,6 +303,8 @@ test('stdlib: function static property through a re-export hop calls directly', 
   })
   is(count(text, /call_indirect|call \$__dyn_get/g), 0)
 })
+
+// Loops
 
 const N = 1000
 const dot = (body) => `const X = new Float64Array(${N})\nconst Y = new Float64Array(${N})
@@ -444,6 +450,8 @@ test('stdlib: a kernel returning its array parameter indexes statically', () => 
     export let f = (n, a, x, y) => axpy(n, a, x, y)`)
   is(count(text, /call \$__typed_idx|call \$__dyn_|call \$__to_num/g), 0)
 })
+
+// Counted loops against the host
 
 // A loop rewritten over its trip number (plan/counted-loops.js) runs what the
 // source runs: every shape below agrees with the host on each input, at each

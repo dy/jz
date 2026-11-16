@@ -280,7 +280,7 @@ test('import: transitive imports', () => {
   is(exports.f(5), 11)  // 5*2 + 1
 })
 
-// === re-exports ===
+// re-exports
 
 test('re-export: named from module', () => {
   const inner = 'export let val = (x) => x + 1'
@@ -443,7 +443,7 @@ test('import: unknown export errors', () => {
   ), /not exported/)
 })
 
-// === export default + default import ===
+// export default + default import
 
 test('export default: arrow function', () => {
   const wasm = compile('export default (x) => x + 1')
@@ -907,7 +907,7 @@ test('nested module imports do not stack prefixes', () => {
   is(exports.g(), 42)
 })
 
-// === Cross-module array resize ===
+// Cross-module array resize
 
 test('cross-module: importer `.length = 0` between owner pushes keeps one array', () => {
   const mods = { './state.js': 'export const arr = [7]\nexport let ownerPush = (v) => { arr.push(v); return 0 }\nexport let readLen = () => arr.length' }
@@ -922,7 +922,7 @@ test('cross-module: importer `.length = 0` between owner pushes keeps one array'
   is(exports.t(), 19)
 })
 
-// === Destructured export declarations ===
+// Destructured export declarations
 
 // A destructuring export declaration (`export let { a } = obj`) must register its
 // bindings in the module's export table. The single-module form compiles; only the

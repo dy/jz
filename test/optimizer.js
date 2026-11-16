@@ -3675,7 +3675,7 @@ test('promoteIntArrayLiterals: large int-only literal stays promoted (length / i
   is(main(), 65535)
 })
 
-// === Workstream #5: closure-capture rep narrowing ===
+// Workstream #5: closure-capture rep narrowing
 
 test('captureIntCertain: intCertain propagates across capture (Math.floor elides)', () => {
   // Parent has `let i = n | 0` — every defining RHS is integer (bitwise-or).
@@ -3735,7 +3735,7 @@ test('captureIntCertain: float capture does NOT enable elision', () => {
   is(run(src).main(3), 3)
 })
 
-// === Workstream #3c: schema field intCertain ===
+// Workstream #3c: schema field intCertain
 
 test('schemaSlotIntCertain: Math.floor elides on intCertain slot', () => {
   // `{ x: n | 0, y: (n * 2) | 0 }` — every observed write to slot x and y is
@@ -3807,6 +3807,7 @@ test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
   is(run(src).main(5.9), 5)
 })
 
+// pass semantic-preservation pins
 // Behavioural (run + assert), since the failure mode is a wrong runtime value.
 
 test('zero-init drop (watr zeroinit): -0.0 initializer is preserved (not coerced to +0)', () => {

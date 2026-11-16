@@ -346,7 +346,7 @@ test('union inline: eligibility verdicts (positive + fail-closed negatives)', ()
   is([...(ctx.schema.inlineUnion?.keys() || [])].join(';'), '', 'exported union return fails closed')
 })
 
-// --- union carrier end-to-end: packed cells, exact values ---
+// union carrier end-to-end: packed cells, exact values
 // One-function tagged-record stream through the max-K-stride packed i32
 // carrier: contiguous ⌈stride/2⌉-cell records, raw i32 field reads resolved
 // by the discriminant ladder (positive + exclusion refinements). Value must

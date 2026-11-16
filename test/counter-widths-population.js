@@ -52,7 +52,7 @@ const short = (bound, start, step, op, down = false) => (args) => args.filter(([
 })
 const prog = (name, prelude, body, args) => P.push({ name, src: `${prelude}\nexport let f = (b, s, t) => {\n  ${X8}\n  let c = 0, u = 0\n  let s0 = s\n  ${body}\n}`.replace(/\bs0\b/g, 's0'), args })
 
-// ---- arguments
+// arguments
 const E31 = 2147483648, E32 = 4294967296
 const edges = [E31 - 2, E31 - 1, E31, E31 + 1, E32 - 1, E32, E32 + 1, 1073741824, 1610612735, -E31, -E31 - 1, -E31 + 1, 536870912, 4503599627370496]
 const small = [0, 1, 2, 5, 8, 8.5, 9, 40, -1, -0, NaN, -Infinity, -2147483649]
@@ -82,7 +82,7 @@ const capped = []
   for (const B of Bs) for (const S of Ss) for (const T of Ts) if (k++ % 3 === 0 || B > 1e9 && S > 1e9) capped.push([B, S, T])
 }
 
-// ---- A. `for`, the counter in the head
+// A. `for`, the counter in the head
 let n = 0
 for (const cap of [false, true]) for (const op of ['<', '<=']) for (const step of ['1', '2', '3', 't'])
   for (const start of ['0', 's', '2147483640']) for (const bound of BOUNDS) {
@@ -108,7 +108,7 @@ for (const cap of [false, true]) for (const op of ['>', '>=']) for (const step o
       `${setup}\n  let sum = 0\n  for (let i = ${start}; i ${op} ${B}; ${stepS}) { ${cap ? `if (++c > ${CAP}) break; ` : 'c++; '}${BODY[body]('i').replace(/\bs \+=/g, 'sum +=')} }\n  return [c, sum, u, ${SUM8}]`, cap ? bw(bound, args) : short(bound, start, step, op, true)(bw(bound, args)))
   }
 
-// ---- B. `while`, the counter declared outside and read after
+// B. `while`, the counter declared outside and read after
 for (const cap of [false, true]) for (const op of ['<', '<=']) for (const step of ['1', '2', 't'])
   for (const start of ['s', 's + 2', '-s', 's | 0', 's * 1']) for (const bound of ['param', 'module', 'word']) {
     const body = BODIES[n++ % BODIES.length]
@@ -121,7 +121,7 @@ for (const cap of [false, true]) for (const op of ['<', '<=']) for (const step o
       `${setup}\n  let sum = 0, i = ${start}\n  while (i ${op} ${B}) { ${cap ? `if (++c > ${CAP}) break; ` : 'c++; '}${BODY[body]('i').replace(/\bs \+=/g, 'sum +=')}; i += ${step} }\n  return [c, sum, u, i, ${SUM8}]`, cap ? bw(bound, args) : short(bound, start, step, op)(bw(bound, args)))
   }
 
-// ---- C. a counter no test names
+// C. a counter no test names
 const sideArgs = [0, 1, 2, 3, 8, 1024, 2147483647, 2147483648, 4294967295, 4294967296, 1e300, -1, NaN, 8.5, Infinity, -Infinity].map(b => [b, 0, 1])
 prog('side: bits of a shifted word', '', `let v = b, bits = 0\n  while (v > 1) { v >>= 1; bits++ }\n  return [bits, v, x8[bits] === undefined ? -1 : x8[bits]]`, noBig(sideArgs))
 prog('side: bits of an unsigned shift', '', `let v = b >>> 0, bits = 0\n  while (v) { v = v >>> 1; bits++ }\n  return [bits, v, x8[bits & 7]]`, noBig(sideArgs))
@@ -161,7 +161,7 @@ prog('inner: a product grown inside one trip', '', `let sum = 0\n  for (let i = 
 prog('inner: a sum grown inside one trip', '', `let sum = 0\n  for (let i = 0; i < (b & 7); i++) { let k = s; for (let q = 0; q < 6; q++) { k += t; if (x8[k] === undefined) u++; else sum += x8[k] } sum += k }\n  return [sum, u]`,
   [[7, 0, 1], [7, 2147483640, 3], [7, 0, 1073741824], [7, -2147483645, -2], [7, 0, 0.5], [7, 4294967290, 2], [7, 0, 1e15]])
 
-// ---- E. two counters; a counter of the module; continue
+// E. two counters; a counter of the module; continue
 prog('two counters meeting', '', `let sum = 0\n  for (let i = s, j = b; i < j; i++, j--) { if (++c > ${CAP}) break; sum += i - j; if (x8[j - i] === undefined) u++ }\n  return [c, sum, u]`, capped)
 prog('two counters, one by a name', '', `let sum = 0, j = 0\n  for (let i = s; i < b; i++) { if (++c > ${CAP}) break; j += t; sum += j; if (x8[j] === undefined) u++ }\n  return [c, sum, u, j]`, capped)
 P.push({ name: 'module counter', src: `let idx = 0\nexport let f = (b, s, t) => { let c = 0, sum = 0\n  for (idx = s; idx < b; idx += t) { if (++c > ${CAP}) break; sum += idx }\n  return [c, sum, idx] }\nexport let g = (b, s, t) => idx`, args: capped })
@@ -189,7 +189,7 @@ prog('far: a side counter stepped by a name', '', `let k = s, sum = 0\n  for (le
 prog('far: a product counter', '', `let k = 1, sum = 0\n  for (let i = 0; i < 70; i++) { k *= 3; sum += k % 1000 }\n  return [k, sum]`, [[0, 0, 1]])
 prog('far: an integer sum past 2^53', '', `let sum = s\n  for (let i = 0; i < 50; i++) sum += i * t + 1\n  return [sum, sum % 1024]`, farArgs)
 
-// ---- G. the ways out of a loop and around it
+// G. the ways out of a loop and around it
 prog('label: continue an outer loop from an inner', '', `let sum = 0\n  outer: for (let i = s; i < b; i += t) { if (++c > 12) break; for (let j = i; j < i + 6; j++) { if (j % 4 === 3) continue outer; sum += j; if (x8[j] === undefined) u++ } sum += 1000 }\n  return [c, sum, u]`, capped)
 prog('label: break an outer loop from an inner', '', `let sum = 0\n  outer: for (let i = s; i < b; i += t) { if (++c > 12) break; for (let j = i; j < i + 6; j++) { if (j % 5 === 4 && c > 3) break outer; sum += j } sum += 1000 }\n  return [c, sum]`, capped)
 prog('do while', '', `let i = s, sum = 0\n  do { if (++c > ${CAP}) break; sum += i; if (x8[i] === undefined) u++; i += t } while (i < b)\n  return [c, sum, u, i]`, capped)

@@ -929,6 +929,7 @@ function* filesUnder(rootDir, opts = {}) {
   yield* walk(rootDir)
 }
 
+// Work collection (main thread)
 // Walk the tracked dirs once, applying dir-level skips and the --quick cap, and
 // produce a flat work list — one entry per test file. Content-level skip
 // classification and compile/run happen later, in parallel workers.
@@ -961,6 +962,7 @@ function collectWork() {
   return { work, dirSkip }
 }
 
+// Expected failures
 // Tests that fail for a reason outside jz's correctness contract: a subset the
 // distilled-JS subset deliberately omits, or an upstream parser gap. They still
 // run, but bucket as `xfail` rather than `fail`, so the `fail` count gates
@@ -1047,6 +1049,7 @@ if (!isMainThread) {
   // Spawned worker: run the assigned slice and report tallies back.
   runChunk(workerData.items).then(r => parentPort.postMessage(r))
 } else {
+  // Main: collect work, fan out to a worker pool, aggregate
   const languageTest262Files = countJs(testDir)
   const allTest262Files = countJs(join(TEST262, 'test'))
   const { work, dirSkip } = collectWork()

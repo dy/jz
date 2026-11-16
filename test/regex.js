@@ -165,7 +165,7 @@ test('regex: brand checks cannot read raw BigInt payloads as object pointers', (
   }
 })
 
-// === Parser tests ===
+// Parser tests
 
 test('regex: literal chars', () => {
   is(parseRegex('a'), ['seq', 'a'])
@@ -324,7 +324,7 @@ test('regex: hex/unicode escapes', () => {
   is(parseRegex('[\\x41-\\x5A]'), ['[]', ['-', 'A', 'Z']])
 })
 
-// === Codegen tests ===
+// Codegen tests
 
 test('regex: terminal character runs need no retry loop', () => {
   for (const pattern of ['a+$', '[a-z]+$', '([a-z]+)$', '(?:[a-z]+|\\d+)$', '([^x]{1,4})$'])
@@ -410,7 +410,7 @@ test('regex: compile backreference', () => {
   is(wat.includes('$br_i'), true)
 })
 
-// === Integration tests ===
+// Integration tests
 
 test('regex: basic test()', async () => {
   is(await evaluate('/abc/.test("hello abc world")'), true)
@@ -589,7 +589,7 @@ test('regex: str.match(regex) named capture groups', () => {
 
 test('regex stress: quantifiers / anchors / alternation / groups / classes', () => {
   cases([
-    // === Greedy vs lazy quantifiers ===
+    // Greedy vs lazy quantifiers
     ['greedy * matches maximally: aXXXb', '() => /a.*b/.test("aXXXb")', true],
     ['greedy * matches maximally: ab', '() => /a.*b/.test("ab")', true],
     ['greedy * matches maximally: a', '() => /a.*b/.test("a")', false],
@@ -597,7 +597,7 @@ test('regex stress: quantifiers / anchors / alternation / groups / classes', () 
     ['lazy *? matches minimally: ab', '() => /a.*?b/.test("ab")', true],
     ['greedy + requires at least one: aXb', '() => /a.+b/.test("aXb")', true],
     ['greedy + requires at least one: ab', '() => /a.+b/.test("ab")', false],
-    // === Repetition {n,m} ===
+    // Repetition {n,m}
     ['exact repetition {n}: aaa', '() => /a{3}/.test("aaa")', true],
     ['exact repetition {n}: aa', '() => /a{3}/.test("aa")', false],
     ['exact repetition {n}: aaaa', '() => /a{3}/.test("aaaa")', true],
@@ -607,26 +607,26 @@ test('regex stress: quantifiers / anchors / alternation / groups / classes', () 
     ['open-ended {n,}: aa', '() => /a{2,}/.test("aa")', true],
     ['open-ended {n,}: aaaaa', '() => /a{2,}/.test("aaaaa")', true],
     ['open-ended {n,}: a', '() => /a{2,}/.test("a")', false],
-    // === Anchors ===
+    // Anchors
     ['^ and $ together: exact', '() => /^exact$/.test("exact")', true],
     ['^ and $ together: not exact', '() => /^exact$/.test("not exact")', false],
     ['^ and $ together: exactly', '() => /^exact$/.test("exactly")', false],
     ['anchor with quantifier: aaaa', '() => /^a+$/.test("aaaa")', true],
     ['anchor with quantifier: aaab', '() => /^a+$/.test("aaab")', false],
     ['anchor with quantifier: empty', '() => /^a+$/.test("")', false],
-    // === Alternation edge cases ===
+    // Alternation edge cases
     ['multi-branch alternation: baz', '() => /foo|bar|baz/.test("baz")', true],
     ['multi-branch alternation: qux', '() => /foo|bar|baz/.test("qux")', false],
     ['alternation with anchors: cat', '() => /^(cat|dog)$/.test("cat")', true],
     ['alternation with anchors: catdog', '() => /^(cat|dog)$/.test("catdog")', false],
-    // === Nested groups ===
+    // Nested groups
     ['nested quantified groups: ababab', '() => /(ab)+/.test("ababab")', true],
     ['nested quantified groups: abc', '() => /(ab)+/.test("abc")', true],
     ['nested quantified groups: ba', '() => /(ab)+/.test("ba")', false],
     ['non-capturing group: ababc', '() => /(?:ab)+c/.test("ababc")', true],
     ['non-capturing group: abc', '() => /(?:ab)+c/.test("abc")', true],
     ['non-capturing group: ac', '() => /(?:ab)+c/.test("ac")', false],
-    // === Character class edge cases ===
+    // Character class edge cases
     ['char class with special chars: dot', '() => /[.+*?]/.test(".")', true],
     ['char class with special chars: x', '() => /[.+*?]/.test("x")', false],
     ['negated class with range: a', '() => /[^0-9]/.test("a")', true],
@@ -653,7 +653,7 @@ test('regex stress: word boundary / dot / empty alternation', () => {
   ])
 })
 
-// === Real-world patterns ===
+// Real-world patterns
 
 test('regex stress: integer pattern', async () => {
   is(await evaluate('/^-?\\d+$/.test("42")'), true)
@@ -664,7 +664,7 @@ test('regex stress: integer pattern', async () => {
 
 test('regex stress: real-world patterns / lookahead / search / split', () => {
   cases([
-    // === Real-world patterns ===
+    // Real-world patterns
     ['hex color: valid lowercase', '() => /^#[0-9a-f]{6}$/.test("#ff00aa")', true],
     ['hex color: uppercase rejected', '() => /^#[0-9a-f]{6}$/.test("#FF00AA")', false],
     ['hex color: too short', '() => /^#[0-9a-f]{6}$/.test("#fff")', false],
@@ -673,7 +673,7 @@ test('regex stress: real-world patterns / lookahead / search / split', () => {
     ['simple identifier: single letter', '() => /^[a-zA-Z_]\\w*$/.test("x")', true],
     ['IP-like pattern: full', '() => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1.1")', true],
     ['IP-like pattern: incomplete', '() => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1")', false],
-    // === Lookahead ===
+    // Lookahead
     ['positive lookahead: matches', '() => /\\d+(?=px)/.test("100px")', true],
     ['positive lookahead: no match', '() => /\\d+(?=px)/.test("100em")', false],
     ['negative lookahead: no px', '() => /\\d+(?!px)/.test("100em")', true],
@@ -707,7 +707,7 @@ test('regex stress: backtracking', () => {
   ])
 })
 
-// === new RegExp() with literal pattern ===
+// new RegExp() with literal pattern
 // `new RegExp("[a-z]+")` and `new RegExp("foo", "i")` lower to the same path
 // as `/[a-z]+/` and `/foo/i`. Dynamic patterns can't be compiled at build time
 // and must surface a clean error.

@@ -2044,6 +2044,7 @@ test('schema binding intact: single-shape literal still resolves props', () => {
   is(r.go(), 56)
 })
 
+// Spread copy semantics
 // `{ ...src }` where src's schema is unknown at compile time (a param, an array
 // element, a member access, a HASH) must SHALLOW-COPY src, never alias it — every
 // later write to the result would otherwise leak back into the source.

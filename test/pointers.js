@@ -8,7 +8,7 @@ import { i64Hex, ptrBits, PTR } from '../layout.js'
 import { run, jz, compile } from './util.js'
 
 
-// === Multi-value threshold ===
+// Multi-value threshold
 
 test('multi: vec2', () => {
   const r = run('export let f = (a, b) => [a, b]').f(1, 2)
@@ -518,7 +518,7 @@ test('carrier: LAYOUT-class bigint fields stay provable-raw UNDER the pointsTo=A
   is(exp.ptrHex(), '0x7FFB000300000400')
 })
 
-// === Limits ===
+// Limits
 
 test('nan-box: max aux (32767)', () => {
   const { f } = run(`export let f = () => {

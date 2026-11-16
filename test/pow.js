@@ -75,7 +75,7 @@ function tally(label, pairs, pow, limit = 1) {
   ok(over === 0, `${label}: every pair within ${limit} ulp of host Math.pow (${over} exceeded)`)
 }
 
-// === 1. $math.pow_core — the runtime non-integer tail ===
+// 1. $math.pow_core — the runtime non-integer tail
 
 let runtimePow
 const pow = (x, y) => (runtimePow ??= run('export let f = (x, y) => Math.pow(x, y)').f)(x, y)

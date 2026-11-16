@@ -415,10 +415,6 @@ test('iterator helpers: instanceof Iterator, protocol interplay', () => {
 })
 
 test('generator arguments ownership: outer function is not rest-lowered for a nested generator', () => {
-  // usesArguments walked THROUGH `function*` — an outer function containing an
-  // arguments-using generator was itself rest-param-lowered, and the
-  // generator's arguments-writes aliased the outer (empty) rest array → OOB
-  // (test262 yield/formal-parameters-after-reassignment-strict).
   const { exports } = jz(`export let _run = () => {
     function* g(a, b, c, d) { arguments[0] = 32; yield a; yield b }
     var iter = g(23, 45, 33)

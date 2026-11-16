@@ -80,7 +80,7 @@ for (const t of ALL) {
     add(`two stores, second behind ${d}`, 64, `for (let i = 0; i < n; i++) { a[i + ${20 + d}] = c[i]; a[i + 20] = b[i]@ }`, [t])
   }
 }
-// --- stencils and records
+// stencils and records
 add('stencil in place', 64, `for (let i = 0; i < n; i++) a[i + 20] = a[i + 19] + a[i + 21]`)
 add('stencil ahead in place', 64, `for (let i = 0; i < n; i++) a[i + 20] = a[i + 21] + a[i + 22]`)
 add('stencil self and next', 64, `for (let i = 0; i < n; i++) a[i + 20] = (a[i + 20] + a[i + 21]) * 2`)
@@ -99,7 +99,7 @@ add('compress in place', 60, `for (let i = 0; i < n; i++) a[i] = a[2 * i] + a[2 
 add('mirror in place odd', 64, `for (let i = 1; i < n; i++) a[n + 3 - i] = a[i]@`)
 add('mirror read', 64, `for (let i = 0; i < n; i++) b[i] = a[i] + a[n - 1 - i]`)
 add('mirror read in place', 64, `for (let i = 0; i < n; i++) a[i] = a[i] + a[n - 1 - i]`)
-// --- what the loop leaves in a local or a global
+// what the loop leaves in a local or a global
 add('last index if', 64, `let last = -1; for (let i = 0; i < n; i++) { if (a[i] > 0) last = i; b[i] = a[i]@ } ret = last`)
 add('two lane locals after', 64, `let p = 0, w = 0; for (let i = 0; i < n; i++) { p = a[i]@; w = p * 2; b[i] = w } ret = p + w * 3`)
 add('counter after', 64, `let i = 0; for (; i < n; i++) b[i] = a[i]@; ret = i`)
@@ -120,7 +120,7 @@ add('sum read in the loop', 64, `let s = 0; for (let i = 0; i < n; i++) { s += a
 add('max after', 64, `let m = -1e9; for (let i = 0; i < n; i++) m = Math.max(m, a[i]); ret = n ? m : 0`)
 add('break', 64, `let i = 0; for (; i < n; i++) { if (a[i] < -9) break; b[i] = a[i]@ } ret = i`)
 add('continue', 64, `for (let i = 0; i < n; i++) { if ((i & 3) === 1) continue; b[i] = a[i]@ }`)
-// --- ramps and narrow lanes
+// ramps and narrow lanes
 add('ramp', 64, `for (let i = 0; i < n; i++) b[i] = i * 3 + 1`)
 add('ramp squared', 64, `for (let i = 0; i < n; i++) b[i] = (i * i) & 255`)
 add('ramp beside map', 64, `for (let i = 0; i < n; i++) { b[i] = i & 127; c[i] = a[i]@ }`)
@@ -135,7 +135,7 @@ for (const s of [7, 8, 15, 16, 17, 31]) {
 add('shift by counter', 64, `for (let i = 0; i < n; i++) b[i] = a[i] >> (i & 7)`, INT)
 add('shift by element', 64, `for (let i = 0; i < n; i++) b[i] = a[i] << (c[i] & 31)`, INT)
 add('shift by wide element', 64, `for (let i = 0; i < n; i++) b[i] = a[i] >> c[i]`, INT)
-// --- arms
+// arms
 add('sqrt abs', 64, `for (let i = 0; i < n; i++) b[i] = Math.sqrt(Math.abs(a[i]))`, FLT)
 add('log to int', 64, `for (let i = 0; i < n; i++) { const v = Math.abs(a[i]); if (v > 3) { c[i] = 7; b[i] = (Math.log(v * 1.5 + 1) * 20) | 0 } }`)
 add('exp arm', 64, `for (let i = 0; i < n; i++) { if (a[i] > 0) b[i] = (Math.exp((a[i] & 31) * 0.125) * 8) | 0; else c[i] = 1 }`)
@@ -147,7 +147,7 @@ add('cond store behind', 64, `for (let i = 1; i < n; i++) if (a[i] > 0) a[i - 1]
 add('odd only', 64, `for (let i = 0; i < n; i++) if (i & 1) b[i] = a[i]@`)
 add('select assign', 64, `for (let i = 0; i < n; i++) { let v = a[i]; if (v < 0) v = -v; b[i] = v@ }`)
 add('clamp', 64, `for (let i = 0; i < n; i++) b[i] = Math.min(Math.max(a[i], -4), 4)`)
-// --- how the loop counts
+// how the loop counts
 add('unsigned exit', 64, `for (let x = n - 8; x >= 0 && x < n; x++) b[x] = a[x]@`)
 add('unsigned exit shr', 64, `for (let x = n - 8; (x >>> 0) < n; x++) b[x] = a[x]@`)
 add('start 3', 64, `for (let i = 3; i < n; i++) b[i] = a[i - 3]@`)
@@ -160,7 +160,7 @@ add('bound n - 1', 64, `for (let i = 0; i < n - 1; i++) b[i] = a[i + 1] - a[i]`)
 add('bound the body lowers', 64, `let m = n; for (let i = 0; i < m; i++) { b[i] = a[i]@; if (a[i] > 9) m-- } ret = m`)
 add('bound read from an array the body stores', 64, `c[0] = n; for (let i = 0; i < c[0]; i++) { b[i] = a[i]@; if (i === 5) c[0] = 3 }`)
 add('bound read from the stored array', 64, `b[100] = n; for (let i = 0; i < b[100]; i++) b[i + 90] = a[i] & 3`)
-// --- an outer loop over an inner one
+// an outer loop over an inner one
 add('row sums', 12, `for (let y = 0; y < n; y++) { let s = 0; for (let x = 0; x < 8; x++) s += a[y * 8 + x]; b[y] = s }`)
 add('row sums minus', 12, `for (let y = 0; y < n; y++) { let s = 100; for (let x = 0; x < 8; x++) s -= a[y * 8 + x]; b[y] = s }`)
 add('row prefix', 12, `for (let y = 0; y < n; y++) { let s = 0; for (let x = 0; x < 8; x++) s += a[y * 8 + x]; b[y + 1] = s + b[y] }`)
@@ -173,7 +173,7 @@ add('taps stored ahead', 60, `for (let i = 0; i < n; i++) { let s = 0; for (let 
 add('pixel escape', 40, `for (let x = 0; x < n; x++) { let z = 0, it = 0; const k0 = a[x] * 0.0625; while (it < 20) { z = z * z + k0; if (z > 4) break; it++ } b[x] = it }`, FLT)
 add('pixel escape carried', 40, `let k = 0.5; for (let x = 0; x < n; x++) { let z = 0, it = 0; while (it < 20) { z = z * z + k; if (z > 4) break; it++ } b[x] = it; k = k + 0.001 * it } ret = k`, ['f64'])
 add('pixel escape local after', 40, `let it = 0; for (let x = 0; x < n; x++) { let z = 0; it = 0; const k0 = a[x] * 0.0625; while (it < 20) { z = z * z + k0; if (z > 4) break; it++ } b[x] = it } ret = it`, FLT)
-// --- straight lines
+// straight lines
 add('line dot pair', 0, `b[0] = a[0] * c[0] + a[1] * c[1]; b[1] = a[2] * c[0] + a[3] * c[1]`)
 add('line dot in place', 0, `a[0] = a[0] * c[0] + a[1] * c[1]; a[1] = a[0] * c[2] + a[1] * c[3]`)
 add('line chain', 0, `b[0] = a[0] + 1; b[1] = b[0] + a[1]`)
@@ -183,7 +183,7 @@ add('line swap', 0, `const t0 = a[0], t1 = a[1]; a[0] = t1; a[1] = t0`)
 add('line pairs crossing', 0, `a[1] = b[0] + 1; a[2] = b[1] + 1; b[1] = a[1] * 2; b[2] = a[2] * 2`)
 add('line zeros', 0, `b[0] = a[1] * 0 - 0; b[1] = -(a[2] * 0); ret = (1 / b[0] > 0 ? 1 : 2) + (1 / b[1] > 0 ? 4 : 8)`, FLT)
 add('line mat2 in place', 0, `const m0 = a[0] * b[0] + a[1] * b[2], m1 = a[0] * b[1] + a[1] * b[3]; a[2] = a[2] * b[0] + a[3] * b[2]; a[3] = a[2] * b[1] + a[3] * b[3]; a[0] = m0; a[1] = m1`)
-// --- one function, its arrays apart or one
+// one function, its arrays apart or one
 add('P shift up', 64, `for (let i = 0; i < n; i++) d[i + 1] = s[i]@`, ALL, programP)
 add('P shift down', 64, `for (let i = 0; i < n; i++) d[i] = s[i + 1]@`, ALL, programP)
 add('P store, load ahead', 64, `for (let i = 0; i < n; i++) { d[i + 20] = t[i]@; s[i] = d[i + 21] }`, ALL, programP)

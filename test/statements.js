@@ -43,7 +43,7 @@ test('block: multiple lets / const in body', () => {
   ])
 })
 
-// === Assignment operators ===
+// Assignment operators
 
 test('assignment: =', () => runScalarCase('assignment-set'))
 
@@ -86,7 +86,7 @@ test('assignment: ||= / &&= / ??=', () => {
   ])
 })
 
-// === Comma operator ===
+// Comma operator
 
 test('comma: returns last value', () => runScalarCase('comma-last'))
 
@@ -98,7 +98,7 @@ test('comma: parenthesized comma-expression is a single argument', () => {
   runScalarCase('comma-grouped-second-arg')
 })
 
-// === BigInt ===
+// BigInt
 
 test('bigint: literal + Number()', () => {
   is(run('export let f = () => Number(7n)').f(), 7)
@@ -275,7 +275,7 @@ test('try/catch/finally: error in catch still triggers finally', () => {
   ok(err != null, 'catch re-throw should propagate through finally')
 })
 
-// === Timers ===
+// Timers
 
 test('setTimeout: callback fires', async () => {
   const result = jz(`
@@ -419,7 +419,7 @@ test('host:js timers import only the requested host functions', () => {
   is(clearOnly.exports.f(), 1)
 })
 
-// === Property assignment on functions and arrays ===
+// Property assignment on functions and arrays
 
 test('fn.prop: write + read', () => {
   const { g } = run(`
@@ -567,7 +567,7 @@ test('array[i++] uses old index', () => {
   is(run('export let f = () => { let a = [10, 20, 30]; let i = 1; return a[i++] }').f(), 20)
 })
 
-// === NaN truthiness ===
+// NaN truthiness
 
 test('if(NaN) is falsy', () => runScalarCase('if-nan-falsy'))
 
@@ -774,7 +774,7 @@ test('host boundary: returning null vs undefined', () => {
   is(typeof r.exports.u(), 'undefined')
 })
 
-// === for...of ===
+// for...of
 
 test('for...of: array iteration', () => {
   cases([
@@ -784,9 +784,9 @@ test('for...of: array iteration', () => {
   ])
 })
 
-// === for...in ===
+// for...in
 
-// === typeof string comparisons ===
+// typeof string comparisons
 
 test('typeof: number check', () => {
   is(jz('export let f = (x) => typeof x === "number"').exports.f(42), true)
@@ -909,7 +909,7 @@ test('if(0) still falsy', () => runScalarCase('if-zero-falsy'))
 
 test('if(1) still truthy', () => runScalarCase('if-one-truthy'))
 
-// === Ternary ===
+// Ternary
 
 test('ternary: a ? b : c', () => {
   const { f } = run('export let f = (x) => x > 0 ? x : 0')
@@ -917,7 +917,7 @@ test('ternary: a ? b : c', () => {
   is(f(-3), 0)
 })
 
-// === For loop ===
+// For loop
 
 test('for: sum 0..n', () => runScalarCase('for-sum'))
 
@@ -929,7 +929,7 @@ test('for: omitted init and step with condition', () => runScalarCase('for-omitt
 
 test('for: omitted init condition and step', () => runScalarCase('for-infinite-return', { jzify: true }))
 
-// === Do-while loop (jzify lowers to for + once-flag) ===
+// Do-while loop (jzify lowers to for + once-flag)
 
 test('do-while: basic', () => runScalarCase('do-basic', { jzify: true }))
 
@@ -964,7 +964,7 @@ test('try/finally: break/continue runs cleanup in loop', () => {
   ])
 })
 
-// === Logical operators ===
+// Logical operators
 
 test('&&: short-circuit', () => {
   const entry = scalarCase('logical-and')
@@ -982,7 +982,7 @@ test('&&: chained', () => runScalarCase('logical-and-chain'))
 
 test('||: chained', () => runScalarCase('logical-or-chain'))
 
-// === Combined patterns ===
+// Combined patterns
 
 test('abs via if', () => {
   const { f } = run('export let f = (x) => { if (x < 0) return -x; return x }')
@@ -1233,7 +1233,7 @@ test('debugger statement: parse and ignore at runtime', () => {
   is(exports._run(), 2)
 })
 
-// === Redeclarations (test262) ===
+// Redeclarations (test262)
 // jzify lowers `function`→`const` and `var`→`let`; dedup keeps a single binding
 // per name so a `var` redeclaration after a function declaration is a no-op.
 

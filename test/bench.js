@@ -42,6 +42,7 @@ const ascAvailable = have('asc')
 const wasmOptAvailable = have('wasm-opt')
 const natAvailable = have('clang')
 
+// Speed pins
 //  win  — jz median strictly < target median (small headroom for noise)
 //  tie  — jz median within 5% of target
 //  near — jz median within 10% of target
@@ -195,6 +196,7 @@ const okTiming = (cond, msg) => process.env.CI
 // (1.0 = parity; tighten as we win more.) Over cases with matching checksums.
 const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0 }
 
+// Native-C parity pins (jz wasm vs `clang -O3`)
 // The headline guarantee: jz emits native-grade code. Tolerances are wider than
 // the V8 pins: `clang` runs in a separate process, so its medians carry more
 // harness noise (aos/callback/json/crc32 are stabilised via the recheck loop
@@ -322,6 +324,7 @@ const SIZE_BUDGET = {
   hashjoin: 1900,
 }
 
+// Fastest-wasm claim (AGENTS.md §Performance claims)
 // jz must be the fastest WASM producer on every case — ahead of clang→wasm, rustc→wasm,
 // tinygo→wasm, AssemblyScript (native clang -O3 is the only allowed-faster target). WASM_RIVALS
 // are the wasm-emitting competitors; for each case jz's median must be ≤ the BEST rival's
@@ -373,6 +376,7 @@ const WASM_TODO = {
 // The gate's failure bar is unchanged (red fails); the split changes what the
 // evidence CLAIMS: the strict/band/red counts print with every run.
 
+// Run the speed harness
 // Full corpus (no --cases): the fastest-wasm claim is gated on EVERY case, not a curated
 // subset.
 const speedTargets = ['v8', 'jz', ...(natAvailable ? ['nat'] : []), ...WASM_RIVALS]
@@ -446,6 +450,7 @@ for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos', 'hash', 'b
   if (s.nat) runs[id].nat.medianUs = median(s.nat)
 }
 
+// Run the size harness
 console.log('bench: size — compiling jz/AS + wasm-opt self-check…')
 const sizeOut = execFileSync('node', [SIZE_SCRIPT, '--json'], { encoding: 'utf8', cwd: ROOT })
 const sizes = {}  // id → { jz, jzOpt, as }
@@ -454,6 +459,7 @@ for (const line of sizeOut.split('\n')) {
   if (m) sizes[m[1]] = { jz: +m[2] || null, jzOpt: +m[3] || null, as: +m[4] || null }
 }
 
+// Snapshot table
 const fmtMs = us => us == null ? '   —  ' : (us / 1000).toFixed(2).padStart(6)
 const fmtKb = b => b == null ? '   —  ' : b < 1024 ? `${b} B`.padStart(7) : `${(b / 1024).toFixed(1)} kB`.padStart(7)
 const mark = { win: '✓', tie: '≈', near: '~', trail: '↓', todo: '✗', diff: '?', na: ' ' }
@@ -494,6 +500,7 @@ console.log(`\n  geomean speed jz/target:  v8 ${gV8?.toFixed(3) ?? '—'}×   C 
 console.log(`  geomean size  jz/target:  as ${gAsS?.toFixed(3) ?? '—'}×   wasm-opt slack ${geoSlack?.toFixed(3) ?? '—'}×`)
 console.log()
 
+// Assertions: speed
 for (const [id, claims] of Object.entries(SPEED)) {
   for (const tid of ['v8', 'as']) {
     const claim = claims[tid]
@@ -602,6 +609,7 @@ for (const tid of ['v8', 'as']) {
   }
 }
 
+// Native-C parity (the headline guarantee)
 // jz wasm vs `clang -O3` is a CROSS-SUBSTRATE comparison: jz runs as wasm in
 // V8, clang emits a native binary. Their *ratio* is a property of the host —
 // V8's wasm tier-up, the CPU's auto-vectorisation width — not of jz's codegen.
@@ -663,6 +671,7 @@ test('bench: JZ does not lose to Porffor native by case or geomean (committed ev
   ok(sizeGeomean >= 1, `porf-native/jz artifact-byte geomean ${sizeGeomean?.toFixed(3) ?? 'missing'}×`)
 })
 
+// Assertions: size — strict per-case leadership
 // The owner's bar: jz wasm is ALWAYS smaller than AssemblyScript's, ×1, on
 // EVERY comparable case — not par-or-tie. Unlike speed, size is deterministic
 // (no run-to-run jitter to excuse with a tolerance band), so the gate is a
@@ -698,6 +707,7 @@ for (const tid of ['as']) {
   })
 }
 
+// Assertions: wasm-opt self-check (codegen size slack)
 if (wasmOptAvailable) {
   for (const id of Object.keys(SIZE)) {
     test(`bench: ${id} wasm-opt slack ≥ ${WASMOPT_SLACK_MIN}× (jz codegen not bloated)`, () => {
@@ -709,6 +719,7 @@ if (wasmOptAvailable) {
   }
 }
 
+// Assertions: absolute byte backstop
 for (const [id, budget] of Object.entries(SIZE_BUDGET)) {
   test(`bench: ${id} jz wasm size ≤ ${budget} B (backstop)`, () => {
     const r = runs[id]
@@ -756,6 +767,7 @@ test('bench: examples corpus — jz beats V8 per frame (geomean > 1, winners ≥
   okTiming(/strictly beat V8/.test(strict), `examples not strict wins — ${strict}`)
 })
 
+// Floatbeat perf gate
 // Pin it: each jz-compiled floatbeat must stay at least as fast as V8's JS run of the
 // same `(t)=>sample` source, measured at the player's chunk (sr/2), so a future
 // slowdown trips here even while the kernel corpus stays green.
