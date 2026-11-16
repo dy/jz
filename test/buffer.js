@@ -226,9 +226,8 @@ test('subview — parent writes visible through view', () => {
 })
 
 test('subview — parent bytes outside window untouched', () => {
-  // Regression: previously, new Uint8Array(buf, off, len) placed a header at
-  // (off - 8), clobbering parent buffer bytes. Descriptor-backed views no longer write
-  // into parent memory, so surrounding bytes must stay intact.
+  // Descriptor-backed views no longer write into parent memory, so surrounding bytes
+  // must stay intact.
   const { exports } = jz(`
     export let main = () => {
       let buf = new ArrayBuffer(16)
@@ -341,8 +340,6 @@ test('reinterpret — Uint8Array from fresh ArrayBuffer', () => {
 })
 
 test('reinterpret — Uint32Array length = byteLength / 4', () => {
-  // Regression: previously, new Uint32Array(buf) used buf.length directly,
-  // yielding wrong length for multi-byte stride. Now divides by stride.
   const { exports } = jz(`
     export let main = () => {
       let buf = new ArrayBuffer(16)
@@ -554,8 +551,6 @@ test('aliasing — typed-array .byteLength matches parent buffer', () => {
   `)
   is(exports.main(), 16004)  // byteLength=16, length=4
 })
-
-// === Subview: elem-type variety (signed, float, multi-byte stride) ===
 
 test('subview — Int8Array read/write aliases parent', () => {
   const { exports } = jz(`
@@ -857,12 +852,9 @@ test('subview — view-of-view via .buffer reconstructs root', () => {
   is(exports.main(), 77)
 })
 
-// === owned→view reassignment: `c = c.subarray()/.slice()` ===
 // A typed-array binding reassigned from an owned array to a VIEW (different
 // view-ness for the same elem type) is poisoned by the narrower (can't pick one
-// static view-ness for element access). The `.subarray`/`.slice` emitters must
-// then dispatch off the runtime aux byte instead of crashing on empty IR
-// (regression: "compiler internal: expected emitted IR value … got empty value").
+// static view-ness for element access).
 
 test('subarray — owned→view self-reassign compiles + indexes correctly', () => {
   const { exports } = jz(`
@@ -920,10 +912,9 @@ test('slice — Int16Array owned→view self-reassign (non-byte stride)', () => 
   is(exports.main(u), 111224)
 })
 
-// === array-of-typed-arrays element ctor inference (ch[c][i] = …) ===
-// `ch[c][i] = v` where ch is an Array of typed arrays must inline to a direct
-// store (not a per-element __typed_set_idx runtime dispatch). The element ctor is
-// inferred from every construction form: Array.from, array literal, push, index-fill.
+// array-of-typed-arrays element ctor inference (ch[c][i] = …)
+// `ch[c][i] = v` where ch is an Array of typed arrays must inline to a direct store
+// (not a per-element __typed_set_idx runtime dispatch).
 
 // (the tagged store's tail stays a function, kept out of line: the generic set's typed arm
 // splices the store's head, whose fallback calls it; no per-element store reaches it)
@@ -949,13 +940,9 @@ test('channelData scatter — correct values across construction forms', () => {
 
 // Property-getter dispatch (`.byteOffset` / `.buffer` / `.byteLength` / `.size`) must
 // resolve STATICALLY, not fall through to a runtime `__dyn_get` (which returns
-// undefined for these). The getter-ness was tagged on the emitter CLOSURE
-// (`fn.getter = true`); the self-compile kernel can't reliably read a dyn-prop off a
-// closure returned via a dynamic-key lookup, so it silently scalarized to __dyn_get —
-// `a.byteOffset`/`a.buffer.byteLength` read `undefined` in jz.wasm. Dispatch now
-// authorizes via a plain Set (`ctx.core.getters`), kernel-safe. NO onKernel guard —
-// this runs on the JZ_TEST_TARGET=jz.wasm leg and pins the parity (it was the root of
-// the fft/synth/json self-compile parity divergence in checksumF64's typed-array view).
+// undefined for these). NO onKernel guard — this runs on the JZ_TEST_TARGET=jz.wasm leg
+// and pins the parity (it was the root of the fft/synth/json self-compile parity
+// divergence in checksumF64's typed-array view).
 test('typed-array property getters resolve statically (self-compile parity)', () => {
   const { byteOffset, bufLen, viewWord, size } = jz(`
     export let byteOffset = () => { let a = new Float64Array(4); return a.byteOffset }
@@ -969,7 +956,6 @@ test('typed-array property getters resolve statically (self-compile parity)', ()
   is(size(), 2)                // collection .size getter
 })
 
-// === Constructor copy semantics: TypedArray(typedArray) copies, (buffer) views ===
 test('new TypedArray(typedArray) COPIES — mutations do not alias (spec %TypedArray%(typedArray))', () => {
   const { sameType, converted, hostSrc, bufferView } = jz(`
     export let sameType = () => { let a = new Float64Array(2); a[0] = 1; let c = new Float64Array(a); a[0] = 999; return c[0] }
@@ -984,15 +970,11 @@ test('new TypedArray(typedArray) COPIES — mutations do not alias (spec %TypedA
   is(Number(r.exports.default(r.memory.Float64Array([1, 2]))), 1, 'host-marshaled source (runtime dispatch): copies')
 })
 
-// === Element conversion: ES ToIntN wrap (SetValueInBuffer), not saturate/trap ===
-
 test('typed construction wraps out-of-range values like ES ToIntN', () => {
   // Three construction paths store integer elements: the array-literal fill
   // (was: asI32 saturation — 4e9 clamped to INT32_MAX), the .from copy loop and
   // the cross-kind TypedArray(typedArray) copy (both were trapping
-  // i32.trunc_f64_*). All now use the same semantics as __typed_set_idx's
-  // runtime store: JS `| 0` at compile for constants, the i64 sat+wrap route at
-  // runtime. References: ES ToInt32/ToUint32 (`x | 0`, `x >>> 0`).
+  // i32.trunc_f64_*). References: ES ToInt32/ToUint32 (`x | 0`, `x >>> 0`).
   const { exports: e } = jz(`
     export let lit = () => new Int32Array([4000000000])[0]
     export let lit8 = () => new Int8Array([4000000000])[0]
@@ -1134,10 +1116,7 @@ test('typed-array descriptor provenance crosses calls and closures', () => {
 // A typed array constructor's argument (23.2.5.1): a primitive is ToIndex
 // (its ToNumber converts a string, reads true as 1 and null as 0, and throws
 // a TypeError for a BigInt); an array, a typed array and a buffer copy or
-// view; a Set or a Map iterates; another object is an array-like. The
-// argument of a kind the summary cannot name dispatches at run time, where
-// a string reads as 0 and an array-like is not copied (the conversion and
-// the dynamic reads would cost a numeric kernel their whole size).
+// view; a Set or a Map iterates; another object is an array-like.
 test('typed array constructor: ToIndex on primitives, iterable and array-like sources', () => {
   const src = `export function main() {
     const s = new Set([1, 2, 2]), m = new Map([[1, 2]]), o = { length: 3 }

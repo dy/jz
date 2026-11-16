@@ -65,9 +65,7 @@ test('typed presence: a read the walk cannot place inside the count stays number
 
 // stdlib's word helpers: `F64[0] = x; hi = U32[HIGH]`, the two views over one
 // buffer, the index a module constant behind a decided test, an alias and a
-// field of a literal nothing stores to. The view's count is the buffer's bytes
-// over its element size; the read is inside it, so the emitter loads the word
-// with no bounds test and the value is never the undefined of a miss.
+// field of a literal nothing stores to.
 const VIEWS = 'var F = new Float64Array(1)\nvar U = new Uint32Array(F.buffer)\n'
 const WORD = 'function hw(x) { F[0] = x; return U[HIGH2] }\nexport let f = (x) => hw(x) + hw(x * 2)'
 // The load as the emitter leaves it: the views stay in memory here (a static array only

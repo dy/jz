@@ -99,9 +99,6 @@ const rejects = (src, match) => {
 }
 
 test('object getter/setter lower to accessor slots (PARSE-3)', () => {
-    // Once compiled to dead code → o.x read undefined (silent miscompile); an
-    // object-literal accessor now takes the same `x__get`/`x__set` slot as a
-    // class accessor (jzify/classes.js).
     is(jz('export let f = () => { let o = { get x() { return 42 } }; return o.x }').exports.f(), 42)
     is(jz('export let f = () => { let o = { v: 1, set x(v) { this.v = v } }; o.x = 5; return o.v }').exports.f(), 5)
     // Methods, spread, shorthand, plain props must still compile.
@@ -260,7 +257,6 @@ test('unparenthesized unary base of ** rejected (PARSE-2, ES2016 §13.6)', () =>
     is(jz('export let f = (x) => -(x ** 2)').exports.f(3), -9)
 })
 
-// ── subscript-10.5.0 parser-core shapes ─────────────────────────────────────
 // The rewritten tokenizer core (dispatch/register descriptor machinery) exposed
 // six latent jz miscompiles when the kernel self-compiled it. Each pin below is
 // the ddmin-reduced shape; the kernel build (test/self-compile.js) is the
@@ -294,10 +290,9 @@ export let main = () => mk(5)(2)`
 
 test('ToPropertyKey: runtime non-string keys address their string slot', () => {
     // o[97] ≡ o['97'] (spec ToPropertyKey) — writes stringified (static fold),
-    // reads hashed the raw f64 → miss. Now normalized at the dyn get/set/del
-    // entries, and known HASH/OBJECT receivers route non-string-key reads there.
-    // (UNKNOWN receivers keep the documented lean numeric→array-index read; see
-    // module/array.js's numeric-index design note.)
+    // reads hashed the raw f64 → miss. (UNKNOWN receivers keep the documented
+    // lean numeric→array-index read; see module/array.js's numeric-index design
+    // note.)
     is(jz('export let main = () => { const o = {}; o[97] = 5; return o["97"] }').exports.main(), 5)
     is(jz('export let main = () => { const o = { x: 1 }; o["97"] = 5; let k = 97; return o[k] === undefined ? 0 : 1 }').exports.main(), 1)
     is(jz('export let main = () => { const o = JSON.parse(\'{"97":5}\'); let k = 97; return o[k] }').exports.main(), 5)
@@ -371,16 +366,6 @@ test('for-in/of heads: assignment/sequence sources re-associate', () => {
     is(jz('export let main = () => { let s, k = 0, r = 0; for (s in (k = 5, {m:1,n:2})) r++; return r * 10 + k }').exports.main(), 25)
 })
 
-// ── jzify pre-prepare '[]'-tag ambiguity (self-compile typed-elem-compare hunt) ──
-// A `'[]'`-tagged node means two different things before prepare() splits them
-// into `'['` (array literal) / `'[]'` (element access): a destructure pattern
-// (`[a,b] = …` → `['[]', commaSeqOrSingleElem]`, length ≤ 2) and an element
-// write (`arr[i] = …` → `['[]', receiver, index]`, ALWAYS length 3). jzify's
-// `isDestructurePat` checked only the tag, so `arr[i] = v` — any bracket
-// assignment, any receiver (array/typed array/plain object) — misclassified as
-// a destructuring assignment and was walked as a pattern instead of falling
-// through to the plain-assignment path.
-
 test('isDestructurePat: element-access target is not a destructuring pattern (arity, not tag alone)', () => {
     // The exact shape confusion: both share op '[]', disambiguated only by length.
     ok(!isDestructurePat(['[]', 'arr', [null, 0]]), 'arr[0] (element access, length 3) is not a pattern')
@@ -409,20 +394,14 @@ test('element-assignment target is never mistaken for a destructuring pattern', 
 })
 
 // ── emit.js 'return' handler: ternary-duplicated emit() call (fresh-corpus invalid-wasm hunt) ──
-// `dist/jz.wasm` compiled the bench corpus to genuinely INVALID wasm: "type error in
-// return[0]: expected f64, got i32", identical signature on every case (mat4, json, sort,
-// crc32, bitwise, callback, …). Not a narrowI32Results decision bug (both native and the
-// kernel agree on which functions narrow) — the divergence is downstream, in how the
-// RETURN VALUE gets reboxed once a function's result stays f64 (unnarrowed) but a return
-// tail is i32-shaped (`(expr) | 0` needs `f64.convert_i32_s`). The 'return' op handler
-// computed that rebox as `pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr),
-// rt)` — emit(expr) called separately, once inline per ternary arm, only one ever executing.
-// Behaviorally identical in JS (same AST subtree, one call happens either way) — but the
-// SELF-COMPILED kernel, at every self-compile build level (0/1/2) and every runtime optimize
-// level, drops the rebox on the taken arm's result. compile/index.js's sibling call site
-// (`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`)
-// already materializes the call to a local first and was never affected — mirroring that
-// shape in emit.js's 'return' handler is the fix.
+// `dist/jz.wasm` compiled the bench corpus to genuinely INVALID wasm: "type error in return[0]:
+// expected f64, got i32", identical signature on every case (mat4, json, sort, crc32, bitwise,
+// callback, …). Behaviorally identical in JS (same AST subtree, one call happens either way) —
+// but the SELF-COMPILED kernel, at every self-compile build level (0/1/2) and every runtime
+// optimize level, drops the rebox on the taken arm's result. compile/index.js's sibling call site
+// (`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`) already
+// materializes the call to a local first and was never affected — mirroring that shape in
+// emit.js's 'return' handler is the fix.
 test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function converts to f64', () => {
     // Mixed return kinds (one f64 tail, one i32-shaped `|0` tail) is the natural way a
     // function's result stays unnarrowed while still needing the i32→f64 return-site rebox —
@@ -462,17 +441,6 @@ export let main = () => p.step?.(21)`
 })
 
 test('shadow contract: schema-slot writes stay visible to dyn reads (loop-minted closures)', () => {
-    // Was KNOWN GAP (2026-07-12), root-caused and FIXED 2026-07-13. The whole
-    // pinned closure family (this + the two below) was ONE bug: when a module
-    // contains any dynamic key access (`x[expr]`), object literals are minted
-    // with a props sidecar seeded per schema key (needsDynShadow), and
-    // __dyn_get probes that sidecar BEFORE the schema slots. emit-assign's
-    // ptrAux and chained-receiver arms stored schema slots WITHOUT mirroring
-    // into __dyn_set, so later dyn reads (e.g. fetching `p.then` at an
-    // imprecisely-kinded call site) served the STALE mint-time copy — the
-    // subscription silently vanished. The "loop", "export", and "optimizer"
-    // deltas never mattered; they only shifted which read sites went dynamic.
-    // Both arms now honor the shadow contract (mirror when needsDynShadow).
     const src = (settleBody) => `
         let mt = []
         let mk = () => { let p = { st: 0, val: undefined, cbs: [], then: undefined }; p.then = (ok) => { let q = mk(); if (p.st > 0) { let v = p.val; mt.push(() => { q.st = 1; q.val = ok(v) }) } else p.cbs.push((v) => { q.st = 1; q.val = ok(v) }); return q }; return p }
@@ -481,12 +449,10 @@ test('shadow contract: schema-slot writes stay visible to dyn reads (loop-minted
         export let f = () => { let q = g().then((v) => v + 1); while (mt.length > 0) { let cb = mt.shift(); cb() } return q.val }`
     // control: no loop-minted closure
     is(jz(src('p.st = 1; p.val = v')).exports.f(), 5)
-    // regression pin: identical flow + a (never-entered) loop minting closures
     is(jz(src('p.st = 1; p.val = v; let cbs = p.cbs; for (let i = 0; i < cbs.length; i++) { let cb = cbs[i]; mt.push(() => cb(v)) }')).exports.f(), 5)
 })
 
 test('shadow contract: exported state-mutating closure keeps sibling closures fresh', () => {
-    // Was KNOWN GAP — same single root cause as above; fixed 2026-07-13.
     const src = (kw) => `
         let mt = []
         let sq = []
@@ -497,13 +463,10 @@ test('shadow contract: exported state-mutating closure keeps sibling closures fr
         let res = (v) => { let p = mkp(); settle(p, 1, v); return p }
         export let f = () => { let q = res(4).then((v) => v + 1); drain(); return q.val }`
     is(jz(src('')).exports.f(), 5)       // unexported drain
-    is(jz(src('export')).exports.f(), 5) // exported drain — was undefined before the fix
+    is(jz(src('export')).exports.f(), 5)
 })
 
 test('shadow contract: async modules with an indexed array loop survive the optimizer', () => {
-    // Was KNOWN GAP ("optimizer round-trip / closure-slot divergence") — same
-    // single root cause; the O0/O1 table-size delta was a symptom of stale
-    // sidecar reads, not a pass bug. Fixed 2026-07-13.
     const SRC = `let hitFlag = 0
 let mark = (e) => { hitFlag = 1 }
 export let check = () => hitFlag
@@ -517,12 +480,6 @@ export let go = () => { (async () => 42)().then((v) => { mark() }, mark); return
 })
 
 test('shadow contract: string-index assign of a schema key mirrors for prehashed dot reads', () => {
-    // Was KNOWN GAP — FIXED 2026-07-13: the literal-string INDEX assign
-    // (`it['@@iterator'] = fn`) resolved the schema slot and stored WITHOUT
-    // the __dyn_set mirror (the third arm violating the shadow contract, after
-    // the dot-path ptrAux/chained arms). It now mirrors when needsDynShadow,
-    // so prehashed dot reads (`v[Symbol.iterator]` → dot '@@iterator') see
-    // the write on imprecisely-kinded receivers.
     const src = (assign) => `
         let mk = (nx) => {
           let it = { next: nx, '@@iterator': undefined, map: undefined }
@@ -538,21 +495,10 @@ test('shadow contract: string-index assign of a schema key mirrors for prehashed
           return '' + (u === v) + '|' + (u != null && u.next != null)
         }`
     is(jz(src('it[Symbol.iterator] = () => it')).exports.f(), 'true|true')   // dot-canonical write
-    is(jz(src("it['@@iterator'] = () => it")).exports.f(), 'true|true')       // index write — was false|false before the fix
+    is(jz(src("it['@@iterator'] = () => it")).exports.f(), 'true|true')
 })
 
 test('param narrowing: pointer-carrying i32 args are not integer evidence', () => {
-    // Was KNOWN GAP ("@@iterator method literal invisible post-init") — FIXED
-    // 2026-07-13. Root: the call-site `wasm` lattice counted an i32-lane
-    // POINTER argument (a caller local/param already narrowed to an unboxed
-    // offset) as plain-integer evidence, so the callee's param narrowed to
-    // numeric i32 and every read widened the raw offset with f64.convert_i32_s
-    // — the object arrived as a small NUMBER and every prop probe missed
-    // (Promise.any(obj) → __p_any → __p_list never saw @@iterator). argWasmType
-    // now reports the boxed f64 lane for pointer-kinded bare-name args; only
-    // applyPointerParamAbi (which stamps ptrKind/ptrAux so reads REBOX) may
-    // unbox pointer params.
-    // control: the same read shape WITHOUT the async runtime — correct.
     is(jz(`
         let dyn = (o, k) => o[k]
         let read = (w) => w['@@iterator'] != null && typeof w['@@iterator'] === 'function' ? w['@@iterator']() : 'missing'
@@ -575,16 +521,14 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
     inst.exports._run()
     let st = inst.exports.check()
     for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
-    is(st, 'cc=1')  // was cc=0 before the fix (@@iterator never called)
+    is(st, 'cc=1')
 
     // The promise runtime once spliced into the user module, and its own
     // transform wrapped `__p_try`'s `fn(...aa)` in `__it_drain` AFTER the
     // splice chain had checked the drain flag – the reference was left a FREE
     // NAME and emitted `local.get $__it_drain` (undeclared local, zero-init
     // garbage → call_indirect table[0]; masked because the path was dead
-    // here). The runtime is now the std module `jz:async`, transformed in its
-    // own scope, where a rest array's spread needs no drain: every helper a
-    // lowering references resolves through an import, never a free name.
+    // here).
     const codeTry = code.replace('go(); return 1', 'go(); Promise.try(() => 0); return 1')
     const wat0 = compile(codeTry, { jzify: true, wat: true, optimize: 0 })
     ok(wat0.includes('(func $jz_async$__p_try'), '`Promise.try` reaches the std runtime helper at O0')
@@ -594,13 +538,6 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
 })
 
 test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param kind bug)', () => {
-    // Was the last recorded dyn-read residue — FIXED 2026-07-13. Root: the
-    // pointer-param ABI passes (applyPointerParamAbi / applyTypedPointerParamAbi)
-    // narrowed params to unboxed i32 offsets WITHOUT the body-write guard the
-    // wasm-type narrowing applies — a body reassignment (`v = v['@@iterator']()`)
-    // then stored a boxed f64 into the i32 local: mixed views, wasm validation
-    // failure ("i64.reinterpret_f64[0] expected type f64"). Both passes now
-    // skip body-mutated params, so the natural param-reassign drain idiom works.
     const src = `
         let mk = () => ({ next: () => ({ value: 7, done: true }) })
         let drain = (v) => {
@@ -620,16 +557,12 @@ test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param ki
     for (const optimize of levels(false, true)) is(jz(src2, { optimize }).exports.f(), 42)
 })
 
-// ── test262 negative-parse residual closures (fix/parser-residuals) ────────
 // Each rejects() pins a family the accepted-negative ledger (test262-neg-
 // accepts.json) used to carry; each is paired with a positive twin proving
 // the nearby VALID construct still compiles — the exact-set ledger's own
 // guard against a rule that's merely narrow instead of sound.
 
 test('using declaration: var/using name conflict at the same scope (using-declaration-context)', () => {
-    // `using` is lexically scoped like let/const — declaration() previously
-    // didn't recognize the tag at all, so validateScopeNames' var/lexical
-    // conflict scan never saw a using-bound name.
     rejects(`export let f = () => { { using x = null; var x; return x } }`, 'conflicts with var')
     is(jz('export let f = () => { using x = null; return 1 }').exports.f(), 1)
     is(jz('export let f = () => { using x = null, y = null; return 1 }').exports.f(), 1)
@@ -685,10 +618,7 @@ test('computed member-access target inside a destructuring pattern validates its
     // `receiver[key]` (arity 3) shares the raw '[]' tag with a single-element
     // array pattern (arity 2) — patternItems must not conflate them (an
     // earlier attempt infinite-looped: unwrapping an arity-3 node returned
-    // itself as its own "one item"). Once correctly treated as a leaf, the
-    // key sits in full expression position and gets its one provable
-    // restriction: bare `yield` can't be an identifier reference in strict
-    // code outside a real generator.
+    // itself as its own "one item").
     rejects("'use strict'; export let f = () => { let x = {}; [x[yield]] = [1]; return 1 }", 'identifier reference')
     rejects("'use strict'; export let f = () => { let x = {}; for ([x[yield]] in [[]]) return 1; return 0 }", 'identifier reference')
     // valid neighbours: plain computed-member destructuring targets, and a
@@ -699,10 +629,6 @@ test('computed member-access target inside a destructuring pattern validates its
     ok(compile('export let f = () => { let s = new Float64Array(4); [s[1]] = [4]; return s[1] }') instanceof Uint8Array,
       'a plain computed-member destructuring target still compiles (parses clean; codegen for this exact combination is a separate, pre-existing concern outside this early-error pin)')
     is(jz('export let f = () => { let a, b; [a, b] = [1, 2]; return a * 10 + b }').exports.f(), 12)
-    // jzify's generator lowering doesn't yet reach yield inside an
-    // assignment RHS ('yield inside `=` is not supported yet', a separate
-    // pre-existing limitation) — parse() is the layer this fix touches, so
-    // pin at that layer rather than through the full compile() pipeline.
     ok(Array.isArray(parse("'use strict'; function* g() { let x = {}; [x[yield]] = [1] }")),
       'a real yield-expression key inside a generator is not an identifier-reference violation')
 })
@@ -775,16 +701,7 @@ test('escaped reserved word cannot be a bare identifier reference used as a whol
     // walk()'s per-child loop validates escaped-reserved-word identifiers
     // that are CHILDREN of some parent node, but a lone identifier used as
     // an entire statement (`f\u{61}lse;`) IS the node, not a listed child —
-    // that call site the per-child loop covers never sees it. Scoped
-    // narrowly to this one unambiguous IdentifierReference position
-    // (checkIdentifierRef), not folded into walk()'s general dispatch,
-    // which also reaches property names and import/export specifier
-    // externals through the same bare-string shape.
-    // (A for-in/of target — `for (let in o)` in strict mode — is the exact
-    // same kind of gap and checkIdentifierRef closes it natively too, but a
-    // confirmed self-host-only divergence there (the self-compiled kernel
-    // accepts it regardless) means that specific wiring stays reverted —
-    // see early-errors.js's own NOTE at the for-in/of head handler.)
+    // that call site the per-child loop covers never sees it.
     rejects('export let f = () => { f\\u{61}lse; return 1 }', 'escaped reserved word')
     rejects('export let f = () => { tru\\u{65}; return 1 }', 'escaped reserved word')
     rejects('export let f = () => { n\\u{75}ll; return 1 }', 'escaped reserved word')
@@ -794,16 +711,14 @@ test('escaped reserved word cannot be a bare identifier reference used as a whol
 
 test('lexical-risk pre-filter reaches unterminated comments, dot-adjacent separators, and raw newlines in quotes (other-jessie-context-loss / nested-strict-legacy-escape)', () => {
     // Three independent gaps in sourceHasLexicalRisk's fast pre-filter, each
-    // starving validateLexicalSource's (already-correct) scanner of a
-    // reason to run: an unterminated block comment anywhere in the source
-    // (`src.includes('/*')`); a numeric separator directly after the
-    // decimal point (`10._1` — the existing digit-before-underscore pattern
-    // never anchors on a DOT before the underscore); and a raw LineTerminator
+    // starving validateLexicalSource's (already-correct) scanner of a reason
+    // to run: an unterminated block comment anywhere in the source
+    // (`src.includes('/*')`); a numeric separator directly after the decimal
+    // point (`10._1` — the existing digit-before-underscore pattern never
+    // anchors on a DOT before the underscore); and a raw LineTerminator
     // inside a single/double-quoted string (hasNewlineInQuote, a tight
     // quote-tracking scan — anchoring only on "quote+newline+quote" would
     // false-positive on any file with 2+ same-line-separated strings).
-    // (a trailing unterminated comment at true top level — nested inside an
-    // unclosed brace, subscript's own bracket matcher reports first instead)
     rejects('export let f = () => 1;\n/*unterminated', 'unterminated block comment')
     rejects('export let f = () => 10._1', 'separator')
     rejects('export let f = () => 10._', 'separator')
@@ -829,8 +744,7 @@ test('yield/await as a binding name admits no trailing operand (nested-strict-le
 test('expression-only grammar slots retain their statement/list context (destructuring-cover-grammar / asi / other-jessie-context-loss)', () => {
     // Jessie reuses the same nodes for parenthesized statement lists and
     // expressions, array elisions and argument lists, and object literals and
-    // statement-leading blocks. The surrounding grammar slot disambiguates
-    // each pair without rejecting the valid sibling shape.
+    // statement-leading blocks.
     rejects('f(1,,2)', 'arguments')
     rejects('if (false) f(,1)', 'arguments')
     rejects('(debugger)', 'statement')
@@ -853,9 +767,6 @@ test('expression-only grammar slots retain their statement/list context (destruc
 
 test('for headers keep classic clauses separate from for-in/of heads (asi-and-line-terminator-context / other-jessie-context-loss)', () => {
     // Newlines never replace either of a classic for header's two semicolons.
-    // Conversely, top-level in/of commits to the iteration grammar and cannot
-    // coexist with classic clauses. Header slots are expressions/declarations,
-    // not blocks or a StatementList.
     rejects('for () {}', 'semicolons')
     rejects('for (false\n;\n) {}', 'semicolons')
     rejects('for (false\nfalse\nfalse) {}', 'semicolons')
@@ -898,9 +809,7 @@ test('restricted statement boundaries honor ASI and every line terminator (asi-a
 })
 
 // Two statements on one line need `;` between them unless the first ended in a
-// block of its own (§12.10). The ASI layer split them wherever its line flag was
-// up: after any `}` (an arrow body, an object literal, a function expression) and
-// anywhere after the first line break, so each of these compiled.
+// block of its own (§12.10).
 test('statements on one line need a separator (asi-and-line-terminator-context)', () => {
     for (const src of [
         'export let a = () => {}export let b = 2',
@@ -952,7 +861,7 @@ test('an update after a line break or a block is a prefix one (asi-and-line-term
 // The ASI layer's flags outlived the tokens they were raised for: an empty
 // statement's `;` and line break ended the next statement's operand (`return 1`
 // returned nothing), and a line break kept a tag on a later line from its
-// template. A label heads any statement, not only a loop's.
+// template.
 test('an empty statement, a tagged template and a label end where they are written (asi-and-line-terminator-context)', () => {
     is(jz('export let f = () => {\n  ;\n  return 1\n}').exports.f(), 1)
     is(jz('export let f = () => {\n  ;;\n  return 2\n}').exports.f(), 2)
@@ -1102,8 +1011,7 @@ test('else boundaries distinguish ASI, empty statements, and IdentifierName prop
 
 test('a one-statement block is a block: sole declarations inside braces stay accepted', () => {
     // The parser collapses `{ stmt }` to `stmt`, so the source scanner, not the
-    // AST, decides whether a declaration had its braces. A do-while tail heads
-    // no statement either: a declaration on the next line is the next statement.
+    // AST, decides whether a declaration had its braces.
     is(jz('export let f = (x) => { if (x) { const t = x * 2; return t } return 0 }').exports.f(3), 6)
     is(jz('export let f = (x) => { let n = 0; while (x > 0) { const d = 1; x -= d; n++ } return n }').exports.f(3), 3)
     is(jz('export let f = (x) => { let n = 0; do { const d = 1; x -= d; n++ } while (x > 0)\n  const y = n * 10\n  return y }').exports.f(3), 30)

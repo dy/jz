@@ -1,11 +1,8 @@
 // A builtin global jz resolves at compile time (a namespace such as Math, a
 // constructor such as Map, a function such as parseInt) is a real binding
-// whether or not jz holds a value for it. `typeof` of one used to fail
-// ("'math' is not in scope") or answer 'undefined' (console, setTimeout);
-// it answers what JS answers now (prepare/state.js GLOBAL_TYPEOF), for a
-// namespace alias too. Unsupported value uses are rejected naming it, and a
-// binding that takes a builtin's name (`(Number) => Number + 1`) is the
-// binding, never the builtin.
+// whether or not jz holds a value for it. Unsupported value uses are
+// rejected naming it, and a binding that takes a builtin's name (`(Number)
+// => Number + 1`) is the binding, never the builtin.
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { levels, onWasi } from './_matrix.js'
@@ -63,8 +60,7 @@ test('builtin globals: a held callable alias calls the builtin', () => agree([
 ]))
 
 // An optional chain on such a name is the plain member: the name is always
-// there, and there is no object to test. `Math?.max(a, b)` was refused
-// ("'Math' as a value is not supported"), with JSON, console and Object.
+// there, and there is no object to test.
 test('builtin globals: an optional chain on a namespace is the member', () => agree([
   ['call', `export let f = (k) => Math?.max(k, 2) + Math?.PI`, 5],
   ['nested', `export let f = (k) => JSON?.stringify([k, Math?.floor(k)]).length`, 2.5],

@@ -134,7 +134,6 @@ const node = (src, calls) => { const m = oracle(src); return calls.map(([name, a
 
 // One group of cells at one level: the spellings of one program, the default
 // first. `calls()` builds fresh arguments: the array programs write into theirs.
-// Returns the differing answers and each spelling's shortfall from the best.
 const sweep = (prefix, programs, calls, entry, level) => {
   const bad = [], key = name => `${prefix}/${name}/${level}`
   const ms = programs.map(([name, src]) => {

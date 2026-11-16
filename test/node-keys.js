@@ -47,7 +47,6 @@ test('node keys: a node is one node only where every leaf is the same value', ()
   ok(constText(['v128.const', 'i32x4', 0, 1, 2, 3]) !== constText(['v128.const', 'i32x4', 0, 1, 2, 4]), 'every lane')
 })
 
-// ---- the check: every JSON.stringify under src, module and jzify, and why it is no node's key ----
 // [file, a fragment of its line, the reason]. A use matches the first entry of its file whose
 // fragment its line holds; an entry no use matches is stale and fails too.
 const MESSAGE = 'an error message shows the node'
@@ -148,8 +147,7 @@ test('node keys: a loop written out twice keeps each copy its constant', () => {
 })
 
 // Two arms that are one tree but for a zero's sign: optimize/select-arms.js compared
-// leaves by ===, took the arms for one and left the branch as it was. The leaves
-// differ, and the arms are the tree over a choice of them.
+// leaves by ===, took the arms for one and left the branch as it was.
 test('node keys: arms differing in a zero\'s sign choose between the two zeros', () => {
   const src = `export let f = (k) => { const v = k * 0.5; let r; if (k > 2) r = v + 0; else r = v + -0; return r }`
   agree(src, [[-0], [0], [3]], levels(0, 2, 'speed'))

@@ -19,13 +19,9 @@ const takesF64 = (src) => {
   try { return typeof raw.f(0.5) === 'number' } catch { return false }
 }
 
-// ── Values ──────────────────────────────────────────────────────────────────
-
 // A boolean returned through a function VALUE (an alias, or a default export
 // re-exported by another module) arrives as the number 0/1: `=== false` and
-// `typeof` both miss. Live: every stdlib predicate sits behind an index.js hop,
-// and `isInteger( y ) === false` guards pow's negative-base branch, so
-// pow(-1, 2.5) returns 1 where JS returns NaN.
+// `typeof` both miss.
 test('stdlib: boolean through an aliased function value keeps its identity', () => {
   const src = `function isInt(x) { return (Math.floor(x) === x) }
     var isInteger = isInt
@@ -48,12 +44,7 @@ test('stdlib: boolean through a default re-export hop keeps its identity', () =>
   is(graph(src, modules, 2.5), host(2.5)); is(graph(src, modules, 2), host(2))
 })
 
-// A module global is stored as i32 unless a fraction is proven. The proof
-// follows the value to its source (a local's definitions, a callee's returns
-// and arguments), a constant outside the i32 range is exact only in f64, and a
-// copy is a read: `const d = G` at module level, `x * d` in a function. Live:
-// constants/float32/pi (acosf(-1) returned 3), constants/float64/max, dnrm2's
-// tbig/tsml (dnrm2 returned 0).
+// A module global is stored as i32 unless a fraction is proven.
 test('stdlib: global initialized through an imported function alias keeps its fraction', () => {
   const modules = {
     './c.js': `import fr from './fr.js'\nvar C = fr(1.5707963267948966)\nexport default C`,
@@ -109,9 +100,7 @@ test('stdlib: an alias chain binds to the function, member or constant it names'
 })
 
 // A builtin constructor bound to a name is the namespace, in a hoisted function
-// too. Live: number/ctor (`module.exports = Number`, read as
-// `Number.NEGATIVE_INFINITY` by constants/float64/ninf) and array/float64
-// (`var Float64Array = require(…)`).
+// too.
 test('stdlib: static property through an aliased constructor', () => {
   agree(`const N = Number\nconst NINF = N.NEGATIVE_INFINITY\nexport let f = (x) => x + NINF`, 'f', [2.5])
   agree(`const N = Number\nfunction g(x) { return x + N.NEGATIVE_INFINITY }\nexport let f = (x) => g(x)`, 'f', [2.5])
@@ -122,7 +111,7 @@ test('stdlib: typed array constructor bound to a name', () => {
 
 // An alias of an import read inside a hoisted function declaration: jzify lists
 // function bodies first, so the alias binds ahead of them (a `var` written once
-// is a `const` by then). Live: `var lanczosSumExpGScaled = require(…)` in beta.
+// is a `const` by then).
 test('stdlib: const alias of an import read by a hoisted function', () => {
   const host = (x) => 0.5 + ((x * x) * 2.0)
   const modules = { './a.js': `function ea(x) { return 0.5 + (x * 2.0) }\nexport default ea`, './i.js': `import ea from './a.js'\nexport default ea` }
@@ -192,15 +181,12 @@ test('stdlib: namespace introspection preserves booleans, aliases and user bindi
     { './value.js': 'export const Math = []' }), true, 'an imported binding keeps its own identity')
 })
 
-// ── Numeric proof ───────────────────────────────────────────────────────────
-
-// A parameter returned as itself keeps its identity for the host (`fib('1')`
-// is '1', test/audit-regressions.js), so the export boxes it. A return under a
-// guard only a number passes (`x !== x`, `x === 0.0`, `isnan( x )`,
-// `isInfinite( x )`) gives back a number, never the value itself: those keep
-// the f64 export, directly and through a wrapper (`export let f = (x) => fn(x)`,
-// the stdlib driver shape). Live: `if ( isnan( x ) ) { return x; }` opens
-// nearly every math/base/special function.
+// A parameter returned as itself keeps its identity for the host (`fib('1')` is
+// '1', test/audit-regressions.js), so the export boxes it. A return under a
+// guard only a number passes (`x !== x`, `x === 0.0`, `isnan( x )`, `isInfinite(
+// x )`) gives back a number, never the value itself: those keep the f64 export,
+// directly and through a wrapper (`export let f = (x) => fn(x)`, the stdlib
+// driver shape).
 test('stdlib: a parameter returned under a numeric guard keeps the f64 export', () => {
   const isnan = `function isnan(v) { return v !== v }\n`
   const isinf = `const PINF = Infinity, NINF = -Infinity\nfunction isinf(v) { return v === PINF || v === NINF }\n`
@@ -219,9 +205,7 @@ test('stdlib: a parameter returned under a numeric guard keeps the f64 export', 
 // Three uses that are numeric-compatible and prove nothing on their own drop a
 // parameter to the boxed representation: the export becomes (i64) → i64 (a
 // BigInt round trip per call, measured 40× slower than the f64 export) and
-// every operation on it carries a conversion. The tiny-argument early-out
-// returns the parameter under a test of another value (`ix`, its high word): a
-// string would come back as itself, so the export stays boxed by design.
+// every operation on it carries a conversion.
 test('stdlib: x !== x on a parameter stays numeric', () => {
   ok(compile(`export let f = (x) => (x !== x) ? 0 : x * 2`, SPEED).byteLength < 400)
 })
@@ -234,9 +218,9 @@ test('stdlib: an isnan guard before arithmetic keeps the f64 export', () => {
     function s(x) { if (isnan(x)) { return NaN } return x * 2 }
     export let f = (x) => s(x)`))
 })
-// A value returned to the host as itself keeps its identity (`fib('1')` is
-// '1', test/audit-regressions.js): a parameter returned by an exported function,
-// through any callee, stays boxed. The tiny-argument early-out is that shape.
+// A value returned to the host as itself keeps its identity (`fib('1')` is '1',
+// test/audit-regressions.js): a parameter returned by an exported function,
+// through any callee, stays boxed.
 test('stdlib: an early return of the original parameter preserves its identity', () => {
   const source = `const F = new Float64Array(1)
     const U = new Uint32Array(F.buffer)
@@ -251,10 +235,8 @@ test('stdlib: an early return of the original parameter preserves its identity',
 })
 
 // A module constant read from a float view, or computed by a call this pass
-// cannot name with a fractional argument, is no integer. Live: every float32
-// constant (`UINT32[0] = 0x7f800000; PINF = FLOAT32[0]`, asinhf's
-// `NEAR_ZERO = f32( ONE / HUGE )` through the selected fround).
-// `same`: the host's value bit for bit, a signed zero included
+// cannot name with a fractional argument, is no integer. `same`: the host's
+// value bit for bit, a signed zero included
 const same = (src, ...xs) => { const want = oracle(src).f(...xs), got = run(src).f(...xs); ok(Object.is(got, want), `f(${xs.map(String).join(', ')}) = ${got}, host ${want}`) }
 test('stdlib: a module constant from a float view keeps its fraction', () => {
   for (const x of [-1, 1.5]) agree(`const F = new Float64Array(1)\nF[0] = 1.5\nconst C = F[0]\nexport let f = (x) => x === C ? x : C`, 'f', [x])
@@ -274,8 +256,6 @@ test('stdlib: a zero remainder by a literal keeps the dividend\'s sign', () => {
 })
 // The additive identity must keep a zero's sign: `0.0 + x` of -0 is +0, which
 // `1 / that` tells from -0 (an integer x cannot be -0, so its fold stands).
-// Live: the constant term of gamma-lanczos-sum's Horner sum, `0.0 + (x * (…))`,
-// whose product is -0 at -1.
 test('stdlib: the additive identity keeps the sign of zero', () => {
   for (const x of [-0, 0, -1]) same(`export let f = (x) => 1 / (0.0 + x)`, x)
   for (const x of [-0, 0, -1]) same(`export let f = (x) => 1 / (x + 0.0)`, x)
@@ -290,8 +270,7 @@ test('stdlib: module var typed array written once needs no nullish guard', () =>
 })
 
 // Load-time selection between a builtin and a polyfill has one answer at
-// compile time. Live: number/float64/base/to-float32 picks Math.fround this
-// way, and the whole float32 family (asinf, atanf, …) calls it per operation.
+// compile time.
 test('stdlib: builtin-or-polyfill selection folds to the builtin', () => {
   ok(compile(`var b = (typeof Math.fround === 'function') ? Math.fround : null
     function poly(x) { return x }
@@ -321,8 +300,6 @@ test('stdlib: function static property through a re-export hop calls directly', 
   is(count(text, /call_indirect|call \$__dyn_get/g), 0)
 })
 
-// ── Loops ───────────────────────────────────────────────────────────────────
-
 const N = 1000
 const dot = (body) => `const X = new Float64Array(${N})\nconst Y = new Float64Array(${N})
   ${body}
@@ -333,10 +310,7 @@ test('stdlib: control, let accumulator with initializer vectorizes', () => {
   vectorizes(dot(`function dot(n, x, y) { let t = 0.0; for (let i = 0; i < n; i++) { t += x[i] * y[i] } return t }`))
 })
 
-// A loop-carried accumulator is held present only as `let t = <number>`. Every
-// other spelling keeps a null/undefined test on it inside the loop and blocks
-// the vectorizer (measured 3× to 12× behind V8 where the control is 5× ahead).
-// Live: stdlib declares every local at the top of the function, then assigns.
+// A loop-carried accumulator is held present only as `let t = <number>`.
 test('stdlib: var accumulator with initializer vectorizes', () => {
   vectorizes(dot(`function dot(n, x, y) { var t = 0.0; for (let i = 0; i < n; i++) { t += x[i] * y[i] } return t }`))
 })
@@ -348,8 +322,7 @@ test('stdlib: let declared bare, assigned before the loop, vectorizes', () => {
 })
 
 // The strided API walks a cursor beside the counter, starts its main loop at a
-// remainder, and unrolls by hand (reference BLAS). Live: blas/base/ddot,
-// daxpy, dscal, dasum; stats/strided; blas/ext/base.
+// remainder, and unrolls by hand (reference BLAS).
 test('stdlib: cursor induction variable beside the counter vectorizes', () => {
   vectorizes(dot(`function dot(n, x, y) { let t = 0.0, ix = 0; for (let i = 0; i < n; i++) { t += x[ix] * y[ix]; ix += 1 } return t }`))
 })
@@ -471,8 +444,6 @@ test('stdlib: a kernel returning its array parameter indexes statically', () => 
     export let f = (n, a, x, y) => axpy(n, a, x, y)`)
   is(count(text, /call \$__typed_idx|call \$__dyn_|call \$__to_num/g), 0)
 })
-
-// ── Counted loops against the host ──────────────────────────────────────────
 
 // A loop rewritten over its trip number (plan/counted-loops.js) runs what the
 // source runs: every shape below agrees with the host on each input, at each

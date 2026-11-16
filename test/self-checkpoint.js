@@ -84,7 +84,7 @@ const FORCED = selfBuildWith({
 })
 // module/core.js: the park lane's end. __park_begin grows the instance's memory to
 // it: that is address space the engine reserves (memory.buffer.byteLength); the OS
-// commits pages as they are touched. The heap cursor (`__jz_heap`) is a third figure.
+// commits pages as they are touched.
 const PARK_END = 0xFFFFFFF0
 
 let normal, forced
@@ -120,8 +120,7 @@ const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
 const A = 'export let main = () => 3 + 4 * 5', A_OUT = 23
 // B's main has a statement body, so it exports through a `$main$exp` boundary wrapper,
 // whose `(export "main")` is WAT text watr parsed: the export name is a byte array with
-// a `valueOf()` (watr/src/util.js `str`), not a JS string. A program with such a
-// wrapper is where the checkpoint had never produced a valid module.
+// a `valueOf()` (watr/src/util.js `str`), not a JS string.
 const B = 'let inc = x => x + 1; export let main = () => { const v = inc(10); return v }', B_OUT = 11
 const C = 'const xs = [1, 2, 3]; export let main = () => "hello".length + xs.length + xs[1]', C_OUT = 10
 
@@ -166,8 +165,7 @@ test('checkpoint: the forced kernel parks, rewinds, unparks and encodes; its out
   is(phasesOf(mf).join(' '), phasesOf(mn).join(' '), 'the same phases, recorded and readable after the rewind')
   // The first checkpoint falls before link: the records of the phases before it
   // (the verdicts of link's own passes, after it, aside) lie at or above the
-  // front's mark and within the memory. They need not rise: a phase gives back
-  // what it made and left unreached.
+  // front's mark and within the memory.
   const linkAt = mf.phases.findIndex(p => p.name === 'link')
   ok(linkAt > 0, 'link is recorded after the rewind')
   ok(beforeRewind(mf).every(p => p.heap >= mf.heapFront && p.heap <= memoryBytes(forced)), 'the records before the checkpoint are intact')
@@ -252,15 +250,8 @@ test('checkpoint: _clear() keeps its meaning beside the checkpoint; retained byt
   is(reinstantiated.exports.main(), A_OUT, 'and reinstantiate')
 })
 
-// ── parsed WAT literals through the actual checkpoint ─────────────────────────
 // Why parkValue may call valueOf on an array: the transport domain is watr's IR,
-// the compiler's own output, whose arrays are exactly two kinds. An ordinary
-// node is a plain Array (Array.prototype.valueOf returns the array itself, not a
-// string) and parks element by element; a string literal watr's cleanup turned
-// into a byte array carries its own valueOf returning the quoted source text
-// (watr/src/util.js `str`), and watr's encoder discriminates the two by that
-// same test (watr/src/compile.js `isStr`). No user object ever enters the tree,
-// so the serializer applies the consumer's discriminator, not a coercion rule.
+// the compiler's own output, whose arrays are exactly two kinds.
 const utf8 = s => [...new TextEncoder().encode(s)]
 const WAT = `(module
   (import "env" "print" (func $print (param i32)))
@@ -322,8 +313,7 @@ test('checkpoint: a program\'s own literals through the forced kernel are the fr
   const forms = k => k.memory.read(k.exports.__irForms(k.memory.String(L), OPT(k)))
   // Every literal reaches the checkpoint as the quoted string the emitter and the
   // stdlib parser produce: watr's encoder converts them in its own copies (its
-  // cleanup copies a node only above a change), never in the tail's tree. The
-  // byte-array form through the checkpoint is mode 2 above.
+  // cleanup copies a node only above a change), never in the tail's tree.
   const [quoted, bytes, arrays] = forms(forced).split(',').map(Number)
   ok(quoted > 0 && arrays > 0, `the IR carries quoted strings and ordinary arrays (${quoted} quoted, ${bytes} byte arrays, ${arrays} arrays)`)
   const l = compileOn(forced, L)
@@ -337,7 +327,6 @@ test('checkpoint: a program\'s own literals through the forced kernel are the fr
   is(instantiate(l).exports.u(), 'héllo ✓ 😀', 'the retained bytes still carry the literal')
 })
 
-// ── recording after the real rewind; capacity across checkpoints ─────────────
 test('checkpoint: recording after the rewind allocates nothing, first and repeated; capacity zero, overflow and reset hold across checkpoints', () => {
   const { normal, forced } = kernels()
   const aFresh = compileOn(normal, A), bFresh = compileOn(normal, B)
@@ -345,7 +334,6 @@ test('checkpoint: recording after the rewind allocates nothing, first and repeat
   const m0 = readMarks(forced)
   ok(m0.heapCheckpoint > 0 && m0.heapCheckpoint < m0.heapOptimize)
   const NAMES = m0.phases.map(p => p.name)
-  // inputs prepared before the measured calls: the name strings live in the arena already
   const listed = forced.memory.String('summary'), unlisted = forced.memory.String('no such phase')
   const h0 = heap(forced)
   forced.exports.recordPhase(listed)
@@ -380,7 +368,6 @@ test('checkpoint: recording after the rewind allocates nothing, first and repeat
   is(readMarks(forced).phaseCapacity ?? PHASE_RECORDS, PHASE_RECORDS)
 })
 
-// ── a failure after the unpark, inside the encoder ───────────────────────────
 const FAIL = 'export let __fail_after_unpark = () => 1\nexport let main = () => 2'
 
 test('checkpoint: a failure in the encoder after the unpark is attributed past the checkpoint stage; diagnostics and earlier output hold; the next compile recovers', () => {

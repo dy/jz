@@ -26,10 +26,6 @@ test('unused timer names do not initialize an absent timer queue', () => {
   }
 })
 
-// === TargetProfile (audit P1) ===
-// Pins the js/wasi policy objects src/session.js's beginSession derives from
-// `host` — the single place ~24 scattered `ctx.transform.host === 'wasi'`
-// checks across compile/emit/module now read a named field from instead.
 // A field flip here means every consumer keyed on it flips too, so this is
 // the one test that has to catch a wrong default.
 
@@ -56,11 +52,9 @@ test('TargetProfile: js vs wasi field values', () => {
   is(targetProfileFor('bogus'), js, 'unrecognized host falls back to the js profile object')
 })
 
-// legalizeForTarget (src/optimize/watr-tail.js) now ports real WASI-only rewrites onto the
-// assembled module tree (command-entry legalization + reactor `_initialize` conversion),
-// both gated on targetProfile.commandEntry — false under js. Pin the js leg as an actual
-// identity transform so a future rewrite that forgets to gate on commandEntry, or narrows
-// its own gate, gets caught here instead of silently reshaping non-WASI output.
+// Pin the js leg as an actual identity transform so a future rewrite that forgets to gate
+// on commandEntry, or narrows its own gate, gets caught here instead of silently reshaping
+// non-WASI output.
 
 test('legalizeForTarget: identity transform under the js TargetProfile (same reference, untouched tree)', () => {
   const module = ['module',
@@ -331,19 +325,10 @@ test('WASI console.log: boolean read from a container prints as boolean', () => 
   is(captured.join(''), 'false\n')
 })
 
-// FIXED (.work/archive/todo.md §deletion-sweep Slice 5 site survey — LEAK C):
-// module/console.js's writePart dispatched on a bare `valTypeOf(part)`
-// STRING/NUMBER check with no runtime tag verification — a dict-census
-// STRING/NUMBER claim ("every value ever written") on an ABSENT key fed
-// raw UNDEF_NAN bits straight to `$__write_str`/`$__write_num`, which
-// assume their argument really IS that kind (no nullish check of their
-// own — unlike `$__write_val`, the generic fallback, which already
-// dispatches on the actual runtime atom). Under `host:'js'` this is masked
-// (console.log there decodes host-side off the raw i64, independent of
-// what the compiler believed) — only reachable under `host:'wasi'`, where
-// module/console.js's own WASI-syscall writers run. Gated writePart's
-// STRING/NUMBER fast branches on `!censusMaybeUndefined(part)`, falling
-// through to the existing, already-correct `$__write_val` general path.
+// Under `host:'js'` this is masked (console.log there decodes host-side off
+// the raw i64, independent of what the compiler believed) — only reachable
+// under `host:'wasi'`, where module/console.js's own WASI-syscall writers
+// run.
 test('WASI console.log: dict-census absent key prints as undefined, not empty/garbage (Slice 5 LEAK C)', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push(text) })
@@ -432,10 +417,8 @@ test('EdgeJS smoke: scalar module has no imports', () => {
   is(exps.f(9), 81)
 })
 
-// === WASI guardrails for unsupported host-bound constructs ===
+// WASI guardrails for unsupported host-bound constructs
 // _interp[name] and bare host-global refs both push raw env imports into the wasm.
-// The post-compile __ext_* check at index.js doesn't see them (they're not __ext_*),
-// so they slip past and produce wasm that fails to instantiate under wasmtime/wasmer.
 // Reject at compile time with a construct-specific message.
 
 function throwsCompile(code, opts, match) {
@@ -484,7 +467,6 @@ test('WASI: host-global reference does not throw under host:js', () => {
   is(error, undefined)
 })
 
-// === WASI typed-fallback (no JS-host env imports for unknown-type access) ===
 // host:'wasi' values are always JSON-derived — PTR.EXTERNAL never appears, so the
 // EXTERNAL arm of dynamic prop/method dispatch is dead code. Take the typed path
 // directly so the wasm has no unsatisfiable env imports.
@@ -711,8 +693,6 @@ test('WASI: wasmtime native', () => {
   ok(out.includes('jz-wasmtime'))
 })
 
-// === Date.now / performance.now ===
-
 test('Date.now: returns reasonable timestamp', () => {
   const t = run('export let f = () => Date.now()').f()
   ok(t > 1700000000000 && t < 2000000000000, `Date.now ${t} in range`)
@@ -732,7 +712,6 @@ test('WASI: wasmer native', () => {
   ok(out.includes('jz-wasmer'))
 })
 
-// === fs — file IO over WASI preopens (module/fs.js) ===
 // fs.read(path) → decoded UTF-8 text, fs.write(path, s) → UTF-8 bytes.
 // Paths resolve against the first preopen (fd 3); errno throws as a number.
 test('fs: read + write round-trip under node:wasi preopens', async () => {
@@ -898,9 +877,8 @@ test('fs: a node:fs reader passed as a callback fills a typed array, no dynamic 
 // A byte array made for a read, and read only below the count the read returned,
 // takes no zero fill (plan/read-buffers.js): the reporter's host made one per read
 // of `n - got` bytes and zeroed the rest of a megabyte at every 1 KiB read of a
-// pipe. A read past the count, a read at an offset, a counter stepped ahead of its
-// read, a wider bound or an escape keeps the fill. Each case holds one typed
-// array, made anew each pass of a loop, and answers what Node answers.
+// pipe. Each case holds one typed array, made anew each pass of a loop, and
+// answers what Node answers.
 test('fs: a buffer only its read\'s count reads takes no zero fill', async () => {
   const wrap = (body) => `import fs from 'fs'
     function sum (t) { let s = 0; for (let i = 0; i < t.length; i++) s = (s * 31 + t[i]) | 0; return s }
@@ -1010,10 +988,6 @@ test('WASI polyfill: writes reach process.stdout as raw bytes', () => {
 })
 
 test('init: top-level WASI calls run via _start (command), not a start section', () => {
-  // The p1 ABI forbids WASI calls inside the wasm start section — it runs during
-  // `new WebAssembly.Instance`, before ANY host can wire memory, so a top-level
-  // console.log/Date.now crashed the JS shim ("Cannot read properties of null").
-  // host:'wasi' ships init as the command `_start` (and `__jz_init`) instead.
   const mod = new WebAssembly.Module(compile(`console.log('init'); export let f = () => 1`, { host: 'wasi' }))
   ok(WebAssembly.Module.exports(mod).some(e => e.name === '_start'), '_start exported')
   ok(!WebAssembly.Module.customSections(mod, 'start').length && WebAssembly.Module.exports(mod).some(e => e.name === '__jz_init'), '__jz_init exported')
@@ -1032,9 +1006,7 @@ test('fs: host js rejects at compile with the wiring hint', () => {
 // Self-arming: a raw `new WebAssembly.Instance` embedder that never calls
 // `_start` (wasmtime does; `wasmtime --invoke` and plain-JS consumers of the
 // import-free wasi build don't) must still see seeded state — every exported
-// function checks the once-guard. Without it, `_clear()` reset the
-// heap from a zero `__heap_reset` and the next alloc wrote out of bounds
-// (the color-space batch harness, jz 0.9.1 report).
+// function checks the once-guard.
 test('init: exports self-arm without _start (raw-instance clear + grow)', () => {
   const src = `
     let buf = new Float64Array(4)   // module-scope init: the start body exists
@@ -1101,8 +1073,7 @@ test('WASI: a timer callback prints its literal, the clock writing beside it', a
 })
 
 // A program's own WASI entry is honored under its name: jz's init (top-level
-// code, seeding) first, then the body, one export of that name. `_start` makes a
-// command, `_initialize` alone a reactor (no `_start` beside it, as WASI wants).
+// code, seeding) first, then the body, one export of that name.
 test('WASI: the program\'s own _start and _initialize run after jz\'s init', () => {
   const load = (src) => {
     const captured = [], imports = wasi({ write: (fd, text) => captured.push(text) })
@@ -1138,9 +1109,7 @@ test('WASI: the program\'s own _start and _initialize run after jz\'s init', () 
 })
 
 // `process.exit(code)` under host:'wasi' is `proc_exit`: the command ends with that
-// status and nothing after the call runs. In a JS host the shim hands the code to
-// `wasi: { exit }`, and where that returns the module traps: no try/catch of the
-// program's takes a trap.
+// status and nothing after the call runs.
 test('process.exit ends a WASI command with its status', async () => {
   const { instantiate } = await import('../interop.js')
   const imports = (src, host) => WebAssembly.Module.imports(new WebAssembly.Module(compile(src, { host }))).map(i => `${i.module}.${i.name}`)

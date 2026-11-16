@@ -291,7 +291,6 @@ export let main = () => {
   both(src)
 })
 
-// --- closed-union carrier eligibility (analyzeUnionInline, stage 1) ---
 // The verifier must accept the canonical tagged-record stream (cursor + tag
 // alias + discriminant chain incl. the exclusion-proven trailing else) and
 // fail closed on a stale tag alias or an unguarded variant read.
@@ -393,7 +392,6 @@ test('union inline: packed carrier is JS-exact and fully devirtualized', () => {
   ok(/i32\.load offset=/.test(mainSeg), 'raw packed-cell field reads')
 })
 
-// --- union carrier stage 3: cursor crosses a user call (measure(rows[i])) ---
 // The shapes-bench shape: rows born from a returning call, the element cursor
 // passed to a callee whose param carries the settled union, a full terminator
 // else-if ladder with a TRAILING fallback (narrowed by exclusion stacking),
@@ -458,11 +456,8 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
     'byte-stride element math (12 B records, no pad cell)')
 })
 
-// The 2026-07-18 re-audit's miscompile class: a cursor-param body whose uses
-// escape the cursor grammar (bracket read, alias, return, closure capture,
-// forwarding) must BLACK the union — schema membership alone is not carrier
-// provenance. Each case pins VALUE EXACTNESS at both opt levels (pre-patch:
-// bracket read WRONG VALUES, alias/forward OOB TRAP).
+// Each case pins VALUE EXACTNESS at both opt levels (pre-patch: bracket read
+// WRONG VALUES, alias/forward OOB TRAP).
 test('union inline: non-grammar cursor-param uses fail closed, values exact', () => {
   const SRC = (read, extra = '') => `
     ${extra}
@@ -687,14 +682,8 @@ test('packed bounds: unhinted host keys preserve numeric and string element sema
 })
 
 
-// --- carrier ownership: the frame that builds the records and every frame
-// that reads them agree on the layout ---
-// Only a named function owns an inline record array. The module's top-level
-// statements and closure bodies hold plain arrays (static.js carrierFrame), and
-// a function called from where no walk reaches (the host for an export; a
-// callback, closure or table for an address-taken function) keeps a plain
-// boundary. Each shape below once read inline cells as plain elements or the
-// reverse: twice the length, fields of garbage.
+// that reads them agree on the layout
+// Only a named function owns an inline record array.
 const MK = `const init = (n) => { const ps = []; for (let i = 0; i < n; i++) ps.push({ x: i + 1, y: i + 2 }); return ps }\n`
 const SUM = `const sum = (ps) => { let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x * 10 + ps[i].y; return s }\n`
 // A function-local carrier of the same schema, so the layout is in play.

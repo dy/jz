@@ -27,9 +27,7 @@ import { run, oracle } from './util.js'
 test('hoist-loop-global: DIRECT reassignment of the global inside the loop stays correct', () => {
   // `cur` is reassigned to a DIFFERENT string mid-loop (i===2) — a hoisted
   // base snapshotted before the loop would read stale bytes for the later
-  // iterations. `stablePtrGlobalNames` sees `cur` (VAL.STRING from its
-  // `'abcdefgh'` initializer) as a hoist CANDIDATE; ownWrites (the direct
-  // `global.set $cur` inside the loop) must veto it.
+  // iterations.
   const src = `
     export let cur = 'abcdefgh', idx = 0
     export const scan = () => {

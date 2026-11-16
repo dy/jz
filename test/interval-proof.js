@@ -140,9 +140,6 @@ test('interval proof: signed recurrence budgets preserve unknown and wide initia
 
 // A loop with no consumer of its own that writes a name declared before it hands
 // the value to what follows: the index a scan keeps reaches the call after it.
-// Kept by `=`, the name holds its entry value or one it was assigned (the verify
-// pass hulls it in, or a widened name takes the hull of its assignments); a name
-// that steps itself, or is assigned its own value, stays open past a word.
 test('interval proof: the index a scan keeps reaches the call after the loop', () => {
   const prior = ctx.func
   try { for (const [label, keep, expected] of [
@@ -615,8 +612,7 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
 }
 const hasTypedBoundsTemp = wat => /\$[^\s)]*(?:tb[in]|ixv)\d*/.test(wat)
 // Match the guard's tree, not a character window: exact f64 index validation
-// can sit between the unsigned bounds test and its load or store. Wide keys
-// compare their full i64 value before narrowing the memory address.
+// can sit between the unsigned bounds test and its load or store.
 const someWat = (n, test) => Array.isArray(n) && (test(n) || n.some(c => someWat(c, test)))
 // A test shared by two accesses is held in a flag local (`local.tee $f (i64.lt_u …)`): an
 // access under `(if (local.get $f) …)` is as checked as one under the test itself.
@@ -1159,8 +1155,6 @@ test('interval proof: output is independent of prior guard shapes', () => {
 
 // Field bounds: a loop-carried cursor written only by xor / shift stays inside
 // its power-of-two field (the bit-reversal permutation of every radix-2 FFT).
-// The linear widening cannot see it; the fixpoint retries such names with the
-// field bound and adopts it only when the whole trial verifies.
 const BIT_REVERSAL = `
 export let rev = (seed) => {
   const re = new Float64Array(256)
@@ -1288,10 +1282,7 @@ const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
 // (a miss arm is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
 const NO_GUARDS = { level: 'speed', sentinelGuards: false, poolFloats: false }
 
-// A loop exits where its test failed. The exit state is the head invariant
-// (entry ∪ back edges) refined by the failed test, never the state the body
-// ran in, and the test's own reads are judged on the head: a read in the test
-// that runs once more at the exiting value stays checked.
+// A loop exits where its test failed.
 const LOOP_EXITS = {
   // `while (i < 5 && j < 3)` exits with j = 3, so a[3] reads past the array
   counters: `export function f(n) {
@@ -1328,9 +1319,8 @@ test('interval proof: a loop exit is where its test failed, not where its body r
     ok(hasCheckedTypedAccess(compile(LOOP_EXITS[name], { optimize: NO_GUARDS, wat: true })), `${name}: the test's read stays checked`)
 })
 
-// On the true path of `x <= a[k]` the read hit, so k is an element index there:
-// the body's read of another array of that length at k needs no check. The
-// test's own read has no such help, so the pop that runs k to -1 stops on its miss.
+// On the true path of `x <= a[k]` the read hit, so k is an element index there: the
+// body's read of another array of that length at k needs no check.
 test('interval proof: a relational test on a typed read bounds its index where it held', () => {
   const src = `export function f(n) {
     const a = new Float64Array(8), b = new Float64Array(8)
@@ -1584,11 +1574,7 @@ test('interval proof: implicit parameter returns invalidate caller storage facts
 
 test('interval proof: every conjunct of a test bounds its arm, a ternary\'s as an if\'s', () => {
   // `i >= 0 && i < a.length ? a[i] : d`: each conjunct bounds `i` from the same
-  // state, so the arm reads within both. A ternary refined by the first
-  // comparison alone, and two conjuncts on one name kept the later only: the
-  // read tested its bound again inside the guard that had just tested it. A
-  // walk over links (`j = j >= 0 && j < next.length ? next[j] : -1`) paid that
-  // second test every link.
+  // state, so the arm reads within both.
   for (const [label, body] of [
     ['ternary', 'return (j >= 0 && j < nx.length) ? nx[j] : -1'],
     ['ternary, bound first', 'return (j < nx.length && j >= 0) ? nx[j] : -1'],
@@ -1612,9 +1598,7 @@ test('interval proof: every conjunct of a test bounds its arm, a ternary\'s as a
 
 // Each loop's fixpoint walks its body several times and every walk reruns the
 // loops inside it, so a deep nest cost 5^depth walks: eight counted loops took
-// over half a minute to compile. Past the proof's budget a loop a discovery
-// pass reaches takes the plain fixpoint (the WAT ranges likewise), so the nest
-// compiles in seconds; its index still reads the array only where it lies.
+// over half a minute to compile.
 test('interval proof: an eight-deep nest compiles, its reads in bounds', () => {
   const v = Array.from({ length: 8 }, (_, i) => 'i' + i)
   let body = `s += a[${v.join(' + ')}]`

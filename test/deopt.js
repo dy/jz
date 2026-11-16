@@ -1,30 +1,19 @@
 // Deopt battery — the "unreasonable" deopts: idiomatic source that jz narrows
 // wrongly, paying the dynamic-dispatch tax despite carrying enough type evidence.
 //
-// Each case was found by firing realistic source "missiles" at the compiler and
-// reading the WAT fingerprint (see scripts/battery.mjs and the landing commits). The
-// pinning discipline mirrors perf-ratchet.js: a correctness
-// `diff()` guards every case (never defend a miscompile), and each codegen pin
-// is a regression backstop that locks in the fix.
+// The pinning discipline mirrors perf-ratchet.js: a correctness `diff()` guards
+// every case (never defend a miscompile), and each codegen pin is a regression
+// backstop that locks in the fix.
 //
-// The three deopt classes fixed here (full root cause in 81d07c5b and 3525c2f9):
-//
-//   D1 — built-in numeric properties (.length/.byteLength/.byteOffset/.size) in `+`.
-//        FIXED: propValType trait table (kind-traits.js) types these as NUMBER on
-//        their sized kinds, so `+` skips the string-concat dispatch.
+//   D1 — built-in numeric properties (.length/.byteLength/.byteOffset/.size) in
+//        `+`.
 //
 //   D2 — jagged `grid[i][j]` re-resolves `grid[i]` per inner iteration.
-//        FIXED: three LICM extensions — if-arm purity, hasDirectStore effect flag,
-//        and read-only heap-memory calls (__typed_idx/__str_idx) as hoistable.
 //
 //   D3 — `arr[<const idx>]()` stays call_indirect (devirt miss).
-//        FIXED: array scalarization lowers `arr[0]` to a scalar closure copy, and
-//        direct-closure copy propagation (emit.js) makes that copy directly callable.
 //
-// Confirmed-reasonable cases (the "untyped stays dynamic" contract, NOT deopts)
-// are pinned below so future fuzzing does not re-flag them. The for-in /
-// generic-dispatch section at the end holds the same discipline over for-in
-// lowering (unroll over a static schema, else a pooled key array).
+// Confirmed-reasonable cases (the "untyped stays dynamic" contract, NOT deopts) are
+// pinned below so future fuzzing does not re-flag them.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
@@ -36,19 +25,9 @@ const count = (s, re) => { const m = s.match(re); return m ? m.length : 0 }
 // a parameter (a no-arg export is the reserved void entry under WASI).
 const diff = (src, arg = 0, label) => agree(src, 'run', [arg], undefined, label || src.replace(/\s+/g, ' ').trim().slice(0, 80))
 
-// ════════════════════════════════════════════════════════════════════════════
 // D1 — built-in numeric properties (.length/.byteLength/.byteOffset/.size) in `+`
-// ════════════════════════════════════════════════════════════════════════════
 //
-// FIXED: the `propValType` trait table (kind-traits.js, mirroring `methodValType`)
-// types built-in numeric properties as VAL.NUMBER on their respective sized kinds.
-// `+` sees a known-NUMBER operand and skips the __is_str_key string-concat dispatch.
-// Previously `.length + x` emitted __is_str_key×2 + __str_concat even though `.length`
-// can never be a string on a typed array/plain array/string.
-//
-// Soundness: object schema slots (ctx.schema.slotVT) run earlier in VT['.'] and
-// override this — `{length:'hi'}.length` keeps its true slot type. Untyped receivers
-// stay null (could be an object with a string-valued shadow).
+// Untyped receivers stay null (could be an object with a string-valued shadow).
 
 test('deopt D1: built-in numeric property + stays correct (diff vs JS)', () => {
   diff('export let run=(x)=>{let b=new Float64Array(x);let s=0;for(let i=0;i<b.length;i++)s+=b[i]+b.length;return s}', 12)
@@ -69,18 +48,10 @@ test('deopt D1: all sized kinds narrow — typed/plain .length in +', () => {
   is(count(plain, /\$__str_concat/g), 0, 'plain-array .length + : no concat')
 })
 
-// Was folded into the sized-kinds test above as "string .length + : no concat",
-// asserting `s.charCodeAt(i) + s.length` narrowed `s` to STRING (via
-// methodEvidence's `.charCodeAt` induce) and so skipped __str_concat. That
-// induce is unsound and retired (fix/string-method-guess — see infer.js's
-// header): a plain OBJECT/HASH can own a same-named `.charCodeAt` closure,
-// so usage alone never proves STRING. `s` here is exported with no
-// call-site proof, so `propValType`'s `.length` narrow is correctly gated
-// off (objType unknown — same soundness rule as the "untyped receiver
-// .length stays conservative" pin below) and `+` keeps the string-capable
-// dispatch. This is the D1 sibling of that soundness pin, over a param
-// whose ONLY prior evidence was the retired guess rather than a bare
-// unused param — same conclusion either way.
+// `s` here is exported with no call-site proof, so `propValType`'s `.length`
+// narrow is correctly gated off (objType unknown — same soundness rule as the
+// "untyped receiver .length stays conservative" pin below) and `+` keeps the
+// string-capable dispatch.
 test('deopt D1: SOUNDNESS — an unproven string-shaped param keeps .length + conservative (methodEvidence retired)', () => {
   if (belowOpt(1)) return
   const str = compile('export let f=(s)=>{let n=0;for(let i=0;i<s.length;i++)n+=s.charCodeAt(i)+s.length;return n}', { wat: true })
@@ -88,8 +59,6 @@ test('deopt D1: SOUNDNESS — an unproven string-shaped param keeps .length + co
 })
 
 test('deopt D1: sibling numeric props narrow too — .byteLength/.byteOffset/.size', () => {
-  // propValType generalizes beyond .length: every built-in numeric property on its
-  // sized kind skips the string dispatch. These shared the D1 deopt before the fix.
   if (belowOpt(1)) return
   const bl = compile('export let f=(x)=>{let b=new Float64Array(x);let s=0;for(let i=0;i<b.length;i++)s+=b[i]+b.byteLength;return s}', { wat: true })
   const bo = compile('export let f=(x)=>{let b=new Float64Array(x);let s=0;for(let i=0;i<b.length;i++)s+=b[i]+b.byteOffset;return s}', { wat: true })
@@ -100,8 +69,7 @@ test('deopt D1: sibling numeric props narrow too — .byteLength/.byteOffset/.si
 })
 
 test('deopt D1: NEGATIVE — * still narrows (control for the + fix)', () => {
-  // * always narrowed .length; the D1 fix brings + to parity. Pin so a future
-  // regression in either operator is caught.
+  // * always narrowed .length; the D1 fix brings + to parity.
   if (belowOpt(1)) return
   const wat = compile('export let f=(x)=>{let b=new Float64Array(x);let s=0;for(let i=0;i<b.length;i++)s+=b[i]*b.length;return s}', { wat: true })
   is(count(wat, /\$__is_str_key/g), 0, '* narrows .length — no string-key dispatch')
@@ -128,21 +96,12 @@ test('deopt D1: SOUNDNESS — untyped receiver .length stays conservative', () =
   ok(count(wat, /\$__(str_concat|add_slow)/g) >= 1, 'untyped receiver .length stays dynamic (no unsound narrow)')
 })
 
-// ════════════════════════════════════════════════════════════════════════════
 // D2 — jagged `grid[i][j]` re-resolves `grid[i]` per inner iteration
-// ════════════════════════════════════════════════════════════════════════════
 //
-// FIXED: three LICM extensions in hoistInvariantLoop (src/optimize/index.js):
-//   1. `if`-arm purity — a value-producing `if` whose condition and both arms
-//      are pure is itself pure (the tag-dispatch idiom wrapping element reads).
-//   2. `hasDirectStore` effect flag — tracks any f64.store/i32.store in the loop.
-//   3. Read-only heap-memory calls (__typed_idx/__str_idx) — safe to hoist when
-//      no mutating call and no direct store can modify heap memory. Allocation/
-//      dispatch-only calls (__str_concat/__is_str_key/__to_num/__to_str) don't
-//      modify EXISTING heap memory, so they don't block the hoist.
-// Together these let LICM hoist `grid[i]` (a tag-dispatch `if` wrapping
-// __typed_idx/__str_idx) out of a read-only `for(j){…grid[i][j]…}` inner loop.
-// The pin uses 50×50 bounds to avoid small-loop unrolling masking the effect.
+//   Allocation/ dispatch-only calls
+//      (__str_concat/__is_str_key/__to_num/__to_str) don't modify EXISTING heap
+//      memory, so they don't block the hoist. The pin uses 50×50 bounds to
+//      avoid small-loop unrolling masking the effect.
 
 const D2_SRC = (hoist) => `let grid
   export let init=(n)=>{grid=[];for(let i=0;i<n;i++)grid.push(new Float64Array(n));return grid}
@@ -159,9 +118,6 @@ test('deopt D2: grid[i] is hoisted out of the inner j-loop (LICM)', () => {
   if (belowOpt(1)) return
   const nohoist = compile(D2_SRC(false), { wat: true })
   const hoist = compile(D2_SRC(true), { wat: true })
-  // Before the fix, nohoist emitted MORE __typed_idx than the manual-hoist form
-  // because grid[i] was re-resolved per inner iteration. After the fix, the
-  // compiler hoists grid[i] itself — both forms emit the same count.
   is(count(nohoist, /\$__typed_idx/g), count(hoist, /\$__typed_idx/g),
     'auto-LICM matches manual hoist — grid[i] no longer re-resolved per inner iter')
 })
@@ -188,15 +144,6 @@ test('deopt D2: inner j-loop contains no outer-counter $i reference', () => {
   is(count(inner, /local\.get \$i\b/g), 0, 'inner j-loop has no $i reference — grid[i] hoisted')
 })
 
-// ════════════════════════════════════════════════════════════════════════════
-// D3 — `arr[<const idx>]()` devirtualizes to a direct call   *(FIXED)*
-// ════════════════════════════════════════════════════════════════════════════
-//
-// FIXED: array scalarization rewrites `let arr=[add]; arr[0](…)` to `let g=add; g(…)`
-// before emit, and direct-closure copy propagation (emit.js) then carries `add`'s
-// directly-callable body to `g` — so the call lowers to a direct `call`, not
-// `call_indirect`. The same copy propagation covers the explicit `let g = arr[0]` form.
-
 test('deopt D3: arr[0](...) stays correct (diff vs JS)', () => {
   diff('export let run=(a)=>{let add=(x,y)=>x+y;let arr=[add];return arr[0](a,a)}', 3, 'arr[0](a,a)')
 })
@@ -216,16 +163,13 @@ test('deopt D3: copy propagation devirtualizes `let g = closure`', () => {
 
 test('deopt D3: NEGATIVE — direct call is already clean', () => {
   // Control: the same function called directly (no array indirection) emits a
-  // direct call and is tiny. Pin so the D3 ceiling is measured against the
-  // achievable floor.
+  // direct call and is tiny.
   if (belowOpt(1)) return
   const wat = compile('export let f=(a,b)=>{let add=(x,y)=>x+y;return add(a,b)}', { wat: true })
   is(count(wat, /call_indirect/g), 0, 'direct call has no call_indirect')
 })
 
-// ════════════════════════════════════════════════════════════════════════════
 // Behavioral pin — D1 fix converges the .length-in-+ and |0-pinned forms
-// ════════════════════════════════════════════════════════════════════════════
 
 test('deopt D1: .length-in-+ vs |0-pinned converge after the propValType fix', () => {
   if (onWasi()) return               // the JS memory codec is the js-host path
@@ -239,23 +183,11 @@ test('deopt D1: .length-in-+ vs |0-pinned converge after the propValType fix', (
   ok(plainT < pinnedT * 1.3, 'plain .length-in-+ is within 30% of the |0-pinned form (fix converged them)')
 })
 
-// ════════════════════════════════════════════════════════════════════════════
 // for-in / generic-dispatch deopt: correctness + the perf-cliff guards
-// ════════════════════════════════════════════════════════════════════════════
 //
-// for-in over a static-schema object used to lower to a per-iteration Object.keys
-// allocation + a dynamic `o[k]` get — 8–9× slower than V8 and an unbounded heap
-// leak. It now (a) unrolls over the static schema with key-literal substitution so
-// `o[k]` folds to a schema slot, or (b) when it can't unroll (break/continue, a
-// closure capturing the key, a computed-write object), falls back to a loop whose
-// key array is a pooled static constant (`__keys_ro`) — never a per-iteration alloc.
-//
-// This section is the regression detector: a differential correctness sweep across
-// object shapes and body forms (diffed against the SAME source run as JS), machine-
-// independent codegen pins (no dynamic dispatch survives an unrollable for-in), and
-// a behavioral pin (a hot for-in does not grow memory). Objects are kept LOCAL to
-// the exported fn — matching the existing for-in suite — so the cases also hold
-// under the hostless WASI boundary (module-global heap init is a separate axis).
+// Objects are kept LOCAL to the exported fn — matching the existing for-in suite —
+// so the cases also hold under the hostless WASI boundary (module-global heap init
+// is a separate axis).
 
 // ── Correctness sweep: for-in body forms over a static schema (these unroll) ──
 test('for-in deopt: value sum / key concat / mixed over static schema', () => {
@@ -296,14 +228,14 @@ test('for-in deopt: a heavy body stays a pooled loop, not an N× unroll (size bu
   const heavy = `export let run=(z)=>{let o={${k16}}; let s=0; for(let k in o){ s += o[k]*o[k] + o[k]*3 - 7; s += o[k]*2 - o[k]; s -= o[k] % 5 } return s}`
   diff(heavy)   // VALUE is correct on every target (this is the correctness half)
   if (belowOpt(1)) return
-  // The size-budget SHAPE (keys × forInBodyCost > BUDGET ⇒ stay pooled) is
-  // asserted on the native compiler only. Under the self-compiled kernel leg the
-  // budget flips after schema-state accumulation across the one no-GC instance
-  // — `ctx.schema.resolve(o)` under-resolves the 8-key shape once the kernel's
-  // schema list has grown, so keys.length drops and the gate unrolls. Benign
-  // (values above are exact either way); it's the self-compile-row kernel-
-  // statefulness class (.work/archive/todo.md), not a codegen regression — so pin the
-  // heuristic where it's stable and let the native leg own it.
+  // The size-budget SHAPE (keys × forInBodyCost > BUDGET ⇒ stay pooled) is asserted
+  // on the native compiler only. Under the self-compiled kernel leg the budget flips
+  // after schema-state accumulation across the one no-GC instance —
+  // `ctx.schema.resolve(o)` under-resolves the 8-key shape once the kernel's schema
+  // list has grown, so keys.length drops and the gate unrolls. Benign (values above
+  // are exact either way); it's the self-compile-row kernel-statefulness class, not a
+  // codegen regression — so pin the heuristic where it's stable and let the native
+  // leg own it.
   if (onKernel()) return
   const body = funcWat(compile(heavy, { wat: true }), 'run')
   ok(body.includes('(loop'), 'heavy body kept the single pooled loop (not unrolled)')
@@ -342,14 +274,6 @@ test('for-in deopt: hot for-in is allocation-free (no memory growth)', () => {
   exports.run(2_000_000)
   is(memory.buffer.byteLength, before, 'no heap growth across 2M for-in iterations')
 })
-
-// ── Enum cache (core.js __hash_keys_ro / object.js emitEnumerateObject) ──
-// A for-in over a RUNTIME receiver (true HASH dict, or a shadow-mirrored schema
-// object) used to rebuild its key array — __coll_order alloc + scan + sort +
-// copy — on EVERY loop entry (jessie's comment wrapper paid it per token). It
-// now serves a 1-slot cache keyed (table off, live len), invalidated by deletes
-// and global-side dyn writes; inserts miss naturally via len. These pin the
-// cache's correctness across every key-set mutation and its allocation-free hit.
 
 test('for-in enum cache: mutations between hot dict enumerations stay correct', () => {
   // insert (len miss) / overwrite (valid hit) / delete (hook) / the stale hole:
@@ -394,10 +318,7 @@ test('for-in enum cache: shadow-mirrored schema object (computed reads) stays co
 test('late literal-key write is enumerable (for-in / keys / values / entries / JSON)', () => {
   // `o.zz = 3` / `o['zz'] = 3` with zz OUTSIDE the literal's schema lands in
   // the dyn sidecar (locals get no schema merge) or — for a data-segment
-  // literal — in the global dyn-props table. Every static enumeration fold
-  // must deopt to the runtime merge for such receivers (literalWriteKeys,
-  // program-facts.js), and the runtime merge must probe the global table for
-  // static-segment receivers too (no heap_start gate on the keyed probe).
+  // literal — in the global dyn-props table.
   diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; let r=''; for(let k in o) r+=k+';'; return r}`)
   diff(`export let run=(z)=>{let o={x:1,y:2}; o['zz']=3; let r=''; for(let k in o) r+=k+';'; return r}`)
   diff(`export let run=(z)=>{let o={x:1,y:2}; o.zz=3; return Object.keys(o).join()}`)

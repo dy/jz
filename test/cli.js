@@ -137,9 +137,6 @@ test('cli: missing file exits 1', () => {
   is(status, 1)
 })
 
-// Regression: CLI should resolve transitive filesystem imports automatically.
-// README says "Transitive imports work" and "CLI resolves filesystem imports automatically",
-// but the CLI only scans top-level imports with a regex, missing nested imports.
 test('cli: transitive filesystem imports', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-transitive-'))
   const mainFile = join(dir, 'main.js')
@@ -188,8 +185,6 @@ test('cli: bare specifiers resolve through node_modules', () => {
 test('cli: --memory sets initial and maximum pages', () => {
   const input = join(tmp, 'mem.js')
   const output = join(tmp, 'mem.wat')
-  // Dynamic-length typed array can't be scalarized away, so it genuinely needs
-  // linear memory (a const read-only array now compiles memory-free).
   writeFileSync(input, 'export let f = (n) => { let a = new Float64Array(n); a[0] = 1.5; return a[0] }')
   cli(input, '--wat', '--memory', '4:16', '-o', output)
   ok(flat(readFileSync(output, 'utf8')).includes('(memory (export "memory") 4 16'), 'memory min/max emitted')

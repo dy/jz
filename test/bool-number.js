@@ -205,11 +205,7 @@ test('bool or number: an assignment yields what it stored, a Boolean as itself',
 })
 
 // A captured variable lives in a cell, a word where every value written to it is a strict
-// int32 (compile/analyze-for-emit.js). The integer level counts a comparison and a Boolean as
-// one, for the arithmetic that converts them, so a variable holding an integer and later a
-// Boolean took a cell of words, and the store truncated the Boolean's box: `let t = 7; const
-// g = () => t; t = x === 3` read false at x = 3, its typeof "number", `if (t)` the false arm.
-// A Boolean beside a number keeps no word. Expected values are Node's.
+// int32 (compile/analyze-for-emit.js). Expected values are Node's.
 test('bool or number: a captured variable holding an integer, then a Boolean', () => {
   const VALUES = ['(x === 3)', '!x', '(x === 3 || (x & 1))', '(x > 2 && (x & 1))', '(x === 3 || x === 1)', '((x & 2) && x === 3)', '(x === 3 ? true : 2)']
   const WRITES = { own: v => `t = ${v}`, closure: v => `const s = () => { t = ${v} }; s()`, again: v => `t = 5; t = ${v}` }

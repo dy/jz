@@ -172,9 +172,7 @@ test('string split: evaluate arguments before limit and separator conversions', 
 })
 
 
-// ============================================
 // STRING METHODS
-// ============================================
 
 // === String.fromCharCode ===
 
@@ -226,12 +224,7 @@ test('decodeURIComponent: malformed escape throws', () => {
 // === TextEncoder ===
 
 // The Uint8Array returned by TextEncoder.encode must support indexed and spread
-// access, not just `.length`/`for-of`. Regression surfaced in watr: `str()` does
-// `bytes.push(...tenc.encode(buf))` and the export-name encoder then reads those
-// bytes by index. jz mis-typed the encode() result so indexed/spread reads were
-// f64-strided — `encode(':')[0]` yielded a denormal (bits of 58) and
-// `encode('AB')[1]` read 8 bytes ahead → 0. General Uint8Array indexing was fine;
-// only encode()'s result diverged, corrupting exotic export names (':' → 0).
+// access, not just `.length`/`for-of`.
 test('TextEncoder', () => {
   cases([
     ['encode result supports indexed access', `() => new TextEncoder().encode(':')[0]`, 58],
@@ -244,12 +237,7 @@ test('TextEncoder', () => {
 })
 
 // Repeated `dst.push(...tenc.encode(buf))` inside a loop with branching must keep
-// reading u8 elements. This is watr's `str()` shape: a buffer is accumulated and
-// flushed mid-loop on each escape. jz lowers the 2nd (and later) flush through the
-// element-unaware __typed_idx fallback (f64.load, stride 8), so the spread reads a
-// denormal that truncates to 0 — corrupting the byte after the first flush. The
-// first flush and a single trailing flush are fine; only repeated mid-loop flushes
-// regress. Surfaced as a literal ':' byte decoding to 0 in an exotic export name.
+// reading u8 elements.
 test('TextEncoder: repeated mid-loop spread-flush keeps bytes (str() shape)', () => {
   const { f } = run(`
     const tenc = new TextEncoder()
@@ -391,14 +379,9 @@ test('string < via variables', () => {
   is(f(), true)
 })
 
-// === mixed untyped/string-literal ordering ===
-// When one operand is a known string literal and the other has no static type
-// (e.g. a char read from an untyped string receiver), cmpOp can't pick lex-vs-
-// numeric at compile time. Pre-fix it fell into the f64 path and compared the
-// unknown side's NaN-boxed string bits as a float — always false — so `s[i] >= '0'`
-// silently returned 0 and digit parsers broke. cmpOp now emits a runtime
-// __is_str_key dispatch on the untyped side: string ⇒ __str_cmp three-way, else
-// ToNumber both. Matches JS: relational is lexicographic only when both sides are
+// When one operand is a known string literal and the other has no static type (e.g.
+// a char read from an untyped string receiver), cmpOp can't pick lex-vs-numeric at
+// compile time. Matches JS: relational is lexicographic only when both sides are
 // strings, otherwise it ToNumbers both.
 
 test('untyped char vs string literal: lexicographic when runtime value is a string', () => {
@@ -444,8 +427,8 @@ test('digit parser over untyped string receiver returns the parsed number', () =
   is(f(''), 0)
 })
 
-// === localeCompare ===
-// Byte-wise variant — not locale-aware. Returns -1/0/1.
+// localeCompare
+// Byte-wise variant — not locale-aware.
 
 test('.localeCompare', () => {
   cases([
@@ -534,8 +517,7 @@ test('fused concat: long literal fragments use bounded code and preserve evaluat
 test('fused concat: literal ASCII parts store inline — no per-separator copy or length call', () => {
   // The serializer shape (`i + ',' + name + '\n'`): literal parts carry their bytes
   // and length at compile time, so only the DYNAMIC parts pay a __str_copy +
-  // __str_length. Profiled on strbuild: the tiny-part copy/len calls were 38.7%
-  // of a row; inlining them was -15% on the bench with an exact checksum.
+  // __str_length.
   const src = `export let f = (i, v) => i + ', ' + v + '!\\n'`
   const r = jz(src, { optimize: { level: 2, watr: false } })
   is(r.memory.read(r.exports.f(7, -3)), '7, -3!\n')
@@ -591,10 +573,9 @@ test('string: .slice', () => {
   ])
 })
 
-// === .slice token-views (no-copy) ===
+// .slice token-views (no-copy)
 // A non-escaping `let t = s.slice(...)` binding lowers to a view (SLICE_BIT
-// pointer into the parent buffer) — no byte copy. The view only fires when the
-// receiver is provably a string and the binding provably never escapes.
+// pointer into the parent buffer) — no byte copy.
 
 test('slice-view: fires for non-escaping local-string slice', () => {
   // `s` is built from a PARAM (not a literal): a literal receiver is now a preEval
@@ -844,9 +825,7 @@ test('string: methods', () => {
   ])
 })
 
-// Empty separator: regression for infinite-loop when plen=0 (advance was
-// `i += plen`, so i never moved). Per JS spec: split into individual chars,
-// and "".split("") → [].
+// Per JS spec: split into individual chars, and "".split("") → [].
 test('string: .split("") splits into chars', () => {
   is(run(`export let f = () => "abc".split("").length | 0`).f(), 3)
   is(run(`export let f = () => "abc".split("")[0].charCodeAt(0) | 0`).f(), 97)
@@ -920,14 +899,10 @@ test('String: at out of range → undefined (not "\\x00")', () => {
 })
 
 test('String: .at on an untyped param dispatches to the string handler (not array)', () => {
-  // Regression: `at: ['core','array']` in autoload routed param `.at` to the array
-  // handler (raw f64 heap read). Now lists 'string' too → runtime ptr-type branch.
   const f = run(`export let f = (s) => s.at(0)`).f
   is(f('hello'), 'h')
   ok(run(`export let g = (s) => s.at(9)`).g('abc') === undefined, 'OOB on param → undefined')
 })
-
-// === search / match ===
 
 test('String: search / match / concat', () => {
   cases([
@@ -936,9 +911,6 @@ test('String: search / match / concat', () => {
     ['match found', `() => "hello world".match("world").length`, 1],
     ['match not found', `() => "hello".match("xyz")`, 0],
     ['match result content', `() => "hello world".match("world")[0].length`, 5],
-    // Regression: untyped `s.concat(...)` fell through to dynamic dispatch and hit an
-    // internal "__ext_call never registered" error. Now routed via the runtime
-    // string/array ptr-type branch (string → __str_concat).
     ['.concat on a dynamic (untyped) receiver: single arg', `(s) => s.concat("!")`, 'hi!', 'hi'],
     ['.concat on a dynamic (untyped) receiver: two args', `(s) => s.concat("-", "x")`, 'hi-x', 'hi'],
     ['.concat on a dynamic (untyped) receiver: literal receiver', `() => "ab".concat("cd")`, 'abcd'],
@@ -954,8 +926,6 @@ test('string +: untyped params are numeric, not concat (documented divergence)',
   is(run(`export let f = (a, b) => a + b`).f(2, 3), 5)                     // numeric still works
   is(run(`export let f = (a) => 'n' + a`).f(7), 'n7')                      // literal operand → concat
 })
-
-// === Bug-fix regression tests ===
 
 // Bug 1: split() with no argument → [str] (JS oracle)
 test('string: .split() no arg returns single-element array of whole string', () => {
@@ -979,7 +949,6 @@ test('string: .split("", limit) honours limit on empty sep', () => {
   is(run(`export let f = () => "abc".split("", 2)[1]`).f(), 'abc'.split('', 2)[1])
 })
 
-// Bug 3: lastIndexOf — not previously implemented
 test('string: .lastIndexOf basic', () => {
   is(run(`export let f = () => "hello".lastIndexOf("l")`).f(), 'hello'.lastIndexOf('l'))
   is(run(`export let f = () => "hello".lastIndexOf("x")`).f(), 'hello'.lastIndexOf('x'))
@@ -1012,11 +981,8 @@ test('string: .replace(search, fn) invokes the callback', () => {
     'ab'.replace('a', m => m + m))                 // 'aab'
 })
 
-// === SSO 6-char / 7-bit codec (chars 4-5 span the offset/aux boundary) ===
-// Regression guard for the 7-bit ASCII small-string optimization: every string
-// producer and consumer must agree on the layout (char i at payload bit i*7, len at
-// bits 42-44). A missed site silently corrupts strings, so exercise each path on
-// 5- and 6-char ASCII (the aux-spanning range) plus the host boundary.
+// A missed site silently corrupts strings, so exercise each path on 5- and 6-char
+// ASCII (the aux-spanning range) plus the host boundary.
 test('SSO 7-bit: 6-char literal charCodeAt across the aux boundary', () => {
   const f = run(`export let f = (i) => "abcdef".charCodeAt(i)`).f
   for (let i = 0; i < 6; i++) is(f(i), 'abcdef'.charCodeAt(i))   // i=4,5 read from aux
@@ -1090,7 +1056,6 @@ test('substring equality: a range compares in place against inline, heap and non
   is(/call \$__char_at\b/.test(funcWat(compile(src, { wat: true }), '__str_range_eq')), false, 'no call per unit')
 })
 
-// === ≤6-ASCII⇒SSO producer invariant (module/string.js header) ===
 // Every producer must normalize a short ASCII result to SSO: `x === "shortLit"`
 // lowers to a bare i64.eq and __str_eq decides any one-SSO compare by bits, so a
 // producer that leaks a ≤6-ASCII HEAP string silently breaks string equality.
@@ -1138,11 +1103,8 @@ test('SSO invariant: producers/consumers', () => {
   ])
 })
 
-// === `x === "literal"` specialization (emit.js emitLooseEq) ===
-// The compiler's hottest comparison (`node[0] === 'if'` AST-tag dispatch). When one
-// operand is statically a string, emit skips the generic __eq NaN-box dispatch and
-// inlines `i64.eq ? equal : (__is_str_key(u) ? __str_eq : ne)`. Behaviorally identical
-// to __eq (jz's ==/=== never coerce); the win is on the self-compile kernel's own 5579 sites.
+// `x === "literal"` specialization (emit.js emitLooseEq)
+// The compiler's hottest comparison (`node[0] === 'if'` AST-tag dispatch).
 test('str-eq spec: heap concat === SSO literal is true (the soundness case)', () => {
   // `"i"+"f"` allocates a HEAP "if" with different bits than the inline SSO literal —
   // a pure i64.eq would wrongly say not-equal; the __str_eq fallback content-compares.
@@ -1155,7 +1117,6 @@ test('str-eq spec: heap concat === SSO literal is true (the soundness case)', ()
 })
 test('str-eq spec: non-string vs string literal is false, no deref (number/null/array)', () => {
   // __is_str_key rejects a number whose f64 bits could alias the STRING tag — number
-  // ===/== string must be false (jz does not coerce), never a wild __str_eq deref.
   is(jz(`let x = 5; export let main = () => (x === "5") | 0`).exports.main(), 0)
   is(jz(`let x = 1.5e308; export let main = () => (x === "if") | 0`).exports.main(), 0)
   is(jz(`let x = null; export let main = () => (x === "x") | 0`).exports.main(), 0)
@@ -1183,10 +1144,6 @@ test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () =>
 })
 
 test('indexOf substr: SIMD first-unit memchr is emitted + matches V8 over edge cases', () => {
-  // The multi-byte heap-haystack path broadcasts needle[0] and reads an i16x8.eq bitmask —
-  // a scan-bound substr search dropped from 5.7× slower than V8 to ~1.4×. The SIMD window only
-  // touches the HAYSTACK, so a SHORT (SSO, ≤6B) needle — the common ","/"://"/"TARGET" — rides it
-  // too (its bytes fetched SSO-aware), not just heap×heap; that closed an 11×→1.4× gap.
   const wat = compile(`export let f = (h, n) => h.indexOf(n)`, { wat: true })
   ok(/i16x8\.bitmask/.test(wat) && /i16x8\.eq/.test(wat), '__str_indexof carries the SIMD first-unit scan')
 
@@ -1210,7 +1167,6 @@ test('indexOf substr: SIMD first-unit memchr is emitted + matches V8 over edge c
 
 test('concat: a fresh result preserves its operands and a private builder can grow', () => {
   // In-place growth requires a private builder, not just self-assignment.
-  // A fresh target `t = s + x` over a live, heap-top `s` used to grow s in place (s += 2 bytes/iter).
   const { loop, after, accum, charAppend } = jz(`
     export let loop = (s, n) => { let a = 0; for (let r = 0; r < n; r = r + 1) { let t = s + "_x"; a = (a + t.length) | 0 } return a | 0 }
     export let after = (s) => { for (let r = 0; r < 5; r = r + 1) { let t = s + "_x" } return s.length | 0 }
@@ -1289,14 +1245,10 @@ test('concat: retained builder values stay immutable across appends', () => {
   }
 })
 
-// === SSO hash-mix agreement (__str_hash's SSO branch vs strHashLiteral's compile-time
 // prehash) — every producer of a ≤6-ASCII SSO string, crossed against every consumer of a
-// compile-time-literal-prehashed probe. A key built at runtime by producer P must be found
-// by a `.get`/`.has`/dot-access whose key is a same-content STATIC LITERAL (which folds its
-// hash via strHashLiteral, module/collection.js, entirely at compile time — no __str_hash
-// call). If the two hash functions ever disagree for the same SSO bits, the probe silently
-// misses instead of erroring, so this is exercised for every producer × every collection
-// (Map/Set/HASH-object) × lengths 1-6.
+// compile-time-literal-prehashed probe. If the two hash functions ever disagree for the
+// same SSO bits, the probe silently misses instead of erroring, so this is exercised for
+// every producer × every collection (Map/Set/HASH-object) × lengths 1-6.
 test('plain key walks preserve strings, Symbol identity and numeric collection equality', () => {
   const src=`export function f(mode) {
     const first=Symbol('same'),second=Symbol('same'),shared=Symbol.for('shared')
@@ -1350,9 +1302,6 @@ test('SSO hash mix: literal-prehashed probe finds a same-content key from every 
   }
 })
 test('SSO hash mix: literal-prehashed probe finds a same-content key from JSON.parse', () => {
-  // __jp_str's simple (no-escape) fast path and its escape-decode path both normalize
-  // ≤6-ASCII results to SSO (module/json.js __sso_norm calls) — both must be found by a
-  // literal-keyed dot-read, which folds strHashLiteral at compile time.
   for (const k of ['a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef']) {
     is(jz(`export let f = (s) => { let o = JSON.parse(s); return o.${k} }`).exports.f(`{"${k}":1}`), 1,
       `JSON.parse simple len=${k.length} → literal dot-read`)
@@ -1378,14 +1327,12 @@ test('SSO hash mix: clamp (h<=1 -> h+=2) holds for both JS and WAT by constructi
 
 // String.prototype.normalize — identity (all normalization forms are identity on
 // ASCII; Unicode case tables remain unsupported — README divergences).
-// Was a compile crash: the autoload tuple lacked the fallback's array dep.
 test('strings: normalize is identity (typed + generic receivers)', () => {
   is(run(`export let f = () => "héllo".normalize().length`).f(), 5)
   is(run(`export let f = () => "abc".normalize("NFD") === "abc" ? 1 : 0`).f(), 1)
   is(run(`export let f = (s) => s.normalize().length`).f !== undefined, true)
 })
 
-// --- static-array folds must not survive mutation (stale-fold miscompile) ---
 // prepare's in-walk template/concat folds consume shapeStrArrays; a push or
 // indexed write BEFORE the fold site must invalidate the fact at the mutation
 // point (statement order = execution order), not only in the post-prep sweep.
@@ -1669,9 +1616,6 @@ test('string slices: interning uses UTF-16 offsets in copies and views', () => {
 })
 
 test('charCodeAt on a dissolved concat buffer reads UTF-16 units', () => {
-  // `const line = a + b + c` used only through `.length`/`.charCodeAt` dissolves
-  // into raw (buf, len) locals (emit/dispatch.js tryConcatBufferDecl); the reader
-  // indexes 16-bit units, never bytes (the strbuild checksum regression).
   const NAMES = ['alpha', 'bravo']
   for (const e of ['0 + "," + NAMES[0] + "," + ((-5 + 0) | 0) + "\\n"', '"," + NAMES[0] + ","', '"é" + NAMES[1] + "😀"']) {
     const src = `const NAMES = ${JSON.stringify(NAMES)}
@@ -1778,9 +1722,7 @@ test('string equality: a canonical string against a long literal is answered by 
 // foldStringRuns): once a string literal sits on the right the left side is a
 // string, so `(e + 'a') + 'b'` is `e + 'ab'` for any `e`. A generated source
 // spells long data so, a chain thousands of terms deep that ran the compiler's
-// recursive walks out of stack (900 terms failed). The fold never reorders a
-// sum: a number, a variable or an object before the first string literal keeps
-// its own `+`, its conversion run once.
+// recursive walks out of stack (900 terms failed).
 test('strings: a long chain of string literals concatenates as JS does', () => {
   const long = `const S = ${Array.from({ length: 5000 }, (_, i) => `'ab${i}'`).join(' + ')}\nexport let f = () => S.length + S.charCodeAt(3000)`
   const order = `let n = 0

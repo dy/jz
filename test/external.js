@@ -24,10 +24,6 @@ test('Read property from external object', () => {
 
 test('Read property from external object via literal bracket key', () => {
   if (onWasi()) return  // wasi: external object
-  // Regression: `obj['nodeType']` IS `obj.nodeType` — both must reach the
-  // host-external read path. The `[]` emitter used to fall to `__dyn_get`
-  // (internal HASH only, no external support), so a literal-key bracket read
-  // on a host object silently returned undefined while dot access worked.
   const { getDot, getBracket } = run(`
     export const getDot = (obj) => obj.nodeType
     export const getBracket = (obj) => obj['nodeType']
@@ -205,30 +201,6 @@ test('Return external object from JZ', () => {
   is(div.nodeName, 'DIV')
 })
 
-// An indexed write through a dynamic property chain on an EXTERNAL object —
-// `o.field[i] = v` where `o` is a plain host object passed as an argument — was a
-// silent no-op: each `.field` read materializes an independent copy (`__ext_prop`
-// → interop.js `wrapVal` deep-copies a container into fresh wasm memory — no
-// identity preserved with the host), so the index-store mutated a copy nobody
-// kept — the host object's actual property was never touched. Whole-field
-// reassignment (`o.field = arr`) and scalar field writes (`o.gain = v`) worked
-// correctly (a direct, non-indexed property SET, not a read-then-mutate). NOT
-// the same root cause as the superficially similar "typedArray.set() into a
-// dynamically-added struct field" no-op (test/array-methods.js, a DISPATCH gap —
-// vt-unknown receivers never reached ANY `.typed:*` emitter at all) — this one is
-// a marshaling-identity gap, fixed differently: emitElementAssign
-// (src/compile/emit-assign.js) now special-cases `obj.prop[idx] = val` when
-// `obj`'s type is unresolved — performs the normal (copy-based) element write,
-// then writes the resulting (possibly-relocated) container back onto the SAME
-// property via `__hash_set`, whose existing type guard already dispatches
-// EXTERNAL receivers to `__ext_set`. Native OBJECT/HASH receivers already
-// share storage, so their fields need no write-back. `mem.read` (interop.js)
-// already recursively decodes an ARRAY pointer
-// back into a real JS array, so the round-trip is correct including one level of
-// array-of-arrays nesting (see test/objects.js's two sibling fixes, same root
-// cause). Live instance: noise-reduction/deplosive.js `params._lfDetS[0] = lfEnv`
-// — envelope-detector state never survived a streaming chunk boundary, silently
-// restarting from zero each call.
 test('staged external field writes retain their owner, result and evaluation order', () => {
   if (onWasi()) return
   const src = `export function f(o, mode, index) {
@@ -332,21 +304,11 @@ test('staged host field stores retain BigInt assignment results', () => {
 
 // A typed array stored onto an EXTERNAL object was a LIVE VIEW into the module's
 // own linear memory, not a host-owned copy (interop.js `mem.read`'s TYPED branch:
-// `new Ctor(mem.buffer, off, len)`). When a later call grows memory (the bump
-// allocator never frees), Memory.grow() detaches the old ArrayBuffer; the next
-// read-back of that field re-marshaled the stale view and jz's fast-path bulk copy
-// threw a raw uncaught TypeError ("...detached ArrayBuffer"). Real hazard for any
-// streaming DSP that stashes typed-array state on a params object across chunks
-// (noise-reduction gate.js `params._lab` — crashes on the call where cumulative
-// allocation first crosses a page). Fixed narrowly at `__ext_set` (interop.js) —
+// `new Ctor(mem.buffer, off, len)`). Fixed narrowly at `__ext_set` (interop.js) —
 // NOT in `mem.read` itself, which stays a live view for its other callers (a
 // function-return-value peek, or explicit `instance.memory.read(ptr)`, where a
 // live view is the documented, intentional behavior — test/external.js's own
-// "Return external object from JZ" above relies on it). `__ext_set` specifically
-// persists onto a REAL, long-lived host object property, so it now `.slice()`s
-// any decoded TypedArray view into an independent, host-owned copy before
-// storing it — TypedArray's own same-ctor copy, exactly `new Ctor(view)` with no
-// manual size/offset bookkeeping, and a no-op for every other decoded value shape.
+// "Return external object from JZ" above relies on it).
 test('typed-array field on an external object survives memory growth', () => {
   if (onWasi()) return  // wasi: external object
   const { step } = run(`
@@ -377,12 +339,10 @@ test('A host object lists, copies and serializes as JS', () => {
   for (const g of [undefined, 2, '--']) is(run(host(), g), js(host(), g), `gap ${g}`)
 })
 
-// A native container's slot holds what was stored in it, a host value too: a
-// read through a slot the summary cannot bound asks the host for a host object
+// A native container's slot holds what was stored in it, a host value too: a read
+// through a slot the summary cannot bound asks the host for a host object
 // (module/core.js nestedMayBeExternal), and a call of such a slot invokes a host
-// function (compile/emit/call-args.js callMaybeHost). The chain read reached jz's
-// own dispatch and answered undefined; the call threw, or at O2, where the
-// literal dissolves into its fields, left a call of the field's name unresolved.
+// function (compile/emit/call-args.js callMaybeHost).
 test('A host object or function held in a native container reads and calls through it', () => {
   if (onWasi()) return
   const host = () => ({ b: { c: 42, d: 'x' }, f: (x) => x * 2 }), dbl = (x) => x * 2
@@ -404,14 +364,9 @@ test('A host object or function held in a native container reads and calls throu
   }
 })
 
-// The module spells a well-known symbol key `@@name` (`o[Symbol.iterator]` reads
-// '@@iterator', and `Symbol.iterator in o` tests '@@iterator', jzify canonSymbols):
-// on a host object it is the host's symbol (interop.js hostKey).
-// A for await over a host stream read the string key, found no iterator and
-// ended at once; a for of that takes the iterator protocol (in a program that
-// reads Symbol.iterator, as here, or defines a generator) threw over a host
-// iterable. A program with neither indexes its for of (`__iter_arr`), which
-// takes no host iterable still.
+// A for await over a host stream read the string key, found no iterator and ended
+// at once; a for of that takes the iterator protocol (in a program that reads
+// Symbol.iterator, as here, or defines a generator) threw over a host iterable.
 test('A host object answers well-known symbol keys: for await over a host stream, the iterator protocol over a host iterable', async () => {
   if (onWasi()) return
   const src = `export const total = async (s) => { let n = 0, t = 0; for await (const c of s) { n++; t += c.length } return [n, t] }

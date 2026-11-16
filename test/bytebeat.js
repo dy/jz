@@ -66,9 +66,7 @@ function testFormula(name, jzBody, tRange, tol, maxBadFrac = 0) {
  *  of Math.sin of a large argument additionally need `maxBadFrac` (see testFormula). */
 const FTOL = 5e-6
 
-// ============================================================
 // BYTEBEAT — output in 0..255
-// ============================================================
 
 testFormula('Sawtooth (viznut)',
   'return t & 255', 65536, 0)
@@ -121,9 +119,7 @@ testFormula('Ryg - String-like',
 testFormula('Krcko',
   'return (((t & (t >> 12)) * ((t >> 4) | (t >> 8)) ^ (t >> 6)) & 255)', 65536, 0)
 
-// ============================================================
 // FLOATBEAT — real compositions, output in -1..1
-// ============================================================
 
 testFormula('Techno Loop',
   `let kick = Math.tanh(Math.sin(t / 20) * 5) * ((t >> 13) & 1);

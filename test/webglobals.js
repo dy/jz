@@ -21,8 +21,6 @@ const runMany = (arrows, opts) => {
   })
 }
 
-// === encodeURI / decodeURI ===
-
 test('encodeURI: reserved set passes through, rest percent-encodes', () => {
   const src = `a b;/?:@&=+$,#-_.!~*'()中`
   const [c0, c1, c2] = runMany([
@@ -48,13 +46,9 @@ test('decodeURI: reserved escapes stay, case preserved, malformed throws', () =>
   throws(c3)
 })
 
-// === console.info / console.debug (compile + run, output is host-side) ===
-
 test('console.info/debug compile and run', () => {
   is(run(`export let f = () => { console.info("i", 1); console.debug("d", 2); return 1 }`), 1)
 })
-
-// === base64 / hex codecs ===
 
 test('btoa/atob: host parity incl whitespace, padding, binary bytes', () => {
   const [c0, c1, c2, c3, c4, c5, c6, c7, c8] = runMany([
@@ -401,11 +395,6 @@ test('Uint8ClampedArray: loop stores clamp at every optimize level', () => {
   for (const optimize of levels(0, 2, 3, 'size')) is(run(src, { optimize }), ref)
 })
 
-// === direct fresh-ctor receivers (regression pin) ===
-// `new T([…]).method(…)` receivers used to fall past elem resolution to the
-// plain-array emitters, which read f64 slots — silently wrong for every
-// element kind except Float64Array (Int32Array read 0s). Pin the class.
-
 test('method chains on fresh typed ctors resolve the element kind', () => {
   const arrows = [
     `() => new Int32Array([1, 2, 3]).map(x => x * 2)[2]`,
@@ -486,8 +475,8 @@ test('URLSearchParams: forEach observes live entries across callback growth and 
 // A module whose initializer reaches into the host (a host global it names, a member
 // of a host value) ships its init as the `_initialize` export, called by the interop
 // once the memory is readable (optimize/watr-tail.js legalizeReactorInit, the WASI
-// reactor's convention): nothing serves `globalThis.document` inside
-// `new WebAssembly.Instance`. A pure module keeps its `start` section.
+// reactor's convention): nothing serves `globalThis.document` inside `new
+// WebAssembly.Instance`.
 test('host globals: an initializer that reads the host runs once the memory is wired', () => {
   if (onWasi() || onKernel()) return
   const touching = `const g = typeof self === 'object' ? self : globalThis

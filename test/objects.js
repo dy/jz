@@ -41,8 +41,7 @@ test('object: the host reads a class instance without its private names', () => 
 
 // A private name asks for a view of its layout only where a reader of the
 // view tables may meet its objects (summary/query.js `enumerable`): a key
-// listing, a deep reader, a shape the summary loses, the host. Each path
-// answers as JavaScript does; a layout none of them meets adds no view.
+// listing, a deep reader, a shape the summary loses, the host.
 test('object: a private name asks for a view only where enumeration meets its layout', () => {
   const A = `class A { #s = 1; constructor() { this.x = 2 } m() { return this.#s } }`
   const src = `${A}
@@ -170,9 +169,7 @@ test('nullable property receivers throw before reading or writing memory', () =>
 // value is evaluated (PutValue): one bound to a layout by its one object
 // assignment (`let o; if (…) o = {…}`) took the slot store at its address, so
 // undefined (offset 0) wrote the module's static data, a string literal the
-// program then returned empty. Every store path tests: a slot by name or by
-// literal key, a module binding's, an element of an array, a resize, a loop
-// target, a setter's, one after a guarded read.
+// program then returned empty.
 test('a store into a receiver that may be missing throws and writes no memory', () => {
   // [the store, a read of what it stored where the receiver is present]
   const stores = [
@@ -379,8 +376,6 @@ test('recursive boolean results keep truthiness and declare final coercion temps
       return reads * 10 + yes
     }
   `
-  // A recursive predicate's result is the join of its returns (the program
-  // summary): a boolean, as in JS, not the 0/1 the boundary used to hand out.
   for (const optimize of levels(0, 2, 3)) {
     const { member, chain, other, block, effects } = jz(source, { optimize }).exports
     is(member(), true, `O${optimize}: direct recursive predicate`)
@@ -436,13 +431,6 @@ test('opaque .length nullish TypeError schema is catchable at every tier', () =>
     is(jz(src, { optimize }).exports.f(null), 1, `O${optimize}`)
 })
 
-// schema/errcls-vs-treeshake reconciliation (fix/schema-treeshake): the
-// length-throw's shared TypeError schema still mints eagerly at emission
-// (commit 8954dac2, pin above) so O0 catch planning never races it, but the
-// jz:schema/jz:errcls custom sections are now built AFTER treeshake and only
-// carry entries something surviving still constructs — a mint whose sole
-// caller treeshakes away must not leave dead schema/errcls bytes behind
-// (the aos/dotprod/wav/callback size-gate regression, e867c3af).
 test('dead opaque-length TypeError schema is pruned from custom sections post-treeshake', () => {
   // `dead` is declared but never called or exported — at O2/O3 (treeshake on)
   // it, and its only use of the shared length-throw path, are fully removed.
@@ -548,9 +536,7 @@ test('Regression: Object.assign with unknown-schema source preserves target alia
 
 // A copy into the dictionary it makes (a spread of an unknown source, which
 // Object.assign onto a literal reduces to; Object.fromEntries) stores through
-// the dictionary's own upsert. The generic one reached an array's element
-// store, whose module such a program never loads: "__arr_set_idx_ptr was
-// requested but never registered".
+// the dictionary's own upsert.
 test('a copy into a fresh dictionary needs no other kind\'s store', () => {
   for (const [name, src, args] of [
     ['assign', `const mk = (k) => k ? { a: 1, b: 'x' } : { c: 2 }
@@ -563,8 +549,7 @@ export const f = (k) => JSON.stringify({ ...mk(k), z: 3, ...mk(0) })`, [1]],
 })
 
 // A receiver no layout or dictionary describes lists its indices: a typed
-// array, and an array or string the compiler cannot type (__idx_enum). Each
-// listed nothing; a known array or string already did. A DataView has none.
+// array, and an array or string the compiler cannot type (__idx_enum).
 test('Object.keys, values, entries and for-in list an index-keyed receiver\'s indices', () => {
   const src = (e) => `const pick = (k) => k === 1 ? new Uint8Array([5, 6]) : k === 2 ? 'ab' : k === 3 ? new DataView(new ArrayBuffer(2)) : [7, 8]
 export const f = (k) => { const v = pick(k); const ta = new Float64Array([1.5, 2]); return JSON.stringify(${e}) }`
@@ -575,8 +560,7 @@ export const f = (k) => { const v = pick(k); const ta = new Float64Array([1.5, 2
 
 // A copy read each value by its key through the generic property read, which
 // missed a string's index (undefined) and read a typed array's as NaN: a
-// spread or Object.assign of either copied no value. It takes an index-keyed
-// source's values by position. A string owns its indices and its length.
+// spread or Object.assign of either copied no value.
 test('a spread, Object.assign and hasOwn see a string\'s and a typed array\'s indices', () => {
   const src = (e) => `const pick = (k) => k ? new Uint8Array([5, 6]) : 'ab'
 export const f = (k) => { const v = pick(k), key = String(k - k); const s = 'ab', ta = new Int16Array([-1, 2]); return JSON.stringify(${e}) }`
@@ -740,14 +724,6 @@ test('schema writes through aliases keep an existing dynamic sidecar coherent', 
   is(f(), 2)
 })
 
-// A name whose objects are minted elsewhere takes no merged layout
-// (ctx.schema.unknownInit; earlier prepare-time schema growth took a box
-// too): `const alias = ns.inner` replaced its box with the
-// inner object's pointer and `alias.f = b` then stored at the box's slot
-// offset into a 1-slot object; `Object.assign(o, {b, c})` on a parameter
-// slot-copied by the merged {b, c} into the caller's {a} object (`p.a` read
-// 2, slot 1 past the allocation). Both writes now take the dynamic path; the
-// neighbours stay intact and the caller's own field keeps its value.
 test('a foreign-minted name gets no merged layout: writes through it stay in bounds', () => {
   const { f, g } = run(`
     function a() { return 1 }
@@ -869,12 +845,6 @@ test('Regression: object-slot booleans coerce with Number and String', () => {
   is(strings(), 'false:true')
 })
 
-// Pre-existing bug surfaced while writing slot-type tests:
-// `let o = w == 0 ? mkA() : mkB()` where both arms returned narrowed-i32 OBJECT
-// pointers used to emit `(f64.convert_i32_s (if (result i32) ...))` — numeric
-// convert of the offset rather than NaN-rebox. Subsequent `o.prop` then read
-// from invalid memory. Fix: `?:` emit propagates matching ptrKind/ptrAux from
-// both arms so downstream `asF64` takes the rebox path.
 test('Regression: ?: with two narrowed-OBJECT helpers preserves pointer identity', () => {
   const { f } = run(`
     let mkA = () => ({ x: 11 })
@@ -912,9 +882,9 @@ test('Regression: ?: result fed directly to .prop access', () => {
 })
 
 test('Regression: ?: with literal object branches — distinct schemas', () => {
-  // Two literal branches with different schemas. Both arms are inline `{}`
-  // (no narrowed-call return), so this stresses the ptrKind propagation
-  // through the object-literal emit shape rather than the call-result shape.
+  // Both arms are inline `{}` (no narrowed-call return), so this stresses
+  // the ptrKind propagation through the object-literal emit shape rather
+  // than the call-result shape.
   const { f } = run(`
     export let f = (w) => {
       let o = w == 0 ? { x: 11, y: 1 } : { x: 22, z: 2 }
@@ -955,12 +925,6 @@ test('Regression: ?: polymorphic — same-shape distinct OBJECT schemas dedup', 
   is(hy(1), 200)
 })
 
-// Polymorphic `?:` with two narrowed-OBJECT arms of structurally distinct
-// schemas — `.prop` falls through `__dyn_get_any` → `__dyn_get`'s OBJECT-
-// schema fallback (added in commit) which reads receiver aux as schemaId,
-// looks up the schema name table, and resolves the slot at runtime.
-// Each `?:` arm reboxes via the f64 path with its own ptrAux so the
-// receiver carries the correct schemaId at runtime.
 test('Regression: ?: polymorphic — different-shape OBJECT schemas resolve .prop', () => {
   const { hy } = run(`
     let n = () => ({ x: 11, y: 100 })
@@ -1025,9 +989,7 @@ test('Regression: nested prefix literal does not inherit enclosing merged schema
 
 // The slot fast-path for `o.prop` reads at a fixed offset with no runtime
 // type check; it is only sound when the receiver is statically known to be
-// OBJECT. A receiver whose type is unknown (e.g. a `?:` over JSON.parse
-// erases its HASH type) must fall through to dynamic dispatch — slot 0 of
-// a HASH is bucket metadata, not a property value.
+// OBJECT.
 test('Regression: unknown-typed receiver does not take OBJECT slot fast-path', () => {
   const { f } = run(`export let f = (w) => {
     let h = w == 0 ? JSON.parse('{"id":"hi"}') : JSON.parse('{"id":"bye"}')
@@ -1064,11 +1026,10 @@ test('Regression: dynamic key write updates existing fixed-shape object slot', (
 })
 
 test('Regression: numeric runtime key write on fixed-shape object preserves schema slots (no OOB)', () => {
-  // `o[i] = v` with a runtime numeric index on a schema object once emitted a raw
-  // array-style `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and
-  // trapping (memory access out of bounds) at large i. It now routes to __dyn_set (the
-  // per-OBJECT propsPtr sidecar), mirroring `o.prop = v`. This is the exact fault that
-  // broke the self-compile when the dispatch table gained integer keys; runs under test:wasm.
+  // `o[i] = v` with a runtime numeric index on a schema object once emitted a raw array-style
+  // `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and trapping (memory
+  // access out of bounds) at large i. This is the exact fault that broke the self-compile
+  // when the dispatch table gained integer keys; runs under test:wasm.
   const { slot, loop, big, compound } = run(`
     export let slot = (i) => { let o = { x: 1 }; o[i] = 99; return o.x }
     export let loop = () => { let o = { x: 1, y: 2 }; for (let i = 0; i < 3; i++) o[i] = 9; return o.x * 10 + o.y }
@@ -1082,14 +1043,11 @@ test('Regression: numeric runtime key write on fixed-shape object preserves sche
   is(compound(0), 5) // undefined+1=NaN to sidecar; slot 0 (o.x) untouched
 })
 
-// Root A′: `o[i]=v` (numeric/dynamic key) on an UNTYPED empty-object binding
-// (`let o = {}` — null-typed, OBJECT only at runtime). It took the polymorphic
-// store path whose fallback raw-stored at ptrOffset(o)+i*8 → schema-slot corruption
-// at small i, an OOB memory trap at large i (the self-compile `blur` crash). It now
-// routes an OBJECT/HASH receiver to __dyn_set (propsPtr sidecar, string key). The
-// numeric-keyed READ stays array/typed by design (returns undefined — see test/perf
-// "skips __is_str_key dispatch"), but the WRITE must never trap or corrupt. Runs
-// under test:wasm. Gated on `rep.notString` so typed-array params keep the lean store.
+// Root A′: `o[i]=v` (numeric/dynamic key) on an UNTYPED empty-object binding (`let o =
+// {}` — null-typed, OBJECT only at runtime). The numeric-keyed READ stays array/typed
+// by design (returns undefined — see test/perf "skips __is_str_key dispatch"), but the
+// WRITE must never trap or corrupt. Runs under test:wasm. Gated on `rep.notString` so
+// typed-array params keep the lean store.
 test("Regression: o[i]=v on an untyped empty-object binding is OOB-safe (Root A′)", () => {
   const { big, loop, sibling } = run(`
     export let big = () => { let o = {}; o[5000] = 42; return 1 }
@@ -1103,11 +1061,9 @@ test("Regression: o[i]=v on an untyped empty-object binding is OOB-safe (Root A�
 
 // Root B: a STRING runtime-key write `o[k]=v` whose key matches a schema field
 // must mirror the value into the fixed schema slot (buildObjectSchemaSetArm in
-// $__dyn_set), or a later static `o.x` read returns the stale slot. That mirror
-// is gated on `$__schema_tbl != 0`; a write-only module pulls in `__dyn_set` but
-// no `__dyn_get*`, so the table was never built (tblConsumed missed __dyn_set)
-// and the slot stayed stale. Runs under test:wasm — single-function modules so
-// no other fn incidentally raises anyDynKey.
+// $__dyn_set), or a later static `o.x` read returns the stale slot. Runs under
+// test:wasm — single-function modules so no other fn incidentally raises
+// anyDynKey.
 test('Regression: o[k]=v where k is a schema field name — static o.x sees the written value', () => {
   const { f } = run(`export let f = (k) => { let o = { x: 1 }; o[k] = 9; return o.x }`)
   is(f('x'), 9)
@@ -1128,11 +1084,9 @@ test('Regression: literal numeric string array assignment updates element storag
   is(f(), 2)
 })
 
-// Object.keys on JSON.parse'd objects — folds to a fixed-shape OBJECT with
-// known schema, so Object.keys returns the schema names. Mutation through
-// __dyn_set stores into the per-OBJECT propsPtr sidecar; like object literals,
-// runtime-added keys are not enumerated by Object.keys. Iteration order
-// follows JSON insertion order (the schema preserves it).
+// Mutation through __dyn_set stores into the per-OBJECT propsPtr sidecar; like
+// object literals, runtime-added keys are not enumerated by Object.keys.
+// Iteration order follows JSON insertion order (the schema preserves it).
 test('Object.keys: returns schema names for JSON.parse OBJECT', () => {
   const { f } = run(`export let f = () => Object.keys(JSON.parse('{"a":1,"b":2,"c":3}')).length`)
   is(f(), 3)
@@ -1158,10 +1112,7 @@ test('Object.keys: JSON.parse OBJECT does not return absent keys', () => {
 })
 
 // Mutation via __dyn_set writes into the OBJECT's propsPtr sidecar — and
-// enumeration MERGES it (JS semantics: added keys are enumerable). This pinned
-// length 1 while jz dropped dyn-added keys from the schema view; the
-// literalWriteKeys deopt (program-facts.js) + runtime sidecar/global merge now
-// match JS exactly (`let o = {a:1}; o.b = 2; Object.keys(o).length === 2`).
+// enumeration MERGES it (JS semantics: added keys are enumerable).
 test('Object.keys: JSON.parse OBJECT mutation grows the enumeration (JS-exact)', () => {
   const { f } = run(`export let f = () => {
     let o = JSON.parse('{"a":1}')
@@ -1231,12 +1182,7 @@ test('Regression: duplicate object-literal keys — last write wins, single slot
   is(run(`export let f = () => Object.keys({a: 1, a: 2}).length`).f(), 1)
 })
 
-// `.prop` on an anonymous object literal must read its declared slot. Without
-// schema resolution from the literal's AST, the access fell through to
-// __dyn_get_expr, which probes the off-16 propsPtr — fresh OBJECT literals
-// have none, so the read returned NULL_NAN. The varName-bound form
-// (`let o = {b:1}; o.b`) already worked because ctx.schema.idOf carries the
-// schema; this extends the same shape resolution to anonymous receivers.
+// `.prop` on an anonymous object literal must read its declared slot.
 test('Regression: .prop on anonymous object literals', () => {
   cases([
     ['resolves slot', '() => ({b: 1}).b', 1],
@@ -1244,8 +1190,7 @@ test('Regression: .prop on anonymous object literals', () => {
     ['multi-prop (c)', '() => ({a: 10, b: 20, c: 30}).c', 30],
     // Chained `.prop.prop` over nested literals — outer `.a` returns the inner
     // OBJECT pointer, and the outer `.b` slot read needs the inner literal's
-    // schema. The literal walk recurses through `.prop` chains over known
-    // literals to find the receiver schema at the deepest reachable node.
+    // schema.
     ['chained on nested literals', '() => ({a: {b: 7}}).a.b', 7],
     ['deeply nested literals', '() => ({x: {y: {z: 42}}}).x.y.z', 42],
   ])
@@ -1268,12 +1213,9 @@ test('Regression: anonymous fixed-shape object literals do not allocate dynamic 
 })
 
 // A schema field lives in its slot only; the sidecar holds the keys outside
-// the schema (module/collection.js buildObjectSchemaSetArm). Object.keys /
-// values / entries / JSON.stringify enumerate the schema then the sidecar,
-// each key once: these pins held the dedup of the former construction-time
-// mirror (every literal of a dyn-reached schema copied its fields into the
-// sidecar) and now hold the enumeration's two sources. (Heap-path literals:
-// literals whose values are all constants take the static-segment path.)
+// the schema (module/collection.js buildObjectSchemaSetArm). (Heap-path
+// literals: literals whose values are all constants take the static-segment
+// path.)
 test('Regression: shadow-mirrored schema keys not duplicated by JSON.stringify', () => {
   const { f } = run(`export let f = (t, k, v) => {
     let probe = t[k]              // forces anyDynKey
@@ -1329,12 +1271,6 @@ test('Regression: shadow + off-schema dyn key — exact JSON enumeration', () =>
 })
 
 // __dyn_get_t's OBJECT-schema arm is gated on `ctx.schema.list.length > 0`.
-// Setting the stdlib template at module-init time froze the gate to false
-// because schemas register lazily as the source is processed — the arm
-// dropped out for any schema added later in the compile, leaving runtime
-// `.prop` reads on OBJECT receivers without a static schemaId returning
-// NULL_NAN. Lifting the gate to template-expansion time captures the final
-// schema count.
 test('Regression: cross-call OBJECT literal — `.prop` resolves via runtime schemaId', () => {
   const { f } = run(`
     let go = (o) => o.b
@@ -1361,9 +1297,6 @@ test('Regression: destructured-param OBJECT literal — inner .prop resolves', (
 
 test('Regression: through-fn nested with multiple props', () => {
   // Models the function-core pattern: `({methods, input}) => input.cart.x`.
-  // Both `input` (param) and `input.cart` (slot value) are OBJECT pointers
-  // with schemaId in NaN-box aux — runtime dispatch reads schema_tbl, finds
-  // the prop's slot, returns the value.
   const { f } = run(`
     let go = ({a, b}) => a.x + b.y.z
     export let f = () => go({a: {x: 10}, b: {y: {z: 20}}})
@@ -1373,8 +1306,7 @@ test('Regression: through-fn nested with multiple props', () => {
 
 // Object.keys on a receiver whose static type is unknown (param sourced from
 // JSON.parse(runtimeStr), destructured from an untyped chain, returned by a
-// polymorphic helper, etc.). The runtime dispatch checks ptr-type at the call
-// site: HASH walks the probe table, anything else returns [].
+// polymorphic helper, etc.).
 test('Object.keys: runtime dispatch — untyped param holding HASH', () => {
   const { f } = run(`
     let inner = (h) => Object.keys(h).length
@@ -1490,8 +1422,6 @@ test('Object.entries: runtime dispatch — non-object receiver returns empty', (
 })
 
 // hasOwnProperty: literal and known-schema fold + runtime dispatch.
-// Without an own emit handler the call falls through to __ext_call and the
-// resulting wasm requires JS host imports, defeating the host:'wasi' target.
 
 test('hasOwnProperty: direct results keep boolean identity and own overrides', () => {
   const sources = [
@@ -1699,9 +1629,6 @@ test('jzify: map(String) canonicalizes to inline String callback', () => {
   is(f(), '1,2')
 })
 
-// Regression: compound assignments on array targets crashed with
-// "Unknown local $[],b,,0" because readVar() received an array node.
-// Fix: desugar to name = name OP val when LHS is not a plain string.
 test('Regression: compound assignments on typed-array index targets', () => {
   const { f } = run(`
     export let f = () => {
@@ -1807,10 +1734,7 @@ test('Object.create with array proto clones data', () => {
   is(f(), 60)
 })
 
-// IIFE property access — `(function(){}).hasOwnProperty('caller')` used to
-// crash with "table index is out of bounds" because __dyn_get_expr_t returned
-// NULL_NAN for missing properties and call_indirect blindly used it as a
-// table index. Now guarded with a __ptr_type check. (test262 S13.2_A7_T1/T2)
+// (test262 S13.2_A7_T1/T2)
 
 test('IIFE property access — .hasOwnProperty("caller") does not crash', () => {
   const exports = run(`export let _run = () => { (function(){}).hasOwnProperty('caller'); return 1 }`, { jzify: true })
@@ -1867,10 +1791,7 @@ test('jzify: object arrow property keeps lexical this unsupported', () => {
 // A method shorthand is `key: function () {}` (ECMA-262 15.4 MethodDefinition):
 // its body is statement-shaped, so `{ m() { f() } }` returns undefined where
 // the arrow `m: () => f()` returns f()'s value, and `this` is the receiver
-// whatever the body's first statement is. The parser used to spell both as
-// the same arrow, so a one-statement body that was not a return, an `if`
-// or a loop read as the arrow (`this.x = 5` failed "this not supported",
-// `f()` returned f's value). `m: function () {}` is a method the same way.
+// whatever the body's first statement is.
 test('jzify: object methods with an expression-statement body are methods, not arrows', () => {
   const exports = run(`const f = () => 4
     export let assign = () => { const o = { x: 0, m() { this.x = 5 } }; o.m(); return o.x }
@@ -1883,9 +1804,7 @@ test('jzify: object methods with an expression-statement body are methods, not a
 
 // A parameter default is an expression of the function's scope (ECMA-262
 // 10.2.10 FunctionDeclarationInstantiation evaluates it in the function's
-// environment): the forms jzify lowers in a body lower in a default too. They
-// used to reach the emitter untransformed, so a method shorthand or a
-// `function` expression in a default failed "function not supported".
+// environment): the forms jzify lowers in a body lower in a default too.
 test('jzify: parameter defaults lower like body expressions', () => {
   const exports = run(`function render(o = { toString() { return 'default' } }) { return String(o) }
     function* gen(a = { k() { return 4 } }) { yield a.k() }
@@ -1927,26 +1846,11 @@ test('computed property names: effectful coercion runs and key stores under coer
   is(exports._run(), 3)
 })
 
-// Root cause: a computed key that ISN'T compile-time-foldable (`const k =
-// 'b'` folds away before reaching the buggy path, so the bug hides behind
-// any const-string key — only a genuinely dynamic key, e.g. a bare exported
-// param, exercises it) forces prepare's computed-key desugaring
-// (`{...s, [k]: v}` / `{a:1, [k]: v}` → `((t) => (t[k]=v, t))({...})`, the
-// `isComputed` handler in src/prepare/index.js) to capture `k` into a
-// synthesized ARROW. `paramNeverString` (src/compile/index.js) used to bail
-// out of `=>` nodes unconditionally, without ever walking into them, so a
-// param's ONLY use — hidden inside that synthesized arrow — was invisible
-// to the "trust numeric export params" proof (`if (func.exported) …` a few
-// lines above it). The proof wrongly certified `k` as VAL.NUMBER; emit-
-// assign.js's emitElementAssign then trusted that stamp (`idxNumericName`)
-// to skip the runtime `__is_str_key` fork and truncate the key through
-// `i64.trunc_sat_f64_s` (a NaN-boxed string pointer saturates to 0) before
-// re-stringifying it via `__i32_to_str` — an entirely bogus "0" key, wrong
-// insertion order, wrong identity. Spread is NOT the trigger — prepare
-// wraps every computed-key literal in the same IIFE regardless — so both
-// forms are pinned. Native JS: spread/static then computed-key write
-// (later key wins), Object.keys reflects own-property insertion order
-// (ECMA-262 CreateDataProperty / OrdinaryOwnPropertyKeys).
+// Spread is NOT the trigger — prepare wraps every computed-key literal in
+// the same IIFE regardless — so both forms are pinned. Native JS:
+// spread/static then computed-key write (later key wins), Object.keys
+// reflects own-property insertion order (ECMA-262 CreateDataProperty /
+// OrdinaryOwnPropertyKeys).
 test('Regression: spread + non-const-foldable computed key resolves the real key, not a phantom index', () => {
   const { probe } = run(`export let probe = (k) => {
     const o = { ...{ a: 1 }, [k]: 2 }
@@ -1963,14 +1867,9 @@ test('Regression: computed key alone (no spread), non-const-foldable — same cl
   is(probe('b'), 'a,b')
 })
 
-// === static object-literal soundness: shared instance vs mutation ===
+// static object-literal soundness: shared instance vs mutation
 // A pure-constant ≥2-prop literal takes the static-data fast path — ONE shared
-// instance returned from every evaluation. That used to leak writes between
-// "instances" (`mk().n++` visible through the next `mk()`), at every opt level;
-// inside the self-compile kernel the same bug pooled propagate's use-count records
-// ({gets,sets,tees}) across ALL locals, deleting live stores at kernel-L2.
-// writtenProps (program-facts) now disqualifies literals whose prop names are
-// ever written; read-only literals keep the static path.
+// instance returned from every evaluation.
 
 test('static literal: direct mutation does not alias instances', () => {
   const { f } = run(`
@@ -2039,9 +1938,6 @@ test('static literal: a key added to one instance does not show on the next', ()
   is(g(), true)
 })
 
-// A key Object.assign or Object.defineProperty copies in is a store of that
-// name: a literal holding it is written, and each evaluation allocates
-// (summary assignedProps, merged into writtenProps).
 test('static literal: a key a builtin stores into does not show on the next evaluation', () => {
   for (const body of ['let p={x:1,y:5};const before=p.y;Object.assign(p,{y:2});return before',
     'let p={x:1,y:5};const before=p.y;const s={y:2};Object.assign(p,s);return before',
@@ -2063,14 +1959,9 @@ test('static literal: read-only literals keep the shared static instance', () =>
   is(f(), 16)
 })
 
-// ---- schema shape-consensus (poisoning) ------------------------------------
+// schema shape-consensus (poisoning)
 // A variable's literal schema binds ONLY while every assignment agrees on that
-// one shape. A disagreeing assignment — non-literal source (table/Map lookup)
-// or different-shape literal, even in dead code — unbinds and poisons the name:
-// fixed-slot reads against one literal's layout would misread the other
-// sources' objects (the `.x` = foreign slot-0 class of bug, found via the
-// self-compile kernel where a dead-branch literal poisoned tryReduce's
-// table entries and killed all reduce vectorization in jz.wasm).
+// one shape.
 
 test('schema poison: dead-code literal must not fix slots for a table-sourced var', () => {
   const r = run(`
@@ -2153,14 +2044,9 @@ test('schema binding intact: single-shape literal still resolves props', () => {
   is(r.go(), 56)
 })
 
-// ── Spread copy semantics ─────────────────────────────────────────────────
 // `{ ...src }` where src's schema is unknown at compile time (a param, an array
 // element, a member access, a HASH) must SHALLOW-COPY src, never alias it — every
-// later write to the result would otherwise leak back into the source. The runtime
-// clone (module/core.js __obj_clone) keys off the box's schemaId, so it copies
-// static-segment sources too, and preserves the source type (OBJECT/HASH). These
-// run on both the host and the jz.wasm kernel legs (test:wasm) — the bug was a
-// self-compile miscompile in jz's own narrow.js before this fix.
+// later write to the result would otherwise leak back into the source.
 
 test('spread copy: mutating the copy of an unknown source never touches the source', () => {
   const r = run(`
@@ -2252,20 +2138,7 @@ test('spread copy: dynamically-added props on the source carry over, independent
 
 // Two Map caches holding DIFFERENT struct schemas that share a field name ('perm'
 // here, at different slot positions) — reading the field through one cache returns
-// zeros: the slot resolves against the other schema's layout. Deleting the unused
-// second shape fixes the first. Live instance: fourier-transform/index.js — the
-// split-radix `cache` entry {x, spectrum, complex, bSi, tw, stages, perm} vs the
-// complex-FFT `cCache` entry {perm, twRe, twFwd, twInv} silently zeroed fft() output
-// end-to-end. Root cause: `makeA`'s and `makeB`'s `e` are different bindings (one
-// per function) but shared one module-global, bare-name-keyed slot in
-// ctx.schema.vars — whichever literal registered LAST won the name, so the other
-// function's `.perm` read resolved against a foreign schema's slot offset. Fixed by
-// cd3d8abf (binding census bars a name from ctx.schema.vars the moment ≥2 sites
-// disagree on its schema) and superseded by 4a0102d2 (BindingId totality: every
-// function-local binding gets a module-wide-unique name before it ever reaches
-// ctx.schema.vars, making the collision structurally unrepresentable — see
-// module/schema.js's `idOf` doc and test/slot-hazards.js's "cross-function bare-name
-// binding collision" pins for the same root cause, other trigger shapes).
+// zeros: the slot resolves against the other schema's layout.
 test('shape collision: same field name in two Map-cached schemas reads the right slot', () => {
   const r = run(`
     const cacheA = new Map()
@@ -2303,19 +2176,7 @@ test('shape collision: same field name in two Map-cached schemas reads the right
 
 // Optional chaining on a host-marshalled object arg always yields undefined —
 // `o?.factor` reads nothing while plain `o.factor` on the same arg works, so the
-// idiomatic `opts?.x ?? dflt` silently collapses to the default. Live instance:
-// every @audio/stretch-* entry (`opts?.factor ?? 1` → WASM always stretched by 1×,
-// compiled and ran without any error). Root cause: emitPropAccess's vt==null arm
-// (module/core.js) called setLinkDemand('external') for plain `.` reads but
-// skipped it for `?.` (a `fromOptional` carve-out present since `?.` was first
-// hand-rolled, kept through 7ec01fbc's delegate-to-emitPropAccess refactor), on
-// the premise that the nullish short-circuit makes the PTR.EXTERNAL arm dead
-// unless externals were "already in play" — false: the short-circuit rules out
-// null/undefined only, and a marshalled object is neither, so a bare `?.` read
-// like `(o) => o?.factor` never set the demand and __dyn_get_any_t_h's whole
-// PTR.EXTERNAL branch (the __ext_prop host callback) compiled out, collapsing to
-// always-undefined. Fixed by dropping the fromOptional carve-out: `?.` now sets
-// the same link demand the plain `.` arm always did.
+// idiomatic `opts?.x ?? dflt` silently collapses to the default.
 test('optional chain reads a marshalled object arg like a plain member read', () => {
   if (onWasi()) return  // wasi: js-object arg
   const opt = run(`export let f = (o) => o?.factor ?? 1`)
@@ -2358,34 +2219,15 @@ test('optional chain continuation keeps the nullish operator after it', () => {
   for (const name of ['len', 'idx', 'call', 'named']) for (const k of [1, 2, 0]) is(got[name](k), want[name](k), `${name}(${k})`)
 })
 
-// Plain-object fields sharing a name with a TypedArray accessor misresolve when
-// the receiver arrives through a call arg — the whole name class, one per symptom:
+// Plain-object fields sharing a name with a TypedArray accessor misresolve when the
+// receiver arrives through a call arg — the whole name class, one per symptom:
 // `buffer` reads NaN/garbage (missing-field read is NOT undefined, so the lazy-init
 // guard `if (!params.buffer) params.buffer = …` never allocates; a literal-declared
 // `{ buffer: arr }` read back through an arg yields garbage, and reading its
 // `.length` traps "Offset is outside the bounds of the DataView"); `byteLength` /
 // `byteOffset` read 0; `length` dies at compile with "'__schema_tbl' is not a known
-// global". Any other name — `_buf`, `buf`, `ptr` — behaves. Silent wrong results.
-// FIXED (probed on fd593164): `length`'s remaining loud error (internal: stdlib
-// '__dyn_get_expr_t_h' requested but never registered) was an autoload gap, not a
-// codegen bug. module/core.js's emitDynGetExprTyped unconditionally demands
-// `__dyn_get_expr_t_h` for ANY constant-string property name reaching the OBJECT/
-// HASH dyn-prop read path — but that stdlib entry is only REGISTERED when
-// module/collection.js's init runs (module/collection.js ~2951). src/autoload.js's
-// PROP_MODULES table decides which modules a property name auto-loads: `buffer`/
-// `byteLength`/`byteOffset` aren't listed there at all, so they fall through to
-// includeForProperty's catch-all default (`core, object, array, string,
-// collection`) — collection included for free. `length` DOES have its own explicit
-// entry (added for `typedarray`, needed by real TypedArray.prototype.length), and
-// that entry simply omitted `collection`. A program whose only dynamic property
-// name is `length` (this repro: no Map/Set, no other dyn-prop name) never loaded
-// collection.js, so `__dyn_get_expr_t_h` stayed unregistered while still being
-// demanded. Fix: `length: [..., 'collection']` in src/autoload.js's PROP_MODULES —
-// restores the same auto-include contract every sibling name already gets.
-// Live instance: audio-effect — flanger/chorus/vibrato/delay/multitap/haas keep
-// ring-buffer state in `params.buffer` and emit NaN or dry-only output; mixer reads
-// `{buffer, gain}` inputs and traps. Renaming the field to `_buf` makes all six
-// bit-exact vs JS.
+// global". Any other name — `_buf`, `buf`, `ptr` — behaves. Renaming the field to
+// `_buf` makes all six bit-exact vs JS.
 test('fields named like TypedArray accessors resolve like any other field', () => {
   // name class: lazy-init guard on a missing field, numeric payload
   for (const name of ['buffer', 'byteLength', 'byteOffset', 'length']) {
@@ -2424,43 +2266,7 @@ test('fields named like TypedArray accessors resolve like any other field', () =
 // all) — reading a property off `arr[i]` INSIDE the callee, where `arr` is an
 // array-of-object-literals passed as the call arg itself, misread: a number
 // field (`gain`) read 0 instead of 2, a typed-array field (`buffer`) combined
-// with a second `inputs[0].x` read on the same line read NaN. Passing the
-// object directly (`pick({...})`, no array wrapper) was correct; pre-indexing
-// outside the call (`pick(arr[0])`) was correct; a LOCAL `let inputs =
-// [{...}]; return inputs[0].x` with no call boundary at all was correct. Only
-// "array literal as the call arg, then `arg[0].prop` read back inside the
-// callee" misread — not a TypedArray-accessor collision, a representation
-// mismatch at the call boundary.
-//
-// Root cause: `pick`'s param `inputs` gets a real, sound `arrayElemSchema`
-// fact ("every element is this schema") from inferArrElemSchema's cross-call
-// fixpoint (src/compile/infer.js) — the same fact `dispatch([d])`-shaped code
-// legitimately needs. But `inlineArraySid` (src/static.js) treats that fact
-// as proof the array is physically inline-packed (structInline: K schema
-// fields laid out AS the array cells, no per-element heap object) — a much
-// stronger claim that only a `[]` + `.push({S})`-built array actually earns.
-// An array LITERAL (`[{buffer: a, gain: 2}]`) always boxes each element as
-// its own heap object instead, same as any other array. module/array.js's
-// `[]` read then computed the structInline fused offset load against that
-// boxed-pointer array, reading the NaN-boxed element pointer's raw bits as
-// the field itself (`i32.trunc_sat_f64_s`/`convert_i32_s` on a pointer bit
-// pattern saturates NaN to 0 — the observed misread).
-//
-// analyzeStructInline (src/compile/analyze.js) was supposed to catch this:
-// its own doc already states a non-empty array literal must poison the
-// schema. Two gaps let it through: (1) verifyCall's per-argument check only
-// cross-validated a named-variable alias or a nested user-call whose OWN
-// return fact agreed — an inline array-literal argument fell through
-// unverified, to a branch that recursed into the literal's substructure but
-// never poisoned anything; (2) a caller with no tracked array of its own and
-// no Array<S>-returning function anywhere in the program (e.g. `f` here) was
-// skipped by the walk entirely on the (previously true, now incomplete)
-// assumption that such a frame can't touch an inline array — a fresh literal
-// argument to a schema-carrying param proves it can. Fixed by poisoning the
-// callee's param candidate for any argument shape that isn't one of the two
-// proven-safe producers, and by widening the walk's skip guard to also fire
-// whenever any function's PARAM (not just its return) carries an
-// arrayElemSchema fact.
+// with a second `inputs[0].x` read on the same line read NaN.
 test('property read off an array-literal call-arg element inside the callee', () => {
   const r = run(`
     let pick = (inputs) => inputs[0].buffer[0] * inputs[0].gain
@@ -2503,24 +2309,10 @@ test('nested write through a host-passed plain-object param is silently lost', (
   is(f({}), 7)
 })
 
-// Same root cause as the test above, reached via `memory.Object()` instead of a bare
-// `{}`: the module never constructs a `{state: …}` object literal anywhere in its
-// source, so it compiles no matching schema — `memory.Object({state: [[0, 0]]})`
-// finds no schema for `{state}` and silently falls back to the same host-reference
-// (External) marshaling (`mem.Object`'s `else if (mem._extMap) return
-// mem.External(obj)` branch in interop.js), NOT a "wasm-native fixed-shape object" as
-// the call site suggests. A write via one property read (`params.state[0] = [7,
-// 9]`) is invisible to a subsequent, separate re-read (`params.state[0][0]` → `0`,
-// stale) — each `.state` access re-marshals its own disconnected copy (see the test
-// above). Fetching the property ONCE into a local and using only that alias (`let
-// state = params.state; state[0] = …; state[0][0]`) reads back correctly, and so
-// does an equivalent object that DOES get a compiled schema (a genuine, non-External
-// `{state: …}` literal built in jz source aliases nested writes correctly — this is
-// External-specific, not a general aliasing bug). This is the load-bearing idiom of
-// the audiojs digital-filter/audio-filter ecosystem — `params.state` / `params.coefs`
-// biquad state lazily allocated once and reused across `filter(buffer, params)`
-// calls — so output silently degraded to stale/NaN from the second call on. Fixed
-// by the same emitElementAssign write-back described in the sibling test above.
+// This is the load-bearing idiom of the audiojs digital-filter/audio-filter ecosystem
+// — `params.state` / `params.coefs` biquad state lazily allocated once and reused
+// across `filter(buffer, params)` calls — so output silently degraded to stale/NaN
+// from the second call on.
 test('memory.Object() property reads alias nested container writes', () => {
   const { exports: { f }, memory } = jz(`export let f = (params) => {
     params.state[0] = [7, 9]
@@ -2530,21 +2322,13 @@ test('memory.Object() property reads alias nested container writes', () => {
   is(f(params), 7)
 })
 
-// === monomorphic schema-slot devirtualization (dyn-prop chain lever) =======
-// A dot-read whose receiver's static type is fully unknown (vt == null — an
-// exported function's own parameter, or the subscript/self-compile dispatch-
-// descriptor pattern of a hot inner function reading `.op`/`.l`/`.word` off a
-// parameter the analysis never pins to VAL.OBJECT) devirtualizes to a runtime
-// tag+schemaId guard + direct payload-slot load when `prop` names a field on
-// exactly ONE registered schema program-wide (ctx.schema.guardedSlotOf,
-// module/schema.js) — see test/optimizer.js for the WAT-shape pin (aux-guard
-// + f64.load, no call). These pin the runtime SEMANTICS: the guard must
-// reject every receiver it doesn't precisely match — wrong schema, no
-// schema, not even an object — falling back to the exact same dynamic
-// dispatch, and — the one genuine soundness question — a dynamic write to a
-// schema-named key must stay visible through the fast-path read
-// (collection.js's __dyn_set schema arm, buildObjectSchemaSetArm, mirrors
-// such a write into the payload slot, so the slot is never stale/shadowed).
+// These pin the runtime SEMANTICS: the guard must reject every receiver it
+// doesn't precisely match — wrong schema, no schema, not even an object —
+// falling back to the exact same dynamic dispatch, and — the one genuine
+// soundness question — a dynamic write to a schema-named key must stay
+// visible through the fast-path read (collection.js's __dyn_set schema arm,
+// buildObjectSchemaSetArm, mirrors such a write into the payload slot, so the
+// slot is never stale/shadowed).
 
 test('devirt schema-slot: dynamic write to a schema-named key stays visible through the fast path', () => {
   const r = run(`
@@ -2600,19 +2384,10 @@ test('devirt schema-slot: two schemas sharing a field name at different slots ne
 // narrow.js's applyPointerParamAbi unboxes a non-exported function's OBJECT-kind
 // param to a raw i32 offset when every live call site proves the same schema —
 // here `chase`'s own recursive call (`chase(o, n-1)`) plus its one external entry
-// (`chase(mk(), n)`, mk's return schema provably `a,b,c`). Its OBJECT arm used to
-// set `p.type='i32'`/`p.ptrKind` and stop there, with no `p.ptrAux` (the schema
-// id): boxPtrIR/asF64 defaults a missing aux to 0 on re-box, so the returned
-// pointer silently carried schema id 0 (whichever schema registers first program-
-// wide) instead of mk's real one. `other`'s DIFFERENT field layout is declared
-// FIRST so it claims schema 0 — mk is provably schema 1+ — making the defaulted-
-// to-0 aux read `other`'s slot for 'a' (or nothing) instead of mk's. `getA`'s `.a`
-// read goes through guardedSlotOf (two schemas disagree on `a`'s slot index, so
-// the structural single-slot fast path can't apply either), whose runtime tag+aux
-// compare is exact-match — a wrong aux reads undefined, not a fallback.
-// Differential-verified: FAILS (returns undefined, base case n=0 included — not
-// just deep recursion) against the pre-fix narrow.js/ir.js/module/core.js, PASSES
-// against the fix.
+// (`chase(mk(), n)`, mk's return schema provably `a,b,c`). `other`'s DIFFERENT
+// field layout is declared FIRST so it claims schema 0 — mk is provably schema 1+
+// — making the defaulted-to-0 aux read `other`'s slot for 'a' (or nothing) instead
+// of mk's.
 test('devirt schema-slot: recursive OBJECT param keeps its real schema id, not schema 0', () => {
   const r = run(`
     const other = () => ({ z: 0, a: 99 })
@@ -2781,10 +2556,6 @@ test('spread merge: enumeration sees the spread keys, not just the literal ones'
   is(r.gate(), 1, 'reads through the merged schema stay live')
 })
 
-// Object.freeze/isFrozen consistency (2026-07-10): freeze is a documented
-// no-enforcement passthrough, but a freeze()-marked never-reassigned binding
-// now answers isFrozen true (prepare records it at the identity fold) — the
-// self-inconsistent isFrozen(freeze(x)) === false wart is gone.
 test('objects: freeze/isFrozen consistency', () => {
   is(run(`export let f = () => { let o = { a: 1 }; return Object.isFrozen(Object.freeze(o)) ? 1 : 0 }`).f(), 1)
   is(run(`export let f = () => { const o = { a: 1 }; Object.freeze(o); return Object.isFrozen(o) ? 1 : 0 }`).f(), 1)
@@ -2794,12 +2565,6 @@ test('objects: freeze/isFrozen consistency', () => {
   is(run(`export let f = () => Object.freeze({ a: 7 }).a`).f(), 7)
 })
 
-// Builtin-name properties on plain objects (2026-07-11): `.size`/`.length` are
-// ORDINARY own keys on OBJECT/HASH — only Set/Map expose an entry count, only
-// string/array/typed a length. The old bare getters read the length HEADER of
-// whatever arrived (`{size:4}` → 0, `{length:7}` → undefined); in the self-compile
-// kernel that broke `ctx.runtime.internTable.size` — the intern-table slot
-// skipped stripStaticDataPrefix's shift, the final L2 byte-parity divergence.
 test('objects: size/length are ordinary props on objects, counts on collections', () => {
   const r = run(`
     let holder = { t: null }
@@ -2834,8 +2599,7 @@ test('objects: size/length are ordinary props on objects, counts on collections'
 // Sibling of the size/length hijack (same class, module/typedarray.js): the
 // buffer-family getters read BUFFER/TYPED headers off ANY unproven receiver —
 // `{byteLength: 5}` through a dyn holder read 0 (byte header of nothing) and
-// `.buffer` retagged foreign memory as a BUFFER. Only BUFFER/TYPED own these
-// accessors in JS; everything else reads the ordinary own property.
+// `.buffer` retagged foreign memory as a BUFFER.
 test('objects: buffer-family names are ordinary props off collections', () => {
   const r = run(`
     let holder = { t: null }
@@ -2897,9 +2661,7 @@ test('objects: a record-stream cursor keeps its member schema', () => {
 
 // An in-place replace store (`arr[i] = {…}` over the tracked cursor `const p =
 // arr[i]`) whose read nobody proved in-bounds: past the length the cursor is
-// `undefined` (raw pointer 0). The store must extend the array with a fresh
-// object at every tier, never write through the null pointer (it did, at the
-// size tier: address 0, array unchanged).
+// `undefined` (raw pointer 0).
 test('in-place replace store past the length extends the array at every tier', () => {
   const src = `const mk = () => { const a = []; for (let i = 0; i < 4; i++) a.push({ x: i, y: 2 }); return a }
   const run = (ps, n) => { let s = 0; for (let i = 0; i < n; i++) { const p = ps[i]; const nx = ((p ? p.x : 0) + 1) | 0; ps[i] = { x: nx, y: 1 }; s = (s + nx) | 0 } return s * 100 + ps.length }
@@ -2912,9 +2674,7 @@ test('in-place replace store past the length extends the array at every tier', (
 // A property key is a string (ToPropertyKey): `Object.fromEntries` stores a
 // number key as its string, so `o[-1]`, `o[2]` and `o[1.5]` find the entries
 // `[-1, …]`, `[2, …]`, `[1.5, …]` made, through a literal key or a computed
-// one, and `Object.keys` lists them. A negative literal index is out of range
-// on an array, a typed array or a string alone; on an object it reads the
-// property "-1". Every level, against JS.
+// one, and `Object.keys` lists them. Every level, against JS.
 test('objects: numeric keys are property keys through fromEntries and a negative literal index', () => {
   const src = `const A = Object.fromEntries([[-1, 'a'], [2, 'b'], [1.5, 'c']])
   const T = { number: -1, string: -2 }
@@ -2949,10 +2709,6 @@ test('objects: fromEntries evaluates its argument once and takes a Map\'s entrie
   }
 })
 
-// A module object's slot written `undefined` at runtime: the bracket read sees
-// it. The write lives in the global shadow table beside the literal's
-// init-time sidecar, and a present `undefined` there was read as a miss, so
-// the sidecar's initial value came back (5 after `obj.value = undefined`).
 test('objects: a runtime write of undefined to a module object wins over the literal\'s value on a bracket read', () => {
   const src = `const obj = { value: 5, other: 1 }
     const key = () => 'val' + 'ue'
@@ -2967,8 +2723,7 @@ test('objects: a runtime write of undefined to a module object wins over the lit
 // A receiver of unknown kind (a builder's parameter from a closure table):
 // `out.length = 0` resized only an array and did nothing to an object with a
 // `length` slot; `out.push(...bytes)` ran the array builtin over the object's
-// memory instead of its own `push`. An array still resizes and bulk-pushes;
-// anything else takes the property write and the own method.
+// memory instead of its own `push`.
 test('objects: an unknown receiver\'s length write and spread push reach the object', () => {
   const src = `const makeBuf = (cap) => {
     const b = { buf: new Uint8Array(cap), length: 0 }
@@ -3004,7 +2759,7 @@ test('objects: an unknown receiver\'s length write and spread push reach the obj
 test('objects: a wide schema read by a computed key probes its static key index', () => {
   // A receiver of several wide shapes reads a computed key through the shared
   // slot search; the runtime hashes the key once and probes the schema's index
-  // instead of comparing every slot's key. A miss reads undefined as before.
+  // instead of comparing every slot's key.
   const keysA = Array.from({ length: 40 }, (_, i) => `op_${i}_${'x'.repeat(i % 9)}`)
   const keysB = Array.from({ length: 12 }, (_, i) => `alt${i}`)
   const src = `const A = { ${keysA.map((k, i) => `${k}: ${i * 3}`).join(', ')} }
@@ -3045,9 +2800,7 @@ test('Object.defineProperties: a literal map of descriptors defines each propert
 
 // A binding that may be nullish holds no layout of its own (summary sidOf):
 // an element of a holey array (`new Array(n)` filled by a loop, a TTA
-// decoder's channel states). Its reads take the summary's layout with a
-// nullish test; its stores, `ch.k--` among them, write the same slot, not a
-// dynamic property beside it, and throw where the receiver is missing.
+// decoder's channel states).
 test('a store through an element of a holey array writes its layout\'s slot', () => {
   const src = `let mk = (s) => ({ a: 1, b: s, k: 10 })
 let chans = new Array(3)

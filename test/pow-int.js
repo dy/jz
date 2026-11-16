@@ -3,9 +3,7 @@
 // constant-exponent fold (module/math.js foldPow), which agree bit for bit. One rounding
 // past the square-and-multiply, so it is the correctly rounded reciprocal wherever x^|n|
 // is exact: 10 ** -2 is 0.01, 3 ** -5 is 1/243 as IEEE division gives it (the reference
-// here, x^|n| exact below 2^53). Where x^|n| leaves the normal doubles it takes the
-// reciprocal's square-and-multiply, as before: 5.67e102 ** -3 is 5.485937093757787e-309,
-// where 1/x^3 overflowed to 0. Against the host (V8's Math.pow) within pow's bound in
+// here, x^|n| exact below 2^53). Against the host (V8's Math.pow) within pow's bound in
 // test/math-ulp.js, at levels 0, 2 and 3 (level 3 lifts the constant-exponent loops).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'

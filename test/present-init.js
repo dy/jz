@@ -60,14 +60,11 @@ export let f = (n, size, reach) => {
   return h
 }`
 
-// The one conversion left is the store `re[j] = tr`: `j = perm[i]` may miss
-// (i past perm's 80 elements), a property store would keep `tr` as it is, so
-// the all-uses proof cannot normalize `tr` at its write. The versioned arm has
+// The one conversion left is the store `re[j] = tr`: `j = perm[i]` may miss (i
+// past perm's 80 elements), a property store would keep `tr` as it is, so the
+// all-uses proof cannot normalize `tr` at its write. The versioned arm has
 // proven both indices in range by then; a presence proof reading the arm's own
-// guard makes this 0. (Before the summary stopped demanding a typed array's
-// index, the fixture took the dynamic key path, 355 KB with no select at all.)
-// (A specialized copy of the loop would hold the store a second time: the
-// count is the emitter's, with both source integral copies and IR copies off.)
+// guard makes this 0.
 test('present init: the fast arm of a versioned swap stores its temp unconverted', () => {
   // (a conversion is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
   is(conversions(wat(swap, { optimize: { level: 3, specializeLoops: false, versionIntegralLoops: false, poolFloats: false } })), 1, 'the temp converts once, at the store whose key may miss')

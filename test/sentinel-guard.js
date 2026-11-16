@@ -122,9 +122,7 @@ test('sentinel guard: the pop, the scan and the read after the scan run unchecke
 })
 
 // The pop's test reads z[k] (in range for k >= 0), its body v[k - 1] (k >= 1):
-// each bound is tested where its read runs. A pass that stops at the hull's
-// bottom (k = 0, z[0] the -INF sentinel) ends in the fast loop; the checked loop
-// runs only on the flag the body's guard sets.
+// each bound is tested where its read runs.
 test('sentinel guard: the pop leaves its fast loop only where the body would read past the hull', () => {
   if (onKernel()) return
   const ir = parseWat(kernelOf(compile(ENVELOPE, { optimize: 'speed', wat: true })))
@@ -246,7 +244,7 @@ test('sentinel guard: copied suffix locals preserve nullish values at cursor bou
 
 // The forms decline where a copy could not stand for the original: a loop that
 // breaks itself (the slow loop would run after the break), a cursor a closure
-// writes, a cursor the suffix writes. Each still computes the host's result.
+// writes, a cursor the suffix writes.
 test('sentinel guard: a break, a captured cursor and a suffix write keep the original code', () => {
   const cases = {
     ownBreak: `export function f(n) {

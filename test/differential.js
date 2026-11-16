@@ -47,11 +47,6 @@ const PROGRAMS = [
   { name: 'cond-neg canon', src: `export let f = (c, x, y) => { let n = (c|0) & 3; let u = (n === 0 ? x : -x) + (n === 1 ? -y : y); let v = (n === 2 ? -x : x) * (n === 3 ? y : -y); let w = u - v; return (w === w ? w : 1.5) + (u !== u ? 2.25 : 0.0) }`, args: () => [num(), num(), num()] },
 ]
 
-// Divergences this fuzzer caught and that are now fixed (kept here as a log):
-//   • `Math.round(a)`  — was `f64.nearest` (ties-to-even); now corrected to JS
-//     ties-toward-+∞ (module/math.js).  • `Math.imul(_, ≥2³¹)` — operand now
-//     ToInt32-wrapped, not saturated (module/math.js).  Both are back in PROGRAMS.
-
 const jsRef = src => oracle(src).f
 const RUNS = 400
 
@@ -69,19 +64,18 @@ for (const { name, src, args } of PROGRAMS) {
   })
 }
 
-// ── Memory-access geometries: the typed-array store/load sublanguage where the SLP
-// store-pair packer and the lane vectorizer live — the oracle this suite previously
-// lacked (a forward-shift `o[k+1]=o[k]; o[k+2]=o[k+1]` SLP read-after-write miscompile
-// shipped past every green gate). MODULE-LEVEL arrays (the base-addressing shape that
-// actually engages SLP — a local array stays scalar) with FLOAT arithmetic over
-// INTEGER-VALUED data (×100.0): the value stays f64 so the packer fires, yet every
-// partial sum stays < 2^53, so a POSITION-WEIGHTED sum is exact regardless of addition
-// order — the lane vectorizer's accepted f64-reduction reassociation (1–2 ULP, see
-// vectorize.js) can't move it, but a wrong/duplicated/stale ELEMENT does (verified: with
-// the RAW guard removed, "forward shift" diverges 7/7 by ~1.5e5, not a ULP). `(seed*i)|0`
-// is avoided — the i32 store path skips SLP. Run at the default level (SLP + vectorizer
-// on) and 'speed' (adds the 4-accumulator reduce). `weight (i+1)` is order-sensitive, so
-// a permutation that preserves the multiset still trips it.
+// Memory-access geometries: the typed-array store/load sublanguage where the SLP
+// store-pair packer and the lane vectorizer live. MODULE-LEVEL arrays (the
+// base-addressing shape that actually engages SLP — a local array stays scalar) with
+// FLOAT arithmetic over INTEGER-VALUED data (×100.0): the value stays f64 so the packer
+// fires, yet every partial sum stays < 2^53, so a POSITION-WEIGHTED sum is exact
+// regardless of addition order — the lane vectorizer's accepted f64-reduction
+// reassociation (1–2 ULP, see vectorize.js) can't move it, but a wrong/duplicated/stale
+// ELEMENT does (verified: with the RAW guard removed, "forward shift" diverges 7/7 by
+// ~1.5e5, not a ULP). `(seed*i)|0` is avoided — the i32 store path skips SLP. Run at the
+// default level (SLP + vectorizer on) and 'speed' (adds the 4-accumulator reduce).
+// `weight (i+1)` is order-sensitive, so a permutation that preserves the multiset still
+// trips it.
 const sval = () => (rng() * 200 | 0) - 100
 const MEM_PROGRAMS = [
   { name: 'forward shift (SLP RAW)',
@@ -114,12 +108,9 @@ for (const { name, src } of MEM_PROGRAMS) {
 }
 
 // ── Reassigned-parameter / side-effecting-select-arm: a value written to a PARAM (or local)
-// then read must observe the write. These surfaced only at opt ≥ 2 (watr runs): the `x = 0`
-// compiles as a `local.tee` inside a ToInt32 `|0` idiom or a ternary else-arm, and watr's
-// constant-`select` fold used to drop the discarded arm — dropping the write, so the read saw
-// the incoming param. `select` evaluates BOTH arms, so the fold is only sound when the discarded
-// arm is pure (watr fix: `isPure(discardedArm)`). Also caught by the differential fuzzer
-// (seeds 90/2833/3611); pinned deterministically here across the watr opt levels.
+// then read must observe the write. `select` evaluates BOTH arms, so the fold is only sound when
+// the discarded arm is pure (watr fix: `isPure(discardedArm)`). Also caught by the differential
+// fuzzer (seeds 90/2833/3611); pinned deterministically here across the watr opt levels.
 const REASSIGN_PROGRAMS = [
   { name: 'param = 0; return p|p', src: `export let f = (p0) => { p0 = 0; p0 = 0; return (p0 | p0) }`, args: [12345.678], want: 0 },
   { name: 'param = 0; const-ternary reads it', src: `export let f = (p0, p1) => { p1 = 0; let v0 = ((3 === 3) ? 0 : p1); return p1 }`, args: [1, 6995.66], want: 0 },

@@ -81,13 +81,7 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
 
 // x64's `roundsd` keeps the upper half of its destination, so it waits on whatever
 // last wrote that register, and V8 picks it with no regard to that: in a resampler's
-// loop, the sample the iteration before stored. The phase outlives its word (its
-// fraction reads it), so the add rounded it into another register and each index
-// waited a whole sample's evaluation; resample ran 2.4× slower on every x64 model
-// measured, none of it on arm64. A number read after its conversion is rounded
-// through its negation, a value made only to die there, and a number made for its
-// conversion takes the truncation into its own local (optimize/to-int32.js `rounded`).
-// (A local of the name read anywhere else counts as a later read: the negation then.)
+// loop, the sample the iteration before stored.
 test('index words: ToInt32 rounds a number it does not consume through a value that dies there', () => {
   const src = `export let run = (x, n) => {
       let s = 0, p = x
@@ -149,7 +143,7 @@ test('index words: words by the add answer at every edge', () => {
 // After watr the lowering reads each function's intervals (optimize/to-int32.js): a
 // number they keep within ±2^51 and never NaN takes the add with no magnitude test,
 // an integer takes it with no truncation, and a saturating truncation they keep
-// inside the word takes it too. What they leave open keeps the test.
+// inside the word takes it too.
 test('index words: a bounded ToInt32 after watr takes the add with no test', () => {
   const src = `(module (func $f (export "f") (param $x f64) (result i32) (local $t f64) (local $i i32) (local $s i32)
     (block $out (loop $l
@@ -327,8 +321,7 @@ test('index words: clamped neighbours of a row-major cell read the elements JS n
 // A key made of parameters every call passes an integral Number (a floor, a
 // remainder of one by a literal, a clamp of one by `Math.min`/`Math.max`, an
 // integer element or its miss) is integral in the helper: one truncation and a
-// NaN test where a key of unknown fraction runs the full test. One call
-// passing a fraction keeps the full test, and every key answers what JS names.
+// NaN test where a key of unknown fraction runs the full test.
 test('index words: a parameter every call passes an integral number keys typed arrays as one', () => {
   const lib = `const tbl = new Uint8Array(400), offs = new Int32Array(41)
     for (let i = 0; i < 400; i++) tbl[i] = (i * 7) % 13

@@ -1,4 +1,3 @@
-// Performance regression tests — jz WASM must be competitive with JS
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { belowOpt, levels, onWasi, onKernel } from './_matrix.js'
@@ -550,12 +549,7 @@ test('codegen: for-loop counter matches .length type — no converts in loop', (
 
 test('codegen: ping-pong typed-array ternary select reads via direct load', () => {
   // The classic double-buffer: two typed-array globals, and a hot function that
-  // picks one per pass with a ternary (`flip ? a : b`) then indexes it. The
-  // selected binding must inherit the branches' typed-array kind so `src[i]`
-  // stays a direct f64.load — NOT the dynamic `$__typed_idx` dispatch (one call
-  // per element, which it decayed to when a ternary branch was a variable name
-  // rather than a `new` literal). Regression for lenia's ring convolution,
-  // 0.31× → 1.13× over V8 once the per-tap call vanished.
+  // picks one per pass with a ternary (`flip ? a : b`) then indexes it.
   const src = `
     let a, b, flip = 0
     export let init = (n) => { a = new Float64Array(n); b = new Float64Array(n); a[0] = 1 }
@@ -775,10 +769,7 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
 })
 
 test('codegen: unary negation feeding arithmetic drops its redundant NaN-canon', () => {
-  // `-x` canon-izes (f64.neg flips a NaN's sign bit → non-canonical number-NaN). But when the
-  // negation feeds f64 arithmetic — `x * -y`, `a - -b` — the consumer propagates the NaN and
-  // re-canon-izes on its own escape, so the inner per-neg `select + f64.ne` is dead. Tagging the
-  // neg with canonOf lets the arithmetic strip it (same contract as the sqrt/min/max canons).
+  // `-x` canon-izes (f64.neg flips a NaN's sign bit → non-canonical number-NaN).
   const wat = compile('export let f = (a, b) => a * (-b) + (-a) * b', { optimize: 'speed', wat: true })
   is((wat.match(/f64\.const nan/g) || []).length, 0, 'inline negation in arithmetic carries no NaN-canon')
   // Correctness across NaN/±0/finite: the value is identical with or without the canon here.
@@ -788,12 +779,9 @@ test('codegen: unary negation feeding arithmetic drops its redundant NaN-canon',
 
 test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (no f64 round-trip)', () => {
   if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
-  // `ax = ax + DX[dir]` with DX a module-global Int32Array and ax/dir i32: the read +
-  // add must stay in the i32 domain (one i32.add), not round-trip i32.load → f64.convert
-  // → f64.add → i32.trunc_sat. The global typed array's element type was invisible to
-  // exprType during analyze/emit (only locals/params were consulted), so the whole
-  // expression widened to f64 — the ulam spiral measured 2.2× SLOWER than V8; with the
-  // global typed-elem registry consulted it is ~1.6× faster. Pins both: emit and exprType.
+  // `ax = ax + DX[dir]` with DX a module-global Int32Array and ax/dir i32: the read + add
+  // must stay in the i32 domain (one i32.add), not round-trip i32.load → f64.convert →
+  // f64.add → i32.trunc_sat.
   const wat = compile(`
     let DX = new Int32Array([1, 0, -1, 0])
     let out = new Int32Array(1)
@@ -803,8 +791,7 @@ test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (
       out[0] = ax
     }`, { wat: true })
   // Every `+` in the kernel is integer (ax, DX[dir], dir+1, i+1) so a correct lowering has
-  // NO f64 arithmetic at all. HEAD emits f64.add + f64.convert_i32_s on `ax + DX[dir]` — the
-  // round-trip — because the global Int32Array's element type was invisible to exprType.
+  // NO f64 arithmetic at all.
   is((wat.match(/f64\.add/g) || []).length, 0, 'no f64.add on the integer accumulation')
   is((wat.match(/f64\.convert_i32_s/g) || []).length, 0, 'no i32→f64 convert feeding the accumulation')
   ok((wat.match(/i32\.add/g) || []).length >= 1, 'accumulation lowers to native i32.add')
@@ -812,10 +799,9 @@ test('codegen: integer accumulation from a GLOBAL typed array reads native i32 (
 
 test('codegen: integer const-global folds to i32 — x % CONST_GLOBAL takes the integer path', () => {
   if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
-  // `const N = 16384` is an immutable integer constant. A counter bounded by it must stay
-  // i32, and `x % N` must lower to native i32.rem_s — not fold N to an f64 constant and route
-  // `%` through the software f64 remainder (the long-division the crc32/json outer loops paid).
-  // Pins both exprType (i32 typing) and readVar (i32.const emit) for const-int globals.
+  // `const N = 16384` is an immutable integer constant. A counter bounded by it must stay i32,
+  // and `x % N` must lower to native i32.rem_s — not fold N to an f64 constant and route `%`
+  // through the software f64 remainder (the long-division the crc32/json outer loops paid).
   const wat = compile(`
     const N = 16384
     export let f = (iters) => {
@@ -851,9 +837,7 @@ test('codegen: sound load-CSE — reuse arr[idx] across a disjoint-index store, 
 })
 
 test('codegen: load-CSE never reuses a load across a store through an aliasing view', () => {
-  // Index inequality proves disjoint elements only on one element grid. A view (`subarray`)
-  // shifts the grid and a reinterpret (`new Uint8Array(f.buffer)`) changes the width, so a
-  // store at a different index through either must reload `A[1]` / `F[0]`.
+  // Index inequality proves disjoint elements only on one element grid.
   const subarray = `let A = new Float64Array(8), B = A.subarray(1)
     export let f = () => { for (let i = 0; i < 8; i++) A[i] = i; let x = A[1]; B[0] = 100; let y = A[1]; return x + y }`
   const width = `let F = new Float64Array(4), U = new Uint8Array(F.buffer)
@@ -927,9 +911,7 @@ test('codegen: shared integer gathers do not acquire an artificial undefined ini
 })
 
 test('codegen: a cached in-bounds element stores as the Number it holds', () => {
-  // Load CSE caches `a[i]`/`a[c]` across the sift's compare and swap. A read the
-  // body proves in bounds is present, so its temp stores with no nullish fold;
-  // an unproven twin (`c < n`) still converts its miss to NaN.
+  // Load CSE caches `a[i]`/`a[c]` across the sift's compare and swap.
   const sift = (bound) => `const a = new Float64Array(8)
     export function f(x, n) {
       for (let k = 0; k < 8; k++) a[k] = k === 2 ? x : k
@@ -1212,11 +1194,9 @@ test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => 
 test('codegen: f64-strided index does NOT force its counter to i32', () => {
   // Guard against over-narrowing: when the index carries a genuinely-f64 operand
   // (here `w` is an exported-function param, fixed f64 by the host ABI), the access
-  // truncs no matter what, so keeping the counter i32 would add a compare-convert
-  // per iteration for zero trunc savings (a net loss — the game-of-life regression).
-  // The counter must keep widening to f64 exactly as before the auto-narrow rule.
-  // (A *global* stride is now inferred i32 — that's the integer-global inference win,
-  // covered by the rfft/game-of-life example byte-checks; this guards the f64 case.)
+  // truncs no matter what, so keeping the counter i32 would add a compare-convert per
+  // iteration for zero trunc savings (a net loss — the game-of-life regression). The
+  // counter must keep widening to f64 exactly as before the auto-narrow rule.
   const wat = compile(`
     let mem;
     export let init = (k) => { mem = new Float64Array(k*k); return mem; };
@@ -1289,11 +1269,7 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
   if (belowOpt(2)) return  // promoteGlobals + hoistGlobalPtrOffset are level-2 passes (level 1 = treeshake/sortLocalsByUse/fusedRewrite only)
   // A typed-array global indexed N times per cell expands each access to a
   // `(i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $_pg)) MASK))` decode of
-  // the NaN-boxed pointer. The promoted snapshot is set once at entry from a
-  // non-volatile global, so that decode is loop-invariant — it must be snapshotted
-  // ONCE, leaving each access a plain `(i32.add base (i32.shl idx 3))`. Regression
-  // for watercolor's Gauss-Seidel pressure solve (5 reads/cell × millions of cells):
-  // 0.91× → 1.02× over V8 once the per-element reinterpret/and/wrap vanished.
+  // the NaN-boxed pointer.
   const wat = compile(`
     let p, N = 0
     export let init = (n) => { N = n; p = new Float64Array(n); return p }
@@ -1335,12 +1311,8 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
 
 test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile global)', () => {
   if (belowOpt(2)) return  // hoistGlobalPtrOffset base-decode hoist is a level-2 pass (not in the level-1 preset)
-  // The wireworld / cellular-automaton shape: two grids `a`/`b` swapped each frame
-  // (`a = b; b = tmp`). The swap makes them volatile, so function-scope hoisting
-  // (hoistGlobalPtrOffset) can't snapshot their base. But within EACH loop the pointer
-  // is invariant (the swap is between loops), so LICM must hoist the inline base decode
-  // to the loop pre-header — otherwise every neighbour read re-decodes the NaN-box
-  // (8 reads/cell in the conductor branch). 0.98× → 1.11× over V8.
+  // The wireworld / cellular-automaton shape: two grids `a`/`b` swapped each frame (`a
+  // = b; b = tmp`).
   const wat = compile(`
     let W = 0, a, b
     export let init = (n) => { W = n; a = new Int32Array(n); b = new Int32Array(n); return a }
@@ -1356,8 +1328,6 @@ test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile glo
   const step = wat.match(/\(func \$step[\s\S]*?\n  \)/)?.[0] || ''
   // No per-element pointer decode survives inside either loop — both are hoisted to
   // their own pre-header (the first reads pre-swap `a`, the second the post-swap `a`).
-  // The decode is the masked low word of the box; the nullish test a `let`
-  // global keeps reads the box too, once per iteration, and is not a decode.
   let inLoop = 0
   walkWat(parseWat(step), (n, inside) => { if (inside && n[0] === 'i64.and' && n[1]?.[0] === 'i64.reinterpret_f64' &&
     n[1][1]?.[0] === 'global.get' && (n[1][1][1] === '$a' || n[1][1][1] === '$b')) inLoop++ })
@@ -1385,11 +1355,6 @@ test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)'
   if (belowOpt(2)) return  // integer facts come from the interval fixpoints, a level-2 pass (optimize/config.js)
   // FNV/PRNG hot path: every read of `h` is funnelled through a `>>>` (ToUint32)
   // sink via bit-faithful ops, so narrowUint32 keeps `h` an unsigned i32 local.
-  // The mix must compile to i32.add/xor/shl — never f64 — else the loop pays a
-  // convert_i32_u round-trip per op. (Regression: a uint32-widening guard once
-  // fired on these `.unsigned` reads, emitting f64.add/convert on the hot path.)
-  // An i32 loop bound (`n | 0`) keeps the counter i32, so the only legal f64 op
-  // is the single convert_i32_u that reboxes the uint32 result at the boundary.
   const wat = foldWords(compile(`
     export let hash = (n) => {
       let h = 2166136261
@@ -1407,13 +1372,9 @@ test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)'
 })
 
 test('codegen: f64 threshold in a recurrence lowers to a branchless select at speed', () => {
-  // `err = acc - (acc >= t)` emits `f64.sub(acc, f64.convert_i32_s(f64.ge …))`. That
-  // i32→f64 convert (cvtsi2sd) round-trips the comparison out of a GPR and back into
-  // an XMM register — a domain cross that sits ON the loop-carried critical path of an
-  // error-diffusion / scalar-IIR sweep, ~doubling per-step latency (V8 keeps the JS
-  // threshold in the FP domain). boolConvertToSelect (speed tier only) rewrites it to
-  // `select(acc-1, acc, acc>=t)`, never leaving the f64 domain. Pin: fires at speed,
-  // stays a convert at the default level, and the value is unchanged either way.
+  // `err = acc - (acc >= t)` emits `f64.sub(acc, f64.convert_i32_s(f64.ge …))`. Pin:
+  // fires at speed, stays a convert at the default level, and the value is unchanged
+  // either way.
   const src = `
     let buf = new Float64Array(256)
     export let sweep = (n) => {
@@ -1448,9 +1409,6 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
 
   // Guard: a PARAM reassigned once by a comparison is NOT treated as boolean — its
   // incoming arg is unconstrained, so an earlier `f64 - param` read isn't `cond?1:0`.
-  // (Plain locals are safe: a pre-def read sees the zero-init 0 = false.) jz keeps such
-  // params f64 today so the convert-in-subtract shape doesn't even arise, but the pass
-  // stays correct for any IR — `param - p` must subtract the value, never select on it.
   const psrc = `let buf = new Float64Array(64)
     export let h = (k) => { let pre = buf[0] - k; k = buf[1] >= buf[2] ? 1 : 0; return buf[k] + pre }`
   is(jz(psrc, { optimize: 'speed' }).exports.h(5), -5, 'param read subtracts its value, not select(param)')
@@ -1494,12 +1452,7 @@ test('codegen: unknown-receiver index with NUMBER key guards receiver kind once,
   // ToPropertyKey-probe dyn-props, not silently read undefined through
   // __typed_idx's unrelated __len bounds check (re-audit #5 finding #1,
   // 2026-07-30 — `o={}; o['1']=9; o[n]` for a proven-NUMBER local `n` used to
-  // read undefined). Selection is now by a single RECEIVER pointer-kind tag
-  // test (ARRAY/TYPED → the lean __typed_idx read; else → __dyn_get_expr's
-  // ToPropertyKey read) — not a per-key __is_str_key dispatch.
-  // `g` forwards an unknown value into `f`, so `f`'s receiver stays unproven
-  // (an export used only as a numeric array-like would otherwise take the typed
-  // boundary contract and read typed storage outright).
+  // read undefined).
   const unopt = compile(`
     export let f = (a) => { let s = 0; for (let i = 0; i < 100; i++) s = s + (a[i] | 0); return s }
     export let g = (x) => f(x)
@@ -1527,15 +1480,8 @@ test('codegen: unknown-receiver index with NUMBER key guards receiver kind once,
 })
 
 test('codegen: receiver proven ARRAY-or-TYPED across disagreeing call sites drops the guard entirely', () => {
-  // Named follow-up to the numeric-key unknown-receiver soundness fix (9f46d517,
-  // re-audit #5 finding #1): a helper called once with a plain Array and once
-  // with a Float64Array can't get an exact-kind `val` consensus (the two sites
-  // disagree) — but BOTH kinds take the SAME __typed_idx fast arm, so the
-  // guard's ptrTypeEq test is provably dead weight. reps.js recvArrTyped /
-  // narrow.js hardParamRecvArrTyped fold this CLASS (not exact-kind) consensus;
-  // module/array.js's numeric-key guard sites collapse straight to the bare
-  // __typed_idx call when it holds. `recv` is looped (3 statements) so watr's
-  // small-function inliner can't dissolve the call sites and hide the effect.
+  // `recv` is looped (3 statements) so watr's small-function inliner can't
+  // dissolve the call sites and hide the effect.
   const wat = compile(`
     function recv(x, i) { let s = 0; for (let k = 0; k < 3; k = k + 1) s = s + x[i] + k; return s + x[i] }
     export let f = (n, kind) => {
@@ -1867,18 +1813,6 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   }
   const watrJs = readFileSync(new URL('../node_modules/watr/watr.js', import.meta.url), 'utf8')
   // optimize: 'speed' — max scalar unroll on top of the full L2 watr pipeline.
-  // L2 already runs watr's inlineOnce + coalesce; 'speed' adds the nested-unroll
-  // tunings that buy this micro-pin the most CI-variance headroom for its 1.5×
-  // threshold.
-  // memory: 4096 — pre-allocate 256MB so the bench loop's bump-allocator growth
-  // never triggers memory.grow during measurement (prior `memoryPages` key was
-  // a silent no-op; jz reads `memory` for the page count shorthand).
-  // BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §5/§9): watr
-  // (external npm dependency) has 4 of its own genuinely-unprovable BigInt
-  // sites, unreachable from this repo — see test/watr.js's own
-  // withRawCarrier for the full rationale; same escape hatch, scoped to
-  // this one synchronous jz() call so it can't race a concurrently-running
-  // test expecting the default CARRIER_BOX=1 diagnostic to fire.
   const jzWatr = jz(watrJs, { jzify: true, modules: ENTRY, memory: 4096, optimize: 'speed' })
   const { exports: { compile: jzCompile } } = jzWatr
   const { default: jsCompile } = await import('../node_modules/watr/src/compile.js')
@@ -1937,14 +1871,7 @@ test('perf: spread + destructure', () => {
   // Four hot patterns where porffor's recent work targets parity. V8's JIT
   // detects [a,b]=[b,a] and stack-elides arrays — jz can't match that without
   // escape analysis, so the pin is "absolute jz time stays bounded" + a logged
-  // ratio for visibility, NOT "jz < V8 * k". Reference numbers (Apple Silicon,
-  // node 22) recorded in /tmp/jz-spread.mjs vs /tmp/porf-spread/all.js show:
-  //   destruct swap (10k×5):  jz 0.6ms,  porf 96.4ms   — jz 160× faster
-  //   spread concat (1k×5):   jz 0.9ms,  porf 45.6ms   — jz 51× faster
-  //   rest sum (10k×5):       jz 2.7ms,  porf 98.7ms   — jz 37× faster
-  //   object spread (1k×5):   jz 0.1ms,  porf OOM      — jz wins by default
-  // Pins are 4× headroom over recorded jz times; tightens future regression
-  // catch without making CI flaky on slow runners.
+  // ratio for visibility, NOT "jz < V8 * k".
   const N = 5
   const jsBench = (fn, k) => bench(() => fn(k), N)
 
@@ -2056,12 +1983,7 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // Numeric-compatible fields stay in scalar lanes without linking string coercion.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
 // A proven dictionary writes its own table; computed keys still coerce at runtime.
-// The two-digit integer writer (`__itoa_sn`, the number-to-string of the computed key)
-// and the 4 KiB block colouring in `__alloc`: 11007 -> 11149. Number::toString's exact
-// short-decimal path (`__ftoa_short`), Ryū's three products in one (`__ryu_mulshift3`)
-// and its four-digit removal: 11407 (as measured at a9fd0e1a0) -> 11991.
 golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 11991)
-// Parsing and formatting now share the power generator and unsigned product.
 // Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
 const parserFixture = `export let f = (s) => {
   let i = 0, n = s.length
@@ -2074,57 +1996,26 @@ const parserFixture = `export let f = (s) => {
 }`
 // The Map hash's inlined string arm (layout-kinds.js mapHashStringArm) adds its
 // packed-string mix and cell load to every copy watr inlines: 13234 -> 13907.
-// The scan loop runs in a specialized copy, the loop as written beside it
-// (optimize/specialize.js): 14343 -> 14721.
-// Each pass of the scan loop gives back what it allocated, by the escape flag
-// and the walk from its log (iterationRelease): 15233 -> 16876.
-// The two-digit integer writer and the 4 KiB block colouring: 16876 -> 17029.
-// No frame or export sets the outermost mark, so link exports no setter and
-// the escape tests against it fold away: 17124 -> 15567.
-// The runtime work since, inside the band: 15567 -> 16336.
 golden('closure-heavy parser', parserFixture, 16336)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])
     is(f(input), expected, JSON.stringify(input))
 })
-// Baseline 985→1062 included the old prepare-time bound snapshot. Bound
-// hoisting now uses immutable receiver kinds or IR memory-effect proofs.
-// 1062→873: guardRefine (watr/optimize) folds NaN-box tag reads under the
-// dominating `tag==K` guard, so the generic helpers inlineOnce splices into
-// `new Float64Array(x)`'s ARRAY arm drop their impossible tag-dispatch arms
-// (typed/hash/set/map branches of the inlined __len, the __typed_shift call).
-// 873→930: i64 boundary carrier. `arr` is a boxed (NaN-box) param, so the export thunk now
-// takes it as i64 (Safari NaN-canonicalization dodge) and a `jz:i64exp` custom section records
-// the carrier map for interop.js. Custom-section metadata + the i64 param signature — zero
-// runtime cost (sections aren't executed); the numeric result still rides plain f64.
-// 1111→1466: TypedArray(typedArray) COPY semantics (c8c75d2) — `new Float64Array(arr)`
-// on a boundary-unknown arg now carries the 3-way source dispatch (ARRAY→from,
-// TYPED→element-converting copy loop, else→size alloc). JS-correct construction;
-// the copy arm is the cost of not aliasing the source storage.
-// 1581→1725: the element heads (layout.js numTypedWat) open `__typed_idx`, `__len` and
-// the element stores beside their whole bodies, now tails (the size tier keeps one body).
+// Baseline 985→1062 included the old prepare-time bound snapshot.
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
 }`, 1725)
-// 1729→1532: a typed copy already owns its source kind and extent; its dynamic
-// element reader needs only aux/view dispatch, not generic Array/missing checks.
-// 1545→1645: the array arm converts each element (a nullish or boolean atom to
-// its number, any other box NaN) instead of copying the box into the Float64Array.
-// 1466→1545: the boundary copy's element dispatch inlines at level 2 (+65), and the
-// frame rewind saves and restores the heap pointer around the Float64Array copy (+14).
-// 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at
-// a7c2eb3 with the same linked watr; timing caps green).
 
 test('codegen: a remainder of two words by a divisor that may be zero is the hardware remainder behind a test', () => {
   if (belowOpt(2)) return
   // `c % gw` of a queue's cell by a grid width: two faithful i32 views whose
   // divisor no interval excludes from zero ran the fmod helper per pop; it is
   // `i32.rem_s` under `gw === 0 ? NaN : …`, the dividend's sign kept for an
-  // exact zero (`-6 % 3` is -0). Exact over every edge the host reaches.
+  // exact zero (`-6 % 3` is -0).
   const src = `export let rem = (a, b) => { let x = a | 0, y = b | 0; return x % y }
     export let left = (a, b) => { let x = a | 0, y = b | 0; return (x % y) > 0 ? 1 : 0 }`
   const w = compile(src, { optimize: 'speed', wat: true })

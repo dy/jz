@@ -105,7 +105,6 @@ test('carried elements: an unproven store, a skipped store, a moved index and a 
 // A pushed counter (`v[k] = q`, a monotone stack's top) whose element the list before the
 // loop left at the counter's first value less its step: every pass reads `q - step`, no
 // local crosses the back edge, and a difference with the counter cancels (`2 * q - 2 * t`).
-// (a counter the compiler holds to a word: below a masked bound)
 const LAGGED = (bottom, step, ctor) => `
 const f = (v, n, seed) => { let k = 0, s = seed | 0
   v[0] = ${bottom}

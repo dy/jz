@@ -75,8 +75,6 @@ test('header hoist: the forwarding hop and the length leave the loop, the barrie
   ok(/i32\.load/.test(loopBody(fnText(text, 'sum'))), 'a receiver that may be missing keeps its header reads inside')
 })
 
-// The reset keeps its meaning with the barrier ahead of the loop: round 2
-// starts from what module init left, however many times the loop stored.
 test('header hoist: a reset restores the array the loop stored into', () => {
   for (const optimize of levels(0, 2)) {
     const { exports, memory } = jz(src, { optimize })

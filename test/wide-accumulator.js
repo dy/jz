@@ -138,10 +138,7 @@ test('wide accumulator: deleted conversion tees cannot feed a later read', async
 
 // A loop whose passes a counter bounds (optimize/word-ranges.js loopTrips) moves its
 // carrier by at most passes × steps: entered from a literal, the carrier needs no test
-// on entry or per pass, and the loop as written does not stay beside it. A radix sort's
-// prefix sum, read through an Int32Array store (the conversion's inline tail), wraps
-// there past 2^31; a token counter steps under a string's length, its loop leaving to
-// a block past the arm that holds it.
+// on entry or per pass, and the loop as written does not stay beside it.
 test('wide accumulator: a counted loop from a literal carries its sum alone', () => {
   const prefix = `export let f = (seed) => {
     const count = new Int32Array(256)

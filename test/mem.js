@@ -16,10 +16,6 @@ async function run(code, opts) {
   return { module: r.module, memory: r.memory, instance: { exports: adaptI64(r.module, r.instance.exports) } }
 }
 
-// ============================================
-// Passthrough: read(number) → number
-// ============================================
-
 test('mem.read: regular number passthrough', async () => {
   const r = await run('export let f = () => [1]')
   const m = r.memory
@@ -34,10 +30,6 @@ test('mem.read: NaN passthrough (falls through type dispatch, returns NaN)', asy
   const m = r.memory
   ok(isNaN(m.read(NaN)))
 })
-
-// ============================================
-// Array: JS → WASM → JS roundtrip
-// ============================================
 
 test('mem.Array: write + read roundtrip', async () => {
   const r = await run(`
@@ -96,10 +88,6 @@ test('mem.write: a typed array takes its own element kind', () => {
   is([...m.read(f16)], [1.5, -2.25], 'f16 elements, not their integer parts')
 })
 
-// ============================================
-// String: JS → WASM → JS roundtrip
-// ============================================
-
 test('mem.String: SSO roundtrip', async () => {
   const r = await run(`export let len = (s) => s.length`)
   const m = r.memory
@@ -137,9 +125,7 @@ test('mem.String: SSO boundary (4 chars)', async () => {
   is(r.instance.exports.len(m.String('abcde')), 5) // 5 = heap
 })
 
-// ============================================
 // Object: JS → WASM → JS roundtrip
-// ============================================
 
 test('mem.Object: auto schema lookup', async () => {
   const r = await run(`
@@ -191,9 +177,7 @@ test('mem.Object: ambiguous schemas throws', async () => {
 
 test('mem.Object: unknown schema marshals as first-class hash', async () => {
   // Schema-less plain objects become real jz HASHes: wasm-side dyn reads, NEW-prop
-  // writes, and nested-container mutation all keep identity. (The old External
-  // fallback decode/re-marshaled per access, so `params.P[i][i] = v` landed on a
-  // marshaling copy and vanished — the digital-filter rls.js covariance repro.)
+  // writes, and nested-container mutation all keep identity.
   const r = jz(`export default function f (params) {
     let N = params.order
     params.P = new Array(N)
@@ -210,17 +194,6 @@ test('mem.Object: unknown schema marshals as first-class hash', async () => {
   const h = r.memory.Object({ z: 1, w: 2 })
   is(r.memory.read(h), { z: 1, w: 2 }, 'round-trips through mem.read')
 })
-
-// === BigInt through mem bridge (mem.Object/mem.write route through mem.wrapVal) ===
-//
-// mem.Object's inline marshal loop, and mem.write's array/object in-place
-// update branches, used to hand-roll their own null/string/array dispatch
-// and fall through to bare `bits(v)` for everything else — a plain
-// (non-isBox) BigInt value silently stored raw, unmarked i64 bits instead
-// of going through mem.wrapVal's typed post-C4b throw (interop.js, the
-// `isBox(v)` check). mem.Array/mem.Hash already routed every element/value
-// through mem.wrapVal; mem.Object/mem.write now do too — one dispatch,
-// same C4b doctrine everywhere a host value crosses into jz memory.
 
 test('mem.Object: plain BigInt property value throws (post-C4b doctrine, mirrors mem.wrapVal)', async () => {
   const r = await run(`
@@ -354,9 +327,7 @@ test('mem.write: partial object update', async () => {
   is(r.instance.exports.getY(ptr), 2)
 })
 
-// ============================================
 // TypedArray: JS → WASM → JS roundtrip
-// ============================================
 
 test('mem.Float64Array: write + read roundtrip', async () => {
   const r = await run(`
@@ -393,9 +364,7 @@ test('mem.read: WASM TypedArray → JS typed array', async () => {
   almost(arr[0], 1); almost(arr[1], 2); almost(arr[2], 3)
 })
 
-// ============================================
 // write: unsupported types throw
-// ============================================
 
 test('mem.write: string pointer throws', async () => {
   const r = await run(`export let make = () => { let s = "hello world"; return s }`)
@@ -406,9 +375,7 @@ test('mem.write: string pointer throws', async () => {
   ok(threw)
 })
 
-// ============================================
 // Nested: array of floats roundtrip
-// ============================================
 
 test('mem.read: nested read (number elements)', async () => {
   const r = await run(`export let make = () => { let a = [1, 2, 3]; return a }`)
@@ -418,9 +385,7 @@ test('mem.read: nested read (number elements)', async () => {
   is(arr[0], 1); is(arr[1], 2); is(arr[2], 3)
 })
 
-// ============================================
 // jz.memory() API
-// ============================================
 
 // The memory's own enumerable surface is index.d.ts JzMemory, member for member:
 // the codec behind it (schemas, allocator, host references) stays in the runtime.
@@ -467,7 +432,6 @@ test('jz.memory(): JS-side Array + read roundtrip', () => {
 test('jz({ memory }): auto-wraps raw WebAssembly.Memory', () => {
   const raw = new WebAssembly.Memory({ initial: 1 })
   const inst = jz('export let f = (n) => [n, n + 1]', { memory: raw })
-  // raw should now be enhanced
   ok(typeof raw.read === 'function', 'raw is now enhanced')
   ok(inst.memory === raw, 'inst.memory is the same raw object')
   is(inst.exports.f(1), [1, 2])
@@ -578,9 +542,7 @@ test('shared memory: duplicate schemas not re-added', () => {
 
 test('one-off: inst.memory works without shared memory', () => {
   if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-compile
-  // { memory: 1 } requests owned (non-shared) memory. A ≤8-element array return now
-  // comes back as a multi-value tuple with no heap at all, so without the explicit
-  // request this module would be memoryless — and there'd be no `inst.memory` to test.
+  // { memory: 1 } requests owned (non-shared) memory.
   const inst = jz('export let f = () => [1, 2, 3]', { memory: 1 })
   ok(inst.memory instanceof WebAssembly.Memory, 'memory is WebAssembly.Memory')
   const arr = inst.memory.read(inst.instance.exports.f())
@@ -616,11 +578,7 @@ test('memory.reset(): module-global heap values survive a reset (rewind to post-
 })
 
 // A closure the module builds as it starts keeps its captured bindings in
-// cells made then, below the post-init mark: module state, as a global is. A
-// call that stores one of its own values into such a cell (directly, or as a
-// grown array's new storage) leaves the reset nothing to read through it but
-// what the cell held before the round. Without the cell's undo record the
-// reset gave the memory back while the cell still named it.
+// cells made then, below the post-init mark: module state, as a global is.
 test('memory.reset(): a module-level closure\'s captured binding returns to what the module started with', () => {
   const src = `const make = () => { let st = null, list = [0]; return { set: (n) => { st = [n, n + 1]; list.push(n) }, get: () => st === null ? -1 : st[0] + st[1], last: () => list[list.length - 1] + list.length } }
     const api = make()
@@ -724,13 +682,10 @@ test('_clear() rewinds to the post-init heap mark, preserving module-init state'
 })
 
 test('_clear() restores runtime-written module globals to their post-init snapshot', () => {
-  // The warm-reuse landmine class: a module-level lazy cache holds an ARENA pointer;
-  // `__jz_clear` rewinds the arena; the next round's `if (!CACHE)` sees a stale truthy
-  // handle and dereferences whatever now lives at that offset (watr's in-kernel NCLS
-  // dict, json's __jbuf — every one was this shape). The contract that kills the whole
-  // class: _clear restores every runtime-written module global to its post-__start
-  // value — warm behaves as fresh, minus the init cost. `churn` reuses the freed arena
-  // between rounds so a dangling read is REAL garbage, not accidentally-intact bytes.
+  // The contract that kills the whole class: _clear restores every runtime-written
+  // module global to its post-__start value — warm behaves as fresh, minus the init
+  // cost. `churn` reuses the freed arena between rounds so a dangling read is REAL
+  // garbage, not accidentally-intact bytes.
   const { exports, memory } = jz(`
     let CACHE = null
     let hits = 0
@@ -749,12 +704,7 @@ test('_clear() restores runtime-written module globals to their post-init snapsh
 test('_clear() heals ephemeral values written into DURABLE collection slots', () => {
   // The durable-interior sibling of the global sweep above: the dict itself is
   // init-created (const binding — the sweep rightly skips it), but a round-1
-  // memo write stores a round-arena array INTO its durable slot. Without the
-  // slot heal (__durable_slot_log/__durable_slot_heal), round 2's cache hit
-  // returns the stale handle and reads churned garbage — the corpus-wide warm
-  // trap (a durable literal-text→node dict handing round-1 arrays into round-2's
-  // tree). With it, the entry reads `undefined` after _clear and the memo
-  // rebuilds.
+  // memo write stores a round-arena array INTO its durable slot.
   const { exports, memory } = jz(`
     const CACHE = new Map()
     let builds = 0
@@ -903,22 +853,14 @@ test('durable logs grow past their first buffers before _clear', () => {
 })
 
 test('_clear() heals a durable array header past IN-PLACE growth, not just relocation', () => {
-  // Root-caused from .work/evidence.md's banked lead 2 ("warm _clear() corruption
-  // non-repro… new durable-array heal length defect banked"): `site.length` read
-  // 154 instead of 150 after one push-grow-clear-regrow round. `let site = []`
-  // gets a __start capacity of 4 — the first 4 pushes of a round fit IN PLACE
-  // (len bumped 0→1→2→3→4 directly on the durable header, no relocation, so
-  // arrGrow's own durableFwdLogIR — gated on off/newOff crossing the durable/
-  // ephemeral boundary — never fires). Only the 5th push crosses into a fresh
-  // ephemeral block and finally logs, but by then it reads len=4 off the header,
-  // not the header's true post-__start value of 0. `__durable_fwd_heal` then
-  // "restored" the header to a length it never had: healed len 4 + this round's
-  // 150 real pushes = 154. The fix (module/collection.js durableLenLogIR, called
-  // from every in-place length-mutating site, idempotent via
-  // __durable_fwd_log's now-dedup-per-`off` scan in module/core.js) captures the
-  // header's true (len, cap) on the FIRST touch of a round — in place or
-  // relocating — so N in-place writes before an eventual grow all converge on
-  // the one correct snapshot.
+  // `let site = []` gets a __start capacity of 4 — the first 4 pushes of a round
+  // fit IN PLACE (len bumped 0→1→2→3→4 directly on the durable header, no
+  // relocation, so arrGrow's own durableFwdLogIR — gated on off/newOff crossing
+  // the durable/ ephemeral boundary — never fires). Only the 5th push crosses
+  // into a fresh ephemeral block and finally logs, but by then it reads len=4 off
+  // the header, not the header's true post-__start value of 0.
+  // `__durable_fwd_heal` then "restored" the header to a length it never had:
+  // healed len 4 + this round's 150 real pushes = 154.
   const { exports, memory } = jz(`
     let site = []
     export let grow = (n) => { for (let i = 0; i < n; i++) site.push(i + '|' + i); return site.length }`,
@@ -987,25 +929,17 @@ test('_clear() heals in-place length writes on the OTHER durable-array length si
   is(exports.pop(2), 3, 'round 2: same result — the original popped elements are back')
 })
 
-// Root-cause prerequisite for the per-element fix below (found while building it,
-// not the length-heal session): every durable-vs-ephemeral guard (durableFwdLogIR/
-// durableLenLogIR/durableArrSnapIR/durableSlotLogIR/durableEntryLogIR) tests
-// `offset < $__heap_reset`. `$__heap_reset` is only captured to its TRUE post-init
-// watermark as the LAST thing `__start` does — while `__start` is still running its
-// OWN body, the global still reads its declared constant (HEAP.START, the
-// static-data-end address). A compile-time-constant literal (array/hash/set/map
-// built entirely from literals) gets folded BELOW that address — so any in-place
-// header mutation reachable from module-level (non-function) init code, e.g.
-// `let a = [1,2,3,4,5,6,7,8]; a.length = 5` as top-level statements, reads its own
-// low static address as "< __heap_reset" and wrongly logs itself as a this-round
-// mutation to heal AWAY — even though it's establishing the module's own
-// post-__start baseline. `_clear()` then "heals" the array back to its
-// PRE-init-truncation content, corrupting the very state `_clear()` exists to
-// restore TO. Fixed in src/wat/assemble.js by sentinel-ing `$__heap_reset` to 0 as
-// the first instruction of `__start`'s own body (below every real pointer — nothing
-// durable yet while `__start` runs), so every guard reads "not durable yet"
-// throughout init; the pre-existing end-of-body capture still sets the TRUE
-// watermark the instant `__start` finishes.
+// `$__heap_reset` is only captured to its TRUE post-init watermark as the LAST
+// thing `__start` does — while `__start` is still running its OWN body, the global
+// still reads its declared constant (HEAP.START, the static-data-end address). A
+// compile-time-constant literal (array/hash/set/map built entirely from literals)
+// gets folded BELOW that address — so any in-place header mutation reachable from
+// module-level (non-function) init code, e.g. `let a = [1,2,3,4,5,6,7,8]; a.length
+// = 5` as top-level statements, reads its own low static address as "<
+// __heap_reset" and wrongly logs itself as a this-round mutation to heal AWAY —
+// even though it's establishing the module's own post-__start baseline. `_clear()`
+// then "heals" the array back to its PRE-init-truncation content, corrupting the
+// very state `_clear()` exists to restore TO.
 test('_clear() does not corrupt a durable array whose header is mutated by MODULE-LEVEL (non-function) init code', () => {
   const { exports, memory } = jz(`
     let a = [1,2,3,4,5,6,7,8]
@@ -1019,18 +953,6 @@ test('_clear() does not corrupt a durable array whose header is mutated by MODUL
   is(exports.dump(), '1,2,3,4,5', 'repeated bare _clear() — not a one-shot coincidence')
 })
 
-// splice-heal-2026-08-13: the length fix above heals the HEADER (len/cap) but a
-// durable array has no per-ELEMENT heal at all — in-place mutations of EXISTING
-// cells (arr[i]= on an in-bounds index, splice/copyWithin/unshift's memory.copy
-// shifts, reverse/sort's swaps, fill's overwrite, and a `.length=` grow-in-place
-// refill re-entering indices a same-round shrink narrowed past) leak round 1's
-// bytes into round 2 even though the LENGTH reads back correct — banked lead from
-// .work/evidence.md's own heal-length entry (`a.splice(1,2)` on `[1,2,3,4,5]` gave
-// `3` both rounds, length healed, but the SURVIVING elements differed round to
-// round). Each case below: mutate a durable array, `_clear()`, re-run the exact
-// same operation — a correct heal means round 2 gives the SAME answer as round 1
-// (starting from the same restored [1,2,3,4,5] baseline both times), not round 1's
-// leftover data feeding into round 2's computation.
 test('_clear() heals a durable array\'s ELEMENT DATA, not just its header, across every in-place mutator', () => {
   const { exports, memory } = jz(`
     let a1 = [1,2,3,4,5]
@@ -1124,21 +1046,17 @@ test('_clear() does NOT heal .shift()\'s header rebasing (documented intentional
 
 // Relocation-forwarding bound check (layout.js followForwardingWat/ptrOffsetFwdWat):
 // every ARRAY/SET/MAP/HASH pointer dereference validates its offset against
-// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. That bound
-// used to be computed as `i32.shl(memory.size, 16)` — sound for every page count
-// EXCEPT the wasm32 ceiling itself (memory.size()==65536 pages / 4 GiB), where
-// 65536*65536 == 2^32 overflows i32 to exactly 0, making the bound "offset <= 0" —
-// unsatisfiable for any real offset, so the forward-chase silently stops running for
-// the rest of execution. A large-offset RUNTIME repro needs an actual ~4 GiB memory
-// (exercised by the warm-kernel stress above, which drives a real build to that
-// ceiling); this is the fast, host-level structural pin: the fix computes the same
-// bound in i64 against a cached $__heap_end64 global (module/core.js, kept in sync by
-// __memgrow) instead of recomputing the overflowing i32 shift at every dereference.
-// Both counts are exact, not just "present" — 1 legitimate i32.shl(memory.size,16)
-// survives (module/core.js's own $__heap_end assignment, whose wraparound is benign:
-// __alloc's consumer just slow-paths one extra call, __memgrow re-derives everything
-// fresh in i64 — see that file's comment); a regression back to the inline i32 bound
-// at any forwarding site would push this count above 1.
+// "memory.size() * 65536" before trusting a cap=-1 forwarding sentinel. A
+// large-offset RUNTIME repro needs an actual ~4 GiB memory (exercised by the
+// warm-kernel stress above, which drives a real build to that ceiling); this is the
+// fast, host-level structural pin: the fix computes the same bound in i64 against a
+// cached $__heap_end64 global (module/core.js, kept in sync by __memgrow) instead of
+// recomputing the overflowing i32 shift at every dereference. Both counts are exact,
+// not just "present" — 1 legitimate i32.shl(memory.size,16) survives
+// (module/core.js's own $__heap_end assignment, whose wraparound is benign: __alloc's
+// consumer just slow-paths one extra call, __memgrow re-derives everything fresh in
+// i64 — see that file's comment); a regression back to the inline i32 bound at any
+// forwarding site would push this count above 1.
 test('followForwardingWat/ptrOffsetFwdWat bound check is i64 (not i32.shl(memory.size,16), which overflows to 0 at the wasm32 4GiB ceiling)', () => {
   const wat = compile(
     `export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); const m = new Map(); m.set(1, 2); return xs.length + m.size }`,
@@ -1288,10 +1206,7 @@ test('host array handles: element writes invalidate closed element proofs', () =
 })
 
 
-// The host may write into what a result holds. An array the program reads
-// again after the call, through an object a module binding or a capture keeps,
-// opens its elements; one that only the fresh result holds keeps its proofs
-// (a decoder's `{ channelData, sampleRate }` stores typed).
+// The host may write into what a result holds.
 test('host array handles: a fresh result\'s arrays keep their element proofs, a retained one\'s open', () => {
   const src = `export const decode = (n) => {
     const ch = Array.from({ length: 2 }, () => new Float32Array(n))
@@ -1397,14 +1312,9 @@ test('host memory: boolean tags survive structured construction and writes', () 
 })
 
 // A render loop allocates a block per iteration and lets nothing escape: the
-// per-iteration arena rewind (compile/analyze/frame-effects.js, optimize/loop-
-// rewind.js) restores the heap pointer at the top of every iteration, so the
-// memory holds flat over any number of blocks. Two things once defeated it: a
-// store into a typed-array parameter the export boundary types read as a store
-// that could grow it (fixed storage cannot grow), and the loop was found by a
-// node the peephole walk had copied away (its label survives).
-// A loop's per-iteration rewind in the final text: a restore of the heap
-// pointer at the top of the loop (the marker local's name is the link's).
+// per-iteration arena rewind (compile/analyze/frame-effects.js,
+// optimize/loop-rewind.js) restores the heap pointer at the top of every
+// iteration, so the memory holds flat over any number of blocks.
 const rewoundLoops = wat => [...wat.matchAll(/\(loop (\$[^\s()]+)\n\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)\)/g)].map(m => m[1])
 const loopRestores = wat => rewoundLoops(wat).length
 // A literal-length block a function keeps to itself is static storage
@@ -1517,8 +1427,7 @@ test('arena: a loop destructuring a callee\'s tuple runs in constant memory', ()
 // A loop's callee allocations belong to the iteration: a method of a class
 // receiver the summary knows but cannot prove non-nullish (the read throws
 // for null before any call), a class getter inside it, a typed block built
-// per call. The function around the loop calls a closure it cannot name (an
-// indirect call), which the loop's own tape does not reach.
+// per call.
 test('arena: a loop rewinds around a method of a class receiver that may be nullish, beside an indirect call', () => {
   const src = `class Source {
     #gain; constructor(gain) { this.#gain = gain }
@@ -1568,8 +1477,7 @@ test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
 
 // A parameter is the function's storage, outside every iteration: a block
 // kept in one outlives the iteration that built it, so the loop keeps its
-// allocations. Rewound, the next iteration's block would take the kept
-// block's memory.
+// allocations.
 test('arena: a loop keeping a block in a parameter does not rewind', () => {
   const src = `export function last(prev, prev2, n) {
     for (let i = 0; i < n; i++) {
@@ -1713,9 +1621,7 @@ test('reset: a function\'s init-time properties survive it, in a bundled module 
 
 // A field of an object the module made as it started, overwritten by a call
 // with a value the call made, named after a reset memory the reset had freed:
-// it read the next allocations, or trapped. The round's first such store
-// saves the object's slots (module/core/durable-log.js `__durable_obj_snap`),
-// and the reset reads them back.
+// it read the next allocations, or trapped.
 test('reset: an object made at start reads as it started, whatever a call stored into it', () => {
   if (onWasi()) return  // memory.reset is the js host's
   const show = `v => v === null ? 'null' : v === undefined ? 'undefined' : typeof v === 'object' ? 'object v=' + v.v + ' s=' + v.s : typeof v + ' ' + v`
@@ -1762,14 +1668,9 @@ test('reset: an object made at start reads as it started, whatever a call stored
   }
 })
 
-// A call's first store of a round into an array made as the module started saves the array
-// for the reset in a record the round's log holds (module/core/durable-log.js
-// `__durable_arr_snap`). An in-place store of a number has no escape site, so nothing told a
-// frame that restores the heap about the record: `w2`'s frame (the concatenation reads the
-// flag) gave it back at its return, `w3`'s object took its memory, and the walk of the log as
-// `w3`'s frame returned (module/core/reach.js `__survive`) followed what the object wrote there
-// and never ended, at levels 2, 3 and speed, in 1.0.3 too. The reset read the same record: with
-// `fill`'s array in its memory, `memory.reset()` trapped. Run in a worker stopped at a limit.
+// A call's first store of a round into an array made as the module started saves the array for
+// the reset in a record the round's log holds (module/core/durable-log.js
+// `__durable_arr_snap`). Run in a worker stopped at a limit.
 test('reset: the record of an array a call first stores a number into is the round\'s, whatever frame stored it', () => {
   if (!onWasi()) {
     const healed = `let b = [2, 3, 5]

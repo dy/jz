@@ -247,8 +247,7 @@ test('remainder: an integral dividend of bounded magnitude by a word takes the i
 
 // A planar deinterleave's source index, `(i % seg) * ch + ~~(i / seg)` under
 // `seg = Math.floor(len / ch)`: the divisor is an integer of no i32 view, the
-// dividend a counter below a length. The remainder is the i64 hardware's behind
-// a zero test (`seg` is 0 for a short input, where JS reads NaN), never a call.
+// dividend a counter below a length.
 test('remainder: an integral divisor of no word, a rounding of a quotient, takes the i64 remainder', () => {
   const src = `const deinterleave = (samples, ch) => {
       const len = samples.length, seg = Math.floor(len / ch), out = new Float32Array(len)

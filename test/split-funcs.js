@@ -425,8 +425,7 @@ test('loop passes: a pass that branches out of itself, or that compacts, stays',
 })
 
 // A loop that keeps what its passes allocate sits in a compaction's loop (optimize/loop-compact.js):
-// an exit past the threshold opens each pass, and the loop around enters it again at the same
-// pass. The strength reduction steps a pointer beside the counter.
+// an exit past the threshold opens each pass, and the loop around enters it again at the same pass.
 const WRAPPED = ({ reset = '', mid = '' } = {}) => `(func $f (export "f") (param $n i32) (result i32)
     (local $i i32) (local $j i32) (local $acc i32) (local $row i32) (local $p i32) (local $th i32) (local $w i32)
     (local.set $th (i32.const 50))
@@ -555,8 +554,7 @@ test('loop passes: rounds that keep what they allocate move out of the compactio
 
 // A round storing its sample into a small typed array (a timing loop) indexes the array by the
 // counter, which a copy per round would make literal (plan/literals.js unrollTypedArrayLoops):
-// eleven copies of the inlined kernel, no rounds left to make calls of. An accumulator per
-// channel, indexed inside the inner loop, still unrolls.
+// eleven copies of the inlined kernel, no rounds left to make calls of.
 const SAMPLED_SRC = `const kernel = (xs, out, k) => { for (let i = 0; i < xs.length; i++) out[i] = xs[i] * k + out[i] * 0.5 }
 export let main = (n) => {
   const xs = new Float64Array(64), out = new Float64Array(64)

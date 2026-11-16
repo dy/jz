@@ -1,21 +1,12 @@
-// Abrupt-edge + OOB-sentinel value semantics — the 2026-07-15 miscompile family.
+// Abrupt-edge + OOB-sentinel value semantics.
 //
 // (1) ABRUPT EDGES: a `break` reaches the loop exit — and a `continue` its back
-// edge — carrying the flow state AT the statement. The interval walk once
-// published fall-through-only exit states, so `if (c) { x = BIG; break }; x = 0`
-// "proved" the post-loop read and emitted a RAW load: `a[x]` with x = BIG
-// trapped (or read adjacent heap) instead of yielding `undefined`. Same class
-// through do/for-of/labeled loops, switch case-selection, and try/catch
-// exception edges (watr's deadset was also try_table-blind: it dropped the
-// pre-try store the catch path reads — watr 5.6.1).
+// edge — carrying the flow state AT the statement.
 //
 // (2) OOB SENTINEL: a checked typed read yields the UNDEF sentinel NaN in its
 // miss arm. Consumed by f64 ARITHMETIC, hardware NaN propagation carries the
-// PAYLOAD to the escape, where the boundary decoded it back as `undefined` —
-// JS says ToNumber(undefined) = NaN. The producer/consumer seam now folds the
-// miss arm statically (toNumF64 × checkedNumRead), f64 stores apply the spec
-// ToNumber, and uninitialized `let`s coerce unless definitely assigned
-// (ast.js firstRefKind).
+// PAYLOAD to the escape, where the boundary decoded it back as `undefined` — JS
+// says ToNumber(undefined) = NaN.
 //
 // Every case runs the JS source as ground truth, then jz at O0/O2/O3 — the
 // four values must agree exactly (NaN compares by Object.is semantics here).

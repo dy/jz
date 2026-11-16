@@ -249,7 +249,7 @@ export let main = () => {
 // A reference taken before an array grew and moved holds the old offset,
 // whose header forwards to the new one (__ptr_offset), as every element read
 // follows it: identity follows it too, inline (`===` and its kin) and in the
-// dynamic comparisons and the searches. Distinct arrays stay distinct.
+// dynamic comparisons and the searches.
 test('never-grown: identity follows an array that moved as it grew', () => {
   const src = `const grow = (x, n) => { for (let i = 0; i < n; i++) x.push(i) }
     export let inline = () => { const a = [1]; const s = [a]; for (let i = 0; i < 100; i++) a.push(i); const b = s[0]; return [b === a, a !== b, b == a, s.findIndex(x => x === a)] }

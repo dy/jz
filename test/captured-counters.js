@@ -21,8 +21,6 @@ const agreeAll = (src, seeds) => {
 
 // The widths the loads and stores of the binding `i`'s cell use at a level
 // (none where the cell is gone: its closures inlined, the binding a local).
-// A Number cell takes no word access; a word cell's first store, the
-// placeholder before any value, still fills all 8 bytes.
 const cellWidths = (src, optimize) => new Set([...compile(src, { optimize, wat: true })
   .matchAll(/\b(f64|i32)\.(?:load|store)\s*\(local\.get \$\ue000cell_i\)/g)].map(m => m[1]))
 
@@ -137,8 +135,8 @@ test('captured counters: an unbounded or outrun counter keeps its magnitude', ()
 
 // A captured binding every definition of which is an unsigned word (`>>> 0`, `>>>=`,
 // a literal below 2^32) holds the word in an i32 cell its closures read unsigned
-// (compile/analyze-scans.js uint32Cells): a hash past 2^31 compares and returns
-// as the Number it is. A step that is no word (`h += 1`) keeps the Number cell.
+// (compile/analyze-scans.js uint32Cells): a hash past 2^31 compares and returns as
+// the Number it is.
 const WORDS = (step) => `const makeHash = () => {
   let h = 2166136261
   const add = (b) => { h = (h ^ b) >>> 0; h = Math.imul(h, 16777619) >>> 0; return h }

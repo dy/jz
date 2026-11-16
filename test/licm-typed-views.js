@@ -62,8 +62,6 @@ test('LICM typed views: absent and reassigned receivers retain execution order',
 })
 
 // These are the two exact emitter expressions, isolated from later folding.
-// The full data select is invariant even when address zero changes; its
-// eagerly evaluated load on the owned arm is not independently invariant.
 const base = name => `(i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get ${name})) (i64.const 4294967295)))`
 const view = name => `(i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get ${name})) (i64.const 32))) (i32.const 8))`
 const data = (a = '$a', b = '$a', c = '$a') => `(select

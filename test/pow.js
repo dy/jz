@@ -2,26 +2,22 @@
 // host's own Math.pow (V8 ports the same fdlibm algorithm — see module/math.js) and
 // against authoritative correctly-rounded vectors:
 //
-//   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double log,
-//      exact split product, jz's exp table; module/math.js), the kernel the runtime-y
-//      $math.pow takes for every positive finite base and non-integer exponent, and for
-//      integer exponents past its square-and-multiply fast path (|y| ≤ 16). Documented
-//      worst case 0.54 ulp: bit-exact against the host on nearly every input, one ulp
-//      off on the rest — V8 ports fdlibm's e_pow.c, itself "nearly rounded", so an
-//      occasional last-ulp difference between two sub-ulp kernels is expected, not a
-//      jz bug. Before this the fallback was `exp(y·log(x))`, whose composed error grows
-//      with |y·ln x| — many ulps off for the exponents real content uses (PQ/HDR
-//      transfer curves, gamma decodes).
+//   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double
+//      log, exact split product, jz's exp table; module/math.js), the kernel the
+//      runtime-y $math.pow takes for every positive finite base and non-integer
+//      exponent, and for integer exponents past its square-and-multiply fast path
+//      (|y| ≤ 16). Documented worst case 0.54 ulp: bit-exact against the host on
+//      nearly every input, one ulp off on the rest — V8 ports fdlibm's e_pow.c,
+//      itself "nearly rounded", so an occasional last-ulp difference between two
+//      sub-ulp kernels is expected, not a jz bug.
 //   2. $math.pow_fold — the CORRECTLY-ROUNDED CONST-EXPONENT fold under
-//      `optimize.crPow` (the authoritative comment is above emitPow in module/math.js):
-//      `x ** C` / Math.pow(x, C) with a compile-time-constant, non-integer, non-±0.5,
-//      non-k/5 exponent C lowers to `$math.pow_fold`, which shares $math.pow_transcend's
-//      two-phase Ziv dd/td kernel with $math.pow_core. Off crPow (the default) the same
-//      case lowers to a plain `exp(C·log(x))` composition and no $math.pow_fold exists in
-//      the build, so every probe compiles with crPow on. The WAT is probed per function
-//      to confirm the fold took the cheap path (no `$math.pow`/`$math.pow_core` call)
-//      rather than silently falling through to the general call, which would make the
-//      gate vacuous.
+//      `optimize.crPow` (the authoritative comment is above emitPow in
+//      module/math.js): `x ** C` / Math.pow(x, C) with a compile-time-constant,
+//      non-integer, non-±0.5, non-k/5 exponent C lowers to `$math.pow_fold`, which
+//      shares $math.pow_transcend's two-phase Ziv dd/td kernel with $math.pow_core.
+//      The WAT is probed per function to confirm the fold took the cheap path (no
+//      `$math.pow`/`$math.pow_core` call) rather than silently falling through to
+//      the general call, which would make the gate vacuous.
 //   3. $math.pow_fifths, the k/5 fold (x ** 2.4, the sRGB/Rec.709 decode gamma):
 //      x^p·fifthroot(x^r), $math.fifthroot's bit-hack seed and four Newton steps, on the
 //      range where it stays within 40 ulp of x^c (module/math/trig-tables.js fifthFold),
@@ -35,16 +31,11 @@
 //   4. The correctly-rounded vector gate — test/vectors/pow-cr.txt: 5152 lines of
 //      `xbits ybits resultbits` (big-endian f64 hex), generated with mpmath 1.4.1 at
 //      200-bit precision (round-to-nearest on the final float conversion), inputs
-//      STRICTLY coerced to doubles before evaluation. Classes: colorpq's real exponents
-//      (PQ nv=2610/16384, p=1.7·2523/32, their inverses, sRGB 2.4/±) over its value
-//      range; general log-spaced grids across ±extremes; 3k random (x,y) pairs; 400
-//      MINED hard cases (exact result nearest to a rounding boundary out of 30k
-//      candidates). Regeneration recipe: .work/archive/todo.md (CR-pow session).
-//      Baselines at bake time: V8 Math.pow misses 3/5152 (0.058%, all in the mined
-//      tail); jz runtime $math.pow missed 424 (8.2%); the const-exponent fold missed
-//      194/827 (23.5%). The gate demands ZERO on both jz paths — correctly rounded is
-//      unique, so this also pins fold==runtime consistency (self-compile byte-parity
-//      depends on it).
+//      STRICTLY coerced to doubles before evaluation. Baselines at bake time: V8
+//      Math.pow misses 3/5152 (0.058%, all in the mined tail); jz runtime $math.pow
+//      missed 424 (8.2%); the const-exponent fold missed 194/827 (23.5%). The gate
+//      demands ZERO on both jz paths — correctly rounded is unique, so this also
+//      pins fold==runtime consistency (self-compile byte-parity depends on it).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
@@ -67,9 +58,7 @@ for (let e = -300; e <= 300; e += 12) LOG_BASES.push(10 ** e)
 // literal for a fold to fire — so a whole exponent list compiles once.
 const perExp = (exps) => exps.map((c, i) => `export let e${i} = (x) => x ** ${c}`).join('\n')
 
-// Tally `pairs` of (x, y) through `pow` against host Math.pow: the bit-exact / 1-ulp /
-// worse counts, and — only on a genuine miss — the offending pairs, so a regression is
-// diagnosable from the log alone. Every pair must land within `limit` ulp.
+// Every pair must land within `limit` ulp.
 function tally(label, pairs, pow, limit = 1) {
   let exact = 0, oneUlp = 0
   const worse = []
@@ -91,9 +80,6 @@ function tally(label, pairs, pow, limit = 1) {
 let runtimePow
 const pow = (x, y) => (runtimePow ??= run('export let f = (x, y) => Math.pow(x, y)').f)(x, y)
 const TAIL_BASES = [...LOG_BASES, 0.18, 0.5, 1.0000001, 2.2, 255.7]
-// The pinned values from the colorpq regression (±0.1593017578125 — a PQ-curve exponent —
-// and ±78.84375, its far end) plus common non-integer shapes: ±0.5 (sqrt fast path),
-// ±1/3 (cube root), ±2.4 (sRGB gamma), ±100.7 (large non-integer).
 const TAIL_EXPS = [0.1593017578125, -0.1593017578125, 78.84375, -78.84375, 0.5, -0.5, 1 / 3, -1 / 3, 2.4, -2.4, 100.7, -100.7]
 // jz mirrors CURRENT V8's pow (src/prepare/math-kernel.js); older hosts' Math.pow itself
 // sits ±1 ulp off that reference on a few pairs (node 22 CI vs node ≥ 24), so the ≤1ulp
@@ -117,14 +103,8 @@ test('Math.pow non-integer tail — bit-exact/≤1ulp random pairs vs host', () 
   tally('random', pairs, pow, TAIL_LIMIT)
 })
 
-// === 2. $math.pow_fold — the correctly-rounded const-exponent fold (crPow) ===
-
-// Exponents that reach $math.pow_fold specifically — finite, non-integer, not ±0.5 and
-// not a k/5 fraction (those route to $math.sqrt / $math.fifthroot instead — section 3).
-// The colorpq regression's own exponents (the PQ curve's nv=2610/16384 and
-// p=1.7·2523/32) plus common non-fifthroot shapes.
-// (2610/16384 IS 0.1593017578125, the pinned PQ exponent — listed once: identical
-// functions in one module deduplicate, and the probe below reads each function's own body.)
+// Exponents that reach $math.pow_fold specifically — finite, non-integer, not ±0.5 and not
+// a k/5 fraction (those route to $math.sqrt / $math.fifthroot instead — section 3).
 const FOLD_EXPS = [
   2610 / 16384, -(2610 / 16384),
   1.7 * 2523 / 32, -(1.7 * 2523 / 32),
@@ -187,8 +167,6 @@ test('const-exponent pow fold — SIMD twin (pow_fold_v) matches the scalar fold
   ok(Object.is(got, want) || ulpDiff(got, want) <= 4, `vectorized loop's folded reduction matches a scalar host computation (got ${got} vs ${want})`)
 })
 
-// === 3. $math.pow_fifths: the k/5 fold's default kernel ===
-
 // the exported function's own body: the fold's helper calls $math.pow past its range
 const fnOf = (text) => funcWat(text, 'f') || funcWat(text, 'f$exp')
 test('fifthroot-backed pow fold reaches WAT via $math.pow_fifths by default (not $math.pow/$math.pow_fold)', () => {
@@ -234,11 +212,6 @@ const exactFifthPow = (x, k) => {
   const [my, ey] = mantExp(y)                   // the midpoint to the next double: (2·my + 1) · 2^(ey − 1)
   return cmpScaled((2n * my + 1n) ** 5n, (ey - 1) * 5, xk, exk) < 0 ? step(y, 1) : y
 }
-// Regression ceiling against that reference: the fold measures a worst case of 4 ulp
-// across these exponents on the range it runs (four Newton steps, the last a correction:
-// module/math.js $math.fifthroot; the x^p · fifthroot(x^r) composition adds the rest),
-// so 96 catches a dropped step (three steps left a ~2.65M ulp floor) while tolerating
-// machine/input variance.
 const ULP_CEILING = 96
 
 test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, async () => {
@@ -311,8 +284,6 @@ test('fifthroot pow fold in lanes: both lanes share the Newton steps, bit-exact 
   const vec = funcWat(wat(src, { optimize: 'speed' }), 'math.pow_fifths_v')
   ok(vec && !/call \$math\.fifthroot\s+\(f64x2\.extract_lane/.test(vec.replace(/\(else[\s\S]*$/, '')) && /f64x2\.div/.test(vec), 'the fifth root runs its divisions two lanes wide')
 })
-
-// === 4. Correctly rounded on the authoritative vector set (runtime + fold paths) ===
 
 const NV = 2610 / 16384, P = 1.7 * 2523 / 32
 

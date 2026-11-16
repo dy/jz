@@ -1,23 +1,5 @@
 /**
  * `wasm:js-string` boundary opt-in tests.
- *
- * The narrower (src/narrow.js phase J) flips an exported function's string
- * param from f64 (NaN-boxed SSO carrier) to externref when:
- *   - every use of the param maps to a `wasm:js-string` builtin
- *   - at least one use is string-discriminating (`.charCodeAt`) or a call-site
- *     proves STRING — `.length`-only stays polymorphic to preserve the
- *     "number → undefined, array → length" tolerant semantics
- *   - `.charCodeAt(i)` uses are provably in-bounds (scanBoundedLoops) — the
- *     wasm:js-string builtin traps on OOB; we can only flip when safe
- *   - no reassignment / `++` / `--` / closure capture of the param
- *
- * When the opt-in fires:
- *   - boundary wrapper takes `(param externref)` — JS strings flow through
- *     directly, zero copy, zero transcoding
- *   - `.length` lowers to `(call $__jss_length …)`
- *   - in-bounds `.charCodeAt` lowers to `(call $__jss_charCodeAt …)`
- *   - interop.js attaches a JS polyfill for the `wasm:js-string` imports so
- *     engines without native builtin support still work
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
@@ -129,8 +111,7 @@ test('jsstring opt-in: param escape (concat) rejects', () => {
 test('jsstring opt-in: string-literal default is string-discriminating proof', () => {
   if (onWasi()) return  // wasi: jsstring externref interop
   // `s = ''` declares intent — even without `.charCodeAt`, the explicit string
-  // default proves the param is meant to be a string. Flip to externref; the
-  // interop wrapper substitutes the default JS-side when caller passes undef.
+  // default proves the param is meant to be a string.
   const wat = compile(`
     export const len = (s = '') => s.length
   `, { wat: true, optimize: { watr: false } })

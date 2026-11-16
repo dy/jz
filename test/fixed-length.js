@@ -175,8 +175,7 @@ test('fixed length: a reset restores a durable array stored to directly', () => 
 // A block storing a durable fixed-length array (three's Matrix4.compose: `const
 // te = this.elements`, sixteen products, then `te[0] = …`) saves it where it
 // binds it, before the products: the save's call no longer stands among their
-// live values. The reset restores what module init left, a round building on
-// the last.
+// live values.
 test('fixed length: a block saves its durable array where it binds it', () => {
   const src = `class M {
     constructor() { this.elements = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }

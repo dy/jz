@@ -60,9 +60,7 @@ for (const [name, src] of Object.entries(EDGES)) {
 // KNOWN-OPEN edges (memo global / Map cache): the value-level "kind or nullish"
 // return facts they need proved UNSOUND as consumed — an unguarded typed unbox
 // on a nullish/dyn-undefined value reads garbage memory instead of JS behavior
-// (caught by a composite-route OOB during development). Their revival needs a
-// guarded unbox (tag-checked pointer materialization, hoistable) or a non-null
-// flow proof. Pinned DYNAMIC until then.
+// (caught by a composite-route OOB during development).
 for (const [name, src] of Object.entries({
   memo: `const mk = (n) => new Float64Array(n)\nlet last = null\nconst get = (n) => { if (last === null) last = mk(n); return last }\nexport let go = (n) => { const T = get(1024); let s = 0; for (let i = 0; i < n; i++) s += T[i & 1023]; return s }`,
   map: `const mk = (n) => new Float64Array(n)\nconst cache = new Map()\nconst get = (n) => { let p = cache.get(n); if (p === undefined) { p = mk(n); cache.set(n, p) }; return p }\nexport let go = (n) => { const T = get(1024); let s = 0; for (let i = 0; i < n; i++) s += T[i & 1023]; return s }`,
@@ -89,17 +87,6 @@ export let go = () => {
   is(exports.go(), 1008)
 })
 
-// module-memo OBJECT-FIELD route (bench/provenance's edge 4, distinct from the
-// KNOWN-OPEN bare-typed-array "memo" edge above): `getMemo`'s return is
-// classified VAL.OBJECT (never nullish by construction — every path either
-// returns the already-populated global or freshly makes one), so
-// module/core.js's emitPropAccess devirtualizes the `.wre`/`.wim` field reads
-// through guardedSlotOf's runtime tag-checked fast path (same mechanism the
-// `field`/`fieldInline` edges above already use, previously skipped for a
-// vt===VAL.OBJECT receiver — see module/core.js emitPropAccess's `vt ===
-// VAL.OBJECT` arm). Guarded, not unconditional: a schema mismatch still falls
-// to the ordinary dynamic dispatch, so this can only ever be as fast, never
-// wrong — the same safety margin the KNOWN-OPEN edges above are pinned on.
 test('provenance: module-memo object-field route is value-correct', () => {
   const src = `const mk = (n) => { const wre = new Float64Array(n), wim = new Float64Array(n); for (let i = 0; i < n; i++) { wre[i] = i * 0.5; wim[i] = i * 0.25 }; return { wre, wim } }
 let lastN = 0, lastPlan = null

@@ -435,9 +435,7 @@ test('specialize: the slots of an array hold any value, a hole among them', () =
 })
 
 // An array of Numbers whose cells may be holes (a store the summary cannot bound,
-// a store past the end): its read tests the cell for a hole. The copy reads the
-// cell bare, a Number, and leaves where the cell holds a NaN, which a hole, an
-// undefined, a null and a NaN element all are: the loop as written reads it.
+// a store past the end): its read tests the cell for a hole.
 test('specialize: the cells of an array of Numbers that may hold holes', () => {
   const src = `const fill = (a, n) => { for (let k = 0; k < n; k++) a[k] = k % 4 === 3 ? NaN : k % 3 }
 const same = (a) => { let c = 0; for (let i = 0; i < a.length; i++) if (a[i] === a[i + 1]) c++; return c }
@@ -487,8 +485,7 @@ test('specialize: extents that fail inside a copy', () => {
 })
 
 // The twin is no gain of the copy's own: the arm the extents choose runs as fast
-// in the loop as written. A loop that would leave by its twin alone keeps its one
-// form, and the loop inside it its one vector body.
+// in the loop as written.
 test('specialize: a versioned loop alone buys no copy', () => {
   const src = `let fold = (re, n) => {
   for (let len = 2; len <= n; len <<= 1) {

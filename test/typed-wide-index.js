@@ -156,10 +156,7 @@ test('typed wide index: a key of unknown integrality meets the length as its tru
 
 test('typed wide index: a planar offset the integer pass proves wide is one unsigned compare', () => {
   // `(i % seg) * ch + ~~(i / seg)` over the counter's divmod: an integer past
-  // 2^31 by its interval, held in a name. Narrowed to a word first it paid a
-  // fit test, a select of -1 and their conjunction around every bounds test
-  // where emission knew no integrality of the name, and two clamps of the
-  // integer to a word where it knew the name whole.
+  // 2^31 by its interval, held in a name.
   const source = `const CH = 2
   let dei = (s, ch, out) => { const len = s.length, seg = Math.floor(len / ch)
     for (let i = 0; i < len; i++) { const si = (i % seg) * ch + ~~(i / seg); out[i] = s[si] } }

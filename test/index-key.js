@@ -70,8 +70,7 @@ test('index key: signed integer offsets keep word arithmetic without wrapping in
 
 // A module array the program also gives a non-index numeric key (`t[1.5]`): a
 // key of unknown integrality reads the element as an integer and the property
-// otherwise. The summary types the binding an array that is always present,
-// so the element arm reads the array alone, with no test of the other kinds.
+// otherwise.
 test('index key: a module array read by an unknown number reads its element as an array', () => {
   const src = `export let table = []
     table[1.5] = 'half'; table[3] = 'three'; table[0] = 'zero'

@@ -112,9 +112,7 @@ test('spread: source presence belongs to each copy before and after reassignment
   }
 })
 
-// ============================================
 // SPREAD IN ARRAY LITERALS
-// ============================================
 
 test('spread: [...arr] basic', () => {
   const { f } = run(`export let f = () => {
@@ -173,9 +171,7 @@ test('spread: empty spread', () => {
   is(f(), 0)
 })
 
-// ============================================
 // SPREAD IN FUNCTION CALLS WITH REST PARAMS
-// ============================================
 
 test('spread: direct and local calls preserve object aliases and missing arguments', () => {
   for (const declaration of [
@@ -262,10 +258,6 @@ test('spread in optional call: mixed positional + spread args', () => {
   }`)
   is(f(), 10)
 })
-
-// ============================================
-// SPREAD IN ARRAY METHODS
-// ============================================
 
 test('spread: fixed methods preserve positions, empty arguments and typed views', () => {
   const src = `export function f(k) {
@@ -551,9 +543,7 @@ test('spread: [...a].length after push', () => {
   is(f(), 3)
 })
 
-// ============================================
 // SPREAD IN METHOD CALLS WITH VARIADIC
-// ============================================
 
 test('spread: string.concat(...strings)', () => {
   const { f } = run(`export let f = () => {
@@ -600,9 +590,7 @@ test('spread: object spread stores explicit boolean properties', () => {
   is(f(), 2)
 })
 
-// ============================================
 // EDGE CASES
-// ============================================
 
 test('spread: nested arrays', () => {
   const { f } = run(`export let f = () => {
@@ -651,9 +639,7 @@ test('spread: short local array literals scalarize through spread and reads', ()
   ok(!/__arr|__alloc_hdr|__mkptr|__len|__typed_idx/.test(body), 'hot spread concat should not materialize arrays')
 })
 
-// ============================================
 // OBJECT SPREAD
-// ============================================
 
 test('spread: {...obj} basic', () => {
   const { f } = run(`export let f = () => {
@@ -771,9 +757,7 @@ test('spread: var-assigned defaults provide source schema with jzify', () => {
   is(f('{"x":4,"y":7}'), 47)
 })
 
-// ============================================
 // OBJECT REST DESTRUCTURING
-// ============================================
 
 test('spread: let {x, ...rest} = obj', () => {
   const { f } = run(`export let f = () => {
@@ -813,11 +797,10 @@ test('spread: rest gets only remaining props', () => {
 })
 
 // Second-class a′: a multi-prop spread `{ ...src, k }` whose source schema is
-// unknown at analysis time must be HASH-typed (src/kind.js VT['{}'] → VAL.HASH),
-// so its result reads go through the hash path — NOT a schema-slot f64.load that
-// could match an UNRELATED ambient schema and OOB/mis-read. This was the
-// self-compile crash class behind `{ ...func.sig, params, results }`. Pins the type
-// + the read shape; runs under test:wasm.
+// unknown at analysis time must be HASH-typed (src/kind.js VT['{}'] → VAL.HASH), so
+// its result reads go through the hash path — NOT a schema-slot f64.load that could
+// match an UNRELATED ambient schema and OOB/mis-read. Pins the type + the read
+// shape; runs under test:wasm.
 test('spread: multi-prop unknown-schema spread is HASH — no ambient-schema slot misdispatch', () => {
   // `ambient` registers a schema [extra, other]; if the spread result were
   // mistyped OBJECT, `c.extra` could resolve to ambient slot 0 (a raw f64.load).
@@ -858,11 +841,6 @@ test('spread: rest-param spread through export-only unknown callee', () => {
 })
 
 test('unshift: multi-arg inserts in argument order, returns new length', () => {
-  // ES: a.unshift(1,2,3) -> [1,2,3,...existing], returns the new length. The
-  // old emitter silently DROPPED every argument past the first — in the
-  // self-compile kernel that broke assemble.js's own
-  // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
-  // divergence (.work/archive/todo.md, INSTRUMENTED-KERNEL SESSION).
   const r = run(`
     export let go = () => {
       const a = [9]
@@ -877,8 +855,7 @@ test('unshift: multi-arg inserts in argument order, returns new length', () => {
 
 test('unshift: spread args land in argument order', () => {
   // Scalar and spread arguments must retain their source order when prepended:
-  // `a.unshift(1, ...ys)` yields [1, ...ys, ...a]. Kernel instance:
-  // assemble.js `inject.unshift(setBase, ...snapSlots)` — the gsnap reorder.
+  // `a.unshift(1, ...ys)` yields [1, ...ys, ...a].
   const r = run(`
     export let go = () => {
       const ys = [2, 3]
@@ -918,8 +895,7 @@ test('spread into a fixed-arity function fills its parameters from the array', (
 
 test('spread into a method: the source is staged once, by its kind', () => {
   // A string source counts characters and reads a character per element; a
-  // Set iterates its keys; an unknown source decides at runtime. The staging
-  // is one for `push`'s bulk path, the per-element loop and an array literal.
+  // Set iterates its keys; an unknown source decides at runtime.
   const src = `const app = (a, s) => { a.push(...s); return a.length }
     const pre = (a, s) => { a.unshift(...s); return a.length }
     export let f = () => {
@@ -951,9 +927,6 @@ test('spread into a method: a program without a string of its own compiles', () 
 })
 
 // three.js utils: `function warn(...params) { …; console.warn(message, ...params) }`.
-// The values a spread prints are as many as the run decides, so they print
-// from the array the arguments build: the text is what the host prints for
-// the same arguments given one by one.
 test('spread into console: the arguments print as the values they spread to', () => {
   if (onWasi()) return  // the text goes to fd_write; the js host's print is what this reads
   const src = `function warn(...params) { const message = 'THREE.' + params.shift(); console.warn(message, ...params) }
@@ -980,10 +953,7 @@ test('spread: a layout the summary derives types the literal\'s fields', () => {
 })
 
 // A spread of such a literal makes another layout, known only once the first
-// is named. Named after the plan alone, the outer one stayed unnamed while the
-// emitter built it as a layout, and a parameter the plan had typed a
-// dictionary read it as one: NaN. Each summary names layouts until a spread
-// of one makes none new, before the plan decides anything from it.
+// is named.
 test('spread: a spread of a spread\'s result reads its fields as slots', () => {
   const cases = [
     `let inner = (o) => ({ ...o, y: 2 })\nlet outer = (o) => ({ ...inner(o), z: 3 })\nlet use = (o) => o.x + o.y * 10 + o.z * 100\nexport let f = (n) => use(outer({ x: n }))`,

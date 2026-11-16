@@ -700,8 +700,7 @@ test('ToPrimitive: a boxed BigInt returned by a conversion method is primitive',
 
 // A conversion method runs where no call names it: the summary takes its callers
 // for unknown (an escaped closure's), its BigInt result boxed for the conversion
-// that reads it. A method with a parameter, or an arrow, was walked by no call,
-// its result no value, so it returned the BigInt's raw bits, a Number to `+`.
+// that reads it.
 test('ToPrimitive: a conversion method of any shape returns its BigInt boxed', () => {
   for (const [va, vb] of [['valueOf(z) {', 'valueOf(z) {'], ['valueOf: () => {', 'valueOf: (z) => {']]) check(`export function f(k) {
     let order = ''

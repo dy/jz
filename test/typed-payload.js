@@ -38,10 +38,7 @@ test('typed payload: the store is direct', () => {
   ok(!/call \$__typed_set_idx_tagged/.test(body), 'no runtime writer')
 })
 
-// A channel read at a loop index may be missing too. Inlined into that loop, a
-// kernel's loop is versioned: its guard tests every receiver present, and in the
-// fast arm the receiver reads as its constructor (emit/control-flow.js, the
-// guard's `notNullish` refinement), not through the run-time element dispatch.
+// A channel read at a loop index may be missing too.
 const pairs = `
 function pair(x, x2, s, out, k) { let z = s[0], q = 0, q2 = 0; for (let i = 0, l = x.length; i < l; i++) { let v = x[i], v2 = x2[i]; z = z * 0.5 + v; q += v * v; q2 += v2 * v2 } s[0] = z; out[k] = q; out[k + 1] = q2 }
 function ms(channels, out) { let n = channels.length, k = 0; for (; k + 1 < n; k += 2) pair(channels[k], channels[k + 1], new Float64Array(4), out, k); return out }

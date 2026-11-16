@@ -233,8 +233,7 @@ test('async: for await closes its iterator on an early exit', async () => {
 
 // Async HOST IMPORTS — a host function returning a thenable becomes a jz
 // promise the module can await (made + settled via the runtime's __p_make/
-// __p_finish exports; settlement drains + sweeps). This is the fetch story:
-// no WASI networking — I/O stays host-side, awaitable in jz.
+// __p_finish exports; settlement drains + sweeps).
 test('async: host imports returning promises are awaitable', async () => {
   if (onWasi() || onKernel()) return
   const src = `import { ft } from 'host'
@@ -398,8 +397,7 @@ test('async generators: requests settle in microtask order', async () => {
 
 // yield* in an async generator hands next(), throw() and return() to its
 // delegate, awaiting each result; a sync delegate's values are awaited
-// (CreateAsyncFromSyncIterator). A for await closes its iterator when the
-// body leaves early or a return() arrives at a yield inside it.
+// (CreateAsyncFromSyncIterator).
 test('async generators: yield* and for await forward to and close the inner iterator', async () => {
   if (onWasi() || onKernel()) return
   await agreeAsync(`let log = ''
@@ -578,10 +576,9 @@ test('async: using disposes across awaits', async () => {
 
 // What JS evaluates before a suspension reads before it where another
 // activation could tell: a name another call or a closure assigns meanwhile,
-// a callee of that name, a method off a receiver whose key the program
-// writes or a getter defines (called on that receiver), a constructor, a
-// spread's iteration, a shorthand's value, a computed key, an assignment's
-// receiver. A name nothing else assigns, and a builtin method, read in place.
+// a callee of that name, a method off a receiver whose key the program writes
+// or a getter defines (called on that receiver), a constructor, a spread's
+// iteration, a shorthand's value, a computed key, an assignment's receiver.
 test('async: operands read before an await where JS reads them', async () => {
   if (onWasi() || onKernel()) return
   await agreeAsync(`let log = '', total = 0, n = 1, k = 'a', g = (x) => 'old' + x
@@ -622,9 +619,7 @@ test('async: a promise enumerates no keys', async () => {
 })
 
 // A promise holds no own property: `then`, `catch` and `finally` are
-// Promise.prototype's, its state none at all. Own-property checks answer as
-// JS does by literal key, by a key known at run time and on a receiver of
-// unknown kind; `in` finds the methods; the tag is the class's.
+// Promise.prototype's, its state none at all.
 test('async: a promise has no own properties', async () => {
   if (onWasi() || onKernel()) return
   await agreeAsync(`const own = (o, k) => Object.hasOwn(o, k)
@@ -728,12 +723,6 @@ test('async: a class in the body reads its bindings', async () => {
 
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
-  // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals
-  // stopped only at '=>' (or nowhere), so a nested function declaration's own
-  // `return` forced statement decomposition and read as a machine return.
-  // One canonical boundary (FN_BOUNDARY_OPS) + fn-decl hoisting fix these.
-  // Function DECLARATION at machine-body top level — hoisted to a const-bound
-  // expression; callable before its textual position (JS hoisting semantics).
   const [c0, c1, c2, c3, c4, c5] = valAll([
     `async () => { function helper() { return 1 } return helper() }`,
     `async () => { const v = helper(); function helper() { return 6 } return v }`,
@@ -792,10 +781,9 @@ test('async: an await anywhere in an expression suspends at a statement, in sour
 // An object-literal `async m() {}` is a method shorthand whose one-statement
 // body arrives bare (the parser's shape for every one-statement body); the
 // async lowering took it for a concise expression body and returned the
-// statement's own non-value (a NaN-box leak read as 2.78e-307). Async
-// generator members `async *g()` and `async *[computed]()` parse with the
-// async on the member's value, as `async m()` does. Reference: ECMA-262
-// 15.6 AsyncFunctionBody, 15.7 AsyncGeneratorMethod, 27.7 Promise jobs.
+// statement's own non-value (a NaN-box leak read as 2.78e-307). Reference:
+// ECMA-262 15.6 AsyncFunctionBody, 15.7 AsyncGeneratorMethod, 27.7 Promise
+// jobs.
 test('async: object-literal method shorthands and async generator members', async () => {
   if (onWasi() || onKernel()) return
   const { main } = jz(`const o = {
@@ -917,8 +905,7 @@ export let g = () => { let res; const p = new Promise((r) => { res = r }); retur
 // Resolving a promise with a promise adopts it as a thenable
 // (NewPromiseResolveThenableJob): its then runs in a job of its own and the
 // settlement in a reaction after it, two jobs, as Node takes them; an await
-// takes one (PromiseResolve). An async return, a handler's result and an
-// executor's resolve all resolve so.
+// takes one (PromiseResolve).
 test('async: resolving with a promise takes the two jobs Node takes', async () => {
   if (onWasi() || onKernel()) return
   const src = `export const f = async () => {
@@ -972,19 +959,18 @@ test('async: a function that never awaits settles its promise in the jobs Node t
 })
 
 // …and compiles to no machine and no driver: the body under a try, its
-// promise made where it returns (`__p_done`). One that awaits keeps both.
-// (Unoptimized: the runtime's names stand, none inlined.)
+// promise made where it returns (`__p_done`). (Unoptimized: the runtime's
+// names stand, none inlined.)
 test('async: a function that never awaits runs no machine', () => {
   const settled = compile('const g = async (x) => x + 1\nexport const f = () => g(1)', { wat: true, optimize: false })
   ok(!/__async_run/.test(settled) && /__p_done/.test(settled), 'no driver, a settled promise')
   ok(/__async_ret/.test(compile('const g = async (x) => (await x) + 1\nexport const f = () => g(1)', { wat: true, optimize: false })), 'an await keeps a machine')
 })
 
-// An async function's machine drives itself (jzify/generators.js `self`):
-// its frame record holds its promise, its state and the bindings that live
-// across an await; it suspends by subscribing itself (`__await`) and completes
-// by settling its promise (`__async_ret`). No driver, iterator object or step
-// record, no cell per binding.
+// An async function's machine drives itself (jzify/generators.js `self`): its
+// frame record holds its promise, its state and the bindings that live across
+// an await; it suspends by subscribing itself (`__await`) and completes by
+// settling its promise (`__async_ret`).
 test('async: an async function\'s machine drives itself from one frame record', () => {
   const out = JSON.stringify(jzify(parse('const g = async (x) => { let t = 0; for (let i = 0; i < x; i++) t += await i; return t }\nexport const f = () => g(3)')))
   ok(out.includes('"__p_async"') && out.includes('"__async_ret"') && out.includes('"__await"'), 'its promise, completion and suspension')
@@ -996,8 +982,6 @@ test('async: an async function\'s machine drives itself from one frame record', 
 // holds what an async function returns and what one awaits without its
 // identity (src/summary/index.js opaque), the summary reading an awaited value
 // off the promise it names, Promise.all's an array of its inputs' (COMBINED).
-// A record and an array of records, which the runtime's one value binding
-// would join and lose, read as slots.
 test('async: an awaited value keeps the layout its producer gave it', async () => {
   const src = `const ORD = [[{ qty: 1, cents: 2 }], [{ qty: 3, cents: 4 }, { qty: 5, cents: 6 }]]
 const USR = [{ id: 7, tier: 1 }]
@@ -1035,9 +1019,7 @@ export const g = () => rec().then(o => o)`).exports
 // machine (jzify/async.js splitDirectAsync): no promise between them, the call
 // resuming its caller where the promise would have, in Node's order for every
 // value it settles with (a value, a promise, a thenable, a getter that throws,
-// a rejection), at once or after awaits of its own. The name still binds a
-// function returning a promise: a value passed on, an export, Promise.all's
-// input; a second declaration of the name keeps every await of it a promise's.
+// a rejection), at once or after awaits of its own.
 test('async: an awaited call resumes its caller in microtask order, no promise between', async () => {
   const out = JSON.stringify(jzify(parse('const g = async (x) => x + 1\nexport const f = async () => (await g(1)) + (await g(2))')))
   ok(/\["\(\)","__p_done",\[",",[^\]]*"__kc"\]\]/.test(out), 'the callee resumes the machine it is handed')
@@ -1119,9 +1101,7 @@ test('async: an awaited call resumes its caller in microtask order, no promise b
 // A machine keeps in its frame what crosses a suspension and no more: a
 // binding one step writes and then reads, the value a resumption brings, the
 // exception a catch takes and an await's operand held for the summary are
-// locals of the step (jzify/generators.js stepBound). A jump to a state
-// nothing else enters by number runs it in place: a loop awaiting in its body
-// dispatches to its first state, its test and its resumption only.
+// locals of the step (jzify/generators.js stepBound).
 test('async: a machine\'s frame holds what crosses a suspension, its dispatch what is entered by number', async () => {
   const src = 'const g = async (x) => { const a = x + 1; let b = 0; if (a > 2) b = a; await null; const c = a * 2; b += c; try { await null } catch (e) { return e } return a + b }\nexport const f = () => g(3)'
   const out = JSON.stringify(jzify(parse(src)))

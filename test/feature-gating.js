@@ -87,15 +87,7 @@ test('features.external: computed reads use receiver facts, not previous demand'
 test('features.external ON: untyped ?.prop read — __ext_get import present', () => {
   if (onWasi()) return  // wasi: external object
   // `?.` on an unknown receiver delegates to the SAME emitPropAccess arm the
-  // plain `.` read uses (module/core.js) — same demand, same import. `o` itself
-  // may BE the PTR.EXTERNAL host object reaching in through this very read, no
-  // other access needed to put "externals in play" first (an exported function's
-  // own untyped parameter is exactly this — see test/objects.js's marshalled-arg
-  // regression). A prior version exempted `?.` from the demand on the false
-  // premise that the nullish short-circuit makes the EXTERNAL arm unreachable
-  // unless something else set it first — it doesn't; the short-circuit rules
-  // out null/undefined only, and dropped __ext_get for every `opts?.x ?? dflt`
-  // whose only property access was itself optional-chained.
+  // plain `.` read uses (module/core.js) — same demand, same import.
   const w = wat(`export let f = (o) => o?.x`)
   is(hasImport(w, '__ext_get'), true)
 })
@@ -145,8 +137,6 @@ test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
   is(/__ext_get/.test(body), true)
 })
 
-// === Organically usage-gated substrates (no ctx.linkDemand flag — inc(__*) drives them) ===
-
 test('organic hash gating OFF: scalar-only — no hash substrate', () => {
   const w = wat(`export let f = (x) => x + 1`)
   is(hasDef(w, '__hash_get'), false)
@@ -163,9 +153,6 @@ test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
   // inference (same class as the preset-table skip in booleans.js).
   // Burn down with the string-param differential; do not widen this skip.
   if (onKernel()) return
-  // JSON.parse builds OBJECT pointers via a runtime schema cache (__jp_obj
-  // routes through __jp_schema_get); previously it emitted HASH and pulled
-  // __hash_set_local. The schema substrate is what gets exercised now.
   const w = wat(`export let f = (s) => JSON.parse(s)`)
   ok(hasDef(w, '__jp_schema_get'))
 })
@@ -222,8 +209,7 @@ test('organic json gating ON: JSON.stringify pulls json stdlibs', () => {
 })
 
 // TypedArrays don't have dedicated __typed_* stdlibs — they compile to raw
-// f64.load/f32.load/etc. at header-offset addresses. No stdlib-level gating
-// dimension to assert; usage is invisible in the stdlib-symbol view.
+// f64.load/f32.load/etc. at header-offset addresses.
 
 test('features.set OFF: scalar-only — no set stdlibs', () => {
   const w = wat(`export let f = (x) => x + 1`)
@@ -246,12 +232,6 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
   const h = wat(`export let f = (m) => m.has('k')`)
   ok(hasDef(h, '__map_has_h'))
   is(hasDef(h, '__map_hash'), false)
-  // #3 bit-eq: on a hash hit, an inline `storedKey == queryKey` (i64.eq on the slot's key word)
-  // short-circuits the __same_value_zero / __str_eq call for the identity (interned/SSO) case:
-  // the `bitEq || sameValueZero(…)` test either keeps its diamond, `… (then (i32.const 1))
-  // (else (call $__same_value_zero …`, is chained by watr's `conditions`, a bit-equal key
-  // branching past the call and the call exiting on its own, or exits the probe on each
-  // (collection/ordered.js genOrdLookup: `(br_if $hit bitEq) (br_if $hit sameValueZero)`).
   const flat = g.replace(/\s+/g, ' ').replace(/ \)/g, ')')
   // Local reuse may rename the slot address; its key word is still compared before the call.
   ok(/\(i64\.eq \(i64\.load offset=8 \(local\.(get|tee) \$[^\s()]+\b/.test(flat))
@@ -317,26 +297,10 @@ test('alloc:false omits allocator helper exports', () => {
     ok(/\(memory/.test(w))
 })
 
-// === Proven-ARRAY receivers skip the generic __ptr_offset tag-dispatch ===
-// __arr_grow_known's callers (__arr_push1, __arr_set_length, inline-len array
-// store) have already proven the receiver ARRAY — same contract as __arr_idx_known
-// vs __arr_idx. It inlines the raw offset extract + forwarding chase (ARRAY is
-// forwarding-capable, so the chase itself stays; only the tag re-extract +
-// FORWARDING_MASK dispatch that __ptr_offset repeats is skippable). The defensive
-// __arr_grow (untyped call sites) still needs the generic helper — receiver isn't proven.
+// __arr_grow_known's callers (__arr_push1, __arr_set_length, inline-len array store) have
+// already proven the receiver ARRAY — same contract as __arr_idx_known vs __arr_idx.
 test('__arr_grow_known: proven-ARRAY grow skips the generic __ptr_offset call', () => {
   if (onKernel()) return  // self-compile kernel codegen shape differs; in-process leg owns this
-  // Was a single exported `f`'s own bare parameter (`(a) => { a.push(1); ... }`)
-  // — its ONLY "proof" that `a` was ARRAY came from src/compile/infer.js's
-  // methodEvidence source treating `.push` usage alone as certain (fix/
-  // param-mutation-propagation found that unsound: a plain OBJECT/HASH value
-  // can own a same-named closure property, so `.push` usage no longer induces
-  // ARRAY). Rewritten to prove `a` is ARRAY the SOUND way instead — two real
-  // call sites both passing array literals, resolved by the cross-function
-  // paramReps fixpoint (src/param-reps.js) — so this test still exercises the
-  // real optimization (a genuinely proven-ARRAY receiver skips the generic
-  // tag-dispatch), just from evidence that can't misfire on a closure-bearing
-  // object.
   const w = wat(`const g = (a) => { a.push(1); return a.length }; export const h1 = () => g([1]); export const h2 = () => g([2, 3])`)
   const body = w.match(/\(func \$__arr_grow_known\b[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'expected __arr_grow_known to be emitted')

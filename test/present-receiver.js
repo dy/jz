@@ -69,12 +69,7 @@ test('present receiver: a sole missing-receiver check calls the throw helper, no
 
 // A row a const names is the element read: a missing one has no length and no
 // element, and a row the program grows or replaces has the length it has then.
-// The plan read `row.length` off the literal's row lengths (`rowlen[i]`) and
-// unrolled a loop bounded by a table of lengths as if every bound were one of
-// the literal's (plan/loops.js, removed): `d.length` past the end answered
-// undefined, a pushed row its literal count, a bound past the end ran the
-// shortest row's steps, a row index below zero no step. Node's message names
-// the key; jz's is its prefix.
+// Node's message names the key; jz's is its prefix.
 const rows = `export const len = (n) => { const a = [[1]]; const d = a[n]; return d.length }
   export const elem = (n) => { const a = [[1]]; const d = a[n]; return d[0] }
   export const pushed = (n) => { const rows = [[1, 2], [3]]; const row = rows[0]; row.push(n); return row.length }

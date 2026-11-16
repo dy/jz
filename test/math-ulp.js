@@ -11,7 +11,6 @@ import { is, ok } from 'tst/assert.js'
 import { run, ulpDiff } from './util.js'
 import { MATH_KERNEL, powRuntime } from '../src/prepare/math-kernel.js'
 
-// the bound, in ulps, each function keeps against the host (measured maximum in the comment)
 const BOUND = {
   sin: 2, cos: 2, tan: 4,               // 1, 1, 3: fdlibm's reduction and polynomials
   asin: 1, acos: 1,                     // fdlibm rational kernels
@@ -130,8 +129,6 @@ export let sign = (x) => Math.sign(Math.sin(x))`)
   is(s(Math.PI / 2), 1)
   is(c(Math.PI), -1)
   for (const x of [NaN, Infinity, -Infinity]) for (const f of [s, c, t]) ok(Number.isNaN(f(x)), `${f.name}(${x}) is NaN`)
-  // Payne–Hanek: the double closest to a multiple of π/2 of all (Muller, Elementary
-  // Functions, the worst case 6381956970095103·2^797 at 2^-61), and a sample past 2^24
   for (const x of [6381956970095103 * 2 ** 797, 1e22, -1e300, 2 ** 24, 1.7976931348623157e308]) {
     ok(ulpDiff(s(x), Math.sin(x)) <= BOUND.sin, `sin(${x}) = ${s(x)}, host ${Math.sin(x)}`)
     ok(ulpDiff(c(x), Math.cos(x)) <= BOUND.cos, `cos(${x}) = ${c(x)}, host ${Math.cos(x)}`)

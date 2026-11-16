@@ -94,10 +94,9 @@ test('push: an array at the heap top grows in place without the host allocator',
   for (const optimize of levels(0, 2, 'speed', 'size')) is(jz(src, { optimize, alloc: false }).exports.f(27), want, `f(27) at ${optimize}, alloc: false`)
 })
 
-// The kernel: a fresh array a loop pushes into as many times as the data
-// says (no count it could reserve is proven). Its hot path stores in place;
-// only the arm the block is full in calls (`__arr_room`). The size tier keeps
-// one call per push site (`__arr_push1`; two sites, so watr keeps it a call).
+// The kernel: a fresh array a loop pushes into as many times as the data says
+// (no count it could reserve is proven). The size tier keeps one call per
+// push site (`__arr_push1`; two sites, so watr keeps it a call).
 test('push: a push loop stores in place at the speed tier', () => {
   if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
   const src = `export let f = (n) => { const a = [], b = []; while (n > 1) { if (n % 2) { a.push(n); n = 3 * n + 1 } else { b.push(n); n = n / 2 } } return a.length * 1000 + b.length + a[a.length - 1] }`

@@ -13,9 +13,7 @@ const fn = (code) => run(code).f
 const wat = (code) => compile(code, { wat: true, optimize: { watr: false } })
 // A boolean-returning export boxes its 0/1 carrier into a FALSE/TRUE NaN atom —
 // `(i32.or (i32.const 4) <bit>)` fed to `$__mkptr` — inside its `$f$exp` boundary
-// wrapper, the boolean carrier's only footprint. A number-returning export has no
-// boundary wrapper at all. (Quiet-NaN ABI: the atom rides f64, no i64 carrier.)
-// The export thunk's boolean box: a select of the two atoms (boolBoxIR).
+// wrapper, the boolean carrier's only footprint.
 const boxesResult = (code) => /\(func \$f\$exp[\s\S]*?\(select\s+\(f64\.const nan:0x7FF8000500000000\)\s+\(f64\.const nan:0x7FF8000400000000\)/.test(wat(code))
 
 test('bool identity: named recursive callbacks preserve raw and boxed false results', () => {
@@ -97,9 +95,7 @@ test('bool identity: retained absent capture survives write, error and reset', (
   }
 })
 
-// ============================================
 // Surface as a real boolean at the host boundary
-// ============================================
 
 test('bool: literal true/false decode at boundary', () => {
   is(fn('export let f = () => true')(), true)
@@ -143,9 +139,7 @@ test('bool: Boolean() surfaces as boolean', () => {
   is(fn('export let f = () => Boolean()')(), false)
 })
 
-// ============================================
 // typeof observes a real boolean
-// ============================================
 
 test('bool: typeof of a runtime comparison is "boolean"', () => {
   is(fn('export let f = (x) => typeof (x > 0)')(5), 'boolean')
@@ -157,9 +151,7 @@ test('bool: typeof of a literal boolean is "boolean"', () => {
   is(fn('export let f = () => typeof false')(), 'boolean')
 })
 
-// ============================================
 // String / JSON.stringify observe a real boolean
-// ============================================
 
 test('bool: String() of a comparison is "true"/"false"', () => {
   is(fn('export let f = (x) => String(x > 0)')(5), 'true')
@@ -171,9 +163,7 @@ test('bool: JSON.stringify observes boolean', () => {
   is(fn('export let f = () => JSON.stringify([true])')(), '[true]')
 })
 
-// ============================================
 // Cheap carrier — branch & arithmetic positions pay nothing
-// ============================================
 
 test('bool: comparison in branch position works without boxing', () => {
   is(fn('export let f = (a, b) => { if (a < b) return 1; return 0 }')(1, 2), 1)
@@ -245,10 +235,6 @@ test('bool: a string or nothing, and a number or a string, test by kind', () => 
   }
 })
 
-// ============================================
-// Host → jz: a JS boolean coerces to the 0/1 carrier
-// ============================================
-
 test('bool: host boolean coerces to 0/1 in arithmetic', () => {
   is(fn('export let f = (b) => b + 0')(true), 1)
   is(fn('export let f = (b) => b + 0')(false), 0)
@@ -256,18 +242,10 @@ test('bool: host boolean coerces to 0/1 in arithmetic', () => {
   is(fn('export let f = (b) => +b')(false), 0)
 })
 
-// ============================================
 // Honest limitations — the carrier only appears where statically provable.
 // Pinned so the README's stated boundaries can't drift silently.
-// ============================================
 
 test('bool: value-preserving &&/|| carry the boolean atom across the boundary (gap CLOSED)', () => {
-  // Was a documented gap: `5 && true` crossed as raw 1 (the value-preserving
-  // merge collapsed the BOOL arm to its numeric carrier). Closed by the
-  // ambiguous-BOOL-merge identity work (.work/archive/todo.md §deletion-sweep):
-  // a merge with a statically-BOOL arm and a NUMBER sibling boxes the BOOL
-  // arm at identity/boundary escapes, so the atom survives to JS exactly.
-  // Pure-NUMBER merges stay raw (byte-identical fast path) — pinned below.
   is(fn('export let f = () => 5 && true')(), true)
   is(fn('export let f = () => 0 || true')(), true)
   is(fn('export let f = () => 5 && 3')(), 3)
@@ -277,12 +255,7 @@ test('bool: value-preserving &&/|| carry the boolean atom across the boundary (g
 test('bool: identical ambiguous merge duplicated across return branches (quarantine CLOSED)', () => {
   // The carrier-invariant design's quarantined anomaly: { if(s){return M}
   // return M } with M = ((x>0)&&1) duplicated in both branches once returned
-  // 0 for BOTH arguments. Diagnosed 2026-08-01: duplication was never causal
-  // — both branches independently computed the same wrong value through the
-  // VT['()'] grouping blind spot (mechanism B); the parser never shares node
-  // references between occurrences and no cross-occurrence cache exists, so
-  // a CSE/dedup class is structurally impossible. Pinned at every tier now
-  // that the boundary is proven correct.
+  // 0 for BOTH arguments.
   const src = 'export let f = (s, x) => { if (s) { return ((x>0)&&1) } return ((x>0)&&1) }'
   for (const optimize of levels(0, 2, 3)) {
     const f = jz(src, { optimize }).exports.f
@@ -294,32 +267,14 @@ test('bool: identical ambiguous merge duplicated across return branches (quarant
 })
 
 test('bool: bare boolean read from a container decodes as a real boolean', () => {
-  // Was a documented gap (bare return crossed as the raw 1/0 carrier instead of
-  // proving BOOL at the boundary) — closed as a side effect of the member-
-  // compound-assign BigInt fix (2^62 boundary ledger entry): narrowValResults/
-  // narrowBoolResults (src/compile/narrow.js), the function-return-kind
-  // pre-pass, now installs the function's own analyzeBody(body).flatObjects
-  // before resolving a `.`/`[]` return tail's kind — previously it ran before
-  // ctx.func.flatObjects was populated for the function under examination, so
-  // a proven-BOOL (or BIGINT — see statements.js) flat array/object element's
-  // return tail read as unproven and kept the raw Number carrier.
   is(fn('export let f = () => { let a = [true, false]; return a[0] }')(), true)
   is(fn('export let f = () => { let a = [true, false]; return typeof a[0] }')(), 'boolean')
 })
 
-// ============================================
-// audit-#12 BOOL_CARRIER closures (this commit) — test262's own reproductions
-// of the join/throw-slot carrier gap, pinned at every optimize level.
-// ============================================
-
 test('bool: throw/catch preserve boolean identity (audit-#12, was WRONG)', () => {
   // src/compile/emit.js 'throw' emitter used `asF64(emit(expr))` — a raw
-  // numeric box, the 18th unnamed site of bridge.js storedValue's "boxed-
-  // value slot" gap (see the emitter's own doc comment). `throw true`
-  // crossed the throw slot as a plain NUMBER carrier: `catch(e){ e===true }`
-  // read false and `typeof e` read 'number'. Fixed by routing the thrown
-  // expression through storedValue (the established chokepoint) instead —
-  // covers a bare boolean AND an ambiguous join thrown directly.
+  // numeric box, the 18th unnamed site of bridge.js storedValue's
+  // "boxed-value slot" gap (see the emitter's own doc comment).
   const cases = [
     ['export let f = () => { let r; try { throw true } catch (e) { r = typeof e } return r }', 'boolean'],
     ['export let f = () => { let r; try { throw true } catch (e) { r = e === true } return r }', true],
@@ -347,10 +302,8 @@ test('bool: RegExp flag getters preserve boolean identity (audit-#12, was WRONG)
 test('bool: strict-eq boxes a short-circuited BOOL arm even when the sibling arm is unresolved (audit-#12, was WRONG)', () => {
   // emitStrictEq's "one side proven BOOL, other side dynamic-unknown" branch
   // assumed an unresolved (null) static kind can never carry a raw BOOL bit.
-  // False for `true || undefined`/`true || null`: VT['||'] can't unify BOOL
-  // with NULL/UNDEF (kind stays null), but the arm actually taken at runtime
-  // (`true`) is still raw BOOL. Fixed via mayCarryRawBool + the
-  // gate/body-split emitIdentitySafeArms (test262 logical-or/S11.11.2_A4_T4).
+  // Fixed via mayCarryRawBool + the gate/body-split emitIdentitySafeArms
+  // (test262 logical-or/S11.11.2_A4_T4).
   const cases = [
     'export let f = () => (true || undefined) === true',
     'export let f = () => (true || null) === true',
@@ -359,22 +312,12 @@ test('bool: strict-eq boxes a short-circuited BOOL arm even when the sibling arm
     is(jz(src, { optimize }).exports.f(), true, `O${optimize} ${src}`)
 })
 
-// ============================================
-// Boolean identity across untyped carriers — the self-compile mother bug
-// (kernel resolveOptimize: `1 === true` took the level-2 branch; fromEntries
-// presets read back 0/1 so `cfg.pass !== false` ran passes the host skipped).
-// (kernel resolveOptimize: `1 === true` took the level-2 branch; fromEntries
-// presets read back 0/1 so `cfg.pass !== false` ran passes the host skipped).
+// Boolean identity across untyped carriers
 //
-// Contract (src/ir.js BOOL_ATOM_BASE): booleans are raw i32/f64 0/1 ONLY while
-// their static type is known (branch/arithmetic position). The moment one flows
-// into an untyped carrier — container store, collection key/value, closure arg,
-// mixed ?:/&&/||/?? merge — it materializes as its TRUE/FALSE atom (carrierF64),
-// so typeof / String / strict-eq observe boolean identity. Strict equality
-// against a bool literal on an unknown operand compares atom BITS (emitStrictEq)
-// — `1 === true` is false, exactly ES; BOOL∪NUMBER merges deliberately stay raw
-// (the 0/1 IS the ToNumber image — VT['?:'] carries NUMBER there).
-// ============================================
+// Strict equality against a bool literal on an unknown operand compares atom
+// BITS (emitStrictEq) — `1 === true` is false, exactly ES; BOOL∪NUMBER merges
+// deliberately stay raw (the 0/1 IS the ToNumber image — VT['?:'] carries NUMBER
+// there).
 
 const LEVELS = levels(false, 2)
 
@@ -484,12 +427,6 @@ test('bool identity: preset-table idiom (the kernel divergence chain)', async ()
 })
 
 test('bool identity: dyn-spread literal bool props keep the atom (=== true survives)', async () => {
-  // The rotateLoops loss: {...fromEntries(...), rotateLoops: true} lowers via
-  // emitDynamicSpread (unknown spread source → HASH); its explicit `k: v` writes
-  // stored `emit(v)` RAW — a literal true landed as 1.0 bits, not the TRUE atom —
-  // so every `cfg.flag === true` gate read false and speed-tier passes silently
-  // dropped in-kernel (sum|3 rotation, O3 preset flags). The write must go
-  // through storedValue/carrierF64 like every other container ingress.
   const SRC = `
   const AO = Object.fromEntries([['p', true]])
   const P = { ...AO, a: true, b: false, s: 'speed', n: 16 }
@@ -537,13 +474,7 @@ test('bool identity: JSON, truthiness, arithmetic on boxed bools', async () => {
   }
 })
 
-// A boolean that may be nullish is not statically boolean. `litTruth`'s
-// shape (src/prepare/const-fold.js) returns `!!x` or null; `t === false` was
-// lowered as "t is falsy", so null took the false arm and foldConstIf dropped
-// every `if` whose condition was no literal — the kernel compiled
-// `if (idx > 1) return idx * 8; return 7` to `return 7`. The identity of the
-// nullish member is its carrier's; loose `==` converts the present boolean
-// and rejects the nullish (JS: `null == false` is false, `true == 1` true).
+// A boolean that may be nullish is not statically boolean.
 test('bool identity: a boolean-or-null result keeps null apart from false and true', () => {
   const SRC = `
   const tri = n => n === 1 ? true : n === 0 ? false : null
@@ -589,11 +520,9 @@ test('bool identity: strict equality of a number against an untyped operand conv
 
 // A boolean the analysis marks nullable (a builtin's result, `la.has(a)`,
 // fails closed) keeps its raw 0/1 carrier; strictly compared with a value the
-// program cannot kind (`lb.has(b)`, lb a slot value: its result is an atom)
-// it enters the dynamic compare as its atom, as it would enter any untyped
-// carrier. The raw 1 beside the TRUE atom read unequal: the compiler's own
-// closure-body dedup (src/wat/assemble/closure-table.js, `al !== bl`) found no
-// equal bodies in the kernel and kept 1,249 duplicates.
+// program cannot kind (`lb.has(b)`, lb a slot value: its result is an atom) it
+// enters the dynamic compare as its atom, as it would enter any untyped
+// carrier.
 test('bool identity: a nullable boolean beside an unkinded boolean compares strictly as its atom', () => {
   const SRC = `const namesOf = (fn) => { const names = new Set(); for (const n of fn) if (typeof n === 'string') names.add(n); return names }
   const equalBodies = (fa, la, fb, lb) => {
@@ -634,9 +563,7 @@ test('bool identity: a nullable boolean beside an unkinded boolean compares stri
 
 // Loose `==` between values the program cannot type statically: a boolean
 // beside a number converts (`true == 1`, `false == 0`), null and undefined
-// are equal to each other alone, a boolean is not a string. The runtime's
-// `__eq` compared the boolean atom's bits with the number, so every such
-// pair was unequal; the static BOOL arm already converted.
+// are equal to each other alone, a boolean is not a string.
 test('bool identity: dynamic loose equality converts a boolean beside a number', () => {
   const SRC = `const box = (v) => [v][0]
   export const probe = () => {
@@ -653,10 +580,7 @@ test('bool identity: dynamic loose equality converts a boolean beside a number',
 // boolean it can (a literal, a proven local, a comparison result): the
 // boolean atom converts on either side (`true == 1`, `x == true` with x
 // holding true), a boxed BigInt compares mathematically, null and undefined
-// equal no number; `!=` negates. Strict `===` through the same dynamic path
-// stays identity: `true === 1` is false whatever carries the operands.
-// The static side once compared raw bits (a NaN-boxed atom equals no f64),
-// and the runtime's strict form inherited the loose boolean conversion.
+// equal no number; `!=` negates.
 test('bool identity: loose equality of a number or boolean against any converts; strict stays identity', () => {
   const PARTNERS = ['1', '0', '2', '-0', 'NaN', 'true', 'false', 'k > 0', 'k === 0', 'null', 'undefined']
   const table = (X) => `[${PARTNERS.flatMap(p => [`${X} == ${p}`, `${p} == ${X}`, `${X} != ${p}`, `${X} === ${p}`, `${p} === ${X}`]).join(', ')}].map(v => v ? 1 : 0).join('')`

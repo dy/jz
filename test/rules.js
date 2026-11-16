@@ -47,8 +47,6 @@ test('rules: a ternary of a Boolean and a Number under a constant condition, com
   for (const optimize of CONFIGS) for (const c of [1, 2, NaN]) agree(src, 'f', [c], { optimize })
 })
 
-// ── the grids ─────────────────────────────────────────────────────────────
-
 let seed = 0x2545F491
 const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296
 const POW2 = Array.from({ length: 32 }, (_, k) => 2 ** k)
@@ -91,8 +89,6 @@ const SPELLED = {
   'i64.const': [0n, 1n, -1n, 0x7ff8000000000000n, -0x0008000000000000n, 0x100000000n, 0xffffffffn, 0x7ff8000100000001n, '0x7FF8000000000000', '0x4338000000000000', '-0x8000000000000000', '18442240474082181120'],
   'f64.const': [0, -0, 1, 2, -2, 0.5, 2 ** 31, Infinity, '2', 'nan:0x7ff8000000000001', 'inf', '-0'],
 }
-
-// ── instances of a pattern ────────────────────────────────────────────────
 
 const isHole = (p) => typeof p === 'string' && p[0] === '?'
 // The type of operand `i` of `op` (`addr` an address, `box` a NaN box a helper reads).
@@ -143,8 +139,6 @@ const clone = (n) => {
   return m
 }
 
-// ── running two trees over the grid ───────────────────────────────────────
-
 // A function of parameters `params` returning `tree` as integer bits: a float parameter
 // arrives as its bits, a float result leaves as its bits.
 const WIRE = { i32: 'i32', addr: 'i32', i64: 'i64', box: 'i64', f64: 'i64', f32: 'i32' }
@@ -193,8 +187,6 @@ const differs = (ex, i, relation, params, result, count, only, admit) => {
 }
 const counts = () => ({ inputs: 0, removed: 0, outside: 0 })
 
-// ── the table ─────────────────────────────────────────────────────────────
-
 const show = (n) => printTree(n)
 const RUNTIME = ['__ptr_type', '__ptr_aux', '__is_null', '__is_nullish']
 for (const row of TABLE) {
@@ -218,7 +210,6 @@ for (const row of TABLE) {
       ok(bad === null, `${name}: ${show(a)} => ${show(b)}` + (bad === null ? '' : ` differs at (${bad})`))
       if (bad !== null) break
     }
-    // (a tuple the condition refuses where both sides agree: reported, not failed)
     let agreeing = 0
     if (refused.length) {
       let rx = null
@@ -230,8 +221,6 @@ for (const row of TABLE) {
     if (agreeing) console.log(`# rules: ${name}'s condition refuses ${agreeing} of ${refused.length} instances on which both trees agree`)
   })
 }
-
-// ── the rules that stay code ──────────────────────────────────────────────
 
 // A rule that stays code, run on patterns: `pass` rewrites `(func $f (param $x0 …) … body)` in
 // place (with `module`, a module holding it), and each body is compared with what the pass

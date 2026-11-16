@@ -64,9 +64,6 @@ test('kind tests: typeof and a name decide their tests where the kinds do', () =
   ok(!entries.some(e => e.code === 'shape-lost'), entries.filter(e => e.code === 'shape-lost').map(e => e.message).join('; '))
 })
 
-// A parameter's default reads its argument by position when the function reads
-// `arguments` (jzify/arguments.js). What the calls pass there decides the
-// default's test: a `null` argument is no missing one, so `f(null)` keeps it.
 test('kind tests: a default read by position runs only where a call leaves the argument out', () => {
   const cases = [
     `function f(a = 9) { return arguments.length * 100 + (a === null ? 10 : a === undefined ? 20 : a) }
@@ -86,7 +83,7 @@ export let g = () => f(1) * 1000 + f(1, 2)`,
 
 // A decided test still runs where evaluating it may do something: a call its
 // `||` evaluates before the operand that decided it, a member read that throws
-// on a missing receiver. Only the arm it never takes goes.
+// on a missing receiver.
 test('kind tests: a decided test keeps its effects', () => {
   const cases = [
     `let n = 0

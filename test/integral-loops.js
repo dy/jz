@@ -251,8 +251,6 @@ test('integral loops: what else the loop writes reads the same after it', () => 
   }
 })
 
-// `p = q + 1` reads q, which the loop halves: q is no integer, so p is none
-// either; the census drops both and stops (it used to re-add q forever)
 test('integral loops: a handler reads what the loop wrote before it threw', () => {
   // a copy writes the cursor under a name of its own, which a throw leaves unwritten
   const src = `const buf = new Float64Array(8)
@@ -278,8 +276,7 @@ test('integral loops: an index read through a name the loop writes a fraction to
 
 // A filter state read back from storage of mixed kinds (a Float64Array by
 // default, a plain list where the caller keeps one): `z1 = s[0]` is of no
-// known kind, and each `+` of it asks for a string. Where the state holds
-// Numbers the loop runs as a copy whose sums add.
+// known kind, and each `+` of it asks for a string.
 const biquad = `function state() { return new Float64Array(2) }
 function section(fc) { const a = Math.exp(-fc); return { b0: 1 - a, b1: 0.1, b2: 0, a1: -a, a2: 0.05 } }
 function biquad(data, c, s = state()) {
@@ -328,9 +325,7 @@ test('integral loops: where the state holds Numbers the loop adds them', () => {
 
 // A callback a factory returns keeps its state on a record, fields added on
 // first use: `let keys = state.keys` may be undefined as far as the summary
-// knows, and each access in the loop tests it. Where all are present the
-// loop, a closure's own, runs as a copy that reads them as the typed arrays
-// and the record (read only by its fields) they are.
+// knows, and each access in the loop tests it.
 const stateful = `function makeProcess(tol) {
   return function (mag, state) {
     if (!state.keys) { state.keys = new Float64Array(mag.length); state.acc = new Float64Array(mag.length); state.coef = { g: tol, h: 0.5 } }
@@ -425,10 +420,7 @@ test('integral loops: a counter bounded by a float of unknown integrality counts
 })
 
 // A copy declares the words it names anew inside its own block, so no guard of an
-// enclosing loop reads one. IMA ADPCM's block loop around its word and channel
-// loops (decode-wav's `decodeImaWav`, its channels made by a loop) took the cursor
-// word of the copy inside into its own guard, a name no scope there declares: the
-// module did not compile.
+// enclosing loop reads one.
 test('integral loops: a guard reads no word a copy inside it declared', () => {
   const src = `const RAW = new Uint8Array(2048)
     for (let i = 0; i < 2048; i++) RAW[i] = (i * 53 + 7) & 255
@@ -614,11 +606,6 @@ test('integral loops: a nest over module dimensions is one version, its pixel cu
 test('integral loops: a raster nest\'s row base and derived index are words, so the stencil lifts', () => {
   // `rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 : x - 1`: integers of the
   // counter and of names the guard holds to int32s, reaching an element index.
-  // Their hulls over the loop are expressions of what the guard reads; where
-  // they fit i32 the copy declares each as its word, and the typed-bounds
-  // versioning reads an affine index of words: the 5-point stencil lifts. The
-  // loop as written keeps every other input (a fractional width reads past the
-  // row as JS does).
   const src = `let W = 0, H = 0, uA, uB
     export let resize = (w, h) => { W = w; H = h; uA = new Float64Array(w * h); uB = new Float64Array(w * h); for (let i = 0; i < uA.length; i++) uA[i] = i % 7; return uB }
     export let step = () => {
@@ -652,11 +639,7 @@ test('integral loops: a raster nest\'s row base and derived index are words, so 
 test('integral loops: a ring counter is a cursor with a floor, and a loop under a literal bound guards nothing', () => {
   // `si = si + 1; if (si >= N) si = 0` steps up by a literal and resets to one:
   // its advance over the loop is the trips times the step, from the higher of
-  // its entry and the reset. A loop under a literal bound counts its trips
-  // without a guard of the bound; a cursor entering from a literal, or from the
-  // hull a copy just before left it in, runs as a word with no test at all. The
-  // pixel loop then holds two plain inner loops, and the iterated-map reduction
-  // lifts it.
+  // its entry and the reset.
   const src = `let W = 0, H = 0, px, SEQLEN = 5, seq
     export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); seq = new Int32Array(8); seq[2] = 1; seq[4] = 1; return px }
     export let setSeq = (bits, len) => { if (len < 2) len = 2; if (len > 6) len = 6; SEQLEN = len; let i = 0; while (i < len) { seq[i] = (bits >> i) & 1; i++ } }
@@ -696,10 +679,6 @@ test('integral loops: a ring counter is a cursor with a floor, and a loop under 
 
 // The copy's words, read off the planned body: the plan pass rewrites in place,
 // so the function's body after a compile holds the copies it made.
-// The Number sums, differences and products inside the loops of a module's text
-// (a guard's `1 / x > 0`, a -0 test, divides). A loop the typed-bounds versioning
-// split is read in its fast arm (`label.fN`): the checked twin keeps the Number
-// path of a read past the end.
 const loopFloats = (text) => {
   const loops = []
   const walk = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop') { loops.push(n); return } for (const c of n) walk(c) }
@@ -738,7 +717,7 @@ test('integral loops: a density scatter under a range test indexes by a word', (
   // bounds `row`, the guard holds W and H to int32s and tests the product's
   // hull, and the copy declares the index as its word (an `imul` of words):
   // the hot loop stores through an i32 index, where a Number index converted
-  // and checked on every count. The loop as written keeps fractional sizes.
+  // and checked on every count.
   const src = `let W = 0, H = 0, dens
     export let resize = (w, h) => { W = w; H = h; dens = new Uint32Array(w * h); return dens }
     export let frame = (r0, r1) => {
@@ -804,9 +783,7 @@ test('integral loops: a deposit behind an early return reads its cell as a word'
 
 test('integral loops: a queue\'s module cursors and its elements run as words of the copy', () => {
   // sandpile's relax: `c = queue[qHead]; qHead++; if (qHead >= QN) qHead = 0` with the
-  // cursors module bindings. The loop runs no user code and nothing in it can throw,
-  // so the copy steps its own words and stores them back; the ring's reset bounds
-  // them whatever the trips; the element read at a proven index is a word too.
+  // cursors module bindings.
   const src = `let Gw = 0, grid, inq, queue, qHead = 0, qTail = 0, qCount = 0, QN = 0
     export let resize = (w) => { Gw = w | 0; let n = Gw * Gw; QN = n; grid = new Int32Array(n); inq = new Int32Array(n); queue = new Int32Array(n); qHead = 0; qTail = 0; qCount = 0; return grid }
     let push = (c) => { if (inq[c] === 0) { inq[c] = 1; queue[qTail] = c; qTail++; if (qTail >= QN) qTail = 0; qCount++ } }
@@ -853,9 +830,7 @@ test('integral loops: a queue\'s module cursors and its elements run as words of
 
 test('integral loops: a union-find\'s find loops are one with the copy that proves their roots', () => {
   // percolation: `find` spliced twice per union, its root a moving index of its own
-  // loop. In the sweep's copy the root enters as a word (the cell index, an imul of
-  // words) and stays one (`parent[parent[r]] | 0`), so the find loops need no test
-  // of their own there: the copy holds their fast arms alone.
+  // loop.
   const src = `let W = 0, H = 0, parent, rnk, r
     export let resize = (w, h) => { W = w; H = h; parent = new Int32Array(w * h); rnk = new Int32Array(w * h); r = new Float64Array(w * h); let i = 0; while (i < w * h) { r[i] = ((i * 7919) % 101) / 101; i++ } return parent }
     let find = (i) => { let cur = i; while (parent[cur] !== cur) { let pp = parent[parent[cur]] | 0; parent[cur] = pp; cur = pp } return cur }
@@ -926,10 +901,7 @@ test('integral loops: a rounded coordinate under a range test is an integer ther
 
 test('integral loops: a hull end at the word\'s extreme opens, so no guard that cannot hold', () => {
   // sandpile's relax: `c = queue[qHead]` is any int32, so `nb = c - gw` fits one
-  // signed word only for a width at most zero. A test of that end
-  // (`-2147483648 - gw >= -2147483648`) fails on every run and leaves the loop
-  // as written, cold. The copy takes the element as its word and leaves the
-  // difference a Number.
+  // signed word only for a width at most zero.
   const src = `let W = 0, grid, queue, QN = 0
     export let resize = (w) => { W = w; grid = new Int32Array(w * w); queue = new Int32Array(w * w); QN = w * w; let i = 0; while (i < QN) { queue[i] = i; i++ } return grid }
     export let relax = (n) => {
@@ -963,10 +935,7 @@ test('integral loops: a hull end at the word\'s extreme opens, so no guard that 
 test('integral loops: a module binding reset before every step of it is the loop\'s scratch, not a cursor', () => {
   // maze's generation: the loop steps `qt` only after `qt = 0` (the solve's
   // start, inlined), on the round that ends generation; `qt` is undefined until
-  // then. A cursor's guard holds its entry value to an int32, which undefined
-  // fails on every generation frame, leaving the loop as written: cold. With
-  // nothing of its entry value stepped, `qt` is no cursor: the copy writes it
-  // as written, and its entry value stays what it was.
+  // then.
   const src = `let GX = 0, stack, sp = 0, q, qt, vis
     export let resize = (n) => { GX = n; stack = new Int32Array(n + 1); vis = new Int32Array(n + 1); q = new Int32Array(n + 1); sp = 1; stack[0] = 0; return vis }
     export let step = (rounds) => {
@@ -1057,9 +1026,7 @@ test('integral loops: a parameter some call passes a fraction is held to no int3
 
 test('integral loops: an inner copy\'s hull tests lift to the outer guard at the counter\'s ends, one version of the nest', () => {
   // error diffusion: the row's word `idx = py * W + qx` and `r = idx + W` have
-  // hulls over the outer counter `py`. Tested per row inside the outer copy,
-  // the nest is a loop, a test and a loop, which no later pass reads as a nest;
-  // tested at py's ends in the outer guard, the copy holds the inner copy alone.
+  // hulls over the outer counter `py`.
   const src = `let W = 0, H = 0, gray, px
     export let resize = (w, h) => { W = w; H = h; gray = new Float64Array(w * h); px = new Uint32Array(w * h); let i = 0; while (i < w * h) { gray[i] = (i % 7) / 7; i++ } return px }
     export let frame = () => {
@@ -1098,9 +1065,8 @@ test('integral loops: an inner copy\'s hull tests lift to the outer guard at the
 
 test('integral loops: a walk over links is a word of the copy, a missed link ending it', () => {
   // fireflies' neighbour gather: `let j = head[c]; while (j >= 0) { … j = next[j] }`
-  // over int32 arrays. Every write of `j` is an element, an integer or a miss:
-  // undefined, which fails `j >= 0` and ends the walk. The copy reads a missed
-  // link as -1, the same end, and walks by an i32: no conversion per link.
+  // over int32 arrays. The copy reads a missed link as -1, the same end, and walks
+  // by an i32: no conversion per link.
   const src = `let N = 0, head, next, val, out
     export let resize = (n) => {
       N = n; head = new Int32Array(4); next = new Int32Array(n); val = new Float64Array(n); out = new Float64Array(4)
@@ -1144,9 +1110,6 @@ test('integral loops: a walk over links is a word of the copy, a missed link end
 
 test('integral loops: a nest under inclusive bounds lifts its inner product tests to the outer guard', () => {
   // the 3×3 cell search: `while (cy <= gy + 1) { while (cx <= gx + 1) { let cell = cy * cols + cx … } }`.
-  // The cell's product is tested at cy's ends (the bound itself, under `<=`)
-  // in the outer guard: nothing is tested between the loops, one nest for every
-  // later pass; the walk over links keeps its own test of its entry.
   const src = `let cols = 0, rows = 0, head, next, seen, px, py, out
     export let resize = (c, r, n) => {
       cols = c; rows = r; head = new Int32Array(c * r); seen = new Int32Array(c * r); next = new Int32Array(n); px = new Float64Array(n); py = new Float64Array(n); out = new Float64Array(n)
@@ -1205,9 +1168,7 @@ test('integral loops: a nest under inclusive bounds lifts its inner product test
 
 test('integral loops: optimize.coldTrap throws the version\'s number where the loop as written would run', () => {
   // A guard failing on the input a copy was meant for runs the loop as written,
-  // cold, with nothing to show for it but time. The diagnostic replaces that arm
-  // with a throw of the version's number: a gallery page or a kernel driven
-  // under it names the guard that fails instead of hiding it.
+  // cold, with nothing to show for it but time.
   const src = `let W = 0, grid, queue, QN = 0
     export let resize = (w) => { W = w; grid = new Int32Array(w * w); queue = new Int32Array(w * w); QN = w * w; let i = 0; while (i < QN) { queue[i] = i; i++ } return grid }
     export let relax = (n) => {
@@ -1236,8 +1197,7 @@ test('integral loops: a divisor of fractions alone is no name of the guard', () 
   // Binning a float by a width read from a float array (`(data[i] / w) | 0`):
   // the quotient of a fraction is a float's whatever the divisor, so holding
   // `w` to an int32 buys no word's division, and the test fails for every
-  // fractional width, where the loop runs. Fireflies' neighbour grid divides
-  // a position by a fractional cell so: its copy never ran.
+  // fractional width, where the loop runs.
   const src = `let N = 0, st = new Float64Array(1), data, hist = new Int32Array(16)
     export let setup = (n, w) => {
       N = n; st[0] = w; data = new Float64Array(n)
@@ -1276,7 +1236,7 @@ test('integral loops: an end moved by a literal past the type\'s extreme is no e
   // `g = (x / cell) | 0` is any int32; `if (g >= cols) g = cols - 1` bounds it
   // above alone, its floor `min(cols - 1, -2^31)`, and `c = g - 1` moves that
   // floor past -2^31: a test of it holds for no value and left the loop as
-  // written, cold, on every run. The hull of `c` is none instead.
+  // written, cold, on every run.
   const src = `let count = 0, cols = 1, st, pos, head, next, out
     export let setup = (n, cell) => {
       count = n; st = new Float64Array(1); st[0] = cell
@@ -1323,10 +1283,9 @@ test('integral loops: an end moved by a literal past the type\'s extreme is no e
 })
 
 test('integral loops: a self-call\'s argument reading its own parameter ends the fraction check', () => {
-  // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its
-  // call sites, one of which passes an expression of `x` itself; the check once
-  // recursed without end (stdlib-special in the benchmark corpus). An argument is
-  // read in its caller's scope: a local there is unknown, a fraction visible there counts.
+  // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its call
+  // sites, one of which passes an expression of `x` itself; the check once recursed
+  // without end (stdlib-special in the benchmark corpus).
   const src = `let acc = new Float64Array(8)
     let walk = (n, x) => { let i = 0; while (i < n) { acc[i] += x; i++ } if (n > 1) walk(n - 1, x * 0.5) }
     export let run = (n) => { walk(n, 1.0); return acc[0] }`
@@ -1340,9 +1299,7 @@ test('integral loops: a self-call\'s argument reading its own parameter ends the
 test('integral loops: a stream position entering from an element steps inside an index, its coordinates by bytes and 16-bit words', () => {
   // glyfparse's outline decode: `r` enters each glyph from an Int32Array (no
   // literal, no hull), steps inside `stream[r++]` and by `r += 2`; `x` steps by
-  // a byte either way or by a 16-bit word. The copy holds both as words under
-  // the budget of the glyph's point count; a stream too short, an offset too
-  // far, a point count of zero run the loop as written.
+  // a byte either way or by a 16-bit word.
   const src = `let NG = 0, stream, off, pts
     export let setup = (ng, len) => {
       NG = ng; stream = new Uint8Array(len); off = new Int32Array(ng); pts = new Int32Array(ng)
@@ -1412,10 +1369,6 @@ test('integral loops: a version placed as the one statement of a block stays a b
 })
 
 test('integral loops: an index shifted to the word\'s extreme is no element of the proof, so no guard that cannot hold', () => {
-  // A box blur reads `src[(row + xi) << 2]`: the shifted index spans every
-  // int32, so a test of its ends against the length (`-2147483648 >= 0`) fails
-  // on every run and left the nest as written, cold. The element stays outside
-  // the hull proof; the guard holds the dimensions and the copy runs.
   const src = `export let hblur = (src, dst, w, h, r) => {
       const win = 2 * r + 1
       for (let y = 0; y < h; y++) {
@@ -1458,10 +1411,7 @@ test('integral loops: an index shifted to the word\'s extreme is no element of t
 test('integral loops: a loop over integer parameters and a peel\'s integer segment ends runs as written', () => {
   // The dimensions enter from immutable integer module bindings (`hblur(img, tmp,
   // W, H, R)` under `const W = 512`), the segment ends are the least and most of
-  // them: every bound an integer by its writes. The loop as written runs over
-  // integers already; a copy would guard what the emitter proves, and leave the
-  // loop as written cold beside it. With no version, the channel lift takes the
-  // interior segment.
+  // them: every bound an integer by its writes.
   const src = `const W = 64, H = 8, R = 2
     const hblur = (src, dst, w, h, r) => {
       const win = 2 * r + 1
@@ -1507,11 +1457,7 @@ test('integral loops: a loop over integer parameters and a peel\'s integer segme
 
 test('integral loops: a scan whose counter steps inside an index and in a nested run over a byte takes a copy of integer words', () => {
   // A glyph parser's flag scan: `flags[p++] = f`, and a repeat count read from the
-  // stream drives an inner loop stepping `p` again. The counter's advance over one
-  // round is bounded by the byte (at most 256), so the copy runs under a guard
-  // holding the bound below the word's top by that much; the counter is a word
-  // stepped as wraps, and the stream cursor a word with its budget. The loop as
-  // written, where `p` is a Number, runs only for a count past that bound.
+  // stream drives an inner loop stepping `p` again.
   const src = `const parse = (stream, counts, flags) => {
       let h = 0
       for (let g = 0; g < counts.length; g++) {
@@ -1579,11 +1525,7 @@ test('integral loops: a counter stepped by a byte-sized run takes a copy with a 
 test('integral loops: a sum of int32s past the word takes a copy that tests it and leaves for the loop as written', () => {
   // A DP row's cells: `up + 1` over an int32 element, `diag + (… ? 0 : 1)` over a
   // name every write of which is an element, `prev[j - 1] + 1`. No hull holds the
-  // sums within int32, so the loop as written computed them wide. The copy tests
-  // the wide side before each statement (`up > 2147483646`), bailing to the loop
-  // as written, resumed at the copy's counter, where the result would leave the
-  // word; under the tests the sums are words. A row with a cell at the word's
-  // top bails and computes as written: the same values either way.
+  // sums within int32, so the loop as written computed them wide.
   const src = `const LB = 64
     const scan = (a, b, prev, n) => {
       for (let i = 1; i <= n; i++) {
@@ -1633,7 +1575,7 @@ test('integral loops: a `for` whose copy leaves at a sum runs its init once', ()
   // written past its guard: one cold loop. A `for` with an init is no resumption of itself:
   // `for (z += 5; …)` left at a cell of the word's top ran `z += 5` again, at levels 2 and over
   // (ECMA-262, ForStatement: the init expression is evaluated once, before the first test).
-  // The row leaves the copy at the cell `at`. Expected values are Node's.
+  // Expected values are Node's.
   const row = (decl, head, tail, after) => `const LB = 16
     export let f = (big, at, z0) => {
       const prev = new Int32Array(LB + 1)
@@ -1697,10 +1639,7 @@ test('integral loops: a step in an arm of an `if` advances a cursor from zero to
 
 test('integral loops: a walk stepped up and down under a literal step count takes a copy of words', () => {
   // square tracing: `x++`/`x--`/`y++`/`y--` under `while (steps < MAXCODES)` with
-  // MAXCODES a module constant. The count is literal but far past what the emitter
-  // unrolls, so the cursors take the copy: a word each, under the guard of its entry
-  // plus the count each way. The loop as written, for a start near the word's ends,
-  // stays beside it.
+  // MAXCODES a module constant.
   const src = `const W = 64, H = 64, MAXCODES = 4096
     const trace = (bmp, visited, codes, nc, sx, sy) => {
       let x = sx, y = sy, dir = 3, steps = 0
@@ -1743,8 +1682,7 @@ test('integral loops: words stepped on the arms of a dense chain take one select
   // The copy steps a word as `x = (x + 1) | 0`, which the select accumulation
   // (compile/loop-recurrence.js selectArmUpdatesIn, speed tier) reads as it reads
   // `x++`: `x = (x + (dir === 0 ? 1 : dir === 2 ? -1 : 0)) | 0`, exact since every
-  // value a word holds is an int32. A name some write of which may hold a fraction
-  // (`x = n / 2`) keeps its chain: `(x + 0) | 0` would drop the fraction.
+  // value a word holds is an int32.
   const src = `const W = 64, H = 64, MAXCODES = 4096
     const trace = (bmp, codes, nc, sx, sy) => {
       let x = sx, y = sy, dir = 3, steps = 0
@@ -1800,10 +1738,7 @@ test('integral loops: words stepped on the arms of a dense chain take one select
 test('integral loops: a walk entering from the counters of the loops around it stands alone, untested', () => {
   // The tracer inlined into its scan declares its cursors from the scan's counters
   // (`let x = sx`, `sx` a `for (let sx = 1; sx < W - 1; sx++)` stepped by its loop
-  // alone): int32s within [1, W - 2], never -0. The entry plus the count each way
-  // fits the word, so the copy tests nothing and needs no loop as written beside
-  // it, whose Number twin held the scan's registers. A start moved by any int32
-  // (`(off | 0) + x`) has no such hull: the guard tests the entry, the twin stays.
+  // alone): int32s within [1, W - 2], never -0.
   const src = (start) => `const W = 64, H = 64, MAXCODES = 4096
     const trace = (bmp, codes, nc, sx, sy) => {
       let x = sx, y = sy, dir = 3, steps = 0
@@ -1886,11 +1821,7 @@ test('forward conditions: a boolean declared once for the `if` right after it is
 test('integral loops: an output cursor stepped inside nested loops and expressions takes the copy\'s word under a count the round\'s own test gives', () => {
   // LZ's compressor: `op` steps by `op++` inside an initializer, by `op += 2` in an
   // arm and by `out[op++] = …` in the other, inside `for (b < 8 && ip < n)` under
-  // `while (ip < n)`. The round's test entered again makes the inner loop run at
-  // least once, its `if (bestLen >= 3)` floors `ip += bestLen` at 3, so `ip` rises
-  // by at least one a round: the while has its trips, `op` its budget (at most
-  // 1 + 8 × 2 a round), and the copy steps the word, the step of a one-statement
-  // arm hoisted into a block after it.
+  // `while (ip < n)`.
   const src = `const WINDOW = 64, MIN_MATCH = 3, MAX_MATCH = 18
     const compress = (src, n, out) => {
       let op = 0, ip = 0
@@ -1951,11 +1882,7 @@ test('integral loops: an output cursor stepped inside nested loops and expressio
 
 test('integral loops: a cursor stepped in a nested loop over a round\'s own count takes the copy\'s word by the round\'s budget', () => {
   // LZ's inflater: `op` steps by `op++` inside `for (k < len)`, `len` a code's field
-  // of the round (`(code & 15) + 3`), and by `dst[op++] = …` in the other arm. No
-  // name of the loop's gives the inner trips, so the round's advance comes from the
-  // budget, which reads the field's range off the round's declarations and the inner
-  // version as its loop as written: at most 1 + 8 × 18 a round, under the count of
-  // the while's own cursor.
+  // of the round (`(code & 15) + 3`), and by `dst[op++] = …` in the other arm.
   const src = `const MIN_MATCH = 3
     const inflate = (inp, clen, dst) => {
       let ip = 0, op = 0
@@ -2114,7 +2041,6 @@ test('integral loops: a walk to an end tested by equality indexes by words both 
 // nothing writes (decode-dsd's stage 1: `const { C, tables } = st` in the
 // factory, `i < C` in the `push` it returns) gets the copy a bound it binds
 // gets: the copy reads the capture once, which is what every read of it is.
-// Every number agrees, integral or not; a capture some code writes stays out.
 test('integral loops: a closure bounded by a capture nothing writes', () => {
   const src = `const ring = (st) => { const { C, t } = st; return (k) => { let s = 0; for (let i = 0; i < C; i++) s += t[(i + k) & 7] + i; return s } }
     const moved = (st) => { let { C, t } = st; const bump = () => { C += 0.5 }; return (k) => { let s = 0; bump(); for (let i = 0; i < C; i++) s += t[(i + k) & 7]; return s } }
@@ -2129,7 +2055,6 @@ test('integral loops: a closure bounded by a capture nothing writes', () => {
     }
   }
   if (belowOpt(2)) return
-  // (watr off: the closure, called directly now, would join its one caller, the copy's names shared with its locals)
   const w = wat(src, { optimize: { level: 2, watr: false } })
   // (a closure is named `$` + T + `closure<n>`, the copy's counter `i` + T + `int<n>`: prepare's binding mark)
   ok(w.split(/\n(?=  \(func )/).some(f => f.startsWith(`  (func $${T}closure`) && f.includes(`(local $i${T}int`)), 'the closure counts an int32 copy')
@@ -2138,9 +2063,7 @@ test('integral loops: a closure bounded by a capture nothing writes', () => {
 // A counter entering from a name (`for (let j = lim; j < num; j++)`, a
 // predictor's history past its order) under a bound of unknown integrality
 // (`num`, a count `>>> 0` made) gets the copy a literal start gets: its start
-// is the name's word, tested as an int32, the bound rounded once. A loop
-// nested around another that reads those names took no copy without it.
-// The values are the same for every start and bound, integral or not.
+// is the name's word, tested as an int32, the bound rounded once.
 test('integral loops: a counter entering from a name counts in a word', () => {
   const src = `function pred(out, num, order) {
       let lim = order + 1, s = 0
@@ -2174,11 +2097,8 @@ test('integral loops: a counter entering from a name counts in a word', () => {
   ok(copy, 'the counter counts in a word of the copy, under the rounded bound')
 })
 
-// A start the copy takes as a word untested must be one on every run: a `length` is
-// a count of an array, a string or a typed array alone. `{ length: 2.5 }` read as one
-// started the copy's counter at 2.5 under the bound rounded up, `ceil(4.2) = 5`, one
-// trip past Node's (levels 2 and over; the bound an exported parameter, which the
-// copy tests by its range alone). Expected values are Node's.
+// A start the copy takes as a word untested must be one on every run: a `length` is a
+// count of an array, a string or a typed array alone. Expected values are Node's.
 test('integral loops: a start read from another receiver\'s length is tested as a word', () => {
   for (const recv of ['new Float64Array(3)', '[1, 2, 3]', "'abc'"]) for (const [step, test] of [['j++', 'j < num'], ['j--', 'j > num - 4']]) {
     const src = `export let f = (b, num, t) => {
@@ -2256,9 +2176,6 @@ test('integral loops: a head kept as written where reading it over its counter w
 
 // A stride visibly a fraction (resample's `phase += step`, `step` a quotient) is no
 // cursor's: its guard would fail on every run, the loop as written running cold.
-// A head whose other names the loop only reads (the bound a string scan's lowering
-// declares, `min(len, s.length)`) keeps its form; the tokenizer bench case holds
-// its speed, which a copy of such a head lost (43 µs → 63 µs).
 test('integral loops: a fractional stride keeps the loop, a scan the head its lowering wrote', () => {
   const src = `export const phase = (a, o) => { let s = 0; const step = o.up / o.dn; for (let k = 0, p = 1; k < 20; k++, p += step) s += a[p | 0] | 0; return s }
     const scan = (src, len) => { let h = 0, tokens = 0; for (let i = 0; i < len; i++) { const c = src.charCodeAt(i); if (c > 32) { h = (h * 31 + c) | 0; tokens++ } } return h + tokens }
@@ -2342,12 +2259,9 @@ test('integral loops: a loop stepped by a literal counts its trips, a cursor of 
 })
 
 test('integral loops: a cursor near 2^31 - 1 stepped in a nest keeps its value past the word', () => {
-  // `p` enters an int32 and steps past 2^31 - 1: by a counted inner loop, whose landing
-  // `p = clc + 2 * (trips | 0)` is an integer of integers (plan/counted-loops.js), and by an
-  // arm (`if (v >= 0) p += 2`) no counted loop takes. A name the frame's guard tests that the
-  // round writes is an int32 where the copy enters, not where an inner version stands: an inner
-  // version read it as one and wrapped it (-2147483647 for 2147483649). The channel loop runs
-  // under kind copies of the samples' view, its head its own (plan/kind-split.js).
+  // `p` enters an int32 and steps past 2^31 - 1: by a counted inner loop, whose landing `p =
+  // clc + 2 * (trips | 0)` is an integer of integers (plan/counted-loops.js), and by an arm
+  // (`if (v >= 0) p += 2`) no counted loop takes.
   const shape = (step) => `function walk(b, p, out, frames, nCh) {
       let s = 0
       for (let i = 0; i < frames; i++)

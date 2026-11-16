@@ -775,9 +775,6 @@ test('site: benchmark publication runs only from a complete sharded measurement'
   ok(/float-lane smoke[\s\S]*?--targets=jz,jz-exact,c-wasm,c-wasm-fast[\s\S]*?"jz-exact"/.test(bench), 'the gate job runs the exact and fast lanes and checks the exact lane\'s answer')
 })
 
-// The held-out lane's behavior is tested in test/bench-claims.js; this pins how
-// heldout.yml wires it: by hand only, V8 alone in a dry run, a contact on main alone,
-// and the record written by its own job through the tested script.
 test('site: the held-out lane runs by hand, V8 alone when dry, and records a contact on main', () => {
   const workflow = readFileSync(join(root, '.github/workflows/heldout.yml'), 'utf8')
   const on = workflow.slice(workflow.indexOf('\non:\n'), workflow.indexOf('\nconcurrency:\n'))

@@ -11,16 +11,13 @@ const throws = (code, match, msg, opts) => {
   ok(error && error.message.includes(match), `${msg}: expected "${match}", got "${error?.message}"`)
 }
 
-// ============================================================================
 // Prohibited identifiers
-// ============================================================================
 
 test('prohibited: this', () => throws('export let f = () => this.x', 'this', 'this should error'))
 test('prohibited: super', () => throws('export let f = () => super.x', 'super', 'super should error'))
 test('strict rejects: arguments', () => throws('export let f = () => arguments[0]', 'arguments', 'arguments should error', { strict: true }))
-// At a module's top level a function declaration is lexical (ES2026 §16.2.1.1): a second one is an early error, not a hoist.
-// A member the target does not serve of a namespace it does (`Math.frund`) reads as
-// undefined, as a missing property of an object does; a call of it is still refused.
+// At a module's top level a function declaration is lexical (ES2026 §16.2.1.1): a second one is an early error,
+// not a hoist.
 test('namespace: a member the target does not serve reads as undefined, its call is refused', () => {
   is(jz('export let f = () => [typeof Math.frund, Math.frund === undefined, typeof Math.fround].join(" ")').exports.f(), 'undefined true function')
   throws('export let f = (x) => Math.frund(x)', 'math.frund', 'a call of an unserved member should error')
@@ -36,11 +33,7 @@ test('Function constructor: a TypeError at run time, a function by typeof', () =
 test('module: a second function declaration of a name is an early error', () => throws('function f() { return 1 }\nfunction f() { return 2 }\nexport let g = () => f()', 'duplicate function declaration', 'a duplicate top-level function should error'))
 test('prohibited: eval', () => throws('eval("1")', 'eval', 'eval should error'))
 
-// A SIMD (v128) value can't be NaN-boxed into the uniform f64 closure ABI. An IIFE is
-// lambda-lifted to a typed direct call (liftIIFEs), so SIMD flows through it — those WORK.
-// A GENUINE closure (an arrow escaping as a value, or an IIFE that mutates a capture so it
-// can't lift) still rides the f64 ABI; carrying v128 there is an actionable compile error,
-// not the opaque `f64.convert_i32_s expected i32, found v128` wasm-validator crash.
+// A SIMD (v128) value can't be NaN-boxed into the uniform f64 closure ABI.
 test('SIMD + closures: IIFEs lift and run; genuine closures error clearly', () => {
   is(jz('export let f = (a) => f32x4.lane((() => f32x4.splat(a))(), 0)').exports.f(3), 3, 'SIMD IIFE returning v128 lifts + runs')
   is(jz('export let f = (a) => f32x4.lane(((x) => f32x4.mul(x, x))(f32x4.splat(a)), 0)').exports.f(3), 9, 'SIMD IIFE with a v128 param lifts + runs')
@@ -50,9 +43,7 @@ test('SIMD + closures: IIFEs lift and run; genuine closures error clearly', () =
   throws('export let f = (a) => { let x = a; return f32x4.lane((() => { x = x + 1.0; return f32x4.splat(x) })(), 0) }', 'SIMD', 'mutated-capture SIMD IIFE errors clearly')
 })
 
-// ============================================================================
 // Prohibited ops
-// ============================================================================
 
 // async GRADUATED (jzify/async.js state machines + plain-jz promise runtime) —
 // strict mode and unlowered shapes are the remaining rejections.
@@ -63,11 +54,6 @@ test('strict rejects: class', () => throws('class Foo {}', 'class', 'class shoul
 // outside a generator body is the remaining rejection.
 test('prohibited: yield outside a generator', () => throws('export let f = () => { let x = yield 1; return x }', 'yield outside a generator', 'stray yield should error'))
 test('prohibited: delete', () => throws('delete obj.x', 'delete', 'delete should error'))
-// 'in' operator now supported for HASH key existence checks
-// instanceof GRADUATED (.work/archive/todo.md §deletion-sweep Slice B) — Array/Map/Set/the 8
-// TypedArray ctors/ArrayBuffer/the 7 Error classes now work (see the dedicated
-// test block below); an unsupported RHS (jz has no prototype chain) remains
-// a loud compile-time reject, the one surviving case this test now pins.
 test('strict rejects: instanceof (unsupported RHS)', () => throws('x instanceof Object', 'instanceof', 'instanceof on an unsupported RHS should error', { strict: true }))
 test('prohibited: with', () => throws('with (obj) {}', 'with', 'with should error'))
 test('strict rejects: var', () => throws('var x = 1', 'var', 'var should error', { strict: true }))
@@ -85,17 +71,13 @@ test('default accepts ==/!= (non-coercing)', () => {
   ok(compile('export let f = (a, b) => a != b'), '!= compiles in default mode')
 })
 
-// ============================================================================
 // Const enforcement
-// ============================================================================
 
 test('prohibited: const reassignment', () => throws('const x = 1; export let f = () => { x = 2; return x }', "const 'x'", 'const reassign should error'))
 test('prohibited: const +=', () => throws('const x = 1; export let f = () => { x += 1; return x }', "const 'x'", 'const += should error'))
 test('prohibited: const ++', () => throws('const x = 1; export let f = () => { x++; return x }', "const 'x'", 'const ++ should error'))
 
-// ============================================================================
 // Const shadowing — nested scopes can shadow outer const
-// ============================================================================
 
 test('const: param shadows outer const', () => {
   is(run('const x = 1; export let f = () => { let g = (x) => { x = 3; return x }; return g(9) }').f(), 3)
@@ -105,9 +87,7 @@ test('const: inner let shadows outer const', () => {
   is(run('const x = 1; export let f = () => { let x = 10; x = 20; return x }').f(), 20)
 })
 
-// ============================================================================
 // Temp name hygiene — compiler internals don't collide with user names
-// ============================================================================
 
 test('hygiene', () => {
   cases([
@@ -118,9 +98,7 @@ test('hygiene', () => {
   ])
 })
 
-// ============================================================================
 // Block scoping — let/const are block-scoped
-// ============================================================================
 
 test('block scope', () => {
   cases([
@@ -131,11 +109,8 @@ test('block scope', () => {
 })
 
 test('block scope: same const name in sibling blocks resolves correctly', () => {
-  // Two `const g = () => N` in if/else arms used to collapse to one WASM
-  // local. When `g` was passed as a value to a callback (rather than direct-
-  // called from the same arm), both arms' references resolved to one body —
-  // f(0) returned 1 instead of 2. Renaming the second decl restores per-block
-  // uniqueness at the WASM-local level.
+  // Renaming the second decl restores per-block uniqueness at the WASM-local
+  // level.
   const { f } = run(`export let f = (c) => {
     const out = (g) => g()
     if (c) {
@@ -150,10 +125,6 @@ test('block scope: same const name in sibling blocks resolves correctly', () => 
   is(f(0), 2)
 })
 
-// ============================================================================
-// Default params — internal calls
-// ============================================================================
-
 test('default: internal call with omitted arg', () => {
   is(run('let g = (x = 42) => x; export let f = () => g()').f(), 42)
 })
@@ -162,9 +133,7 @@ test('default: internal call with provided arg', () => {
   is(run('let g = (x = 42) => x; export let f = () => g(7)').f(), 7)
 })
 
-// ============================================================================
 // Side-effect preservation in optimizations
-// ============================================================================
 
 test('optimizer: *0 preserves side effects', () => {
   const { f, h } = run('let c = 0; let g = () => { c += 1; return 7 }; export let f = () => 0 * g(); export let h = () => c')
@@ -172,9 +141,7 @@ test('optimizer: *0 preserves side effects', () => {
   is(h(), 1)  // g() must execute even though result is 0
 })
 
-// ============================================================================
 // Closure default params
-// ============================================================================
 
 test('closure', () => {
   cases([
@@ -182,10 +149,6 @@ test('closure', () => {
     ['default param not used', '() => { let g = (x = 42) => x; return g(9) }', 9],
   ])
 })
-
-// ============================================================================
-// Tail-call with defaults and rest params
-// ============================================================================
 
 test('tail-call: return with default param', () => {
   is(run('let g = (x = 5) => x; export let f = () => { return g() }').f(), 5)
@@ -199,24 +162,14 @@ test('variadic: omitted fixed + default', () => {
   is(run('let g = (x = 5, ...rest) => x + rest.length; export let f = () => g()').f(), 5)
 })
 
-// ============================================================================
-// Bare block scoping
-// ============================================================================
-
 test('block scope: bare block', () => {
   is(run('export let f = () => { let x = 1; { let x = 2; x = 3 }; return x }').f(), 1)
 })
 
-// ============================================================================
-// Runtime global conflicts
-// ============================================================================
-
 test('prohibited: __heap conflicts with runtime', () =>
   throws('let __heap = 5; let a = [1]; export let f = () => __heap', 'compiler internal', '__heap should conflict'))
 
-// ============================================================================
 // Template tag — function aliasing
-// ============================================================================
 
 test('template: distinct functions with same name', () => {
   if (onWasi() || onKernel()) return  // wasi/kernel: js template-tag interp injects host fns — not reachable via (code, strict)
@@ -226,9 +179,7 @@ test('template: distinct functions with same name', () => {
   is(f(1), 102) // (1+1) + (1*100) = 102
 })
 
-// ============================================================================
 // Runtime .length safety
-// ============================================================================
 
 test('runtime', () => {
   cases([
@@ -263,10 +214,8 @@ test('runtime: loose null inequality excludes undefined/null', () => {
 
 // Constructor/namespace validation deferred to emit/modules
 
-// ============================================================================
 // Strict core mode — opt-in: dynamic features error instead of pulling
-// dynamic-dispatch stdlib. (Largest WASM-size lever per audit.)
-// ============================================================================
+// dynamic-dispatch stdlib.
 
 const throwsStrict = (code, match, msg) => {
   let error
@@ -304,7 +253,6 @@ test('strict: accepts typed-array loop', () => {
   ok(wasm.byteLength > 0, `should compile, got ${wasm.byteLength}`)
 })
 
-// === strict: boundary arg/param type mismatch ===
 // A typed param (declared via default, or inferred from a type-exclusive use)
 // receiving a statically-conflicting arg is a compile error — jz doesn't coerce
 // across the call boundary, so the result would silently diverge from JS.
@@ -317,46 +265,23 @@ test('strict: string-default param rejects a number argument', () =>
   throwsStrict('export const g = (s = "") => s; export const a = () => g("x"); export const f = () => g(5)',
     'strict mode', 'string param <- number arg should error'))
 
-// Was: "strict: .charCodeAt-inferred string param rejects a number argument"
-// — asserted this exact program threw a strict-mode boundary error, treating
-// `s.charCodeAt(0)` as a "type-exclusive use" that proves `s` is a real
-// String. fix/string-method-guess found that's unsound in general: a plain
-// OBJECT/HASH value can own a same-named `.charCodeAt` closure property
-// (`t.charCodeAt = (i) => t.n + i`, attached to an object literal
-// post-construction — the same shape the ARRAY twin's `.push`-closure idiom
-// exploits below), so `.charCodeAt` usage alone is NOT proof of STRING (no
-// String/Array/Object equivalent exists for the compared-across
-// disambiguation that check relies on) — no more than `.push` usage alone
-// is proof of ARRAY. infer.js's methodEvidence source no longer induces a
-// `val` from method-name usage AT ALL (see that module's header — the whole
-// rung retired, both directions). `g`'s param is therefore genuinely
-// polymorphic here (one call site passes a real string, another passes a
-// number) and must compile permissively, same as any other duck-typed
-// parameter jz can't prove a single kind for — trading an optional extra
-// strict-mode diagnostic for never silently miscompiling the closure-shadow
-// shape (README.md: a missed compile-time reject is far preferable to a
-// silent wrong value).
+// `g`'s param is therefore genuinely polymorphic here (one call site passes
+// a real string, another passes a number) and must compile permissively,
+// same as any other duck-typed parameter jz can't prove a single kind for —
+// trading an optional extra strict-mode diagnostic for never silently
+// miscompiling the closure-shadow shape (README.md: a missed compile-time
+// reject is far preferable to a silent wrong value).
 test('strict: .charCodeAt usage alone does not prove a STRING param (no false-positive reject)', () => {
   ok(compile('export const g = (s) => s.charCodeAt(0); export const a = () => g("x"); export const f = () => g(42)',
     { strict: true }).byteLength > 0, 'a genuinely polymorphic (string-or-number) .charCodeAt-using param must not be rejected on usage alone')
 })
 
-// Was: "strict: .push-inferred array param rejects a number argument" —
-// asserted this exact program threw a strict-mode boundary error, treating
-// `a.push(1)` as a "type-exclusive use" that proves `a` is a real Array.
-// fix/param-mutation-propagation found that's unsound in general: a plain
-// OBJECT/HASH value can own a same-named `.push` closure property (the
-// makeByteBuf/ByteBuf idiom — `b.push = (v) => {...}`, attached to an
-// object literal post-construction), so `.push` usage alone is NOT proof
-// of ARRAY, mirroring `.charCodeAt` above — infer.js's methodEvidence
-// source is retired entirely (fix/string-method-guess), not just for this
-// method-name family. `g`'s param is therefore genuinely polymorphic here
-// (one call site passes a real array,
-// another passes a number) and must compile permissively, same as any
-// other duck-typed parameter jz can't prove a single kind for — trading an
-// optional extra strict-mode diagnostic for never silently miscompiling
-// the makeByteBuf shape (README.md: a missed compile-time reject is far
-// preferable to a silent wrong value).
+// `g`'s param is therefore genuinely polymorphic here (one call site
+// passes a real array, another passes a number) and must compile
+// permissively, same as any other duck-typed parameter jz can't prove a
+// single kind for — trading an optional extra strict-mode diagnostic for
+// never silently miscompiling the makeByteBuf shape (README.md: a missed
+// compile-time reject is far preferable to a silent wrong value).
 test('strict: .push usage alone does not prove an ARRAY param (no false-positive reject)', () => {
   ok(compile('export const g = (a) => { a.push(1); return a[0] }; export const h = () => g([1]); export const f = () => g(7)',
     { strict: true }).byteLength > 0, 'a genuinely polymorphic (array-or-number) .push-using param must not be rejected on usage alone')
@@ -375,9 +300,7 @@ test('strict: type mismatch is permitted in non-strict mode (divergence tolerate
   ok(compile('export const g = (x = 0) => x + 1; export const f = () => g("hi")').byteLength > 0)
 })
 
-// ============================================================================
 // Error message quality — compile errors carry source location
-// ============================================================================
 
 test('error: unknown import gives useful message', () => {
   let error
@@ -427,16 +350,9 @@ test('error: strict mode dynamic property access message', () => {
   ok(error.message.includes('strict'), `message should mention strict mode: ${error.message}`)
 })
 
-// A binding that can hold a Boolean beside a Number (`let x = false ?? 1`,
-// `let x; x = c && 1`, separate stores of `true` and `1`) and whose reads
-// observe its identity (typeof, ===, a return) used to be rejected at
-// compile time (`Binding '…' can be both Boolean and Number…`), and a plain
-// reassignment once skipped even that and read the Boolean as a raw
-// number. The binding is now a tagged carrier: every Boolean store lands
-// as its atom (src/kind/val-type-of.js boolTagged, emit/dispatch.js boolCarrier)
-// and the reads take the dynamic forms a mixed kind takes. Reference:
-// ECMA-262 13.15.2 (the value of `??`/`&&` is one operand, unconverted),
-// 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15 IsStrictlyEqual.
+// Reference: ECMA-262 13.15.2 (the value of `??`/`&&` is one operand,
+// unconverted), 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15
+// IsStrictlyEqual.
 test('mixed Boolean and Number binding keeps its identity on plain reassignment', () => {
   const { f, g } = jz(`export let f = () => { let x; x = false ?? 1; return [typeof x, x === false, x] }
     export let g = (k) => { let v; if (k) v = true; else v = 1; return [typeof v, v === true, v] }`).exports
@@ -503,9 +419,7 @@ test('error: spread on non-variadic function', () => {
   if (error) ok(error.message.length > 0, 'error message should be non-empty')
 })
 
-// ============================================================================
 // Error message precision — compiler must locate where in source the error is
-// ============================================================================
 
 test('error: location includes line number', () => {
   if (onKernel()) return  // kernel: source-line error annotation is host-side (ctx.error.src in compile()), not in the wasm
@@ -596,10 +510,8 @@ test('error: module resolution error includes file name', () => {
   ok(error.message.includes('nonexistent'), `message mentions module file: ${error.message}`)
 })
 
-// ============================================================================
 // Built-in Error subclasses — `new TypeError(msg)` / bare `TypeError(msg)`
 // reach JS as a real Error with the message preserved
-// ============================================================================
 
 for (const cls of ['SyntaxError', 'TypeError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError']) {
   test(`${cls}: throw new ${cls} surfaces message`, () => {
@@ -626,10 +538,8 @@ test('Error subclasses: try/catch with throw new TypeError', () => {
   }`).f(-5), -1)
 })
 
-// ============================================================================
 // Dead-throw carrier — treeshake must preserve __jz_last_err_bits even when
 // the function carrying the only throw is itself dead-stripped
-// ============================================================================
 
 test('throw inside an unused arrow does not break codegen', () => {
   const wasm = compile(`const err = () => { throw 1 }; export let f = () => 1`)
@@ -642,14 +552,11 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
   ok(wat.includes('(export "__jz_last_err_bits"'), 'last-err global exported')
 })
 
-// ============================================================================
-// Uncatchable internal throw → a trap, NOT the exceptions proposal. A throw with
-// no `try`/`catch` anywhere is uncatchable IN WASM (semantically a trap there);
-// declaring the $__jz_err Tag just to carry it forces consumers that don't enable
-// the exceptions proposal (wasmtime, wabt, wasm2c) to reject the module on the Tag
-// section — V8 alone enables exceptions by default, which masked this. Keep such
-// modules in the wasm MVP. (User throw/try/catch is an ABI contract and keeps the
-// tag + exceptions runtime — above.)
+// A throw with no `try`/`catch` anywhere is uncatchable IN WASM (semantically a
+// trap there); declaring the $__jz_err Tag just to carry it forces consumers that
+// don't enable the exceptions proposal (wasmtime, wabt, wasm2c) to reject the
+// module on the Tag section — V8 alone enables exceptions by default, which masked
+// this. Keep such modules in the wasm MVP.
 //
 // The trap is NOT uncatchable at the HOST boundary, though: __jz_last_err_bits
 // (plain mutable-i64 MVP global, no exceptions proposal needed) survives the trap
@@ -657,7 +564,6 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
 // class and message (audit #7 P1 — this used to be stripped along with the
 // tag, making host decode unreachable and forcing a bare `RuntimeError:
 // unreachable` on every ordinary runtime error).
-// ============================================================================
 
 test('uncatchable internal throw is a trap, not the exceptions tag (MVP-portable)', () => {
   // `Number(v)` pulls __to_num, whose non-coercible-value branch throws $__jz_err.
@@ -682,11 +588,9 @@ test('catchable throw keeps the exceptions runtime (try/catch needs the tag)', (
   ok(wat.includes('(try_table'), 'try/catch lowers to try_table')
 })
 
-// ============================================================================
 // Host decode of a trap-lowered internal throw (audit #7 P1) — the trap above is
 // decoded at the host boundary into the real ECMAScript error class the throw
 // site models, with its message (src/err-codes.js).
-// ============================================================================
 
 test('host decode: trap-lowered JSON.parse throw resolves to a real SyntaxError', () => {
   let error
@@ -744,11 +648,7 @@ test('host decode: memory that cannot grow is the RangeError of an allocation', 
 
 // An array holds its elements dense, eight bytes each (module/core.js
 // DENSE_MAX): a length past 2^29 - 3 cannot be stored, where JavaScript makes a
-// sparse array. Every path to one throws the RangeError of an allocation, which
-// the program catches and after which the heap is whole: `new Array(n)` wrote
-// n into an i32 header over a block its wrapped size reserved (3e9 read
-// -1294967296, 2147483000 read -1), and an index store or a grow past 2^29
-// handed out the same block (memory access out of bounds, or worse, none).
+// sparse array.
 test('array length past what memory can hold is the RangeError of an allocation', () => {
   const src = `export let ctor = (n) => { const a = new Array(n); return [a.length, a[0], a[n - 1]] }
     export let setLen = (n) => { const a = [1, 2]; a.length = n; return [a.length, a[1], a[n - 1]] }
@@ -781,11 +681,10 @@ test('array length past what memory can hold is the RangeError of an allocation'
 // A length the runtime takes from other data (a typed array's or a string's
 // elements, a byte each; a parse or a split that doubles its room) or a hash
 // table's capacity passes what memory can hold only past 512 MiB of data, more
-// than a test allocates: each such site is pinned by the test it makes where
-// the length comes in (`__dense_check` past DENSE_MAX, `__table_check` past
+// than a test allocates: each such site is pinned by the test it makes where the
+// length comes in (`__dense_check` past DENSE_MAX, `__table_check` past
 // TABLE_MAX, module/core.js), the RangeError of an allocation the tests above
 // read through `new Array(n)`, a length store and an index store, which share it.
-// A length taken from arrays alone is bounded by the memory they hold: no test.
 test('a length taken from other data is tested where it comes in', () => {
   const sites = [
     ['spread of a typed array', 'export let f = (n) => [...new Uint8Array(n)].length', 'dense'],
@@ -822,9 +721,7 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   // global a trap-lowered throw does — decodeThrown must consume it there too, or
   // a later genuine trap on the SAME instance reads the stale nonzero value and
   // misdecodes as the earlier, already-handled error. The later trap is
-  // padStart's unmarked string-length guard (the pin above). The in-wasm
-  // catch/finally marker consume (src/compile/emit.js 'catch'/'finally') is
-  // exercised by the audit-#8 P1-1 repro in this file's catch/finally section.
+  // padStart's unmarked string-length guard (the pin above).
   const src = `export let f = (mode) => {
     if (mode === 1) throw 300
     return 'a'.padStart(2 ** 31).length
@@ -839,17 +736,10 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   ok(!(second instanceof SyntaxError), 'the stale marker from the first decode must not leak into the second')
 })
 
-// audit-#8 P1-1 (2026-08-03): a JSON error CAUGHT INSIDE wasm (a `try`/`catch`
-// the module fully handles — never rethrows, never escapes to the host) used
-// to leave $__jz_last_err_bits pointing at the handled error's code. A LATER
-// genuine trap (unrelated to $__jz_err — here, an oversized Float64Array
-// allocation) then misdecoded at the host boundary as the STALE handled error
-// instead of a plain RuntimeError. Fix: src/compile/emit.js's 'catch' and
-// 'finally' emitters zero the marker as soon as the thrown value is bound
-// (before the handler/cleanup runs) — the in-wasm handling is what consumes
-// it, mirroring interop.js's decodeThrown reset for the escaping-throw case.
-// No `maxMemory` option needed (unlike the pins above) — this repro runs on
-// BOTH legs, native and kernel.
+// A LATER genuine trap (unrelated to $__jz_err — here, an oversized
+// Float64Array allocation) then misdecoded at the host boundary as the STALE
+// handled error instead of a plain RuntimeError. No `maxMemory` option needed
+// (unlike the pins above) — this repro runs on BOTH legs, native and kernel.
 test('host decode (audit-#8 P1-1): a JSON error caught IN-WASM does not stale-poison a later genuine trap — same call', () => {
   const src = `export let f = (n) => {
     try { JSON.parse('{bad json') } catch (e) {}
@@ -875,10 +765,8 @@ test('host decode (audit-#8 P1-1): a JSON error caught IN-WASM does not stale-po
   ok(!(error instanceof SyntaxError), 'the earlier in-wasm-caught SyntaxError must not leak into this later trap')
 })
 
-// ============================================================================
 // Error wrapping — unknown identifier errors must read as jz wording, not
 // watr's internal "Unknown local/func/global" phrasing
-// ============================================================================
 
 test('unknown global references surface as a clean jz error, not watr "Unknown ..."', () => {
   if (onKernel()) return  // kernel: the watr-error→friendly-message rewrite is host-side (compile() catch), not in compileSelf
@@ -891,9 +779,7 @@ test('unknown global references surface as a clean jz error, not watr "Unknown .
     `watr-shaped error leaked: ${err.message.slice(0, 120)}`)
 })
 
-// ============================================================================
 // .caller / .callee prohibition — bad-practice access surfaces a clear error
-// ============================================================================
 
 test('prohibited: .caller property access', () => {
   let err
@@ -908,12 +794,6 @@ test('prohibited: .callee property access', () => {
   catch (e) { err = e }
   ok(err?.message.includes('callee'), `.callee should be prohibited: ${err?.message?.slice(0, 60)}`)
 })
-
-// ============================================================================
-// Reject-cleanly cluster (2026-07-10) — constructs that previously leaked
-// internal errors ("Unknown op", watr "Unknown instruction", generic
-// not-in-scope) now carry curated messages. Never fail unknowingly.
-// ============================================================================
 
 // generators graduated: an empty generator is a VALID machine (immediately done).
 test('generators: empty generator runs (immediately done)', () => {
@@ -955,16 +835,11 @@ test('try: discarded method result before return compiles and runs', () => {
   is(j(`export let f = () => { let a = [1]; try { a.toSorted(); return 1 } catch (e) { return 2 } }`), 1) // default comparator pulls string module
 })
 
-// .work/archive/todo.md §deletion-sweep Slice A: `new Error(msg)`/the 7 built-in subclasses
-// now construct a real in-wasm object (PTR.OBJECT, schema ['message','name'],
-// module/core.js buildErrorObject) instead of lowering to the bare message
-// value — supersedes the old "Error IS its message string" documented
-// divergence this block used to pin. `.message`/
-// `.name` read correctly, and String()/template-literal interpolation format
-// per spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message
-// empty / message if name empty / name+": "+message otherwise / "Error" if
-// both empty) via src/ir.js's toStrI64 Error-schema arm — the fix for the
-// pre-existing `${anyDynamicObject}` → "" bug, at least for Error objects.
+// `.message`/ `.name` read correctly, and String()/template-literal interpolation format
+// per spec's Error.prototype.toString (ECMA-262 20.5.3.4: name if message empty / message
+// if name empty / name+": "+message otherwise / "Error" if both empty) via src/ir.js's
+// toStrI64 Error-schema arm — the fix for the pre-existing `${anyDynamicObject}` → "" bug,
+// at least for Error objects.
 test('errors: real Error objects (.work/archive/todo.md §deletion-sweep Slice A)', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => { try { throw new Error('boom') } catch (e) { return e.message } }`), 'boom', '.message reads the constructor argument')
@@ -976,18 +851,6 @@ test('errors: real Error objects (.work/archive/todo.md §deletion-sweep Slice A
   is(j(`export let f = () => { try { throw Error('bare') } catch (e) { return e.message } }`), 'bare')
 })
 
-// audit-#10 finding-4: a RETURNED (not thrown) Error object previously decoded
-// at the host boundary as a plain {message,name} object — never `instanceof
-// Error` — because interop.js's Error-class upgrade (mem.errorSidToClass,
-// the 'jz:errcls' custom section audit-#9 P0-2's Brand redesign added) only
-// ever ran inside decodeThrown, reached exclusively by an ESCAPING THROW. A
-// function that returns its Error normally (`return e`, or constructs and
-// returns one directly) never touches decodeThrown at all. Fixed by
-// extracting the identical sid→class lookup into `errorSidClassOf` (shared
-// by decodeThrown AND the new `readRet`, wired into both heap-module export
-// wrappers' `finishRet` call and the async promise-settle path
-// `readSettled`) — a returned/resolved Error now upgrades the same way a
-// thrown one does.
 test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the boundary (audit-#10 finding-4)', () => {
   const j = (code) => jz(code, { jzify: true }).exports.f()
   const literal = j(`export let f = () => new TypeError('x')`)
@@ -1003,40 +866,6 @@ test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the 
   ok(!(base instanceof TypeError), 'but is not instanceof a sibling subclass')
 })
 
-// audit-#20 (root-caused alongside finding-4 above): an async function that
-// RESOLVES (not throws) with ANY value — heap or primitive — lost or trapped
-// on it, in two AST-shape-dependent failure modes, both in the shared
-// generator/async machinery (not Error-specific — confirmed with a
-// plain-object, non-Error repro alongside the Error one):
-//   - concise arrow body (`async () => expr`, implicit return): lowerAsync
-//     (jzify/async.js) spliced the arrow's raw body straight into a
-//     synthetic `function*` node without wrapping it in a `return` — a REAL
-//     function* body is never concise (only arrows have that JS shape), so
-//     the generator lowering (jzify/generators.js) compiled the bare
-//     expression as a discarded expression-statement: `next()` always fell
-//     through to the machine's own `{value:undefined,done:true}` tail,
-//     whatever the arrow evaluated to. Fixed in jzify/transform.js's
-//     `'async'` handler: a concise body (anything but a leading '{}' block —
-//     even `({x:1})` parses as `['()', obj]`, never bare '{}') is now
-//     wrapped into `['return', body]` before lowering, the same shape a
-//     single-statement function body already carries unwrapped.
-//   - block body (`async () => { return expr }`) with NO await anywhere in
-//     it: jzify/generators.js's state-machine builder (`flattenStmt`)
-//     treated any compound statement containing no `yield` as inert and
-//     spliced it verbatim (the atomic fast path, gated on `hasYield` alone)
-//     — but a yield-free block can still hold a `return`, and splicing it
-//     let that `return` execute as a bare host return out of the `__next`
-//     closure instead of the `{value,done}` record its caller reads,
-//     corrupting the settlement (a number equally, but a heap/NaN-boxed
-//     pointer misread as the wrong shape is what trapped
-//     unreachable/OOB). Fixed by adding a boundary-respecting `hasReturn`
-//     alongside `hasYield` in the same gate, so a yield-free-but-return-
-//     bearing block now decomposes through the existing '{}' unwrap instead
-//     of short-circuiting.
-// Was blocking finding-4's readSettled/readRet decode from ever being
-// reached on the resolve side — the reject side (an async function that
-// THROWS) was always fine: a throw traps through the wasm exceptions tag,
-// never touching __p_value/the generator machine's return protocol at all.
 test('errors: an async function resolving with a heap value (object, Error, …) decodes correctly, both AST shapes (audit-#20)', async () => {
   if (onWasi() || onKernel()) return
   const j = (code) => jz(code, { jzify: true }).exports.f()
@@ -1057,7 +886,6 @@ test('errors: an async function resolving with a heap value (object, Error, …)
 })
 // coercion per ES 20.5.1.1 — "If message is not undefined, let msg be
 // ? ToString(message)" (argument absent OR its value is undefined → no
-// message, i.e. ''). Node-verified authority: `new Error(false).message` ===
 // 'false' (ToString, not ToNumber); `new Error(undefined).message` === '' and
 // `new Error().message` === '' (both empty, two different spec clauses, same
 // outcome); `new Error({}).message` === '[object Object]'; `new
@@ -1078,24 +906,16 @@ test('errors: Error ctor message coercion (ES 20.5.1.1, audit-#9 P1)', () => {
   is(jz(`export let f = (x) => new Error(x).message`, { optimize: 0 }).exports.f(undefined), '', 'dynamic undefined argument')
 })
 
-// audit-#10 finding-2: `new Error({}).message` above is the literal AST-shape
-// case 5f8ff012 special-cased (`isClosedObjLiteralNoStringMethod`). The
-// GENERAL ES 20.5.1.1 invariant — ToString(message) for ANY non-undefined
-// message, not just a literal — was already routing through toStrI64 (the
-// same chokepoint String()/template literals use) for the non-special-cased
-// case; the gap was narrower than "absent": a BOUND name pointing at a
-// closed-schema object (no toString/valueOf, no dyn/out-of-schema writes)
-// didn't get the literal's short-circuit, so it fell into toStrI64's generic
-// OBJECT path — which has a real, pre-existing, general, Error-unrelated bug
-// for non-Array objects (confirmed live: `String(o)` for a bound plain object
-// returns typeof "object", not a string at all — .work/archive/todo.md §deletion-sweep's
-// own "Consequence" section already flags `${anyDynamicObject}` as broken,
-// out of scope for this design). Generalized `isClosedObjLiteralNoStringMethod`
-// (module/core.js) to `isClosedObjNoStringMethod`, extending the closed-world
-// fact from "AST is literally a `{}` node" to "a bound name whose OWN
-// declaration schema is closed" — the SAME generalization finding-1 applied
-// to Object.assign's target (literal fact → binding fact), same root cause
-// pattern, not a new mechanism.
+// The GENERAL ES 20.5.1.1 invariant — ToString(message) for ANY non-undefined message,
+// not just a literal — was already routing through toStrI64 (the same chokepoint
+// String()/template literals use) for the non-special-cased case; the gap was narrower
+// than "absent": a BOUND name pointing at a closed-schema object (no toString/valueOf,
+// no dyn/out-of-schema writes) didn't get the literal's short-circuit, so it fell into
+// toStrI64's generic OBJECT path — which has a real, pre-existing, general,
+// Error-unrelated bug for non-Array objects (confirmed live: `String(o)` for a bound
+// plain object returns typeof "object", not a string at all — .work/archive/todo.md
+// §deletion-sweep's own "Consequence" section already flags `${anyDynamicObject}` as
+// broken, out of scope for this design).
 test('errors: Error ctor message coercion — bound closed-schema object (audit-#10 finding-2)', () => {
   const j = (code) => jz(code, { jzify: true }).exports.f()
   is(j(`export let f = () => { let o = {x: 1}; return new Error(o).message }`), '[object Object]', 'bound non-empty closed-schema object now gets the same short-circuit as the literal')
@@ -1163,27 +983,6 @@ test('errors: internal errors materialize at catch without reinterpreting user n
   is(j(`export let f = () => { try { throw 300 } catch (e) { return e.message } }`), undefined, 'user numbers have no Error properties')
 })
 
-// ============================================================================
-// instanceof (.work/archive/todo.md §deletion-sweep Slice B; audit-#8 P0-1, 2026-08-03)
-// ============================================================================
-// `instanceof` is a real op — op-policy.js's blanket REJECT_OPS entry is gone;
-// src/prepare/index.js's handler validates the RHS against a closed allowlist
-// (jz has no prototype chain) and src/compile/emit.js's emitter folds a
-// statically-proven LHS kind to a constant or emits a tag/aux/schema compare.
-// Strict-mode source reaches this directly on every raw `instanceof` node.
-// Default-mode source reaches the SAME sound machinery for every RHS this
-// file's INSTANCEOF_ALLOW supports (Array/Map/Set/TypedArray/ArrayBuffer/the
-// 7 Error classes): jzify/transform.js's 'instanceof' handler passes those
-// through as `['instanceof', val, name]` instead of answering them itself.
-// Before audit-#8 P0-1, jzify answered the Error-family rows with its own
-// broad `typeof===object` guess BEFORE this sound handler ever saw the node —
-// `new TypeError(x) instanceof RangeError` answered `true` in default mode
-// (JS: false). isBoth below runs every row in BOTH modes so that regression
-// cannot come back unnoticed in either one. jzify keeps its own Promise/
-// Iterator shape-probes (this file's handler rejects both RHS names) and its
-// permissive `typeof===object` fallback for RHS names outside
-// INSTANCEOF_ALLOW (Object/RegExp/user-class names — default mode stays
-// permissive there; strict mode's loud-reject table below is unaffected).
 const jBoth = (code) => [jz(code, {}).exports.f(), jz(code, { strict: true }).exports.f()]
 const isBoth = (code, expected, msg) => {
   const [d, s] = jBoth(code)
@@ -1215,9 +1014,6 @@ test('instanceof: Array/Map/Set/ArrayBuffer/TypedArray — truth table (both mod
 })
 
 test('instanceof: Error family — tag+schema compare, class hierarchy (both modes)', () => {
-  // audit-#8 repro 1, exact form: a plain let-bound Error (not caught) checked
-  // against a SIBLING class. This is the repro that was `true` in default mode
-  // before the fix (JS: false).
   isBoth(`export let f = () => { let e = new TypeError("x"); return e instanceof RangeError }`, false, 'audit-#8 repro 1: new TypeError(x) instanceof RangeError')
   // constructed Error objects: exact class true, sibling false, base Error true (hierarchy)
   isBoth(`export let f = () => { try { throw new TypeError('t') } catch (e) { return e instanceof TypeError } }`, true, 'e instanceof TypeError (exact class)')
@@ -1247,19 +1043,6 @@ test('instanceof: internal errors retain brands and numbers do not (both modes)'
   isBoth(`export let f = () => { try { let a = [1]; a.with(5, 2) } catch (e) { return e instanceof RangeError } return false }`, true, 'caught internal error retains its class')
 })
 
-// audit-#9 P0-2 (2026-08-04): the P0-3 patch (above, superseded) hid class
-// identity behind a reserved, unspellable schema slot ('__errcls__') enforced
-// by prepare-time rejection at every dot/literal-key site plus a matching
-// runtime exclusion in every enumeration/dyn-dispatch consumer — an
-// enumerated-invariant that bit twice (Object.assign/spread over an Error
-// crashed outright, since NEITHER had been taught the slot existed) and stole
-// a legal property name from every jz program. Redesigned: class identity now
-// lives in the pointer's SCHEMA ID (module/schema.js's ctx.schema.errorSid —
-// one id per class), a real hidden brand no source-level write can reach —
-// `instanceof` reads the sid, `.name`/`.message` are the layout's two slots,
-// which its enumeration view hides as JS does (not enumerable), and there is
-// no reserved slot left to filter anywhere. `__errcls__` is un-stolen: an
-// ordinary user property name, usable on ANY object, Error or not.
 test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)', () => {
   is(jz(`export let f = () => { let o = { message: "x", name: "TypeError", __errcls__: 1 }; return o.__errcls__ }`).exports.f(), 1,
     'a plain object literal spelling __errcls__ as a key compiles and reads back')
@@ -1280,16 +1063,6 @@ test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)
     'for-in over an error sees no key')
 })
 
-// audit-#9 P0-2 groups 1/2: Object.assign/spread over a real Error object used
-// to crash the compiler outright (`__arr_set_idx_ptr` never registered /
-// `Unknown section func,$__obj_clone`). audit-#10 finding-3 then asked for one
-// consistent answer across keys, JSON, spread and for-in: (a) JS fidelity,
-// non-enumerable on every surface, which needed a per-slot enumerability fact
-// threaded through every enumeration site, or (b) enumerable everywhere. (b)
-// held until the enumeration view (module/schema.js enumView) became that
-// fact: an Error's layout hides `message` and `name` (ctx.schema.hidden), so
-// every surface lists neither, as JS does, and a spread or assign copies
-// neither. A property the program adds stays enumerable.
 test('errors: Object.keys, JSON, for-in, spread and assign see no Error field, as JS', () => {
   const src = (e) => `export let f = () => { let e = new TypeError("x"); e.code = 7; return JSON.stringify(${e}) }`
   for (const e of ['Object.keys(e)', 'Object.values(e)', 'Object.entries(e)', '(() => { const r = []; for (const k in e) r.push(k); return r })()',
@@ -1298,17 +1071,6 @@ test('errors: Object.keys, JSON, for-in, spread and assign see no Error field, a
     for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(), oracle(src(e)).f(), `${e} O${optimize}`)
 })
 
-// FIXED (was KNOWN-FAIL, pre-existing, general, Error-unrelated — found live
-// while pinning the enumerability decision above): Object.assign onto an
-// ANONYMOUS object-LITERAL target (`Object.assign({}, {a:1})`, no bound name)
-// never grew the target's schema with a source's new keys — it only
-// overwrote slots the target literal's OWN props already declared, so a
-// genuinely new source key had no slot to land in and was silently dropped
-// (`Object.assign({}, {a:1})` gave `[]`, real JS gives `['a']`). Root cause:
-// A literal target keeps its construction layout. Source keys outside that
-// layout must use ordinary property storage, while existing fields overwrite
-// their slots. Replacing the call with object spread would interleave getters
-// with argument evaluation; the call stages arguments before it copies.
 test('Object.assign onto an object-literal target grows the result with every source key (ECMA-262: OrdinarySetWithOwnDescriptor copies left-to-right, later source wins a collision, a target key absent from every source survives)', () => {
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`).exports.f(), 1, 'a brand-new key from the source lands — the original pin (real JS: 1, [\'a\'])')
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).sort().join(',')`).exports.f(), 'a', 'key name matches')
@@ -1339,10 +1101,6 @@ test('instanceof: compile-time fold — proven-kind LHS emits no runtime tag/aux
 
 // Loud rejection: jz has no prototype chain, so RHS support is a closed
 // allowlist — everything else is a compile-time error, not a silent guess.
-// Covers every excluded-with-evidence case from prepare's INSTANCEOF_ALLOW
-// comment (BigInt64Array/BigUint64Array collide at the aux level;
-// WeakMap/WeakSet fold to Map/Set and are
-// tag-indistinguishable from them) alongside the ordinary unsupported names.
 test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prototype chain)', () => {
   const rejects = (code) => throws(code, 'instanceof', 'unsupported instanceof RHS should error', { strict: true })
   rejects(`export let f = (x) => x instanceof Object`)
@@ -1401,12 +1159,9 @@ test('instanceof: primitive wrapper probes include nullish values and primitive 
 })
 
 // A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
-// names none by its spelling: `({}) instanceof OBJECT` folded to false.
-// Namespace aliases retain their known constructor. A binding of the program's
-// own value is asked at run time (class-dispatch.js valueInstanceof): a class
-// answers for its instances, a value that is no function throws. An alias of a
-// builtin constructor rejects: its instances are not told apart by a run-time
-// test, as an ordinary function's (`new` of one calls it) are not.
+// names none by its spelling: `({}) instanceof OBJECT` folded to false. An
+// alias of a builtin constructor rejects: its instances are not told apart by
+// a run-time test, as an ordinary function's (`new` of one calls it) are not.
 test('instanceof: a binding holding a constructor is not told apart by its spelling', () => {
   for (const [src, want] of [
     [`export let f = () => { const O = Object; return 'o' instanceof O }`, false],
@@ -1431,7 +1186,7 @@ test('instanceof: a binding holding a constructor is not told apart by its spell
 // mark its factory puts on them, jzify/generators.js genMark), also through
 // a class's generator method read as a value; a function with no `prototype`
 // (an arrow, a method, an async function) throws the TypeError for an object
-// and answers false for a primitive. `g() instanceof g` answered false.
+// and answers false for a primitive.
 test('instanceof: a function value answers by its prototype', () => {
   const t = `const t = (x, C) => { try { return x instanceof C } catch (e) { return e.name } }\n`
   for (const [src, want] of [
@@ -1550,7 +1305,7 @@ test('runtime throws: a constant error is thrown by one shared helper, every sit
 test('catch: a spread of a value that may not iterate keeps its try', () => {
   // The catch emitter drops a try whose body it proves cannot throw; a spread
   // throws through the runtime's iterable normalization, with no call or
-  // throw in the source. `[...v]` lost its catch; `for (x of v)` kept it.
+  // throw in the source.
   const src = `
     export const lit = (v) => { let r = 0; try { const a = [...v]; r = a.length } catch (e) { r = 7 } return r }
     const len = (...xs) => xs.length
@@ -1587,9 +1342,7 @@ test('catch: an optional call keeps its try', () => {
 
 // A thrown value crosses to the host as JavaScript delivers it: a primitive, an
 // object or an array as itself, an Error as the host's Error of its class with
-// its message, a name it set and its other own properties. No private code or
-// wasm exception rides on it. (A class deriving Error has no host class: its
-// instance is the host's Error of the base, its name and message the source's.)
+// its message, a name it set and its other own properties.
 test('errors: a thrown value reaches the host as Node delivers it', () => {
   const caught = (f) => { try { f(); return { returned: true } } catch (e) { return e instanceof Error
     ? { error: Object.getPrototypeOf(e).constructor.name, name: e.name, message: e.message, own: Object.keys(e), private: 'thrown' in e || 'cause' in e }

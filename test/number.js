@@ -167,22 +167,18 @@ test('Number: toString', () => {
     ['large int', '() => { let n = 9999999999; return n.toString().length }', 10],
     ['1e15', '() => { let n = 1000000000000000; return n.toString().length }', 16],
     // __ftoa was stripping trailing zeros from the integer part when prec=0 (auto-fit
-    // reduces prec because scaled value won't fit i32). Repro: 1079623680 → "107962368".
-    // Found via biquad bench when `(s >>> 0) / 4294967296` style PRNG output got
-    // stringified via template literal. Fix: gate strip-trailing-zeros on prec>0.
+    // reduces prec because scaled value won't fit i32).
     ['preserves trailing zero in integer', '() => { let n = 1079623680; return n.toString().length }', 10],
     ['preserves multiple trailing zeros in integer', '() => { let n = 1234567000; return n.toString().length }', 10],
     // The original bench bug surfaced via template-literal interpolation of an
-    // i32-spec'd value. Compute a value with trailing zero so it can't fold,
-    // then stringify. Without the fix, "1079623680" became "107962368" (length 9).
+    // i32-spec'd value. Compute a value with trailing zero so it can't fold, then
+    // stringify.
     ['preserves trailing zero through computed value', '() => { let n = 539811840 + 539811840; return n.toString().length }', 10],
   ])
 })
 
-// === toString(radix) — spec-compliant range validation ===
+// toString(radix) — spec-compliant range validation
 // Per 21.1.3.6: radix coerces to integer in [2, 36]; otherwise RangeError.
-// Pre-fix: radix=1 hung the digit loop, radix=0 trapped 'remainder by zero',
-// radix=37 / -1 silently returned wrong digit strings.
 
 test('Number: toString(radix)', () => {
   cases([
@@ -302,8 +298,6 @@ test('Number: toPrecision', () => {
   ])
 })
 
-// === String() / expression toString ===
-
 test('Number: String() / expression toString', () => {
   cases([
     ['String(42)', '() => String(42).length', 2],
@@ -380,8 +374,7 @@ test('Number: a bound `>>> 0` uint32 reads and computes as its unsigned value', 
 test('Number: a bound `>>> k` (k≥1) keeps the fast signed-i32 path and stays correct', () => {
   // `expr >>> k` for a constant k with (k & 31) ≥ 1 lands in [0, 2³¹−1] — it fits a *signed*
   // i32, so the binding stays i32 (the FFT index path: `nn >>> 1`), unlike the `>>> 0` above
-  // which must widen to f64. The unsigned-shift semantics still hold: a value negative as a
-  // signed i32 before the shift (−1 ≡ 0xFFFFFFFF) reads as uint32 >>> k, never the signed >>.
+  // which must widen to f64.
   is(run('export let f = () => { let u = (0 - 1) >>> 1; return u }').f(), 2147483647)   // 0xFFFFFFFF >>> 1
   is(run('export let f = () => { let u = (0 - 2) >>> 1; return u }').f(), 2147483647)   // 0xFFFFFFFE >>> 1
   is(run('export let f = () => { let u = (0 - 1) >>> 4; return u }').f(), 268435455)    // 0xFFFFFFFF >>> 4
@@ -390,11 +383,7 @@ test('Number: a bound `>>> k` (k≥1) keeps the fast signed-i32 path and stays c
   is(run('export let f = () => { let u = (0 - 1) >>> 32; return u }').f(), 4294967295)
 })
 
-// === Regression: String() large-value fraction-drop + trap ===
 // Pre-fix, the __ftoa fit loop reduced precision until the scaled integer fit i32, which
-// (a) dropped the fractional part once floor(val) exceeded ~2^31, and (b) trapped on the
-// large-integer digit-extraction path for values just below the 1e21 exponential threshold
-// (a per-digit subtraction could go slightly negative under f64 rounding → i32.trunc_f64_u trap).
 test('Number: String() large-value fraction-drop + trap', () => {
   cases([
     ['preserves the fraction: 1073741824.5', '() => String(1073741824.5)', String(1073741824.5)],  // '1073741824.5'
@@ -403,15 +392,9 @@ test('Number: String() large-value fraction-drop + trap', () => {
   ])
 })
 
-// ---- platform-NaN const folding (the linux-x64 self-compile OOB) ----------------
-// x64 wasm arithmetic produces SIGN-SET qNaNs where arm64 produces canonical
-// ones. A folded NaN (Math.sqrt(-1) on the narrowed path) must normalize to
-// the canonical atom before it rides a kind-erased const-node slot — and the
-// detector must be Number.isNaN, not `v !== v`: in-kernel `!==` goes through
-// __eq's bit-equality, where a sign-set qNaN equals itself (the arm that keeps
-// negative i64-carrier BigInts working), so the !== guard missed exactly the
-// payload that traps. Byte-identical kernels passed on arm64 and OOB'd on
-// linux-x64 until this.
+// platform-NaN const folding (the linux-x64 self-compile OOB)
+// x64 wasm arithmetic produces SIGN-SET qNaNs where arm64 produces canonical ones.
+// Byte-identical kernels passed on arm64 and OOB'd on linux-x64 until this.
 
 test('NaN const fold: sqrt(-1) through reductions stays canonical', () => {
   const r = run(`
@@ -428,18 +411,12 @@ test('NaN const fold: sqrt(-1) through reductions stays canonical', () => {
   is(r.main(), 1)
 })
 
-// ---- Eisel-Lemire mul64 carry fix (1-ULP misparse) --------------------------
+// Eisel-Lemire mul64 carry fix (1-ULP misparse)
 // The __dec_to_f64 WASM implementation used a 3-way 64-bit addition to compute
-// the 128-bit product's middle limb (mid = t01 + t10 + (t00>>32)). For certain
-// inputs the addition overflows 64 bits, silently dropping a carry bit into the
-// high 64-bit product word. This produced a result 1 ULP low for values like
-// 2505210838544172e-23.  Fix: split into two sequential additions, detecting
-// overflow from each step and propagating the carry into p1hi.
+// the 128-bit product's middle limb (mid = t01 + t10 + (t00>>32)).
 
 test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', () => {
   // 2505210838544172e-23: triggers the mul64 carry overflow in __dec_to_f64.
-  // The 3-way mid accumulation (t01 + t10 + t00>>32) overflowed 64 bits, dropping
-  // a carry bit into p1hi, producing a result 1 ULP too low.
   is(run(`export let f = () => +"2505210838544172e-23"`).f(), 2.505210838544172e-8)
   is(run(`export let f = () => +"2.505210838544172e-8"`).f(), 2.505210838544172e-8)
   // More cases inside the trimmed table range (exp10 ∈ [-65,65]) — the realistic
@@ -449,13 +426,11 @@ test('Number: unary + / Number() correctly-rounded hard cases (EL carry fix)', (
   is(run(`export let f = () => +"1.23456789012345678e-40"`).f(), 1.23456789012345678e-40)
   is(run(`export let f = () => +"6.022140857e23"`).f(), 6.022140857e23)
   // f64-EXTREME exponents (|10^e| > 10^65 — denormals / near-MAX) intentionally fall
-  // back to POW10_SCALE (the EL table is trimmed for size, see module/number.js).
-  // No real-world literal reaches them; Number.MIN_VALUE / Number.MAX_VALUE are still
-  // exact (emitted as f64.const, not parsed). The mul64 carry fix is exercised by the
-  // 2505210838544172e-23 case above (exp10 -23, inside the table).
+  // back to POW10_SCALE (the EL table is trimmed for size, see module/number.js). No
+  // real-world literal reaches them; Number.MIN_VALUE / Number.MAX_VALUE are still
+  // exact (emitted as f64.const, not parsed).
 })
 
-// ---- parseInt/parseFloat spec edges (test262 builtins gate, 2026-07-10) -----
 // parseInt: StrWhiteSpace is UTF-8-decoded __skipws (NBSP/LS/PS/Zs — was ASCII-
 // only), invalid radix (≠0 and outside 2..36 after ToInt32) is NaN before any
 // input inspection, and a number input takes ToString like any other value —
@@ -632,10 +607,7 @@ test('Number generic boundaries canonicalize box-looking NaNs without changing n
 
 test('Number payload proofs: plain-array arithmetic stores raw, raw ingress still normalizes', () => {
   // A boxed array's elements were normalized where they were stored, and
-  // arithmetic on them makes no payload: the store back needs no select. An
-  // array of raw Numbers (compile/numeric-arrays.js) and one that may hold a
-  // hole hand a numeric read the cell as it lies (the hole a NaN): what
-  // arithmetic makes of it is normalized where it leaves, as a typed element's is.
+  // arithmetic on them makes no payload: the store back needs no select.
   const kernel=(make,use='')=>`const a=${make};export function f(n){const o=[];for(let i=0;i<4;i++)a[i]=i*0.5+a[(i+1)&3];${use}
     for(let i=0;i<4;i++){const x=a[i];let y=x*2;y=y+a[i];o[i]=Math.sqrt(y)-x}return o}`
   // canonicalNumberIR's own test of its temp: `cn != cn`
@@ -664,8 +636,7 @@ test('Number payload proofs: an exported Number result crosses as a Number whate
   // the host reads a result crossing as a Number as one (interop.js numberRet):
   // a NaN whose bits spell a boolean, a string or an array's pointer is NaN,
   // returned by an arrow or a function, a typed array's element or arithmetic
-  // on one. (The exact bits of null and undefined read as those, the values a
-  // nullable Number result returns.)
+  // on one.
   const src=`const bits=(hi,lo)=>{const t=new Float64Array(1),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;return t}
     export let e=(hi,lo)=>bits(hi,lo)[0]
     export function d(hi,lo){const v=bits(hi,lo)[0];return v}
@@ -683,10 +654,7 @@ test('Number payload proofs: a host NaN or a checked read spelling undefined or 
   // signaling, enters with the canonical bits (interop.js numberArg), so a
   // parameter's NaN cannot come back as undefined or null; a nullable
   // result's checked read is normalized where it lies inside a choice
-  // (ir/sentinels.js checkedArms). A Number result left with such a payload
-  // inside the module (`bits(hi, 0)[0] * 2`) is a NaN: a result that may be
-  // undefined or null crosses as i64, so an f64 one is a Number (numberRet).
-  // Nullable and void results still read undefined and null.
+  // (ir/sentinels.js checkedArms).
   const src=`const bits=(hi,lo)=>{const t=new Float64Array(1),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;return t}
     export let product=(hi)=>bits(hi,0)[0]*2
     export function read(hi){const v=bits(hi,0)[0];return v}

@@ -1,4 +1,3 @@
-// Phase 2: Multi-value return tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { run, wat, funcWat, oracle } from './util.js'

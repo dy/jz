@@ -300,7 +300,7 @@ test('summary: a counter an array\'s length bounds stores elements, not numeric 
 
 test('summary: a ring cursor versioned as an index keeps its hull below the array it indexes', () => {
   // movavg's write index: a number from the bag, stepped by `(ptr + 1) % m`
-  // under `m = mem.length`. The plan runs the loop under `Object.is(ptr, ptr |
+  // under `m = mem.length`.
   // 0) && ptr >= 0 && ptr < mem.length && mem.length > 0`; the summary keeps
   // the copy's cursor in [0, 2^29) and below the array's length, so the loop
   // reads and stores the element without a key test, growth or a call for `%`.
@@ -538,11 +538,6 @@ test('summary: array demand preserves identity, escapes, defaults and assignment
   }
 })
 
-// The stable length asks that the loop's body run none of the program's code.
-// `Math.imul` of pure operands and a field read of an element run none: the
-// element read is present. A program that defines a `toString` runs it where an
-// operator converts an operand the summary cannot call primitive (`p.tag`, a
-// slot of a number or an object): the read stays checked.
 test('summary: a stable-length loop reads present where its body runs no code of the program\'s', () => {
   const elementReads = (fn, arr, idx) => {
     const reads = [], find = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith(arr + MARK) && typeof n[2] === 'string' && n[2].startsWith(idx + MARK)) reads.push(n); n.forEach(find) }
@@ -743,9 +738,7 @@ test('summary: array cells join every store; two arrays joined share one cell', 
 
 // Every construction of an array owns a cell, like a literal: the constructors,
 // `Array.of`, `Array.from`, a string's `split`, an array's `concat` and `splice`,
-// `JSON.parse` of a string the program holds. A method that builds a fresh array
-// leaves the receiver's cell alone; one that stores into the receiver joins the
-// stored kinds; a length store extends with holes.
+// `JSON.parse` of a string the program holds.
 test('summary: array constructions own cells; concat, splice, split, JSON.parse and Array(n) holes', () => {
   const elemOf = (fn, bare) => ctx.summary.at(fn).elemKindOf(binding(fn, bare))
   summarize(`const S = '[3,4]'
@@ -888,15 +881,8 @@ test('summary codegen: a method called through an array of instances, an exporte
   if (OPT_LEVEL === 2) ok(!/__dyn_get|__hash|__to_str/.test(compile(src, { wat: true })), 'the method comes from the element\'s schema slot, the method parameter is a typed array')
   const { exports: api, memory } = jz(src)
   is(api.run(4), 2 * 0.5 * 1.5 * 2.5)
-  // Nullish receiver checks retain the private error signal: 3060 → 3132 B.
-  // A control build omitting only those checks restores 3060; keep the same slack.
-  // Known-array reads and lengths take their forwarding hop inline in the
-  // speed tiers (src/ir/pointers.js fwdOffsetIR): 3132 → 3184 B, two hops.
-  // The `jz:brand` custom section names the class for interop: 3184 → 3235 B.
-  // The unknown constructor argument's array arm converts each element (a
-  // nullish or boolean atom to its number, any other box NaN): 3235 → 3332 B.
-  // Escape tracking adds 210 B against 6f069d30 (3328 → 3538 B), and frees
-  // the complete call frame: 100 calls retained 33600 B before, zero now.
+  // Nullish receiver checks retain the private error signal: 3060 → 3132 B. A
+  // control build omitting only those checks restores 3060; keep the same slack.
   // Preserve the existing 40 B slack; benchmark size caps are independent.
   if (OPT_LEVEL === 2) {
     const mark = memory.used
@@ -915,12 +901,9 @@ test('summary codegen: a method called through an array of instances, an exporte
   // a site there beside the one in the constructor nothing calls any more: the
   // slot of that dead site is never read, and is no evidence against the demand.
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
-  // The same required receiver check adds 72 B to the exported-class case.
-  // The `jz:brand` custom section names the exported class for interop: 2072 → 2084 B.
-  // The constructor argument's array arm converts each element: 2084 → 2171 B.
-  // The conditional arena cleanup adds 205 B and releases 80 B per call.
-  // The host constructs the exported class (`jz:class`): `process` is an export
-  // of its own too, so it stays a function where `run` inlined it: 2325 → 2603 B.
+  // The same required receiver check adds 72 B to the exported-class case. The host
+  // constructs the exported class (`jz:class`): `process` is an export of its own too,
+  // so it stays a function where `run` inlined it: 2325 → 2603 B.
   if (OPT_LEVEL === 2) ok(compile(cls).length < 2730, `bytes: ${compile(cls).length}`)
 })
 
@@ -1147,9 +1130,7 @@ test('summary: named callable values share closure argument and result analysis'
 
 test('summary: joins that never read through a value keep its shapes', () => {
   // `must` only tests its argument: objects and booleans meet there without
-  // losing the shapes. A rest parameter is a tuple of its arguments by
-  // position. Set elements are followed. A dictionary joined with an object
-  // keeps the dictionary cell, its shapes riding on it.
+  // losing the shapes.
   summarize(`const must = (c, m) => { if (!c) throw new Error(m) }
     const rest = (...args) => args[1]
     export const f = (n) => {
@@ -1248,8 +1229,7 @@ test('summary: cyclic host graphs retain nested arrays and callables', () => {
 
 test('summary: a decided condition prunes its dead arm; a nullish receiver read throws', () => {
   // `x === undefined` on a binding that is never nullish walks only the live
-  // arm, so a defaulted destructuring keeps the argument's shape. A read
-  // through a nullish receiver is a throwing call, not an unknown value.
+  // arm, so a defaulted destructuring keeps the argument's shape.
   summarize(`const mk = (opts) => { const o = opts === undefined ? {} : opts; const sig = o.sig === undefined ? null : o.sig; return { current: sig } }
     export const f = () => { const frame = mk({ sig: { params: [1], results: [] } }); return frame.current.params.length }`)
   is(tagOf(kindOf('mk', 'o')), K.OBJECT, 'the never-undefined argument skips the {} default')
@@ -1315,9 +1295,7 @@ test('summary: a wrapper hands back what its closure argument returns', () => {
 
 test('summary: a lost shape\'s member reached through a value of several kinds is called there', () => {
   // `any` joins the record with an array: the record's shape is lost, yet its
-  // member stays the one closure `rec.f` holds. A call through `any` binds it,
-  // and a read through `any` hands it where the summary cannot follow: either
-  // way the array `b` passes reaches `f` beside the typed array `a` passes.
+  // member stays the one closure `rec.f` holds.
   for (const use of ['any.f([10, 20, 30])', '{ let g = any.f; return g([10, 20, 30]) }']) {
     const src = `let rec = { f: (x) => x[0] + x.length }
 export let a = () => rec.f(new Float64Array([1, 2]))
@@ -1349,10 +1327,7 @@ test('summary: Object.assign onto a shape stores each source slot; a shape besid
 
 // A method several classes define, one returning its typed buffer and another
 // an object (web-audio-api's `_tick`: a param's Float64Array, a node's
-// AudioBuffer), joins a shape with a typed array. The shape keeps its identity
-// in the join's cell, so its fields keep their kinds: the channel arrays it
-// holds stay typed arrays, and a loop storing into one is versioned by width
-// instead of storing through the receiver-of-any-kind helper.
+// AudioBuffer), joins a shape with a typed array.
 test('summary: a shape beside a typed array keeps its identity', () => {
   const src = `class Buf {
     #data
@@ -1567,8 +1542,7 @@ test('specialization: forwarding alone does not earn a kind clone', () => {
 // A method call through a receiver the summary joined (an object beside a
 // number: a mixed cell) or lost (the unknown kind: every promise's value slot
 // holds what the other promises settle with too) runs the closure the shapes
-// hold under the name. It ran none: the string `set` stores into the captured
-// binding went unseen, and `inc` added it as a number ('x' + 1 read 'x').
+// hold under the name.
 test('summary: a method call through a joined or an awaited receiver runs its closure', async () => {
   const body = `{ let s = 0; let o = { set: () => { s = 'x' }, get: () => s, inc: () => { s = s + 1; return s } }; return c ? o : 1 }`
   const tail = `let inst = null
@@ -1592,7 +1566,6 @@ export let inc = () => inst.inc()`
 
 // `Array.isArray(x) ? x : [x]` over a field set on first use: the wrapping arm
 // holds what is no array, so the list of records never joins a list of lists.
-// A member path is narrowed only in an arm that neither calls nor stores.
 test('summary: Array.isArray narrows a name, and a member path in an arm that cannot change it', () => {
   const lists = `const mkSos = (k) => [{ b0: k, a1: 2 }, { b0: k + 1, a1: 3 }]
     const params = { fs: 1 }, other = { fs: 2 }
@@ -1622,9 +1595,7 @@ test('summary: Array.isArray narrows a name, and a member path in an arm that ca
 // `batch(data, opts(o))`, `data` a channel read from a list (a Float32Array or
 // missing): where the test fails `data` is no Float32Array, so the options
 // record never joins a typed array, keeps its shape, and the batch's cursor
-// stays a number (an element store, no string key). A typed array of another
-// kind, a buffer (a SharedArrayBuffer is no ArrayBuffer) and an unknown class
-// keep their kinds on the failing side.
+// stays a number (an element store, no string key).
 test('summary: instanceof narrows a name on both sides of its test', () => {
   const src = `function opts(o) { let n = o?.size ?? 8; let h = o?.hop ?? (n >> 2); return { ...o, n, h } }
     function stream(o) { return o.n * 1000 + o.h }
@@ -1670,8 +1641,7 @@ test('summary: instanceof narrows a name on both sides of its test', () => {
 // A member path tested against null in a conditional whose arm neither calls
 // nor stores reads what the test read: `params.x1 != null ? params.x1 : 0` is a
 // Number, the filter state a kernel reads back from its record, which a loop
-// then carries without converting. A getter runs again on the second read, so
-// an accessor's name keeps its kind.
+// then carries without converting.
 test('summary: a member tested against null reads as present in the arm', () => {
   const src = `function k (d, q) {
       let a = q.x1 != null ? q.x1 : 0, b = null != q.y1 ? q.y1 : 0, c = q.z1 == null ? 0 : q.z1
@@ -1873,8 +1843,6 @@ test('phase checkpoint, natively: a solve\'s result is data, and what predates t
 // unknown shape, a method it does not know) may store anything into the object
 // it is handed, under any name: a read under a computed name holds anything,
 // not only what the visible stores left beside the layout (an empty one here).
-// The compiler's own dependency table, a `{}` modules fill by `Object.assign`,
-// read `typeof entry === 'function'` as never true.
 test('summary: an object an unseen call fills holds anything under any name', () => {
   const src = `import { make } from 'host'
 const core = { deps: {} }
@@ -1918,12 +1886,7 @@ test('summary: a logical assignment reads as its target or its value', () => {
 
 // A method the summary cannot see through, called on a host value, stores no
 // named property into a typed array (summary/index.js escapeReceiver): no
-// typed array method stores one and a host holds its elements alone. A read
-// keyed by a possibly missing number (`t[b[i]]`: `b[i]` past its end is
-// undefined, the property "undefined") stays the element or what the program
-// stored under a name, where the call made it anything, and the sum over it
-// a string concatenation (decode-dsd's stage 1, `__dyn_get_t` and `__add_slow`
-// per tap).
+// typed array method stores one and a host holds its elements alone.
 test('summary: a method on a host value leaves typed arrays\' named properties as the program stores them', () => {
   const body = `const t = new Float32Array(4), b = new Uint8Array(4)
     export function f() { for (let i = 0; i < 4; i++) { t[i] = i + 0.5; b[i] = 3 - i } let s = 0; for (let i = 0; i < 8; i++) s += t[b[i]] ?? 1; return s }`
@@ -1942,15 +1905,7 @@ test('summary: a method on a host value leaves typed arrays\' named properties a
 })
 
 // A parameter only tested joins its arguments without losing what a join loses
-// (summary/index.js passiveParamsOf). The scan read a try statement in the
-// parser's layout, `['catch', param, handler]`, where a prepared one is
-// `['catch', body, param, handler]`: it walked neither the protected body nor
-// the handler, so a parameter stored through, kept or returned there was one
-// only tested. An object passed where a number is too kept its fields' kinds
-// past the store (level 0 answered with the kind the literal had), and a
-// captured parameter assigned in a handler, esbuild's CommonJS wrapper, joined
-// without its cell on the call and with it on the assignment, a round each, so
-// the solve ended on its bound of rounds.
+// (summary/index.js passiveParamsOf).
 test('summary: a parameter used inside a try statement is no parameter only tested', () => {
   const stored = `{ let a = { x: 1 }; f(a, 1); f(7, 1); return typeof a.x === 'string' ? 1 : 0 }`
   const programs = {
@@ -1983,16 +1938,7 @@ test('summary: a parameter used inside a try statement is no parameter only test
 })
 
 // The walk reads a parameter as what its callers pass until its first reassignment,
-// and a name within the tags its tests prove (summary/index.js `pre`, `refined`). Two
-// ends of those regions were missed where an `if` assigns the name. On a path the
-// straight-line state does not follow (a try statement's body, handler or finalizer,
-// a labelled block with a break) the conditional's join left the parameter "not yet
-// reassigned": every read after it, a call's argument among them, was of the callers'
-// kinds alone (`try { if (typeof o === 'number') o = { x: o } } catch (e) {} show(o)`:
-// `show` never took an object, and its `typeof v === 'object'` arm was folded away).
-// And a test's arm, ending, restored the mask the name had before the test, though the
-// arm had assigned it (`if (o == null) return; if (typeof o === 'number') o = null`:
-// "not nullish" came back for the reads after, and `show`'s `v === null` was folded).
+// and a name within the tags its tests prove (summary/index.js `pre`, `refined`).
 test('summary: an assignment under an `if` ends the parameter\'s incoming kind and the proofs around it', () => {
   const show = `let show = (v) => v === null ? 'null' : v === undefined ? 'undef' : typeof v === 'function' ? 'fn' : typeof v === 'object' ? 'obj' + v.x : typeof v + v`
   const set = `if (typeof o === 'number') o = { x: o }`

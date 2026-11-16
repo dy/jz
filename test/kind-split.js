@@ -81,9 +81,7 @@ export let peek = () => [...mono, ...left, ...right].join()`
 })
 
 // A kernel a tracker's closure calls with the array its factory was given: one
-// caller passes a Float32Array, another a Float64Array. Each constructor gets a
-// copy of the loop, the class test proving its element kind though the name
-// held a number array of either kind before it.
+// caller passes a Float32Array, another a Float64Array.
 test('kind split: an array of either of two kinds, handed on through a closure, reads each by its kind', () => {
   const src = `function g(data, pos, N, win) { let re = 0, im = 0; for (let i = 0; i < N; i++) { let x = (data[pos + i] || 0) * win[i]; re += x * 0.5; im -= x * 0.25 } return [re, im] }
 function mk(source, N) { const win = new Float64Array(N).fill(0.5); return function at(t) { const [r0, i0] = g(source, t, N, win); const [r1, i1] = g(source, t + 1, N, win); return r0 + i1 } }
@@ -133,10 +131,7 @@ export let run = (color, n) => { const out = new Float32Array(n); proc(color, n,
 
 // An AudioBuffer-like container: its channels are views of one Float32Array,
 // and a parameter's mix swaps a Float64Array into a channel (web-audio-api's
-// AudioBuffer `_channels`). The summary keeps the pair of widths through the
-// join (summary/kind.js TYPED_FLOAT), so a loop over channels of either width
-// runs a copy for each width they all may hold, and the vectorizer lifts the
-// copies; a mix of widths runs the loop as written.
+// AudioBuffer `_channels`).
 const channels = `const BLOCK = 64
 class Buf {
   #n

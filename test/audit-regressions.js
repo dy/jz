@@ -548,7 +548,7 @@ test('audit: compile-time integer conversion wraps beyond i64 during self-hostin
 // The README's "bitwise operands under 2^63": a bitwise operator converts its
 // operand through a saturating i64 truncation (src/ir/numeric.js toI32), exact
 // under 2^63 and for every nonfinite; past it the operand reads as -1, or as 0
-// when negative. No compare per conversion pays for the wrap modulo 2^32.
+// when negative.
 test('audit: a bitwise operand converts as JS under 2^63 and saturates past it', () => {
   const src = `export let or0 = (x) => x | 0
     export let shr0 = (x) => x >>> 0
@@ -569,8 +569,7 @@ test('audit: a bitwise operand converts as JS under 2^63 and saturates past it',
 
 // A string operand need not be a literal: a local that holds one makes `+` a
 // concatenation and `<` a comparison of strings, whatever the other operand's
-// kind (src/compile/param-numeric.js isStr). A parameter beside it keeps its
-// runtime dispatch: read as a number, 'b' was NaN and 'a' < 'm' was false.
+// kind (src/compile/param-numeric.js isStr).
 test('audit: a local that holds a string concatenates and compares as one', () => {
   const src = `export let acc = (a, b, c) => { const s = ""; const s1 = s + a; const s2 = s1 + b; const s3 = s2 + c; return s3 }
     export let pre = (a, b) => { const p = "p:"; return p + a + b }
@@ -593,8 +592,8 @@ test('audit: a local that holds a string concatenates and compares as one', () =
 })
 
 // A sum whose value is read as a string is a concatenation: its operands are read as
-// strings, and a parameter among them is no number at the boundary (src/summary
-// demand, `STR`). Read as a number, `s + s` was NaN and `.slice` read it as an address.
+// strings, and a parameter among them is no number at the boundary (src/summary demand,
+// `STR`).
 test('audit: a parameter summed and then read as a string is a string', () => {
   const src = `export let twice = (s) => { const x = s + s; return x.slice(1) }
     export let inline = (s, t) => (s + t).slice(1)
@@ -616,9 +615,6 @@ test('audit: a parameter summed and then read as a string is a string', () => {
   }
 })
 
-// A store reads its key before its value (PutValue): a value whose call moves what the
-// key reads stores where the key was (module/typedarray.js). The typed store took the
-// value first and read the key after it.
 test('audit: a typed store reads its key before a value that moves it', () => {
   const src = `const OUT = new Float64Array(4), AT = new Int32Array(1)
     let at = 0
@@ -694,8 +690,7 @@ test('audit: constant parameters preserve a guarded Number-or-BigInt domain', ()
 
 // A closure stored beside the fields of an object a literal nested (`ns.inner.parse = f`
 // where the literal declared no `parse`) runs when the member is called
-// (src/summary/index.js): its body is reached and its parameter bound. Unreached, a
-// binding of its body had no kind and a BigInt shifted as an i32.
+// (src/summary/index.js): its body is reached and its parameter bound.
 test('audit: a closure stored beside a nested object\'s fields is reached by its call', () => {
   const src = `function parseNum(n) {
       const b = typeof n === 'string' ? BigInt(n) : n
@@ -1555,11 +1550,7 @@ test('audit: bounded numeric conversions retain missing and nonfinite values', (
   }
 })
 
-// An integer element store converts its value by ToInt32. Over checked reads
-// of integer elements (a length the compiler does not know: the adaptive
-// filter taps of a TTA decoder, `qm[i] -= dx[i]`) the value is a bounded
-// integer or the NaN of a miss, and the inline wrap is exact; the helper that
-// recovers the low word past 2^63 stays for values of no known range.
+// An integer element store converts its value by ToInt32.
 test('audit: an integer element store over checked integer reads converts inline', () => {
   const src=`let a=new Int32Array(4),b=new Int32Array(4),u=new Uint32Array(4),f=new Float64Array(4)
     a[0]=2147483647;b[0]=-2147483648;a[1]=-2147483648;b[1]=2147483647;a[2]=5;b[2]=9
@@ -1720,8 +1711,7 @@ test('audit: a module global holds what a closure, a callback or a source of no 
 // A local's storage is decided once, from the numbers the interval proof finds
 // it holds: a sum past one word stays a Number though its operands are words,
 // where a remainder reads it (its result is bounded, its operand is not) or a
-// closure does. A character key is a number and a word (`s[true]` and
-// `s[2 ** 32]` read no element), and a Boolean binding is no number at all.
+// closure does.
 test('audit: a sum past one word stays a Number wherever a read observes its number', () => {
   const src = `const sub = (a, b) => (a | 0) - (b | 0)
     export let rem = (k) => { const a = 3 + (k | 0); return a % 7 }
@@ -1739,10 +1729,6 @@ test('audit: a sum past one word stays a Number wherever a read observes its num
   }
 })
 
-// The value of an assignment is the number assigned. A name every read of which
-// takes its word keeps a word of it, so the assignment's own value, read as a
-// number, is a read that does not (each of these answered -2^31 for 2^31, or 0
-// for 0.5, at every level).
 test('audit: an assignment read as a number answers the number assigned, not the word its target keeps', () => {
   const src = `let G = 0, H = 0
     const h = (x) => x
@@ -1763,10 +1749,6 @@ test('audit: an assignment read as a number answers the number assigned, not the
   }
 })
 
-// An unsigned word's top is past 2^31: `a - 1` over `a = k >>> 0` is no signed
-// word's difference though its lower side fits one (4294967294 answered -2 at
-// every level once the local's range was known; the remainder of it did on
-// every tree).
 test('audit: an unsigned word less a literal is no signed word', () => {
   const src = `export let sub = (k) => { const a = k >>> 0; const b = a - 1; return b }
     export let addNeg = (k) => { const a = k >>> 0; const b = a + -1; return b }
@@ -1786,11 +1768,7 @@ test('audit: an unsigned word less a literal is no signed word', () => {
   }
 })
 
-// A name is an integer where every write of it is one. A module binding any
-// function may write, a local a sibling closure writes and a closure's own
-// parameter have writes the body at hand does not hold: its own integer
-// writes say nothing of those (`Math.round` answered 1.5 and `T[0.5]` the
-// first element, at every level).
+// A name is an integer where every write of it is one.
 test('audit: a name other code writes is no integer by the writes in sight', () => {
   const cases = [
     `let G = 0; const w = (d) => { G += 0.25; if (d > 0) w(d - 1) }; export let f = (k) => { G = 0; w(5); return Math.round(G) + k }`,
@@ -1826,10 +1804,7 @@ test('audit: a name other code writes is no integer by the writes in sight', () 
 })
 
 // A `for`'s braced body is a block of its own: a `let` in it of a name the head
-// names is another binding than the head's. The parser hands the body as its
-// bare list, and the head's frame held it: `for (let i = 0; i < k; i++) { let i
-// = 5 }` stepped the body's `i` and never ended, a bound the body redeclared was
-// read from the body, and `for (x of a) { let x }` assigned the body's `x`.
+// names is another binding than the head's.
 test('audit: a for body that declares a name of its head has its own', () => {
   const cases = [
     `export let f = (k) => { let c = 0; for (let i = 0; i < k; i++) { let i = 5; c += i } return c }`,
@@ -1865,9 +1840,7 @@ test('audit: a for body that declares a name of its head has its own', () => {
 })
 
 // null converts to 0, a Number of its own: a comparison tells it from a NaN, so
-// its conversion is dead only where the value is held a Number. The pass that
-// drops a dead undefined test (NaN either way) dropped the null test with it,
-// and `let i = null; while (i < n)` ran no iteration at levels 2 and over.
+// its conversion is dead only where the value is held a Number.
 test('audit: a null read as a number is 0 in a comparison', () => {
   const cases = [
     `export let f = (n) => { let i = null, c = 0; for (; i < n; i += 1) c++; return c }`,
@@ -1883,9 +1856,7 @@ test('audit: a null read as a number is 0 in a comparison', () => {
   }
 })
 
-// null and undefined are two values. A binding whose every definition is one
-// deciding value reads as it, and the definitions were compared by their JSON
-// text, which writes both as null: `x = undefined` after `let x = null` was lost.
+// null and undefined are two values.
 test('audit: a binding written null and undefined holds either', () => {
   const cases = [
     `export let f = (k) => { let x = null; if (k > 5) x = undefined; return x === undefined ? 1 : 0 }`,
@@ -1952,8 +1923,6 @@ test('audit: a reassigned module string is read, not folded', () => {
 
 // A function's own assignment of a module binding says what a read after it
 // holds only until a call: any call may run a function that assigns the binding.
-// `X = 1; w(); return X + 1` returned NaN where `w` had stored a string (the
-// export's result was a Number by the fact, and a string crossed as one).
 test('audit: a module binding a function assigns is not what the caller last wrote', () => {
   const cases = [
     `let X = 1\nconst w = (k) => { if (k > 3) X = 'ab' }\nexport let f = (k) => { X = 1; w(k); return X + 1 }`,
@@ -2000,12 +1969,7 @@ test('audit: Array.isArray of a value that may be missing asks the value', () =>
   ok(!compile(`export let f = (k) => { const a = [k, k + 1]; return Array.isArray(a) ? a.length : -1 }`, { optimize: 0, wat: true }).includes('__ptr_type'), 'a present array answers without a tag test')
 })
 
-// A literal split into names declares each slot where the literal was. A slot a
-// statement writes is no `const`, whatever declared the literal: `const a = [1, 2]`
-// fixes the array, not what it holds. Declared `const`, the slot was its
-// initializer to every reader of declarations, and an index read through it was
-// held inside its array by the 2 it started as: the load ran with no bounds
-// test, on whatever the slot held by then.
+// A literal split into names declares each slot where the literal was.
 test('audit: a literal\'s slot that is written is read as what it holds', () => {
   const top = `const A = [10, 20, 30, 0, 3], T = new Float64Array([10, 20, 30, 40])\n`
   const cases = [
@@ -2028,10 +1992,7 @@ test('audit: a literal\'s slot that is written is read as what it holds', () => 
   ok(!/\$f[\s\S]*?i32\.lt_u[\s\S]*?\(func /.test(wat.slice(wat.indexOf('(func $f'))), 'an unwritten slot indexes with no bounds test')
 })
 
-// A literal nothing writes is one shared static instance. A write through a
-// literal string key (`o['w'] *= 3`, which stays in the bracket form) writes
-// the property the dot form writes: a literal holding it is built per
-// evaluation, or one call's product is the next call's operand.
+// A literal nothing writes is one shared static instance.
 test('audit: a literal written through a string key is no shared instance', () => {
   const cases = [
     `export let f = (v) => { const o = { w: 2, t: 1 }; o['w'] *= 3; return o.w }`,
@@ -2047,9 +2008,7 @@ test('audit: a literal written through a string key is no shared instance', () =
   }
 })
 
-// A local every read of which takes its word keeps the word. An assignment read
-// as a number is no such read: its value is the number assigned (`A[p = 0.5]`
-// is no element, `return (p = 2 ** 32)` is 2^32), which the word is not.
+// A local every read of which takes its word keeps the word.
 test('audit: an assignment read as a number is the number, whatever its target keeps', () => {
   const cases = [
     `export let f = (v) => { let p = 2; const r = (p = v * 1) + 1; return (p & 3) + r * 8 }`,
@@ -2072,10 +2031,6 @@ test('audit: an assignment read as a number is the number, whatever its target k
   ok(!/\(local \$h\w* f64\)/.test(wat), 'a hash local stays a word')
 })
 
-// A quotient under a test of its remainder is an integer only of what the test
-// divided: an operand the arm writes, or a closure or a callee it calls may
-// write, divides something else (each of these answered the wrong element or
-// a floor of a fraction on main).
 test('audit: an exact quotient is exact only of the operands the test divided', () => {
   const cases = [
     `export let f = (k) => { const T = [10, 20, 30, 40]; let a = Math.floor(k); if (a % 2 === 0) { a = a + 1; const q = a / 2; return T[q] === undefined ? 100 : T[q] } return -7 }`,
@@ -2089,8 +2044,7 @@ test('audit: an exact quotient is exact only of the operands the test divided', 
 })
 
 // A module binding every write of which, in every flow, is an integer wherever
-// finite reads as one: floored by no instruction, keyed as an integer. One
-// write elsewhere of anything else keeps the floor.
+// finite reads as one: floored by no instruction, keyed as an integer.
 test('audit: a module global every write of which is an integer is read as one', () => {
   const whole = `let G = 0; const w = (d) => { G = Math.floor(G / 2) + 1; if (d > 0) w(d - 1) }
     export let f = (k) => { G = Math.floor(k); w(3); return Math.floor(G) + G }`
@@ -2104,9 +2058,6 @@ test('audit: a module global every write of which is an integer is read as one',
   is(floors(frac), 3, 'one fractional write keeps it')
 })
 
-// -0 is no integer a hull holds: a remainder of a dividend that may be -0 keeps
-// its sign (a binding of `-(y & 0)` answered +0 on main, a `-0` literal once the
-// proof read it as integral wherever finite).
 test('audit: a dividend that may be -0 keeps the remainder\'s sign', () => {
   const cases = [
     `export let f = (y) => { let v = -0; return 1 / (v % ((y & 7) + 1)) }`,
@@ -2119,9 +2070,6 @@ test('audit: a dividend that may be -0 keeps the remainder\'s sign', () => {
     for (const y of [0, 1, 2, 5]) is(jz(src, { optimize }).exports.f(y), oracle(src).f(y), `${src} f(${y}) at ${optimize}`)
 })
 
-// Math.round past 2^52: every double there is an integer and rounds to itself.
-// The half-integer test `nearest(x) === x - 0.5` held of an even one, where
-// x - 0.5 rounds back to x, and bumped it by one on main.
 test('audit: Math.round of an integer past 2^52 is the integer', () => {
   const src = `export let f = (k) => Math.round(k)`
   for (const optimize of levels(0, 2, 'speed')) {
@@ -2132,12 +2080,7 @@ test('audit: Math.round of an integer past 2^52 is the integer', () => {
 })
 
 // A typed array's key that may be a Boolean names no element: `W[true]` reads
-// undefined and stores a property. On main the key was the Boolean's number
-// wherever a Number could sit beside it: a conditional with a Boolean arm at
-// every level (the read took the merge for a Number key, and a staged key was
-// emitted as one), and a binding, an array's element or a call's result
-// wherever their other reads convert (the demand pass took a typed key for no
-// evidence, so the Boolean was stored as 0 or 1).
+// undefined and stores a property.
 test('audit: a typed array\'s key that may be a Boolean names no element', () => {
   const holders = {
     module: (V, body) => `let G = 0; const w = (k) => { G = k > 1 ? ${V} : 1 }; export let f = (k) => { const W = new Float64Array([4, 5, 6]); G = Math.floor(k); w(k); ${body('G')} }`,
@@ -2163,17 +2106,12 @@ test('audit: a typed array\'s key that may be a Boolean names no element', () =>
   }
   for (const H of Object.values(holders)) for (const V of ['true', 'k > 1']) for (const O of others) for (const U of uses) check(H(V, R => O(R) + U(R)))
   // A null and a string beside the number name none either ('1' names the second);
-  // an undefined key reads none. They answered right on main: the key's storage
-  // kept them, which a demand that counts the key as a read still does.
+  // an undefined key reads none.
   for (const H of [holders.module, holders.local, holders.element]) for (const V of ['null', `'1'`, `'1.0'`, 'undefined']) for (const U of uses.slice(0, 2)) check(H(V, R => others[1](R) + U(R)))
 })
 
 // A binding is stored as numbers where every read of it converts (the
-// summary's numeric demand), so a Boolean it holds lands as 0 or 1. A read
-// that does not convert must count against that: on main a typed array's key
-// and `Array(x)` were no evidence, and a field nothing reads by name was none
-// though its object was serialized, enumerated, copied, handed to the host or
-// read by a key (`JSON.stringify({ ok })` wrote 1 for true at every level).
+// summary's numeric demand), so a Boolean it holds lands as 0 or 1.
 test('audit: a Boolean beside a binding\'s numbers reaches a reader that does not convert it', () => {
   const mul = R => `if (${R} * 2 === 14) return -6; `
   const holders = {
@@ -2210,9 +2148,6 @@ test('audit: a Boolean beside a binding\'s numbers reaches a reader that does no
   for (const V of ['undefined', 'null']) for (const R of readers.slice(1, 4)) check(holders.local(V, R))
 })
 
-// A literal -0 is not +0 where a fold reads a zero. `c ? -0 : 1` was the negated bit of
-// the condition and `c ? 1 : -0` the bit, which has no -0 (emit/logical.js); `x - -0` was
-// x, which is -0 for x = -0 where JS answers +0 (emit/arithmetic.js).
 test('audit: a fold of a literal zero keeps the zero its sign', () => {
   for (const src of [
     `export let f = (k) => 1 / (k > -1 ? -0 : 1)`,

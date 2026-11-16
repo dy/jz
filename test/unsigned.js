@@ -8,29 +8,7 @@
  * i32 fast-path silently miscompiles (wrap, sign-flip, or trunc_sat saturation).
  *
  * These all assert *runtime values against the JS spec*, since the bug class is
- * silent wrong-answers, not a WAT-shape change. Each block targets one leak that
- * was found and fixed:
- *   • narrow.js  — unsignedResult propagates through (tail-)call chains; mixed-sign
- *                  tails do NOT narrow to unsigned (sign must be consistent).
- *   • emit.js    — `+`/`-`/`*`/`%` and relational `<`/`>`/`<=`/`>=` skip the signed
- *                  i32 fast-path when an operand is `.unsigned` (widen to f64).
- *   • emit.js    — `>>>` const-fold ≥ 2^31 keeps `.unsigned`; foldConst / cmpOp
- *                  const-fold bail on `.unsigned` operands.
- *   • ir.js      — asF64 of an `.unsigned` i32.const widens by its uint32 value.
- *   • emit.js    — the '?:' handler's i32-select join widens EACH arm by its OWN
- *                  sign when two plain arms disagree (falls to an f64 select/if,
- *                  still branchless), and propagates the agreed `.unsigned` flag
- *                  onto the joined node when they agree (keeps the single-select
- *                  fast path — a single downstream asF64 now converts correctly
- *                  either way, instead of always guessing signed).
- *   • emit.js    — the '&&'/'||' handlers' own i32 if-join, the confirmed sibling
- *                  of the '?:' fix above: '&&' propagates just the truthy arm's
- *                  (b's) sign, since its falsy arm is provably zero and so never
- *                  carries a magnitude either way; '||' — whose truthy arm returns
- *                  a's OWN value, so both arms genuinely disagree — needs the same
- *                  signedness-agreement gate as '?:', falling back to per-arm
- *                  widening (by each side's OWN sign, not a hardcoded signed
- *                  convert) on disagreement.
+ * silent wrong-answers, not a WAT-shape change.
  */
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
@@ -240,8 +218,6 @@ test(`${family} compounds: null and absent checked operands throw after one RHS 
   }
 })
 
-// Red semantic pins: the attempted member staging/default-local repair was
-// reverted after a .subarray() regression. No staging implementation is retained.
 for (const op of ['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '||=', '&&=', '??=', 'pre++', 'post++', 'pre--', 'post--'])
 test(`member reference ${op}: single evaluation, abrupt stages and recovery`, () => {
   for (const ref of ['get().value', 'get()[key()]', '((get()[key()]))']) {
@@ -520,8 +496,6 @@ test('numeric domains: normalized postfix recovery retains its BigInt producer',
   }
 })
 
-// ───────────────────────────────────────────────── canonical uint32 boundary
-
 test('(x >>> 0) reboxes as uint32 across the export boundary', async () => {
   const { main } = run(scalarCase('unsigned-export-boundary').source)
   is(main(-1), 4294967295)
@@ -535,8 +509,6 @@ test('(x >>> 0) / 2^32 — canonical PRNG unit-interval idiom', () => {
   is(main(-1), 4294967295 / 4294967296) // 0.9999999997671694
   is(main(0), 0)
 })
-
-// ───────────────────────────────────────────── unsignedResult call-chain propagation
 
 test('unsignedResult propagates through a tail-call helper', () => {
   const { main } = run(scalarCase('unsigned-tail-helper').source)
@@ -553,8 +525,6 @@ test('unsigned result used in arithmetic at the call site widens (no wrap)', () 
   is(main(-1), 4294967296)
 })
 
-// ─────────────────────────────────────────────── mixed-tail sign consistency
-
 test('mixed signed/unsigned return tails do NOT narrow to unsigned', () => {
   // One tail is `x | 0` (signed), the other `x >>> 0` (unsigned). Narrowing the
   // whole function to unsigned would corrupt the signed branch — so it must not.
@@ -562,8 +532,6 @@ test('mixed signed/unsigned return tails do NOT narrow to unsigned', () => {
   is(main(-1), -1)        // signed branch preserved
   is(main(5), 5)          // unsigned branch (small) unaffected
 })
-
-// ─────────────────────────────────────────── arithmetic with an unsigned operand
 
 test('`+` / `-` with an unsigned operand widen to f64 (no i32 wrap)', () => {
   is(run('export let main = (x) => (x >>> 0) + 1').main(-1), 4294967296)
@@ -581,8 +549,6 @@ test('`%` with an unsigned operand uses true uint32 value (not signed rem)', () 
   is(run('let u = (x) => x >>> 0; export let main = (x) => u(x) % 7').main(-1), 3)
 })
 
-// ────────────────────────────────────────── relational comparison with unsigned
-
 test('relational comparisons treat an unsigned operand by its true magnitude', () => {
   is(run('export let main = (x) => (x >>> 0) < 5').main(-1), false)   // 4294967295 < 5 → false
   is(run('export let main = (x) => (x >>> 0) > 5').main(-1), true)
@@ -596,8 +562,6 @@ test('relational comparisons on small unsigned values still correct', () => {
   is(run('export let main = (x) => (x >>> 0) < 5').main(3), true)
   is(run('export let main = (x) => (x >>> 0) > 5').main(3), false)
 })
-
-// ───────────────────────────────────────────── constant folding of unsigned
 
 test('constant-folded `>>>` ≥ 2^31 keeps its uint32 value', async () => {
   is(await evaluate('(-1 >>> 0)'), 4294967295)
@@ -618,8 +582,6 @@ test('const-folded uint32 through an unsignedResult helper', () => {
   is(run('let u = (x) => x >>> 0; export let main = () => u(-1)').main(), 4294967295)
 })
 
-// ───────────────────────────────────────────── signed i32 fast-paths unaffected
-
 test('signed i32 operands keep their fast-path semantics', async () => {
   // `| 0` produces a signed i32; none of the unsigned guards should perturb it.
   is(run('export let main = (x) => (x | 0) + 1').main(5), 6)
@@ -631,10 +593,9 @@ test('signed i32 operands keep their fast-path semantics', async () => {
 })
 
 // A Uint32Array element read is typed i32 (the 32-bit element) for fast integer/bitwise use, but
-// its full 0..2^32-1 magnitude must survive EVERY use — bitwise (bits), comparison, integer and
-// f64 arithmetic, and a raw value read. Unlike the `>>>`-result local below, the typed-array read
-// carries its unsigned elem-aux to each use, so high values (≥ 2^31) don't sign-flip. (This is what
-// lets the lorenz fade loop drop the i32→f64→i32 round-trip while staying numerically correct.)
+// its full 0..2^32-1 magnitude must survive EVERY use — bitwise (bits), comparison, integer and f64
+// arithmetic, and a raw value read. Unlike the `>>>`-result local below, the typed-array read
+// carries its unsigned elem-aux to each use, so high values (≥ 2^31) don't sign-flip.
 test('uint32: Uint32Array element reads keep full unsigned range across all uses', () => {
   const e = run(`let a = new Uint32Array(2)
     export let setup = () => { a[0] = 4294967295; a[1] = 16 }
@@ -651,28 +612,10 @@ test('uint32: Uint32Array element reads keep full unsigned range across all uses
   is(e.div(), 268435455.9375)     // f64 convert is unsigned
 })
 
-// ───────────────────────────────────────────── local-binding unsigned reads
-
 test('unsignedness survives a local binding read outside a >>> sink', () => {
-  // ROOT CAUSE (fixed): `narrowUint32` (src/compile/analyze-scans.js) proves a
-  // local is a canonical uint32 accumulator from its WRITES alone — a uint32
-  // literal initializer plus every reassignment shaped `name = (…) >>> k`.
   // ToUint32 is idempotent (re-masking an already-masked value is a no-op), so
   // that write invariant alone guarantees the stored bits always equal the true
-  // [0, 2^32) value — independent of how the local is later READ. The old code
-  // additionally required every READ to be re-sunk through its own `>>>`, which
-  // wrongly dropped the `.unsigned` tag for a bare `return u`, `u + 1`, or
-  // `u < 5`: the bits then reboxed SIGNED (-1 instead of 4294967295).
-  //
-  // A second leak in the same class: `narrowI32Results` (src/compile/narrow.js)
-  // decides whether a whole function's narrowed i32 RESULT reboxes at the call/
-  // export boundary via convert_i32_u or _s from its return tail's shape —
-  // but only recognized a literal `>>>` or a call to an already-unsignedResult
-  // function, not a bare read of the local narrowUint32 just proved unsigned.
-  // A function whose only tail is `return h` (h a `>>> 0`-reassigned local)
-  // narrowed to a SIGNED i32 result and reboxed -1294967296 instead of
-  // 3000000000 — the exact "hashing/checksum" shape named atop this file,
-  // returning the accumulator bare instead of re-masking it on the way out.
+  // [0, 2^32) value — independent of how the local is later READ.
   is(run(scalarCase('unsigned-local-return').source).main(-1), 4294967295)
   is(run('export let main = (x) => { let u = x >>> 0; return u + 1 }').main(-1), 4294967296)
   is(run('export let main = (x) => { let u = x >>> 0; return u < 5 }').main(-1), false)
@@ -680,10 +623,7 @@ test('unsignedness survives a local binding read outside a >>> sink', () => {
 
 test('unsigned accumulator: magnitude-boundary pins (ECMA-262 §7.1.8 ToUint32)', () => {
   // ToUint32(k) = k modulo 2^32, mapped into [0, 2^32) — the exact semantics
-  // `>>> 0` implements (ECMA-262 §7.1.8). A local reassigned `h = (…) >>> 0`
-  // and read BARE (no further `>>>` sink on the read side) must reproduce that
-  // magnitude exactly at every boundary, not just for values small enough to
-  // also fit signed i32.
+  // `>>> 0` implements (ECMA-262 §7.1.8).
   const acc = (v) => run(`export let main = () => { let h = 0; h = (h + ${v}) >>> 0; return h }`).main()
   is(acc(2147483648), 2147483648)   // 2^31 — first value whose signed i32 reading goes negative
   is(acc(2147483649), 2147483649)   // 2^31 + 1
@@ -694,8 +634,6 @@ test('unsigned accumulator: magnitude-boundary pins (ECMA-262 §7.1.8 ToUint32)'
   const wrapped = run(scalarCase('unsigned-accumulator-wrap').source).main()
   is(wrapped, 4)   // 4294967290 + 10 = 4294967300 ≡ 4 (mod 2^32)
 })
-
-// ───────────────────────────────────── identity-preserving tail positions
 
 test('unsignedness threads through `u+` and a same-arm `?:` tail (ECMA-262 §7.1.8 ToUint32)', () => {
   // ROOT CAUSE (fixed): narrowI32Results' isUnsignedTail (src/compile/narrow.js)
@@ -728,11 +666,6 @@ test('unsignedness threads through a same-arm `&&` / `||` tail', () => {
 })
 
 test('const-folded `+((… >>> 0))` still reboxes unsigned (no regression from the tail fix)', async () => {
-  // Purely compile-time (`3000000000 >>> 0` folds to a literal before any
-  // return-tail analysis runs), so this never touches narrowI32Results —
-  // pinned to guard the SAME visible symptom (`+` of a uint32) via a
-  // completely different mechanism (src/static.js's constant folder) from a
-  // regression the tail fix above could plausibly cause.
   is(await evaluate('+((3000000000) >>> 0)'), 3000000000)
 })
 
@@ -744,16 +677,6 @@ test('a mixed-sign `?:` tail must NOT claim unsigned (ECMA-262 §7.1.8 ToUint32 
   // join must recognize the mismatch and refuse to commit unsignedResult —
   // proven here by the signed arm staying exactly `x` (committing unsigned
   // would instead read a negative `x`'s bits as a huge positive magnitude).
-  //
-  // The h arm itself was a SEPARATE gap this fix did not close (see the
-  // '?:' select-join tests below, now fixed): with sig.unsignedResult
-  // correctly left false, emit.js compiled the '?:' as a single wasm
-  // `select` over i32 and widened the SELECTED value ONCE (f64.convert_i32_s)
-  // — no per-arm sign through the select, so the h arm still misread. That
-  // was a return-STATEMENT-level widening gap (src/compile/emit.js's '?:'
-  // handler / src/ir.js's asF64), a different phase than the function-
-  // RESULT-boundary narrowing this test targets — closed separately, now
-  // asserted here too since both arms are correct.
   const { f } = run('export let f = (c, x) => { let h = 0; h = (h + 3000000000) >>> 0; return c ? h : (x | 0) }')
   is(f(false, -5), -5)
   is(f(false, 5), 5)
@@ -761,19 +684,12 @@ test('a mixed-sign `?:` tail must NOT claim unsigned (ECMA-262 §7.1.8 ToUint32 
   is(f(true, 5), 3000000000)
 })
 
-// ────────────────────────────────────── '?:' select-join per-arm sign (emit.js)
-
 test('mixed-sign `?:` ternary: each arm widens by its OWN sign at O0/O2/O3 (regression for the select-join gap above)', () => {
   // The exact shape the mixed-sign-tail test above documented as a known,
   // separate gap: `h` is a narrowUint32-proven uint32 accumulator (the true
-  // arm), `s` an ordinary negative signed local (the false arm). Both are
-  // i32-representable, so emit.js's '?:' handler used to take the i32
-  // `select` fast path and widen the JOINED result ONCE via f64.convert_i32_s
-  // — correct for `s`, sign-flipping `h` (3000000000 read as a negative i32
-  // bit pattern). Fixed by widening each arm with its own `.unsigned` BEFORE
-  // the join when the two plain arms disagree. Pinned at all three optimize
-  // tiers since O2/O3 inline `f` into its caller (different IR shape reaching
-  // the same '?:' handler).
+  // arm), `s` an ordinary negative signed local (the false arm). Pinned at
+  // all three optimize tiers since O2/O3 inline `f` into its caller
+  // (different IR shape reaching the same '?:' handler).
   for (const optimize of levels(0, 2, 3)) {
     const { f } = run(`export let f = (c) => { let h = 0; h = (h + 3000000000) >>> 0; let s = -5; return c ? h : s }`, { optimize })
     is(f(true), 3000000000, `O${optimize}: unsigned arm (h) reads its true uint32 magnitude`)
@@ -782,13 +698,10 @@ test('mixed-sign `?:` ternary: each arm widens by its OWN sign at O0/O2/O3 (regr
 })
 
 test('agreeing-unsigned `?:` arms: the joined select still needs its OWN `.unsigned` (both-agree half of the same fix)', () => {
-  // The '?:' handler's fast path (single i32 select + single widen) previously
-  // dropped `.unsigned` unconditionally, even when BOTH arms agreed unsigned —
-  // the same root cause as the mixed-sign case above, just with the disagreement
-  // gate never tripping. Isolated from the ternary's own return-tail position
-  // (`picked + 0`, not `return c ? h : h2` directly) so this exercises the
-  // '?:' handler's own select+asF64 join, not narrow.js's separate function-
-  // result tailSign mechanism (which already had its own `h ? h : h` pin).
+  // Isolated from the ternary's own return-tail position (`picked + 0`, not
+  // `return c ? h : h2` directly) so this exercises the '?:' handler's own
+  // select+asF64 join, not narrow.js's separate function-result tailSign
+  // mechanism (which already had its own `h ? h : h` pin).
   for (const optimize of levels(0, 2, 3)) {
     const { f } = run(`export let f = (c) => {
       let h = 0; h = (h + 3000000000) >>> 0
@@ -823,17 +736,9 @@ test('agreeing-SIGNED `?:` arms keep the branchless i32-select fast path (no reg
   is(f(0, 7, -9), -9)
 })
 
-// ────────────────────── '&&'/'||' if-join per-arm sign (emit.js, confirmed sibling of the '?:' fix)
-
 test('`(x|0) && h`: the i32 if-join keeps the TRUTHY arm\'s own sign at O0/O2/O3 (&& sibling of the select-join fix)', () => {
   // `&&`'s i32 if-join (src/compile/emit.js, the '&&' handler's i32 fast path) is
   // asymmetric, unlike '?:'/'||' below: the FALSY arm is provably `local.get $t`
-  // === 0 — wasm's `if` cond IS the same bits later read back on that path, and 0
-  // means the same thing signed or unsigned — so only the TRUTHY arm (b, returned
-  // verbatim) can ever surface a real magnitude. Before this fix the joined node
-  // never carried `.unsigned`, so a downstream asF64 always guessed signed:
-  // `(x|0) && h` with h a narrowUint32-proven uint32 accumulator misread h's true
-  // magnitude whenever the truthy (b) arm was taken.
   for (const optimize of levels(0, 2, 3)) {
     const { f } = run(`export let f = (x) => { let h = 0; h = (h + 3000000000) >>> 0; let picked = (x | 0) && h; return picked + 0 }`, { optimize })
     is(f(1), 3000000000, `O${optimize}: truthy arm (h) reads its true uint32 magnitude`)
@@ -842,16 +747,6 @@ test('`(x|0) && h`: the i32 if-join keeps the TRUTHY arm\'s own sign at O0/O2/O3
 })
 
 test('`h || (x|0)`: mixed-sign arms widen by their OWN sign at O0/O2/O3 (|| sibling of the select-join fix)', () => {
-  // `||`'s i32 if-join is the true structural sibling of '?:': its THEN-arm returns
-  // a's own value verbatim when truthy, so — unlike '&&' above — BOTH arms can
-  // surface an independent real magnitude. h (a narrowUint32-proven uint32
-  // accumulator, conditionally assigned so both the compile-time unsigned proof
-  // and a runtime-falsy 0 stay reachable) beside an ordinary signed `x | 0` is the
-  // exact mixed-sign shape 9c313e58 fixed for '?:': before this fix, a single
-  // downstream asF64 guessed signed for the whole join, sign-flipping h whenever
-  // the truthy (a) arm was taken. Fixed by gating the i32 fast path on sign
-  // agreement, widening each arm by its own sign (still branchless, an `if` not a
-  // `select`) on disagreement.
   for (const optimize of levels(0, 2, 3)) {
     const { f } = run(`export let f = (c, x) => { let h = 0; if (c) h = (h + 3000000000) >>> 0; let picked = h || (x | 0); return picked + 0 }`, { optimize })
     is(f(true, 5), 3000000000, `O${optimize}: truthy arm (h) reads its true uint32 magnitude`)
@@ -950,11 +845,9 @@ test('uint32: a division truncated by | 0 and a remainder read the unsigned valu
 
 // A uint32 where a loop versioned on its typed extents reads a word (compile/emit/control-flow.js,
 // "Typed-bounds loop VERSIONING"): the loop's bound, the counter's start, a stride, an offset of the
-// index. The guard sign-extended each into its i64 sums, so `b >>> 0` past 2^31 was a negative
-// bound, `B - 1 < length` held and the unchecked arm ran: an element past the end read as the
-// memory there, and a store landed in it. ECMA-262, TypedArray exotic objects: an index
-// IsValidIntegerIndex refuses reads undefined (TypedArrayGetElement) and stores nothing
-// (TypedArraySetElement). Every loop leaves by its own count. Expected values are Node's.
+// index. ECMA-262, TypedArray exotic objects: an index IsValidIntegerIndex refuses reads undefined
+// (TypedArrayGetElement) and stores nothing (TypedArraySetElement). Every loop leaves by its own
+// count. Expected values are Node's.
 test('uint32: a bound, a start, a stride or an offset past 2^31 is no negative word in a loop\'s extent guard', () => {
   const BODY = {
     read: ix => `sum += x[${ix}]`,
@@ -995,8 +888,7 @@ test('uint32: a bound, a start, a stride or an offset past 2^31 is no negative w
 // A bound that is an expression of words is a Number: `B0 + B1` is 2^31 at B0 = B1 = 2^30. The
 // same guard read it through ToInt32, -2^31, which is under every length, so the unchecked arm
 // ran a loop the bound does not end and read past the array (levels 2 and over; each name of
-// the bound is held to 2^30, which leaves room for no sum of two). The bound is the value the
-// emitter types it: a Number is tested as one. Expected values are Node's.
+// the bound is held to 2^30, which leaves room for no sum of two). Expected values are Node's.
 test('a loop bound that is a sum of words past 2^31 is no negative word in the extent guard', () => {
   const E30 = 2 ** 30, cap = 'if (++c > 44) break'
   const BOUND = {
@@ -1023,11 +915,7 @@ test('a loop bound that is a sum of words past 2^31 is no negative word in the e
 
 // `x >= LO && x <= HI` of a word local is one unsigned compare, `(x - LO) <=u (HI - LO)`
 // (compile/emit/logical.js, range-check fusion), its complement `x < LO || x > HI` the same
-// negated. The subtraction wraps in one word, so both ends must lie in the operand's own
-// domain: of a uint32 (`b >>> 0`) an end below zero read the word's bits as signed, and 2^31
-// fell inside `[-2^31, 2^31 - 2]`, 2^32 - 1 inside `[-5, 100]` (every level, since 2026-06).
-// An end past the domain holds for every value, so it stands as the domain's. Expected values
-// are Node's.
+// negated. Expected values are Node's.
 test('uint32: a range test of a uint32 against an end below zero reads its unsigned value', () => {
   const C = ['n >= -2147483648 && n <= 2147483646', "typeof n === 'number' && n >= -2147483648 && n <= 2147483646",
     'n >= -5 && n <= 100', 'n <= 2147483646 && n >= -2147483648', 'n >= -2147483648 && n <= 2147483647', 'n >= -10 && n <= -3',

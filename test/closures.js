@@ -198,9 +198,8 @@ test('function length uses source parameters, including runtime keys and dedupli
 })
 
 // The arity bytes are a lazy data table under a base global: a strip of dead
-// interned data at the tail, which re-lays the tables after it, moves them
-// with it. Laid out bare, a class's static read through `this.constructor`
-// (whose dispatch interns names the strip then drops) read another table's byte.
+// interned data at the tail, which re-lays the tables after it, moves them with
+// it.
 test('function length of a static read through the constructor survives the data tail strip', () => {
   const src = `class C { static m(a, b) { return a } static z() { return 0 } g() { return this.constructor.m.length } h() { const K = this.constructor; return K.z.length } }
     class D { static m(a, b, c) { return a } k() { const h = this.constructor.m; return h.length } }
@@ -465,7 +464,6 @@ test('closure: integer const capture folds into closure body', () => {
     }
   `
   is(runHost(src).f(511), 255)
-  // `let g = …` inlines like a const now; the closure form is what this reads.
   const body = wat(src, { optimize: { sourceInline: false } }).match(/\(func \$[^\s)]*closure[\s\S]*?^  \)/m)?.[0]
   ok(body, 'closure body present')
   ok(!/\$__env|f64\.load|local\.get \$MASK/.test(body), 'const capture should not allocate/load an env slot')
@@ -520,13 +518,8 @@ test('HOF: top-level function with args', async () => {
   is(jz('let add = (a, b) => a + b; let apply = (g, x, y) => g(x, y); export let f = () => apply(add, 3, 4)').exports.f(), 7)
 })
 
-// === Method dispatch (closure stored as object property, called as o.m(args)) ===
-//
 // `o.m(args)` where `m` is a closure-valued property goes through schema-known
-// slot read + closure.call (src/emit.js) for fixed-shape objects. The fn module
-// must be auto-loaded for any inline arrow that survives prep — defFunc only
-// lifts arrows that are the direct RHS of a let/const, so an arrow inside an
-// object literal stays as a closure value and needs the closure runtime.
+// slot read + closure.call (src/emit.js) for fixed-shape objects.
 
 test('method: inline arrow called as o.m(args)', () => {
   is(runHost(`
@@ -596,9 +589,7 @@ test('method: dispatch under host:wasi', () => {
   is(ex.calc(), 23)
 })
 
-// ============================================================================
 // Closure ABI: MAX_CLOSURE_ARITY boundary, static arity errors, argc-aware rest
-// ============================================================================
 
 test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed BigInt distinctly', () => {
   const src = `
@@ -628,12 +619,7 @@ test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed Bi
 test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel-oracle.js "captured BOOL∪NUMBER merge" AGREE row)', () => {
   // `let v = x > 0 && 1` (kind.js hasAmbiguousBoolMerge): the && collapses
   // to NUMBER (v's own valTypeOf) but its runtime value is drawn from
-  // {coerced false, real number 1} — never a genuine 0. Capturing `v` by a
-  // closure reads a bare name, no expression shape left for
-  // hasAmbiguousBoolMerge to see, so the false arm's identity used to be
-  // unrecoverable by the time module/function.js's env-slot store ran. `v`
-  // is a tagged binding now (kind.js boolTagged: the closure's read observes
-  // it): its own storage holds the atom, and the capture copies it.
+  // {coerced false, real number 1} — never a genuine 0.
   const src = `
     export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
     export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }
@@ -684,9 +670,7 @@ test('arity err: closure call with 9 args', () => {
 
 test('arity err: top-level func with 9 params used as value', () => {
   // `big` stored into an array — a genuine non-devirtualizable escape, so the
-  // closure ABI is unavoidable and the arity ceiling must fire. (Passing it
-  // straight to a forwarder no longer suffices: inlineHotInternalCalls inlines
-  // the forwarder and the call devirtualizes to a direct `call $big`.)
+  // closure ABI is unavoidable and the arity ceiling must fire.
   throws(
     `let big = (a,b,c,d,e,f,g,h,i) => a
     export let f = () => { let arr = [big]; return arr[0](1,2,3,4,5,6,7,8) }`,
@@ -887,7 +871,6 @@ test('spread into closure: mixed literal + spread', () => {
   is(f(), 10)
 })
 
-// === The rest slot view (src/compile/rest-view.js) ===
 // A rest parameter that never escapes reads the argument slots; the program's
 // results must equal JS's at every level, whichever lowering the rest takes.
 
@@ -1012,14 +995,7 @@ test('MAX_CLOSURE_ARITY exported value', () => {
   is(MAX_CLOSURE_ARITY, 8)
 })
 
-// ============================================================================
 // CLOSURE local unboxing (unboxablePtrs VAL.CLOSURE branch)
-//
-// `let g = (x) => …` with non-reassigned `g` is stored as i32 envPtr instead of
-// the full f64 NaN-box. ptrAux=funcIdx is preserved on the rep so reboxing for
-// escape paths (array store, pass to non-narrowed param, indirect call through
-// inner helper) reconstructs the correct call_indirect target.
-// ============================================================================
 
 test('closure-unbox: direct call with capture works', () => {
   const { f } = runHost(`export let f = (n) => {
@@ -1138,8 +1114,7 @@ test('closure-unbox: o.fn(g) — object-property closure dispatch', () => {
 
 test('closure-unbox: o.fn(g) — module-level binding', () => {
   // Module-level `let g = (n) => …` is extracted via defFunc into
-  // ctx.funcs.list (top-level function). Post-prep scan in prepare.js detects
-  // top-level func names used in value positions and includeModule('fn').
+  // ctx.funcs.list (top-level function).
   const { f } = runHost(`
     let g = (n) => n + 100
     let o = { fn: g }
@@ -1149,13 +1124,10 @@ test('closure-unbox: o.fn(g) — module-level binding', () => {
 })
 
 test('trampoline arity: closure ABI widens to a table-resident function arity', () => {
-  // `pick3` (arity 3) is lifted to a top-level function and used only as a
-  // first-class value; the sole indirect call passes 1 arg, so maxCall=1, and
-  // a lifted def's param list is never re-observed by the arity scan (it walks
-  // bodies, not param lists) so maxDef misses it too. The closure ABI width
-  // must be widened by ProgramIndex address-taken arities, otherwise the boundary trampoline
-  // forwards `$__a2` against a 2-param trampoline → "Unknown local $__a2" at
-  // assemble time.
+  // `pick3` (arity 3) is lifted to a top-level function and used only as a first-class
+  // value; the sole indirect call passes 1 arg, so maxCall=1, and a lifted def's param list
+  // is never re-observed by the arity scan (it walks bodies, not param lists) so maxDef
+  // misses it too.
   const { put, run } = runHost(`
     let pick3 = (a, b, c) => a
     let store = []
@@ -1198,9 +1170,7 @@ test('closure-unbox: trivial closure-call program stays compact (post-watr fused
 test('closure-unbox: no reinterpret/wrap_i64 roundtrip in inlined closure call', () => {
   // After watrOptimize inlines the closure body, the call-site
   // `asF64(local.get $g)` (rebox to f64) immediately meets the body's
-  // `i32.wrap_i64 (i64.reinterpret_f64 …)` (unbox back to envPtr). The
-  // post-watr fusedRewrite pass folds this — assert the WAT for $f doesn't
-  // contain the surviving roundtrip pattern.
+  // `i32.wrap_i64 (i64.reinterpret_f64 …)` (unbox back to envPtr).
   const w = wat(`
     let g = (x) => x + 1
     export let f = () => g(41)
@@ -1224,9 +1194,7 @@ test('IIFE arrow returning sparse array literal materializes holes as undefined'
 
 // Arrow whose `{}` body contains a single expression statement: per JS grammar,
 // `=> {` is always a block (use `=> ({...})` for an object return), so the body
-// must return `undefined`, NOT allocate an empty object. The parser may emit
-// `['{}', expr]` for the body — jzify normalizes it back to a block shape
-// (`['{}', [';', expr]]`) so prepare.js doesn't mistake it for an object literal.
+// must return `undefined`, NOT allocate an empty object.
 test('arrow block body with single expression-statement returns undefined', () => {
   // Bare form covered by test262 (statement-body-requires-braces-must-return-explicitly-missing.js)
   const { f } = runHost(`
@@ -1247,12 +1215,8 @@ test('arrow block body inside another arrow returns undefined', () => {
   is(f(), 1)
 })
 
-// === Function-namespace scalar replacement (plan.js flattenFuncNamespaces) ===
 // A user function used as a property bag — `parse.space = …; parse.step = …` —
 // otherwise compiles each `f.prop` to a closure-keyed hash side-table access.
-// Since the table can never be observed by the host, jz dissolves a reassigned
-// slot into an f64 module global and drops a single-write only-called slot's
-// dead `__dyn_set`.
 
 // The esbuild/jessie dialect-override pattern: a property is reassigned, so the
 // receiver becomes a `multiProp` dynamic object. SROA must preserve last-write
@@ -1297,12 +1261,10 @@ test('func-namespace SROA: single-write only-called slot direct-calls, no table'
 
 // A computed-key write on a function value, `g[k] = v`, addresses the same
 // property bag `g.tag = v` writes (the closure-keyed side table): a closure has
-// no elements, so no key is an index. The element store's path reassigned the
-// receiver binding with the "relocated" pointer: an f64 into the unboxed i32
-// closure local (invalid wasm), or a function's own name (no binding at all).
-// Each receiver form against JS at O0, O1 and O2: a local closure, one with a
-// capture, a module-level arrow and function declaration, the read, `in`,
-// `delete`, a numeric key (ToPropertyKey) and a call after the write.
+// no elements, so no key is an index. Each receiver form against JS at O0, O1
+// and O2: a local closure, one with a capture, a module-level arrow and
+// function declaration, the read, `in`, `delete`, a numeric key (ToPropertyKey)
+// and a call after the write.
 test('a computed-key write on a closure is a property write, on every receiver form', () => {
   const SRC = `const g = (x) => x + 1
   function h(x) { return x * 2 }
@@ -1332,13 +1294,9 @@ test('func-namespace SROA: cross-module single-write only-called slot direct-cal
   // subscript's asi.js writes `parse.enter`/`parse.exit` onto parse.js's
   // EXPORTED `parse` — the lift's name must carry parse.js's module prefix
   // (the base function's OWNING module), not asi.js's (the module that
-  // TEXTUALLY contains the write). The dead-write matcher used to reconstruct
-  // the expected name from the local module's own mangling, so a
-  // cross-module lift never matched and both the write and every
-  // `parse.enter()`/`parse.exit()` call stayed on the dyn-prop path forever —
-  // exactly the hot tokenizer probes this pin catches. Two-module shape: m1
-  // exports `lex` and calls its own `.next` slot; m2 (a DIFFERENT module)
-  // supplies the single write.
+  // TEXTUALLY contains the write). Two-module shape: m1 exports `lex` and
+  // calls its own `.next` slot; m2 (a DIFFERENT module) supplies the single
+  // write.
   const code = `import { lex } from './m1.js'
 import './m2.js'
 export let f = () => lex('x')`
@@ -1367,14 +1325,10 @@ test('func-namespace SROA: escaping namespace keeps the dynamic path correct', (
   is(runHost(src).f(), 2)
 })
 
-// === module-global closure devirtualization (plan/scope.js devirtGlobalCalls) ===
 // A module global written only by unconditional init statements, resolving
 // (through aliases/chained assignment/`??=`/`||=`) to one statically-known
-// function, collapses every call through it to a direct `call` — no
-// call_indirect, no trampoline. Distinct from the watr-level `devirt` below
-// (guarded multi-candidate dispatch): this fires pre-emit, on the AST, and
-// only when the candidate set has exactly one member for the program's
-// entire post-init lifetime.
+// function, collapses every call through it to a direct `call` — no call_indirect,
+// no trampoline.
 
 test('devirtGlobalCalls: ??= chain resolves the pre-wrap value (subscript asi.js baseSpace shape)', () => {
   // `const baseSpace = parse._baseSpace ??= parse.space` — asi.js captures
@@ -1494,13 +1448,11 @@ test('devirt: param-held closure is never devirtualized (unknown candidates)', (
   is(main(4), 17) // (4+1) + (4*3)
 })
 
-// ---- nullable mark across captures ------------------------------------------
+// nullable mark across captures
 // A capture whose parent binding can hold null (`let x = null` later assigned a
 // number) must keep its nullable mark inside the closure body — the body's own
 // write facts (val NUMBER) would otherwise fold `x == null` to constant false
-// and skip the guard. Found via the self-compile kernel: _offsetLocalStride's
-// `stride == null` first-write guard never fired in a recursive walker, killing
-// every offset-tee memory.copy recognition in jz.wasm.
+// and skip the guard.
 
 test('capture nullable: null-compare guard survives recursive closure writes', () => {
   const r = run(`
@@ -1533,13 +1485,9 @@ test('capture nullable: strict ===null guard inside plain closure', () => {
   is(r.go(), 7)
 })
 
-// ── IIFE lambda-lifting (liftIIFEs) ──────────────────────────────────────────────────
 // `(params => body)(args)` is hoisted to a top-level function with its free variables
 // appended as params and replaced by a DIRECT call — so it never rides the f64-only
-// closure ABI (SIMD flows through) and pays no closure alloc/indirect call. Capture is
-// by value, exact for a synchronous immediate invocation. inlineOnce then folds the
-// single-caller body back in. A capture that's MUTATED in the body can't lift (no
-// write-back) and stays on the closure path — still correct.
+// closure ABI (SIMD flows through) and pays no closure alloc/indirect call.
 test('IIFE lift: capture-by-value, params, nesting — direct call, no closure table', () => {
   is(runHost('export let f = (a) => (() => a * 2.0 + 1.0)()').f(5), 11, 'captures enclosing a by value')
   is(runHost('export let f = (a) => ((x) => x + a)(10.0)').f(7), 17, 'own param + capture')
@@ -1586,9 +1534,7 @@ test('IIFE lift: a name that reads no binding is no capture', () => {
 // A module binding made by a factory run once (gl-matrix's `export const rotationTo =
 // (() => { const tmp = create(); …; return (out, a, b) => { … } })()`) held a closure:
 // every call rode the closure ABI with boxed arguments, and the arrow's parameters,
-// and the library's beneath it, kept no kind. The factory's statements go in place as
-// module statements under names of their own, and the binding holds the arrow: a
-// function with its calls' kinds, in a program's entry and in its modules alike.
+// and the library's beneath it, kept no kind.
 test('once-run factory: a module binding takes the returned arrow, its declarations the module', () => {
   const src = `const make = () => [1, 2, 3]
     export const f = (() => { const a = make(); let n = 0; return (o, x) => { n++; o[0] = a[0] + x; return o[0] + n } })()
@@ -1622,15 +1568,6 @@ test('once-run factory: a program\'s module takes the lift the entry takes', () 
   if (!onKernel() && !belowOpt(2)) ok(!/call_indirect/.test(wat(src, { modules: { './quat.js': quat } })), 'the module binding is a function: no closure call')
 })
 
-// Identifiers named like Object.prototype members must resolve as ordinary variables.
-// The compiler keyed several resolution dictionaries (CONSTANTS, F64_CONSTANTS,
-// REJECT_IDENTS, GLOBALS, the scope chain) on the identifier name with PLAIN objects.
-// In V8, `{}` inherits Object.prototype, so `'valueOf' in CONSTANTS` was true and
-// `CONSTANTS['valueOf']` returned the inherited method — `let valueOf = 5` resolved to a
-// boxed function (emitted 0) and `valueOf = …` errored "Assignment to non-variable".
-// jz.js-ONLY: the self-compile kernel's jz objects are prototype-less, so the kernel compiled
-// these correctly all along (the bug only bit the compiler running in V8). Fixed by making
-// the dictionaries prototype-less (Object.create(null)).
 test('identifiers named like Object methods resolve as plain variables (proto-less dicts)', () => {
   for (const n of ['valueOf', 'toString', 'hasOwnProperty', 'constructor', 'isPrototypeOf', 'propertyIsEnumerable']) {
     is(run(`export let main = () => { let ${n} = 5; return ${n} }`).main(), 5, `let ${n}`)
@@ -1645,37 +1582,7 @@ test('identifiers named like Object methods resolve as plain variables (proto-le
 })
 
 // A write to a captured variable FROM INSIDE the closure body did not join the
-// shared cell's type. If every outer-visible value was integer (`let env = 0`),
-// the cell stayed i32 and closure-side f64 stores truncated silently: `env = 1.5`
-// read back 1; a one-pole accumulator `env = c*env + (1-c)*x` collapsed to 0
-// forever. Outer-side float writes DID widen (`let n = 0; fn; n = 0.5` was fine) —
-// only closure-body writes were missing from the join.
-//
-// ROOT CAUSE — the SAME "stops at `=>`" blind spot in THREE independent places,
-// all now fixed together (they share the shape, not just the symptom):
-//   1. src/type.js collectIntDefs (the intCertainMap fixpoint): its body walker
-//      returned immediately on any `=>` node, so a captured name's ONLY visible
-//      "definition" was its outer declaration — the closure-body reassignment
-//      never contradicted it, so intCertain stayed (wrongly) true forever.
-//   2. src/compile/index.js's closure-capture narrowing consumed that same
-//      intCertain to decide the boxed CELL's storage width (i32 vs f64) —
-//      inherited the blind spot.
-//   3. src/compile/analyze.js's widenLocalTypes (the general i32→f64 local-
-//      width fixpoint, feeding narrowI32Results' decision on the ENCLOSING
-//      FUNCTION's own wasm result type) had the identical `=>`-skip in its own
-//      body walker — so even once (1)/(2) were fixed and the cell itself read/
-//      wrote as genuine f64, `env`'s reported LOCAL type stayed i32, and
-//      `return env` narrowed the whole function to i32, truncating at the
-//      return site instead of the cell.
-// Fix: collectIntDefs/intCertainMap gained an opt-in `capturedNames` mode that
-// also folds in defs found inside nested arrows (used only by the boxed-cell
-// narrowing call site — every other caller is unaffected); widenLocalTypes
-// computes the same "reassigned somewhere, maybe inside an arrow" name set via
-// findMutations (already `=>`-transparent) and threads it through its own two
-// widening walks the same way. Live instance: dynamics-processor envelope.js
-// (`let env = 0; return (x) => { env = c*env + (1-c)*mag; … }`) — every
-// envelope-based processor (compressor, limiter, deesser, ducker, compand)
-// compiled clean and ran as a silent passthrough.
+// shared cell's type.
 test('closure: f64 write from closure body widens an int-initialized captured cell', () => {
   const { f } = run(`export let f = () => {
     let env = 0
@@ -1732,8 +1639,6 @@ test('fixed fn-table dispatch: keyed on the index, a missing element throws', ()
   // A table only ever called by index holds its literal's arrows for good, so
   // the call switches on the index its element read holds (optimize/devirt.js),
   // and an index the table lacks reads undefined, whose call throws TypeError.
-  // The undefined atom's aux bits (2) name table slot 2: an unchecked call of
-  // the loaded box ran closure 2 there instead, at every tier.
   const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k, (x, k) => Math.imul(x, k | 1), (x, k) => (k - x) | 0]
 const fold = (code, ks, n) => { let x = 7; for (let i = 0; i < n; i++) x = ops[code[i]](x, ks[i]); return x }
 export let f = (bad) => {
@@ -1765,7 +1670,6 @@ test('static const array reads: base/len fold is strip-safe and mutation-gated',
   // derived the base from the global (assemble's
   // static-prefix-strip rebases pointers AFTER the fold — a baked absolute went
   // stale once, trapping OOB on nested tables).
-  // 1) big string pool → nonzero prefix strip; folded read must still be correct
   const big = run(`const S = "${'x'.repeat(200)}"
 const T = [1.5, 2.5, 3.5, 4.5]
 export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += T[i & 3]; return s + S.length * 0 }`)
@@ -1825,12 +1729,7 @@ export let g = () => t[0](5) + t[0](1, 2)`)
 test('closure-table call-site param lattice: indexed-only dispatch proves NUMBER params', () => {
   // The dispatch bench's exact shape (bench/dispatch/dispatch.js): a const
   // array of capture-free arrows invoked ONLY through one data-indexed call
-  // site. No alias, no export, no non-call read of `ops` anywhere — so
-  // scanClosureTableLatticeCandidates proves the table safe, and every
-  // element's params gain the SAME numeric-args lattice tryDirectClosureCall
-  // already builds for a single directly-bound closure (emit.js
-  // recordClosureTableCallSite/resolveClosureTableParamLattice; consumed by
-  // emitClosureBody, compile/index.js). Value correctness first:
+  // site.
   const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k]
 export let f = (n) => {
   let h = 0
@@ -1882,7 +1781,6 @@ export let f = (n) => {
   const { f } = run(src)
   is(f(4), 0)   // same recurrence as the const-literal pin above
 
-  // Structural half only (tier guard after the value asserts — audit #5):
   if (belowOpt(2)) return
   const w = wat(src)
   ok(/\(f64\.add\s*\(local\.get \$__a0\)\s*\(local\.get \$__a1\)\)/.test(w),
@@ -1893,14 +1791,6 @@ export let f = (n) => {
 test('closure-table call-site param lattice, IMPERATIVE-CONSTRUCTION class: FAIL-OPEN pins', () => {
   // Three independent shapes that must each disqualify the imperative param
   // lattice (result stays correct — no false proof — just generic codegen):
-  //
-  // 1. Module-scope touch (interleaved/conditional construction): a call site
-  //    reachable from module-init code can't guarantee its evidence is
-  //    gathered before the write's closure body compiles (compile/index.js's
-  //    early-merge window only covers occurrences confined to function
-  //    bodies) — see scanImperativeClosureTableLatticeCandidates's own doc
-  //    for the module-init-order reasoning. This is the honest
-  //    "interleaved-construction" fail-open case.
   const moduleTouch = `let tbl = []
 function writer() { tbl[0] = (x, k) => (x + k) | 0; tbl[1] = (x, k) => x ^ k }
 writer()
@@ -1910,12 +1800,6 @@ export let f = (n) => { let h = seed; for (let i = 0; i < n; i++) h = tbl[i & 1]
   ok(wat(moduleTouch).includes('__str_concat'),
     'module-scope touch: fail-open, no false proof (generic dispatch kept)')
 
-  // 2. Loop-built table (`for (...) tbl[c] = (...) => ...`): the closure-table
-  //    lattice poisons any write reachable through a loop. The program
-  //    summary proves this one instead: the table holds one closure, every
-  //    call binds its parameters to numbers, and the per-iteration capture
-  //    `cc` is a number whatever its capture semantics, so the body needs no
-  //    string path. Correctness is pinned with the proof.
   const loopBuilt = `let tbl = []
 function writer() { for (let c = 0; c < 2; c++) { let cc = c; tbl[cc] = (x, k) => (x + k + cc) | 0 } }
 export let f = (n) => { writer(); let h = 0; for (let i = 0; i < n; i++) h = tbl[i & 1](h, i); return h }`
@@ -1923,9 +1807,9 @@ export let f = (n) => { writer(); let h = 0; for (let i = 0; i < n; i++) h = tbl
   is(run(loopBuilt).f(5), 12)
   ok(!wat(loopBuilt).includes('__str_concat'), 'loop-built table: one closure, numeric at every call, no string path')
 
-  // 3. Alias (subscript's own guarded idiom, `(fn = table[idx]) && fn(args)`):
-  //    dyn-closure-tables.js's header comment documents this idiom as SAFE
-  //    for IDENTITY devirt — it is NOT safe for a param-KIND proof (the alias
+  // Alias (subscript's own guarded idiom, `(fn = table[idx]) && fn(args)`):
+  //    dyn-closure-tables.js's header comment documents this idiom as SAFE for
+  //    IDENTITY devirt — it is NOT safe for a param-KIND proof (the alias
   //    reaches the body through an untracked path), so it disqualifies here,
   //    same reasoning as the const-literal table's own alias pin above.
   const alias = `let tbl = []
@@ -1936,11 +1820,6 @@ export let f = (n) => { writer(); pick = tbl[0]; let h = 0; for (let i = 0; i < 
   ok(wat(alias).includes('__str_concat'), 'alias (guarded-idiom shape): fail-open, no false proof')
 })
 
-// f.call/apply/bind on a proven function binding lowers statically (prepare
-// foldFnCallApplyBind, 2026-07-10): thisArg is dead for jz functions (no
-// `this`), kept only for side effects. Previously .call/.apply silently
-// returned undefined and .bind trapped (table OOB). A user object's own
-// `call` property keeps the runtime path.
 test('closures: call/apply/bind static lowering', () => {
   is(run(`let g = (a, b) => a + b; export let f = () => g.call(null, 1, 2)`).f(), 3)
   is(run(`let g = (a, b) => a + b; export let f = () => g.apply(null, [3, 4])`).f(), 7)
@@ -1955,9 +1834,7 @@ test('closures: call/apply/bind static lowering', () => {
 
 // A binding of a function literal holds a function in the literal's own body
 // as it does after it (prepare/handlers.js prepDecl): `g.bind(…)` there folds
-// to a closure over g. The body was prepared before the binding was known to
-// hold a function, so the bind took the runtime method dispatch, which binds
-// nothing, and threw "is not a function".
+// to a closure over g.
 test('closures: bind of a function inside its own body', () => {
   const src = `const top = (d) => d > 0 ? top.bind(null, 0)() : 7
     export let arrow = (n) => { const g = (d) => d > 0 ? g.bind(null, 0)() : 7; return g(n) }
@@ -1974,12 +1851,7 @@ test('closures: bind of a function inside its own body', () => {
 
 // Function.prototype.bind of any function value (module/function.js `__bound`):
 // the bound function calls the target with the receiver and the arguments
-// bound, then its own, its length the target's less the bound count. The
-// method dispatch had arms for `.call` and `.apply` and none for `.bind`, so a
-// bind of a function the compiler could not name (a parameter, a member, an
-// element) threw "is not a function"; prepare's fold of a named one made an
-// arrow whose length was its own. A function's call, apply and bind read as
-// values are functions too: `typeof a[0].bind` read undefined.
+// bound, then its own, its length the target's less the bound count.
 test('closures: bind of any function value', () => {
   const src = `const top = (a, b, c) => a * 100 + b * 10 + c
     function decl(a, b) { return a - b }
@@ -2219,7 +2091,7 @@ test('closures: captured loop header throws retain the last environment', () => 
 // A parameter default belongs to its arrow: a loop binding only a default reads
 // is captured (a fresh binding per iteration), and a top-level function only a
 // default reassigns stays a mutable binding, neither lifted nor devirtualized
-// onto its first value. Each case was wrong before: 3,3,3 / 18 / 11.
+// onto its first value.
 test('closures: a parameter default captures a loop binding and reassigns a function binding', () => {
   for (const src of [
     `export let run = (n) => { const fs = []; for (let i = 0; i < n; i++) fs.push((x = i) => x); return fs.map(f => f()).join(',') }`,
@@ -2231,22 +2103,10 @@ test('closures: a parameter default captures a loop binding and reassigns a func
   }
 })
 
-// re-audit #5 critical #3: the per-iteration mechanism above lived ENTIRELY
-// on the function-scope emit path (emitLoopFreshBoxed, gated on ctx.func.boxed
-// — populated by boxedCaptures, called from analyzeFuncForEmit/emitClosureBody,
-// NEITHER of which runs for the module top-level). A module-scope loop's
-// body-let instead took declareGlobal's single-instance path (`depth === 0`
-// alone gates it — depth tracks only function nesting, not loop nesting), so
-// every iteration's closure aliased the SAME wasm global: reads at call time
-// saw whatever the loop left behind, not a per-iteration snapshot. Fixed by
-// routing a captured module-scope loop-body binding through the SAME local
-// (mintLocal) + boxed-cell machinery a function-scope loop already uses
-// (prepare/index.js's loopLocalNames + ctx.scope.moduleLoopCaptured) instead
-// of a parallel copy. Every assertion below is JS ground truth (value-oracle
-// style) — run the same source under Node to reproduce the expected column.
+// Every assertion below is JS ground truth (value-oracle style) — run the same
+// source under Node to reproduce the expected column.
 test('closures: module-scope for-of/for-let captures per-iteration binding', () => {
-  // The audit's exact repro: module-scope for-of push. Was 22 (both closures
-  // read the LAST binding via the shared global); JS truth is 12.
+  // The audit's exact repro: module-scope for-of push.
   is(run(`let fs = []; for (let x of [1, 2]) fs.push(() => x); export let f = () => fs[0]() * 10 + fs[1]()`).f(), 12)
   // for-let (classic for-head) sibling, module scope.
   is(run(`let fs = []; for (let i = 0; i < 3; i++) fs.push(() => i); export let f = () => fs[0]() * 100 + fs[1]() * 10 + fs[2]()`).f(), 12)
@@ -2262,10 +2122,7 @@ test('closures: module-scope for-of/for-let captures per-iteration binding', () 
   // Pay-per-capture: an UNCAPTURED module-scope loop var stays the cheaper
   // single-instance global (no per-iteration cell/local machinery paid for).
   is(run(`let sum = 0; for (let x of [1, 2, 3]) sum += x; export let f = () => sum`).f(), 6)
-  // The ledgered P0-2 banked class (closure-in-loop rebinding a dispatch-table
-  // slot), module-scope variant: `orig` is captured by the replacement arrow
-  // and must resolve to the pre-overwrite value at CALL time, not a stale/
-  // shared read. JS truth: lookup.f(2,3) = (2+3) + 1000 = 1005.
+  // JS truth: lookup.f(2,3) = (2+3) + 1000 = 1005.
   is(run(`
     let lookup = {}
     lookup.f = (a, b) => a + b
@@ -2291,16 +2148,7 @@ test('closures: a module-scope loop body binds a closure that captures its count
   }
 })
 
-// Reassigned function bindings: a depth-0 `let g = (…) => …` lifts into a
-// FIXED named function (defFunc) — sound only while the binding is immutable.
-// JS allows reassigning a let/var function binding (even from inside a
-// function); lifting one froze callers onto the FIRST value — the module-level
-// reassign made later calls silently run the stale arrow (differential vs
-// native: 20 expected, 15 got), and an in-function reassign errored "'h' is
-// not in scope" (the write targeted a binding that no longer existed). The
-// prepare-time reassignedTopLevel scan now demotes such bindings to ordinary
-// closure-valued globals; devirtGlobalCalls re-devirts init-order-resolvable
-// cases. Scope-tracked: writes to same-named LOCALS don't demote.
+// Scope-tracked: writes to same-named LOCALS don't demote.
 test('closures: reassigned module function bindings stay live', () => {
   const r = run(`
     let g = (x) => x + 5
@@ -2321,20 +2169,9 @@ test('closures: reassigned module function bindings stay live', () => {
   is(r.kval(), 9, 'the un-reassigned module binding stays lifted and correct')
 })
 
-// Regression: inside a NESTED closure specifically (top-level functions were
-// unaffected), a `let` local whose declaration initializer has no statically
-// provable type — here a closure param, itself unresolved at analysis time —
-// and which is CONDITIONALLY reassigned to a string literal got typed as
-// STRING outright. The value-type walk (analyzeValTypes/analyzeBody, both
-// sharing makeValTracker) has no control-flow/dominance notion of "this write
-// is under an `if`, not unconditional" — it treated the declaration's
-// unresolved (null) observation as "no information" rather than as an
-// observation of an unknown-but-possibly-conflicting kind, so it never poisoned
-// the binding when the later definite (string) write arrived. `+`/`+=` then
-// trusted the STRING classification and skipped ToString: on the not-reassigned
-// (number) path, the number's box bits were handed straight to the string
-// concat helper — empty output instead of the digits. Caught via watr's
-// print.js `sub` local, in-kernel.
+// `+`/`+=` then trusted the STRING classification and skipped ToString: on the
+// not-reassigned (number) path, the number's box bits were handed straight to
+// the string concat helper — empty output instead of the digits.
 test('closures: let + conditional-reassign union local concats correctly (both arms)', () => {
   const r = run(`
     export function outer(n) {
@@ -2381,10 +2218,7 @@ test('closures: union local + typeof/isFinite/Object.is guard prints WAT-style t
 
 test('closures: forward capture binds the block-hoisted shadowed decl', () => {
   // JS block hoisting: a closure textually BEFORE `let x` in the same block
-  // captures THAT x, not an outer same-named one. Prepare's shadow rename used
-  // to decide only at decl traversal, so the earlier closure body resolved to
-  // the OUTER binding (returned 100, not 5). prescanBlockDecls pre-registers
-  // the block's rename decisions at scope entry, before any statement preps.
+  // captures THAT x, not an outer same-named one.
   is(run(`export let main = () => { let x = 100; { let f = () => x; let x = 5; return f() } }`).main(), 5)
   // sibling-block rename (same-arrow sibling blocks share one WASM local space)
   is(run(`export let main = () => { { let x = 1 } { let f = () => x; let x = 7; return f() } }`).main(), 7)
@@ -2427,13 +2261,8 @@ export let f = () => [o.m(5), o.m(0)]`)
 })
 
 test('closures: mutually-recursive const arrows inside a CLOSURE-compiled function (preboxed cell order)', () => {
-  // The mutual pair must live inside a nested closure (not a top-level function):
-  // the closure-compile path used to populate ctx.func.preboxed AFTER emitting the
-  // body, so each boxed decl re-allocated its cell — the earlier arrow's env kept
-  // the entry cell (null) and calls through it silently no-opped. Under self-compile
-  // this hollowed EVERY generator/async machine (jzify's flattenList/flattenStmt
-  // pair). Fixed by mirroring the top-level order (populateBoxedSets before
-  // emitBlockBody); pinned here at the exact trigger shape.
+  // Fixed by mirroring the top-level order (populateBoxedSets before emitBlockBody);
+  // pinned here at the exact trigger shape.
   const { f } = runHost(`export let f = () => {
     const outer = () => {
       const tag = new Set(['x'])
@@ -2463,9 +2292,7 @@ test('closures: i32-narrowed param coerces with ES ToInt32 WRAP, not saturation'
 
 // audit-#18: staticClosureEnv must not fire when the enclosing function can
 // re-enter between two closure calls — the recursive activation overwrites the
-// shared static capture slot (outer(2) read 6 instead of 12 at O2/O3). The
-// sound grant requires the body's only calls to be the closure itself
-// (src/compile/index.js onlyCallIsSelf).
+// shared static capture slot (outer(2) read 6 instead of 12 at O2/O3).
 test('static closure env: re-entrant enclosing function with two call sites reads its own captures', async () => {
   const src = `export function outer(n) { const x = n; const f = () => x * x + x; const a = f(); if (n > 0) outer(n - 1); return a + f() }`
   for (const lvl of levels(0, 2, 3)) {
@@ -2474,29 +2301,6 @@ test('static closure env: re-entrant enclosing function with two call sites read
   }
 })
 
-// closure-plan: deep-captured const loses its declaration (banked 2026-08-19,
-// .work/archive/todo.md) — a function-scoped const captured by a closure nested 2+
-// arrow levels deep, where the IMMEDIATE enclosing arrow ('mid') never
-// references the const itself (only a closure nested INSIDE mid does).
-// mid's own ClosureEnvPlan (src/compile/closure-plan.js) correctly folds the
-// const away (mode 'constant', no env slot — mid's body has it as a direct
-// top-level declaration). The nested closure's plan mints later, while mid's
-// OWN body is the active frame: `topLevelIntConsts(ctx.func.body)` only sees
-// mid's own top-level statements, not the ancestor where the const is
-// actually declared, and `findFreeVars`'s no-scope fallback (src/compile/
-// analyze-scans.js) checked only `ctx.func.locals`/params for "is this name
-// capturable" — a name mid folded away (by design, no local) failed that
-// check and was silently dropped from the capture set entirely. The nested
-// closure's plan then believed it captured nothing, while its body still
-// held a bare reference to the const with no local, no param, no env slot,
-// and no inherited fold to resolve it: a reference emitted with no
-// declaration behind it ('NAME is not in scope').
-//
-// First observed only via self-compile (src/wat/assemble.js's
-// dedupClosureBodies, commit a6220d95's SENTINEL/isSentinel/mix shape,
-// worked around by hoisting to module scope in a9449127) and mis-attributed
-// as self-compile-specific — it is not: the shape below reproduces natively,
-// no self-compile involved, at every optimize level.
 test('closure-plan: constant capture through a non-capturing intermediate arrow', () => {
   const src = `export function outer(x) {
     const S = -2
@@ -2662,9 +2466,6 @@ test('closures: a concise body naming a function returns it as a value', () => {
 // call: devirtGlobalCalls rewrites the site, so the call census, the inliner
 // and the parameter proofs read it as a direct call (stdlib's out-buffer
 // variants: `frexp.assign = assign`, called as `frexp.assign(x, out, 1, 0)`).
-// A global nothing reads once its calls are rewritten, or an alias of one,
-// drops its init and leaves the map: the function's address is no longer
-// taken by it. One read as a value, or one the host holds, keeps both.
 test('devirtGlobalCalls: the site calls the function; a global nothing reads drops its init', () => {
   const nz = `function nz(v, out, s, o) { out[o] = v; out[o + s] = 0; return out }
     function m(v) { return nz(v, [0, 0], 1, 0) }
@@ -2687,12 +2488,7 @@ test('devirtGlobalCalls: the site calls the function; a global nothing reads dro
 })
 
 // A global bound once to a builtin holds the builtin's value wrapper
-// (prepare/entry.js). A call through it is the builtin's own call, typed
-// arguments and all, however many sites there are; the wrapper is a value
-// nothing calls, and a global nothing reads drops its init, whether a statement
-// of a list or a module's whole init. stdlib selects its float32 conversion this
-// way: `fround = typeof Math.fround === 'function' ? Math.fround : null`, then
-// `if (typeof builtin === 'function') { f32 = builtin } else { f32 = polyfill }`.
+// (prepare/entry.js).
 test('devirtGlobalCalls: a call through a global that holds a builtin is the builtin\'s call', () => {
   const modules = {
     '/main.js': `var fround = (typeof Math.fround === 'function') ? Math.fround : null\nexport default fround`,
@@ -2814,9 +2610,6 @@ test('closure: a kernel a returned callback calls in its loop splices there', ()
 // A helper whose expression body reads its one parameter before anything but
 // literals (`lin2db(env(x))`, env a closure call with effects) splices with the
 // argument standing where the parameter is read: it runs where the call ran it.
-// A body that reads anything else first keeps the call, and so the order. The
-// order is the plan's, read without watr (whose macro pass had its own order bug,
-// fixed in watr's own tests).
 test('closure: a helper reading its parameter first splices with a call for its argument', () => {
   const src = `let k = 1
     const lin2db = (lin) => 20 * Math.log10(Math.max(Math.abs(lin), 1e-10))
@@ -2881,9 +2674,6 @@ test('closures: protected block shadows stay separate through errors and finaliz
 // writes is declared, so the declaration's absent value is not what later reads
 // see (test262 async-function/evaluation-body: `assert(called)` after `foo()`);
 // a test of the name proves nothing past a call either.
-// An empty literal a closure assigns to a binding it captures and then writes
-// keys into is the dictionary every reader takes it for: the assignment is
-// typed as a declaration is, and its allocation follows that plan.
 test('closures: an empty literal a closure assigns and fills reads back its keys', () => {
   const srcs = {
     keys: `export function f(k){let o;const h=()=>{o={};o.p=k;o.q=k+1;return o.p+o.q};return h()+o.q}`,
@@ -2975,8 +2765,7 @@ test('closures: a call from a sibling reaches the parameter', () => {
 // A closure its binding hands on (an argument, a builtin's callback, a store,
 // a return, a copy, `bind`, `call`, `apply`), or calls in a form the call-site
 // rows do not record (a spread, an optional call), runs for callers the rows
-// never see: its direct calls say nothing of its parameters. A closure only
-// called by name keeps what they proved.
+// never see: its direct calls say nothing of its parameters.
 test('closures: a closure its binding hands on takes its parameters from every caller', () => {
   const srcs = {
     argument: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb('x', n); return g(1, 2) + h(g) }`,

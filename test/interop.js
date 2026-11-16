@@ -3,9 +3,6 @@
 // Validates that prebuilt jz wasm bytes can be instantiated and called through
 // the host runtime (interop.js) with no compiler / parser / watr dep. The wasm is
 // produced once via the full jz pipeline, then handed to the runtime as bytes.
-// The runtime's codec and wrapper are white-box imports; the `jz/interop`
-// package specifier, resolved through the exports map as a downstream consumer
-// would, exposes `instantiate` alone (checked below).
 
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
@@ -14,8 +11,6 @@ import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
 import { HEAP, symbolCountMax } from '../layout.js'
 import { oracle, jz, compile } from './util.js'
 import { compile as wasm } from 'watr'
-
-// ── subpath surface ─────────────────────────────────────────────────────────
 
 test('interop: host throws enter source catch without changing their values', () => {
   const src=`import {fail} from 'host';let calls=0;
@@ -380,9 +375,7 @@ test('package: root and every public subpath ship declarations; pointer carriers
 
 test('interop: subpath stays compiler-free with only host and codec dependencies', async () => {
   // The whole point of the subpath: it can be loaded without dragging in the
-  // compiler. Enforce it as a static contract — `jz/interop` may import only
-  // host linking, layout, error metadata and the UTF-8 codec for worklet hosts.
-  // Compiler dependencies must never enter this path.
+  // compiler. Compiler dependencies must never enter this path.
   const { readFileSync } = await import('node:fs')
   const url = await import.meta.resolve('jz/interop')
   const sourceOf = (u) => readFileSync(new URL(u), 'utf8')
@@ -399,7 +392,6 @@ test('interop: subpath stays compiler-free with only host and codec dependencies
   }
 })
 
-// ── prebuilt-wasm round-trip ────────────────────────────────────────────────
 // Compile once via the full pipeline, then drive the resulting bytes through
 // the subpath alone. Mirrors what a downstream "ship the .wasm" consumer does.
 
@@ -618,8 +610,6 @@ test('interop: computed host reads preserve empty keys, errors and optional rece
   }
 })
 
-// ── NaN-box codec helpers (used by tooling around prebuilt wasm) ────────────
-
 test('interop: ptr/offset/type/aux codec round-trips', () => {
   // type=4 (string), aux=0, offset=128
   const p = interop.ptr(4, 0, 128)
@@ -629,7 +619,6 @@ test('interop: ptr/offset/type/aux codec round-trips', () => {
 })
 
 test('interop: i64ToF64 / f64ToI64 are bit-cast inverses', () => {
-  // ptr() now yields the i64 carrier directly (a BigInt) — no NaN-box ever materializes as f64.
   const box = interop.ptr(6, 3, 1024)
   is(typeof box, 'bigint')
   // i64→f64→i64 round-trips the bits losslessly (the f64 form is intact on V8).
@@ -640,8 +629,8 @@ test('interop: i64ToF64 / f64ToI64 are bit-cast inverses', () => {
 
 test('interop: boxes carry as i64 BigInt, never an f64 NaN-box (JSC-safe codec)', () => {
   // The Safari fix in one assertion: a box must never become a JS number (f64), or JSC
-  // canonicalizes its NaN payload mid-decode. Every box-producing codec entry yields a BigInt,
-  // and numbers stay numbers. (Reverting the codec to an f64 representation fails this.)
+  // canonicalizes its NaN payload mid-decode. (Reverting the codec to an f64 representation
+  // fails this.)
   is(typeof interop.ptr(4, 0, 1024), 'bigint')
   for (const atom of [interop.NULL_NAN, interop.UNDEF_NAN, interop.TRUE_NAN, interop.FALSE_NAN]) is(typeof atom, 'bigint')
   const { memory, exports } = interop.instantiate(compile('export let f = () => "hello world"'))
@@ -773,12 +762,7 @@ test('interop: typed argument dispatch requires explicit bigint handles', () => 
   }
 })
 
-// ── zero-copy I/O: a typed array by length + Uint8Array memcpy ──────────────
-
 test('interop: Uint8Array arg crosses via native memcpy (correct for stride-1)', () => {
-  // Regression: the inbound TypedArray path gated the fast `.set` memcpy on stride>=2,
-  // so a Uint8Array (stride 1, e.g. a whole audio file) fell to a per-byte DataView
-  // loop — slow, and a silent miscompile would surface here as a wrong sum.
   const { exports } = interop.instantiate(compile(`
     export let sum = (b) => { let n = b.length, s = 0; for (let i = 0; i < n; i++) s += b[i]; return s }
   `))
@@ -806,35 +790,6 @@ test('interop: a typed array made by length is a live view + box for zero-copy i
   is(out2[2], out[2])
 })
 
-// decodeThrown / jz:schema (watr downstream CI, 2026-08): a thrown Error's
-// `.message` decodes through mem.read's generic OBJECT case, which indexes
-// `mem.schemas[sid]` positionally (compile/index.js's jz:schema writer:
-// "entry index === schema id"). The reader used to merge incoming entries
-// into `mem.schemas` by CONTENT alone (`props.join(',')`) — sound for
-// ordinary object schemas (content really does mean "same shape" there),
-// unsound for the 7 built-in Error classes, which module/schema.js
-// deliberately keeps as SEPARATE compile-time ids sharing the identical
-// physical prop list ['message','name'] (distinguished only by a `salt`
-// — the class name — folded into ctx.schema.register's dedup key, never
-// serialized into the jz:schema bytes themselves). Registering 2+ of the
-// 7 collapsed every one after the first into ONE runtime index, shifting
-// every later sid's position — so the SECOND (and later) Error class
-// registered in a program decoded its thrown `.message` as `undefined`
-// (mem.schemas[sid] resolves to some OTHER, unrelated, usually zero-field
-// schema). This is the live-schema sibling of the dead-schema collision
-// compile/index.js's jz:schema writer already names and fixes (its
-// `[String(id)]` placeholder covers only entries with no salt to lose).
-// Root cause: interop.js's read-side dedup key didn't mirror
-// ctx.schema.register's write-side key (which folds in `salt`) — fixed by
-// reading jz:errcls first and computing the identical salted key while
-// merging jz:schema.
-//
-// This exact shape was watr's own downstream CI failure ("case: error on
-// unknown instruction: should throw", compile.js's `err()` — a SECOND
-// built-in Error class had already been registered elsewhere in the
-// program by the time this one threw, e.g. `err()`'s own — the corruption
-// throws off every Error class after the first one used anywhere in the
-// module, not just at this call site).
 for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   test(`interop: decodeThrown recovers .message for EVERY built-in Error class in one module, not just the first (${lbl})`, () => {
@@ -876,7 +831,6 @@ test('interop: a typed array constructor takes a length as its host constructor 
   is(memory.read(memory.BigInt64Array([1n, -2n])), new BigInt64Array([1n, -2n]), 'BigInt64Array(data)')
 })
 
-// ── numeric export boundary ─────────────────────────────────────────────────
 // A proven-numeric param is an f64 slot; every box-capable param takes the i64
 // lane (jz:i64exp). The wrapper hands an f64 slot the host value untouched, so the
 // WebAssembly JS-API's ToNumber at the call is the exact JS coercion.
@@ -931,7 +885,6 @@ test('interop: a box-capable export param never rides the f64 lane', () => {
   is(exports.f('10'), false)
 })
 
-// ── numeric array-like export parameters ────────────────────────────────────
 // A parameter the body only indexes, measures, writes by element, forwards to
 // a function that does the same, or returns, is a numeric array-like: the
 // wrapper normalizes the host value to a Float64Array copy at entry and, when
@@ -1116,8 +1069,7 @@ test('interop: typed views, typed methods and accumulators keep an array-like pa
 // Two classes of one field list are two schemas: the compiler brands each
 // (module/schema.js), and the `jz:brand` section carries the brand, so
 // interop keeps their sids and field contracts apart within a module and
-// across the modules sharing one memory. A plain object matches a plain shape
-// first; among classes alone it is ambiguous.
+// across the modules sharing one memory.
 test('interop: classes of one field list keep their identity through the sections', () => {
   if (onWasi() || onKernel()) return
   const one = jz(`class A { constructor(x) { this.x = x } }\nclass B { constructor(x) { this.x = x } }
@@ -1182,9 +1134,8 @@ test('interop: numeric host imports preserve zero, NaN, infinities and hidden co
 })
 
 // A host function is JavaScript: it can call an export back, and the export can write a
-// global of the module or replace what it holds. What the caller kept of the global from
-// before the call (a copy in a local, a typed array's base) is then stale. Each program
-// runs in Node too, the import a function that calls the export, and jz answers the same.
+// global of the module or replace what it holds. Each program runs in Node too, the
+// import a function that calls the export, and jz answers the same.
 test('interop: a host import that calls an export back leaves no stale copy of a global', () => {
   if (onWasi() || onKernel()) return
   const cases = [
@@ -1424,8 +1375,7 @@ test('interop: a WASI module\'s stdio goes through the wasi option', () => {
 // A method that captures nothing is a closure with no environment; the host
 // calls it on the object it read it from, so that object stays held as long
 // as the host holds it, though the closure holds no memory itself (interop.js
-// S.read: every decoded closure counts toward pinning its owner). The module
-// churning memory between the read and the call reused the object's block.
+// S.read: every decoded closure counts toward pinning its owner).
 test('interop: an object whose methods capture nothing stays held while the host calls them', () => {
   if (onWasi() || onKernel()) return
   for (const optimize of levels(false, 2, 'speed')) {

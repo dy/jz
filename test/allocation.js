@@ -548,8 +548,7 @@ test('allocation: copied concat results do not retain builder storage', () => {
 // A bump allocator packs arrays back to back, so two of 2^k bytes start one
 // header (16 bytes) apart in their low twelve address bits: a kernel storing
 // to one and loading the other an element later matches an in-flight store
-// there on every iteration (4K aliasing). A block of 4 KiB or more starts at
-// the next quarter-page colour instead; the size tier keeps the packing.
+// there on every iteration (4K aliasing).
 test('allocation: blocks of 4 KiB or more start a quarter page apart mod 4096', () => {
   const src = `export let ends = (n) => {
     const a = new Float64Array(n), e0 = __heap_mark()

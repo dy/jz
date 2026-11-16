@@ -4,13 +4,8 @@
 // ToNumber read whatever the other operand is, the parameter (ANY at the host
 // boundary, BIGINT from every in-program call) is seeded NUMBER by the second
 // fixpoint, and an in-program call passing a BigInt then trips the runtime's
-// mixing check inside the function. This is layout.js's `i64Hex` and its
-// callers (src/compile/emit/comparisons.js `emitTypeofCmp`, the
-// `typeof x === 'number'` arm), which is why the self-hosted kernel throws
-// `Cannot mix BigInt and other types` in emitFuncs on any program with a
-// `typeof x === 'number'` test in expression position, its own source first
-// of all (`.work/optimizer-review/checkpoint-45868ec5.md`). The regression is
-// ordinary JS; the pins stay red until the summary's demand rule closes.
+// mixing check inside the function. The regression is ordinary JS; the pins
+// stay red until the summary's demand rule closes.
 //
 // What a repair must satisfy is semantic: every payload's exact bits reach the
 // function from the host and from the program alike, and the published ABI
@@ -36,12 +31,7 @@ const i64Hex = bits => '0x' + hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + hx8(Num
 // positive, a negative NaN with the quiet bit. COLLIDING are the plain BigInt
 // values whose top 13 bits are 0x7FF8: the NaN box prefix itself (the value in
 // the compiler's LAYOUT), a NaN with an atom payload, and the largest positive
-// i64. The host boundary once read them as boxes it minted (interop.js isBox:
-// `(hi32(b) & 0xFFF80000) === 0x7FF80000`), so they reached the program as
-// NaN, undefined and an object. A slot the body reads only as a scalar value
-// is declared `val` in jz:hostabi (src/compile/param-numeric.js
-// paramValueOnly), and every host BigInt at it is a value: boxed, never a
-// handle.
+// i64.
 const PAYLOADS = [0x8000000000000000n, 0n, 0xFFFFFFFFFFFFFFFFn, -1n, 1n, 0x7FF7FFFFFFFFFFFFn, 0xFFF8000000000000n]
 const COLLIDING = [0x7FF8000000000000n, 0x7FF8000200000000n, 0x7FFFFFFFFFFFFFFFn]
 

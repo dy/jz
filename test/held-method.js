@@ -72,12 +72,9 @@ test('held method: a name a store may change, or used as a value, is not the met
   for (const [name, src] of Object.entries(open)) throws(() => compile(src), /Object\.prototype|not in scope|not supported/, name)
 })
 
-// A held builtin is any function of the target a name holds: a method of a prototype
-// the target dispatches by the receiver's kind (String, Number, Boolean, Array beside
+// A held builtin is any function of the target a name holds: a method of a prototype the
+// target dispatches by the receiver's kind (String, Number, Boolean, Array beside
 // Object), a function named bare or in a namespace (`Symbol`, `String.fromCharCode`).
-// `name.call( recv, …args )` is the method on the receiver, `name( …args )` the function,
-// `name.member` the member as prepare names one: a member the target does not serve
-// (`Sym.toStringTag`, a well-known symbol) is undefined, as a missing property is.
 const builtins = {
   'a method of String.prototype': `var lower = String.prototype.toLowerCase, sl = String.prototype.slice
     export let f = () => lower.call('AbC') + sl.call('abcdef', 1, 3)`,
@@ -140,7 +137,7 @@ test('held method: the class of a value is a string where two are added', () => 
 // A function of the target named bare (`Symbol`, `parseInt`) held in a name, through any
 // names (`var Sym = Symbol; var ctor = Sym`), is that function where it is called or asked
 // its type: the chain seeds the function's module for the call's sake, and a read of the
-// name resolved to the module. A block-local alias resolves through its scope.
+// name resolved to the module.
 test('held builtin: a bare function of the target through a chain of names', () => {
   const src = `var Sym = Symbol
     var ctor = Sym

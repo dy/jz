@@ -96,8 +96,6 @@ test('example: ulam renders the requested view across repeated calls', async () 
     }
 });
 
-// Regression: examples/build.mjs once compiled with the DEFAULT options (no optimize), so the
-// auto-SIMD vectorizers never ran and every demo shipped a scalar .wasm that lost to plain JS.
 // The examples are perf demos, so the build MUST stay speed-optimized — assert a known-vectorizable
 // kernel still emits SIMD under the exact options the build uses (so dropping `speed` fails here).
 test('example: build options keep kernels vectorized (SIMD)', () => {
@@ -106,15 +104,8 @@ test('example: build options keep kernels vectorized (SIMD)', () => {
     ok(/f64x2\./.test(wat), `burningship must vectorize under the examples build options (OPT=${JSON.stringify(OPT)})`);
 });
 
-// Achievement ratchet: the escape-time fractals BEAT V8 (Node, 800×500: burning-ship 1.46×, Julia
-// 1.19×, mandelbrot vectorized) because the divergent escape vectorizer takes the BREAK-ON-FIRST
-// fast path — f64x2 lanes with NO per-iteration v128.bitselect freeze. The old masked SIMD froze
-// every escaped lane each step, which nearly cancelled the 2× and left jz ~0.9× V8 (slower). Wall-
-// clock is machine-dependent (see the jukebox ratchet above), so pin the DETERMINISTIC CAUSE: each
-// fractal must (1) vectorize, (2) carry no freeze, (3) emit the scalar tail. A regression to the
-// masked path (re-adds bitselect) or to scalar (drops f64x2) trips this. Covers burning-ship
-// (escape-after-update), Julia (compound guard + per-pixel z₀ + cached squares — vectorizes with
-// NO kernel change), mandelbrot (escape-at-top).
+// Wall-clock is machine-dependent (see the jukebox ratchet above), so pin the DETERMINISTIC CAUSE:
+// each fractal must (1) vectorize, (2) carry no freeze, (3) emit the scalar tail.
 test('example: escape-time fractals take the break-on-first FAST path (beats V8)', () => {
     for (const name of ['burningship', 'julia', 'mandelbrot']) {
         let wat = compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
@@ -124,16 +115,7 @@ test('example: escape-time fractals take the break-on-first FAST path (beats V8)
     }
 });
 
-// Achievement ratchet: the per-pixel-color vectorizer (tryPerPixelColor) lifts pixel kernels that
-// compute an f64 value from the index (cos/sin/sqrt…) and pack it to a u32 colour into f64x2 lanes —
-// two adjacent pixels at once, transcendentals via the bit-exact $math.*2 mirrors, the pack scalar
-// per lane. chladni hits 2.28× V8 (the two per-row + per-pixel Math.cos → $math.cos2). interference's
-// sRGB `a**γ` (constant γ) lowers at emit-time to exp(γ·log a) (module/math.js emitPow), so the pixel
-// is sin+sqrt — TRUE 2-wide ($math.sin2 / f64x2.sqrt), not a per-lane-scalar mirror. Pin the
-// deterministic cause — chladni takes the per-pixel-color path ($__ppc tail); interference's
-// N-source grating has an inner per-source reduction, which per-pixel-color declines by design,
-// so it must take the OUTER-STRIP path ($__os) and lift the reduction to f64x2 there. The
-// bit-exactness gate lives in test/simd.js.
+// The bit-exactness gate lives in test/simd.js.
 test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/sqrt)', () => {
     const w = (name) => compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
     const ch = w('chladni');
@@ -146,46 +128,14 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
     ok(!/call \$math\.pow2/.test(it), 'interference never needs the per-lane-scalar $math.pow2 mirror');
 });
 
-// Stencil vectorizer (experimental): watercolor's curl / vorticity-confinement / divergence /
-// gradient-subtract / capillary-bleed sweeps are 2-D neighbour stencils over f64 fields (the
-// Gauss–Seidel pressure loop is loop-carried and rightly stays scalar). With stencil
-// the pure sweeps lift to f64x2 (neighbour loads f[c±1] / f[c±w], derived IV c=r+x). It must be
-// BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders nothing per lane.
+// It must be BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders
+// nothing per lane.
 test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/watercolor/watercolor.js', import.meta.url), 'utf8');
     const watText = compile(src, { ...OPT, wat: true });
     const frame = funcWat(watText, 'frame');
-    // RECOVERED (audit-#8 P1-2 follow-up, c8700daa's own named lever): `w`/`h`
-    // trace to a resize(w,h) runtime param — genuinely unbounded statically, so
-    // `w-1`/`h-1` can never get a STATIC intExprRange proof and tryStencil's
-    // `boundPureInv` (src/optimize/vectorize.js) declined. The fix reuses the
-    // EXISTING Root-F typed-bounds loop VERSIONING (emit.js `emitter['for']`):
-    // its runtime guard already re-evaluates each level's bound and proves
-    // `|bound| ≤ 2^31`; a new per-free-name integral+magnitude conjunct (same
-    // idiom, ±2^30) proves a REAL [lo,hi] hull for `w`/`h` THEMSELVES, fed
-    // through withRefinements (flow-types.js — the same channel forCounterRange
-    // uses) for exactly the fast arm's own re-emission. `w-1` then lowers as
-    // native i32.sub inside the guarded fast arm, boundPureInv accepts it, and
-    // the stencil lifts under the proof the guard just checked. Scalar stays
-    // the fallback whenever the guard's magnitude/integrality conjuncts fail.
-    // 49 → 39 (2026-09-27): `W`/`H` are set from resize(w, h)'s host parameters
-    // and read back as values (`x1 > W - 2`, passed to samp), so the integer-global
-    // inference keeps them f64 (a host may pass 64.5; an i32 global truncated it
-    // silently). The bleed sweep's `w2 = W`, `r = y2 * w2`, `c = r + x2` then type
-    // f64 at analysis and neither vectorizer sees an integer model; the guard's
-    // per-name integral conjunct cannot retype locals fixed before emit. The
-    // velocity sweeps (`w = WV`, `WV = w >> 1`) still lift. Recovering the ink
-    // sweeps needs a source-level integer versioning of an f64 width:
-    // `if (W === (W | 0)) <nest with W | 0> else <nest>`, typed per copy.
-    // 39 → 40 (2026-09-28): the SLP store-pair packer packs two adjacent initial
-    // stores of the module initializer (`$__start`) into one v128 store; the sweeps
-    // are as before (`slp: false` gives 39 on both sides).
-    // RECOVERED (2026-10-04): the source versioning takes the ink sweep's row base
-    // `r = y2 * w2` and index `c = r + x2` as words where their hulls fit i32
-    // (plan/integral-loops.js: derived integers), so the typed-bounds versioning
-    // reads an affine index of words and the bleed stencil lifts beside the
-    // velocity sweeps. Pinned by shape, not by an operation count: the SIMD loops
-    // of `frame` and the bleed's neighbour load.
+    // Pinned by shape, not by an operation count: the SIMD loops of `frame` and the
+    // bleed's neighbour load.
     const simdLoops = (frame.match(/\(loop \$\S*__simd_loop/g) || []).length;
     ok(simdLoops >= 5, `watercolor: the velocity sweeps and the ink bleed lift (${simdLoops} SIMD loops in frame)`);
     ok(/v128\.load offset=8/.test(frame), 'watercolor: the capillary bleed stencil reads its neighbours as lanes');
@@ -203,11 +153,9 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'watercolor SIMD stencils bit-exact vs scalar (3072 px, 30 frames)');
 });
 
-// Stencil vectorizer: waves is the 2-D wave equation — a 9-point sweep over two height
-// buffers swapped each frame. With stencil the inner x-loop lifts to f64x2
-// (neighbour loads a[c±1] / a[rn+x], derived IV c=rc+x). BIT-EXACT end-to-end — the swap
-// is outside the loop so the in-loop read/write bases stay distinct (no aliasing). The slope
-// field is a stencil too; the reflection shading reads it as a per-pixel map and stays scalar.
+// Stencil vectorizer: waves is the 2-D wave equation — a 9-point sweep over two height buffers
+// swapped each frame. BIT-EXACT end-to-end — the swap is outside the loop so the in-loop
+// read/write bases stay distinct (no aliasing).
 test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
     const base = (compile(src, { optimize: { level: OPT.optimize, stencil: false }, wat: true }).match(/f64x2\./g) || []).length;
@@ -234,22 +182,13 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'waves SIMD stencil bit-exact vs scalar (12288 px, 60 frames)');
 });
 
-// Outer-loop strip-mine (experimental): metaballs sums an inverse-square field over every blob
-// per pixel — the outer W×H pixel loops are independent, the inner blob loop is a reduction. With
-// outerStrip, two adjacent pixels (xi, xi+1) run as f64x2 lanes (cx → ramp, blob loads
-// → splat, sum → per-lane f64x2), then each lane packs its colour. BIT-EXACT: each lane accumulates
-// in the same scalar order (a per-lane reduction reorders nothing). The odd-width column + the rest
-// of the frame run via the kept scalar tail.
+// Outer-loop strip-mine (experimental): metaballs sums an inverse-square field over every blob per
+// pixel — the outer W×H pixel loops are independent, the inner blob loop is a reduction. BIT-EXACT:
+// each lane accumulates in the same scalar order (a per-lane reduction reorders nothing).
 test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/metaballs/metaballs.js', import.meta.url), 'utf8');
-    // outerStrip is now default-on at speed; SCALAR baseline turns it explicitly off.
     const base = (compile(src, { optimize: { level: OPT.optimize, outerStrip: false }, wat: true }).match(/f64x2\./g) || []).length;
     const os = (compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    // Root F's nest versioning hands the LANE vectorizer the canonical scaffold at
-    // BOTH tiers (36 lanes vs the old strip-only 21) — outer-strip no longer has
-    // headroom to add here. The pin now guards the stronger property: the field
-    // loop is heavily laned regardless of the strip pass, and never regresses when
-    // the strip pass is on.
     ok(base >= 21 && os >= base, `metaballs field loop stays laned (${base} → ${os} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
@@ -265,12 +204,8 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
 
 // Iterated-map reduction (tryIteratedReduce): lyapunov runs a per-pixel logistic recurrence over
 // two inner loops (warmup + accumulate), gathers a forcing sequence seq[si] (scalar index), selects
-// the rate r = seq[si]<1 ? a : b, and accumulates λ += log|r·(1−2x)| under a per-lane guard. Two
-// adjacent pixels strip-mine to f64x2 lanes: x/λ recurrences per-lane, seq/counters scalar, the
-// rate-select a v128-typed branch, the log via $math.log_v, the conditional accumulate a bitselect.
-// BIT-EXACT — per-lane IEEE arithmetic + the log_v mirror reorder nothing. (Flips a 1.4× warm-V8
-// LOSS into a ~1.6× win — the inner reduction is latency-bound, unlike a cheap pixel map.) Isolated
-// via the outerStrip toggle (the iterated-reduce gate).
+// the rate r = seq[si]<1 ? a : b, and accumulates λ += log|r·(1−2x)| under a per-lane guard.
+// BIT-EXACT — per-lane IEEE arithmetic + the log_v mirror reorder nothing.
 test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/lyapunov/lyapunov.js', import.meta.url), 'utf8');
     const base = (compile(src, { optimize: { level: OPT.optimize, outerStrip: false }, wat: true }).match(/f64x2\./g) || []).length;
@@ -306,12 +241,8 @@ test('example: regressed kernels keep their vectorization (byte-fade / pmax / na
     ok(/i32x4\.relaxed_trunc_f64x2_s_zero/.test(watOf('fern')), 'fern: ToInt32 map must lift to the i32x4 relaxed narrow');
 });
 
-// Outer-strip LEGALITY (regression): a per-sample loop whose body is an iterated f64 RECURRENCE
-// (lorenz RK4: x/y/z carried across samples, never re-seeded per sample) is NOT a per-pixel
-// reduction — its "accumulators" are loop-carried across the outer loop, so strip-mining two
-// adjacent samples into f64x2 lanes runs both lanes from the SAME seed and halves the real work,
-// producing a WRONG (and bogus-fast) result. The strip-miner must reject it. Bit-exact speed-vs-
-// scalar is the guard; the chaotic recurrence amplifies any 1-ulp divergence into a visible delta.
+// Bit-exact speed-vs-scalar is the guard; the chaotic recurrence amplifies any 1-ulp divergence
+// into a visible delta.
 test('outer-strip rejects loop-carried recurrences (lorenz) — speed ≡ scalar', () => {
     const src = `
 const xs = new Float64Array(4096)
@@ -343,12 +274,10 @@ export let run = () => {
 // Stencil with float-derived index + f32 widening: schrodinger's stepR/stepI are 2-D 5-point
 // Laplacians where the row base `y*w` is computed in f64 (so idx = trunc(y*w + x), recognized as
 // i32-affine since trunc(C+x)=trunc(C)+x), and the potential V is a Float32Array (f32 load promoted
-// to f64). With stencil both lift to f64x2 (f64 loads → v128.load, V → promote_low_f32x4
-// of load64_zero). BIT-EXACT — lane-parallel stencil, no reassociation; the float→int index is
-// stride-1 by construction.
+// to f64). BIT-EXACT — lane-parallel stencil, no reassociation; the float→int index is stride-1 by
+// construction.
 test('example: schrodinger float-index + f32-widening stencil vectorizes and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/schrodinger/schrodinger.js', import.meta.url), 'utf8');
-    // stencil is now default-on at speed; SCALAR baseline turns it explicitly off.
     const base = (compile(src, { optimize: { level: OPT.optimize, stencil: false }, wat: true }).match(/f64x2\./g) || []).length;
     const wat = compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
@@ -368,40 +297,12 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
 });
 
 // Toroidal-wrap stencils: diffusion's 5-point Gray-Scott and slime's 3×3 diffuse blur both index
-// neighbours with a torus wrap (`xw = x>0 ? x-1 : w-1`). The wrap-select is stride-1 in the interior
-// (1 ≤ x ≤ w-2); tryStencil treats it as a coeff-1 derived IV and PEELS the boundaries — scalar x=0
-// before the SIMD, the SIMD capped at `min(bound, rightWrapBoundary) - (lanes-1)` so no chunk reaches
-// a wrap column, the kept scalar tail finishing them. A nested-loop GUARD stops the OUTER y-loop from
-// matching (its body holds the inner x-loop). BIT-EXACT (lane-parallel stencil, no reassoc). NOTE:
-// slime seeds agents from Math.random, so a fixed randomSeed is required to compare SIMD vs scalar.
+// neighbours with a torus wrap (`xw = x>0 ? x-1 : w-1`). BIT-EXACT (lane-parallel stencil, no
+// reassoc). NOTE: slime seeds agents from Math.random, so a fixed randomSeed is required to compare
+// SIMD vs scalar.
 test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-exact', () => {
-    // RECOVERED (audit-#8 P1-2 residual A, 2026-08-03): the loop-bound magnitude gap the
-    // watercolor/waves/schrodinger tests above name was already fixed (Root-F per-name guard
-    // conjunct, emit.js) — `x < w` itself lowers native i32 here too. The residual THIS fix
-    // closes is different: diffusion/slime compute their wrap value (`xw = x>0?x-1:w-1`) into a
-    // NAMED local rather than inlining the select at the index site — since `w-1` can't be proven
-    // i32-small statically, both ternary branches unify at f64 (`x-1` becomes
-    // `f64.sub(f64.convert_i32_s(x),1)`, the invariant `w-1`/`0` stays a bare f64 value), wrapped
-    // in jz's ordinary Infinity-guarded overflow-canon (NOT NaN-guarded as first hypothesized —
-    // direct WAT inspection showed the EXISTING `/inf/i.test` canon check already matches; only
-    // the wrap-select's OWN two branches needed teaching). `isStep` (vectorize.js) now also
-    // recognizes the f64-domain step `f64.{add,sub}(f64.convert_i32_s(x), f64.const 1)`; `ivCoeff`
-    // treats a bare `f64.const` as loop-invariant (coefficient 0), matching its existing
-    // `i32.const` case; the RIGHT-direction guard (`ivCompare`) accepts `f64.{lt,eq}` comparing
-    // `f64.convert_i32_s(x)` against an f64 invariant B, converting B to i32 via the exact SAME
-    // `i32.wrap_i64(i64.trunc_sat_f64_s(B))` idiom jz's own overflow-canon already uses elsewhere
-    // — value-exact for any finite integer-valued f64, not an approximation.
     const cases = [
-        // RECOVERED (2026-10-04): the row bases `rowC = y * w` and the index `c = rowC + x`
-        // are words of the source versioning's copy (plan/integral-loops.js: derived
-        // integers), so the 5-point stencil lifts in both step functions; pinned by
-        // their neighbour loads, not an operation count, wherever the steps land
-        // (their own functions, or inlined into frame).
         { name: 'diffusion', want: (w) => ((funcWat(w, 'stepAtoB') + funcWat(w, 'stepBtoA') + funcWat(w, 'frame')).match(/v128\.load/g) || []).length >= 16, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
-        // The 3×3 blur lifts in its present-grid arm (the loop as written is the
-        // version's cold arm now: plan/integral-loops.js leaves it scalar); pinned
-        // by the lanes' nine neighbour loads wherever the blur lands (its own
-        // function, or inlined into frame). Compare every frame across resize/reuse.
         { name: 'slime', want: (w) => ((funcWat(w, 'blurDecay') + funcWat(w, 'frame')).match(/v128\.load/g) || []).length >= 9, drive: (e) => {
             const frames = [];
             for (const [w, h] of [[0, 0], [1, 1], [2, 2], [3, 3], [64, 48], [64, 48], [65, 49], [64, 48]]) {
@@ -424,17 +325,8 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     }
 });
 
-// Pure-function inline into the per-pixel-color lift: plasma's per-pixel value is fbm(...) ×3 (a
-// 5-octave sine helper). foldStrDispatchF64 removes the dead string-dispatch from a PRIVATE CLONE of
-// $fbm's `+` (its params are raw-f64 there, so the is-string branch can never fire), making the
-// clone pure and registering it in pureFuncMap; liftPPC then inlines from that clone — substituting
-// lifted lane args for params and lifting the body — so the sines become $math.sin2. BIT-EXACT
-// (extract-repack mirror + lane-parallel arithmetic).
+// BIT-EXACT (extract-repack mirror + lane-parallel arithmetic).
 //
-// The REAL, standalone `$fbm` emitted into the module is left UNTOUCHED by the fold (audit fix,
-// 2026-08 — folding it in place used to strip its live runtime string/atom dispatch too, unsound:
-// under jz's NaN-boxing ABI a bare `(param f64)` can carry a string/undefined/atom exactly like a
-// real number, so "declared f64" alone never proves the guard dead for $fbm's own ordinary callers).
 // It may legitimately still contain `__is_str_key` — that's not tested here; what matters is the
 // lift itself (asserted above) and bit-exactness against the scalar path (below).
 test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)', () => {
@@ -447,10 +339,7 @@ test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)',
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'plasma fbm-inline bit-exact vs scalar (1536 px)');
 });
 
-// Divergent-escape with per-lane OUTCOME tracking: newton's inner loop converges to one of N roots
-// and records which via `(then (local.set $root K) (br))` — a 2-statement break the recognizer now
-// accepts, tracking each lane's root in an i32x4 via bitselect on the newly-escaped mask. The
-// achievement-ratcheted escape fractals (break-on-first fast path) are untouched. BIT-EXACT.
+// BIT-EXACT.
 test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/newton/newton.js', import.meta.url), 'utf8');
     ok((compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'newton vectorizes');
@@ -464,14 +353,10 @@ test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exac
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'newton outcome-tracking bit-exact vs scalar (1536 px)');
 });
 
-// lorenz renders an f32 energy field then composites it paper→ink. It was refactored from a
-// conditional trail-fade store (`if (p & 0xffffff) px[i] = fade(p)`) to an UNCONDITIONAL opaque
-// composite (every pixel written = exactly the paper colour where dark, so no faded smudges linger
-// on a light theme). The standalone conditional-store→bitselect lift it used to exercise is now
-// unit-covered in test/simd.js ("conditional STORE form"); here we pin the refactored example's
-// correctness + scalar/SIMD agreement. NOTE: the unconditional composite (clamp f32 energy → lerp
-// → pack ARGB → store) does NOT vectorize yet — the per-pixel-color pass only lifts the u32-density
-// tonemap shape — so this is also the regression guard for vectorizing it (it must stay bit-exact).
+// lorenz renders an f32 energy field then composites it paper→ink. NOTE: the unconditional
+// composite (clamp f32 energy → lerp → pack ARGB → store) does NOT vectorize yet — the
+// per-pixel-color pass only lifts the u32-density tonemap shape — so this is also the regression
+// guard for vectorizing it (it must stay bit-exact).
 test('example: lorenz energy composite renders + stays bit-exact scalar↔SIMD', () => {
     const src = fs.readFileSync(new URL('../examples/lorenz/lorenz.js', import.meta.url), 'utf8');
     const run = (opts) => { const { exports } = jz(src, { ...opts, randomSeed: 5 }); const px = exports.resize(80, 60); if (exports.init) exports.init(); for (let f = 0; f < 30; f++) exports.frame(f * 0.05, 0.3); return [...px]; };
@@ -480,15 +365,13 @@ test('example: lorenz energy composite renders + stays bit-exact scalar↔SIMD',
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lorenz composite bit-exact vs scalar (4800 px, 30 frames)');
 });
 
-// Mixed-lane log-tonemap (tryToneMap): fern / attractors both end in a flat loop that
-// loads an i32 density, lifts it to f64 for `Math.log(d+1)*S`, clamps, truncates back to i32, packs an
-// ARGB word, and (conditionally) stores it — i32 lanes wrapping an f64 ISLAND that the single-lane lift
-// can't carry. The 2-wide hybrid loads 2 u32 (load64_zero → i32x4 low lanes), `f64x2.convert_low_i32x4_s`
-// into the island, `$math.log_v` + clamp, `i32x4.trunc_sat_f64x2_s_zero` back out, packs, and masked-
-// stores the low 2 lanes. BIT-EXACT per lane (log_v is the per-lane mirror; clamp keeps L finite so
-// trunc_sat == |0; masks match their data width). fern seeds dens via Math.random ⇒ fixed randomSeed.
-// (bifurcation deliberately tonemaps via a precomputed LUT — the per-pixel log was slower than scalar —
-// so it no longer takes this path and isn't a case here.)
+// Mixed-lane log-tonemap (tryToneMap): fern / attractors both end in a flat loop that loads an i32
+// density, lifts it to f64 for `Math.log(d+1)*S`, clamps, truncates back to i32, packs an ARGB word, and
+// (conditionally) stores it — i32 lanes wrapping an f64 ISLAND that the single-lane lift can't carry.
+// BIT-EXACT per lane (log_v is the per-lane mirror; clamp keeps L finite so trunc_sat == |0; masks match
+// their data width). fern seeds dens via Math.random ⇒ fixed randomSeed. (bifurcation deliberately
+// tonemaps via a precomputed LUT — the per-pixel log was slower than scalar — so it no longer takes this
+// path and isn't a case here.)
 test('example: log-tonemap (fern/attractors) vectorizes mixed-lane f64x2 + bit-exact', () => {
     const cases = [
         // fern is (t, sway, panX, panY, zoom) — the pan/zoom refactor added the last three; driving
@@ -591,12 +474,12 @@ for (const { name, body } of FLOATBEATS) test(`example: jukebox ${name} compiles
     await WebAssembly.compile(bytes);
 });
 
-// V8-parity ratchet. Every jukebox voice compiles faster than V8's JS-JIT of the same
-// source (scripts/bench-all-jukebox.mjs) because jz proves the floatbeat math numeric
-// and skips the per-sample `__to_num` boxing — which also lets the ToNumber string-parse
-// stdlib treeshake, so V8 tiers the hot fill loop up properly. Wall-clock is machine-
-// dependent (see test/perf-ratchet.js), so we pin the deterministic cause instead: the
-// number of hot-path (`beat`/`fill`/closure) `__to_num` coercions. A lost numeric-typing
+// Every jukebox voice compiles faster than V8's JS-JIT of the same source
+// (scripts/bench-all-jukebox.mjs) because jz proves the floatbeat math numeric and skips
+// the per-sample `__to_num` boxing — which also lets the ToNumber string-parse stdlib
+// treeshake, so V8 tiers the hot fill loop up properly. Wall-clock is machine-dependent
+// (see test/perf-ratchet.js), so we pin the deterministic cause instead: the number of
+// hot-path (`beat`/`fill`/closure) `__to_num` coercions. A lost numeric-typing
 // optimization re-introduces per-sample boxing and trips this; the string-parsing voices
 // (charCodeAt/Number) keep a small legitimate residue. Lower is always fine (`<=`).
 test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
@@ -604,14 +487,6 @@ test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
         'Predestined Fate': 9, 'Please Exist': 0, 'Sunrise on Mars': 4,
         'Random melody with array': 0, 'Virtual Insanity': 0, 'Bitrot': 0,
         'Ambient Waves': 0, 'Sierpinski Chords': 0, 'Sine Rider': 0,
-        // Digital Rain 6→12: watr's inlineWrappers (speed tier) dissolves the
-        // closure-ABI trampoline by DUPLICATING the beat body into it — the
-        // standalone stays for direct calls, so static __to_num sites double
-        // while per-sample boxing is unchanged (each call runs one copy).
-        // 12→14: compoundAssign now routes BOTH operands through toNumF64
-        // (`t /= 44100` on the not-provably-numeric beat param coerces — the
-        // raw f64.div carried a possible UNDEF payload to the boundary). Two
-        // static sites; per-sample boxing unchanged for numeric inputs.
         'Digital Rain': 14, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
     };
     for (const fb of FLOATBEATS) {
@@ -727,15 +602,11 @@ test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', (
 // Field lines of line charges are the level curves of the stream function ψ = Σ nₖ·arg(z − zₖ), the
 // imaginary part of the complex potential Σ nₖ·ln(z − zₖ): Feynman Lectures II §7–2, "Two-dimensional
 // fields; functions of the complex variable", Eq. 7.14, F(z) = ln z "yields the field for a line
-// charge" (https://www.feynmanlectures.caltech.edu/II_07.html). The kernel takes no arctangent: it
-// builds e^{iψ} as a product of unit vectors, the powers shared across the binary digits of the line
-// counts. Held here to the textbook sum, arctangent by arctangent, on counts of one and several set
-// bits and both signs. A line's half-width h is 1/1500 of the frame's mean side, 0.65 px at least,
-// anti-aliased over one more pixel: a pixel within ¼ px of ψ ≡ 0 (mod 2π) is inked, one beyond
-// h + 0.95 px is black. The kernel draws a cast once. A frame of at most 360000 px is whole after one
-// call; a larger one is first a draft of square blocks, then, the cast held still, redrawn row by
-// row over later calls: the second frame here is one, with a line wider than the least. The draft is
-// the picture through larger pixels, so it holds the same ink.
+// charge" (https://www.feynmanlectures.caltech.edu/II_07.html). Held here to the textbook sum,
+// arctangent by arctangent, on counts of one and several set bits and both signs. A frame of at most
+// 360000 px is whole after one call; a larger one is first a draft of square blocks, then, the cast
+// held still, redrawn row by row over later calls: the second frame here is one, with a line wider
+// than the least.
 test('example: field-lines draws the level curves of ψ = Σ n·arg(z − zₖ)', async () => {
     const url = new URL('../examples/field-lines/field-lines.js', import.meta.url);
     const src = fs.readFileSync(url, 'utf8');

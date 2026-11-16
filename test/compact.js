@@ -149,9 +149,7 @@ test('compact: a returned view outlives the compactions of the calls after it', 
 })
 
 // Once the program's own allocation grew the memory, the views handed before
-// are detached, and the compaction may grow it for its scratch again. Under a
-// memory maximum each grow fits exactly, with no room to spare: a program that
-// returned one view still has its garbage collected, not an out-of-memory.
+// are detached, and the compaction may grow it for its scratch again.
 test('compact: once the program grew the memory past its views, a compaction grows it again', () => {
   if (onWasi() || !counted()) return
   const src = `let px, junk
@@ -236,8 +234,7 @@ test('compact: a loop keeps what it carries and no more', () => {
     if ((name === 'prefix' || name === 'prefixTwice' || name === 'concat' || name === 'json') && counted()) {
       // unbounded, the prefix string alone would reach 3.6 GB; a loop compacts
       // past 2 MB of slack (34 MB of memory at the former 16), and wasm memory
-      // grows by doubling. Of two loops in a row, what the first left since its
-      // last compaction lies below the second's mark and stays to the return.
+      // grows by doubling.
       exports.f(60000)
       const mb = name === 'prefixTwice' ? 16 : 8
       ok(memory.buffer.byteLength <= mb * 1024 * 1024, `${name}: 60000 iterations stay within ${mb} MB (${Math.round(memory.buffer.byteLength / 1024)} KB)`)
@@ -257,8 +254,7 @@ test('compact: loops at every level', () => {
 test('compact: a site roots the locals live at the loop, not every pointer the function holds', () => {
   if (onWasi() || !counted()) return
   // a, b, c are read before the loop only: dead at its top, not roots; the
-  // carried s is one, with n as the parameter the loop reads. The function
-  // holds a dozen pointer-capable locals; a site marks the few live ones.
+  // carried s is one, with n as the parameter the loop reads.
   const src = `export const f = n => { const a = [n], b = 'x' + n, c = { v: n }; let t = a.length + b.length + c.v; let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + t }`
   const want = oracle(src), { exports } = jz(src)
   for (const n of [5, 3000]) is(exports.f(n), want.f(n), `f(${n})`)
@@ -341,10 +337,7 @@ console.log(JSON.stringify({
 })
 
 // A later loop's floor never moves: what an earlier loop of the same function
-// made after its last walk stays below it for the rest of the call. A loop that
-// drops what it makes (strings replaced each round) and compacted inside walks
-// once more as it ends, so the next loop starts where its live data ends, not
-// past its garbage (bench/stringify's warm-up and timed loops, 5 MB of it).
+// made after its last walk stays below it for the rest of the call.
 test('compact: a loop that drops what it makes leaves no garbage below the loop after it', () => {
   if (onWasi() || onKernel()) return
   const src = `import { at } from 'host'
@@ -507,10 +500,8 @@ test('compact: durable arrays below and above the stub log\'s table heal at a re
 // the stub log's table at the start, the snapshot skipped the table's
 // addresses and the inline test did not: it read the bit of an array a table
 // away, or past the bitmap's end, and an array that bit called saved kept the
-// round's write through the reset. Every reader now takes a bit's cell by one
-// rule, the table skipped (collection/durable.js seenCellWat). Arrays a
-// table's span apart, written from the last down and from the first up, all
-// reset.
+// round's write through the reset. Arrays a table's span apart, written from
+// the last down and from the first up, all reset.
 test('compact: an element store asks the bit the snapshot sets, past the stub log\'s table', () => {
   if (onWasi() || !counted()) return
   const src = `const arrs = []
@@ -551,11 +542,7 @@ test('compact: a reset after compactions returns the module to its start', () =>
 
 // A closure's named properties, and a shifted array's, live in one table keyed
 // by the object's address (module/collection.js `__dyn_props`), which no walk
-// reads as a pointer. Across the compactions between calls, and a reset between
-// rounds, a closure that writes its captured binding, a shifted array and one
-// shifted to no capacity (its words end where its data starts) keep their
-// properties wherever the move lays them, and an object later made at an
-// address a moved one left takes none of its properties.
+// reads as a pointer.
 test('compact: named properties kept by address follow their objects across the compactions between calls', () => {
   if (onWasi() || !counted()) return
   const src = `let kept = []
@@ -648,10 +635,7 @@ test('compact: a props table built at init heals at a reset after compactions re
 
 // A Map and a Set built at init lie below the reset mark; the entries a round
 // adds to them are logged by their slots' addresses for the reset to drop
-// (core/durable-log.js `__durable_slot_log`). A compaction that moves the
-// round's keys rehashes the tables in place: each logged address follows its
-// entry, so the reset drops the round's entries and keeps the init ones,
-// whether or not the round grew the tables past their storage.
+// (core/durable-log.js `__durable_slot_log`).
 test('compact: collections built at init and keyed by objects heal at a reset after compactions rehashed them', () => {
   if (onWasi() || !counted()) return
   const src = (every, until) => `const byKey = new Map(), seen = new Set()
@@ -681,11 +665,8 @@ test('compact: collections built at init and keyed by objects heal at a reset af
   }
 })
 
-// A Map that grew at init is a chain of stubs below the reset mark, the
-// pointer the module holds its first. A round grows it again into new
-// storage, which a compaction moves: the stub rewritten to name the moved
-// storage is the chain's last below the mark, the one the reset's relocation
-// heal restores to the table it was, so the reset reads the init entries again.
+// A Map that grew at init is a chain of stubs below the reset mark, the pointer
+// the module holds its first.
 test('compact: a collection that grew at init heals at a reset after a compaction moved what the round grew', () => {
   if (onWasi() || !counted()) return
   const src = `const list = [], byName = new Map()
@@ -826,10 +807,7 @@ test('compact: named properties kept by address follow the objects a phase compa
 
 // The for-in key cache (module/object.js: the key array of the last table a
 // for-in enumerated, read only while its epoch holds) names memory it does not
-// own. A reset bumps its epoch and leaves the pointer, as a rewound frame that
-// filled it does; a compaction rooting it would read the released round,
-// whatever the reused memory holds now, as the cached array, and rewrite words
-// of live data as its elements.
+// own.
 test('compact: a for-in key cache a reset left is no root of the next round\'s compaction', () => {
   if (onWasi() || !counted()) return
   const src = `const dict = {}

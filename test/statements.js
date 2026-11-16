@@ -1,4 +1,3 @@
-// Phase 1: Block bodies, control flow, statements
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
@@ -34,8 +33,6 @@ function hasSection(wasm, code) {
   }
   return false
 }
-
-// === Block body with let/return ===
 
 test('block: let + return', () => runScalarCase('block-let-return'))
 
@@ -153,17 +150,10 @@ test('bigint: typeof guard works through internal function parameter', () => {
 })
 
 test('bigint: compares full unsigned 64-bit bounds', () => {
-  // The 0x…n operands are >= 2^52 — audit P0-2 fixed this row: bigint LITERALS are the
-  // tagged `['bigint', decimalStr]` node (parse.js), so bigintUnsignedBound (emit.js) reads
-  // the magnitude straight off the decimal STRING, unconditionally, on every leg. No more
-  // native-vs-kernel split (was gated on !onKernel() — the kernel's inline carrier used to
-  // collapse a literal this large into a plain float before the compare even ran).
   is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), false)
   is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), true)
-  is(jz('export let f = () => -1n < 0n').exports.f(), true)   // un-curated 2026-07-25: string-compare misproof wave (see .work/archive/todo.md)
+  is(jz('export let f = () => -1n < 0n').exports.f(), true)
 })
-
-// === Number/Error builtins ===
 
 test('Number(): identity', () => {
   is(run('export let f = (x) => Number(x)').f(42), 42)
@@ -497,8 +487,6 @@ test('local array property/length/index/method', () => {
   ])
 })
 
-// === If/else ===
-
 test('if: early return', () => {
   const { f } = run('export let f = (x) => { if (x > 0) return x; return -x }')
   is(f(5), 5)
@@ -512,8 +500,6 @@ test('if: comparison ==', () => {
   is(f(0), 42)
   is(f(7), 7)
 })
-
-// === Prefix/postfix increment ===
 
 test('prefix ++i returns new', () => runScalarCase('prefix-increment-value'))
 
@@ -642,12 +628,9 @@ test('nested constant-local ternary arithmetic NaN condition is falsy', () => {
 
 // A non-canonical NaN (f64.div(0,0) is 0xFFF8… on x86, 0x7FF8… on arm) must never reach
 // the bitwise __is_truthy helper, which bit-matches the canonical number-NaN and so
-// mis-reads x86's sign-set NaN as TRUTHY. The bug is invisible on arm (its arithmetic NaN
-// is already canonical) — so this asserts the codegen INVARIANT, not just a runtime value:
-// if the merged result `$<v>` is bit-tested via __is_truthy, its numeric arm must have
-// been NaN-canon'd (`select (f64.const nan) … (f64.ne x x)`). Whitespace-insensitive and
-// matches both `call`/`return_call`. (Regressed 2026-06-14 when canonNum gained an
-// `isNumericIR` skip; green on arm, red on x86 CI.)
+// mis-reads x86's sign-set NaN as TRUTHY. Whitespace-insensitive and matches both
+// `call`/`return_call`. (Regressed 2026-06-14 when canonNum gained an `isNumericIR` skip;
+// green on arm, red on x86 CI.)
 const rawNaNToTruthy = (code, v) => {
   const wat = compile(code, { wat: true, optimize: 0 })
   const body = wat.match(/^  \(func \$f[\s\S]*?^  \)/m)?.[0] || ''
@@ -673,7 +656,6 @@ test('nullish-coalescing numeric fallback NaN is falsy', () => {
   const code = 'export let f = (p0, p1) => { let v = p0 ?? (p1 / p0); return v ? 1 : 0 }'
   is(run(code, { optimize: 0 }).f(undefined, 6995.66), 0)   // p0 nullish → v = p1/NaN = NaN → falsy
   ok(!rawNaNToTruthy(code, 'v'), 'un-canon NaN must not reach __is_truthy')
-  // `num ?? num` is now value-typed NUMBER (kind.js VT['??']) → read NaN-safe, no canon.
   is(run('export let f = (p0, p1) => { let v = (p0/p1) ?? (p1/p0); return v ? 1 : 0 }', { optimize: 0 }).f(0, 0), 0)
 })
 
@@ -684,10 +666,9 @@ const condBitTestsRawDiv = (code) =>
     .test(compile(code, { wat: true, optimize: 0 }).replace(/\s/g, ''))
 
 test('&& / || with an arithmetic operand: no raw NaN reaches __is_truthy', () => {
-  // `(a/b) && s` tests a/b's truthiness in the CONDITION and may return a/b as the result;
-  // a non-numeric arm (string `s`) makes the merge value-untyped → its truthiness routes
-  // through __is_truthy. The arithmetic arm must be NaN-canon'd and the cond NaN-safe.
-  // Codegen assertion — the bug is arm-invisible (arm's arithmetic NaN is already canonical).
+  // `(a/b) && s` tests a/b's truthiness in the CONDITION and may return a/b as the result; a
+  // non-numeric arm (string `s`) makes the merge value-untyped → its truthiness routes
+  // through __is_truthy.
   for (const code of [
     'export let f = (p, q, s) => { s = s + ""; let v = (p / q) && s; return v ? 1 : 0 }',
     'export let f = (p, q, s) => { s = s + ""; let v = s && (p / q); return v ? 1 : 0 }',
@@ -721,8 +702,6 @@ test('strict mode prohibits void', () => {
 
 // NOTE: subscript/jessie parses `undefined` as empty AST `[]`, so it never reaches
 // prepare's strict-mode check. The behavior is correct (returns 0 / null).
-
-// === null/undefined semantics ===
 
 test('undefined keyword returns undefined', () => {
   const r = jz('export let f = () => undefined')
@@ -815,17 +794,8 @@ test('typeof: number check', () => {
 })
 
 test('typeof: NaN is still "number" (not a NaN-box pointer)', () => {
-  // Regression: `typeof x === 'number'` fast-pathed via a raw v===v self-compare
-  // to reject NaN-boxed pointers (mirroring isPtrKind's "isPtr" idiom) — but the
-  // canonical number-NaN bit pattern collides with that same "is this a box" test
-  // (IEEE: NaN !== itself), so a genuine NaN parameter folded to false instead of
-  // 'number'. Caught via watr's print.js: `typeof sub === 'number' && ...` never
-  // entered its non-finite branch for a real NaN leaf.
   is(jz('export let f = (x) => typeof x === "number"').exports.f(NaN), true)
   is(jz('export let f = (x) => typeof x !== "number"').exports.f(NaN), false)
-  // Sibling compare paths (general !==/===/==/!= dispatch, not the typeof fast
-  // path) were already correct — pinned alongside so a future regression in
-  // either direction is caught.
   is(jz('export let f = (x) => x !== x').exports.f(NaN), true)
   is(jz('export let f = (x) => x === x').exports.f(NaN), false)
   is(jz('export let f = (x) => x == x').exports.f(NaN), false)
@@ -860,8 +830,7 @@ test('for...in: count keys', () => {
 
 test('for...in: enumerates dynamically-added keys, consistent with Object.keys', () => {
   // for-in iterates `Object.keys(src)`, so a key added via computed assignment (`o[k]=v`) shows up
-  // in the loop, and both enumerations agree. (Regression: for-in used to unroll from the static
-  // schema only and miss it.)
+  // in the loop, and both enumerations agree.
   is(run("export let f = () => { let o = {x: 1}; let k = 'z'; o[k] = 2; let c = 0; for (let p in o) c++; return c }").f(), 2)
   is(run("export let f = () => { let o = {a: 1}; let k = 'b'; o[k] = 2; return Object.keys(o).length }").f(), 2)
   is(run("export let f = () => { let a = [10, 20, 30]; let n = 0; for (let i in a) n++; return n }").f(), 3)
@@ -875,7 +844,6 @@ test('for...in: null/undefined source is a no-op (no throw)', () => {
   is(run('export let f = () => { let n = 0; for (var x in null) n++; return n }').f(), 0)
   // a dynamically-null variable (not a static literal) is guarded at runtime too
   is(run('export let f = () => { let o = null; let n = 0; for (let k in o) n++; return n }').f(), 0)
-  // non-nullish sources still enumerate normally (no regression)
   is(run('export let f = () => { let o = {a: 1, b: 2}; let n = 0; for (let k in o) n++; return n }').f(), 2)
 })
 
@@ -1067,11 +1035,8 @@ test('inter-function call from block body', () => {
   is(f(5), 26)
 })
 
-// === delete: computed key lowers to runtime, static key remains prohibited ===
 // Static `delete obj.x` would change a fixed-shape slot's structural type and
-// stays a compile error. `delete obj[k]` lowers to `__dyn_del`, which removes
-// from the per-object shadow store AND clears any matching schema slot to
-// UNDEF_NAN so subsequent reads see "absent".
+// stays a compile error.
 
 test('delete: computed key removes a dynamically-added property', () => {
   // Uses `jz()` directly — runtime needs the dynamic-property host imports
@@ -1230,8 +1195,6 @@ test('delete: jzify path also rejects literal-key form', () => {
   ok(err?.message.includes('object shape is fixed'), `delete should remain prohibited: ${err?.message?.slice(0, 80)}`)
 })
 
-// === Unicode identifiers (test262 identifiers/start-unicode-*, part-unicode-*) ===
-
 test('unicode escape in identifier — \\u{XXXX} compiles and runs', () => {
   if (onKernel()) return  // non-ASCII identifier — see byte-vs-codeunit note below
   const exports = run(`export let _run = () => { var \\u{0860} = 1; return \\u{0860} }`, { jzify: true })
@@ -1239,19 +1202,14 @@ test('unicode escape in identifier — \\u{XXXX} compiles and runs', () => {
 })
 
 test('non-ASCII identifier — bare codepoint works', () => {
-  // Kernel strings are UTF-8 byte-oriented; native subscript runs on host UTF-16. The
-  // identifier scanner treats a unit ≥192 as an id char: native sees ࡠ (U+0860) as ONE
-  // codeunit (2144 ≥192 → id char), but the kernel sees its three UTF-8 bytes
-  // (224,161,160) where the continuation bytes 161/160 are <192 and end the identifier
-  // after one byte — "Unclosed {". Non-ASCII identifiers are an architectural boundary
-  // (byte- vs codeunit-oriented source), the same root as the UTF-8 string-length
-  // difference; making them work needs UTF-8-aware ID_Continue scanning in the parser.
+  // Kernel strings are UTF-8 byte-oriented; native subscript runs on host UTF-16.
+  // Non-ASCII identifiers are an architectural boundary (byte- vs codeunit-oriented
+  // source), the same root as the UTF-8 string-length difference; making them work
+  // needs UTF-8-aware ID_Continue scanning in the parser.
   if (onKernel()) return
   const exports = run(`export let _run = () => { var ࡠ = 1; return ࡠ }`, { jzify: true })
   is(exports._run(), 1)
 })
-
-// === Lexical grammar basics (test262: ASI, comments, line terminators, directive prologue) ===
 
 test('lexical grammar: ASI, comments, whitespace, line terminators, directive prologue', () => {
   const exports = run(`"use strict";
@@ -1294,8 +1252,6 @@ test('redeclaration: repeated var keeps the first initializer', () => {
   is(exports._run(), 3)
 })
 
-// === for-in with `let` as identifier (test262 identifier-let-allowed) ===
-
 test('for-in with let as identifier compiles and runs', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`, { jzify: true })
   is(exports._run(), 1)
@@ -1310,10 +1266,6 @@ test('statements: **= compound assignment', () => {
   is(run(`export let f = (x) => { x **= 0.5; return x }`).f(16), 4)
 })
 
-// BigInt mixed-type semantics (2026-07-10): arithmetic with a proven non-BigInt
-// side is a compile error (JS TypeError) — was raw f64-bit reinterpretation;
-// comparisons coerce mathematically via f64 (5n > 3, 0n < 0.5); unary + on a
-// BigInt rejects (the one coercion BigInt refuses); ** on BigInt rejects.
 test('statements: BigInt mixed ops', () => {
   is(run(`export let f = () => 5n > 3 ? 1 : 0`).f(), 1)
   is(run(`export let f = () => 0n < 0.5 ? 1 : 0`).f(), 1)
@@ -1326,13 +1278,10 @@ test('statements: BigInt mixed ops', () => {
 })
 
 // Compound-assign / inc-dec on a BigInt rode compoundAssign's generic f64
-// arithmetic path, which silently rounds away magnitude >= 2^53 — `n += 1n`
-// on a large accumulator was a no-op (f64.add(n, 1) === n once n exceeds f64's
-// integer precision). Fixed by gating compoundAssign (and the '++'/'--' table
-// entry) on the target's proven BIGINT kind, mirroring the binary '+'/'-'/'*'/
-// '/'/'%' operators' own i64 arms exactly (asI64 both sides, i64.<op>,
-// fromI64) — see src/compile/emit.js compoundAssign. Boundary values (2^62±1)
-// and both signs, authority: host JS BigInt semantics.
+// arithmetic path, which silently rounds away magnitude >= 2^53 — `n += 1n` on
+// a large accumulator was a no-op (f64.add(n, 1) === n once n exceeds f64's
+// integer precision). Boundary values (2^62±1) and both signs, authority: host
+// JS BigInt semantics.
 test('statements: compound-assign on BigInt uses i64 arithmetic, not f64', () => {
   is(run(`export let f = () => { let n = 4611686018427387903n; n += 1n; return n }`).f(), 4611686018427387903n + 1n)
   is(run(`export let f = () => { let n = -4611686018427387903n; n -= 1n; return n }`).f(), -4611686018427387903n - 1n)
@@ -1342,13 +1291,8 @@ test('statements: compound-assign on BigInt uses i64 arithmetic, not f64', () =>
   is(run(`export let f = () => { let n = 9223372036854775800n; n %= 7n; return n }`).f(), 9223372036854775800n % 7n)
   is(run(`export let f = () => { let n = -17n; n /= 5n; return n }`).f(), -17n / 5n)          // truncates toward 0
   is(run(`export let f = () => { let n = -17n; n %= 5n; return n }`).f(), -17n % 5n)          // sign follows dividend
-  // Complex-LHS compound-assign (obj.prop, arr[i]) is untouched by this fix — it
-  // already desugars to `name = name + val` at the '+='/etc dispatch, BEFORE ever
-  // reaching compoundAssign, so it hits the binary op's own BIGINT arm directly
-  // (that pre-existing desugar path is separately flaky under object-schema-census
-  // reuse across compiles — a distinct, out-of-scope finding — so it's not pinned here).
-  // Mix-reject: a genuinely mixed BigInt/Number compound-assign is a TypeError in
-  // JS, same as the spelled-out binary form (`statements: BigInt mixed ops` above).
+  // Mix-reject: a genuinely mixed BigInt/Number compound-assign is a TypeError in JS,
+  // same as the spelled-out binary form (`statements: BigInt mixed ops` above).
   throws(() => run(`export let f = () => { let n = 8n; n += 1; return n }`), /Cannot mix BigInt/)
   throws(() => run(`export let f = () => { let n = 8n; n -= 1; return n }`), /Cannot mix BigInt/)
 })
@@ -1365,28 +1309,9 @@ test('statements: ++/-- on a BigInt uses i64 arithmetic, not f64', () => {
   // Postfix value-position recovery `(++n)-1`/`(--n)+1`: the compiler-synthesized
   // literal 1 must never trip the BigInt/Number mix-reject guard — exercised by
   // the "materialized" postfix cases above (their non-void '(n++)' RHS already
-  // takes this path). A BARE `return n++`/`return ++n` on a bigint local used to
-  // hit a separate, then-ledgered gap (closure-return-kind valResult inference
-  // didn't thread local kinds through unary-shaped return tails, for `-n`/`~n`
-  // too) — now fixed, see 'return-kind inference: unary BigInt family' below.
+  // takes this path).
 })
 
-// Round-6 prereq (a) sibling, second independent hit: narrowValResults'
-// valTypeOfWithCalls (src/compile/narrow.js) had BigInt-aware cases for
-// + ?: && || () but none for the unary family (u- ~ ++ --) — a bare `return
-// ++n` on a proven-BIGINT local exported raw f64 (numericUnaryVT's own
-// recursion into a bare identifier always hits the GLOBAL lookupValType,
-// which has nothing to say about a local before narrow.js's per-function reps
-// are live). Fixed at the root in kind.js's new valTypeOfWithLocals, shared by
-// narrowValResults AND the closure return-kind pre-pass (module/function.js).
-// A sibling gap surfaced by the SAME fix, in a DIFFERENT phase: exprType's
-// (src/type.js) bitwise-ops i32-narrowing gate used the identical locals-blind
-// valTypeOf(expr) BigInt check — left uncorrected, a proven-BIGINT local's
-// `~`/`&`/etc. return tail narrowed the function's WASM result to i32 while
-// narrowValResults (this fix) correctly claimed BIGINT for the same tail, a
-// WAT-validation crash (the two phases' facts about one expression must
-// agree). Fixed by threading analyzeBody's valTypes into exprType's optional
-// 3rd param.
 test('statements: return-kind inference: unary BigInt family (u- ~ ++ --) proves through a local', () => {
   is(run(`export let f = () => { let n = 4611686018427387903n; return ++n }`).f(), 4611686018427387903n + 1n)
   is(run(`export let f = () => { let n = -4611686018427387903n; return --n }`).f(), -4611686018427387903n - 1n)
@@ -1404,73 +1329,21 @@ test('statements: return-kind inference: unary BigInt family (u- ~ ++ --) proves
 // through i64 arithmetic (a prior, separate fix) but — unlike the binary '&'/
 // '|'/etc operators — never called bigintMixReject, so a genuinely mixed
 // BigInt/Number compound-assign (`n &= 1` on a BigInt n) silently computed a
-// wrong value instead of throwing like real JS. Added the same mix-reject
-// contract the binary bitwise operators already enforce.
+// wrong value instead of throwing like real JS.
 test('statements: bitwise compound-assign on BigInt rejects a Number mix like the binary operator does', () => {
   is(run(`export let f = () => { let n = 4611686018427387903n; n &= 15n; return n }`).f(), 4611686018427387903n & 15n)
   is(run(`export let f = () => { let n = 1n; n <<= 40n; return n }`).f(), 1n << 40n)
   throws(() => run(`export let f = () => { let n = 8n; n &= 1; return n }`), /Cannot mix BigInt/)
 })
 
-// MEMBER-TARGET sibling of the round-5 bare-name fix (ledger "BIGINT COMPOUND-
-// ASSIGN FIXED 2026-07-29"): `obj.n++`/`arr[i]++` and hand-written `obj.n =
-// obj.n + 1` were left unfixed there — three independent roots, all in the
-// self-referential member-write path:
 //  (1) prepare's `.`/`[]` ++/-- desugar (index.js) hardcoded a spelled-out
 //      `obj.n = obj.n + 1` with a plain NUMBER literal `1` — STRUCTURALLY
 //      IDENTICAL to whatever a genuine `obj.p += 1`/`obj.p = obj.p + 1` also
 //      produces (same shape at emit time), so bigintMixReject could not tell
 //      them apart (was live for arrays: their elem-kind census already proved
-//      BIGINT, so the false mix hit every time). Fixed by giving prepare a
-//      DEDICATED unary op for this shape — `'+1'`/`'-1'` ("the operand,
-//      incremented/decremented by one, same kind" — see kind.js VT['+1']/
-//      VT['-1'], emit.js's new table entries) — an op no parser or other pass
-//      ever produces, so it needs no mix-check bypass at all. Plain-Number
-//      members fall through to `emit(['+'|'-', n, [, 1]])`, re-invoking the
-//      exact old binary-handler shape — byte-identical WASM (kernel-parity
-//      33/33 confirms).
-//  (2) The schema-slot kind census (program-facts.js writeVT) had NO way to
-//      handle a self-referential `.prop=` write except its generic "`.prop`
-//      read → null" rule (only the dict-value census had self-read
-//      neutrality) — any self-referential compound member write (`o.n = o.n
-//      + 1n`, `o.n += 1n`) hard-poisoned the slot's censused kind, so a
-//      SCHEMA-backed object's member never proved BIGINT post-write. Fixed by
-//      ABSTAINING (isSelfPreservingPropWrite) at the write-observation call
-//      site for structurally self-preserving writes, instead of observing or
-//      poisoning — leaves the literal's own kind fact untouched. (The dict-
-//      value census's OWN self-read-collapses-to-sibling join was tried
-//      first and reused directly — it regressed a real mix-reject, since
-//      collapsing to the sibling operand's kind launders a genuine BigInt vs
-//      Number mismatch into a false NUMBER observation; abstain is the
-//      correct schema-side operation, not collapse.)
-//  (3) The FLAT (SRoA-scalarized) object/array's kind fast path (kind.js
-//      VT['.']/VT['[]']) unconditionally answered "unproven" for ANY written
-//      slot ("its value may differ from the literal") — sound in general, but
-//      wrong for the common case where every write is provably self-
-//      preserving. Fixed via analyze-scans.js selfPreservingWrittenKeys, the
-//      flat-object sibling of (2)'s abstain check.
-// A fourth, separate gap surfaced investigating this: narrowValResults/
-// narrowBoolResults (src/compile/narrow.js) — the function-return-kind
-// pre-pass — run BEFORE per-function kind facts are available, so a BARE
-// `return obj.n`/`return arr[i]` after one of these writes could keep
-// exporting the wrong (Number) boundary kind even once the VALUE itself was
-// correct. Fixed for FLAT objects/arrays (analyzeBody(body).flatObjects,
-// temporarily installed for the duration of that function's own valType
-// resolution in both passes — the fact is body-pure, safe to install/restore
-// per function) AND for the array-elem-kind census (re-audit #6 finding 2):
-// rep.arrayElemValType is populated via updateRep, a whole-program store,
-// not a simple per-function context field like ctx.func.flatObjects — but
-// analyzeBody(body).arrElemValTypes IS exactly that per-function context
-// field's own source data (the same slice updateRep later folds into the
-// whole-program store at emit time), so narrow.js's installArrElemReps
-// installs it onto ctx.func.localReps for the duration of kind resolution,
-// mirroring the flatObjects install precisely. Confirmed pre-existing and
-// unrelated to compound-assign, and NOW FIXED: a bare `return arr[i]` on a
-// BigInt array element was wrong with no write at all (`let a = [1n]; return
-// a[0]` mis-decoded as a raw-bit-reinterpreted Number) — was banked in
-// .work/archive/todo.md, now pinned as fixed directly below (no `+ 0n` sidestep
-// needed). Boundary values 2^62±1, host-JS-authority — same convention as
-// the sibling tests above.
+//      BIGINT, so the false mix hit every time).
+//  Boundary values 2^62±1, host-JS-authority — same convention as the
+//      sibling tests above.
 test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i64 arithmetic', () => {
   const HI = 4611686018427387903n // 2^62 - 1
   // obj.prop — fully fixed, incl. the bare-return boundary kind.
@@ -1492,17 +1365,12 @@ test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i
   is(run(`export let f = () => { let a = [${HI}n]; return a[0]++ + 0n }`).f(), HI)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] += 1n; return a[0] + 0n }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] + 0n }`).f(), HI + 1n)
-  // arr[i] — bare (unembedded) return of the boundary-kind pre-pass, no `+ 0n`
-  // arithmetic-path sidestep: re-audit #6 finding 2's own fix, direct pins.
   is(run(`export let f = () => { let a = [${HI}n]; a[0]++; return a[0] }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; ++a[0]; return a[0] }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0]--; return a[0] }`).f(), HI - 1n)
   is(run(`export let f = () => { let a = [${HI}n]; return a[0]++ }`).f(), HI)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] += 1n; return a[0] }`).f(), HI + 1n)
   is(run(`export let f = () => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] }`).f(), HI + 1n)
-  // No writes at all — the ORIGINAL repro (re-audit #6 finding 2): a bare
-  // `let a = [1n]; return a[0]` misdecoded as an unrelated Number (the i64
-  // bit pattern reinterpreted as f64) with zero mutation involved.
   is(run(`export let f = () => { let a = [${HI}n]; return a[0] }`).f(), HI)
   // Genuine BigInt/Number mix through a member still TypeErrors (not masked by
   // the synthesized-1 exemption, which only matches prepare's own ±1 shape).
@@ -1511,10 +1379,8 @@ test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i
   throws(() => run(`export let f = () => { let o = {n: 8n}; o.n += 1; return o.n }`), /Cannot mix BigInt/)
 })
 
-// Ratchet: the fix above must change NOTHING for plain-NUMBER member ++/--/
-// compound-assign — bigint-gated paths only. Exact values (not almost()),
-// mirroring the pre-existing plain-number member-mutation coverage in
-// test/objects.js and test/minimal-output.js.
+// Exact values (not almost()), mirroring the pre-existing plain-number
+// member-mutation coverage in test/objects.js and test/minimal-output.js.
 test('statements: member Number ++/--/compound-assign unaffected by the BigInt member fix', () => {
   is(run(`export let f = () => { let o = {n: 5}; o.n++; return o.n }`).f(), 6)
   is(run(`export let f = () => { let o = {n: 5}; ++o.n; return o.n }`).f(), 6)
@@ -1531,9 +1397,6 @@ test('statements: member Number ++/--/compound-assign unaffected by the BigInt m
 // `>>>` has no BigInt arm at all (ES2020 §6.1.6.2.11 defines no
 // BigInt::unsignedRightShift) — unlike the other bitwise ops, which fall to
 // i64.<op>, this one is a TypeError for ANY BigInt operand, mixed or not.
-// Was previously ungated: fell through the binary handler's i32 path (raw
-// garbage) and the `>>>=` compound entry's generic i64 branch (silently
-// computed i64.shr_u instead of throwing).
 test('statements: BigInt has no >>> (unsigned right shift) — TypeError', () => {
   throws(() => run(`export let f = () => 5n >>> 1n`), /unsigned right shift|TypeError/)
   throws(() => run(`export let f = () => 5n >>> 1`), /unsigned right shift|TypeError/)
@@ -1546,14 +1409,6 @@ test('statements: BigInt has no >>> (unsigned right shift) — TypeError', () =>
 
 // Repeated-compile stability: the ledger flagged the obj-member BigInt shape
 // as "FLAKY across repeated compiles" (attributed to schema-census reuse).
-// Not reproduced under direct investigation (compiling the same and varying
-// object shapes 20-200x in one process gave identical results every time —
-// ctx.js's reset() rebuilds ctx.schema fresh per beginSession call, and
-// resetFactStore() rebuilds the program-facts store fresh too); pinned here
-// as a standing regression guard for exactly the shape the ledger named,
-// across enough repeated compiles in one process to catch any reintroduced
-// cross-compile state bleed (a fresh jz() call per iteration, deliberately —
-// same process, independent compiles).
 test('statements: member BigInt ++ is stable across repeated compiles (no schema-census bleed)', () => {
   const HI = 4611686018427387903n
   const src = `export let f = () => { let o = {n: ${HI}n}; o.n++; return o.n }`

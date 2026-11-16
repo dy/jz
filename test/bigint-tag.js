@@ -1,11 +1,6 @@
 // A raw Number's bits spell any pointer tag: 12.0 is 0x4028000000000000, whose
 // tag field reads PTR.BIGINT. Every "is this carrier a BigInt box" test goes
-// through isBigIntBox (src/ir/bigint.js), which asks for a NaN-box first. The
-// kernel hit this in watr's sinkSets: a local touched twelve times in one
-// statement threw "Cannot mix BigInt and other types". The runtime's
-// __to_str formats a boxed BigInt's payload (it passed the box through
-// unformatted: a template of a Map value the summary cannot narrow past
-// Number|BigInt printed nothing).
+// through isBigIntBox (src/ir/bigint.js), which asks for a NaN-box first.
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { isBigIntBox } from '../src/ir.js'
@@ -326,9 +321,6 @@ test('bigint tag: isBigIntBox asks for a NaN-box before reading the tag', () => 
 // watr's f64 encoder: `value` is a reassigned parameter whose kinds include
 // a boolean, so the plan never materializes it and its reads are raw; the
 // ternary that initializes it joins a raw literal with a boxed call result.
-// The join takes the binding's raw carrier (the call arm unboxes), else the
-// `|=` and the BigInt64Array store see a box pointer: the kernel encoded
-// `f64.const nan:0x7ff8000200000000` as its own heap address.
 test('bigint tag: a join written to a raw binding unboxes its call arm', () => {
   const SRC = `const _buf = new ArrayBuffer(8), _u8 = new Uint8Array(_buf), _i64 = new BigInt64Array(_buf)
   const F64_NAN = 0x7ff0000000000000n, F64_QUIET = 0x8000000000000n
@@ -354,9 +346,7 @@ test('bigint tag: a join written to a raw binding unboxes its call arm', () => {
 })
 
 // No body materializes a module binding: it holds what each write stored, a
-// tagged carrier's box included. Its BigInt reads took the bits raw, and
-// arithmetic ran on the box's pointer; they test the tag where a write of the
-// binding may store a box (provenance globalReps joins a function's writes).
+// tagged carrier's box included.
 test('bigint tag: a tagged value written to a module binding reads back as the BigInt', () => {
   const SRC = `let h = 0, g = 0
   const put = (k) => { const m = k ? 5n : 'a'; g = m }
@@ -391,10 +381,7 @@ test('bigint tag: typeof beside a BigInt concatenates', () => {
 // A module binding's carrier is one program-wide fact (representation-plan
 // representationGlobalCarrier, from the summary's kind of it): a raw BigInt
 // where the binding holds a BigInt alone, a box where it may hold one beside
-// another value. Every write converts to it and every read takes it, so a raw
-// BigInt a function stores reads as a BigInt for typeof, ===, a string and the
-// host, a join of a product and the binding boxes the product, and an exported
-// parameter stored into one takes the host's BigInt (provenance).
+// another value.
 test('bigint tag: a module binding holds its BigInt in one carrier for every write and read', () => {
   const SRC = `let h = 0, m = 5n, c = null, s = 1n, e = 0
   const put = (n) => { h = n }
@@ -426,8 +413,7 @@ test('bigint tag: a module binding holds its BigInt in one carrier for every wri
 // `length` of an untyped parameter (a builder from a closure table), and the
 // program holds a BigInt elsewhere, so the plan tags `at`. The subtraction
 // took the i64 path unconditionally and read the Number's bits as a carrier
-// (the self-compiled encoder's item length came out subnormal). The tagged
-// side's flag decides both arms; the partner unboxes or coerces beside it.
+// (the self-compiled encoder's item length came out subnormal).
 test('bigint tag: a tagged carrier beside an unresolved operand dispatches on the tag', () => {
   const SRC = `const makeBuf = (cap) => {
     const b = { buf: new Uint8Array(cap), length: 0 }
@@ -552,13 +538,7 @@ test('bigint tag: a closure result crosses its ABI tagged; a caller chosen at ru
 })
 
 // A closure reads a BigInt parameter tagged: the closure ABI's slots carry a
-// BigInt boxed (representation-plan body-data.js closureBoxParams). A call of
-// a name no function or builtin answers passes each argument on that edge,
-// whether it reaches the body directly (emit/call.js tryDirectClosureCall) or
-// through the table; the direct call passed the raw i64 and the plan recorded
-// no edge, so the body's tag test read `i` as a Number and `i - 1n` threw
-// "Cannot mix BigInt and other types". A closure that calls itself, one called
-// once, one called from another closure, from a table or through a parameter.
+// BigInt boxed (representation-plan body-data.js closureBoxParams).
 test('bigint tag: a closure receives its BigInt arguments tagged, called directly or through the table', () => {
   const src = `
     export let self = (n) => { const g = (i) => i < 1n ? 0n : g(i - 1n); return String(g(BigInt(n))) }
@@ -577,11 +557,9 @@ test('bigint tag: a closure receives its BigInt arguments tagged, called directl
 })
 
 test('bigint tag: a parameter of every kind materializes; the joins it feeds keep every arm\'s identity', () => {
-  // The join `typeof v === 'bigint' ? v : BigInt(v)` has no kind of its
-  // own, so the edge into its RAW binding was dropped and the reads took
-  // the box's pointer bits (watr's slebSize answered 10 for 300n). A
-  // boolean arm beside a boxed one carries its atom, whatever the join's
-  // consumer; a join whose binding never materializes keeps the raw carrier.
+  // The join `typeof v === 'bigint' ? v : BigInt(v)` has no kind of its own,
+  // so the edge into its RAW binding was dropped and the reads took the
+  // box's pointer bits (watr's slebSize answered 10 for 300n).
   const SRCS = [
     `const size = (v) => { let x = typeof v === 'bigint' ? v : typeof v === 'string' ? BigInt(v) : BigInt(Math.trunc(Number(v) || 0)); let n = 1; while (true) { const b = x & 0x7fn; x >>= 7n; if ((x === 0n && (b & 0x40n) === 0n) || (x === -1n && (b & 0x40n) !== 0n)) return n; n++ } }
      const parse = (s) => { const w = s.split(' '); return [w[0], w[1].endsWith('n') ? BigInt(w[1].slice(0, -1)) : w[1].startsWith('#') ? Number(w[1].slice(1)) : w[1]] }
@@ -608,9 +586,7 @@ test('bigint tag: a parameter of every kind materializes; the joins it feeds kee
 // finite, nonzero, subnormal magnitude as a raw BigInt carrier: a genuine
 // 5e-324 was both a bigint and a number, and the kernel, reading its own
 // AST's literal that way, spelled `5e-324` by its bits (`f64.reinterpret_i64
-// (i64.const 1)`) where native wrote `f64.const 5e-324`. A BigInt on such an
-// operand is a box; the tag decides, as $__typeof does. Without bigint
-// syntax the compare folds, its operand still evaluated once.
+// (i64.const 1)`) where native wrote `f64.const 5e-324`.
 test('bigint tag: typeof reads a subnormal Number as a number; a boxed BigInt by its tag', () => {
   const SRC = `const box = (v) => [v][0]
   export let sub = () => { const n = box(5e-324); return (typeof n === 'bigint' ? 1 : 0) + (typeof n === 'number' ? 2 : 0) + (typeof n !== 'bigint' ? 4 : 0) }
@@ -637,10 +613,7 @@ test('bigint tag: typeof reads a subnormal Number as a number; a boxed BigInt by
 // infinities equal nothing, a payload past 2^53 is exact), a string through
 // StringToBigInt (whitespace, a sign, a radix prefix; no parse is no
 // equality), a boolean as 0 or 1, null and undefined equal nothing; `!=`
-// negates and `===` stays identity. The partner is a literal, or a value
-// the program cannot kind (the last shape): there `===` keeps the raw-
-// carrier contract (identical bits are equal, so a Number 0 beside 0n) and
-// only the loose rows are pinned. The host is the oracle.
+// negates and `===` stays identity. The host is the oracle.
 const EQ_PARTNERS = ['300', '301', '300.5', '0', '-0', '1', '-5', 'NaN', 'Infinity', '-Infinity', '9007199254740992', '9007199254740993', '1e300',
   "'300'", "' 300 '", "'+300'", "'0x12c'", "'0b1'", "'300.0'", "'3e2'", "'abc'", "''", "' '", "'-5'", "'-0x5'", "'1n'", "'9007199254740993'",
   'true', 'false', 'null', 'undefined', '300n', '301n', '1n', '0n', '-5n', '9007199254740993n']
@@ -669,9 +642,7 @@ const tableModule = (shapes, values) => {
   return [rows, rows.map(r => r.src).join('\n')]
 }
 // ToString (ES2024 7.1.17) of a BigInt through every carrier: its decimal
-// digits, whatever box it rides in. String(), a template, concatenation on
-// either side, a join, .toString() and a radix. The runtime's __to_str
-// formats the box; nothing unboxes ahead of it.
+// digits, whatever box it rides in.
 const strTable = (X) => `[String(${X}), \`\${${X}}\`, ${X} + '', '' + ${X}, [${X}].join('/'), ${X}.toString(), ${X}.toString(16)].join('|')`
 const STR_SHAPES = {
   literal: (V, s) => `export let f${s} = (k) => ${strTable(V)}`,
@@ -759,14 +730,6 @@ test('bigint compare: <, >, <=, >= through values of several kinds agree with JS
   }
 })
 
-// A BigInt reaches a generic slot boxed once. An exported function's array
-// parameter is any kind to its body, so `b[i] + 1n` may concatenate and its
-// runtime BigInt arm boxes the sum: the store into the polymorphic typed
-// writer took that box for a raw payload and boxed it again, storing the
-// box's own bits (emit-assign.js taggedValueExpr, the plan's storage source).
-// And `let s = 0n` before `s = s + b[i]` wrote the raw word into a slot the
-// generic sum shares, where it read as the Number 0 and the sum threw "Cannot
-// mix BigInt" (ir/bigint.js applyBindingWriteAction).
 test('bigint tag: a BigInt into a generic slot is boxed once', () => {
   const mk = 'const b = new BigInt64Array(2); b[0] = 2n; b[1] = 7n'
   const rows = {

@@ -47,8 +47,8 @@ test('native wasm2c postprocess is module-generic and fail-closed', () => {
 // WABT 1.0.42 passes each helper the memory's base and size from locals of the caller
 // (`i32_load_default32(wasm_rt_local_memory_base, wasm_rt_local_memory_size, mem, addr)`): the
 // two-argument shadows made its output no C ("too many arguments provided to function-like
-// macro invocation"). Its helpers are kept; the barriers still go. The fixture is the shape of
-// its declarations (src/template/wasm2c.declarations.c), not a build's output.
+// macro invocation"). The fixture is the shape of its declarations
+// (src/template/wasm2c.declarations.c), not a build's output.
 test('native wasm2c postprocess: WABT 1.0.42 keeps its own helpers', () => {
   const helpers = `#define DEFINE_LOAD(name, t1, t2, t3, force_read) \\
   static inline t3 name##_unchecked(uint8_t* const wasm_rt_local_memory_base, \\
@@ -136,7 +136,6 @@ syncBuiltinESMExports()
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 
-// ── scripts/native/compile.mjs: a jz program as a native executable ─────────
 // Built for real: wasm2c, its runtime and a C compiler must be present (CI's
 // bench workflow installs them); elsewhere these skip with the reason below.
 const COMPILE = join(ROOT, 'scripts/native/compile.mjs')
@@ -314,10 +313,6 @@ test('native executable: a CC carrying arguments, and a C failure blamed on no t
   ok(!/tail call/.test(bad.stderr), 'without blaming a tail call the module does not make')
 }))
 
-// jz's tag dispatch (bench/shapes' measure): an if-chain on one i32 tag, each arm reading
-// its own fields of a 20-byte record. clang folds the chain into a switch, which x86 lowers
-// from 4 cases to one indirect jump through a table: a branch predictor learns that far
-// worse than the branches V8 runs once the stream repeats (shapes: 7.9× V8's time on Zen 5).
 const F = n => `(i32.load offset=${4 * n} (local.get $p))`
 const ARMS = [`(i32.add ${F(1)} ${F(2)})`, `(i32.mul ${F(1)} (i32.mul ${F(1)} (i32.const 3)))`, `(i32.mul ${F(1)} ${F(2)})`,
   `(i32.sub ${F(4)} ${F(2)})`, `(i32.add (i32.add ${F(1)} ${F(2)}) ${F(3)})`, `(i32.sub (i32.mul ${F(1)} ${F(2)}) ${F(3)})`,

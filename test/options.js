@@ -165,8 +165,6 @@ test('options: optimize object — tailCall:false uses ordinary call frames', ()
   ok(!/return_call/.test(compile(TAIL, { wat: true, optimize: { tailCall: false } })), 'tailCall:false')
 })
 
-// audit-#11: the wasm2c lane's TargetProfile (src/session.js, the internal host
-// 'native') forces the noTailCall policy tailCall:false sets explicitly.
 test('options: the internal host native uses ordinary call frames', () => {
   ok(!/return_call/.test(compileInternal(TAIL, { wat: true, host: 'native' })), "host 'native' emits no return_call")
 })
@@ -188,8 +186,6 @@ test('options: optimize object, alloc:false: instantiation and calls write no wo
   // A module that owns its memory and exports no heap top keeps its heap private;
   // a host that took the cell at 1020 for its own heap top wrote a word of static
   // data there at instantiation, any word below the heap start (1.0.0, 1.0.1).
-  // One-unit strings below U+0400 make every word of their run such a word (a
-  // length 1, or a unit and its zero pad).
   const C = Array.from({ length: 300 }, (_, i) => String.fromCharCode(0xC0 + i))
   const src = `const C = ${JSON.stringify(C)}\nexport let one = (i) => JSON.stringify(C[i])\nexport let all = () => C.join('')`
   const mod = new WebAssembly.Module(compile(src, { host: 'js', optimize: { level: 'size', alloc: false } }))

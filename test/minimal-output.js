@@ -28,10 +28,9 @@ const hasAllocator = (src, O) => has(src, '_alloc', O)        // __jz_alloc/__jz
 const hasStart = (src, O) => has(src, '$__start', O)
 const hasData = (src, O) => has(src, '(data', O)
 
-// === Constants never need a start function ===
-// A const initialised to a compile-time value belongs in the global decl, inline
-// and immutable — not assigned at runtime in `__start`. True for every primitive
-// shape, including the NaN-boxed ones (atoms, SSO strings) that aren't plain i32/f64.
+// Constants never need a start function
+// A const initialised to a compile-time value belongs in the global decl, inline and
+// immutable — not assigned at runtime in `__start`.
 const CONST_PRIMITIVES = {
   number: 'export const x = 42',
   float: 'export const x = 3.14',
@@ -54,9 +53,8 @@ for (const [name, src] of Object.entries(CONST_PRIMITIVES)) {
   })
 }
 
-// === Heap-free programs expose no memory and no allocator ===
-// Numbers, booleans, atoms and SSO strings live entirely in f64 registers. Nothing
-// touches linear memory, so there is no `(memory)`, no allocator, no data segment.
+// Heap-free programs expose no memory and no allocator
+// Numbers, booleans, atoms and SSO strings live entirely in f64 registers.
 const HEAP_FREE = {
   'numeric const': 'export const x = 42',
   'SSO string const': "export const x = 'hi'",
@@ -74,10 +72,8 @@ for (const [name, src] of Object.entries(HEAP_FREE)) {
   })
 }
 
-// === Static strings: data segment, no allocator ===
-// A string literal too long for SSO lands in a static data segment with a constant
-// pointer. The segment needs memory, but nothing allocates — so no `__jz_alloc`/`__jz_clear`
-// and (the pointer being constant) no `__start`.
+// Static strings: data segment, no allocator
+// A string literal too long for SSO lands in a static data segment with a constant pointer.
 test('minimal: static string — data segment, no allocator, no __start', () => {
   if (skip) return
   const src = "export const s = 'a string longer than four bytes'"
@@ -87,7 +83,6 @@ test('minimal: static string — data segment, no allocator, no __start', () => 
   ok(!hasStart(src), 'a constant pointer needs no runtime init')
 })
 
-// === The allocator appears only when the program actually allocates ===
 test('minimal: runtime string concat pulls the allocator', () => {
   if (skip) return
   // `s + '!'` builds a fresh string at runtime → genuine allocation.
@@ -108,11 +103,9 @@ test('minimal: alloc:false omits the uncallable arena-reset heal protocol', () =
   ok(!standalone.includes('$__durable_fwd_log'), 'header logging is absent with its reset consumer')
 })
 
-// === No emitted compiler-internal function is dead ===
+// No emitted compiler-internal function is dead
 // Every `$__foo` / `$math.foo` helper in the binary must be *reached* (called, in the elem
-// table, or exported). An eager include or a dead-branch dependency that nothing actually
-// calls is pure over-production — e.g. string concat used to ship the alloc trio's
-// `__alloc_hdr` (which it never calls) and a stray `__str_len`. Holds at every opt level.
+// table, or exported). Holds at every opt level.
 const deadInternalFuncs = (w) => {
   const internal = (n) => typeof n === 'string' && n !== '$__start' && (n.startsWith('$__') || /^\$[a-z_]+\./.test(n))
   const defined = parseWat(w).slice(1).filter(n => n[0] === 'func' && internal(n[1]) &&
@@ -146,13 +139,11 @@ for (const [name, src] of Object.entries(NO_DEAD)) {
   })
 }
 
-// === Hot-loop leaf helpers inline (no per-iteration call tax) ===
+// Hot-loop leaf helpers inline (no per-iteration call tax)
 // A leaf with no loop of its own, ≤2 call sites, all inside a caller's loop, is spliced
 // in — V8's pre-Turboshaft wasm tiers never inline cross-function, so an out-of-line call
-// here is a hard per-iteration cost. This pins the loop-sited-leaf size budget in
-// plan/inline.js: a ~160-node helper like cloth's `relax` (a sqrt + a handful of array
-// writes, fired per link) must fold into the loop, not survive as a `call`. Guards the
-// in-loop cap against creeping back down below the medium-helper range.
+// here is a hard per-iteration cost. Guards the in-loop cap against creeping back down
+// below the medium-helper range.
 test('minimal: medium leaf called in a hot loop inlines', () => {
   if (skip) return
   const src = `
@@ -173,7 +164,6 @@ test('minimal: medium leaf called in a hot loop inlines', () => {
   }
 })
 
-// === Empty / trivial programs ===
 test('minimal: empty program is an empty module', () => {
   if (skip) return
   is(wat(scalarCase('empty-module').source).replace(/\s+/g, ' ').trim(), '(module)')
@@ -183,12 +173,10 @@ test('minimal: dead pure expression statement is eliminated at O2', () => {
   is(wat('1 + 2;', 2).replace(/\s+/g, ' ').trim(), '(module)')
 })
 
-// === Constant aggregates: static data segment, no allocator ===
-// An all-literal array (≥4 elems) or object literal is a compile-time constant living in
-// a static data segment behind a const pointer, like a static string. Nothing allocates,
-// so no `__jz_alloc`/`__jz_clear`. Reachability-gated: an array/object module load no longer drags
-// the allocator in wholesale — only a *reached* allocator does, and a module-scope const
-// reaches none. (≤3-element arrays are excluded — see the known-gap below.)
+// Constant aggregates: static data segment, no allocator
+// An all-literal array (≥4 elems) or object literal is a compile-time constant living in a static
+// data segment behind a const pointer, like a static string. (≤3-element arrays are excluded — see
+// the known-gap below.)
 const CONST_AGGREGATES = {
   'small array': 'export const x = [1, 2, 3]',
   'single-element array': 'export const x = [42]',
@@ -203,10 +191,10 @@ for (const [name, src] of Object.entries(CONST_AGGREGATES)) {
   })
 }
 
-// === Fully-static template literals fold to one string constant ===
+// Fully-static template literals fold to one string constant
 // `a${123}b`, `hello ${1+2} world` — every interpolation is a compile-time constant, so
 // prepare folds the template to a single literal (static data segment / SSO box), with no
-// runtime concat and no heap machinery. A dynamic interpolation still concatenates.
+// runtime concat and no heap machinery.
 const STATIC_TEMPLATES = {
   'number interp': 'export const x = `a${123}b`',
   'arithmetic interp': 'export const x = `hello ${1 + 2} world`',
@@ -219,13 +207,11 @@ for (const [name, src] of Object.entries(STATIC_TEMPLATES)) {
   })
 }
 
-// === Flat-object typed slots specialize — no polymorphic ToNumber/string battery ===
 // A non-escaping object literal is SRoA'd into scalar locals, and a write-once slot
 // carries its initializer's value-type (kind.js `VT['.']`). So arithmetic on a numeric
 // slot — `p.x * 2`, `p.x * p.y` — stays a plain f64 op, never the ToNumber + ftoa +
-// str_concat battery (and its allocator) that an *untyped* property read drags in.
-// Without the slot-type binding these scalarized objects ballooned ~75 B → ~5.9 KB.
-// (A reassigned slot stays conservative — its runtime value may differ; see fuzz.)
+// str_concat battery (and its allocator) that an *untyped* property read drags in. (A
+// reassigned slot stays conservative — its runtime value may differ; see fuzz.)
 const TYPED_SLOTS = {
   'literal slot product': 'export let f = () => { let p = { x: 5 }; return p.x * 2 }',
   'expression slot product': 'export let f = (n) => { let p = { x: n * 1 }; return p.x * 2 }',
@@ -242,7 +228,6 @@ for (const [name, src] of Object.entries(TYPED_SLOTS)) {
   })
 }
 
-// === Function-local array literals stay fresh per call (no static aliasing) ===
 // The static-data path is module-scope-only: a function-local literal that is mutated in
 // place must NOT alias a shared region, or the mutation leaks across calls. (Imported,
 // not run via WAT probes — this is a value-correctness invariant.)
@@ -253,11 +238,9 @@ test('minimal: function-local mutated array is fresh each call', () => {
   is(JSON.stringify(g()), '[2,2,3,4]', 'call 2 must not see call 1’s mutation')
 })
 
-// === Small function-local literal arrays scalarize — no memory, no allocator ===
 // A non-escaping, fixed-length array of compile-time-constant values, indexed only by
 // static integers, dissolves into scalar `a#i` locals (flatObjectCandidate, same machinery
-// as flat objects). No heap, no `(memory)`, no allocator — `let a=[1,2,3]; a[0]+a[2]`
-// is just two local reads. Bounded to FLAT_ARRAY_MAX elements; a constant element only.
+// as flat objects). Bounded to FLAT_ARRAY_MAX elements; a constant element only.
 const FLAT_ARRAYS = {
   'single element': 'export let f = () => { let a = [42]; return a[0] }',
   'three reads': 'export let f = () => { let a = [1, 2, 3]; return a[0] + a[1] + a[2] }',
@@ -274,9 +257,7 @@ for (const [name, src] of Object.entries(FLAT_ARRAYS)) {
   })
 }
 // Scalarization is conservative: anything that isn't a plain positional read/write of a
-// constant-valued slot keeps the array heap-backed (correctness over minimalism). A
-// `.length` resize, a function/closure element (would desync the call-indirect table),
-// a dynamic index, or a runtime-valued element all fall back to a real array.
+// constant-valued slot keeps the array heap-backed (correctness over minimalism).
 test('minimal: scalarization-ineligible arrays stay correct', () => {
   if (skip) return
   is(JSON.stringify(jz('export let g = () => { let a = [5,6]; a[0]++; return a[0] }').exports.g()), '6', 'fresh per call')
@@ -285,12 +266,10 @@ test('minimal: scalarization-ineligible arrays stay correct', () => {
   is(jz('export let g = (n) => { let a=[n,n*2]; return a[0]+a[1] }').exports.g(5), 15, 'runtime-valued elements')
 })
 
-// === Static aggregate element access folds to a constant ===
+// Static aggregate element access folds to a constant
 // A module-scope const/let/var aggregate whose every reference is a static READ is
 // replaced by its literal element/property value program-wide — `var x=[1,2,3];
-// y=x[0]` becomes `y=1`. The array is never built: no `(data`, no `(memory`, and no
-// `__arr_idx_known`/`__ptr_offset` index helper. Holds for arrays and objects, and
-// across function bodies that read the binding.
+// y=x[0]` becomes `y=1`.
 const FOLD_AGGREGATES = {
   'const array index': 'const x = [1, 2, 3]\nexport const y = x[0]',
   'let array index': 'let x = [1, 2, 3]\nexport const y = x[1]',
@@ -307,8 +286,7 @@ for (const [name, src] of Object.entries(FOLD_AGGREGATES)) {
   })
 }
 // Conservative: anything that isn't a static read keeps the aggregate heap-backed
-// (correctness over folding). Reassignment, element writes, exporting the aggregate,
-// dynamic indices, escapes (passed as a value) and spreads all disqualify.
+// (correctness over folding).
 const NO_FOLD = {
   'reassigned': 'var x = [1, 2, 3]\nx = [9]\nexport const y = x[0]',
   'element write': 'var x = [1, 2, 3]\nx[0] = 9\nexport const y = x[0]',
@@ -400,7 +378,6 @@ test('minimal: never-grown analysis preserves grow semantics', () => {
   is(jz('export let f=()=>{let a=[1,2]; let w={}; w.d=a; w.d.push(7); return a[2]}').exports.f(), 7, 'grow via alias visible through original')
 })
 
-// === Typed arrays never forward — they are fixed-size, never relocated ===
 // A typed array's index read derives its base directly (no __ptr_offset chase): unlike
 // ARRAY/HASH/SET/MAP (growable) or an inferred OBJECT (can alias a relocated array),
 // VAL.TYPED is a narrow type that can only be a real fixed-size typed array.
@@ -411,10 +388,8 @@ test('minimal: typed-array reads skip the forwarding follow', () => {
   is(jz(src).exports.f(2), 240, 'typed array still computes correctly')  // 2*sum(0..15) = 2*120
 })
 
-// === Numeric Array(n) loops skip ToNumber / string formatting ===
 // Numeric cells carry Number-or-undefined reads: holes become NaN in arithmetic.
-// General Number indices still need a named-property fallback outside the element
-// domain. Pin the direct numeric loop paths, not the cold helpers' mere presence.
+// Pin the direct numeric loop paths, not the cold helpers' mere presence.
 const NUMERIC_FILL = {
   'arithmetic fill': 'export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=(i%13)-6; let s=0; for(let i=0;i<n;i++)s+=a[i]*a[i]; return s|0}',
   'bare numeric-local write': 'export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++){let v=i*0.5+1; a[i]=v} let s=0; for(let i=0;i<n;i++)s+=a[i]; return s|0}',
@@ -474,8 +449,7 @@ test('minimal: numeric array reads keep named-key and value-coercion fallbacks',
 })
 
 // SOUNDNESS: the moment an array could hold a non-Number, narrowing must NOT fire — else
-// `+` would compile to f64.add on a string pointer. The cell joins the store in a callee
-// through the parameter, and the string store in the body.
+// `+` would compile to f64.add on a string pointer.
 test('minimal: numeric Array(n) narrowing stays sound under non-numeric use', () => {
   if (skip) return
   // a mutator that writes a string through its parameter reaches the cell, so
@@ -485,12 +459,8 @@ test('minimal: numeric Array(n) narrowing stays sound under non-numeric use', ()
   is(jz('export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=i; a[0]="hi"; return a[0]+a[1]}').exports.f(3), 'hi1', 'mixed string write disqualifies narrowing')
 })
 
-// === Module-level numeric const tables shed the ToNumber/string subsystem ===
 // A top-level `const T = [n, …]` (flat) or `[[n,…], …]` (nested) is provably numeric, so
-// `T[i]` / `T[i][j]` reads skip __to_num — the synth/floatbeat lookup-table shape. Without
-// it a module table drags the full string battery (~5 KB) into a string-free kernel (synth
-// 7.7 KB → 2 KB; a chord table 6 KB → 0.6 KB). Flat = recordGlobalRep's arrayElemValType;
-// nested adds arrayElemElemValType + the `C[i][j]` / `ch=C[i];ch[j]` read sites.
+// `T[i]` / `T[i][j]` reads skip __to_num — the synth/floatbeat lookup-table shape.
 const NUMERIC_TABLE = {
   'flat *':          'const T=[1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5]\nexport let f=(n)=>{let s=0;for(let i=0;i<n;i++)s+=T[i&7]*2;return s}',
   'flat -':          'const T=[1.5,2.5,3.5,4.5]\nexport let f=(n)=>{let s=0;for(let i=0;i<n;i++)s-=T[i&3];return s|0}',
@@ -514,10 +484,8 @@ test('minimal: module numeric const table reads are value-correct', () => {
   is(jz('const C=[[0,4,7],[2,5,9]]\nexport let f=()=>C[1][2]*2').exports.f(), 18, 'nested direct read')
   is(jz('const C=[[0,4,7],[2,5,9]]\nexport let f=()=>{let ch=C[1];return ch[0]*2}').exports.f(), 4, 'nested via binding')
 })
-// SOUNDNESS (default-deny): a non-numeric element write — including a NESTED `C[i][j]=str`,
-// which the dynWriteVars root-walk now flags — must disable narrowing, else `*` would
-// f64.mul a NaN-boxed pointer. The null case proves it routes through ToNumber (null→0),
-// not the NaN-box coincidence (which would give NaN).
+// The null case proves it routes through ToNumber (null→0), not the NaN-box coincidence
+// (which would give NaN).
 test('minimal: module numeric table narrowing stays sound under non-numeric write', () => {
   if (skip) return
   ok(Number.isNaN(jz('const T=[1.5,2.5,3.5]\nexport let f=()=>{T[0]="hi";return T[0]*2}').exports.f()), 'flat string write → NaN')
@@ -537,7 +505,6 @@ test('minimal [known-gap]: new Date still drags in the allocator', () => {
   else ok(true, 'KNOWN: new Date(0) pulls the full allocator/memgrow for a single pointer')
 })
 
-// === .work/archive/todo.md §deletion-sweep Slice A: zero size cost for Error-free modules ===
 // buildErrorObject/toStrI64's Error-schema arm are gated on the Error-class
 // emit handlers and ctx.features.error (prepare's whole-program scan) firing —
 // a program that never constructs an Error must be byte-identical to what it
@@ -556,17 +523,14 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
   }
 })
 
-// audit-#11 gap-2: throwTypeErrorIR (src/ir.js) now forces module/string.js
-// inclusion + interns 'TypeError' and its two message strings — a real
-// dependency this synthetic TypeError never needed before (both were left
-// `undefined`). Reachability MUST still gate it exactly like every other
-// Error mechanism above: a program with no member-access/call site that
-// could ever throw one pays nothing (the pin right above already covers
-// that — a program with NO nullish-receiver check site at all never even
-// calls throwTypeErrorIR, so `ctx.module.include('string')` never fires).
-// This pin is the positive half: a program that DOES have one (a Map
-// `.get()` absent-key read feeding a property access — the same shape
-// audit-#10's own dyn-keys.js repro uses) must show the real strings.
+// Reachability MUST still gate it exactly like every other Error mechanism
+// above: a program with no member-access/call site that could ever throw
+// one pays nothing (the pin right above already covers that — a program
+// with NO nullish-receiver check site at all never even calls
+// throwTypeErrorIR, so `ctx.module.include('string')` never fires). This
+// pin is the positive half: a program that DOES have one (a Map `.get()`
+// absent-key read feeding a property access — the same shape audit-#10's
+// own dyn-keys.js repro uses) must show the real strings.
 test('minimal: nullish-receiver TypeError message strings appear exactly when the check site does (audit-#11 gap-2)', () => {
   if (skip) return
   const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
@@ -577,27 +541,11 @@ test('minimal: nullish-receiver TypeError message strings appear exactly when th
   }
 })
 
-// String-pool reachability (fix/string-pool-reach): an opaque `.length` access is
-// emitted through module/core.js's runtime-dispatch arm (emitLengthAccess) before
-// the receiver's real type is known — that arm eagerly mints the TypeError schema
-// and, once pullStdlib realizes $__length/$__length.value, interns "TypeError" and
-// "Cannot read properties of undefined" (module/core.js's __throw_property_nullish
-// thunk), plus buildStartFn's whole-schema-list runtime table (src/wat/assemble.js)
-// bakes every schema's key strings (e.g. the branded ['message','name'] pair) into
-// the data segment the same way. All of that is SOUND at the point it runs — the
-// receiver could still be nullish — but a LATER pass (optimizeModule's narrowing,
-// here: proving `rows` is always the array it was just built as) can resolve the
-// specific call site to a direct array-length read, leaving $__length/
-// $__length.value/$__throw_property_nullish and the whole schema table with no
-// surviving caller. Before this fix those interned bytes leaked into every module
-// with ANY opaque length/property-dispatch site regardless of whether treeshake
-// proved the throw path itself dead (the audited aos/wav size-gate regression).
-// stripDeadInternedSpans (src/wat/assemble.js) reclaims that trailing dead run once
-// real reachability is known — this pin is the negative half (dead: neither
-// string, matching the schema-fix's OWN 'jz:schema' custom-section reconciliation
-// this is the runtime-data-segment analog of); the pin below is the positive half
-// (live: both strings, AND the throw actually happens with the right host-visible
-// class/message).
+// All of that is SOUND at the point it runs — the receiver could still be nullish —
+// but a LATER pass (optimizeModule's narrowing, here: proving `rows` is always the
+// array it was just built as) can resolve the specific call site to a direct
+// array-length read, leaving $__length/ $__length.value/$__throw_property_nullish
+// and the whole schema table with no surviving caller.
 test('minimal: dead opaque-.length throw path leaves neither the TypeError schema name nor its message string (fix/string-pool-reach)', () => {
   if (skip) return
   const src = `export let f = () => {
@@ -641,9 +589,7 @@ test('minimal: live opaque-.length throw path keeps both strings and throws a re
 // erased leaves the binary, wherever in the segment it lies
 // (optimize/watr-tail.js stripDeadLateData): watr inlines `pick(k)` with a
 // constant and folds the other arm away, its string with it, while the string
-// beside it keeps its bytes. The pre-link reclaim only cut the segment's tail,
-// and only for helpers' spans: a dead stdlib error message laid out before a
-// live one (stdlib-dists' typed-view messages) stayed.
+// beside it keeps its bytes.
 test('minimal: a literal whose last referent the optimizer folded away leaves the data segment', () => {
   if (skip) return
   const enc = s => s.split('').join('\\00')
@@ -660,16 +606,6 @@ export let f = () => pick(${k})`
   }
 })
 
-// Per-instance RUNTIME HEAP cost of a constructed Error. audit-#9 P0-2 shrank
-// the object from 3 slots (['message','name','__errcls__']) to 2
-// (['message','name']) — class identity moved to the schema id, so this is
-// now a 16B payload + 16B header = 32B/instance, under the original design's
-// own ~60-100B ledger estimate. This is a claim about the `__jz_heap` bump-
-// allocator's growth per allocation, NOT compiled .wasm byte size (a single
-// construction call SITE costs the same code bytes whether it runs once or in
-// a hot loop) — measured directly via `instance.exports.__jz_heap` before/after a steady-
-// state batch (after `__jz_clear()` resets any one-time init/data-segment cost so
-// only the repeated per-call growth is counted).
 if (!skip) {
   test('minimal: constructed Error heap footprint (audit-#9 P0-2: 2-slot object, ~32B/instance)', () => {
     const inst = jz(`export let f = (n) => { let t = 0; for (let i = 0; i < n; i++) { let e = new Error('boom'); t = t + e.message.length } return t }`)
@@ -1049,8 +985,7 @@ test('minimal: select and post-increment indices narrow to the i32 ring', () => 
 
 // An array grown only through its own name (push, element write, `.length =`)
 // with every grow written back is never stale: its reads, length reads and
-// push sites take the raw offset instead of following forwarding. An alias or
-// an escape (a call argument, a capture, a store) keeps the follow.
+// push sites take the raw offset instead of following forwarding.
 test('minimal: an own-name-current array reads without the forwarding follow', () => {
   if (skip) return
   const src = `export let f = (n) => {
@@ -1112,8 +1047,7 @@ test('minimal: an enumeration of a receiver no layout names is one function, wha
 // A length store of an integer word resizes without ToNumber at every tier
 // (module/array.js `__arr_set_len`, emit-assign.js lengthWord): `q.length = 0`
 // links no conversion, whose string parser and number printer were most of a
-// small program's bytes at the size tier. Any other value still converts, its
-// RangeError kept.
+// small program's bytes at the size tier.
 test('minimal: a word length store links no conversion at the size tier', () => {
   if (skip) return
   const src = `export let f = () => { const q = [1, 2, 3]; for (let i = 0; i < 4; i++) q.push(i); q.length = 2; const a = q.length; q.length = 5; return a * 100 + q.length * 10 + (q[4] === undefined ? 1 : 0) }`
@@ -1131,7 +1065,7 @@ test('minimal: a word length store links no conversion at the size tier', () => 
 // The size tier links the key hash and equality arms a program's Set and Map
 // keys reach (module/collection/identity.js noteProbeKey, module/collection.js
 // keyArms): Number and atom keys take the number arms (no string walks), string
-// keys the string arm, object keys neither. A seeding notes its elements' kind.
+// keys the string arm, object keys neither.
 test('minimal: the size tier links the key arms its keys reach', () => {
   if (skip) return
   const nums = `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = 0; i < n; i++) { m.set(i % 7, i); s.add((i % 5) * 0.5) }
@@ -1190,10 +1124,9 @@ test('minimal: a binding an if fills holds a value past it', () => {
   }
 })
 
-// A collection or an array the summary proves is read in place: `new Set(array)`
-// by the program's own element read, `.size` from the table's header, `.length = 0`
-// by the word (module/collection.js, emit-assign.js). The kinds a proof leaves out
-// (a hole, a raw Number array, a table a growth moved, a missing source) answer as JS.
+// A collection or an array the summary proves is read in place: `new Set(array)` by
+// the program's own element read, `.size` from the table's header, `.length = 0` by
+// the word (module/collection.js, emit-assign.js).
 test('minimal: a proven source reads in place', () => {
   if (skip) return
   const srcs = {
@@ -1276,7 +1209,7 @@ test('minimal: a settled test goes', () => {
 // `m.get(k) || 0` of a Map of Numbers is a Number though the read may miss (the
 // summary drops what the test discards, kind/val-type-of.js): the sum it enters
 // converts nothing, nor does `|| 0` let a miss through (ir/coerce.js
-// fallsBackPresent). Its tests are the walked list's guard and the truthiness'.
+// fallsBackPresent).
 test('minimal: a logical op of a missing Number is a Number', () => {
   if (skip) return
   const src = `const tally = (lists) => { const m = new Map(); for (const [, l] of lists) m.set(l.length, (m.get(l.length) || 0) + 1); return m }
@@ -1294,10 +1227,9 @@ test('minimal: a logical op of a missing Number is a Number', () => {
 // takes the hash and equality its key's kinds pick (module/collection/forms.js,
 // collection/ordered.js formParams): a key of no string, BigInt or array by its
 // bits, strings and atoms by a string's content, any other the general pair.
-// The size tier writes the probe, the insertion and the growth once and links
-// one probe an operation (stdlib-pull.js collapseTwins). Every form keeps
-// SameValueZero (-0 is +0, NaN is NaN), insertion order and a deleted key's
-// absence, in a table any other site may fill with keys of other kinds.
+// Every form keeps SameValueZero (-0 is +0, NaN is NaN), insertion order and a
+// deleted key's absence, in a table any other site may fill with keys of other
+// kinds.
 const TABLE_KERNELS = {
   zero: `export let f = (n) => { const m = new Map(), s = new Set(); const z = -(n & 0); m.set(z, 1); s.add(z); let t = 0; for (const [k] of m) t += 1 / k; for (const k of s) t += 2 / k; return t }`,
   ints: `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = -3; i < n; i++) { m.set(i, i * 2); s.add(i & 3) } m.delete(1); m.set(-0, 'z'); s.add(-0); s.delete(2); let o = ''; for (const [k, v] of m) o += k + ':' + v + ','; for (const k of s) o += k + ';'; return o + m.get(0) + m.has(1) + s.has(0) + m.size }`,
@@ -1338,7 +1270,7 @@ test('minimal: a proven table probes by its key\'s form', () => {
 // An index the summary bounds reads in place (summary/span.js, summary/index.js):
 // a remainder of a shifted word by a fixed array's length, through a constant
 // too; a counter its loop bounds by the length, where the body calls a table's
-// method or pushes (none shrinks an array). No miss arm, no undefined rendered.
+// method or pushes (none shrinks an array).
 test('minimal: a bounded index reads in place', () => {
   if (skip) return
   const srcs = {
@@ -1521,9 +1453,7 @@ test('minimal: a fused update reads the kind of its read', () => {
 })
 
 // A counter a conjunct bounds by the array's length, where the loop runs only
-// table operations and walks of built-in sequences (summary/index.js). The
-// element stays what the loop read: no guard, whatever the other terms are;
-// a term or a body that may shrink the array keeps it.
+// table operations and walks of built-in sequences (summary/index.js).
 test('minimal: a loop of table operations keeps its bound', () => {
   if (skip) return
   const kernel = (head, body) => `export let f = (n) => {
@@ -1628,7 +1558,7 @@ test('minimal: identity holds past a growth at the size tier', () => {
 
 // A function whose every return is storage it made gives nothing back at any
 // return: no frame, no question of the result (compile/analyze/frame-effects.js
-// returnsMade). A result it may not have made keeps both.
+// returnsMade).
 test('minimal: a result made in the frame takes no frame', () => {
   if (skip) return
   // (no splice of `g` into its caller: the verdict is the function's own)

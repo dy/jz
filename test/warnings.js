@@ -1,4 +1,4 @@
-// Compile-time advisories (opts.warnings / ctx.warn). See .work/archive/todo.md.
+// Compile-time advisories (opts.warnings / ctx.warn).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
@@ -262,12 +262,6 @@ test('warnings: jz() reports advisories through the callback', () => {
   is(warnings[0].code, 'heap-return')
 })
 
-// Pre-audit-#8 (2026-08-03), jzify's default-mode 'instanceof' lowering answered
-// the 7 Error classes via a broad `typeof===object` guess and warned that the
-// answer couldn't discriminate classes ('untagged-instanceof'). P0-1 replaced
-// the guess with a pass-through to the sound core machinery (.work/archive/todo.md
-// §deletion-sweep §4) — the answer is now real, so there is nothing to warn about;
-// the 'untagged-instanceof' warning code is retired.
 test('warnings: instanceof on Error types is sound, no warning (jzify, audit-#8 P0-1)', () => {
   const ws = warningsFor('export let f = (e) => e instanceof TypeError', { jzify: true })
   is(ws.length, 0)
@@ -323,8 +317,7 @@ test('warnings: simd-aos-stride on interleaved index', () => {
 })
 
 // opts.whyNotSimd (CLI --why): per-loop diagnostic naming the op that blocked
-// vectorization. A clean i32 typed-array map whose only blocker is i32.rem_s (no
-// lane-pure SIMD mapping) reaches the lifter, so the reason is op-specific.
+// vectorization.
 const remMap = `
   export let f = (n) => {
     let a = new Int32Array(n)
@@ -405,11 +398,9 @@ test('warnings: shape-lost names the layout of each construction site', () => {
   ok(ws.length && ws.every(w => /\{a\}/.test(w.message)), ws.map(w => w.message).join('; '))
 })
 
-// A summary the compile supersedes may lose a shape the program keeps: here
-// the first, taken before the spread of a spread has a layout, reads `opts.hop`
-// as a value of any kind and loses `ctx` to the hook its test would call. The
-// advisory reports the summary emission reads (compile/index.js), where the
-// layout is named and the test decided.
+// A summary the compile supersedes may lose a shape the program keeps: here the
+// first, taken before the spread of a spread has a layout, reads `opts.hop` as
+// a value of any kind and loses `ctx` to the hook its test would call.
 test('warnings: shape-lost reports what the emitted program loses, not an earlier summary', () => {
   const src = `let settings = (o) => ({ ...o, size: 2048 })
 let run = (opts) => { const hop = opts.hop, fn = typeof hop === 'function' ? hop : null; const ctx = { a: 1, b: 2 }; let s = 0; for (let i = 0; i < 4; i++) { if (fn) ctx.a = fn(i, ctx); s += ctx.a * ctx.b + (fn ? 0 : hop) } return s }

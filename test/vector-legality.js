@@ -18,7 +18,6 @@ const agreeOff = (name, src, args = []) => {
   for (const optimize of levels(2, 3)) is(jz(src, { optimize }).exports.f(...args), want, `${name} at ${optimize}`)
 }
 
-// The nine programs of phase 6's census (.work/maps/vectorize-leads.md), W1 to W9.
 test('vector legality: nine', () => {
   agree("W1 reduce lane local read after", `const a = new Float64Array(64)
 export let f = () => { for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) - 5.75
@@ -181,9 +180,7 @@ export let f = () => {
 })
 
 // A comparison in a byte or 16-bit lane sees the lane's bits, the scalar the whole word: they
-// agree where both operands fit the lane under one reading (lift.js laneCompare). A store into
-// a Uint8ClampedArray clamps by `v < 0` and `v > 255` on the word; lifted to byte lanes and
-// compared signed, every byte past 127 was "negative" and stored as 0.
+// agree where both operands fit the lane under one reading (lift.js laneCompare).
 test('vector legality: narrow comparisons', () => {
   const clamped = (name, e) => agree(`u8c ${name}`, `const a = new Uint8ClampedArray(64), b = new Uint8ClampedArray(64), c = new Uint8ClampedArray(64)
 export let f = () => { for (let k = 0; k < 64; k++) { a[k] = k * 37 % 251; c[k] = (k + 7) * 37 % 251 }
@@ -1018,12 +1015,7 @@ export let f = (x0, x1, x2, x3, y0, y1, y2, y3, z0, z1, z2, z3, iters) => {
 })
 
 // What the legality keeps: loops whose iterations a strip may run together, each still lifted
-// (its own function's WAT holds a vector op) and answering what Node answers. A load one ahead
-// of its store, an element in place, a store a pixel and a half ahead, a load a pixel ahead, a
-// pixel's channel from another, a reduction's lane local nothing reads after it, a mirror to the
-// middle (past a test of its bytes), an outer strip's epilogue reading and writing one element
-// lane by lane, an unsigned exit entered at a non-negative counter, a byte shift under 8, two
-// element stores packed into an array the loop makes from another's elements.
+// (its own function's WAT holds a vector op) and answering what Node answers.
 const A64 = 'const a = new Float64Array(64)\nexport let init = () => { for (let i = 0; i < 64; i++) a[i] = ((i * 7) % 13) - 5.75 }\nexport let check = () => { let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 + a[i]) % 1000003; return h }\n'
 const KEPT = [
   ['load one ahead of the store', A64 + 'export let f = () => { for (let i = 0; i < 63; i++) a[i] = a[i + 1] * 2; return 0 }'],

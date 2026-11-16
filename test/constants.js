@@ -2,13 +2,10 @@
 // (src/compile/plan/constants.js, pass `constants`): a spliced call binds each
 // argument its body writes to a name of its own, and the body's tests of that
 // parameter are tests of the literal the site passed. A test of literals is its
-// answer, the arm it rules out is no code, and the binding holds its literal
-// past the test. The bindings followed are the splices' own: each flow below
-// runs as the body of a call (`spliced`), and as the function the source wrote. A
-// binding assigned on every path to its reads holds no `undefined` to test for
-// (summary/definite.js, read where the local is declared), and a labeled block
-// ends with what held at each `break` to it. Every form answers what the host
-// answers.
+// answer, the arm it rules out is no code, and the binding holds its literal past
+// the test. The bindings followed are the splices' own: each flow below runs as
+// the body of a call (`spliced`), and as the function the source wrote. Every
+// form answers what the host answers.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'

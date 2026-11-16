@@ -30,10 +30,9 @@ test('alias: the marks', () => {
   ok(mayAlias(undefined, 'e1') && mayAlias('f0:3', undefined), 'an unmarked access may reach anything')
 })
 
-// A method writes an object's elements, the next one reads them back through another
-// name for the same object: three's `local.compose(…)` then `world.multiplyMatrices(parent,
-// local)`. Its receivers are elements of arrays, which may be missing: each call tests
-// its receiver (`__present`) and splices.
+// A method writes an object's elements, the next one reads them back through another name
+// for the same object: three's `local.compose(…)` then `world.multiplyMatrices(parent,
+// local)`.
 const METHODS = `class M2 {
   constructor() { this.e = [1, 0, 0, 1] }
   rotate(c, s) { const t = this.e; t[0] = c; t[1] = s; t[2] = -s; t[3] = c; return this }

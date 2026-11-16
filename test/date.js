@@ -80,12 +80,7 @@ test('Date object: proven-receiver .valueOf()/.getTime() compares correctly agai
   // kind-traits.js methodValType's `.valueOf() -> receiver kind` rule is
   // right for every OTHER type (jz's valueOf is a receiver passthrough,
   // module/string.js) but wrong for Date: `.valueOf()` returns the
-  // timestamp, a NUMBER, never the receiver. Pre-existing and independent of
-  // the unresolved-dispatch pins below — a PROVEN Date never reaches the
-  // unresolved path at all (tryStaticDispatch's `.date:valueOf` dispatches
-  // it directly) — so `d.valueOf() === n` folded unsound (false) even for a
-  // fully statically-known Date, on EVERY optimize level, until
-  // kind-traits.js's own VAL.DATE carve-out landed.
+  // timestamp, a NUMBER, never the receiver.
   const [r0, r1] = runMany([
     'export let f = () => { let d = new Date(1234567890000); return d.valueOf() === 1234567890000 }',
     'export let f = () => { let d = new Date(1234567890000); return d.getTime() === 1234567890000 }',
@@ -100,21 +95,7 @@ test('Date object: unresolved-vt receiver .valueOf() discriminates Date from pla
   // reading garbage (array[0]'s bits as f64) — but left an
   // unresolved-but-ACTUALLY-Date receiver undiscriminated: `.valueOf()` fell
   // through to string.js's identity fallback (the Date itself, not its
-  // timestamp). Date shares PTR.OBJECT's coarse tag with plain
-  // objects/arrays, so a runtime ptr-TYPE fork alone can't tell them apart —
-  // the fix (emit.js dateAuxFallback, wired into both trySidecarToPrimitive
-  // and tryRuntimePtrTypeFork) additionally tests the receiver's own `aux`
-  // field against ctx.schema.dateSid (a schema registered under a
-  // NUL-prefixed property name, `'\x00time'`, no real object literal can
-  // ever alias — a sound, cheap discriminator, no extra heap load beyond the
-  // existing `$__ptr_type` read).
-  //
-  // Heterogeneous-array-element shape, mirroring the ORIGINAL kernel-parity
-  // repro exactly (watr's print.js `node[i]?.valueOf?.()`): vt is genuinely
-  // unresolved at every optimize level, immune to inlining resolving the
-  // ambiguity away (a single named-function call site, by contrast, can get
-  // specialized per call site once inlined — see the pin below for that
-  // shape instead).
+  // timestamp).
   const src = `
     export let f = (which) => {
       let items = [new Date(1234567890000), {}, [7, 8, 9]]
@@ -136,11 +117,7 @@ test('Date object: unresolved-vt receiver .valueOf() discriminates Date from pla
 test('Date object: unresolved-vt receiver .valueOf() via a shared dispatch function', () => {
   // Same discrimination, named-helper-function shape: a function called with
   // BOTH a Date and a plain object at different call sites keeps its
-  // parameter's vt genuinely unresolved inside the function body. This
-  // specific shape reaches trySidecarToPrimitive (the ctx.closure.call-gated
-  // fork that runs AHEAD of tryRuntimePtrTypeFork whenever the compiled
-  // program has any function at all — the common case) rather than
-  // tryRuntimePtrTypeFork itself, so both forks needed the same aux guard.
+  // parameter's vt genuinely unresolved inside the function body.
   const src = `
     function unresolvedValueOf(x) { return x.valueOf() }
     export let f = () => {

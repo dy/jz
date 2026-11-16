@@ -154,9 +154,7 @@ test('iteration release: a store through a receiver the site keeps names the rec
 test('iteration release: a loop calling a function of the program stays a loop that releases', () => {
   // the loop indexes a small typed array by its counter, which a copy per value
   // would make literal (plan/literals.js unrollTypedArrayLoops): the copies
-  // would have no boundary to give an iteration's memory back at. As a bench
-  // reports through the host, `f` reports through a module binding: a frame
-  // that reads the escape flag, which a release reads under
+  // would have no boundary to give an iteration's memory back at.
   const src = `let report = null
     const make = (n) => { const o = { buf: new Float64Array(n), next: null }; o.next = { buf: new Float64Array(n) }; o.buf[0] = n; return o }
     const median = (a) => { const s = a.slice().sort(); return s[s.length >> 1] }
@@ -251,11 +249,7 @@ test('iteration release: a return, a throw or a branch out of a released loop le
 test('iteration release: a release after a compaction of the loop\'s own starts a mark of its own', () => {
   // The loop compacts what it keeps (optimize/loop-compact.js) and releases its
   // iterations: a compaction moves what the escapes before it reached, empties
-  // the log and moves the epoch, which the release reads afresh. Snapshotted at
-  // the function's entry (optimize/globals.js promoteGlobals), the epoch missed
-  // every compaction the function's own sites ran, which a later pass adds, and
-  // a release walked the emptied log and freed what the window kept. A slack
-  // below a release's 64 KiB brings the compactions between two releases.
+  // the log and moves the epoch, which the release reads afresh.
   const src = `const keep = []
     export let f = (n, a, b) => { let s = 0
       for (let i = 0; i < n; i++) { const t = [i, i + 1, i + 2, i + 3]; if (i >= a && i < b) keep.push(t); s = (s + t[1]) | 0 }
@@ -270,9 +264,7 @@ test('iteration release: a release after a compaction of the loop\'s own starts 
 
 // The immutable-update idiom: each step replaces every record with a literal
 // the emitter writes into the cells its element had (emit-assign.js
-// tryStructInlineReplaceStore). The census, reading the source, counts the
-// literal an allocation that escapes into the array; as emitted the loop
-// allocates nothing (optimize/quiet-loops.js).
+// tryStructInlineReplaceStore).
 const IMMUTABLE = `const N = 256
   const init = () => { const ps = []; let s = 0x1234abcd | 0
     for (let i = 0; i < N; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5
@@ -322,8 +314,7 @@ test('iteration release: a loop that allocates nothing as emitted carries no com
 // The kernel bounded by the array's own length: every store of the loop is in
 // bounds, so the loop saves the array for the reset once ahead of itself
 // (emit/control-flow.js), a record the reset log keeps until the round's clear
-// (core/durable-log.js). It allocates nothing else, and carries no compaction
-// and no release (optimize/quiet-loops.js).
+// (core/durable-log.js).
 test('iteration release: a loop whose one allocation is the reset log\'s save carries no compaction and no release', () => {
   const src = IMMUTABLE.replace(/i < N; i\+\+\) \{(\s+)const p = ps\[i\]/, 'i < ps.length; i++) {$1const p = ps[i]')
   ok(src !== IMMUTABLE, 'the kernel bounded by its own length')

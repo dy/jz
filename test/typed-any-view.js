@@ -43,12 +43,8 @@ test('typed any view: the joined receiver reads its elements directly', () => {
   }
 })
 
-// Element methods walk a view's own elements: its data starts at the byte
-// offset, a resizable buffer's view tracks the buffer, and a copy owns its
-// data. `reduceRight` had no typed form and walked a view as an Array's
-// 8-byte cells (a trap or 0); `toSorted` sorted its copy as a view. A
-// BigInt64Array an exported function's parameter holds (the runtime fork's
-// typed arm) hands find and reduce results over boxed, where they read as raw bits.
+// Element methods walk a view's own elements: its data starts at the byte offset, a
+// resizable buffer's view tracks the buffer, and a copy owns its data.
 const viewMethods = `
 let buf = new ArrayBuffer(64), whole = new Int16Array(buf)
 for (let i = 0; i < 32; i++) whole[i] = (i * 7) % 11 + 1

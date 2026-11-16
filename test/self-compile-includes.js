@@ -1,16 +1,5 @@
 // Self-compile stdlib-inclusion invariant.
 //
-// resolveIncludes() (src/ctx.js) pulls a stdlib helper's transitively-needed helpers two ways:
-//   1. explicit edges — a helper listed in another's manual `deps()` array, or a direct
-//      `inc('__foo')` from an emitter (both plain, self-compile-robust), and
-//   2. an AUTO-dep scan that *realizes* each included template (calls its factory / reads its
-//      string) and greps the body for `$__foo` references.
-// (2) is only a host-side safety net: under self-compile (jz.wasm) it DIVERGES — the realize/scan
-// silently yields nothing for some templates — so a helper reachable ONLY through (2) is dropped
-// from the kernel module. That is the `str.slice`/typed-`.fill` "Unknown func $__clamp_idx" bug:
-// __clamp_idx was body-called by six range helpers yet had ZERO explicit edge, so it rode in on
-// the auto-scan alone and vanished in the kernel.
-//
 // Invariant: every helper a stdlib template body calls must be reachable WITHOUT the auto-scan —
 // i.e. it must appear in some `deps()` array or be directly `inc()`'d. A new helper that forgets
 // its explicit edge fails here in-process, long before the kernel leg traps on the dangling call.
@@ -52,8 +41,6 @@ const PROBES = [
 ]
 
 // Helpers an emitter pulls in directly: every `inc('__foo', …)` literal across src/ + module/.
-// (Dynamic names like `inc(`__regex_${id}`)` are generated roots — they carry a numeric suffix
-// and are excluded below.) This is the second reliable inclusion channel besides deps().
 function emitterIncluded() {
   const set = new Set()
   const scan = (dir) => {

@@ -626,11 +626,7 @@ test('jzify: folds esbuild CommonJS interop Object helper aliases', () => {
 // `(0, f)(…)` whose callee is a member or an index for an interop read it had
 // replaced (its copy of a callee is never the callee itself), then rebuilt the
 // call with an operand an argument: `['()', f, a, b]`, where a call's arguments
-// are one operand. Every reader took the first and dropped the rest, a call of
-// none became the grouping `(f)`, the function for its result, and the callee
-// lost the `(0, …)` that calls it with no receiver. esbuild writes every call
-// of a CommonJS import so, and its own `__commonJS` calls the module's function
-// with `(exports, module)`: `module` arrived undefined.
+// are one operand.
 test('jzify: a comma call in a bundle keeps its callee and every argument', () => {
   // esbuild 0.28.2, `--bundle --format=esm`, of `import { add, id, k, mix } from './a.cjs'`
   const bundle = `
@@ -722,10 +718,9 @@ test('jzify: groups conditional array spread as [...(cond ? a : b)]', () => {
   is(exports._run(), 4)
 })
 
-// === arguments object (test262) ===
+// arguments object (test262)
 // Implicit `arguments` is synthesized from a rest-params lowering whenever the
-// body references the name. `var arguments` / `let arguments` declarations
-// shadow that — they're ordinary locals.
+// body references the name.
 
 test('arguments: jzify supports no-formal trailing-comma cases', () => {
   const exports = runJzify(`export let _run = () => {

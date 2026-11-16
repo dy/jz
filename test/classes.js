@@ -1,14 +1,11 @@
 // `class` lowering (jzify): constructor + instance fields + methods + `new` + `this`,
-// plus `extends`, `super(…)`, `static` members, and private `#fields`.
-// A class at module scope whose base is none or a class of its module is a
-// schema with identity and functions of the receiver: an instance holds its
-// fields alone, `o.m()` on a receiver the summary knows is a direct call, an
-// unknown receiver dispatches on its schema id. Every other class (nested,
-// a dynamic base) is pure desugaring — an instance is a plain object, methods
-// are per-instance arrows capturing it. `this` is renamed to the instance,
-// `new C(a)` becomes `C(a)`, `get x()`/`set x(v)` become the `x__get`/`x__set`
-// members the property reader and store dispatch through. Rejected: full
-// `super.x` property semantics, a getter or setter with a computed name.
+// plus `extends`, `super(…)`, `static` members, and private `#fields`. A class at
+// module scope whose base is none or a class of its module is a schema with identity
+// and functions of the receiver: an instance holds its fields alone, `o.m()` on a
+// receiver the summary knows is a direct call, an unknown receiver dispatches on its
+// schema id. Every other class (nested, a dynamic base) is pure desugaring — an
+// instance is a plain object, methods are per-instance arrows capturing it. Rejected:
+// full `super.x` property semantics, a getter or setter with a computed name.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, onKernel, OPT_LEVEL, levels } from './_matrix.js'
@@ -22,8 +19,7 @@ const agrees = (src) => { const want = oracle(src), got = jz(src).exports; for (
 // A computed member name is evaluated once, where the class is defined, in
 // member order: the heritage first, then every key (instance and static,
 // methods and fields), then the static initializers; the instance fields'
-// initializers at each construction. A member named at run time is the
-// instance's (or the class's) property of that name.
+// initializers at each construction.
 test('class: computed member names evaluate in source order', () => {
   agrees(`export let members = () => {
       const log = [], k = s => (log.push(s), s)
@@ -620,7 +616,7 @@ test('rejects a getter or setter under a computed name', () => {
 
 // Computed class member names from module-scope const bindings: jzify's entry
 // prepass collects `const K = 'str'`, class lowering folds `[K]` (const
-// guarantees no reassignment). Dynamic keys still reject cleanly.
+// guarantees no reassignment).
 test('class: computed member names fold from module consts', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`const K = "m"; class A { [K]() { return 5 } } export let f = () => new A().m()`), 5)
@@ -668,17 +664,12 @@ export let f = () => 1`) } catch (e) { err = e }
   ok(err && /this/.test(err.message), 'mixed batch stays out')
 })
 
-// Static class members: fields + methods (this → the class) were already
-// lowered as post-decl closure props; static BLOCKS now run in class-init
-// order with the same this-binding.
 test('class: static fields, methods, and blocks', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`class A { static x = 41; static m(k) { return A.x + k } } export let f = () => A.m(1)`), 42)
   is(j(`class C { static base = 10; static mk(v) { return this.base + v } } export let f = () => C.mk(5)`), 15)
   is(j(`class E { static a = 1; static { E.b = E.a + 10 } static c = 100 } export let f = () => E.b + E.c`), 111)
 })
-
-// === Classes as structs (jzify/classes.js lowerStruct, src/compile/emit/class-dispatch.js) ===
 
 // A receiver of no class calls the member it holds with every argument the
 // call writes out: the dispatcher of a class member took only as many as the
@@ -760,8 +751,7 @@ test('class struct: an instance with no own properties skips the shadowing looku
 // member's dispatcher, which asks each class's instance for an own property of
 // the name by the class's layout: a field the class assigns under it (a node's
 // `dispose` storing `this.tick`) read in place, and a name outside the layout
-// nowhere on an instance whose properties word is zero. A receiver of no class,
-// or of a layout the class's test does not name, keeps the lookup.
+// nowhere on an instance whose properties word is zero.
 test('class struct: a dispatcher reads a shadowing own property by the class layout', () => {
   const src = `class Node { constructor(v) { this.v = v } tick() { return this.v } dispose() { this.tick = () => -1 } }
     class Gain extends Node { tick() { return this.v * 2 } }
@@ -923,9 +913,7 @@ test('class method boolean result keeps its atom through a dispatcher and an opt
 
 // `static get v() {}` / `static set v(x) {}` on one line parsed as a static
 // field named `get` followed by a method (the multi-line form too, silently),
-// and the one-line form failed with "Unclosed {". The parser now reads the
-// accessor after `static` (subscript feature/class.js), and the class lowering
-// takes the accessor onto the constructor. Reference: ECMA-262 15.7.1
+// and the one-line form failed with "Unclosed {". Reference: ECMA-262 15.7.1
 // ClassElement: `static MethodDefinition`, with MethodDefinition covering
 // `get`/`set` accessors.
 test('class static accessors, one line or many', () => {
@@ -965,13 +953,6 @@ test('class static accessors under every store', () => {
   }
 })
 
-// A derived class reads a static it does not declare through its base, as JS
-// reads it through the class's prototype: a method, a field as the base holds
-// it now, a getter and a setter, through the class's name or a value holding
-// it. A static that reads `this` runs with the class it is read through,
-// `super.m()` and `super.x` in a static reach the base's with the receiver,
-// an own static of the name replaces the base's member whole, and a private
-// static stays the declaring class's.
 test('class statics inherit through the base', () => {
   const src = `class A {
       static k = 3; static count = 0; static tag = 'a'
@@ -1092,8 +1073,7 @@ test('a static a derived class takes as declared and the program stores again is
 // A store to a getter with no setter of its name throws a TypeError, as in
 // strict code: on an instance (of the getter's class or a derived one, under
 // every assignment, in the constructor too), on an object literal and
-// through a receiver of unknown kind. A prototype's data property, which the
-// prototype fold makes a getter, takes an instance's own value instead.
+// through a receiver of unknown kind.
 test('a store to a getter-only accessor throws', () => {
   const src = `class P { constructor() { this.w = 1 } get v() { return this.w * 2 } }
     class Q extends P {}
@@ -1169,8 +1149,7 @@ test('classes: a for-of over an iterable class of another module drives its iter
 // Accessors reach their holders through the receiver the summary names or
 // the dispatcher's `instanceof` arms: a derived class's accessor is a
 // function of its own schema, an object literal's a slot of its schema, a
-// static pair a property of the class value. An unknown receiver probes for
-// the slot only where a literal or a static pair may carry it.
+// static pair a property of the class value.
 test('classes: accessors of derived classes, literals and static pairs on receivers of every kind', () => {
   const derived = `class Ctx { #n; constructor(n) { this.#n = n } }
     class Off extends Ctx { get length() { return 7 } }

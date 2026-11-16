@@ -117,9 +117,7 @@ test('index store: a staged key leaves the store its value', () => {
 })
 
 // A store whose right side calls reads its receiver into a temp first
-// (emit/assignment.js stagedReference). A growth moves the array; the binding,
-// where it still names the old block, follows it with the temp, so a table a
-// registry grows at start is read after it without a forwarding chase.
+// (emit/assignment.js stagedReference).
 test('index store: a binding staged before the right side follows its array as it grows', () => {
   const source = `export let table = []
     let made = 0

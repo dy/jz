@@ -186,8 +186,7 @@ test('generators: try/catch across a yield', () => {
 
 // ES2025 iterator helpers as FUSED loops: a chain rooted at a known generator
 // call — g().map(f).filter(p).take(n)… — compiles to ONE while-next loop with
-// the stages composed in place (no intermediate iterator objects). Terminals
-// (toArray/reduce/forEach/some/every/find) fuse in expression position.
+// the stages composed in place (no intermediate iterator objects).
 test('iterator helpers: stage fusion in for-of', () => {
   is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i }
         export let f = () => { let s = ''; for (const v of g(8).map((x) => x * 10).filter((x) => x % 20 === 0)) s += v + ','; return s }`),
@@ -245,7 +244,7 @@ test('generators: throw() closes the machine and rethrows', () => {
 
 // Generator METHODS (subscript 10.6 grammar): { *g() {} } / class { *m() {} } /
 // static *s() {} — the member value is a function* expression riding the same
-// lowering. `this` binds to the instance (renamed like any method).
+// lowering.
 test('generators: methods in classes and object literals', () => {
   is(j(`class A { *g(n) { for (let i = 0; i < n; i++) yield i } }
         export let f = () => { let r = ''; for (const v of new A().g(4)) r += v; return r }`), '0123')
@@ -311,8 +310,7 @@ test('using: scope-exit disposal', () => {
 
 // A disposal that throws over an earlier throw (the body's, or another
 // disposal's) throws a SuppressedError: `error` the later, `suppressed` the
-// earlier, neither enumerable. A block of one declaration, which the parser
-// keeps as the declaration, is a resource's scope too, in a generator too.
+// earlier, neither enumerable.
 test('using: SuppressedError and lone declarations', () => {
   const src = `export let suppressed = () => {
       try { using a = { [Symbol.dispose]() { throw new Error('dispose') } }; throw new Error('body') }
@@ -374,8 +372,7 @@ test('iterator protocol: spread of iterator values', () => {
 // generator objects through __it_mk — map/filter/take/drop/flatMap and the
 // terminals become value-position methods (lazy, value+counter callbacks,
 // early return() on short-circuit), Symbol.iterator returns self, and
-// `instanceof Iterator` is the callable-next shape probe. Fusable chains
-// still fuse; helper-free programs mint the bare record (pay-per-use).
+// `instanceof Iterator` is the callable-next shape probe.
 test('iterator helpers: value-position chains', () => {
   is(j(`function* g() { yield 1; yield 2; yield 3 }
         export let f = () => {
@@ -482,9 +479,7 @@ test('generators: return() and every completion leaving a try run its finally bl
   export let jumping = () => { log = ''; const it = jumps(); return show(it.next()) + show(it.next()) + log }`))
 
 // throw() at a yield* goes to the delegate's throw(): its catch can answer,
-// and a done result ends the yield* with its value. A delegate with no
-// throw() is closed and the yield* throws a TypeError; an array's iterator
-// has neither throw() nor return().
+// and a done result ends the yield* with its value.
 test('generators: yield* forwards throw() to its delegate', () => agreeAll(`let log = ''
   const show = (r) => r.value + ':' + r.done + ','
   function* inner() { try { yield 'a'; yield 'b' } catch (e) { log += 'c' + e; yield 'h'; return 'r' } finally { log += 'I' } }
@@ -556,9 +551,7 @@ test('generators: yield in for-of and for-in bodies', () => agreeAll(`let log = 
 // The body's declarations are the machine's locals, each spelled apart: a
 // block's binding shadows a parameter, an outer name or a catch parameter
 // without touching it, a reference made before a later declaration reads
-// that declaration's binding, a hoisted var names its parameter. A closure
-// made in a loop the machine splits keeps its own iteration's bindings, as
-// JS keeps them, and shares them with the iteration's code.
+// that declaration's binding, a hoisted var names its parameter.
 test('generators: block scopes and per-iteration bindings across yields', () => agreeAll(`let outer = 'o'
   function* shadow(p) { var p; { let p = 2; let outer = 3; yield p + outer } yield p + outer; let e = 'e'; try { yield 0; throw 'x' } catch (e) { yield e } yield e }
   function* forward() { const f = () => x; { let x = 1; yield f } let x = 2; yield x }
@@ -737,10 +730,7 @@ test('generators: a name shadowing a module generator calls its own binding', ()
   export let own = () => [...h()].join()`))
 
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
-// break, return, throw or outward continue calls return(), once. Exhaustion,
-// a continue and an exception from next() close nothing; the body's exception
-// stands over return()'s, which is otherwise the loop's (with its result
-// checked to be an object).
+// break, return, throw or outward continue calls return(), once.
 test('for-of: a body leaving early closes its iterator', () => agreeAll(`let log = ''
   function* g() { try { yield 1; yield 2; yield 3 } finally { log += 'F' } }
   function* bad() { try { yield 1 } finally { throw 'R' } }
@@ -778,9 +768,7 @@ test('iterator helpers: fused loops close their generator; take() closes before 
 
 // `E[Symbol.iterator]()` is the iterator over E for any E: an indexed value's
 // own (`__it_from` mints it), a provider's `@@iterator` result, a machine
-// itself; Map and Set iterate their snapshot views. The delegating idiom
-// (`[Symbol.iterator]() { return this.items[Symbol.iterator]() }`) is the
-// common collection wrapper; a for-of over it drives the protocol.
+// itself; Map and Set iterate their snapshot views.
 test('iterator values: [Symbol.iterator]() on any receiver', () => {
   is(j(`export let f = () => { const a = [7, 8]; return a[Symbol.iterator]().next().value }`), 7)
   is(j(`export let f = (x) => { const a = x ? [7, 8] : 'ab'; const it = a[Symbol.iterator](); return it.next().value + it.next().value }`), 'ab')
@@ -806,9 +794,7 @@ test('iterator values: [Symbol.iterator]() on any receiver', () => {
 // A generator's machine keeps the bindings of the scopes it splits into
 // states, and its temporaries and state, as fields of one frame record its
 // closures share (jzify/generators.js `frame`): one object a call, where each
-// binding was a heap cell. A field holds no value before its binding's step
-// (`__tdz()`, src/ast.js TDZ_VALUE), so its kind is what its steps store; a
-// binding of a statement that never suspends stays a local of that statement.
+// binding was a heap cell.
 test('generators: the bindings a machine splits live in one frame record', () => {
   const src = 'function* fib(n) { let a = 0, b = 1; for (let i = 0; i < n; i++) { yield a; for (let k = 0; k < 1; k++) [a, b] = [b, a + b] } }\nexport const f = () => [...fib(10)].join()'
   const out = JSON.stringify(jzify(parse(src)))

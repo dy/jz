@@ -138,9 +138,7 @@ test('call boundary: a variant is minted where its kinds differ', () => {
 })
 
 // The channels idiom: an export gathers its host blocks into a list literal a
-// kernel reads element by element. The slots take the typed ABI through the
-// list (param-numeric.js paramArrayLikeList), and the kernel runs one copy per
-// list kind (narrow/param-abi.js splitByListKinds): no element read by kind.
+// kernel reads element by element.
 const hiddenOf = (code, fn) => WebAssembly.Module.exports(new WebAssembly.Module(compile(code))).map(e => e.name).filter(n => n.startsWith('__jz_' + fn + ':')).map(n => n.slice(5)).sort().join()
 // An element the program's own functions read or store by its kind at run time.
 const byKind = (wat) => {
@@ -188,8 +186,7 @@ test('call boundary: a list reaches a function\'s property the program defines o
 test('call boundary: a slot that may be a written plain array takes any value and selects no variant', () => {
   // The compiler marks a parameter the body may store into as a plain array `Array+`
   // (boundary-wrap.js), and says so of more than it must: `n`, handed to subarray,
-  // carries the mark beside the typed slot. Such a slot takes whatever arrives, as
-  // itself; only the typed slots choose the variant (interop.js slotsOf).
+  // carries the mark beside the typed slot.
   const code = `export let head = (data, n) => { let h = data.subarray(0, n); let s = 0; for (let i = 0; i < h.length; i++) s += h[i]; return s }
     export let damp = (buf, n) => { const h = buf.subarray(0, n); for (let i = 0; i < buf.length; i++) buf[i] = buf[i] * 0.1; return buf[0] + buf[1] + h.length }`
   const slots = Object.fromEntries(JSON.parse(new TextDecoder().decode(
@@ -199,7 +196,6 @@ test('call boundary: a slot that may be a written plain array takes any value an
   const want = oracle(code), { exports } = jz(code)
   is(exports.head([1, 2, 3, 4], 2), 3, 'head(Array, number): 1 + 2')
   is(exports.head(Float32Array.of(1, 2, 3, 4), 3), want.head(Float32Array.of(1, 2, 3, 4), 3), 'head(Float32Array, number)')
-  // 0.1 stored into a Float32Array reads back 0.10000000149011612: the sum tells the variant that ran.
   for (const K of [Float32Array, Float64Array]) {
     const a = K.of(1, 2, 3), b = K.of(1, 2, 3)
     is(exports.damp(b, 2), want.damp(a, 2), `damp(${K.name}, number): the variant of its kind`)

@@ -569,14 +569,7 @@ test('.forEach: its value is undefined on every receiver, and its callback write
 
 // A callback written in place for an array's or a typed array's walk runs in
 // that walk (compile/in-place.js): its statements are the function's, and what
-// it declares is new each round. A local it writes is a closure's write to
-// every analysis, held in its cell, and a local again in the optimizer where no
-// closure took the cell (optimize/cells.js). Over an array, a typed array and a
-// parameter, every method answers as JS does: block bodies with a value and
-// without, writes of every kind, rounds that change a kind or a shape the
-// declaration gave, loops, labels, switch and try inside, a throw, a receiver
-// it stores into, closures made inside (the closure stays) and after, another
-// closure reading or writing what it writes.
+// it declares is new each round.
 test('array callbacks: a callback a walk runs in place writes the function\'s own locals', () => {
   const BODIES = {
     each: `let s = 0, n = 0; t.forEach((x, i) => { const d = x - i; s += d * d; n++ }); return [s, n]`,
@@ -614,7 +607,7 @@ test('array callbacks: a callback a walk runs in place writes the function\'s ow
 
 // Every emitter that builds a callback runs an arrow of plain value where it
 // calls it: a sort's comparator, a chained walk's two callbacks, flatMap's, and
-// an expression body that writes. Each write lands once a call, in call order.
+// an expression body that writes.
 test('array callbacks: a comparator, a chained walk and an expression body that writes run in place', () => {
   const src = `export let sorts = (k) => {
     const r = [3, 1, k, 2], t = new Float64Array([3, 1, k, 2]), o = [{ v: 3 }, { v: 1 }, { v: k }]
@@ -698,10 +691,8 @@ test('.indexOf', () => {
   ])
 })
 
-// === .lastIndexOf ===
-// Array.prototype.lastIndexOf — the highest matching index. Previously absent, so the
-// method was force-narrowed to String (STRING_ONLY_METHODS) and `arr.lastIndexOf(x)`
-// silently returned -1. Now a real array path; an UNTYPED receiver forks string-vs-array.
+// .lastIndexOf
+// Array.prototype.lastIndexOf — the highest matching index.
 test('.lastIndexOf', () => {
   cases([
     ['last occurrence wins [1,5,3,5,2]', '() => [1, 5, 3, 5, 2].lastIndexOf(5)', 3],
@@ -1147,15 +1138,10 @@ test('chain: filter + reduce', () => {
   is(run(`export let f = () => [1, 2, 3, 4, 5].filter((x) => x > 2).reduce((s, x) => s + x, 0)`).f(), 12)
 })
 
-// ============================================================================
 // Type-aware method-dispatch regressions
 // (parser/prepare crashes, missing-prop sentinels, host-typed-array spread)
-// ============================================================================
 
 test('Regression: compiler crash on toString / native-method property lookup', () => {
-  // Parsing a file with a property named a native method (.toString) previously
-  // crashed src/prepare.js if GENERIC_METHOD_MODULES / STATIC_METHOD_MODULES
-  // implicitly matched Object.prototype.
   const src = `
     export let test = () => {
       let o = { toString: 1 }
@@ -1191,9 +1177,7 @@ test('Regression: dynamic property access on string returns undefined', () => {
 test('Regression: dynamic property assignment on string throws', () => {
   // Every jz module is strict code: PutValue on a primitive base throws
   // TypeError (ES2023 §10.1.9.2 OrdinarySetWithOwnDescriptor returns false for a
-  // primitive receiver, §6.2.5.6 throws in strict code). The old pins asserted
-  // 42 (a string expando in the global dyn-props table), then undefined (the
-  // sloppy-mode drop).
+  // primitive receiver, §6.2.5.6 throws in strict code).
   const { test } = runHost(`
     export let test = () => { let s = "foo"; try { s.prop = 42; return s.prop } catch (e) { return e.name } }
   `)
@@ -1240,14 +1224,6 @@ test('Regression: array literal spread copies external typed array values', () =
   is(result[2], 67)
 })
 
-// `[...str]` spreads a string into its characters. The spread machinery decoded string
-// ELEMENTS per-char (via __str_idx), but cached the source LENGTH with __len — array length,
-// which is 0 for a string — so `[...str]` silently produced an empty array. Length now uses
-// __str_len for a known string and a runtime STRING?__str_len:__len dispatch for an unknown
-// source (a fn param, the compiler's own `[...key]`). This also closed the json self-compile
-// byte-DIFF: the kernel's shape parser used `[...key]` to emit per-key char checks, so it
-// dropped every key name (kernel built smaller, still correct via positional parsing) while
-// jz.js (V8 spread) kept them — now both match.
 test('array spread of a string yields its characters (length, indexing, map)', () => {
   is(run('export let f = () => { let a = [...("items")]; return a.length }').f(), 5, 'known-string spread length')
   is(run('export let f = () => [...("abc")].map(c => c.charCodeAt(0)).reduce((a,b)=>a+b,0)').f(), 294, 'spread → chars (97+98+99)')
@@ -1257,7 +1233,6 @@ test('array spread of a string yields its characters (length, indexing, map)', (
   is(run('export let f = () => { let arr = ["items","meta"]; let a = [...arr[0]]; return a.length }').f(), 5, 'unknown-source (array element) spread length')
   is(run('export let f = () => { let s = "ab" + "cde"; let a = [...s]; return a.length }').f(), 5, 'unknown-source (concat) spread length')
   is(run('export let f = () => { let arr = ["hi"]; let a = [...arr[0]]; return a[1].charCodeAt(0) }').f(), 105, 'unknown-source spread indexing (i)')
-  // typed-array + array spread still correct (no regression from the length-by-kind change)
   is(run('export let f = () => { let a = [1,2,3]; let b = [...a, 4]; return b.length * 10 + b[3] }').f(), 44, 'array spread intact')
 })
 
@@ -1288,13 +1263,6 @@ test('Regression: imported function returning array with props keeps numeric ind
   is(result[3], true)
 })
 
-// A custom `valueOf` assigned to an array must override the default when invoked.
-// Regression surfaced in watr: `str()` attaches `bytes.valueOf = () => s` to a byte
-// array so `string.const` can recover the original string via `.valueOf()`, and
-// `normalize` distinguishes string-byte-arrays from sub-expressions via
-// `arr.valueOf !== Array.prototype.valueOf`. jz ignored the assignment — calling
-// `arr.valueOf()` returned the array itself — so `string.const`'s operand was
-// misread as an opcode ("Unknown instruction 104").
 test('valueOf: custom override on array is invoked', () => {
   const { f } = runHost(`export let f = () => {
     let a = [1, 2]
@@ -1331,17 +1299,11 @@ test('valueOf: override wins on an array-element receiver', () => {
 })
 
 // The comparison `arr.valueOf !== Array.prototype.valueOf` must reflect a runtime
-// override — not be constant-folded from the receiver's static type. This is the
-// EXACT discriminator at watr compile.js:369, which classifies a string-byte-array
-// (override assigned by `str()`) as an immediate vs a sub-expression. jz only accepts
-// `Array.prototype.valueOf` as a syntactic comparison RHS (it is otherwise "not in
-// scope"), and folds `<arrayExpr>.valueOf === Array.prototype.valueOf` to `true`
-// (so `!==` to `false`) because the receiver is statically an array — ignoring the
-// assigned override. Result: every string operand misreads as an opcode
-// ("Unknown instruction 104"). Distinct from the tests above, which compare against a
-// captured runtime value or call `.valueOf()`; both of those already pass.
-// Uses the jzify path: `Array.prototype.valueOf` only resolves under jzify (the
-// path watr's build takes); the bare in-memory path rejects it as "not in scope".
+// override — not be constant-folded from the receiver's static type. Distinct from
+// the tests above, which compare against a captured runtime value or call
+// `.valueOf()`; both of those already pass. Uses the jzify path:
+// `Array.prototype.valueOf` only resolves under jzify (the path watr's build takes);
+// the bare in-memory path rejects it as "not in scope".
 test('valueOf: identity vs Array.prototype.valueOf reflects override (not static fold)', () => {
   const { f } = jz(`export let f = () => {
     let a = [104, 105]
@@ -1351,8 +1313,6 @@ test('valueOf: identity vs Array.prototype.valueOf reflects override (not static
   is(f(), 'overridden')
 })
 
-// A plain array (no override) must still compare EQUAL to Array.prototype.valueOf,
-// so the fix narrows to "has an assigned override" rather than disabling the fold.
 test('valueOf: plain array identity still equals Array.prototype.valueOf', () => {
   const { f } = jz(`export let f = () => {
     let a = [104, 105]
@@ -1392,14 +1352,6 @@ test('Regression: ternary only evaluates the live branch', () => {
   is(result[1], 1)
 })
 
-// Regression: local-variable integer array fed through .map().join() produced
-// garbage floats ('8.48e-314,...') instead of the correct string.
-//
-// Root cause: promoteIntArrayLiterals rewrites `let a=[1,2,3]` to
-// `new Int32Array([1,2,3])` for SIMD optimization. The SIMD .map() then
-// produces a PTR.TYPED (Int32Array) result. __str_join was reading elements
-// with an 8-byte (f64) stride, but typed arrays have 4-byte stride for i32.
-// Fix: __str_join dispatches to __typed_idx for PTR.TYPED receivers.
 test('Regression: local-var integer array .map().join() matches JS (integers)', () => {
   const { f } = runHost(`export function f() {
     let a = [1, 2, 3]
@@ -1437,9 +1389,7 @@ test('Regression: stored map result .join() on local-var integer array', () => {
 
 test('Array.from: a non-callable mapfn throws (TypeError), not an internal crash', () => {
   // Array.from(items, mapfn) spec step 2: if mapfn is defined and not callable, throw a
-  // TypeError before iterating. A statically non-callable literal (boolean/number/null/object)
-  // must surface this as a runtime throw — earlier a `true` mapfn slipped the callable guard
-  // and crashed the compiler in the closure machinery instead.
+  // TypeError before iterating.
   throws(() => run('export let f = () => Array.from([1, 2], true)').f())
   throws(() => run('export let f = () => Array.from([1, 2], false)').f())
   throws(() => run('export let f = () => Array.from([1, 2], 5)').f())
@@ -1448,13 +1398,8 @@ test('Array.from: a non-callable mapfn throws (TypeError), not an internal crash
   is(run('export let f = () => Array.from([1, 2, 3]).length').f(), 3)
 })
 
-// === Array.from: typed sources (audit-#12 P0-3) ===
 // __arr_from did a raw `memory.copy(len<<3)` unconditionally — correct only for
-// 8-byte f64-stride ARRAY storage. Any narrower/wider typed source (Int8..Uint32,
-// Float32, view-indirected/BigInt64/BigUint64) got the wrong bytes at the wrong
-// stride. Fixed: dispatch on `__ptr_type(src)` — PTR.ARRAY keeps the exact-same
-// memory.copy (see the WAT-pin test below); any other type routes per-element
-// through `$__typed_idx`, the same polymorphic reader `src[i]` bracket-reads use.
+// 8-byte f64-stride ARRAY storage.
 test('Array.from: every TypedArray element kind reads the correct value (was memory.copy garbage)', () => {
   is(run(`export let f = () => { let a = new Int8Array([1, 2, -3]); let r = Array.from(a); return r[0] * 100 + r[1] * 10 + r[2] }`).f(), 117)
   is(run(`export let f = () => { let a = new Uint8Array([1, 2, 3]); let r = Array.from(a); return r[0] * 100 + r[1] * 10 + r[2] }`).f(), 123)
@@ -1579,8 +1524,7 @@ test('Array.from(string): pin current per-char behavior (unaffected by the typed
 
 // An array source is walked as its iterator walks it (ES §23.1.2.1 step 5), to
 // its length at each step: a mapper that grows it is visited further, one that
-// shrinks it stops there. A Set or a Map gives its entries, written directly or
-// reaching a helper that also takes an array, a string or an array-like.
+// shrinks it stops there.
 test('Array.from: a mapper sees the array it changes, and a Set or a Map gives its entries', () => {
   const src = `export let grow = () => { const a = [1, 2, 3]; const r = Array.from(a, (x, i) => { if (i === 0) a.push(4); return x * 2 }); return [r, a] }
   export let grows = () => { const a = [1]; return Array.from(a, (x, i) => { if (a.length < 40) a.push(x + 1); return x + i }) }
@@ -1619,10 +1563,6 @@ test('for…of: reads the array it walks, as JS answers', () => {
 // === .length assignment ===
 
 test('.length =: plain array resizes (grow & shrink), even when scalarization-eligible', () => {
-  // Regression: literal arrays with only "safe" uses were scalarized / promoted to
-  // Int32Array, folding the `.length` assignment TARGET into a literal —
-  // `Assignment to non-variable: [null,2]`. A member write on the binding must
-  // disqualify scalarization and typed promotion; resize stays an ARRAY op.
   is(run('export let f = () => { let a = [1, 2]; a.length = 5; return a.length }').f(), 5)
   is(run('export let f = () => { let a = [1, 2, 3]; a.length = 1; return a.length }').f(), 1)
   is(run('export let f = () => { let a = [1, 2]; a.length = 4; return a[0] + a.length }').f(), 5)
@@ -1635,10 +1575,8 @@ test('.length =: typed array rejects with a clear fixed-size error', () => {
   throws(() => compile('export let f = () => { let a = new Float64Array(2); a.length++; return a.length }'), fixedSize)
 })
 
-// === TypedArray .fill — regression for the silent-no-op bug ===
 // The plain-array `__arr_fill` gates on PTR.ARRAY and silently returned a typed
-// array UNCHANGED (a wrong result, no error). `.typed:fill` now loops the
-// element-width-aware `__typed_set_idx` over the clamped range.
+// array UNCHANGED (a wrong result, no error).
 
 test('.fill: typed array fills (was a silent no-op)', () => {
   const { f } = runHost(`export let f = (n) => { let a = new Float64Array(n); a.fill(5); return a[0] + a[n - 1] }`)
@@ -1666,14 +1604,10 @@ test('.fill: returns the array (chainable) + plain arrays still work', () => {
   is(run(`export let f = () => { let a = [1, 2, 3, 4]; a.fill(9); return a[0] + a[3] }`).f(), 18)
 })
 
-// === TypedArray .at — element-width bug (garbage even for a VALID index) ===
 // No `.typed:at` ever existed, so a typed receiver fell through to the generic
 // (non-ARRAY) `.array:at` path, which unconditionally f64.loads at off+t*8 — correct
 // only for the 8-byte-wide kinds (Float64Array, BigInt64/BigUint64Array; the wrong
-// opcode happened to read the right bytes there). Every narrower kind read the wrong
-// OFFSET at the wrong WIDTH even in range: `new Int32Array([10,20,30]).at(1)` read
-// garbage instead of 20. Now routes through the same resolveElem/elemLoadIR/SHIFT
-// machinery `.typed:[]` (bracket read) already proves correct per width.
+// opcode happened to read the right bytes there).
 test('.at: every element width reads the correct value (was garbage for all but f64)', () => {
   is(runHost(`export let f = () => new Int8Array([10, 20, 30]).at(1)`).f(), 20)
   is(runHost(`export let f = () => new Uint8Array([10, 20, 30]).at(1)`).f(), 20)
@@ -1748,10 +1682,8 @@ test('.at: opaque/polymorphic receiver (element kind not provable at compile tim
   is(f(0), 20)
 })
 
-// === TypedArray .reverse / .copyWithin / .sort — same silent-no-op bug class ===
 // `.reverse`/`.sort` routed through the PTR.ARRAY-gated plain-array helpers and
-// returned the typed receiver UNCHANGED; `.copyWithin` was unimplemented. Each now
-// has a `.typed:*` emitter going through the element-kind-aware get/set helpers.
+// returned the typed receiver UNCHANGED; `.copyWithin` was unimplemented.
 
 test('.reverse: typed array reverses (was a silent no-op), all widths', () => {
   const f64 = runHost(`export let f = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; a.reverse(); return a[0]*100+a[1]*10+a[2] }`).f
@@ -1801,7 +1733,6 @@ test('.sort: BigInt64 numeric compare on exact bits', () => {
   is(f(), 1030)   // [10n,20n,30n]
 })
 
-// === TypedArray .keys / .entries / .lastIndexOf ===
 // .keys/.entries fell through collViewDyn's else (return the receiver), so .keys
 // yielded VALUES and .entries yielded scalars; .lastIndexOf was unimplemented.
 
@@ -1854,7 +1785,6 @@ test('.indexOf / .includes: typed honor fromIndex (was ignored)', () => {
   is(inc(), 0)     // 3 is at index 0, excluded by fromIndex 1
 })
 
-// === TypedArray ES2023 immutable methods: toReversed / toSorted / with ===
 // All return a fresh typed array (receiver unchanged); were unimplemented (threw).
 
 test('.toReversed: reversed copy, original untouched', () => {
@@ -1879,11 +1809,10 @@ test('.with: copy with one element replaced; negative index; OOB throws', () => 
   throws(() => runHost(`export let f = () => { let a = new Float64Array(3); return a.with(5, 9)[0] }`).f(), /.*/)
 })
 
-// === TypedArray .subarray — a zero-copy aliasing VIEW (not a copy) ===
-// Was unimplemented (threw). Subtlety: small typed arrays are scalarized/mirrored, which
-// desyncs a persistent view from the array's storage — so a `subarray` receiver must be
-// kept memory-backed (createsTypedArrayAlias in plan/literals.js). f64 element writes
-// through the view were the canary for that bug.
+// Subtlety: small typed arrays are scalarized/mirrored, which desyncs a persistent view
+// from the array's storage — so a `subarray` receiver must be kept memory-backed
+// (createsTypedArrayAlias in plan/literals.js). f64 element writes through the view were
+// the canary for that bug.
 
 test('.subarray: zero-copy view — writes alias the parent both ways (all sizes)', () => {
   const small = runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let v = a.subarray(1,4); v[1]=77; a[3]=88; return v[0]*1+v[1]*10+v[2]*100 + a[2]*1000 }`).f
@@ -1963,10 +1892,7 @@ export const entry = () => { const buf = new Float64Array(2); buf[0] = 1; k(buf)
 
 // `new T([literals])` / `T.from([…])` builds the typed array natively — alloc + one
 // native-typed store per element — rather than materializing a boxed-f64 ARRAY (every
-// element a 9-byte f64.const) and a per-element f64→elem copy loop. Pins both the
-// correctness across element kinds AND the absence of the round-trip (no copy loop, and
-// no f64.store for the integer views). The shape jz's own copy-loop→from fusion emits
-// (vm's instruction table: 1977→1382 B once this stopped round-tripping through f64).
+// element a 9-byte f64.const) and a per-element f64→elem copy loop.
 test('typed array from literal: native build, no f64 round-trip', () => {
   // correctness across signed/unsigned/width/float element kinds
   is(runHost(`export let f = () => { const a = new Int32Array([10, 20, 30]); return (a[0]+a[1]+a[2])|0 }`).f(), 60)
@@ -1986,25 +1912,9 @@ test('typed array from literal: native build, no f64 round-trip', () => {
 
 // `.every()` on a typed-array FIELD of a heap-returned object crashed the
 // compiler ("internal: Cannot read properties of null (reading '0')") — the
-// receiver's element type flows through an object schema, not a local
-// binding, so `resolveElem` (module/typedarray.js) can't trace it back to a
-// `new XArray(...)` ctor and `typedLoop` returned null. TWO compounding bugs:
-// (1) emit.js's `tryStaticDispatch` treated ANY non-undefined return from a
-// `.${vt}:${method}` emitter — including this `null` "can't handle it" sentinel
-// — as a definitive match, so dispatch stopped instead of falling through to a
-// working strategy, and the null IR reached a consumer and crashed; (2) even
-// with (1) fixed, "fall through" would have meant module/array.js's generic
-// `.every` (`arrayLoop`), which assumes 8-byte f64-boxed elements — wrong for a
-// real typed array's packed native bytes (proven separately: the sibling
-// `.map` case, which already had its own "fall back to generic" special case,
-// silently returns garbage — a latent bug of the same shape, left as-is since
-// no test exercises it and it isn't one of this pass's 18). Fixed at the root:
-// `typedLoop` (shared by every/some/find*/indexOf/includes/reduce/forEach) now
-// falls back to `__typed_get_idx` — the same runtime aux-tag dispatch
-// `.reverse`/`.sort`/`.fill`/`.copyWithin` already use unconditionally — when
-// the concrete element kind can't be proven statically. Live instance:
-// time-stretch/psola.js (`norm.every((v) => v <= 1e-8)` on a render()-returned
-// buffer pair).
+// receiver's element type flows through an object schema, not a local binding,
+// so `resolveElem` (module/typedarray.js) can't trace it back to a `new
+// XArray(...)` ctor and `typedLoop` returned null.
 test('every: typed-array field of heap-returned object', () => {
   const { test } = runHost(`
     let render = (n) => {
@@ -2020,193 +1930,43 @@ test('every: typed-array field of heap-returned object', () => {
   is(test(4), 1)
 })
 
-// `typedArray.set(src)` on an array held in a DYNAMICALLY-ADDED struct field was a
-// silent no-op — a receiver whose static type is fully unknown (a dyn-prop field
-// carries no schema/ctor tracking at all) never reached ANY `.typed:*` emitter:
-// emitMethodCall's dispatch has no arm for "unknown-type receiver, but a
-// TYPED-specific emitter also exists for this method name" (the sibling of the
-// STRING-vs-generic runtime fork it already has), so `.set` fell to the generic
-// emitter — module/collection.js's `Map.prototype.set(key, val)` — silently
-// mistaking the source array for a Map key. (Confirmed the same root cause is
-// not `.set`-specific: `.forEach`/`.fill` on the identical shape misfired too —
-// a 3-element Float64Array's `.forEach` callback fired 24 times, 3 × its 8-byte
-// stride, because the generic path also misreads a typed array's BYTE-length
-// header as a raw element count.) Fixed with a new runtime ptr-type fork
-// (src/compile/emit.js, mirrors the existing string fork) that checks the
-// receiver's actual tag and dispatches `.typed:${method}` when it really is a
-// typed array. The same local binding or a literal-schema field already worked
-// (vt was known there, reaching `.typed:set` via static dispatch). Live
-// instance: time-stretch pvoc/pvoc-lock/transient (`state.prev = new
-// Float64Array(n)` on the stftBatch state object, then `state.prev.set(phase)`
-// each frame — WASM output silently diverged from JS).
-// An earlier emit-side attempt at this fix miscompiled the SELF-COMPILE kernel
-// (tokenizer lost `let`). THIS session's re-attempt (probed on fd593164):
-// root-caused the earlier miscompile's likely mechanism first — a SECOND,
-// competing runtime fork racing the existing string fork. TYPED and STRING
-// share five method names (at/includes/indexOf/lastIndexOf/slice); a fork
-// bolted on separately from the string one has to re-decide, on its own, which
-// of the two checks a shared method name first, and can silently misroute a
-// real string through the wrong arm (the self-hosted tokenizer is
-// string-method-heavy: `source.slice(i, j)` etc.). Avoided by construction:
-// added the `.typed:${method}` case to tryRuntimeStringFork's OWN dispatch
-// (src/compile/emit.js) via the existing dispatchByPtrType helper — STRING
-// still checked first, TYPED second, generic last, one decision instead of
-// two competing ones. Correctness is solid: `npm run build` + kernel-oracle
-// (539/539 AGREE-tier assertions, native vs kernel vs JS-oracle) + kernel-parity
-// (byte-identical WAT at O2/O3) all passed clean on a dist/jz.wasm built with
-// this diff, plus this test's own runtime result and forEach/fill/slice/Map.set
-// differential probes — no logic or semantic defect found anywhere.
-// NOT LANDED — self-compile BUILD reliability regresses. `node scripts/build-
-// dist.mjs` / `scripts/self-compile-build.mjs` (both: native jz compiling its
-// own ~159-module source graph at -O3) call watr's assemble() and, WITH this
-// diff applied, die there 4 of 5 runs with "Unknown instruction null" (a
-// memidx/data-segment site, watr/src/compile.js) — including two failures on
-// scripts/build-dist.mjs itself, the exact script the ONE success came from
-// (byte-for-byte the same source: the build is flaky, not just script-
-// dependent). WITHOUT this diff (src/autoload.js's fix alone, or an untouched
-// fd593164 control worktree): 2/2 clean. So the trigger needs this diff
-// present, but doesn't fire every time — consistent with tipping a MARGINAL,
-// pre-existing edge in the self-compile pipeline rather than this diff being
-// unconditionally wrong (this repo's own .work/evidence.md documents active,
-// independent self-compile-build nondeterminism — §defect 2, 2026-08-20, the
-// day before this tip). The fix as designed is preserved, NOT committed to
-// src/compile/emit.js: full file + diff at .work-adjacent session scratchpad
-// keep-emit.js / keep-emit.diff (mirrors the prior attempt's own keep-emit.js
-// precedent). Next session: reproduce with JZ_SELF_COMPILE_OPT=2 (rule out
-// -O3-only), then bisect self.js's 159-module graph (disable half, retry) to
-// the source position feeding `null` into watr's memidx/data builder — the
-// in-kernel discipline pass this shape has needed since the first attempt.
-// LOCALIZED (2026-08-21, agent/typed-set-edge, worktree off ca9ca31d). Crash-rate
-// reproduced first: 5/5 `npm run build` runs failed on this worktree (was 4/5),
-// identical stack every time (watr/src/compile.js instr()@1127, called from the
-// code/func-body section handler @851, assemble/compile @267/356, index.js's
-// watrCompile(optimized) call) — confirms the defect, not a fluke of the prior
-// session's count. NOT a memidx/data-segment site as first guessed — that was
-// this diff's own hedge, unresolved at the time. Root-caused via a temp
-// pre-watrCompile IR census (index.js, gated on JZ_DEBUG_DUMP_TREE, deleted with
-// this fix): 2 real `npm run build` runs both surfaced the identical shape, a
-// bare `['then', null]` (2-element array) nested under an `(if …(i32.and
-// tagbits mask)(i32.eq …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e.
-// `dispatchByPtrType`'s (src/ir.js) own `['then', ir]` construction with `ir`
-// unresolved to `null`. One run caught 112 such nodes across many distinct
-// compiler-internal functions ($closure24/25/29/121/211/929/2040/2252/2997/
-// 3010/4118/4121, $__start, $m60_ast$handlerArgs, …) — self.js's own module
-// graph, not this diff's emit.js/module/*.js source meaning.
-// MECHANISM: `tryRuntimeStringFork`'s new `cases.push([PTR.TYPED, callMethod(t,
-// typedEmitter)])` (this diff, src/compile/emit.js) embeds
-// `callMethod(t, typedEmitter)`'s return value VERBATIM into `dispatchByPtrType`'s
-// `then` arm — and `callMethod` → `emitMethodCallSpread`'s common path
-// (src/compile/emit.js: `if (!parsed.hasSpread) return methodEmitter(objArg,
-// ...parsed.normal)`) is a bare passthrough with no falsy guard. Several
-// `.typed:*` emitters use `return null` as a DECLINE signal for a shape their
-// fast path doesn't cover: confirmed `.typed:slice`
-// (module/typedarray.js:2610, `if (r.isBigInt) return null`) and
-// `.typed:filter` (module/typedarray.js:2548, `if (!r || r.isBigInt) return
-// null`; broader — also declines on a wholly-unresolved element kind, `!r`);
-// siblings unaudited. That convention is SOUND for every PRE-EXISTING caller —
-// `tryStaticDispatch`'s direct `.${vt}:${method}` call and the top-level
-// TYPED_STRATEGIES list both treat a falsy strategy return as "try the next
-// strategy" — this diff's dispatchByPtrType embedding is the FIRST caller that
-// splices a `.typed:${method}` result straight into IR with no such guard, so
-// a decline becomes a bare `null` sitting where an instruction belongs. The
-// decline convention itself predates this session (real, latent, in module/
-// typedarray.js already) — this diff supplies the first caller that doesn't
-// respect it, which is exactly the "pre-existing edge, newly tipped" shape the
-// earlier hedge guessed at, now with a name: not self-compile-build
-// nondeterminism (research.md §defect 2 is a different, wasm-hosted jz×jz
-// region-allocator mechanism, ruled out — this is host-native, no region
-// arena involved), but a real per-compile trigger condition (self.js contains
-// several vt-unknown receivers, several of them BigInt-element or
-// unresolved-element typed arrays, calling a method this diff newly routes
-// through the TYPED case) that fires on MOST but not EVERY compile — plausibly
-// order/inlining-sensitive in which of several equally-guilty call sites gets
-// hit or optimized-away first, not yet isolated further.
+// Correctness is solid: `npm run build` + kernel-oracle (539/539 AGREE-tier assertions,
+// native vs kernel vs JS-oracle) + kernel-parity (byte-identical WAT at O2/O3) all
+// passed clean on a dist/jz.wasm built with this diff, plus this test's own runtime
+// result and forEach/fill/slice/Map.set differential probes — no logic or semantic
+// defect found anywhere. `node scripts/build-dist.mjs` /
+// `scripts/self-compile-build.mjs` (both: native jz compiling its own ~159-module
+// source graph at -O3) call watr's assemble() and, WITH this diff applied, die there 4
+// of 5 runs with "Unknown instruction null" (a memidx/data-segment site,
+// watr/src/compile.js) — including two failures on scripts/build-dist.mjs itself, the
+// exact script the ONE success came from (byte-for-byte the same source: the build is
+// flaky, not just script-dependent). Next session: reproduce with JZ_SELF_COMPILE_OPT=2
+// (rule out -O3-only), then bisect self.js's 159-module graph (disable half, retry) to
+// the source position feeding `null` into watr's memidx/data builder — the in-kernel
+// discipline pass this shape has needed since the first attempt. Crash-rate reproduced
+// first: 5/5 `npm run build` runs failed on this worktree (was 4/5), identical stack
+// every time (watr/src/compile.js instr()@1127, called from the code/func-body section
+// handler @851, assemble/compile @267/356, index.js's watrCompile(optimized) call) —
+// confirms the defect, not a fluke of the prior session's count. Root-caused via a temp
+// pre-watrCompile IR census (index.js, gated on JZ_DEBUG_DUMP_TREE, deleted with this
+// fix): 2 real `npm run build` runs both surfaced the identical shape, a bare `['then',
+// null]` (2-element array) nested under an `(if …(i32.and tagbits mask)(i32.eq
+// …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e. `dispatchByPtrType`'s
+// (src/ir.js) own `['then', ir]` construction with `ir` unresolved to `null`.
 // JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
-// localization run above used `npm run build`'s O3 default.
-// DIRECTION (a) TRIED PRIOR SESSION AND REVERTED — UNSAFE, do not repeat as-is.
-// Guarded `tryRuntimeStringFork`: a nullish `callMethod(t, typedEmitter)` (or
-// `strEmitter`) is omitted from `cases`, not pushed — falls through to the next
-// case or to `generic` instead of embedding `null`. Build-crash gate PASSED
-// clean: `npm run build` × 5/5 (was 5/5 FAIL without the guard). But
-// kernel-oracle/kernel-parity, run immediately after per this repo's own gate
-// order, FAILED near-totally on the resulting dist/jz.wasm — kernel-oracle 1/13
-// pass (was 13/13 clean at ca9ca31d), kernel-parity 0/3 — every single kernel
-// invocation, including the trivial byte-identical-WAT-at-O0 probe (no typed
-// arrays involved at all), threw an empty-message `SyntaxError` from the
-// KERNEL'S OWN compiled parser (confirmed directly: `self.exports.default(...)`
-// on a plain `sum` source throws `SyntaxError("")`, not a WASM trap). This
-// disproved the working assumption behind (a) — that a declined TYPED case is
-// effectively dead code at runtime, so falling through to `generic` is
-// consequence-free. It is NOT dead code: watr's assembler rejects malformed IR
-// at BUILD time regardless of reachability (explaining the clean 5/5 build),
-// but at least one of the ~112 census-found sites sits on the kernel's live
-// tokenizer/parser hot path and IS reached with real data — `generic`'s
+// localization run above used `npm run build`'s O3 default. DIRECTION (a) TRIED PRIOR
+// SESSION AND REVERTED — UNSAFE, do not repeat as-is. Build-crash gate PASSED clean:
+// `npm run build` × 5/5 (was 5/5 FAIL without the guard). It is NOT dead code: watr's
+// assembler rejects malformed IR at BUILD time regardless of reachability (explaining
+// the clean 5/5 build), but at least one of the ~112 census-found sites sits on the
+// kernel's live tokenizer/parser hot path and IS reached with real data — `generic`'s
 // wrong-layout read there corrupts the compiled parser itself.
 //
-// FIXED (agent/typed-decline-b, direction (b) — audit + close every reachable
-// decline, rather than guard-and-omit it). Audited all ~29 `.typed:*` emitters
-// (grep `'.typed:` module/typedarray.js): `.typed:fill`/`.reverse`/`.copyWithin`/
-// `.sort`/`.set`/`.at`/`.subarray`/`.toBase64`/`.toHex`/`.setFrom*` never decline
-// (unconditional runtime aux-byte dispatch); `.typed:forEach`/`.reduce`/
-// `.indexOf`/`.lastIndexOf`/`.includes`/`.find`/`.findIndex`/`.findLast`/
-// `.findLastIndex`/`.some`/`.every` share one dynamic-branch helper (`typedLoop`)
-// that itself never returns falsy, so their own `if (!loop) return null` guards
-// are dead; `.typed:toReversed`/`.toSorted`/`.with` only propagate `.typed:slice`'s
-// decline. Two had a REAL reachable decline once the TYPED case below embeds a
-// typed emitter's raw return into `dispatchByPtrType` unguarded: `.typed:slice`'s
-// `r.isBigInt` case now routes into the SAME `!r` → `__typed_slice_rt` runtime
-// fallback direction (a) sketched (slice is a raw byte copy — BigInt needs no
-// separate static path); `.typed:filter`'s `!r || r.isBigInt` case gets a new
-// runtime aux-dispatch loop (module/typedarray.js) — `__typed_get_idx`/
-// `__typed_set_idx` per element (the same helpers `typedLoop`'s own dynamic
-// branch already leans on unconditionally), `__ptr_aux`/`__typed_shift`/
-// `__alloc_hdr_n`/`__mkptr` for a correctly-strided, correctly-tagged output
-// allocated worst-case and patched to the true passed count — mirrors
-// `__typed_slice_rt`'s own runtime-aux-dispatch allocation shape, extended with
-// filter's per-element callback. `tryRuntimeStringFork` renamed `tryRuntimePtrTypeFork`
-// (src/compile/emit.js) — it dispatches STRING vs TYPED vs generic now, not just
-// string vs generic. `set: ['core','typedarray','collection']` landed in
-// src/autoload.js PROP_MODULES, generalized to every OTHER `.typed:*` name that
-// shares a generic `.${method}` emitter (fill/map/filter/reduce/forEach/find*/
-// every/some/copyWithin/at/toSorted/toReversed/with/sort/reverse/slice/indexOf/
-// lastIndexOf/includes) — audit found ALL of them missing `typedarray`, not just
-// `set`; differentially confirmed load-bearing (a host-provided typed-array
-// PARAMETER — source names no typed ctor anywhere, so `includeForRuntimeCtor`
-// never fires — silently misdispatched `.fill()` without this row: 1003 instead
-// of 9009, reading a real Float64Array as a guessed plain array). `.typed:[]`/
-// `.typed:[]=` (index ops, not method calls) stay out of scope: a different,
-// pre-existing, already-guarded compile-time-only call path (module/array.js /
-// src/compile/emit-assign.js) never reached through this fork.
-//
-// CLOSED IN A FOLLOW-UP SESSION (agent/typed-map-width): `.typed:map`'s own
-// `!r` (fully-unresolved, non-BigInt) case used to fall back to generic
-// `.map` — sound for BigInt (bit-identical 8-byte load, the same reasoning as
-// its own accepted BigInt fallback a few lines above it) but a real
-// width-correctness gap for a genuinely narrow unresolved receiver: not just
-// "double-width" but a raw header/stride misread (array.js's generic `.map`
-// reads the header via a direct, non-polymorphic `arrayLenFromPtr`/8-byte-
-// stride `arrayLoop`, not the aux-aware `__len`/per-width `elemLoadIR`),
-// confirmed to read outright garbage (denormal `2.5e-316`-class values, raw
-// adjacent heap bytes) for an Int8Array through the opaque-polymorphic/
-// dyn-field/host-receiver fork shapes below — not a plausible wrong number.
-// Fixed the same way `.typed:filter`'s `!r` branch above was: a runtime
-// aux-dispatch loop (module/typedarray.js) — `__typed_get_idx`/
-// `__typed_set_idx` per element (the SAME helpers `typedLoop`'s own dynamic
-// branch and `.typed:set`'s `!r` branch already lean on unconditionally),
-// `__ptr_aux`/`__typed_shift`/`__alloc_hdr_n`/`__mkptr` for a correctly-
-// strided, correctly-tagged output — simpler than filter's shape since map's
-// output length is always EXACTLY the input length (one-shot alloc, no
-// worst-case-then-patch-the-count dance; mirrors `__typed_slice_rt`'s own
-// shape instead). Differentially verified against real Node/V8 typed arrays
-// (not hand-picked literals) for Int8Array wrap (ECMA-262 ToInt8, 7.1.11),
-// Uint8Array wrap-not-clamp (ToUint8, 7.1.10 — contrast with
-// Uint8ClampedArray's ToUint8Clamp, 7.1.12, which only its element WRITES
-// use), and Float32Array f32 store-rounding (distinct from f64 arithmetic),
-// at optimize 0/2/3.
-//
-// The v1 provenance pass closes the two formerly-adjacent holes too: an
-// erased host receiver now retains f16/clamped storage policy, and bracket
-// reads/writes dispatch by runtime element aux instead of assuming 8-byte f64.
+// Differentially verified against real Node/V8 typed arrays (not hand-picked literals)
+// for Int8Array wrap (ECMA-262 ToInt8, 7.1.11), Uint8Array wrap-not-clamp (ToUint8,
+// 7.1.10 — contrast with Uint8ClampedArray's ToUint8Clamp, 7.1.12, which only its
+// element WRITES use), and Float32Array f32 store-rounding (distinct from f64
+// arithmetic), at optimize 0/2/3.
 test('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
@@ -2309,10 +2069,7 @@ test('filter: into typed-array field added dynamically to an empty object (narro
 })
 
 // .typed:slice / .typed:filter BigInt pins — the OTHER decline condition this
-// branch closed (`r.isBigInt`, alongside `!r` above). Both now route through a
-// runtime aux-byte dispatch instead of a bare `return null`; asserted via
-// `.length` exercises the runtime structure; the provenance-through-local
-// indexed-value cases are pinned separately below.
+// branch closed (`r.isBigInt`, alongside `!r` above).
 test('slice: BigInt64Array (isBigInt no longer bails to a bare decline)', () => {
   const { f } = runHost(`export let f = () => {
     let b = new BigInt64Array(4)
@@ -2331,13 +2088,8 @@ test('filter: BigInt64Array (isBigInt no longer bails to a bare decline)', () =>
   is(f(), 2)
 })
 
-// === .typed:map `!r` decline — species/width fix (agent/typed-map-width) ===
-// See the long comment above the BigInt pins for the full mechanism. Four
-// pins: the opaque-polymorphic idiom this file already uses for `.at`'s own
-// dynamic-dispatch test, the dyn-field shape (narrow width, matching
-// `.filter`'s sibling probe just above), the host-receiver shape (zero
-// typed-ctor syntax anywhere in source), and the Uint8Array wrap-vs-clamp
-// truth. Each differential against a real engine value, not a hand-picked one.
+// See the long comment above the BigInt pins for the full mechanism. Each
+// differential against a real engine value, not a hand-picked one.
 
 test('.map: opaque/polymorphic receiver preserves species + width (was reading garbage via the generic-array decline)', () => {
   // `which` makes the element kind unprovable at compile time (resolveElem's
@@ -2363,11 +2115,10 @@ test('.map: into typed-array field added dynamically to an empty object (narrow 
 })
 
 test('.map: host-provided typed receiver (source names no typed ctor at all) preserves species + width', () => {
-  // dst carries no typed-ctor syntax anywhere in source, so resolveElem(dst) can
-  // never trace a binding — the `!r` decline this fix closes. Reads back via
-  // .forEach (proven-correct dispatch) rather than dst[i]/m[i] bracket
-  // indexing — seeing the SEPARATE bracket-index-on-erased-vt-host-receiver
-  // gap noted in the long comment above, not re-testing it here.
+  // Reads back via .forEach (proven-correct dispatch) rather than dst[i]/m[i]
+  // bracket indexing — seeing the SEPARATE
+  // bracket-index-on-erased-vt-host-receiver gap noted in the long comment
+  // above, not re-testing it here.
   const r = jz(`export function f(dst) {
     let m = dst.map(x => x * 2)
     let out = 0
@@ -2405,40 +2156,21 @@ test('.map: Float32Array keeps f32 store-rounding through the runtime decline pa
   ok(f(1) !== 0.1 + 0.2, 'must NOT equal plain f64 arithmetic')
 })
 
-// === .typed:map callback index + BigInt species (agent/typed-map-index,
-// external audit follow-up to agent/typed-map-width above) ===
-//
 // Two remaining defects the width fix didn't touch:
 //
-// (A) CALLBACK INDEX — both the static scalar path (module/typedarray.js,
-// the `elemType != null && !r.isBigInt` branch) and the runtime aux-dispatch
-// loop just above (the `!r` / BigInt fallback) invoked the callback with only
-// the element, dropping the index JS always passes as the 2nd arg. Every
-// OTHER typed-array iteration method in this file (forEach/find/findIndex/
-// findLast/findLastIndex/some/every — see the `ctx.closure.floor = 2`
-// comment near this file's top) already passes (item, idx); `.map` was the
-// one holdout. Fixed by adding a `f64.convert_i32_s` of the loop-counter
-// local as a 2nd closure-call arg on both paths — the SAME idiom the other
-// methods already use, needing no width bump (floor was already 2). The `arr`
-// 3rd arg real JS callbacks also receive stays a recorded gap: jz's callback
-// machinery never passes it to ANY iteration method anywhere in the compiler
-// (array.js's own `.map`/`.filter`/`.forEach` don't either — grep
+// The `arr` 3rd arg real JS callbacks also receive stays a recorded gap: jz's
+// callback machinery never passes it to ANY iteration method anywhere in the
+// compiler (array.js's own `.map`/`.filter`/`.forEach` don't either — grep
 // `cb.call([item, idxArg` in module/array.js — only `.reduce`'s (acc, item,
 // idx) needs a 3-wide floor); adding a receiver-array arg just for typed
 // `.map` would be new, inconsistent surface, not a mirror of anything.
 //
-// (B) BIGINT SPECIES — a statically-known BigInt64Array/BigUint64Array
-// receiver used to short-circuit `.typed:map` straight to generic
-// `Array.prototype.map` (module/typedarray.js, the `if (r?.isBigInt)` branch
-// that used to sit right after `resolveElem`). The 8-byte payload survived
-// (bit-identical width), but the SPECIES didn't: the result was a plain
-// PTR.ARRAY, not a typed array — `ArrayBuffer.isView()` on it reports false,
-// and it carries none of a typed array's other behavior. Fixed by excluding
-// `r.isBigInt` from the SIMD and scalar branches instead, letting it fall
-// through to the SAME runtime aux-dispatch loop the `!r` (unresolved) case
-// already used — which was already proven BigInt-sound (its aux mask already
-// preserved TYPED_ELEM_BIGINT_FLAG; `__typed_get_idx`/`__typed_set_idx`
-// already roundtrip BigInt elements bit-exact via f64.reinterpret_i64) since
+// Fixed by excluding `r.isBigInt` from the SIMD and scalar branches instead,
+// letting it fall through to the SAME runtime aux-dispatch loop the `!r`
+// (unresolved) case already used — which was already proven BigInt-sound (its
+// aux mask already preserved TYPED_ELEM_BIGINT_FLAG;
+// `__typed_get_idx`/`__typed_set_idx` already roundtrip BigInt elements
+// bit-exact via f64.reinterpret_i64) since
 // dynamically-unresolved-but-actually-BigInt receivers always reached it —
 // only the STATICALLY-known case was diverted away from it.
 
@@ -2475,9 +2207,7 @@ test('.map: BigInt64Array/BigUint64Array preserve species (was: silently reroute
   const isView2 = runHost(`export let f = () => ArrayBuffer.isView(new BigUint64Array([1n]).map(x => x)) ? 1 : 0`).f
   is(isView2(), 1, 'BigUint64Array: same')
 
-  // Value pin: x => x + 1n over [1n] → [2n]. Constructor provenance now
-  // survives direct chains, concise callbacks, and local assignments through
-  // one typed-storage provenance authority.
+  // Value pin: x => x + 1n over [1n] → [2n].
   const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => { return x + 1n })[0] === 2n ? 1 : 0`).f
   is(val(), 1, '1n + 1n = 2n, correct species and bit-exact roundtrip')
 
@@ -2585,10 +2315,9 @@ export function g() { let a = [10, 20]; return a.map(s => mk(s)) }`)
   is(r.memory.read(r.exports.f(r.memory.Array([10, 20]))), [{ v: 10 }, { v: 20 }], 'host-marshaled source')
 })
 
-// Array.isArray answers from the STATIC kind when known — a rep-narrowed array
-// (raw base local, e.g. a slice() result) is not a NaN-box, so the runtime tag
-// test alone reads a plain number and says false. O2+ promotion-DERIVED arrays
-// remain a recorded gap (.work/archive/todo.md, extension-surface archive) — pinned at O0 here.
+// Array.isArray answers from the STATIC kind when known — a rep-narrowed array (raw base local,
+// e.g. a slice() result) is not a NaN-box, so the runtime tag test alone reads a plain number
+// and says false. O2+ promotion-DERIVED arrays remain a recorded gap — pinned at O0 here.
 test('Array.isArray: statically-known arrays (slice/rest results)', () => {
   const o = { optimize: false }
   is(jz(`export let f = () => { let a = [1, 2]; let s = a.slice(0); return Array.isArray(s) ? 1 : 0 }`, o).exports.f(), 1)
@@ -2602,20 +2331,8 @@ test('Array.isArray: statically-known arrays (slice/rest results)', () => {
 // `.valueOf()` on an unresolved-static-type receiver (a heterogeneous array's
 // element, or a plain parameter with no call-site type proof) must return the
 // receiver UNCHANGED (Object.prototype.valueOf, ES2024 20.1.3.7 — Array/plain
-// Object inherit it verbatim). Root cause (kernel-parity self-compile printer
-// collapse, watr's print.js `node[i]?.valueOf?.() ?? node[i]` then
-// `Array.isArray(sub)`): jz's unresolved-type `.valueOf()` dispatch
-// (emit.js tryRuntimePtrTypeFork's generic fallback arm) reads ONE shared,
-// flat-keyed `ctx.core.emit['.valueOf']` slot — module/string.js registers
-// the correct identity passthrough there, but module/date.js used to
-// OVERWRITE that SAME flat key with its own Date.prototype.valueOf
-// (`emitDateGetTime`: `f64.load` at the receiver's own base address) whenever
-// both modules were linked into the same compile (which autoload does
-// unconditionally for any unresolved `.valueOf()` call site, independent of
-// whether the program ever mentions Date). For an array, offset 0 IS
-// element 0, so `arr.valueOf()` silently returned `arr[0]` instead of `arr`.
-// Not a self-compile-only bug — reproduces with plain native compile(), zero
-// Date usage anywhere in this source.
+// Object inherit it verbatim). Not a self-compile-only bug — reproduces with
+// plain native compile(), zero Date usage anywhere in this source.
 test('valueOf on unresolved-type receiver returns identity, not element 0 (date.js flat-key regression)', () => {
   // Array element read through a computed index — the exact shape self-
   // compile's WAT printer uses (node[i]?.valueOf?.() ?? node[i]).
@@ -2694,11 +2411,7 @@ test('Ctor.prototype.method.call(receiver, …) is the method on the receiver', 
 
 // The summary models the array callback methods: `map` collects the callback's
 // results in the call's own cell, presence included, so an element that may be
-// null keeps its `!== null` test, in a read and inside an inlined `every`. The
-// kernel compiled `slots.every(b => b !== null)` (module/object.js's static
-// object literal) as always true and laid out null slots. A receiver the
-// summary cannot cell (a rest parameter's map) gets no hint from the body
-// census either: its element kind carries no presence (`e`).
+// null keeps its `!== null` test, in a read and inside an inlined `every`.
 test('array callbacks: a mapped element that may be null keeps its null test; find misses with undefined', () => {
   const src = `const bits = (node) => { if (!Array.isArray(node)) return null; if (node[0] === "f64.const") return "0x" + node[1]; return null }
   const mark = (v) => v > 1 ? "x" + v : null
@@ -2716,13 +2429,7 @@ test('array callbacks: a mapped element that may be null keeps its null test; fi
 
 // The element kind of an array is the program summary's cell (src/summary):
 // one cell per array, joining every store through every alias, helper,
-// callback and closure. The body census widened on `push` alone, so after an
-// `unshift('y')`, a `splice` insert, `fill`, an index write, a push through
-// a helper or an alias, or a store from a callback, `a[i] === 'y'` folded
-// false on the literal's numeric claim; a `concat` took the receiver's kind
-// and ignored its arguments; a `split`, a call result, a JSON array, a table
-// row and a typed-array literal were claimed for good. Each case runs against
-// JS at every level.
+// callback and closure. Each case runs against JS at every level.
 test('element kind: the summary cell joins every store, so a non-number store keeps the read live', () => {
   const cases = {
     'index write': `export let f = (i) => { const a = [1, 2]; a[1] = 'y'; return a[1] === 'y' ? 1 : 0 }`,
@@ -2822,9 +2529,8 @@ test('element kind: an array every store into which is a number reads numbers wi
 // Every position argument (23.1.3.x: fill, copyWithin, slice, splice, with,
 // indexOf/lastIndexOf/includes's fromIndex) is ToIntegerOrInfinity: a string
 // converts, a Boolean is 0/1, undefined takes the default, a BigInt throws a
-// TypeError (7.1.5 ToIntegerOrInfinity through 7.1.4 ToNumber). The search
-// methods honor fromIndex, a negative one from the end. Reference values
-// are V8's for the same expressions (differential below).
+// TypeError (7.1.5 ToIntegerOrInfinity through 7.1.4 ToNumber). Reference
+// values are V8's for the same expressions (differential below).
 test('array positions coerce through ToIntegerOrInfinity and reject BigInt', () => {
   const src = `export function main() {
     const a = [1, 2, 1, 3, 1]
@@ -2909,7 +2615,7 @@ test('Array constructor lengths, toSpliced, and a bare splice', () => {
 
 // A splice whose value goes unread removes its range and builds no array of
 // the removed elements (module/array.js `.splice`): a queue's compaction, a
-// deletion. One whose value is read returns them, as before.
+// deletion.
 test('a splice statement builds no array of what it removes', () => {
   const src = `export let drop = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); let s = 0; while (a.length > 2) { a.splice(0, 2); s += a[0] } return s + a.length }
     export let keep = () => { const a = [1, 2, 3, 4, 5]; const r = a.splice(1, 2); a.splice(-1); return [a, r, [7, 8, 9].splice(1)] }`

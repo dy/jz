@@ -584,10 +584,8 @@ test('regex: str.match(regex) named capture groups', () => {
   is(evalStr('"item:abc-123".match(/^item:(?<slug>[\\w-]+)$/).groups.slug'), 'abc-123')
 })
 
-// ============================================================================
 // Stress tests — real-world patterns, edge cases, conformance
 // (PCRE/Perl test vectors, validation patterns, backtracking edges)
-// ============================================================================
 
 test('regex stress: quantifiers / anchors / alternation / groups / classes', () => {
   cases([
@@ -735,8 +733,6 @@ test('new RegExp(dynamic) errors clearly', () => {
   )
 })
 
-// === Regression: exec() /g lastIndex advancement ===
-
 test('regex: exec /g loop collects all matches', () => {
   // JS oracle: while ((m = /ab/g.exec(s))) loop → 3 matches in 'ab cd ab ef ab'
   // Before fix: lastIndex never advanced → infinite loop (count hit safety limit)
@@ -790,8 +786,6 @@ test('regex: exec /g lastIndex advances correctly', () => {
   is(r.exports.f(mem.String('12 345 6')), jsOracle)
 })
 
-// === Regression: \s missing VT (0x0B) and FF (0x0C) ===
-
 test('regex: \\s matches VT (\\x0B) and FF (\\x0C)', () => {
   // JS: /\s/.test('\x0B') === true, /\s/.test('\x0C') === true
   // Before fix: only matched SP TAB LF CR
@@ -831,8 +825,6 @@ test('regex: replace with a function replacer (single + /g)', () => {
 
 test('regex: replace callback receives capture groups + offset + string (ES 22.1.3.19)', () => {
   const run = src => jz(src).exports.f
-  // Was: only the match was passed — groups read `undefined` (the self-compile
-  // kernel's decodeIdent errs on any regex literal with \uXXXX because of it).
   is(run('export let f = (s) => s.replace(/Q([0-9a-fA-F]{4})/g, (m, p, o, str) => m + "|" + p + "|" + o + "|" + str)')('xQ0041y'),
     'xQ0041y'.replace(/Q([0-9a-fA-F]{4})/g, (m, p, o, str) => m + '|' + p + '|' + o + '|' + str))
   // Unmatched alternation group arrives as undefined (the decodeIdent shape).
@@ -902,13 +894,6 @@ export let sweep = () => {
     is(jz(src, { optimize }).exports.sweep(), '__heap_end __heap ', `O${optimize}: untyped receiver scans`)
 })
 
-// ============================================================================
-// Sticky /y anchoring + \p rejection + matchAll /g gate (2026-07-10).
-// /y previously scanned forward like /g (silently identical); \p{…} silently
-// matched the literal text "p{…}"; matchAll without /g scanned like /g instead
-// of the spec TypeError. All three were silent-wrong — now anchored/rejected.
-// ============================================================================
-
 test('regex: sticky /y anchors at lastIndex, no forward scan', () => {
   is(jz(`let re = /a/y; export let f = () => re.test("ba") ? 1 : 0`).exports.f(), 0)
   is(jz(`let re = /a/y; export let f = () => re.test("ab") ? 1 : 0`).exports.f(), 1)
@@ -938,16 +923,11 @@ test('regex: matchAll requires /g at compile time', () => {
   is(jz(`export let f = () => "a1b2".matchAll(/\\d/g).length`).exports.f(), 2)
 })
 
-// Named backreferences \k<name> (2026-07-11, Ring 2): resolved at parse time to
-// the group's NUMBERED backref node (the VM's existing \1-\9 machinery), so
-// forward references work and undefined names reject cleanly.
 test('regex: \\k<name> named backreferences', () => {
   is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xx") ? 1 : 0`).exports.f(), 1)
   is(jz(`export let f = () => /(?<a>x)\\k<a>/.test("xy") ? 1 : 0`).exports.f(), 0)
   is(jz(`export let f = () => /(?<q>['"]).*?\\k<q>/.test("say 'hi' ok") ? 1 : 0`).exports.f(), 1)  // quote-matching idiom
   is(jz(`export let f = () => /\\k<a>(?<a>x)/.test("x") ? 1 : 0`).exports.f(), 1)  // forward ref
-  // audit-#11 item 7 sub-4: see the property-escapes test above — compile-time
-  // error message text doesn't survive the kernel's wasm-ABI round trip.
   throws(() => jz(`export let f = () => /\\k<nope>x/.test("x")`), onKernel() ? new SyntaxError() : /undefined group/)
 })
 

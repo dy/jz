@@ -1,13 +1,11 @@
 // Integers a loop writes itself, held as words of a copy while a box holds them
 // (src/compile/plan/integral-loops.js): each program answers what Node answers at
-// every level, at the inputs for which a word answers otherwise, and a loop shaped
-// as rfft's butterflies keeps its index locals in integer registers. The inputs are
-// rfft's (examples/rfft): `id *= 4` leaves the word for n >= 2^31 - 1, `i0 += id`
-// for n >= 3 * 2^29 - 1, the stage loops' `ix = (id << 1) - n2` for n >= 2^29, a
-// counter at 2^31; and the box's own edges, where the copy is left mid-loop.
-// Each loop carries a cap on its trips where Node itself would not end. The box is a
-// tier above what the planner builds with no box, never in its place: where its guard
-// fails, the copy with no box runs, or the loop as the planner left it.
+// every level, at the inputs for which a word answers otherwise, and a loop shaped as
+// rfft's butterflies keeps its index locals in integer registers. The inputs are
+// rfft's (examples/rfft): `id *= 4` leaves the word for n >= 2^31 - 1, `i0 += id` for
+// n >= 3 * 2^29 - 1, the stage loops' `ix = (id << 1) - n2` for n >= 2^29, a counter
+// at 2^31; and the box's own edges, where the copy is left mid-loop. Each loop
+// carries a cap on its trips where Node itself would not end.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
@@ -136,8 +134,7 @@ test('boxed counters: a -0 among the names of the box is no word of it', () => {
   // a length) lies in the box by comparison where it is -0, and the proof reads a name of the box as
   // no -0: `(i + 1) * z` was a word of the copy, +0, at levels 2 and over, where the product is -0
   // (ECMA-262, Number::multiply: a product's sign is negative where the operands' signs differ, a
-  // zero's among them). Such a name is tested for -0 as an alias is. `1 / i` tells the zeros apart.
-  // Expected values are Node's.
+  // zero's among them). `1 / i` tells the zeros apart. Expected values are Node's.
   const DECL = {
     'a literal': 'const z = -0',
     'a product of literals': 'const z = 0 * -1',
@@ -158,10 +155,8 @@ export let f = (n, s, t) => {
 })
 
 test('boxed counters: a length the receiver may not make an integer is no word of it', () => {
-  // A `length` is a count only of an array, a string or a typed array: another receiver's is what
-  // it holds (`{ length: 40.5 }`). Read as a word as written, the box tested the name within [0, top]
-  // and the proof read it as an integer, so `ix = n - k` was `(n - k) | 0` and `x[ix]` read x[39]
-  // where Node reads x[39.5], undefined (levels 2 and over). Expected values are Node's.
+  // A `length` is a count only of an array, a string or a typed array: another receiver's is what it
+  // holds (`{ length: 40.5 }`). Expected values are Node's.
   for (const recv of ['new Float64Array(10)', '[1, 2, 3, 4, 5]', "'abcdefghij'"]) compare(`export let f = (b, d, t) => {
   const o = t ? { length: b } : ${recv}
   const n = o.length
@@ -202,11 +197,7 @@ test('boxed counters: rfft answers what Node answers, its index locals words of 
 })
 
 test('boxed counters: a product of a name the box holds stable is a word of the copy', () => {
-  // `W` the loop reads and never writes: aliased and tested into the box once. The walk read it as
-  // the box's whole range, the literal [0, top]: under `y < H`, `y * W` came to `(H - 1) * top`, a
-  // test no height above 3 passes (top 2^30 - 1), and the copy never ran (penrose's `px[y * W + x]`); over the box
-  // alone, to `top * top`, past the word, and the index stayed a Number. The name reads as its own
-  // value now: `W * min(n - 1, H - 1)` the test, `imul(y, W)` the index. Expected values are Node's.
+  // `W` the loop reads and never writes: aliased and tested into the box once. Expected values are Node's.
   const RANGE = `let W = 0, H = 0, px
 export let resize = (w, h) => { W = w; H = h; px = new Float64Array(w * h); return px.length }
 export let f = (n, x) => {
@@ -234,11 +225,8 @@ export let f = (n, x) => {
 })
 
 test('boxed counters: an entry outside the box runs the copy the planner builds with no box', () => {
-  // penrose's line walk (examples/penrose/penrose.js drawLine): `x += sx`, a stride of either sign. The
-  // box holds `x` and `y` in [0, 2^k - 1], so a line stepping left or up, or starting left of the
-  // canvas, fails its guard; the box stood in place of the copy the planner builds with no box (its
-  // trips bounded by `guard < 8000`), and such a line ran as written. The box is a tier above that
-  // copy now: where its guard fails, the copy runs. Expected values are Node's.
+  // penrose's line walk (examples/penrose/penrose.js drawLine): `x += sx`, a stride of either sign.
+  // Expected values are Node's.
   const src = `let W = 0, H = 0, px
 export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); return px.length }
 let drawLine = (x0f, y0f, x1f, y1f, col) => {
@@ -279,9 +267,7 @@ export let lines = (n, x0, y0, x1, y1) => {
 
 test('boxed counters: where only the box builds a copy, the loop beside it stands as with no box', () => {
   // The planner builds no copy of the outer loop (`ix` and `id` leave any width it proves), the
-  // box does. The loop as written beside it ran where the box's guard failed, cold, its inner loop
-  // as written too: slower there than with no box, where the loop runs as written with the inner
-  // copy in it. It stands so now: not cold, the inner copy in place. Expected values are Node's.
+  // box does. Expected values are Node's.
   const src = `const x = new Float64Array(64), a = new Float64Array(16)
 export let f = (n, m) => {
   let ix = 0, id = 1, r = 0

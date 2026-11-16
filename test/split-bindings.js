@@ -230,8 +230,7 @@ test('split bindings: statement renaming takes linear work', () => {
     const body = ['{}', list], before = JSON.stringify(body)
     reads = 0
     const out = splitReassigned({ body, sig: { params: [{ name: 'a' }] } })
-    // Every assignment used to rename the whole remaining suffix: 65,792
-    // reads at 128 statements. Allow a constant number of visits per node.
+    // Allow a constant number of visits per node.
     ok(reads <= count * 32 + 32, `${count} reassignments: bounded traversal (${reads} reads)`)
     const want = [';', list[1]]
     for (let i = 0; i < count; i++) want.push(['let', ['=', N('sum', i), ['+', i ? N('sum', i - 1) : 'sum', value]]])
@@ -380,9 +379,7 @@ test('split bindings: a default inside a version arm splits, its later reads ren
 // string apart, its loops copied behind the guard. One that is an array wherever it
 // holds a value (an element of an array of arrays, a find's or a get's result) has
 // nothing to read apart: the guard's miss is the missing value's TypeError, which
-// the statements as written throw at the same read. Since `Array.isArray` asks the
-// value where its operand may be missing the guard no longer folded, and every such
-// loop was emitted twice.
+// the statements as written throw at the same read.
 test('split bindings: an array that may be missing is read as written, in one loop', () => {
   const src = `const rows = [[1, 2, 3], [4, 5, 6, 7], [8]]
     export let f = (k) => { const a = rows[k]; let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
@@ -415,9 +412,7 @@ test('split bindings: an array that may be missing is read as written, in one lo
 
 // A list keeps an empty statement where an earlier pass folded one away: a
 // conditional whose test the argument's kind decides, in a function spliced into
-// its caller (`if (typeof v === 'object') v.x = 'str'` called with a closure). The
-// split read the statement's operator without asking whether there was one, and
-// the compile stopped on an internal error at levels 2 and over.
+// its caller (`if (typeof v === 'object') v.x = 'str'` called with a closure).
 test('split bindings: a statement folded away is an empty statement of the list', () => {
   const programs = {
     'a closure where an object is tested for': `let sink = (v) => { if (typeof v === 'object') v.x = 'str' }

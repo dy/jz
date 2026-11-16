@@ -198,7 +198,6 @@ test('import unknown symbol', () => {
   throws(() => run(`import { unknown } from 'math'`), /not found|unknown/i)
 })
 
-// Multiple imports
 test('multiple import statements', () => {
   const { f } = run(`
     import { sin } from 'math'
@@ -242,7 +241,6 @@ test('import math from math', () => {
   is(f(16), 4)
 })
 
-// A built-in module's name is the program's to take: its own module wins
 test('import: a source module wins over a built-in module of the same name', () => {
   const f = (src, opts) => jz(src, opts).exports
   for (const name of ['string', 'math', 'core', 'date', 'console', 'json', 'Map'])
@@ -253,9 +251,7 @@ test('import: a source module wins over a built-in module of the same name', () 
   almost(f(`import { sin } from 'math'; export let f = x => sin(x)`).f(0), 0, 1e-12, 'the built-in where no module takes the name')
 })
 
-// ============================================
 // Source module bundling (Tier 2)
-// ============================================
 
 test('import: source module basic', () => {
   const { exports } = jz(
@@ -323,14 +319,10 @@ test('re-export: multi-level chain', () => {
   is(exports.f(14), 42)
 })
 
-// === Aliased re-export ABI ===
+// Aliased re-export ABI
 // `function/const foo; export { foo as bar }` reaches the WASM boundary
 // only via sec.customs (`f.exported=false` for the source func — the
 // snapshot at defFunc is taken before the `export { … }` statement runs).
-// Regression: until the isExported/exportNamesOf split, the rest-param
-// custom section + boundary wrapper both keyed on `f.exported`, so
-// aliased re-exports skipped rest-pack (NaN args) and skipped boundary
-// wrap (narrowed pointer/string params received raw f64 from JS).
 
 test('aliased re-export: rest params packed under alias name', () => {
   const { exports } = jz(`let f = (a, ...rest) => a + rest.length; export { f as g }`)
@@ -381,9 +373,7 @@ test('import: bundled module newline ! after comment', () => {
 test('import: property name colliding with module-scoped binding is not renamed', () => {
   // Module bundling renames module-scoped bindings with a prefix. A property key
   // (`obj.reftype`) is a literal, not a reference — it must survive even when a
-  // module-scope `const reftype` exists. Regression: the rename walk descended
-  // into `['.', obj, prop]`'s third slot, mangling the key, so `IMM.reftype`
-  // resolved to a non-existent property.
+  // module-scope `const reftype` exists.
   const mod = `
     const reftype = 99
     const IMM = { reftype: 42, other: 7 }
@@ -412,8 +402,8 @@ test('import: method name colliding with module-scoped binding is not renamed', 
 
 test('import: a nested arrow\'s default reads a module-scoped binding', () => {
   // The rename walk renamed an arrow's body but not its parameter list, so a
-  // default of an arrow inside a function declaration kept the bare name:
-  // "'C' is not in scope". A default naming an earlier parameter still reads it.
+  // default of an arrow inside a function declaration kept the bare name: "'C'
+  // is not in scope".
   const mod = `
     const B = 2, C = 3
     function order(n) {
@@ -486,10 +476,6 @@ test('import default: bundled arrow', () => {
   is(f(21), 42)
 })
 
-// ============================================
-// Host imports (Tier 3)
-// ============================================
-
 test('import: host function', () => {
   const { exports } = jz(
     'import { double } from "host"; export let f = (x) => double(x) + 1',
@@ -540,9 +526,7 @@ test('import: host constant is shadowed by a local of the same name', () => {
   is(exports.f(), 10)
 })
 
-// ============================================
 // Host import overrides of built-in globals
-// ============================================
 
 test('host override: Math.sin', () => {
   const { exports } = jz(
@@ -707,8 +691,7 @@ test('typeof guards distinguish live host globals from absent ones', () => {
   // (`process`); prep's dead-arm fold must then drop the g.member read even though the literal
   // sits nested one level deep (left-associativity) — so typeof-guarded debug hooks compile
   // with a clean import section and self-compile builds (whose runner provides no env.process)
-  // still instantiate. `globalThis` has static typeof 'object', so its read stays live
-  // and imports the JS host global. WASI rejects that unbound reference.
+  // still instantiate. WASI rejects that unbound reference.
   const src = 'let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)'
   const wasm = compile(src, { host: 'js' })
   const names = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map(i => `${i.module}.${i.name}`)
@@ -741,10 +724,6 @@ test('host override: mixed with built-in fallback', () => {
   is(captured[0], 1)
   // warn uses built-in WASI console (no crash = success)
 })
-
-// ============================================
-// Whole-object host imports
-// ============================================
 
 test('import: whole Math object', () => {
   const { exports } = jz(
@@ -832,9 +811,7 @@ test('autoload: user function wins over internal emitter name', () => {
 })
 
 // JS calling convention drops extras and pads missing with undefined; wasm
-// validates exact arity at every call site. The emitter matches the call's
-// arg count to the declared import signature so a mismatch on either side
-// produces a valid module.
+// validates exact arity at every call site.
 test('import: extra args truncated to declared arity', () => {
   if (onWasi()) return  // wasi: host import / _interp unavailable
   // Host stub declares 1 param; call site passes 5 → extras dropped, valid wasm
@@ -917,11 +894,7 @@ test('bare side-effect import runs module init', () => {
   is(exports.f(), 42)
 })
 
-// Nested imports must not stack prefixes. When module A imports module B and
-// both have specifiers without `__`, the older "sub-import" name heuristic
-// misclassified B's already-prefixed funcs as A-owned and re-mangled them to
-// `A$B$name`. The resulting WAT referenced names that didn't exist. Funcs are
-// now tagged with their owning module's prefix instead.
+// Nested imports must not stack prefixes.
 
 test('nested module imports do not stack prefixes', () => {
   const { exports } = jz(
@@ -937,10 +910,6 @@ test('nested module imports do not stack prefixes', () => {
 // === Cross-module array resize ===
 
 test('cross-module: importer `.length = 0` between owner pushes keeps one array', () => {
-  // `.length =` on a global used to be recorded as a schema PROPERTY write,
-  // auto-boxing the binding (['__inner__','length']): element reads then
-  // deref'd the box while the resize path persisted the raw array ptr into
-  // the global — a read/write protocol split that read garbage (62) here.
   const mods = { './state.js': 'export const arr = [7]\nexport let ownerPush = (v) => { arr.push(v); return 0 }\nexport let readLen = () => arr.length' }
   const { exports } = jz(`
     import { arr, ownerPush, readLen } from './state.js'
@@ -957,10 +926,8 @@ test('cross-module: importer `.length = 0` between owner pushes keeps one array'
 
 // A destructuring export declaration (`export let { a } = obj`) must register its
 // bindings in the module's export table. The single-module form compiles; only the
-// cross-module import fails ("'a' is not exported from …"). Surfaced by
-// window-function/util.js (`export let { cos, sin, abs, … } = Math`), which blocks
-// compiling every package that windows a signal. Fix in prepare's export
-// registration, then flip `test.todo` → `test`.
+// cross-module import fails ("'a' is not exported from …"). Fix in prepare's
+// export registration, then flip `test.todo` → `test`.
 test('cross-module: destructured export declaration registers bindings', () => {
   const { exports } = jz(
     `import { a } from './dep.js'; export let f = () => a`,
@@ -971,12 +938,8 @@ test('cross-module: destructured export declaration registers bindings', () => {
 
 // A factory-produced default export (`export default make(...)` returning a
 // closure) compiles when its module is the entry, but loses the binding when
-// default-imported from another module: "'thing' is not in scope". Closures,
-// factories, and default exports are each documented subset. Live instance:
-// every pitch-shift algorithm package ends with
-// `export default makePitchShift(batch, stream)`; any cross-package default
-// import (shift-hybrid, root aggregators) fails on this.
-// Flip `test.todo` → `test` when fixed.
+// default-imported from another module: "'thing' is not in scope". Flip
+// `test.todo` → `test` when fixed.
 test('cross-module: default-imported factory-produced closure', () => {
   const { exports } = jz(
     `import thing from './dep.js'; export let test = (x) => thing(x)`,
@@ -989,23 +952,18 @@ test('cross-module: default-imported factory-produced closure', () => {
   is(exports.test(3), 15)  // double(3) + square(3)
 })
 
-// Binary-encode-only crash: a default-exported function that memoizes state on
-// its own function object (the taylor-window idiom `c._w = …; c._N = N`)
-// combined — in the same module graph — with an export-only higher-order
-// function (`generate(fn, N)` calling an unknown `fn`) dies in encode with
-// "'__a3' is not in scope" (AST [";"]), while `--wat` emission of the identical
-// graph succeeds. Either piece alone compiles; simplified variants of the memo
-// idiom also compile, so the trigger is sensitive to taylor's exact shape —
-// the taylor.js below is verbatim window-function source, minimally re-based
-// onto a stub util. Live instance: window-function's taylor.js /
-// ultraspherical.js + util.js generate. Flip `test.todo` → `test` when fixed.
-// PARTIAL (2026-07-08): the titled ENCODE CRASH is FIXED — program-facts now records
-// bare func-ref RHS in let/const decls (`let c = taylor`) as a VALUE use, so
-// resolveClosureWidth sizes the uniform ABI to the fn's full arity and the boundary
-// trampoline no longer forwards undeclared $__a{k} slots. Residual: the memo VALUE
-// computes wrong cross-module only (returns 1, want 0.4849…; the same fn-attached
-// memo idiom works single-module) — a distinct dyn-props-on-closure-receiver or
-// default-export-self-name bug. Re-diagnose from here.
+// Binary-encode-only crash: a default-exported function that memoizes state on its
+// own function object (the taylor-window idiom `c._w = …; c._N = N`) combined — in
+// the same module graph — with an export-only higher-order function (`generate(fn,
+// N)` calling an unknown `fn`) dies in encode with "'__a3' is not in scope" (AST
+// [";"]), while `--wat` emission of the identical graph succeeds. Either piece alone
+// compiles; simplified variants of the memo idiom also compile, so the trigger is
+// sensitive to taylor's exact shape — the taylor.js below is verbatim
+// window-function source, minimally re-based onto a stub util. Flip `test.todo` →
+// `test` when fixed. Residual: the memo VALUE computes wrong cross-module only
+// (returns 1, want 0.4849…; the same fn-attached memo idiom works single-module) — a
+// distinct dyn-props-on-closure-receiver or default-export-self-name bug.
+// Re-diagnose from here.
 test('cross-module: function-attached memo state + export-only HOF encodes to binary', () => {
   const util = `
     export let PI = Math.PI
@@ -1064,10 +1022,7 @@ test('cross-module: function-attached memo state + export-only HOF encodes to bi
 // Math.cos(1) → 0 — both when imported by name and when read inside its own module's
 // functions. A plain-arithmetic const in the same position (`1.1 * 2`) is exact, and
 // the same Math.* const in the ENTRY module is exact. Compiles and runs clean —
-// silently wrong. Live instance: noise-reduction/util.js `export const PI2 =
-// Math.PI * 2` — every RBJ biquad coefficient (notch/HP/LP/peaking) is computed at a
-// truncated cutoff angle, so dehum/dewind/deesser wasm output diverges from JS
-// (~1e-2 abs after IIR feedback compounds). Flip `test.todo` → `test` when fixed.
+// silently wrong. Flip `test.todo` → `test` when fixed.
 test('cross-module: Math.*-initialized const in a dep module reads back exact', () => {
   const { exports } = jz(
     `import { TWO_PI, R2 } from './util.js'
@@ -1080,26 +1035,8 @@ test('cross-module: Math.*-initialized const in a dep module reads back exact', 
 })
 
 // A dependency module — non-entry, imported by another module — that both CALLS a
-// private function internally AND re-exports it under an alias
-// (`export { helper as poles }`) failed to compile: "'helper' is not in scope".
-// Root cause (prepareModule, src/prepare/index.js): `exportLocal(exportName,
-// localName)` mangles and renames the LOCAL function, then keys the walk-lookup
-// map (`moduleExports`) by `exportName` only. In-module call sites reference the
-// ORIGINAL local name, not the export alias, so when the two differ the walk
-// that rewrites call sites to the mangled name never finds an entry for the
-// local name — the call site is left pointing at a function that no longer
-// exists post-rename. The un-aliased case (`export {helper}`, `exportLocal(name,
-// name)`) never surfaced this: there exportName === localName, so the single map
-// entry accidentally served both purposes. The deferred `export default alias`
-// resolution had the identical bug via its own (now-removed) inline copy of the
-// same logic. Fixed generally: `exportLocal` now also keys the map by
-// `localName` whenever it differs from `exportName`, and the default-export
-// path delegates to `exportLocal` instead of re-deriving it.
-// Live instance: digital-filter/iir/butterworth.js — `butterworthPoles` is
-// called internally (line 24, inside the default-exported `butterworth`) and
-// re-exported `export { butterworthPoles as poles }` (line 38); every
-// audio-filter module that imports butterworth as a dependency (biquad design,
-// filter chains) failed to compile on this.
+// private function internally AND re-exports it under an alias (`export { helper
+// as poles }`) failed to compile: "'helper' is not in scope".
 test('cross-module: dependency module calling AND aliased-re-exporting the same private helper', () => {
   const { exports } = jz(
     `import outer from './dep.js'; export let f = (n) => outer(n)`,
@@ -1115,11 +1052,6 @@ test('cross-module: dependency module calling AND aliased-re-exporting the same 
   is(exports.f(3), [0, 2, 4])
 })
 
-// Boundary case: an aliased re-export with NO internal call to the aliased
-// name anywhere else in the module. This already worked before the fix above
-// (exportName === the only reference to `helper` is the export itself, so the
-// missing walk-lookup key was never actually consulted) — pinned so the fix
-// doesn't accidentally narrow the working case while widening the broken one.
 test('cross-module: aliased re-export with no internal call to the aliased name', () => {
   const { exports } = jz(
     `import { poles } from './dep.js'; export let f = (n) => poles(n)`,
@@ -1130,11 +1062,8 @@ test('cross-module: aliased re-export with no internal call to the aliased name'
   is(exports.f(4), 12)
 })
 
-// Same bug, reached through `export default helper` instead of a named `as`
-// alias — `export default X` is itself an aliased export (exportName
-// 'default' vs localName `X`), the deferred resolution branch `exportLocal`
-// now also covers. `helper` here is the CALLEE (not the caller) of an
-// unexported sibling `caller`, re-exported so `caller` stays reachable.
+// `helper` here is the CALLEE (not the caller) of an unexported sibling
+// `caller`, re-exported so `caller` stays reachable.
 test('cross-module: dependency module calling AND default-exporting the same private helper', () => {
   const { exports } = jz(
     `import { go } from './dep.js'; export let f = (n) => go(n)`,
@@ -1184,8 +1113,6 @@ test('cross-module: aliased re-export survives a second module hop', () => {
 })
 
 test('module-level destructuring takes the module prefix like a plain declaration', () => {
-  // Two modules destructuring the same names kept one shared global (and the
-  // second declaration was reported as a compiler-internal name conflict).
   const { exports } = jz(`import { fa } from './a.js'; import { fb } from './b.js'
     const [Xw, Yw] = [7, 8]
     export let f = () => fa() * 100 + fb() * 10 + Xw + Yw`, {
@@ -1263,8 +1190,6 @@ test('imports: a declarator with no value is exported', () => {
 
 // A module's scope is the builtins plus its own declarations and imports; it
 // never sees the importing module's bindings (ES module scopes do not nest).
-// `b.js` is first reached beneath `a.js`, after `a.js` bound `core` to another
-// module's default export; `b.js`'s own `const core` must win inside `b.js`.
 test('bundling: an importer\'s alias does not leak into a module prepared beneath it', () => {
   const modules = {
     './core.js': 'export default (x) => x + 100',

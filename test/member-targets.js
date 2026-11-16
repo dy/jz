@@ -1,12 +1,6 @@
 // A destructuring assignment to member targets (`({a: t.x} = o)`, `[t.x,
 // u[i]] = arr`) writes through the reference it took before reading the
-// source, as ES orders it. Such a write reaches an object outside its
-// literal's layout, like any store through an alias or a helper's parameter:
-// the module keeps it in the object's own dictionary (its header's, or for a
-// durable object the table its offset keys), and the host used to decode the
-// object from its layout's slots alone, so the property vanished on the way
-// out, and a deleted slot stayed. The host now asks the module for both
-// (module/collection.js __obj_props, __obj_deleted; interop.js mem.read).
+// source, as ES orders it.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, onWasi } from './_matrix.js'

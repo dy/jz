@@ -226,10 +226,7 @@ test('splice: a store into an element takes a straight-line body whose prefix cl
 // JS reads a store's target before its value (`R[K] = f(x)`: R, then K, then f's
 // statements, then the store), and a splice puts f's statements after the target's
 // parts: a part they could change, or one that runs something itself, is read into
-// a temp ahead of them. A receiver read through memory is one (`out[0]`, which the
-// callee's store through an alias changes), a key that counts is another
-// (`out[1][cnt++]`). A local lambda at such a target took no splice, so it stayed
-// a closure (decode-wav's MS ADPCM `expand`, at `ch[0][outBase + cnt++]`).
+// a temp ahead of them.
 const TARGETS = `function swap(o, v) { o[0] = v; return 7 }
 export let swapped = () => { let A = [0, 0], B = [0, 0], out = [A, B]; for (let i = 0; i < 2; i++) out[0][i] = swap(out, B); return A[0] * 1000 + A[1] * 100 + B[0] * 10 + B[1] }
 export let rows = (n) => {
@@ -273,8 +270,7 @@ test('splice: a call hoisted out of a stored value runs after what the target re
 // A call that may change what the target read moves all the same, the target read ahead
 // of it as JS reads it: its receiver and key into temps where the call may change them,
 // and under a compound operator its value (`OUT[at] += step(x)`: `at`, then `OUT[at]`,
-// then step's statements, then the store). Each kernel makes an array of its own and
-// writes what its target reads: the element, the key's binding, the receiver, the name.
+// then step's statements, then the store).
 const HELD = `const OUT = new Float64Array(4), ROWS = [new Float64Array(2), new Float64Array(2)]
 let at = 0, acc = 0
 function bump(v) { const t = [v, v + 1]; let s = 0; for (let j = 0; j < 2; j++) s += t[j]; OUT[0] = 100; return s }

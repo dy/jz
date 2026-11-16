@@ -1,4 +1,4 @@
-// Stage-0 architecture gates (see .work/evidence.md §Middle-end consolidation):
+// Stage-0 architecture gates:
 //   1. REGISTRY COVERAGE — every flag any call site reads off the optimize
 //      config must be declared in PASS_NAMES or TUNING_KEYS. An unlisted name
 //      reads `undefined !== false` and silently runs at O0, breaking the
@@ -92,8 +92,7 @@ test('passes: every optimize-config read is a registered pass or tuning key', ()
   const re = /(?:optimize\??|_o|cfg)\s*\.\s*([A-Za-z_$][\w$]*)\s*(?:!==|===)\s*(?:false|true|'|")/g
   // Bare truthy reads escape the comparison-shaped idiom above — the exact hole
   // that let `transform.optimize?.approxPow` (module/math.js) go unregistered
-  // while this test claimed coverage. The canonical module-tier read path is
-  // unambiguous, so match it in ANY expression context.
+  // while this test claimed coverage.
   const reBare = /transform\.optimize\?\.\s*([A-Za-z_$][\w$]*)/g
   const unknown = new Map()
   for (const p of files) {
@@ -160,7 +159,7 @@ test('passes: unknown optimize keys and presets fail loudly', () => {
 test('passes: dead code never changes retained-code bytes (no hidden auto-tuning)', () => {
   // The retired AST-shape auto-tuner flipped watr:false past size thresholds,
   // so appending DEAD functions changed the LIVE function's optimization
-  // (+30% size at the crossing). Default must name one stable pipeline.
+  // (+30% size at the crossing).
   const live = `export let f = (x) => x * 2 + 1`
   const dead = live + '\n' + Array.from({ length: 60 }, (_, i) =>
     `let unused${i} = (a) => { let s = 0; for (let k = 0; k < 9; k++) s += a * k; return s }`).join('\n')
@@ -203,11 +202,10 @@ test('passes: emission tier never writes durable analysis state (slice-4 exit gr
 })
 
 test('passes: no bare optimization-object truthiness gates (audit P1 exit grep)', () => {
-  // resolveOptimize(0) returns an all-false OBJECT — truthy. A transform gated
-  // on bare `ctx.transform.optimize` therefore ran at O0, silently weakening it
-  // as the representation-free correctness oracle. Every emit-time transform
-  // must read a NAMED registered flag (`ctx.transform.optimize?.pass`); the
-  // whole-object read is legal only for presence checks on properties.
+  // resolveOptimize(0) returns an all-false OBJECT — truthy. Every emit-time
+  // transform must read a NAMED registered flag
+  // (`ctx.transform.optimize?.pass`); the whole-object read is legal only for
+  // presence checks on properties.
   const files = []
   const walkDir = (dir) => {
     for (const f of readdirSync(dir)) {
@@ -368,9 +366,6 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // key first (string.js's `bind('.valueOf', …)`), a LATER raw assignment
   // — not bind(), a literal `ctx.core.emit[name] = …`, exactly date.js's
   // pre-fix `ctx.core.emit['.valueOf'] = emitDateGetTime` — clobbers it.
-  // Undetectable at the moment of the raw write (no Proxy), so this is
-  // verifyEmitIntegrity's post-hoc catch, same as combo 2, but now reached
-  // from bind()'s ledger entry instead of only reg()'s.
   reset({}, {}, noopBridge)
   m.ctx.core.currentModule = 'string'
   bind('.valueOf', (val) => val)                    // string.js's generic identity fallback
@@ -395,7 +390,7 @@ test('passes: duplicate stdlib registration throws at registration time, both di
 
   // combo 7 (carve-out proof): TYPE-QUALIFIED keys (`.type:method`) are
   // namespaced by design and stay unguarded — two bind() writers for the
-  // SAME type-qualified name never throw. Distinct from combo 4's flat key.
+  // SAME type-qualified name never throw.
   reset({}, {}, noopBridge)
   m.ctx.core.currentModule = 'testModuleG'
   bind('.date:__testDup7', freshHandler())

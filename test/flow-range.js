@@ -6,9 +6,8 @@ import { levels } from './_matrix.js'
 import { agree, wat } from './util.js'
 import parseWat from 'watr/parse'
 
-// The converted value lives in the loop. A separate guarded counter copy may
-// convert ceil(n) before entering it; that bound is not the clamp's result.
-// (a guard is read by its Infinity literal, kept inline: the speed tier pools float literals otherwise)
+// The converted value lives in the loop. (a guard is read by its Infinity literal, kept inline: the
+// speed tier pools float literals otherwise)
 const LITERAL_O3 = { optimize: { level: 3, poolFloats: false } }
 const guards = text => {
   let count = 0

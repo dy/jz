@@ -49,9 +49,7 @@ test('destruct: object rest copies dynamic own properties after defaults', () =>
   is(got.rest(make()), ref.rest(make()), 'own enumerable values from a host object')
 })
 
-// ============================================
 // Array destructuring
-// ============================================
 
 test('destruct: let [a, b] = arr', () => {
   const { f } = run(`export let f = () => {
@@ -120,9 +118,7 @@ test('destruct: module-scope for-of binding pattern declares generated temps', (
   is(f(), 6)
 })
 
-// ============================================
 // Object destructuring
-// ============================================
 
 test('destruct: let {x, y} = obj', () => {
   const { f } = run(`export let f = () => {
@@ -167,12 +163,10 @@ test('destruct assign: [...rest] = arr', () => {
 // (prepare/index.js expandDestruct) — %tmp is a plain int-array-literal
 // promotion candidate (src/compile/plan/literals.js promoteIntArrayLiterals);
 // `Array.isArray(x)` only disqualified %tmp's promotion when `x` WAS the
-// candidate name, missing this one-hop-derived case. Promoted at O1-O3, %tmp
-// (and so `x`, via .typed:slice) lost its ARRAY identity: Array.isArray(x)
-// answered false though `x` is a genuine (small) array by every other
-// observation. Fixed via _collectDerivedArrayNames (same file) — pinned at
-// every optimize level via npm run test:matrix (test:opt0/opt3 rerun this
-// whole file; JZ_TEST_OPTIMIZE governs jz's own default via test/_env.js).
+// candidate name, missing this one-hop-derived case. Fixed via
+// _collectDerivedArrayNames (same file) — pinned at every optimize level via
+// npm run test:matrix (test:opt0/opt3 rerun this whole file; JZ_TEST_OPTIMIZE
+// governs jz's own default via test/_env.js).
 test('destruct: const [...x] = arr keeps Array identity under promotion (audit-#12 Family A)', () => {
   const { f } = run(`export let f = () => {
     const [...x] = [1]
@@ -292,9 +286,7 @@ test('destruct assign: scalar array literal swap does not allocate array', () =>
   }`).f(), 21)
 })
 
-// ============================================
 // Optional chaining
-// ============================================
 
 test('optional: ?.prop on valid object', () => {
   const { f } = run(`export let f = () => {
@@ -379,9 +371,7 @@ test('optional: ?.prop on dynamic HASH object', () => {
 })
 
 // obj?.method(args) evaluates obj once, returns null when nullish, otherwise
-// dispatches the same as obj.method(args). These pin that the optional-callee
-// shape (['()', ['?.', ...], ...]) reaches the standard method dispatch — so
-// type-aware lowerings like .toLowerCase apply to optional chains too.
+// dispatches the same as obj.method(args).
 
 test('optional: ?.method() on string literal', () => {
   const { f } = jz(`export let f = () => "Express"?.toLowerCase()`).exports
@@ -453,10 +443,6 @@ test('optional: dynamic string property compares numerically against number RHS'
   is(f(), true)
 })
 
-// ============================================
-// typeof
-// ============================================
-
 test('typeof: number', async () => {
   const { exports: { f } } = await jz('export let f = () => typeof 42')
   is(f(), 'number')
@@ -483,10 +469,6 @@ test('typeof: string heap', async () => {
 })
 
 // A destructured binding must carry the same type tag as the element it bound.
-// Regression: `let [, idx] = arr` lost the type tag, so `typeof idx` returned
-// 'undefined' even though the value coerced fine — while `arr[1]` was correct.
-// Surfaced in watr's `let [, idx] = nodes.shift(); typeof idx === 'string'`
-// type resolution, producing spurious "Type mismatch" compile errors.
 test('typeof: destructured string binding', async () => {
   const { exports: { f } } = await jz(`export let f = () => { let arr = ['type', '\$name']; let [, idx] = arr; return typeof idx }`)
   is(f(), 'string')
@@ -502,10 +484,8 @@ test('typeof: destructured matches indexed', async () => {
   is(f(), 'match')
 })
 
-// Destructuring the Math builtin must bind members like the equivalent alias
-// `let abs = Math.abs` (which compiles and runs). Idiomatic shorthand in the
-// wild: window-function/util.js `export let { cos, sin, abs, … } = Math`, and
-// fourier-transform/index.js `const { sqrt, sin, cos, abs, SQRT1_2, SQRT2 } = Math`.
+// Destructuring the Math builtin must bind members like the equivalent alias `let
+// abs = Math.abs` (which compiles and runs).
 test('destruct: from Math builtin namespace', () => {
   const { exports: { f } } = jz(`let { abs } = Math
 export let f = (x) => abs(x)`)
@@ -540,9 +520,7 @@ export let f = (v) => sqrt(abs(v)) * SQRT1_2 * SQRT2`)
 
 // Module top-level `let { … } = Math` must not collide with the compiler's
 // own internal globals of the same name in a multi-module bundle (observed as
-// "'abs' conflicts with a compiler internal — choose a different name"). A
-// plain user binding `let abs = (x) => x` (no Math involved) already compiles
-// fine, so the collision was specific to the destructure path.
+// "'abs' conflicts with a compiler internal — choose a different name").
 test('destruct: top-level `let {abs} = Math` in a multi-module bundle', () => {
   const { exports } = jz(
     `import { go } from './dep.js'
@@ -600,25 +578,7 @@ export let f = (v) => M.sqrt(v)`)
 })
 
 // Same alias, declared inside a function body instead of at module top level.
-// The top-level form (above) aliases `M` through `scope.chain` — the same flat
-// table `Math` itself resolves through, so the '.' handler needs no changes.
-// Inside a function, `registerBuiltinAlias` would instead have to write `M`
-// into the block-scoped `scopes` stack, which the '.' handler's `mod =
-// ctx.scope.chain[obj]` check does not consult — extending it there requires
-// distinguishing a genuine alias from an ordinary un-renamed local that merely
-// happens to be NAMED like a module (e.g. a `fn` callback parameter self-maps
-// to its own name), which is more risk to the hottest path in prepare than
-// this rarer shape justifies.
-// Re-verified independently (2026-07-06): confirmed in src/prepare/index.js —
-// `resolveCallee`'s bare-identifier branch DOES check `scopes.length &&
-// isDeclared(callee) ? resolveScope(callee) : ctx.scope.chain[callee]`, but its
-// sibling `.`-callee branch a few lines down reads only `ctx.scope.chain[obj]`,
-// exactly as diagnosed — the fix is real and roughly as scoped as described.
-// Left AS TODO this session for an ADDITIONAL, independent reason: this file is
-// mid-edit by the user this session (git status dirty, non-empty diff already
-// present) and the project's own discipline for this pass forbids touching it
-// while that's true — not just the architectural-risk call above. Flip
-// `test.todo` → `test` when fixed.
+// Flip `test.todo` → `test` when fixed.
 test('destruct: namespace-as-value alias inside a function body', () => {
   const { exports: { f } } = jz(`export let f = (v) => { const M = Math; return M.sqrt(v) }`)
   is(f(16), 4)
@@ -703,13 +663,6 @@ test('destruct: hoisted sibling function references a Math alias declared later 
   ok(Math.abs(exports.default(1) - Math.exp(1)) < 1e-6, `expected ~${Math.exp(1)}, got ${exports.default(1)}`)
 })
 
-// ============================================================================
-// Unblanketing fixes (2026-07-10) — three real bugs the coarse test262 skips hid:
-// 1. defaults fired on null (?? lowering) — must fire ONLY on undefined;
-// 2. numeric keys in object patterns crashed the compiler (string-hash on 0);
-// 3. `var` pattern declarators were silently DROPPED by hoist-vars.
-// ============================================================================
-
 test('destruct: defaults fire only on undefined, never null', () => {
   is(run(`export let f = () => { let [a = 1, b = 2] = [null, undefined]; return (a === null ? 1 : 0) * 10 + b }`).f(), 12)
   is(run(`export let f = () => { let { x = 5, y = 6 } = { x: null }; return (x === null ? 1 : 0) * 10 + y }`).f(), 16)
@@ -755,7 +708,6 @@ test('destruct: var pattern declarators hoist their bindings', () => {
 
 // for-of head assignment-form object pattern parses as a STATEMENT-position
 // `{…}` cover (a `;`-block node, not a `,`-list) — patternItems unwraps both.
-// Before: the pattern silently mis-destructured (defaults fired on null).
 test('destruct: for-of head cover-grammar object pattern', () => {
   is(run(`export let f = () => { let x, c = 0; for ({ x = 1 } of [{ x: null }]) { c = (x === null ? 1 : 0) * 10 + 1 } return c }`).f(), 11)
   is(run(`export let f = () => { let x, c = 0; for ({ x = 2 } of [{}]) { c = x } return c }`).f(), 2)
@@ -769,8 +721,6 @@ test('destruct: arguments-path param default fires only on undefined', () => {
     export let g = () => f() * 1000 + f(null)`).g(), 9110)
 })
 
-// catch-param patterns + var-pattern for-of heads + assignment-form targets
-// (2026-07-10): all three bound nothing or shadowed the outer binding before.
 test('destruct: catch patterns / var-pattern heads / assignment-form targets', () => {
   is(run(`export let f = () => { try { throw { a: 5 } } catch ({ a }) { return a } }`).f(), 5)
   is(run(`export let f = () => { try { throw [7] } catch ([x]) { return x } }`).f(), 7)
@@ -783,11 +733,6 @@ test('destruct: catch patterns / var-pattern heads / assignment-form targets', (
   is(run(`export let f = () => { let k = 0; for (k in { z: 1 }) { } return k.length }`).f(), 1)
 })
 
-// Shadow renames for catch params + destructure targets (2026-07-20): a catch
-// param or pattern target shadowing an outer (renamed) binding used to resolve
-// handler/block reads to the OUTER binding — and the catch local aliased its
-// WASM slot. Catch now gets its own scope frame + rename; pattern targets
-// rename via substPattern (prop keys stay source-spelled: `{x}` → `{x: x@n}`).
 test('destruct: shadowed catch params and pattern targets bind their own local', () => {
   is(run(`export let main = () => { let e = 5; { let e = 6; try { throw 1 } catch (e) { return e } } }`).main(), 1)
   is(run(`export let main = () => { let e = 5; try { throw 1 } catch (e) { e = e + 10 } return e }`).main(), 5)
@@ -801,12 +746,9 @@ test('destruct: shadowed catch params and pattern targets bind their own local',
   is(run(`export let main = () => { let r = 0; { let { a, b = a + 1 } = { a: 5 }; r = a * 10 + b } return r }`).main(), 56)
 })
 
-// The comma-group hole: the parser groups multi-prop object patterns as
-// ['{}', [',', 'a', 'b']] — renaming those bare strings as array-style targets
-// destroyed the shorthand's implied KEY ({a}→{a@1}, reads a nonexistent prop).
-// This shape is all over the compiler's own source (for (const [, {lName, type}]
-// of replacements) in promote-globals) — the miscompiled pass only RUNS inside
-// the built kernel, so the kernel leg was the sole witness (1h17m fuzz-gate spin).
+// The comma-group hole: the parser groups multi-prop object patterns as ['{}',
+// [',', 'a', 'b']] — renaming those bare strings as array-style targets destroyed
+// the shorthand's implied KEY ({a}→{a@1}, reads a nonexistent prop).
 test('destruct: renamed multi-prop object patterns keep property keys', () => {
   is(run(`export let f = () => { const a = 100, b = 200; let out = a + b; { const [, { a, b }] = [0, { a: 1, b: 2 }]; out = out * 10 + a + b } return out }`).f(), 3003)
   is(run(`export let f = () => { const m = new Map(); m.set('gA', { a: 1, b: 2 }); m.set('gB', { a: 3, b: 4 }); const a = 100, b = 200; let out = a + b; for (const [, { a, b }] of m) out = out * 10 + a + b; return out }`).f(), 30037)
@@ -827,15 +769,8 @@ test('for-in destructuring head: key string destructures with per-iteration bind
   is(exports.t(), 'i:i')
 })
 
-// ============================================
-// Indexed array patterns (compile/plan/index-array-patterns.js)
-// ============================================
-
-// An array pattern over a value the summary proves an array reads it by
-// index: no cursor record, no protocol calls, no unwinding. An array that may
-// be missing reads the same way behind a test that hands the missing value to
-// the protocol's open, which throws. Any other source (a collection, a string)
-// keeps the protocol.
+// An array pattern over a value the summary proves an array reads it by index:
+// no cursor record, no protocol calls, no unwinding.
 test('destruct: a pattern over a proven array reads by index', () => {
   const opener = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(open|pull|step)/g) || []).length
   ok(opener(`export let f = (p) => { const [a, b, ...r] = p; return a + b + r.length }`) > 0, 'an export\'s untyped parameter keeps the protocol')

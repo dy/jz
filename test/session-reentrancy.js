@@ -1,11 +1,9 @@
 /**
- * Reentrancy probe (session survey audit-#13 slice a — the COORDINATOR RULING's
- * gate for the unified reset choreography). Not another "compile twice in one
- * process" determinism check (test/determinism.js already has that) — this
- * compares a WARM in-process compile against a compile of the SAME program in a
- * BRAND-NEW node process, so a bug that corrupts BOTH the warm and a same-process
- * "fresh" compile identically (e.g. a wrong default baked in at module load)
- * can't hide.
+ * Reentrancy probe. Not another "compile twice in one process" determinism check
+ * (test/determinism.js already has that) — this compares a WARM in-process
+ * compile against a compile of the SAME program in a BRAND-NEW node process, so a
+ * bug that corrupts BOTH the warm and a same-process "fresh" compile identically
+ * (e.g. a wrong default baked in at module load) can't hide.
  *
  * Two pairs, each picked to bleed through exactly the state this slice folded
  * into ONE reset choreography (src/ctx.js's RESET_HOOKS / src/session.js's
@@ -105,22 +103,11 @@ const PREPARE_HEAVY = `
   }`
 const MINIMAL = `export let f = () => 1`
 
-// Closure/loop-plan pair (audit-#19 P0 probe): compile/closure-plan.js's
-// closure plans, compile/loop-model.js's loop plans, and ir.js's
-// loopPlanLink used to be module-global WeakMaps — under self-compiling
-// WeakMap lowers to a strong Map (no native GC), so entries from a PRIOR
-// compile() survive into the next one, and the kernel's arena-reset offset
-// reuse can pointer-collide a fresh AST node with a stale key, producing a
-// stale-plan HIT exactly where every reader here fails open on a miss. The
-// fix made all three session-owned (fresh WeakMap per reset()/beginSession());
-// folded into the session-owned `ctx.plans` subtree,
-// rebuilt directly by reset(), by architecture re-audit item 3 (.work/archive/todo.md).
-// CLOSURE_LOOP_A/B are STRUCTURALLY parallel —
-// same shape/position for a zero-capture closure, a heap-capture closure, a
-// boxed-cell closure (a reassigned-inside-closure counter), and two loops
-// (one with a typed hull, one plain) — but with different literal bounds, so
-// a stale plan leaking from A into B's same-shaped nodes would read the
-// WRONG hull/boundConst/storage and miscompile, not merely no-op.
+// CLOSURE_LOOP_A/B are STRUCTURALLY parallel — same shape/position for a zero-capture
+// closure, a heap-capture closure, a boxed-cell closure (a reassigned-inside-closure
+// counter), and two loops (one with a typed hull, one plain) — but with different
+// literal bounds, so a stale plan leaking from A into B's same-shaped nodes would read
+// the WRONG hull/boundConst/storage and miscompile, not merely no-op.
 const CLOSURE_LOOP_A = `
   export let mk = (n) => {
     let zero = () => 42
@@ -349,9 +336,7 @@ test('FunctionPlan transfers analysis collections through one opaque, linear han
   restoreActiveFunction(ctx, displaced)
 })
 
-// typedElem/typedLen are owned by ActiveFunction itself. A closure with a
-// static typed array must restore the complete displaced record, leaving no
-// parallel authority on ctx.types and no facts on the inactive session frame.
+// typedElem/typedLen are owned by ActiveFunction itself.
 test('closure bodies publish opaque FunctionPlans before their IR emission', () => {
   if (onKernel()) return
   compile(`export let outer = n => { let x = n; let a = y => { let b = z => x + y + z; return b(2) }; return a(1) }`)
@@ -488,22 +473,9 @@ test('session-reentrancy: order-reversed — minimal then prepare-heavy, regex-f
   ok(eq(warmRegexHeavy, compileFresh(REGEX_HEAVY)), 'regex-heavy (compiled second) differs from fresh-process compile')
 })
 
-// CompileSession-as-value (Slice B, .work/archive/compile-session-design.md §2.3 row
-// 1/3) reassigned `ctx` by identity every reset() instead of mutating fields
-// in place, so a caller holding a `ctx` reference from before a later
-// compile() would keep observing that older compile's own coherent
-// snapshot. SWAP-REVERTED (stack-test-2026-08-15, .work/evidence.md
-// b8f802b8's half-bisection: the const→let identity-swap conversion was
-// isolated as the SOLE guilty mechanism for a deterministic region-live
-// kernel-oracle regression, `facts` absorption proven innocent) — `ctx` is
-// back to `const`, mutated field-by-field in place, so a held reference is
-// NO LONGER a stable snapshot: it observes every later reset() through the
-// same object identity. This test now documents that known limitation
-// directly (a regression guard against silently reintroducing partial-
-// mutation visibility, not a reentrancy-safety claim) rather than asserting
-// the now-false identity-swap behavior. Reentrancy is a named future slice,
-// deferred pending the write-site forensic (b8f802b8's own "concrete next
-// step") rather than re-landed blind.
+// This test now documents that known limitation directly (a regression guard against
+// silently reintroducing partial-mutation visibility, not a reentrancy-safety claim)
+// rather than asserting the now-false identity-swap behavior.
 test('session-reentrancy: swap-reverted — a ctx reference held across a later reset() is NOT a stable snapshot (known limitation, deferred)', () => {
   if (onKernel()) return  // white-box probe of ctx.js's own module-binding identity
   compile(PREPARE_HEAVY)

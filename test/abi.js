@@ -3,14 +3,6 @@
 // module loads with the interop of the jz that built it, and the high-level
 // wrapper is the public embedder contract.
 //
-// A wasmtime/Rust/Go/Zig host runs prebuilt jz wasm with (a) the exported allocator,
-// (b) the documented NaN-box layout (layout.js), and (c) the wasm function SIGNATURE,
-// which is self-describing: a numeric param/result is `f64`; a value that can be a
-// NaN-box — heap pointer, null|undef|bool atom, bigint, or a dynamic value — is `i64`
-// carrying the box bits directly. The i64 carrier means no host ever depends on an
-// engine preserving f64 NaN payloads across the boundary (JSC/Safari does NOT). A JS
-// host reads the carrier map from the `jz:i64exp` custom section; a typed host (Rust/Go)
-// reads it straight off the function type. Same binary, same contract, every host.
 // These tests reconstruct a raw host by hand. If they break, that binary is internally inconsistent.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'

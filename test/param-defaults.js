@@ -136,8 +136,7 @@ test('param defaults: a default runs where a call lets it, and only there', () =
 // A class factory takes its initializer's defaults (jzify/classes.js
 // lowerStruct): an argument `new C()` or `new this.constructor()` leaves out
 // arrives as the default's value, never as an undefined the initializer's
-// own default would replace in a kind that keeps it. The fields then hold
-// the default's kind alone, with no nullish value to test for.
+// own default would replace in a kind that keeps it.
 test('param defaults: a constructor argument left out arrives as the default, not as undefined', () => {
   const src = `class V { constructor(x = 0) { this.x = x } }
     class B { constructor(min = new V(3), max = new V(4)) { this.min = min; this.max = max } clone() { return new this.constructor() } sum() { return this.min.x + this.max.x } }

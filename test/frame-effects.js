@@ -1,13 +1,10 @@
 // Frame effects (src/compile/analyze/frame-effects.js) and the arena rewind
 // they gate (src/optimize/arena-rewind.js). A rewind restores the heap
-// pointer at return; it is sound only when no allocation made during the
-// call outlives the frame. An escape lowers the escape flag, where it runs,
-// to the address it wrote into, and a frame restores when the flag stands at
-// or above its own mark: what was written into is the frame's own, and goes
-// with it. The census finds the escapes in the source, the tape pass the rest
-// in the emitted body, and `whyNotRewind` names why a candidate keeps its
-// heap: on every call (`escape: …`), or on a call that runs an escape
-// (`kept on a call that runs an escape: …`, the first the frame may reach).
+// pointer at return; it is sound only when no allocation made during the call
+// outlives the frame. An escape lowers the escape flag, where it runs, to the
+// address it wrote into, and a frame restores when the flag stands at or
+// above its own mark: what was written into is the frame's own, and goes with
+// it.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
@@ -27,9 +24,8 @@ const flagged = (src, opts = {}) => /esc_save/.test(bodyOf(compile(src, { wat: t
 const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...opts, whyNotRewind: (n, r) => why.push([n, r]) }); return why.find(([n]) => n === '$f')?.[1] ?? null }
 // Heap growth over `calls` calls of `call`, after `settle` calls that make first-call state.
 const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < settle; i++) call(); const used = memory.used; for (let i = 0; i < calls; i++) call(); return memory.used - used }
-// Each `(loop …)` span of a body, by its parentheses.
-// A growth's check: the heap it snapshots and compares, the escape it runs. Not
-// the names of its locals, which the temp pool hands to later values too.
+// Each `(loop …)` span of a body, by its parentheses. Not the names of its
+// locals, which the temp pool hands to later values too.
 const ESC_CHECK = /\$__esc|\(global\.get \$__heap\)/
 const loopSpans = (wat) => [...wat.matchAll(/\(loop/g)].map(({ index }) => { let d = 0, j = index; do { d += wat[j] === '(' ? 1 : wat[j] === ')' ? -1 : 0; j++ } while (d > 0); return wat.slice(index, j) })
 
@@ -202,8 +198,6 @@ test('frame effects: own builtin-named methods retain their call effects', () =>
     }
   }
 })
-
-// --- The miscompile: an allocation that escapes the frame through a store into module state.
 
 test('frame effects: a fresh object stored into a module field survives the call', () => {
   const src = `const st = { last: null }
@@ -533,9 +527,7 @@ test('frame effects: what escaped through a callback, a return from inside a loo
     export function churn(n) { const a = []; for (let i = 0; i < n; i++) a.push([i, i]); return a.length }
     export let read = () => store.length * 1000 + store[2] * 100 + (store[5] ?? 0) + (store[13] ?? 0) + (store[21] ?? 0) * 10 + (store[31] ?? 0)`
   // a loop a `return` or a jump to a label leaves has no check after it: the store
-  // checks itself. A named arrow runs from each call to it (`pick`'s own parameter,
-  // out of scope in `h`; `put`, called in a loop a branch guards and after it). Kept
-  // out of line, the arrows stay arrows.
+  // checks itself. Kept out of line, the arrows stay arrows.
   const want = oracle(kept)
   for (const optimize of [...levels(2, 'size'), { level: 2, inlineFns: false, sourceInline: false }]) {
     const m = jz(kept, { optimize }).exports
@@ -641,9 +633,7 @@ test('arena rewind: a frame that reaches a for-in cache fill restores its heap a
 
 // The phase checkpoint's verdict (module/core.js `__park_mark` to `__park_end`,
 // scripts/self.js checkpointPhase): the escape flag read over a phase as a
-// rewound frame reads it over a call. A phase that allocates only for its own
-// result is safe; one that files a value into older storage is not, nor is a
-// phase around it; the protocol's own calls are no escape.
+// rewound frame reads it over a call.
 test('phase checkpoint: the escape flag says whether a phase wrote into nothing older than itself', () => {
   const src = `const keep = []
     const pure = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set('k' + i, [i, i + 1]); return m.size }
@@ -735,7 +725,7 @@ test('plan/site-receivers: a hoisted receiver keeps the statement\'s meaning, an
 // out, an element at a computed index, a call's result) is kept as the site
 // evaluates it, and the flag goes down to the storage it named: a frame
 // restores where that storage was its own, and keeps what it stored where it
-// was older. An initialization `(t ??= [])` is read through its binding.
+// was older.
 test('frame effects: a receiver the emitter cannot read again is kept as it is evaluated', () => {
   const src = `const store = { lists: [[], []] }
     const table = new Map([['k', []]])
@@ -803,8 +793,8 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
 })
 
 test('frame effects: a call that opens the runtime\'s iterator records keeps nothing past the first of a round', () => {
-  // The records are made as the module starts (src/std/iter.js): a call that made one kept all it allocated beside it.
-  // The round's first store of an iterator into a record saves the record for the reset, once.
+  // The records are made as the module starts (src/std/iter.js): a call that made one kept all it allocated beside
+  // it.
   const first = (src, args, optimize) => {
     const { exports: m, memory } = jz(src, { optimize }), js = oracle(src), kept = [], reset = []
     for (let i = 0; i < 3; i++) { const used = memory.used; is(m.f(...args, i), js.f(...args, i), `call ${i} at ${optimize}`); kept.push(memory.used - used) }
@@ -962,8 +952,6 @@ test('frame effects: a local a closure made in a declaration rebinds is no fresh
   ok(/^kept on a call that runs an escape: grows buf/.test(whyNot(src)), 'the push into what the closure rebound is a store into storage of unknown age')
 })
 
-// --- The widening: parameters, numbers into outer storage, fresh local containers.
-
 test('frame effects: a function with parameters rewinds when its allocations stay in the frame', () => {
   ok(rewinds('export function f(a, p) { const t = new Float64Array(a.length); for (let i = 0; i < a.length; i++) t[i] = a[i] * p; let s = 0; for (let i = 0; i < t.length; i++) s += t[i]; return s }'), 'a typed temporary sized by a parameter')
   ok(rewinds('const out = new Float64Array(8); export function f(n) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = i; for (let i = 0; i < 8; i++) out[i] = t[i] * 2; return out[0] }'), 'numbers stored into a module typed buffer')
@@ -992,7 +980,6 @@ test('frame effects: a rewound function with parameters computes the same values
   }
 })
 
-// --- Per-iteration rewinds: a loop whose iteration lets no allocation escape
 // restores the heap pointer at the top of each iteration (optimize/loop-rewind.js).
 
 test('frame effects: a loop building a temporary per iteration runs in constant memory, and an escaping one keeps its values', () => {
@@ -1022,8 +1009,6 @@ test('frame effects: whyNotRewind reports no allocation and the vetoing callee',
   const every = whyNot('let last = null; function keep(v) { last = [v]; return v > 0 ? keep(v - 1) : 0 } export function f(n) { const t = new Array(n).fill(0); keep(t.length); return t.length }')
   is(every, 'kept on a call that runs an escape: calls keep: outer binding last', 'a callee escaping on every call, called on every call')
 })
-
-// --- The tape pass: the unsafe set, imports, kernel taint, tail calls, cycles.
 
 const onTape = (m, fn) => { resetTape(); const root = fromWat(m); fn(root); return toWat(root) }
 const src = (n) => JSON.stringify(n)
@@ -1335,8 +1320,6 @@ test('arena rewind on the tape: mutually recursive clean kernels are safe callee
   ok(/heap_save/.test(f), 'a cycle with no unsafe member is safe, and the allocation inside it makes the caller rewind')
 })
 
-// --- Load CSE across a call to a function that writes no outer storage.
-
 test('frame effects: a cached typed-array load survives a call to a read-only callee and not a writing one', () => {
   if (onKernel()) return
   const mk = (callee) => `const a = new Float64Array(8)
@@ -1508,8 +1491,7 @@ test('frame effects: inactive native readers do not manufacture source effects',
 
 test('frame effects: a call that never returns does not make its frame allocate', () => {
   // `s.charCodeAt(i)` on a value that may be nullish throws an error the
-  // runtime builds: allocation only on the path the exception leaves by. A
-  // scan that allocates nothing else keeps no rewind protocol on every call.
+  // runtime builds: allocation only on the path the exception leaves by.
   if (onKernel()) return
   const src = `let cur, idx = 0
     export function f() { let c; while ((c = cur.charCodeAt(idx)) <= 32) idx++; return c }
@@ -1557,7 +1539,6 @@ test('frame effects: a type test makes a method on the name its builtin; a predi
 // A frame whose one way to allocate is growing storage older than itself (a
 // parameter's array taking a property) gives nothing back at its return: the
 // growth lowers the flag below its mark, and without one it made nothing.
-// It keeps its heap and pays no protocol; its caller still decides.
 test('frame effects: a frame that only grows storage older than itself pays no protocol', () => {
   if (onKernel()) return
   const src = `const loc = (node, at) => (Array.isArray(node) && (node.loc = at), node)
@@ -1606,9 +1587,7 @@ test('frame effects: a call through a record field names the closures it runs', 
 })
 
 // An arrow called in place (`o ?? (() => { throw TypeError(…) })()`) runs here
-// and nowhere else: its sites are the frame's, no computed callee. A
-// destructuring's own test of a missing source is a call of the runtime
-// (`__destructure_nullish`), which the census lists as making its error.
+// and nowhere else: its sites are the frame's, no computed callee.
 test('frame effects: an arrow called where it stands is walked in the frame', () => {
   const src = `export function f(k, o) { const t = new Float64Array(k + 2); const v = o ?? (() => { throw TypeError('missing') })(); t[0] = v.a + v.b; return t[0] }
     export function g(k, o) { const t = new Float64Array(k + 2); let { a, b } = o; t[0] = a + b; return t[0] }`

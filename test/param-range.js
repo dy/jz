@@ -67,9 +67,7 @@ test('parameter hull: widening is independent for each function and argument pos
 // (summary `bind`): a call through a table or a function's property joins the
 // hull like a direct call; one that cannot align them (`.call`, `.apply`, a
 // callback) opens the position; a function the host or a dispatcher may call
-// has no hull. A channel that noted nothing would leave the hull to the direct
-// calls, and a store the hull bounds would land past what the other channel's
-// arguments reach (`out[o + s]` with `o` from the property call alone).
+// has no hull.
 test('parameter hull: every call channel joins the hull, the host opens it', () => {
   is(JSON.stringify(ranges(`function esc(a) { return a * 2 }
     const fs = [esc]

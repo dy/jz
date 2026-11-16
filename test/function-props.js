@@ -3,8 +3,6 @@
 // as a value stays callable, `typeof` says 'function', and every name for it
 // sees one set of properties. Where the function never escapes, the plan
 // dissolves them into module globals (plan/scope.js flattenFuncNamespaces).
-// A top-level function used to be boxed into an object like a number with
-// properties: read as a value, it was the box, and a call through it trapped.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { levels, belowOpt, onWasi, onKernel } from './_matrix.js'
@@ -89,9 +87,7 @@ test('function properties: a property read as a value and called reads a global,
 })
 
 // A namespace property becomes a module global; read while the module initializes,
-// ahead of its first store, it is undefined there. The summary decides what the
-// initializers run before each store (summary/index.js settleInitOrder): a call
-// stored twice crashed (`table index is out of bounds`), the test of it folded true.
+// ahead of its first store, it is undefined there.
 test('function properties: a property read during initialization before its first store is undefined', () => agree([
   ['stored twice', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nconst before = parse(3)\nparse.p = (x) => x * 2\nparse.p = (x) => x * 3\nconst after = parse(3)\nexport let f = (x) => [before, after, parse(x)]`, 5],
   ['through a callback', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nconst before = [3].map((x) => parse(x))[0]\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, parse(x)]`, 5],

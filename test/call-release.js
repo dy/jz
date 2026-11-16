@@ -156,9 +156,7 @@ for (const optimize of levels(0, 2, 3, 'size'))
 test('call release: a call back into the module keeps what the inner call kept', () => {
   if (onWasi()) return  // a host function calls back: the js host's
   // A zero-argument host import calls an export that keeps an array: the call
-  // around it must not release what the inner call kept. Today the census counts
-  // any import call as unknown, so the outer frame is not released at all; the
-  // host's nesting flag (interop.js enter/leave) holds this when it is.
+  // around it must not release what the inner call kept.
   let inst
   const src = `import { poke } from 'host'
     let kept = []
@@ -305,12 +303,11 @@ test('call release: a call of numbers made while another runs tells it what it k
   is(inst.exports.check(), want, 'the arrays the calls kept read back intact')
 })
 
-// A frame whose result may be a heap value asks it as it returns: one the
-// frame did not make (a number, a value older than the call) lets the frame
-// give back what it allocated; one it made is the caller's, and the host, which
-// takes a copy of a string, an array, an object or a collection, releases it
-// then. A typed array is a view of the module's memory: it holds the call's.
-// The result test is independent of the optional reachability walk.
+// A frame whose result may be a heap value asks it as it returns: one the frame
+// did not make (a number, a value older than the call) lets the frame give back
+// what it allocated; one it made is the caller's, and the host, which takes a
+// copy of a string, an array, an object or a collection, releases it then. The
+// result test is independent of the optional reachability walk.
 for (const optimize of levels(2, 3))
   test(`call release: a call whose result may be a heap value releases unless the result is of its making, at ${optimize}`, () => {
     const src = `const kept = ['a string the module holds, too long to pack', [7, 8, 9]]
@@ -384,8 +381,7 @@ for (const optimize of levels(2, 3))
 
 // A handler takes for the escape flag the lowest it stood at since the
 // outermost frame was entered: the frames an exception left did not hand
-// theirs back. What they stored stays; a call whose frames stored nothing
-// keeps nothing, whether a catch ran in it or not.
+// theirs back.
 for (const optimize of levels(2, 3, 'size'))
   test(`call release: a call in which a catch ran keeps what its frames stored, at ${optimize}`, () => {
     const src = `const st = { cur: null, n: 0 }
@@ -415,9 +411,7 @@ for (const optimize of levels(2, 3, 'size'))
 
 // A frame whose tail call is dispatched (narrow's typed guard: one arm calls
 // the clone, the other the function) returns from inside the value it
-// returns. Each of those returns restores as the frame's own does; one that
-// left without it would leave the flag the frame's entry cleared, and the
-// caller would free what an escape before the call kept.
+// returns.
 for (const optimize of levels(2, 3, 'size'))
   test(`call release: a frame whose tail call is dispatched restores on each of its returns, at ${optimize}`, () => {
     const src = `const st = { last: null }
@@ -444,8 +438,7 @@ for (const optimize of levels(2, 3, 'size'))
   })
 
 // The same, through a string result: `snapshot` copies a Map and returns a
-// string; `update`'s tail call of it dispatches. A frame that left without
-// its restore made the next call read freed memory.
+// string; `update`'s tail call of it dispatches.
 for (const optimize of levels(2, 3))
   test(`call release: a frame copying a Map and returning a string restores on its dispatched return, at ${optimize}`, () => {
     const src = `const source = new Map([['seed', [7]]]); const sink = []
@@ -598,10 +591,7 @@ test('call release: views of older storage release copied arguments and new desc
 })
 
 // An arm a literal decides against is dropped by the emitter, its stores
-// with it: a site the census listed there is no escape. A frame that counted
-// it as an escape at no instruction kept everything it made on every call.
-// The crossover of a filter network inverts a band only at some orders; the
-// export splices it with a literal order and the inversion is no code.
+// with it: a site the census listed there is no escape.
 for (const optimize of levels(2, 3, 'size'))
   test(`call release: a store in an arm a literal decides against is no escape, at ${optimize}`, () => {
     const src = `const st = { sos: null }

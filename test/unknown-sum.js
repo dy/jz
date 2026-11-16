@@ -1,11 +1,8 @@
 // A sum with a side the program cannot type (a host object's field, an
 // element of a host array, a method's result) may be a string, and the `+`
-// emitter concatenates it at run time. Its type used to be the optimistic
-// NUMBER all the same, so the next `+` or `*` ran f64 arithmetic on the
-// string's box: `o.name + 1 + 2` gave 'x1', `(o.name + 1) * 1` gave 'x1'
-// instead of NaN. Such a sum is a number only where the program cannot
-// concatenate (kind/val-type-of.js addsAsNumber); a numeric export parameter
-// keeps its contract.
+// emitter concatenates it at run time. Such a sum is a number only where the
+// program cannot concatenate (kind/val-type-of.js addsAsNumber); a numeric
+// export parameter keeps its contract.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, belowOpt, onWasi } from './_matrix.js'

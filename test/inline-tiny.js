@@ -138,8 +138,7 @@ test('inline tiny: a copy the inliner cannot lift goes back to the function', ()
 })
 
 // Per-record formatting: each row of integer and string fields becomes a line by concatenation,
-// its characters folded. The loop calls the runtime's digit count, integer conversion, string
-// length and copy once a row; V8's inliner has room in the kernel for one of them.
+// its characters folded.
 const ROWS = `
 const NAMES = ['alpha', 'bravo', 'carol', 'echo']
 export let main = (seed) => {
@@ -170,8 +169,7 @@ test('inline tiny: a loop formatting records splices the runtime it calls per ro
 
 // A math kernel (optimize/pure-funcs.js) past the loop bound joins each call a kernel loop makes,
 // in an arm of an `if` too, through a copy of its own the single-caller inliner dissolves: V8 grows
-// a loop's function past 640 bytes by a tenth at most, less than a sine. A call outside a loop
-// keeps the function; a loop that calls the program keeps the call.
+// a loop's function past 640 bytes by a tenth at most, less than a sine.
 const horner = (depth) => depth ? `(f64.add (f64.const ${(depth * 0.37) % 1}) (f64.mul (local.get $x) ${horner(depth - 1)}))` : '(f64.const 0.5)'
 const KERNEL = `(module
   (func $math.k (param $x f64) (result f64)

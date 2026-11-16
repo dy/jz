@@ -2,13 +2,9 @@
  * Structural absence-of-overhead invariants over OPTIMIZED output — the
  * machine-checked half of "predictable proven performance".
  *
- * invariants.js proves correctness-of-STRUCTURE (const, scope, exports, layout).
- * THIS file proves the PERFORMANCE CONTRACT: the optimized WAT contains none of
- * the overhead the optimizer claims to remove. You cannot prove "fast" — that is
- * induction against a moving JIT on a noisy stopwatch. You CAN prove "no waste":
- * a negative, statically checkable property of the output, independent of any
- * competitor or machine. That is the strongest guarantee actually available, and
- * the honest surrogate for speed (see .work/evidence.md §"minimal theoretical WASM").
+ * invariants.js proves correctness-of-STRUCTURE (const, scope, exports, layout). THIS
+ * file proves the PERFORMANCE CONTRACT: the optimized WAT contains none of the
+ * overhead the optimizer claims to remove.
  *
  * Two oracles over the same WAT facts:
  *
@@ -50,10 +46,9 @@ const GLOBAL_DECODE = (n) => n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1
 const SIMD = head(/^(v128|f64x2|f32x4|i32x4|i16x8|i8x16)\./)
 const LI_SNAP = (n) => typeof n[1] === 'string' && /^\$__li\d/.test(n[1])
 
-// ════════════════════════════════════════════════════════════════════════════
-// 1. ABLATION — overhead PRESENT with the guarding pass off, ABSENT with it on.
-//    (control proves the check has teeth; on-state proves the named pass fires.)
-// ════════════════════════════════════════════════════════════════════════════
+// ABLATION — overhead PRESENT with the guarding pass off, ABSENT with it on.
+//    (control proves the check has teeth; on-state proves the named pass
+//    fires.)
 
 const boundedLoop = tree => {
   const loops = []
@@ -93,20 +88,8 @@ const STRING_BASE_DECODE = (n) =>
 
 test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a call to a PROVABLY-clean named function, inside a function poisoned elsewhere by an unrelated call_indirect', () => {
   // Two things independently block the EXISTING machinery here:
-  //  - hoistGlobalPtrOffset requires the WHOLE function clean (no write, no
-  //    call_indirect anywhere) — `ops[mode]()`'s dynamic dispatch poisons the
-  //    entire function even though the scan loop itself never reaches it.
-  //  - hoistInvariantLoop's generic LICM already re-tries per loop, but its
-  //    purity rule for `global.get` is a blanket "no call at all in the loop"
-  //    (SAFE_OFFSET/READONLY_MEM/NON_MUTATING/PURE_CALL whitelist only) — a
-  //    call to an ordinary user function (`helper`, forced un-inlined via a
-  //    second call site) trips it even though `helper` provably never writes
-  //    idx/cur (optimize/effects.js over the direct call graph).
-  // hoistLoopGlobalPtrOffset is the only pass that clears BOTH: scoped to the
-  // loop (ignores the unrelated call_indirect outside it) AND effects-aware
-  // (tolerates the in-loop call once the callee is proven clean).
-  // `cur` is a string by every store (src/summary): `String(s)`, not the
-  // host's `s`, which could be anything.
+  //  `cur` is a string by every store (src/summary): `String(s)`, not the
+  //    host's `s`, which could be anything.
   const src = `
     export let idx = 0, cur = ''
     const ops = []
@@ -143,17 +126,13 @@ test('ablation: hoistInvariantLoop snaps an invariant cell read to a pre-header 
 
 test('ablation: promoteGlobals snapshots a repeatedly-read global to one function-entry local', () => {
   // `g` read 5×, never written on f's path → one `global.get` + cheap local.gets, not five 5-byte loads.
-  // Another export writes it: a name that holds one number for good reads as the number (test/held-number.js).
   const src = `let g = 5.5; export let set = (v) => { g = v }; export let f = () => { return g + g + g + g + g }`
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   ok(count(parse(src, { promoteGlobals: false }), gGet) > 1, 'control: multiple global.get $g with pass OFF')
   ok(count(parse(src, 2), gGet) <= 1, 'INVARIANT: global read once, snapshotted to a local, with pass ON')
 })
 
-// What a call to the host ends. A shim of the runtime's own (the seed Math.random asks for
-// once) calls no export, so the copy of a global stands across it; a function the user
-// imports is JavaScript and may call `set`, so past it the global is read again
-// (optimize/effects.js; the values, test/interop.js).
+// What a call to the host ends.
 test('promoteGlobals: a runtime shim ends no copy of a global, a function the user imports does', () => {
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   const body = (call) => `let g = 5.5; export let set = (v) => { g = v }; export let f = () => { const r = ${call}; return g + g + g + g + g + r }`
@@ -167,9 +146,7 @@ test('promoteGlobals: a runtime shim ends no copy of a global, a function the us
 })
 
 test('ablation: promoteCells holds in a local a cell no closure took', () => {
-  // An arrow writes `s`, so it is a cell to every analysis. The walk ran the arrow in
-  // place (compile/in-place.js) and made no closure: the cell's address only addresses
-  // its own loads and stores. In `g` a closure reads the same sum: the cell stays.
+  // An arrow writes `s`, so it is a cell to every analysis.
   const src = `export let f = (n) => { const a = new Float64Array(n); let s = 0; a.forEach((x, i) => { s += x * i }); return s }
   let sink; export let g = (n) => { const a = new Float64Array(n); let s = 0; sink = () => s; a.forEach((x, i) => { s += x * i }); return s }`
   const cell = (n) => n[0] === 'call' && n[1] === '$__alloc' && n[2]?.[0] === 'i32.const' && Number(n[2][1]) === 8
@@ -182,8 +159,7 @@ test('promoteGlobals preserves the raw-i64 carrier of repeated host-global reads
   // Host globals cross the JS↔wasm boundary as i64 so the engine cannot
   // canonicalize an external-reference NaN box. Three reads trigger the global
   // snapshot pass; its local must preserve that representation, not use the
-  // source-level f64 value type. The old mismatch made O2/O3 modules invalid
-  // before watr ran: local.set expected f64, global.get $process produced i64.
+  // source-level f64 value type.
   const src = `export const f = () => [process, process, process]`
   const tree = parseWat(compile(src, { host: 'js', optimize: { level: 2, watr: false }, wat: true }))
   const localTypes = new Map()
@@ -198,11 +174,9 @@ test('promoteGlobals preserves the raw-i64 carrier of repeated host-global reads
   ok(WebAssembly.validate(compile(src, { host: 'js', optimize: 2 })), 'optimized module validates')
 })
 
-// ════════════════════════════════════════════════════════════════════════════
-// 2. POPULATION SWEEP — a proof over a generated sublanguage, not a sample.
+// POPULATION SWEEP — a proof over a generated sublanguage, not a sample.
 //    Same seeded programs the correctness fuzzer runs (test/fuzz.js), checked
 //    for absence-of-waste instead of value parity.
-// ════════════════════════════════════════════════════════════════════════════
 // Keep every seed, but compile each population once for both questions. Cache
 // only the two counters, never the WAT trees or executable instances. A failed
 // compile is a failure, not a seed silently removed from the denominator.
@@ -234,8 +208,6 @@ for (const [name, gen] of [
   })
 }
 
-// Both populations now narrow completely (200/200 seeds). The old ceiling was
-// the number of seeds itself, so it could never detect a regression.
 for (const [name, gen] of [
   ['Int32Array min/max', typedIntMinMaxSource],
   ['Int32Array break/continue (IV-SR)', typedIVSRSource],
@@ -245,23 +217,17 @@ for (const [name, gen] of [
   })
 }
 
-// typed-int nested-conditional narrowing: now CLOSED (13 → 0). Two fixes: (1) toI32
-// distributes ToInt32 through `(if result f64)` recursively so nested integer `?:`
-// chains narrow to `(if result i32)` (lane-vectorized as i32x4 bitselect); (2) the
-// last 2 residuals weren't user-loop f64 at all — a mixed number/boolean ternary lost
-// type precision, so `+` emitted polymorphic string-concat dispatch, pinning the
-// number→string formatter whose OWN loops (dtoa) are f64 (src/kind.js VT['?:'], see
-// the absence test below). Hard-zero gate now; a regression on either path trips it.
+// Two fixes: (1) toI32 distributes ToInt32 through `(if result f64)` recursively so
+// nested integer `?:` chains narrow to `(if result i32)` (lane-vectorized as i32x4
+// bitselect); (2) the last 2 residuals weren't user-loop f64 at all — a mixed
+// number/boolean ternary lost type precision, so `+` emitted polymorphic
+// string-concat dispatch, pinning the number→string formatter whose OWN loops (dtoa)
+// are f64 (src/kind.js VT['?:'], see the absence test below).
 test(`sweep: typed-int emits NO f64 op in any loop body (seeds 1..${SWEEP}) — proven waste-free`, () => {
   is(countLoopF64(typedIntSource), 0)
 })
 
 test('absence: a pure-integer program pulls no number→string formatter (mixed num/bool ?: precision)', () => {
-  // A mixed number/boolean ternary `(c ? num : num>k)` used to lose type precision, so
-  // the enclosing `+` emitted the polymorphic string-concat dispatch on pure-numeric
-  // operands, pinning __str_concat → __to_str → __static_str (a dtoa formatter). A
-  // pure-int program ballooned 1 → ~19 funcs. Fixed in src/kind.js (VT['?:'] now mirrors
-  // the &&/||/?? BOOL-coercion rule: a boolean branch coerces in numeric context).
   const src = `export let f = () => { const a = new Int32Array(16); for (let i = 0; i < 16; i++) { a[i] = ((a[i] - ((a[i] <= 2) ? a[i] : a[i])) + ((a[i] === 255) ? a[i] : (a[i] > 2))) | 0 } return 0 }`
   const tree = parse(src, 2)
   const fmt = (n) => n[0] === 'func' && typeof n[1] === 'string' && /__static_str|__str_concat|__to_str|__ftoa/.test(n[1])
@@ -269,15 +235,13 @@ test('absence: a pure-integer program pulls no number→string formatter (mixed 
   ok(count(tree, (n) => n[0] === 'func') <= 3, 'pure-int program stays tiny (was 19 funcs with the leak)')
 })
 
-// Loop-invariant pointer/length helpers must be hoisted, never re-run per element.
-// Clean generators (internal arrays, constant length) lower with zero such calls
-// in any loop — the LICM / hoistGlobalPtrOffset guarantee, over the population.
-// (NB: the param-typed-array generator `typedSource` does NOT hold this AT LEVEL 2 — a
-// typed array passed as a PARAM re-decodes its base every iteration, 200/200, because
-// the polymorphic store reassigns `buf`. At SPEED (level 3) unswitchTypedParamLoop closes
-// it: a Float64Array-gated fast loop hoists the base and vectorizes (test/unswitch-typed-
-// param.js). This sweep parses at level 2, where the loop stays scalar — so the param
-// generator remains excluded here.)
+// Loop-invariant pointer/length helpers must be hoisted, never re-run per element. (NB:
+// the param-typed-array generator `typedSource` does NOT hold this AT LEVEL 2 — a typed
+// array passed as a PARAM re-decodes its base every iteration, 200/200, because the
+// polymorphic store reassigns `buf`. At SPEED (level 3) unswitchTypedParamLoop closes it:
+// a Float64Array-gated fast loop hoists the base and vectorizes
+// (test/unswitch-typed-param.js). This sweep parses at level 2, where the loop stays
+// scalar — so the param generator remains excluded here.)
 for (const [name, gen] of [
   ['Int32Array min/max', typedIntMinMaxSource],
   ['Uint8Array byte scan', typedByteScanSource],

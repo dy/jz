@@ -973,10 +973,7 @@ test('int-narrow: a wide integer read only for its low word is that word', () =>
 })
 
 // A select picks its first operand where its condition holds, its second where it
-// fails: an operand the condition compares lies within the comparison there. The
-// clamp `r < lo ? lo : r > hi ? hi : r` bounds an accumulator fed back through it,
-// so the sum it takes again is an integer one register holds (decode-qoa's
-// `qoa_clamp(predicted + dequantized, …)`, the clamp-acc kernel).
+// fails: an operand the condition compares lies within the comparison there.
 test('int-range: a clamp\'s operand is within its bounds, so the recurrence through it is integer', () => {
   const src = (T) => `const T = ${T}, B = new Uint8Array(256)
     for (let i = 0; i < 256; i++) B[i] = (i * 37) & 255
@@ -993,8 +990,7 @@ test('int-range: a clamp\'s operand is within its bounds, so the recurrence thro
 })
 
 // A local whose reads all truncate it holds the truncation (`early`): a NaN written there is the
-// zero it truncates to, an undefined a bare `let` holds in a loop's every pass among them. Its
-// integer form was the constant NaN, which no integer constant spells.
+// zero it truncates to, an undefined a bare `let` holds in a loop's every pass among them.
 test('int-narrow: a NaN written to a local every read truncates is its zero', () => {
   const src = `const A = new Uint32Array(64)
   export let words = () => A

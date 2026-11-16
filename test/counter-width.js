@@ -531,12 +531,11 @@ test('counter width: imul takes the product\'s range within one word, any word b
   is(range([0, 10], null), [-2147483648, 2147483647], 'an unknown operand: any word')
 })
 
-// A counter each pass of its loop admits by the truth of an element read at it
-// (`(d = ops[i++])`, the read's own step, or `ops[i]` under `i++`) rises only through
+// A counter each pass of its loop admits by the truth of an element read at it (`(d =
+// ops[i++])`, the read's own step, or `ops[i]` under `i++`) rises only through
 // indices of elements its receiver holds, so it stays within the receiver's length:
-// an array's eight-byte elements in a 32-bit memory, a string's i32 length
-// (static.js elementCounter). A closure's counter is its own too, a parameter no
-// call needs to supply among them (plan/counted-loops.js adoptLoopCounters).
+// an array's eight-byte elements in a 32-bit memory, a string's i32 length (static.js
+// elementCounter).
 test('counter width: a counter admitted by an element read stays within its receiver\'s length', () => {
   const source = `const sum = (ops) => { let d, n = 0; for (let i = 0; (d = ops[i++]);) n += d; return n }
     const count = (ops) => { let n = 0; for (let i = 0; ops[i]; i++) n++; return n }

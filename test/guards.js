@@ -162,12 +162,7 @@ test('guards: reads under a test of something else', () => {
 
 // The bound a loop's counter runs to is read through the other tests the loop
 // leaves by (`flag && j < n`, the emitter's short-circuit form), and an index
-// the emitter keeps in a temp (`local.tee`) is the sum it stores. A test that
-// equates the counter with another local, or tests an element it reads, bounds
-// no index: the reads past it still take their tests ahead of the loop.
-// A test on what a read answers (`pos[p + c] === 0`, the read hedged for a
-// miss) bounds nothing of the address: the reads beside it in the ternary's
-// arms are tested ahead of the loop like any other.
+// the emitter keeps in a temp (`local.tee`) is the sum it stores.
 test('guards: a test on an element read shields no index made of its address', () => {
   const src = `export function f(pos, n) {
   if (!(pos instanceof Float32Array)) throw new TypeError('x')

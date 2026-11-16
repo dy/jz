@@ -118,11 +118,7 @@ test('loop fields: an element a loop stores a maybe-missing value into reads bac
 })
 
 // A cascade of sections kept as the library keeps them: coefficient records,
-// each section's state a pair array, a stage loop of a constant count. The
-// stage loop is written out, and the sample loop then holds every coefficient
-// and every state element in a local, the pairs stored back after it; a call
-// handing one pair for two sections (the pairs found not distinct) runs the
-// loop as written.
+// each section's state a pair array, a stage loop of a constant count.
 const cascadeOf = (coefs, count) => `${coefs}
 const filter = (data, coefs, state) => {
   const n = ${count}
@@ -187,10 +183,7 @@ export let go = () => f(new Float64Array(5).fill(1), [[0, 0], [10, 0]])`, [['go'
 // of one layout made at one site (the constructor's literal), so no
 // construction site tells them apart: the copy holds their fields where it
 // finds them three objects at run time, and the loop as written runs where two
-// are one. Another class's accessor of the same name (Quaternion's `get x()`)
-// leaves a vector's `x` a field. A coordinate a read past the buffer's end
-// leaves undefined is a Number or missing: the copy finds the box's present
-// and holds them as Numbers, tested once before the loop.
+// are one.
 const box = `class Q { constructor() { this._x = 0 } get x() { return this._x } set x(v) { this._x = v } }
 class V {
   constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }

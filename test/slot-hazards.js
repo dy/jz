@@ -3,10 +3,7 @@
  * collectSlotWriteHazards + census write observation, module/schema.js reader
  * belts, src/kind.js VT['.'] census deferral).
  *
- * The slot censuses (slotIntCertain / slotTypes / slotTypedCtors) once
- * observed only `{}` literals and resolvable `obj.prop =` writes — every
- * other write family silently left stale facts that consumers baked into
- * codegen. Each test here pins a probed-live miscompile:
+ * Each test here pins a probed-live miscompile:
  *   1. dyn keyed write `o[k] = v` vs Math.floor elision
  *   2. dyn keyed write of a string vs slotVT NUMBER (raw arithmetic on a box)
  *   3. `.prop=` through an unresolvable receiver vs floor elision
@@ -25,7 +22,7 @@ import { initSchema } from '../module/schema.js'
 import { levels } from './_matrix.js'
 
 // A multi-schema static read unboxes only if EVERY alternative is proven
-// boxed BigInt. Per-schema (raw OR unboxed) does not prove a raw merged read.
+// boxed BigInt.
 test('slot carriers: refinements require one common read representation', () => {
   const facts = { schema: { list: [['n'], ['n'], ['n'], []] }, func: { refinements: new Map() } }
   initSchema(facts)
@@ -159,19 +156,13 @@ export let main = () => {
 })
 
 test('slot-hazards: §21 counter-example — computed-key write through an untyped param still poisons the slot KIND (pointsTo===\'ALL\' load-bearing after the hz→pointsTo swap)', () => {
-  // .work/archive/carrier-representation-design.md §21's own counter-example, verbatim
-  // shape: `corrupt`'s `obj[key]=val` has an unresolvable receiver (obj: plain
-  // param, no schemaId) AND an unresolvable key (key: plain param, not a
-  // literal, not repOf(key)?.intCertain) — collectSlotWriteHazards can name
-  // neither a sid nor a prop to scope the hazard to, so it sets pointsTo to
-  // the 'ALL' sentinel (was `hz.all = true`) and NOTHING else. If slotVT's
-  // gate ever dropped this term (or the product-lattice Slice 6b swap ever
-  // left a reader on the old, now-permanently-empty hz.sids), `f.count`
-  // downstream of `corrupt(f, 'count', 'oops')` would still answer NUMBER —
-  // wrong, since the call really did overwrite that slot with a string — and
-  // this test would decode the box's raw pointer bits as a number instead of
-  // taking the string concat path. (The second call, of another layout, keeps
-  // `obj` unresolved: a parameter every call passes one layout resolves to it.)
+  // If slotVT's gate ever dropped this term (or the product-lattice Slice 6b swap ever
+  // left a reader on the old, now-permanently-empty hz.sids), `f.count` downstream of
+  // `corrupt(f, 'count', 'oops')` would still answer NUMBER — wrong, since the call
+  // really did overwrite that slot with a string — and this test would decode the
+  // box's raw pointer bits as a number instead of taking the string concat path. (The
+  // second call, of another layout, keeps `obj` unresolved: a parameter every call
+  // passes one layout resolves to it.)
   const src = `
 class Foo { constructor() { this.count = 0 } }
 const corrupt = (obj, key, val) => { obj[key] = val }
@@ -261,9 +252,8 @@ const init = () => {
   return ps
 }
 export let main = () => step(init())`
-  // `main` releases what it made as it returns, so its call of `step` is one watr inlines: the kernel is read before watr.
-  // `step` runs once and its loops allocate nothing as emitted (optimize/quiet-loops.js): each pass of the outer
-  // loop is a function of its own (optimize/split-funcs.js loopPasses), read with it
+  // `main` releases what it made as it returns, so its call of `step` is one watr inlines: the kernel is read
+  // before watr.
   const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const stepBody = wat.split('(func ').filter(c => /^\$step(?:\$s\d+)*\s/.test(c)).join('(func ')
   // A checked cursor may retain the undefined box before projection. It is
@@ -283,7 +273,7 @@ test('slot-hazards: miss-capable reads keep their undefined guards (no sentinel 
   // mayBeNullish must flag them (fail-closed) or the guard folds away — the
   // self-compile kernel's own `autoCache.get(name) !== undefined` cache probe
   // folded TRUE and every call returned the miss sentinel (the byte-parity
-  // root). The dedupe-cache idiom pins it end to end.
+  // root).
   const src = `
 const cache = new Map()
 const compute = (k) => k * 2 + 1
@@ -326,10 +316,10 @@ export let main = (n) => {
 
 // Structural slotOf closed-world hole: the old form checked slot-consistency
 // only among schemas CONTAINING the prop — an OBJECT receiver of a schema
-// LACKING it read (and WROTE) the foreign slot. `p.x` on a {z,w,q} record
-// returned z; `p.x = v` corrupted z in place. Sound form: the prop must live
-// at the same slot in EVERY registered schema; unique-prop receivers keep the
-// runtime-guarded devirt (guardedSlotOf), everything else goes dynamic.
+// LACKING it read (and WROTE) the foreign slot. Sound form: the prop must
+// live at the same slot in EVERY registered schema; unique-prop receivers
+// keep the runtime-guarded devirt (guardedSlotOf), everything else goes
+// dynamic.
 test('slot-hazards: structural slotOf refuses schemas lacking the prop (read + write)', () => {
   const src = `
 const mk = () => { const a = []; a.push({ x: 41, y: 2 }); return a }
@@ -364,16 +354,6 @@ export let main = () => (use(mk()) * 10 + use(other())) | 0`
     is(run(src, { optimize }).main(), 79, `O${optimize}: shared-slot structural read exact`)
 })
 
-// Cross-function bare-name binding collision (the kernel-fragility episodes'
-// TRUE root, three times manifested): ctx.schema.vars is module-global and
-// keyed by BARE NAME, so one function's `const site = {…}` literal used to
-// resolve ANOTHER function's same-named binding — a for-of binding, a param, a
-// non-literal decl — through the literal's layout: a RAW fixed-slot load at a
-// foreign offset, no guard, no dyn fallback, at EVERY optimize level (the
-// self-compile kernel's rest-spec read `site.callee` off the wrong slot when an
-// unrelated pass added a differently-ordered literal). prepare's binding
-// census now bars such names from the vars channel (per-function ValueReps
-// keep devirtualizing); reads fall to the guarded/dyn path.
 test('slot-hazards: literal decl in one function must not type another function\'s for-of binding', () => {
   const src = `
 const use = (arr) => { let s = 0; for (const site of arr) s += site.callee; return s }
@@ -472,9 +452,6 @@ export let main = () => other()`
   is(sa, sb, 'same-length param rename does not change output size')
   for (const optimize of LEVELS) is(run(A, { optimize }).main(), 3, `O${optimize}: values exact`)
   // Second placement (the audit's 4× case): a CALLED use + a sibling local.
-  // Locals no longer publish into the module vars map, so both spellings take
-  // the lean scalar-replaced form — byte-identical AND free of the generic-+
-  // string machinery the pessimistic path pulled.
   const C = `
 const use = (o) => o.x
 const other = () => { let o; o = { x: 1 }; return o.x }
@@ -490,10 +467,9 @@ export let main = () => use({ x: 5 }) + other()`
 })
 
 test('slot-hazards: object-literal param default must not type supplied arguments', () => {
-  // The default shape holds only on the omitted-arm; a caller's differently-
-  // ordered object stores x elsewhere — the unconditional default-schema
-  // install read the default's slot (6 → 9 at every tier). The param is
-  // supplied-shape ∪ default-shape: only call-evidence channels may devirt.
+  // The default shape holds only on the omitted-arm; a caller's
+  // differently-ordered object stores x elsewhere — the unconditional
+  // default-schema install read the default's slot (6 → 9 at every tier).
   const src = `
 const f = (o = { x: 1, y: 2 }) => o.x
 export let omitted = () => f()

@@ -175,7 +175,6 @@ test('simd: masked-lockstep mandelbrot matches scalar (f32 lanes)', () => {
   is(frame(W, H, L), scalar(W, H, L))
 })
 
-// ── f64x2 — two full-precision f64 lanes (module/simd.js) ────────────────────
 test('simd: f64x2 build + per-lane arithmetic + extract', () => {
   const { f } = run(`export let f = (a, b) => {
     let v = f64x2.lanes(a, b)
@@ -206,10 +205,9 @@ test('simd: f64x2.sin / f64x2.cos — both lanes, all quadrants', () => {
 })
 
 test('simd: f64x2.log / exp / exp2 — true-vectorized, BIT-EXACT to scalar', () => {
-  // log/exp/exp2 run ONE poly across both lanes (≈2×, log beats V8 native). The hot path (both lanes
-  // normal/finite) mirrors the scalar op-for-op; any edge lane routes both to the scalar fallback.
-  // Either way each lane must be bit-for-bit equal to jz's scalar $math.log/exp/exp2 — the invariant
-  // the per-pixel-color / toneMap passes lift against (a lossy mirror would change every demo's pixels).
+  // log/exp/exp2 run ONE poly across both lanes (≈2×, log beats V8 native). Either way each lane must be
+  // bit-for-bit equal to jz's scalar $math.log/exp/exp2 — the invariant the per-pixel-color / toneMap
+  // passes lift against (a lossy mirror would change every demo's pixels).
   const { L0, L1, SL, E0, SE, X0, SX } = run(`
     export let L0 = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 0)
     export let L1 = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 1)

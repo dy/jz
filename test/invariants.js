@@ -194,10 +194,6 @@ test('invariant: shared power generator reconstructs every decimal entry exactly
   }
 })
 
-// ============================================================================
-// Const enforcement invariants
-// ============================================================================
-
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
   if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-compile leg
   reset(emitter, GLOBALS, emissionHooks())
@@ -224,9 +220,7 @@ test('invariant: module-scope const is not a mutable WASM global', () => {
   ok(!w.includes('global.set $X'), `const X should not be global.set: ${w.slice(0, 200)}`)
 })
 
-// ============================================================================
 // Block scope invariants — functional (compiler DCE eliminates unused locals)
-// ============================================================================
 
 test('invariant: if-block let does not shadow outer at runtime', () => {
   is(run('export let f = () => { let x = 1; if (1) { let x = 2; x = 3 }; return x }').f(), 1)
@@ -240,9 +234,7 @@ test('invariant: bare block scoping', () => {
   is(run('export let f = () => { let x = 1; { let x = 2 }; return x }').f(), 1)
 })
 
-// ============================================================================
 // Optional chain invariants
-// ============================================================================
 
 test('invariant: ?.[i] with side-effecting base evaluates once', () => {
   const { f, getCalls } = run(`
@@ -280,9 +272,7 @@ test('invariant: ?.[] on null returns null without evaluating key', () => {
   is(getEvalCount(), 0)
 })
 
-// ============================================================================
 // Type preservation invariants
-// ============================================================================
 
 test('invariant: i32 loop counter stays i32 in WAT', () => {
   const w = wat('export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }')
@@ -294,7 +284,6 @@ test('invariant: division always produces f64 result', () => {
   ok(w.includes('f64.div'), 'division uses f64.div')
 })
 
-// ============================================================================
 // Body facts: signature freshness is checked on every hit; explicit mutation
 // seams cover AST and ambient changes. Global invalidation includes anonymous
 // bodies, not just the named function registry.
@@ -415,7 +404,6 @@ test('invariant: explicit body mutation seams refresh cached facts', () => {
   analyzeBody(func.body)
 })
 
-// ============================================================================
 // Global fact changes also invalidate bodies outside the named registry.
 test('invariant: global fact invalidation includes anonymous body roots', () => {
   if (onKernel()) return
@@ -426,9 +414,6 @@ test('invariant: global fact invalidation includes anonymous body roots', () => 
   clearBodyFacts()
   ok(analyzeBody(anonymous) !== before, 'phase invalidation drops anonymous observations too')
 })
-
-// Module export invariants
-// ============================================================================
 
 test('invariant: exported function appears in WAT exports', () => {
   const w = wat('export let add = (a, b) => a + b')
@@ -441,19 +426,13 @@ test('invariant: non-exported function is not in WAT exports', () => {
   ok(w.includes('(export "f"'), 'exported name is in exports')
 })
 
-// ============================================================================
-// NaN-boxing invariants
-// ============================================================================
-
 test('invariant: null pointer uses NaN pattern', () => {
   const w = wat('export let f = () => null')
   // null should compile to the special NaN pattern, not i32.const 0
   ok(w.includes('f64') || w.includes('i64'), 'null expression uses float/int ops')
 })
 
-// ============================================================================
 // Layout invariants — layout.js is the sole source of NaN-box carrier i64 hex
-// ============================================================================
 const ROOT = join(import.meta.dirname, '..')
 
 const COMPILE_FAMILY_OWNERS = [
@@ -637,13 +616,6 @@ test('layout: fixed-width hex formatting needs no general radix scratch', () => 
 })
 
 test('layout: i64Hex is self-compile-safe across the full 64-bit range', async () => {
-  // Under self-compile, BigInts are raw SIGNED i64 bits (kind-erased), so any
-  // formatting that routes through bits.toString(16) renders a bit-63-set
-  // value as a signed "-8000…" fragment — the emitted `(i64.const 0x00-…)`
-  // is unparseable and killed every durable-log helper the kernel compiled
-  // (the nanPrefixMaskHex regression). i64Hex must build the hex from
-  // logical-shifted 32-bit halves; this pins host output byte-for-byte
-  // against the toString reference for the boundary patterns.
   const { i64Hex, nanPrefixMaskHex } = await import('../layout.js')
   const ref = (b) => '0x' + b.toString(16).toUpperCase().padStart(16, '0')
   for (const bits of [0n, 1n, 0x7FF8000000000000n, 1n << 63n,
@@ -652,18 +624,9 @@ test('layout: i64Hex is self-compile-safe across the full 64-bit range', async (
   ok(/^0xFFF8/.test(nanPrefixMaskHex()), 'sign-bit-forced mask formats unsigned')
 })
 
-// ============================================================================
-// isReassigned emission memo — memoized path must be bit-equivalent to the walk
-// ============================================================================
-// The emit driver brackets its stages with begin/endAssignedMemo (ast.js), so
-// every emit-time isReassigned query resolves through a per-subtree
-// assigned-name set instead of an O(|body|) rescan. The set collection must
-// mirror the walk's tree contract EXACTLY — a `let`/`const` declarator's `=`
-// binds rather than writes (only initializers scanned), non-name mutation
-// targets contribute nothing but their subexpressions are scanned.
 // (`redeclaresName` in type.js is the same walk shape and often paired at call
-// sites — left unmemoized deliberately: it never showed in the m86 profile.
-// If it ever does, it takes this same treatment and this same test.)
+// sites — left unmemoized deliberately: it never showed in the m86 profile. If
+// it ever does, it takes this same treatment and this same test.)
 test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async () => {
   const { isReassigned, beginAssignedMemo, endAssignedMemo } = await import('../src/ast.js')
   const both = (node, name) => {
@@ -703,9 +666,7 @@ test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async
   is(isReassigned(root, 'a'), true)
 })
 
-// ============================================================================
 // FunctionPlan linear ownership
-// ============================================================================
 test('invariant: FunctionPlan transfers collections once and keeps projections detached', async () => {
   const { createFunctionPlan, functionPlanRepField, installFunctionPlan } = await import('../src/compile/function-plan.js')
   const { isMapOverlay, makeMapOverlay } = await import('../src/compile/map-overlay.js')
@@ -745,14 +706,6 @@ test('invariant: FunctionPlan transfers collections once and keeps projections d
   throws(() => installFunctionPlan(ctx, plan), /already-consumed FunctionPlan/)
 })
 
-// ============================================================================
-// Static-data parts accumulator — exact equivalence with the string form
-// ============================================================================
-// The data segment accumulates as parts + a maintained length
-// (src/static-data.js) because member-target `+=` fresh-copies the whole
-// segment per append in the self-compiled kernel (the jz×jz goal-gate wall,
-// .work/evidence.md §EXHAUSTIVE ATTRIBUTION). Offsets, alignment padding, and
-// the final joined bytes must be byte-equivalent to the old string form.
 test('invariant: static-data parts accumulator matches string-form bytes and offsets', async () => {
   const { dataAlign, dataPush, dataLen, dataBytes, dataReset, pushStaticSlots, hexBytes } = await import('../src/static-data.js')
   const { ctx } = await import('../src/ctx.js')
@@ -789,15 +742,7 @@ test('invariant: static-data parts accumulator matches string-form bytes and off
   }
 })
 
-// ============================================================================
 // dedupClosureBodies — hash-cons grouping parity with the retired stringify key
-// ============================================================================
-// The dedup key moved from JSON.stringify of each closure's renamed tree
-// (measured 810.76 MB of transient churn on the jz×jz region-live self-compile)
-// to a rename-invariant rolling hash + exact alpha-aware comparator. Two bodies
-// are one where every leaf is the same value: the old key wrote undefined, null,
-// NaN and the infinities all as 'null' and -0 as 0, and closures returning
-// Infinity and -Infinity were one closure (test/node-keys.js).
 test('invariant: closure dedup groups alpha-duplicates, every leaf value apart, and order counterexamples exactly', async () => {
   const { dedupClosureBodies } = await import('../src/wat/assemble.js')
   const { ctx } = await import('../src/ctx.js')
@@ -865,17 +810,10 @@ test('invariant: closure dedup groups alpha-duplicates, every leaf value apart, 
   } finally { ctx.closure.table = savedTable }
 })
 
-// ============================================================================
-// program-facts freeze discipline (v1 architecture-convergence, "facts frozen
-// before consumers" — .work/archive/program-facts-split.md §7 has the full lifecycle
-// table: paramReps/callSites are STAGED facts, published empty/raw by
-// collectProgramFacts and settled by plan()'s own round 3; programFacts
-// itself is closed-shape once ProgramIndex is stapled on). All three pins
-// below are white-box against the freeze.js mechanism itself, not a live
-// compile's internal state — no onKernel() guard needed, since
-// JZ_TEST_TARGET=jz.wasm only changes WHERE compilation happens, never what
-// this plain, side-effect-free module does when called directly from the host.
-// ============================================================================
+// All three pins below are white-box against the freeze.js mechanism itself, not a
+// live compile's internal state — no onKernel() guard needed, since
+// JZ_TEST_TARGET=jz.wasm only changes WHERE compilation happens, never what this
+// plain, side-effect-free module does when called directly from the host.
 
 test('invariant: ProgramIndex owns stable numeric function and member-target identities', () => {
   const target = { name: 'target', sig: { params: [], results: ['f64'] }, body: ['return', [null, 1]] }
@@ -1087,9 +1025,6 @@ test('architecture: host-callability reads the canonical export predicate', () =
   // The raw `func.exported` flag means "declared with `export` in its own
   // module" and is read only where that syntactic fact is the question: the
   // inline `(export …)` attribute sites and the active-function frame record.
-  // Every host-callability decision (roots, coverage, host ABI, inlining)
-  // goes through isExported / isExportedIn, which also resolves aliases and
-  // bundle re-exports.
   const allowed = new Set([
     'src/compile/func-exports.js', 'src/compile/active-function.js',
     'src/compile/boundary-wrap.js', 'src/compile/emit-func.js',
@@ -1336,9 +1271,6 @@ test('invariant: freezeCallSites blocks structural mutation of both the array an
 })
 
 test('invariant: assertProgramFactsShape rejects an undocumented programFacts key, always (not gated)', async () => {
-  // core-simplification-audit.md §4(ii) slice 7: promoted from JZ_DEBUG_INVARIANTS-gated
-  // to always-on (measured <0.03 ms/compile — negligible against whole-compile time), so
-  // the throw now fires regardless of the env flag.
   const { spawnSync } = await import('node:child_process')
   const root = new URL('..', import.meta.url).pathname
   const script = `
@@ -1357,12 +1289,6 @@ test('invariant: assertProgramFactsShape rejects an undocumented programFacts ke
 })
 
 test('invariant: paramReps/callSites consumer order independence — a function\'s own compiled body does not depend on a sibling\'s declaration order', () => {
-  // Proxy for "two consumers swapped in registration order": since both
-  // functions' paramReps/callSites entries live in the SAME frozen Map/array
-  // (keyed by name, not position) once plan()'s round 3 settles, f's own
-  // narrowing/specialization must be identical whichever order the two
-  // functions were declared/registered in — a real, whole-compile pin, not a
-  // synthetic one, exercising the actual freeze this slice installs.
   const extractFunc = (w, name) => {
     const m = w.match(new RegExp(`\\(func \\$${name}\\b[\\s\\S]*?\\n  \\)`))
     return m && m[0]

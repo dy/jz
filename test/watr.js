@@ -10,17 +10,11 @@ const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
-// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §5/§9): watr
-// (an independently-versioned npm dependency, not jz kernel source — Slice
-// 0's own ledger entry, ".work/evidence.md 'BigInt retirement Slice 0'")
-// has 4 of its own genuinely-unprovable BigInt sites (encode.js's
-// F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local),
-// unreachable from this repo to fix. This file compiles watr's REAL bundled
-// source through jz (not a self-compiled kernel — a native, in-process
-// compile, same mechanism), so it hits those same sites. The boxed carrier is
-// the unconditional representation (the CARRIER_BOX flag and its env toggle
-// were deleted); a caller wanting the strict raw-i64 diagnostic uses
-// JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
+// This file compiles watr's REAL bundled source through jz (not a self-compiled
+// kernel — a native, in-process compile, same mechanism), so it hits those same
+// sites. The boxed carrier is the unconditional representation (the CARRIER_BOX
+// flag and its env toggle were deleted); a caller wanting the strict raw-i64
+// diagnostic uses JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
 const withRawCarrier = (fn) => fn()
 
 const ENTRY_MODULES = {
@@ -320,8 +314,7 @@ test('jz: const-table bigint prop read survives whole-program write hazard', () 
 // A sink-boxed bigint PARAM reassigned inside a loop (watr's uleb shape): the
 // sink OR flips the param's rep to boxed for body reads, so the boundary store
 // call sites consult and the loop's raw arithmetic writes must both agree —
-// three stores, one verdict. Regressed as: f(300n) returned 0 (boxed reads
-// deref'd a raw carrier), OOB with arrays in scope.
+// three stores, one verdict.
 test('jz: bigint param loop-reassigned through a sink keeps one representation', () => {
   if (onWasi()) return  // callable `run` returns are JS-host ABI, not WASI command exports
   const src = `
@@ -368,7 +361,6 @@ test('watr metacircular: jz-built watr.wasm produces byte-identical output', asy
   }
 })
 
-// ─── jz-compiled watr regression tests ───
 // These exercise the full jz→watr pipeline (parse + print + compile) and
 // reproduce actual bugs that only manifest when watr is compiled by jz.
 
@@ -393,7 +385,6 @@ function f64Value(wat) {
   return dv.getFloat64(0, true)
 }
 
-// ─── Bug 1: f64 hex integer literal > 53 bits loses precision (const.wast) ───
 // f64.parse accumulates hex integers from LSD→MSD so small contributions are
 // preserved before the final large+small addition. Exact value: 2^97+2^44+1
 // → correctly rounds to 2^97+2^45 (mantissa=1).
@@ -407,10 +398,6 @@ test('watr-regression: f64.const large hex integer rounds correctly', () => {
   is(val, expected, `got ${val}, expected ${expected}`)
 })
 
-// ─── Bug 2 & 3: ref_cast and ref_test — FIXED by jz update ───
-// These previously failed when jz-compiled watr.wasm produced incorrect
-// reference type opcodes, but were fixed in recent jz commits.
-// Kept as passing regression guards:
 test('watr-regression: ref_cast_null on null anyref', () => {
   if (onWasi()) return  // wasi: host global WebAssembly
   const wat = `(module
@@ -455,7 +442,6 @@ test('watr-regression: ref_test_null_data returns 2', () => {
   is(exports.ref_test_null_data(2), 2)
 })
 
-// ─── Bug 4: v128.const i64x2 encodes as f64 (simd const / simd i64x2) ───
 // jz-compiled watr treats i64x2 lane values as f64 instead of i64,
 // producing wrong bytes for large values like 0xffffffffffffffff.
 test('watr-regression: v128.const i64x2 encodes correctly', () => {

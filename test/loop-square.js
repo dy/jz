@@ -28,7 +28,6 @@ const sieveSrc = (n) => `export let f = () => {
 }`
 const primesBelow = (n) => { const c = new Int32Array(n); for (let i = 2; i * i < n; i++) if (!c[i]) for (let j = i * i; j < n; j += i) c[j] = 1; let t = 0; for (let k = 2; k < n; k++) if (!c[k]) t++; return t }
 
-// ── narrowing fires (structural) ──────────────────────────────────────────────
 test('loopSquare: ablation — `i*i < CONST` (CONST ≤ 2³⁰) carries i32, not f64', () => {
   if (onKernel()) return  // kernel runs optimize:false; this inspects optimize:2 WAT
   const src = `export let f = () => { const c = new Int32Array(1000); for (let i = 2; i * i < 1000; i++) { c[i & 1023] = i } return 0 }`
@@ -41,7 +40,6 @@ test('loopSquare: the whole sieve narrows — no f64.mul in any loop', () => {
   ok(!loopHasF64Mul(sieveSrc(1000), 2), 'sieve product/counter chain is i32 end-to-end')
 })
 
-// ── soundness boundaries: MUST stay f64 outside the proven envelope ────────────
 test('loopSquare: SOUND — only narrows within the envelope', () => {
   if (onKernel()) return
   const mul = (src) => loopHasF64Mul(src, 2)  // true = stayed f64 (not narrowed)

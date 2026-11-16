@@ -43,10 +43,9 @@ for (const optimize of levels(0, 3)) {
 }
 
 // Behavioural invariant the user cares about: pulses ENTER from the screen edges and the current fills IN over
-// time — they never materialise mid-screen. A regression that seeds a line's pulses at a phase offset (so a line
-// is ~full of pulses from t=0) would make the lit-pixel count flat from the start instead of climbing. This pins
-// the climb: an early frame must be well short of the filled-in steady state. (The phi→delay fix is what this
-// guards; parity alone would not have caught it, since a wrongly-placed pulse is still placed identically JS/JZ.)
+// time — they never materialise mid-screen. This pins the climb: an early frame must be well short of the
+// filled-in steady state. (The phi→delay fix is what this guards; parity alone would not have caught it, since a
+// wrongly-placed pulse is still placed identically JS/JZ.)
 const litAfter = (seconds) => {
   const m = asJs()
   const p = m.resize(W, H); m.configure(0, SCALE)
@@ -82,8 +81,6 @@ test('grid-current: click burst — arms away from the cursor are the bright one
   const m = asJs(), major = 80 * SCALE
   const p = m.resize(W, H); m.configure(0, SCALE)
   let t = 0; for (let f = 0; f < 30; f++) { t += 0.016; m.frame(t) }
-  // a known interior junction (2·major is also on the 40-subgrid, where spawn() now snaps); the click offset
-  // is sized to the SUBGRID cell (½·major) so it still rounds to THIS junction — cursor right + down of it
   const jx = Math.round(2 * major), jy = Math.round(1 * major)
   m.spawn((jx + major * 0.17) / W, (jy + major * 0.13) / H)   // +0.17·major = +0.34 of a subgrid cell → rounds to the junction
   t += 0.016; m.frame(t); for (let f = 0; f < 25; f++) { t += 0.016; m.frame(t) }

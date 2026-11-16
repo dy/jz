@@ -159,8 +159,7 @@ test('module scratch: the array left in memory answers the same', () => {
 
 // The words of a number a library returns through the array (`toWords( x, WORDS )`, twice in one
 // call): every read of an element follows its store, so the element's local is declared with no
-// `undefined` (compile/emit/dispatch.js), and its writes, words, are what types it. The words then
-// stay in integer registers: no word goes through a Number to be truncated back.
+// `undefined` (compile/emit/dispatch.js), and its writes, words, are what types it.
 const WORDS = `const F = new Float64Array(1), U = new Uint32Array(F.buffer)
 const W = [0, 0]
 const toWords = (x) => { F[0] = x; W[0] = U[1]; W[1] = U[0] }

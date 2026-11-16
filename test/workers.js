@@ -111,8 +111,7 @@ test('imported memory: static region relocates (stringify + parse work)', () => 
   if (onWasi() || onKernel()) return
   // pre-existing hole (predates Workers v1): the EL/Ryū tables and static
   // strings rode the address-0 active segment, which imported memory never
-  // loads — String(n)/Number(s) read garbage. Now a passive segment + start
-  // init behind $__staticBase.
+  // loads — String(n)/Number(s) read garbage.
   const m = new WebAssembly.Memory({ initial: 4, maximum: 64 })
   const e = jz(`export let f = () => String(0.1 + 0.2) + '|' + Number('2.5')`, { importMemory: true, memory: m }).exports
   is(e.f(), '0.30000000000000004|2.5')

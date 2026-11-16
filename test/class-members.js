@@ -115,11 +115,7 @@ test('class members: a store to the class\'s prototype names a member', () => ag
   ['in a class declared inside a function', `export const f = () => { class V { static { V.prototype.isV = true } constructor() { this.x = 3 } } const v = new V(); return v.isV ? v.x : -1 }`],
 ]))
 
-// three.js: Vector3 stores `this.x` beside Quaternion's `set x(v)`. A store
-// under an accessor's name on a receiver the summary types as instances of a
-// class without the accessor is the field's slot store, keeping the
-// receiver's own type (class-dispatch.js lacksSlot): held in a local for the
-// setter probe it lost its layout and stored through a hash.
+// three.js: Vector3 stores `this.x` beside Quaternion's `set x(v)`.
 test('class members: a field stored under another class\'s accessor name keeps its slot', () => {
   const src = `class Q { constructor() { this._x = 0 } get x() { return this._x } set x(v) { this._x = v * 2 } }
     class V { constructor(x = 0, y = 0) { this.x = x; this.y = y } min(v) { this.x = Math.min(this.x, v.x); this.y = Math.min(this.y, v.y); return this } fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; return this } }
@@ -219,7 +215,7 @@ test('class members: an own closure over a method shadows it only on the shapes 
 // summary cannot name, the getter's probe falls back to the class's method
 // (module/core.js `__raw_prop`), and one dispatcher of the read, or of the
 // call, answers a getter class and a method class alike (class-dispatch.js
-// synthesizeClassDispatchers). The method read undefined and its call threw.
+// synthesizeClassDispatchers).
 test('class members: a method reads and calls beside a getter of its name elsewhere', () => {
   const rows = [
     ['beside a literal\'s getter', `const o = { get foo() { return 1 } }

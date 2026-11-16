@@ -103,9 +103,7 @@ test('static storage: a rewritten typed global drops its declaration facts', () 
 
 // A function's writes to a typed global are no length fact for that function:
 // the read before them (`cur.length`, a cache's growth test) and the reads
-// elsewhere see the header. The reset write's length (0) stood for the
-// binding, so the growth test held every call and the cache grew each time
-// (src/optimize/fn.js's effect cache, 150 KB per function in the kernel).
+// elsewhere see the header.
 test('static storage: a typed global rewritten inside a function keeps no per-function length', () => {
   const src = `const T = { syms: ['', 'a', 'b'] }
     let cur = new Int8Array(0), built = null

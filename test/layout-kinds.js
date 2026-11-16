@@ -1,5 +1,5 @@
 /**
- * Heap-kind registry shadow-check (.work/evidence.md §Heap-kind registry).
+ * Heap-kind registry shadow-check.
  *
  * Proves layout-kinds.js's compact KIND_REGISTRY + layout-kinds-doc.js's
  * prose extension against LIVE behavior: one probe per kind × consumer
@@ -8,15 +8,6 @@
  * the runtime ACTUALLY does today — a divergence from some OTHER consumer's
  * stated intent is recorded as a FINDING in layout-kinds-doc.js, not "fixed"
  * by picking a side in this file.
- *
- * Imports BOTH modules (Slice 4 split, audit-#16 registry finding): plain
- * KIND_REGISTRY (layout-kinds.js) is the compact table production actually
- * consumes — tag/aux/identity/identityArm reads and the identity-dispatch
- * generators below are checked against it directly. KIND_REGISTRY_DOC
- * (layout-kinds-doc.js) is the prose-extended table — FINDINGS
- * cross-referencing and the full-column completeness check use it, since
- * the prose columns (allocShape, childPointers, forwarding, identityNote,
- * interopDecode, typeofArm, findings) no longer live on the compact table.
  *
  * Runs identically under plain and JZ_DEBUG_INVARIANTS=1 (no codegen this
  * file touches is gated on that flag) — the DBG_INVARIANTS-conditional
@@ -38,9 +29,7 @@ import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 
 
-// ============================================================================
 // Registry self-consistency (catches this FILE going stale, not the runtime)
-// ============================================================================
 
 test('registry: every live PTR.* tag has at least one KIND_REGISTRY row', () => {
   const tagsInRegistry = new Set(Object.values(KIND_REGISTRY).map(k => k.tag).filter(t => t != null))
@@ -70,13 +59,11 @@ if (DBG_INVARIANTS) {
   })
 }
 
-// ============================================================================
 // typeof — one probe per kind, dynamic dispatch ($__typeof, module/core.js).
 // Real values wherever jz syntax can produce the kind; __mkptr(tag,aux,0)
 // synthetic pointers (test/pointers.js's own EXTERNAL precedent) for kinds
 // with no jz-source literal (HASH) or where deref safety matters (typeof
 // never dereferences a pointer's offset — safe with any offset, including 0).
-// ============================================================================
 
 test('typeof', () => {
   cases([
@@ -100,12 +87,10 @@ test('typeof', () => {
   ])
 })
 
-// ============================================================================
 // Identity — pointer-bits (REF_EQ_KINDS) for every heap kind except STRING
 // (content). Two freshly-built, distinctly-allocated same-shape values must
 // be !== for the pointer-bits kinds, and two independently-built but
 // content-equal strings must be ===.
-// ============================================================================
 
 test('identity', () => {
   cases([
@@ -125,10 +110,8 @@ test('identity', () => {
   ])
 })
 
-// ============================================================================
 // Set/Map keying — $__map_hash + $__same_value_zero (module/collection.js).
 // STRING dedups by content; every other kind dedups by pointer-bits.
-// ============================================================================
 
 test('Set keying', () => {
   cases([
@@ -149,25 +132,13 @@ test('Map keying: a re-derived equal string still hits (content hash+eq)', () =>
   }`).f(), 1)
 })
 
-// ============================================================================
 // Interop decode — sanity pass for the kinds mem.read DOES handle (interop.js).
-// ============================================================================
 
 test('interop: ARRAY decodes to a real JS array', () => ok(Array.isArray(run('export let f = () => [1,2,3]').f())))
 test('interop: OBJECT decodes to a real JS object', () => is(run('export let f = () => ({a:1,b:2})').f().b, 2))
 test('interop: SET decodes to a real JS Set', () => ok(run('export let f = () => { let s = new Set(); s.add(1); return s }').f() instanceof Set))
 test('interop: MAP decodes to a real JS Map', () => ok(run('export let f = () => { let m = new Map(); m.set(1,2); return m }').f() instanceof Map))
 test('interop: STRING decodes to a real JS string', () => is(run('export let f = () => "a"+"b"+"c"+"d"+"e"+"f"+"g"').f(), 'abcdefg'))
-
-// ============================================================================
-// FINDINGS — CLOSED (CARRIER PROGRAM Slice 3, .work/archive/carrier-representation-
-// design.md §7). These probes ORIGINALLY reproduced documented bugs (the
-// registry's own FINDINGS array recorded the divergence); Slice 3 landed the
-// missing arm each one exercises, so each now asserts the JS-CORRECT value —
-// the oracle-flip this slice's own worklist named. Retained under the same
-// names/probes (not deleted) as the regression pin for the arm that closed
-// each gap.
-// ============================================================================
 
 test('closed[typeof]: typeof(boxed BigInt) reports "bigint" ($__typeof PTR.BIGINT arm)', () => {
   // __box_bigint is the test-only intrinsic (module/core.js, mirrors
@@ -206,29 +177,15 @@ test('structuredClone passes an immutable boxed BigInt through unchanged', () =>
   }`).f(), true)
 })
 
-// ============================================================================
-// Heap-kind registry Slice 3 (.work/evidence.md §Heap-kind registry —
-// "$__eq/$__map_hash arms generated"): $__eq's/$__same_value_zero's content-
-// identity dispatch chains and $__map_hash's STRING/BIGINT arms are now
-// GENERATED by layout-kinds.js from KIND_REGISTRY.{STRING,BIGINT}.identityArm
-// (module/core.js and module/collection.js call eqIdentityChain() /
-// sameValueZeroIdentityChain() / mapHashStringArm() / mapHashBigintArm()
-// instead of inlining the WAT text). These are GOLDEN-TEXT PINS: the exact
-// strings below were captured from the hand-written source BEFORE the swap
-// and verified byte-identical to the generator's output at migration time —
-// a future edit to either side that silently drifts the other is caught
-// here as a string mismatch, not as a distant behavior regression.
+// These are GOLDEN-TEXT PINS: the exact strings below were captured from the
+// hand-written source BEFORE the swap and verified byte-identical to the
+// generator's output at migration time — a future edit to either side that
+// silently drifts the other is caught here as a string mismatch, not as a
+// distant behavior regression.
 //
 // FINDINGS[identity-arm-divergence] (layout-kinds.js): extracting these two
-// eq-style chains verbatim surfaced a genuine, PRE-EXISTING divergence
-// between $__eq and $__same_value_zero's STRING arms. Registry Slice 5
-// re-derived it: the per-operand NaN re-guard was load-bearing (proven by
-// the live crash probe below, not just re-read) and now ships in BOTH golden
-// strings; the interned-vs-interned short-circuit is confirmed perf-only and
-// stays $__eq-exclusive — that's the one STRING sub-fragment the two golden
-// strings below still don't share. See the FINDINGS entry for the full
-// writeup.
-// ============================================================================
+// eq-style chains verbatim surfaced a genuine, PRE-EXISTING divergence between
+// $__eq and $__same_value_zero's STRING arms.
 
 test('registry: content-identity kinds are BIGINT then STRING, in that order', () => {
   is(CONTENT_IDENTITY_ORDER.length, 2)
@@ -255,19 +212,15 @@ test('golden[sameValueZeroIdentityChain]: $__same_value_zero\'s generated chain 
 // field) by sheer construction — including PTR.STRING's tag id (4) — purely
 // by chance. 0x3ff20000ffffffff (≈1.1250009536743162) is one such value:
 // finite (exponent 0x3ff, nowhere near the 0x7ff NaN/Inf reserved range),
-// self-equal, tag-bits-alias-STRING. Before this slice, $__same_value_zero's
-// STRING arm trusted the tag WITHOUT re-verifying the operand was actually
-// NaN-boxed (unlike $__eq, which re-guards each operand with `f64.ne(f,f)`)
-// — so on a genuine $__map_hash collision between such a float and a real
-// heap string, it dereferenced the float's low 32 bits as a string offset
-// via __str_eq and OOB-TRAPPED. Natural full-hash collisions are ~2^-32, far
-// outside what a jz-source fuzz probe could hit — this test reaches the same
-// runtime arm the way the runtime itself would (a genuine bucket and entry
-// hash match), by writing the Set's own bucket and entry hash words directly,
-// as __set_add itself does on an insert (module/collection/ordered.js: the
-// entries in insertion order, then the buckets, each `(hash & 0xFC000000) |
-// (entry index + 1)`). See layout-kinds-doc.js's
-// FINDINGS[identity-arm-divergence] for the full writeup.
+// self-equal, tag-bits-alias-STRING. Natural full-hash collisions are ~2^-32,
+// far outside what a jz-source fuzz probe could hit — this test reaches the
+// same runtime arm the way the runtime itself would (a genuine bucket and
+// entry hash match), by writing the Set's own bucket and entry hash words
+// directly, as __set_add itself does on an insert
+// (module/collection/ordered.js: the entries in insertion order, then the
+// buckets, each `(hash & 0xFC000000) | (entry index + 1)`). See
+// layout-kinds-doc.js's FINDINGS[identity-arm-divergence] for the full
+// writeup.
 test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-aliasing hash collision (regression pin)', () => {
   const SET_ENTRY = 16
   const code = `
@@ -307,13 +260,8 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   dv.setInt32(buckets + b0 * 4, 0, true)
   dv.setUint32(buckets + (hTarget & (cap - 1)) * 4, ((hTarget & 0xFC000000) | 1) >>> 0, true)
 
-  // The fixed $__same_value_zero must return false (not crash) — it must reject
-  // the non-NaN-boxed operand exactly like $__eq/$__eq_strict already do. `hasQ`'s
-  // receiver is unproven, so `.has()` routes through collProbeDyn (module/collection.js)
-  // — its result is now the canonical boxed FALSE_NAN atom (not a raw 0.0 number, whose
-  // exported bits used to read back as `0n`), matching `eqQ` below's own boxed-false
-  // convention (.work/archive/carrier-representation-design.md §33/§34: collProbeDyn used to return
-  // an unboxed number, breaking `=== true` bit-comparisons on the same value elsewhere).
+  // The fixed $__same_value_zero must return false (not crash) — it must reject the non-NaN-boxed
+  // operand exactly like $__eq/$__eq_strict already do.
   is(ex.hasQ(sBits, craftedBits), 9221120254220959744n, '$__same_value_zero: no false-positive AND no OOB trap on the forced collision')
   is(ex.eqQ(craftedBits, keyBits), 9221120254220959744n, '$__eq agrees (false), unaffected — sanity cross-check')
 })
@@ -422,7 +370,6 @@ test('Map hashes spread consecutive numeric keys and agree with literal probes',
 
 test('golden[mapHashStringArm]: $__map_hash\'s generated STRING arm matches the captured hand-written text', () => {
   // The enclosing hash dispatcher owns the NaN check. These tag arms keep the same hash algorithms.
-  // Speed modes mix a packed short string and load a cached heap hash in place; size mode calls __str_hash.
   is(mapHashStringArm(), "(if (i32.eq (local.get $t) (i32.const 4))\n      (then\n        (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const 32)) (i64.const 32767))))\n        (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))\n        (if (i32.shr_u (local.get $aux) (i32.const 14))\n          (then\n            (local.set $h (i32.mul\n              (i32.xor (local.get $off) (i32.mul (i32.xor (i32.and (local.get $aux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))\n              (i32.const 0xC2B2AE35)))\n            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))\n            (return (if (result i32) (i32.le_u (local.get $h) (i32.const 1))\n              (then (i32.add (local.get $h) (i32.const 2)))\n              (else (local.get $h))))))\n        (if (i32.eq (i32.and (local.get $aux) (i32.const 8194)) (i32.const 2))\n          (then\n            (local.set $h (i32.load (i32.sub (local.get $off) (i32.const 8))))\n            (if (local.get $h) (then (return (local.get $h))))))\n        (return (call $__str_hash (local.get $v)))))")
   is(mapHashStringArm(true), "(if (i32.eq (local.get $t) (i32.const 4))\n      (then (return (call $__str_hash (local.get $v)))))")
 })

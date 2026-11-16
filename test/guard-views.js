@@ -126,10 +126,8 @@ test('guard view: a call through the view allocates nothing that stays', () => {
   ok(cursor() - before <= 16, 'the heap cursor stays where the probes left it')
 })
 
-// A guard can be the program's only mention of a typed array. The element
-// helpers then linked their plain-array bodies, eight bytes per element: a
-// read decoded two elements as one float, a store overwrote its neighbour and,
-// at the end of the array, the bytes past it. These hold with the pass on or off.
+// A guard can be the program's only mention of a typed array. These hold with the
+// pass on or off.
 test('guarded element: a guard alone names the typed array', () => {
   const rows = [
     ['early exit, constant index', `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; return a[0] * 1000000 + a[1] * 1000 + a[2] }`, () => new Int32Array([1, 2, 3])],

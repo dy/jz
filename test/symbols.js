@@ -319,7 +319,7 @@ test('Symbol property keys never treat identity payloads as string addresses', (
 // A Symbol keeps its description (jz:symbol): String(), toString() and
 // .description read it as JavaScript does, ToString of one throws, and the
 // host reads a symbol the module made with its description, as the module
-// reads one the host made. The description was dropped: String(s) was "NaN".
+// reads one the host made.
 test('Symbol: description, String, toString and ToString agree with the host', () => {
   const src = `const kept = Symbol('kept'), fromFor = Symbol.for('reg')
     const desc = (s) => s.description, str = (s) => String(s), call = (s) => s.toString()

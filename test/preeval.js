@@ -8,10 +8,8 @@ import { scalarCase } from './_scalar-core-cases.js'
 import { oracle, run, jz, compile } from './util.js'
 
 
-// ============================================================================
 // Fold-fires pins — WAT contains the LITERAL, not the runtime ops/calls.
 // (WAT-shape assertions don't hold on the kernel leg: no host-side `wat:true`.)
-// ============================================================================
 
 // A folded function's WHOLE-PROGRAM result may end up i32- or f64-carried
 // (jz narrows an integer-valued function to an i32 wasm result + an f64
@@ -78,9 +76,7 @@ test('fold-fires: transcendental Math.* call with constant arg -> literal', () =
   ok(!wat.includes('call $math.sin'), 'expected no runtime call to $math.sin')
 })
 
-// ============================================================================
 // Value correctness — folded and unfolded (param-forced) forms agree, bit-for-bit.
-// ============================================================================
 
 test('value: numeric chain', () => {
   is(run(scalarCase('preeval-numeric-chain').source).f(), 3)
@@ -166,20 +162,13 @@ test('value: Math.pow / ** constant fold — exact 3-way split emit.js already u
   is(run('export let f = () => Math.pow(1.5, 2.5)').f(), Math.pow(1.5, 2.5))
 })
 
-// ============================================================================
 // Precision-improvement — rational carry rounds the WHOLE formula once,
 // strictly tighter than sequential per-op f64 rounding (module/math.js /
 // pre-eval.js doc: the 0.1+0.2-0.3 example the charter names). It is not
 // JavaScript's result, so it runs where relaxedFloat is on ('speed') or
 // rationalConst asks for it (test/relaxed-float.js holds the default to JS).
-// ============================================================================
 
 test('precision: rational carry beats sequential per-op rounding', () => {
-  // Was native-only (the kernel's i64-wrapping BigInt couldn't carry a rational past 64
-  // bits, so preEval detected the narrow carrier and fell back to bit-exact-vs-JS folding
-  // there) — audit P0-2's host-independent u32-limb rational layer (bignum.js) has no width
-  // ceiling, so the SAME exact-rational fold now runs on every leg (test/kernel-parity.js
-  // fold|0/2/3 graduated out of PARITY_TODO).
   const naive = 0.1 + 0.2 - 0.3   // per-op: round(round(0.1+0.2) - 0.3) = 1/2^54
   const folded = run('export let f = () => 0.1 + 0.2 - 0.3', { optimize: { rationalConst: true } }).f()
   ok(Math.abs(folded) < Math.abs(naive), `expected |${folded}| < |${naive}|`)
@@ -193,19 +182,14 @@ test('precision: rationalConst:false falls back to bit-exact-vs-JS per-op roundi
 })
 
 test('precision: a case where naive intermediate rounding loses a whole unit, rational carry does not', () => {
-  // Was native-only — same reason as above, now fixed the same way.
-  // naive: (1e16 + 1) rounds to 1e16 (1 is below the ULP there) -> minus 1e16 -> 0.
-  // exact: the true value of the formula over the exact double literals is 1.
   const naive = 1e16 + 1 - 1e16
   is(naive, 0)
   const folded = run('export let f = () => 1e16 + 1 - 1e16', { optimize: { rationalConst: true } }).f()
   is(folded, 1)
 })
 
-// ============================================================================
 // Non-fold guards — impure / host-dependent / param-dependent constructs stay
 // unfolded (the runtime op/call survives in the WAT).
-// ============================================================================
 
 test('guard: Math.random never folds', () => {
   if (onKernel()) return
@@ -250,9 +234,7 @@ test('guard: recursive/self-referential zero-arg call never folds (and never han
   if (wat != null) ok(constPin(1).test(wat), 'the unrelated export still compiles fine')
 })
 
-// ============================================================================
 // WASI / matrix sanity — the pass runs identically under every host leg.
-// ============================================================================
 
 test('matrix: folds under wasi host too', () => {
   if (onWasi()) { is(run('export let f = () => 6 * 7', { host: 'wasi' }).f(), 42); return }
@@ -308,9 +290,7 @@ test('constant facts: module, local and capture folds preserve boundaries and bi
 })
 
 // A test that reads a module constant (`const DEBUG = false`, a `var` written
-// once) is decided at compile time and its dead arm goes. Only the test reads
-// the constant: a reference in the code that stays keeps its name. A binding
-// the program writes again, or one a runtime value initializes, decides nothing.
+// once) is decided at compile time and its dead arm goes.
 test('constant test: a module constant decides a branch, the dead arm goes', () => {
   const folds = {
     'an if on a false flag': [`const DEBUG = false

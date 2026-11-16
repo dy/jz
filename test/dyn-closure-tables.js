@@ -39,8 +39,7 @@ test('dyn-closure-tables: checked dispatch tags the outer call after argument ef
 
 // A typed element as the key may be past the end, an element read that misses:
 // the key is a number or undefined, which names an element or a stored
-// "undefined" entry, never `length` or a method. The table's callees stay the
-// table's, and their numeric parameters numeric (no generic `+`).
+// "undefined" entry, never `length` or a method.
 test('dyn-closure-tables: a typed element key keeps the table callees and their kinds', () => {
   const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k, (x, k) => Math.imul(x, k | 1), (x, k) => (k - x) | 0]
     export const run = (n) => { const code = new Int32Array(n), ks = new Int32Array(n)
@@ -65,11 +64,6 @@ test('dyn-closure-tables: open keys retain named values and the checked fallback
 })
 
 test('dyn-closure-tables: direct writes of the same arrow, different captured envs, devirt to br_table', () => {
-  // Each setup(i, delta) call instantiates the SAME lexical arrow (one funcIdx)
-  // with a FRESH captured `delta` — the loop itself isn't used to build the
-  // table (jz's for-let capture shares one cell across iterations, a separate,
-  // pre-existing limitation unrelated to this pass) — a plain function call
-  // gives each instantiation its own parameter binding instead.
   const src = `
     let table = []
     const setup = (i, delta) => { table[i] = (x) => x + delta }
@@ -86,8 +80,6 @@ test('dyn-closure-tables: direct writes of the same arrow, different captured en
 test('dyn-closure-tables: guarded read-then-call idiom `(h = table[idx]) && h(args)` devirts too', () => {
   // subscript's actual parse.step shape: read the slot into a local, guard on
   // truthiness (empty slot → skip), THEN call — not a direct `table[idx](args)`.
-  // The callee at the call site is syntactically the bare local `h`; emit.js's
-  // '&&' handler tags it from the LHS assignment's source shape instead.
   const src = `
     let table = []
     const setup = (i, delta) => { table[i] = (x) => x + delta }

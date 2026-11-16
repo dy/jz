@@ -35,9 +35,7 @@ test('forward hops: a block moved under the loop is followed', () => {
     for (let i = 0; i < 8; i++) { try { s += g(i) } catch (e) { s += xs[i + 4] } s += xs[i] } return s + ':' + xs.length }`, 'a handler reading what the call moved')
 })
 
-// The kernel: a helper appending a range of one array to another. Its loop
-// reads `src` twice a pass and pushes into `dst`; `src`'s hop is a local set
-// before the loop and after the growth call, no read in the loop asks.
+// The kernel: a helper appending a range of one array to another.
 test('forward hops: a source read while pushing asks before the loop', () => {
   if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
   const src = `const app = (dst, src, from, to) => { for (let k = from; k < to; k++) dst.push(src[k * 2], src[k * 2 + 1]) }
@@ -60,10 +58,7 @@ test('forward hops: a source read while pushing asks before the loop', () => {
 // each record into the cells it had) with a push on a rare path into a module
 // array: the push allocates and escapes, so the loop keeps the compaction of
 // what it keeps (optimize/loop-compact.js), whose site forwards every root it
-// reads and re-enters the loop past the set before it. A root the loop never
-// writes holds what it held before the loop, below the floor no compaction
-// moves: the forward hands it back as it was, and its hop is the loop's to
-// hoist. The push's lowering of the flag writes the log, never a block.
+// reads and re-enters the loop past the set before it.
 test('forward hops: a loop that compacts asks for its receiver\'s hop as the compaction re-enters it', () => {
   const src = `const init = () => { const ps = []; let s = 0x1234abcd | 0
       for (let i = 0; i < 64; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5
@@ -101,9 +96,6 @@ test('forward hops: a loop that compacts asks for its receiver\'s hop as the com
 
 // A hop is asked once between calls that may move a block: the first tees its
 // answer, a later one of the receiver on every path after it reads the local.
-// A loop with an indirect call, which keeps its hops from hoisting, asks once a
-// pass however many slots it reads, of a module global as of a local; a call
-// between two reads, an arm that asks alone and a store of the global ask again.
 test('forward hops: a receiver asks once between calls that may move its block', () => {
   agrees(`let q = [1, 2, 3, 4]
     const fs = [(n) => { for (let j = 0; j < n; j++) q.push(j) }, (n) => { q = [9, 8, 7, 6, 5] }, (n) => n]

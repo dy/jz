@@ -85,10 +85,7 @@ test('field cse: the guards of one event read its type once', () => {
 
 // The guards of the library's own events, which each store one name: every
 // test answers by the layout the pointer carries (comparisons.js
-// slotLiteralTest), so nothing reads the cache. Its declaration keeps only the
-// throw a nullish event makes (emit/field-caches.js): no read of the type,
-// none of its dispatch, behind the function's own (a function called from two
-// sites, which the default tier keeps one).
+// slotLiteralTest), so nothing reads the cache.
 const named = guards.replace('export let f', 'export let g = (n) => { try { return timeOf(n > 0 ? mk(n) : undefined) } catch (e) { return e instanceof TypeError ? -1 : -2 } }\nexport let f')
   .replace('h * 1.0001 + timeOf(list[i])', 'h * 1.0001 + timeOf(list[i]) - timeOf(list[(i + 4) % list.length]) * 0.5')
 
@@ -193,9 +190,7 @@ export const f = n => {
 
 // A ring buffer's cursor record: `c.b` and `c.p` are read by the declaration's
 // element read and again by the element store and the cursor's own step, with
-// only `c.f` stored between. Each field read the statement evaluates before any
-// store, call or condition is one read; an element store through `c.b`, a
-// typed array, writes no field.
+// only `c.f` stored between.
 const ring = `const mkBank = () => [7, 5].map(n => ({ b: new Float64Array(n), p: 0, f: 0.5 }))
 const get = (c) => c.p
 export let run = (n) => { const bank = mkBank(); let out = 0

@@ -5,9 +5,7 @@ import { onWasi } from './_matrix.js'
 import { run } from './util.js'
 import jz, { compile } from '../index.js'
 
-// ============================================
 // REST PARAMS
-// ============================================
 
 // === Basic rest params ===
 
@@ -101,9 +99,7 @@ test('rest: fixed-arity internal calls specialize rest array away', () => {
   `).run(), 15)
 })
 
-// ============================================
 // VARIADIC METHODS
-// ============================================
 
 // === String.concat with multiple args ===
 

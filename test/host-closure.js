@@ -84,9 +84,7 @@ export let pick = (k) => k > 0 ? (x) => x + 1 : (x) => x - 1`
 
 // A host function is a function to `typeof`, and no closure of the module: the
 // test proves a closure only of a value the host cannot hand in (flow-types.js
-// typeofVal, the summary's typeof refinement). Proven by the test, the host's
-// function is called, called on a receiver, handed on, stored and called from
-// there as itself, as a thenable's `then` read off a host promise is.
+// typeofVal, the summary's typeof refinement).
 test('host closure: a host function a typeof test proves is called as the host function', async () => {
   if (onWasi()) return
   const src = `

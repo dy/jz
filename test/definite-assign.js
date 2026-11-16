@@ -78,12 +78,10 @@ test('definite assignment: such a binding holds what was assigned, never absence
   is(view.fixedLenOf('o'), 2, 'the array it is stored into keeps its elements present and its count')
 })
 
-// A parameter every read of which an assignment in the body precedes never
-// shows its argument: prepare declares it in the body (handlers.js
-// localizeDeadParams), so it holds the kind of what is assigned, not whatever
-// a caller passes (subscript's `(a, b) => a && (b = expr(p)) && [op, a, b]`).
-// One a read, a default or a closure can see before the assignment keeps it.
-// [name, source (its second parameter the one asked about), args, whether it is a declaration of the body]
+// A parameter every read of which an assignment in the body precedes never shows its argument: prepare
+// declares it in the body (handlers.js localizeDeadParams), so it holds the kind of what is assigned, not
+// whatever a caller passes (subscript's `(a, b) => a && (b = expr(p)) && [op, a, b]`). [name, source (its
+// second parameter the one asked about), args, whether it is a declaration of the body]
 const params = [
   ['assigned first', `const g = (a, b) => { b = a * 2; return b + 1 }
     export const f = (x) => g(x, 'not a number') + g(x)`, [3], true],
@@ -261,11 +259,9 @@ test('definite assignment: every module matches the host', () => {
 })
 
 // The integer-global inference (plan/scope.js inferModuleIntGlobals) stores a
-// module number as i32. One a read can find unassigned or null, where a read
-// observes that (a presence test, the value handed on), keeps f64: an i32
-// reads 0 there. Numeric demand alone does not prove a preceding store:
-// undefined participates as NaN. A declaration with its word value can use i32.
-// [name, source, the call, the global, its storage]
+// module number as i32. Numeric demand alone does not prove a preceding store:
+// undefined participates as NaN. [name, source, the call, the global, its
+// storage]
 const globals = [
   ['null at first, tested for it', `let H = null
     export let set = (v) => { H = v | 0 }

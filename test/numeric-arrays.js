@@ -244,8 +244,7 @@ test('numeric arrays: an array built of lanes keeps its bits through a compactio
 test('numeric arrays: a call no value reaches the receiver of reads nothing', () => {
   // three's Euler: `setFromQuaternion` hands the module's `_matrix` to a method of `this`,
   // and nothing calls it (a member another member calls, which nothing calls either): the
-  // summary walks it with its receiver unbound. The scratch matrix's elements stay raw
-  // for the calls that run: their stores keep their bits, their reads are the loads.
+  // summary walks it with its receiver unbound.
   const src = `${BITS}
     class M {
       constructor() { this.e = [1, 0, 0, 1] }

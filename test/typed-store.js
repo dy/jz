@@ -128,8 +128,7 @@ test('typed store: the same through local receivers', () => {
 
 // The pixel composite (`px[i] = lut[ink[i]]`, a lut of 256 entries indexed by a
 // byte, both arrays made at a resize) and the pixel fade store words: no
-// ToInt32 call at any tier. A clamped sum only the runtime bounds converts
-// inline at the speed tiers, the call its cold arm; -Os keeps the call alone.
+// ToInt32 call at any tier.
 const pixels = `let W = 0, H = 0, px, ink
 let lut = new Uint32Array(256)
 export const resize = (w, h) => { W = w; H = h; ink = new Uint8Array(W * H); px = new Uint32Array(W * H); return px }
@@ -169,8 +168,7 @@ test('typed store: a clamped sum converts inline at the speed tiers, through the
 })
 
 // ToUint8Clamp (ES2026 §7.1.12): the value clamped to [0, 255], rounded half
-// to even, NaN to 0. The store converts inline: `f64.nearest` of the clamped
-// value for a number, two selects for a word, a folded constant. No call.
+// to even, NaN to 0.
 const clamped = `let d
 export const resize = (n) => { d = new Uint8ClampedArray(n); return n }
 const src = new Int16Array(4); src[0] = -7; src[1] = 300; src[2] = 128
@@ -187,12 +185,10 @@ test('typed store: a clamped byte rounds half to even inside [0, 255], inline', 
   }
 })
 
-// A checked element read after a checked store of that element reads the stored word,
-// and one after a checked read of it the read word (optimize/forward-checked.js):
-// `grid[i] += k; if (grid[i] >= 4)` loads `grid[i]` once, `grid[i] >= 4 ? grid[i] >> 2 : …` too.
-// An index the check fails reads undefined either way; the stored word is ToInt32's,
-// wrapped, never the sum. A comparison of such a read with an integral constant
-// compares words, a missing element failing it (passing `!=`).
+// A checked element read after a checked store of that element reads the stored word, and one
+// after a checked read of it the read word (optimize/forward-checked.js): `grid[i] += k; if
+// (grid[i] >= 4)` loads `grid[i]` once, `grid[i] >= 4 ? grid[i] >> 2 : …` too. An index the
+// check fails reads undefined either way; the stored word is ToInt32's, wrapped, never the sum.
 const reread = `let grid, cells
 export const resize = (n) => { grid = new Int32Array(n); cells = new Uint32Array(n); return n }
 export const pour = (i, k) => {

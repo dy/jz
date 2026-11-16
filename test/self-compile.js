@@ -133,33 +133,9 @@ const SAMPLES = [
   ['math-sqrt',   'export let main = () => (Math.abs(Math.sqrt(2) - 1.4142135623730951) < 1e-9) | 0', 1],
   ['math-exp',    'export let main = () => (Math.abs(Math.exp(0.3) - 1.3498588075760032) < 1e-6) | 0', 1],
   ['math-expm1',  'export let main = () => (Math.abs(Math.expm1(0.3) - 0.3498588075760032) < 1e-6) | 0', 1],
-  // OPCODE-dict miscompile (2026-07): watr's packData (data-segment zero-run trim/merge/
-  // split, watr/src/optimize.js) corrupted jz's internStrings-encoded static data
-  // (src/compile/index.js buildInternTable: an 8-byte [hash u32][len u32] header + a
-  // sparse open-addressing intern-probe table, both zero-run-dense) — ONLY at self-compile
-  // scale (native jz building dist/jz.wasm from the full self.js graph; a wrapped or
-  // reduced graph doesn't reproduce it). Surfaced as watr's OWN embedded instr() throwing
-  // "Unknown instruction f64.nearest" when the kernel compiled a program whose Math.exp/
-  // sin/cos/tan/pow/expm1/sinh lowering pulls in a WAT-TEXT stdlib template (module/
-  // math.js, parsed by watr's parser at KERNEL RUNTIME) containing that opcode name —
-  // never on Math.round's f64.nearest (a plain JS array-literal AST node, a different
-  // construction path const.js's OPCODE dict has no trouble matching). Bisected via
-  // optimize's object-config form on the exact self.js entry: {level:1, watr:true} and
-  // {level:2, watr:false} both compile the kernel correctly; watr + internStrings
-  // TOGETHER are required, and disabling watr's packData pass alone (its ~20 other
-  // passes + internStrings stay on) isolated it. The fix shipped in watr 5.1.1;
-  // the build now uses the default packData configuration. math-exp/math-expm1
-  // above cover this path; sin/cos/pow reach additional WAT-text kernels.
   ['math-sin',    'export let main = () => (Math.abs(Math.sin(1.2) - 0.9320390859672263) < 1e-6) | 0', 1],
   ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
   ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
-  // Typed-array element WRITE with a literal RHS ('samples[j] > 0'-shaped repro,
-  // .work/archive/todo.md groundtruth archive): jzify's isDestructurePat (jzify/hoist-vars.js)
-  // misclassified `arr[i] = v` as a destructuring-assignment pattern — both share the
-  // '[]' tag pre-prepare(), disambiguated only by arity (pattern length ≤2, element
-  // access always length 3). Native jzify reconstructs byte-identical IR either way for
-  // this shape (masking it); the kernel's compiled pattern-walk path throws "expected
-  // emitted IR value … got empty value" (src/ir.js asF64) instead. See test/parser-bugs.js.
   ['typed-elem-write-literal', 'export let main = () => { const s = new Float64Array(5); s[0] = 3; return s[0] === 3 ? 1 : 0 }', 1],
 ]
 
@@ -246,13 +222,10 @@ test('self-compile: lazy arithmetic survives repeated speed and baseline compile
   }
 })
 
-// The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON),
-// so they never reach watr's single-call inliner. This pins the LEVEL-2 inliner path:
-// inlineOnce grew large enough that the self-compile kernel mis-compiled its `pinned` Set
-// local (pointer zeroed → __set_add trapped "memory access out of bounds" on every L2
-// compile of a program with an inlinable helper). The fix extracts inlBuildPinned to a
-// small scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-
-// call helper inlineOnce lifts, so this routes straight through the once-trapping path.
+// The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON), so
+// they never reach watr's single-call inliner. The fix extracts inlBuildPinned to a small
+// scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-call
+// helper inlineOnce lifts, so this routes straight through the once-trapping path.
 test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
   const s = instantiate(selfBytes())  // fresh instance of this run's build
   const src = 'export let main = () => { let s = 0; [1,2,3,4].forEach(x => s += x); return s }'
@@ -263,12 +236,8 @@ test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
   is(instantiate(bytes).exports.main(), 10, 'main() === 10 (1+2+3+4)')
 })
 
-// Pins the LEVEL-2 f64-constant pool. hoistConstantPool used to key+emit a pooled constant
-// through `String(number)`, which keeps only ~9 sig digits IN THE KERNEL (jz's number formatter),
-// so a high-precision literal lost precision (0.041666666666666664 → 0x1.5555558325751p-5) — the
-// kernel's L2 output diverged from jz.js (fft/synth twiddle coefficients). Fixed by keying on the
-// exact 64 bits and emitting the number itself. A 17-digit literal used twice (so it pools) whose
-// reciprocal is a clean integer makes any precision loss numerically visible.
+// A 17-digit literal used twice (so it pools) whose reciprocal is a clean integer makes any
+// precision loss numerically visible.
 test('self-compile: level-2 f64-constant pool keeps full precision', () => {
   const s = instantiate(selfBytes())
   // 0.041666666666666664 === 1/24 exactly; pooled (two uses) → its reciprocal must stay 24.
@@ -280,14 +249,8 @@ test('self-compile: level-2 f64-constant pool keeps full precision', () => {
   is(instantiate(bytes).exports.main(), jz(src).exports.main(), 'kernel L2 === jz.js L2')
 })
 
-// Pins the LEVEL-2 LICM hoist-local typing. resultType (src/optimize/index.js) classified a
-// hoisted subtree's wasm type; its comparison-op guard was a regex `/^(eq|ne|lt|gt|le|ge)(_[su])?$/`
-// which, compiled into the kernel at −O2, mis-anchored — `f64.nearest`'s mantissa `nearest` starts
-// with `ne`, so the kernel matched it as a comparison and typed the hoisted `f64.nearest(p0)` local
-// i32 → `local.set (f64.nearest …)` = invalid wasm (f64 into i32). jz.js used V8's regex (correct),
-// so this was KERNEL-ONLY and only the full local fuzz (seed=192) surfaced it. Fixed by detecting
-// comparison mantissas with an explicit Set. Needs the LICM shape: Math.round(p0) loop-invariant in
-// the INNER of two nested loops, p0 reassigned in the OUTER → the round's f64.nearest is hoisted.
+// Needs the LICM shape: Math.round(p0) loop-invariant in the INNER of two nested loops, p0
+// reassigned in the OUTER → the round's f64.nearest is hoisted.
 test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
   const s = instantiate(selfBytes())
   const src = 'let f = (p0) => { let r = 0; let i = 0; while (i < 4) { let j = 0; while (j < 3) { r = r + Math.round(p0); j = j + 1; } p0 = p0 + 0.4; i = i + 1; } return r }; export let main = () => f(2.6)'
@@ -299,14 +262,8 @@ test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.rou
   is(instantiate(bytes).exports.main(), jz(src, { optimize: 2 }).exports.main(), 'kernel L2 === jz.js L2')
 })
 
-// Pins the f64x2 lane vectorizer under self-compile — it broke ENTIRELY two ways this regression hit:
-//  (1) tryToneMap built its `ctx` with a different field set than the other lifters; the kernel
-//      infers one struct layout per shared callee (liftFail), so the mismatched shape corrupted
-//      field reads and liftExprV returned null across the board (re-broke 11657cf), and
-//  (2) the kernel pipeline (scripts/self.js) omitted appendLateStdlib, so the 'post' vectorizer's
-//      injected `$math.log_v` body was never appended → "Unknown func $math.log_v" at instantiate.
-// A tone-map kernel lifts Math.log → f64x2.log_v, exercising both. Compile it SIMD ('speed') and
-// scalar (optimize:false) through the kernel; both must instantiate and yield the same checksum.
+//  Compile it SIMD ('speed') and scalar (optimize:false) through the kernel; both must
+//      instantiate and yield the same checksum.
 test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
   const s = instantiate(selfBytes())
   const TONE = `
@@ -386,24 +343,13 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
   is(instantiate(b).exports.main(), 48, 'B executes correctly after A')
 })
 
-// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
-// and pin byte-parity against a fresh instance compiling the same programs. Exercises
-// the caches that used to dangle across a warm `__jz_clear` (all now reset/copy-on-tag
-// per compile): DOLLAR (src/ir.js, with a new Map because the old backing
-// table is itself an arena allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
-// program-facts}.js — same fresh-instance-not-clear fix), the runtime __dyn_props /
-// __dyn_get_cache_off / __dyn_get_cache_props globals (module/core.js __clear, reset
-// alongside __heap), NULL_IR's missing `.slice()` before `typed()` (src/ir.js —
-// mutating the shared template in place left a dangling props sidecar), and
-// subscript's comment-list cache (external fix, feature/comment.js — rebuilds once
-// per top-level parse() instead of once ever). compile-clear-compile-clear-compile:
-// three rounds catch a fix that only survives ONE `__jz_clear` (e.g. a reset that clears
-// state but not a downstream 1-slot cache pointing at it).
+// Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles, and pin
+// byte-parity against a fresh instance compiling the same programs.
 test('self-compile: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
   // charCodeAt-on-param is load-bearing: it pulls the abi/string.js param
   // decomposition, whose module-level ssoBitI64 memo used to dangle across
-  // _clear (warm round 2 emitted `(i64.const <garbage bytes>)` → watr
-  // "Bad int" — the tokenizer warm-trap). The memo is gone; this pins it.
+  // _clear (warm round 2 emitted `(i64.const <garbage bytes>)` → watr "Bad
+  // int" — the tokenizer warm-trap).
   const src = 'export let main = (s) => { let h = 0; for (let i = 0; i < 10; i++) h += i * i + s.charCodeAt(0); return h }'
   const level = '0'
   const fresh = () => {
@@ -427,12 +373,9 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
   }
 })
 
-// ProgramIndex builds direct edges with two flat CSR passes. A transient
-// per-caller array-of-arrays produced correct round-one bytes but left the
-// self-hosted arena in a state where the same two-argument direct-call source
-// trapped on the first compile after `_clear()`. Keep this source separate from
-// the string-only warm case above because one real caller-to-callee edge is the
-// trigger this pin must preserve.
+// ProgramIndex builds direct edges with two flat CSR passes. Keep this source
+// separate from the string-only warm case above because one real
+// caller-to-callee edge is the trigger this pin must preserve.
 test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare-return→A and repeated clear', () => {
   const sources = [
     'let mul=(x,y)=>x*y;export let main=(x,y)=>{x=+x;y=+y;return mul(x,y)+1}',
@@ -464,45 +407,25 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
   }
 })
 
-// Warm-instance reuse WITHOUT any `_clear()` — the bump arena grows monotonically
-// across every compile, exactly the condition under which narrow.js's pointer-ABI
-// fixes (applyPointerParamAbi's missing ptrAux, passthroughPtrParam's recursive
-// delegation — both in this same test/self-compile.js file's neighbor tests natively,
-// see test/objects.js's "devirt schema-slot" tests for the host-level pin) used to
-// leave a Map/Object receiver whose real schema the static analysis can't see
-// (bindAssignSchema poisons the binding on disagreeing assignments) routing
-// through ctx.schema.guardedSlotOf's speculative devirtualization with a wrong or
-// missing schema aux. The corruption doesn't surface on round 1 — the guard's
-// dyn-props fallback and the header allocator both write real, valid memory each
-// time, just occasionally at a wrong offset, and it takes dozens of accumulated
-// compiles (never rewound, unlike the _clear test above) for the drift to walk
-// off the end of a page and trap "memory access out of bounds" instead of
-// silently misreading. Two field-name shapes (both single-letter-adjacent to
-// jz's own AST op tags, and a common short property name) at 30 rounds each was
-// the smallest N that reproduced that bug reliably.
+// Two field-name shapes (both single-letter-adjacent to jz's own AST op tags, and a
+// common short property name) at 30 rounds each was the smallest N that reproduced
+// that bug reliably.
 //
 // Bumped 30→40 rounds/program to also cover a FOURTH, independent bug this same
 // stress shape (repeated Map/HASH-growth allocation, no _clear) surfaces once the
-// bump arena's absolute byte address crosses ~2 GiB and later needs the wasm32
-// memory to grow to its full 65536-page (4 GiB) ceiling: layout.js's
+// bump arena's absolute byte address crosses ~2 GiB and later needs the wasm32 memory
+// to grow to its full 65536-page (4 GiB) ceiling: layout.js's
 // followForwardingWat/ptrOffsetFwdWat (the ARRAY/SET/MAP/HASH relocation-forwarding
-// chase every dyn-prop/collection dereference runs through) bounded a pointer
-// offset against `i32.shl(memory.size, 16)` — which overflows to exactly 0 the one
-// time memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32).
-// That silently disabled the forward-chase for the rest of execution: a stale
-// reference to an already-relocated collection stopped following its forwarding
-// header and read the abandoned block's cap=-1 sentinel as a real capacity,
-// producing wild table-probe writes ("memory access out of bounds" inside
-// __alloc_hdr_n, or an unbounded probe loop, depending on layout — the exact
-// shape that landed at a given round was highly layout-sensitive, but the trigger
-// — sustained dyn-props allocation pressure with no reset — was not). Fixed by
-// comparing in i64 against a cached $__heap_end64 global (module/core.js,
-// layout.js) instead of the overflowing i32 shift. 40 rounds/program comfortably
-// exceeds every round this bug was observed to fire at across multiple builds
-// (22-52, layout-dependent) without running long enough to reach the genuine
-// 4 GiB ceiling itself (~100+ rounds, where an honest `unreachable` OOM trap is
-// the correct outcome, not a bug). Keep at or above 40 rather than shrinking it
-// back down to "looks clean in a quick run".
+// chase every dyn-prop/collection dereference runs through) bounded a pointer offset
+// against `i32.shl(memory.size, 16)` — which overflows to exactly 0 the one time
+// memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32). Fixed by
+// comparing in i64 against a cached $__heap_end64 global (module/core.js, layout.js)
+// instead of the overflowing i32 shift. 40 rounds/program comfortably exceeds every
+// round this bug was observed to fire at across multiple builds (22-52,
+// layout-dependent) without running long enough to reach the genuine 4 GiB ceiling
+// itself (~100+ rounds, where an honest `unreachable` OOM trap is the correct
+// outcome, not a bug). Keep at or above 40 rather than shrinking it back down to
+// "looks clean in a quick run".
 test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
   const warm = instantiate(selfBytes())
   const PROGRAMS = [

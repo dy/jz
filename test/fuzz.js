@@ -12,8 +12,6 @@
 //   node test/fuzz.js --opt=0,2 --inputs=40
 //   node test/fuzz.js --records --count=500   record arrays across frames
 //   npm test                               the seeded gate below (deterministic)
-//
-// @module test/fuzz
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import {
@@ -21,22 +19,13 @@ import {
   check, report, same, inContract, DEFAULTS, genScalarProgram as genProgram, scalarSource as toSource,
 } from './_fuzz.js'
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Suite gate — deterministic, modest counts so `npm test` stays green + fast.
-// Exploratory long runs go through the CLI below.
-// ─────────────────────────────────────────────────────────────────────────────
 const isMain = import.meta.url === `file://${process.argv[1]}`
-// KNOWN-OPEN miscompiles the fuzzer already surfaced (seeds in the gate range).
-// The gate is a RATCHET: it fails only on a *new* divergence, so `npm test` stays
-// green while these are tracked, and any regression introduced by a code change
-// trips immediately. Fixing a bug → delete its seed(s) here so the ratchet tightens.
-// All known clusters fixed — the ratchet is now empty, so ANY divergence fails CI.
-// History (fixed): `%` semantics (exact __rem); Math rounding elided after param
-// reassign (intCertainMap seeds f64 params false); ToInt32 of large f64 (__toint32
-// i64 bit-surgery); opt3 reassign-after-%0; opt2 ternary-in-return stack imbalance
-// (watr branch-fold preserves block type); i32 arithmetic overflow at the int32
-// boundary — a full-range bitwise/imul operand feeding `*`/`-`/unary-`-` now widens
-// to f64 (isFullRangeI32; `+` stays i32 — the ToInt32-sunk accumulator op).
+// KNOWN-OPEN miscompiles the fuzzer already surfaced (seeds in the gate range). The
+// gate is a RATCHET: it fails only on a *new* divergence, so `npm test` stays green
+// while these are tracked, and any regression introduced by a code change trips
+// immediately. Fixing a bug → delete its seed(s) here so the ratchet tightens. All
+// known clusters fixed — the ratchet is now empty, so ANY divergence fails CI.
 const KNOWN_OPEN = new Set([])
 // JZ_FUZZ_GATE scales the gate seed counts (0 < scale ≤ 1). The kernel-target CI
 // leg (JZ_TEST_TARGET=jz.wasm on a 2-core runner) compiles every fuzz program
@@ -140,9 +129,7 @@ if (!isMain) {
   })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // CLI.
-// ─────────────────────────────────────────────────────────────────────────────
 if (isMain) {
   const arg = (name, def) => {
     const m = process.argv.find(a => a.startsWith(`--${name}=`))

@@ -12,11 +12,7 @@ import { specializeLoops } from '../src/optimize/specialize.js'
 import { IR_FULL, SOURCE_FULL, irSize } from '../src/growth.js'
 
 // Loops the specializer copies (test/specialize.js): a remainder of a counter
-// carried in a float, which the integer copy holds in a register. `pad` IR
-// nodes of straight-line code stand ahead of them, which keep their values;
-// `call`: the inner loop adds its remainder through a call of the program's;
-// 'fwd': it reads an offset through the chase of a relocated array's forwarding,
-// behind the header test every read of a moved array takes.
+// carried in a float, which the integer copy holds in a register.
 const kernel = (pad, call = false) => {
   const stmts = Array.from({ length: Math.ceil(pad / 4) }, (_, k) => `(drop (i32.add (i32.const ${k}) (local.get $k)))`).join('\n')
   return parseWat(`(module

@@ -51,7 +51,6 @@ test('multi: >8 becomes pointer', () => {
   is(g(ptr, 8), 9)
 })
 
-// === NaN-boxing: encode/decode for all pointer types ===
 // Each test uses an array to auto-include memory module, then tests pointer helpers
 
 test('nan-box: ATOM (type=0)', () => {
@@ -166,20 +165,6 @@ test('nan-box: EXTERNAL (type=11)', () => {
   is(f(), 11)
 })
 
-// === i64Hex regression guard (fix/i64hex-hazards) ===
-// Under self-host, raw BigInt#toString(radix) on a value whose bits are
-// PTR-tag-shaped (any real box prefix — the tag nibble sits at bit 47) routes
-// through readI64/isPlanTaggedBigint, which can misjudge it as a boxed
-// pointer and unbox it, reading unrelated heap bytes (layout.js's i64Hex doc;
-// confirmed live for PTR.BIGINT's own prefix, 0x7FFA800000000000). i64Hex
-// never calls .toString() on the raw BigInt — it reaches the hex digits via
-// BigInt shift/and/Number — so it can't reach that dispatch. specializeMkptr
-// (src/optimize/index.js) and boxPtrIR (src/ir.js) both used to fold their
-// box-prefix constant via raw toString(16); these pins inspect the actual
-// compiled WAT text (not just a runtime value) for each site and assert the
-// baked-in hex constant is byte-identical to i64Hex's own native output for
-// the same (type, aux) — a regression back to toString(16) would desync this
-// text even though it may not visibly corrupt a NATIVE (non-self-hosted) run.
 // Structural (optimize:2 heuristics), not value correctness — skip on the
 // self-compile kernel leg like the fixture-based pins above.
 const findFunc = (tree, name) => tree.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === name)
@@ -241,13 +226,10 @@ test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt
     "boxPtrIR's re-box template at the export must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
 })
 
-// === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/archive/carrier-
 // representation-design.md §7) — dormant primitives, unit-level pins.
 // __box_bigint/__unbox_bigint are test-only jz-source intrinsics (module/
 // core.js, mirroring __mkptr/__ptr_type/__ptr_offset above) exposing ir.js's
-// boxBigInt/unboxBigInt directly. Nothing in the production compile path
-// calls these yet — this section proves the primitives themselves are
-// correct in isolation, ahead of any real consumer (Slice 2).
+// boxBigInt/unboxBigInt directly.
 
 const f64BitsBig = (f64) => {
   const dv = new DataView(new ArrayBuffer(8))
@@ -305,37 +287,19 @@ test('carrier: box/unbox roundtrip — i64 min (-2^63)', () => {
   is(f64BitsBig(f()), -9223372036854775808n)
 })
 
-// Range-boundary BOX/UNBOX OOB (2026-08 fix): the two pins above (i64 max,
-// i64 min) round-trip fine — box(x) then unbox THAT SAME pointer always
-// derefs a real, freshly-`$__alloc`'d heap cell, independent of the payload's
-// bit pattern. The bug is narrower and easy to miss testing box/unbox only in
-// matched pairs: `unboxBigInt` (ir.js) is `i64.load(ptrOffsetIR(f64expr))`
-// with NO runtime tag check — by design, for the common case where a BOX
-// paired it. `ptrOffsetIR` unconditionally masks the low 32 bits off
-// WHATEVER i64 it is handed and treats that as a heap address. Call it on a
-// value that was NEVER boxed — a raw BigInt payload reinterpreted as if it
-// were a pointer — and its own bits become the "address". For most BigInts
-// that's a small, silently-wrong offset (reads/corrupts adjacent heap
-// garbage, no trap). For 0x7fffffffffffffffn (i64 max) and
-// 0xffffffffffffffffn (2^64-1, wraps to the all-ones i64 bit pattern), the
-// low 32 bits are 0xFFFFFFFF — ~4 GiB — which is out of bounds for any
-// realistically-sized instance, so `i64.load` there TRAPS instead of merely
-// corrupting: "memory access out of bounds". This is exactly the shape a
-// RepresentationPlan proof gets wrong when it is not order-safe (Shape #8's
-// own investigation trail, `fix/shape8-member-callee`, `src/compile/
-// representation-plan.js`'s `edgeMaterializable` doc comment): the fixpoint
-// can call for UNBOX on a node whose runtime value is still raw. The FIX
-// (applyBigintRepresentationAction and coerceArg, src/ir.js /
-// src/compile/emit.js) routes every PLAN-DIRECTED unbox through
-// `maybeUnboxBigInt` instead of the unconditional `unboxBigInt` —
-// `maybeUnboxBigInt` tag-checks via `$__ptr_type` first and only dereferences
-// a genuine PTR.BIGINT box; a mis-proven raw value takes its `else` arm
-// (bits are already the payload) instead of dereferencing, so a wrong proof
-// can no longer trap. `__unbox_bigint` itself stays the raw, unconditional
-// primitive on purpose (its own doc comment: exposes ir.js's unboxBigInt
-// directly, nothing production calls it) — calling it on a bare, un-boxed
-// literal is a genuine precondition violation, not the bug; these two pins
-// document that precondition rather than expect it to somehow stop trapping.
+// Call it on a value that was NEVER boxed — a raw BigInt payload
+// reinterpreted as if it were a pointer — and its own bits become the
+// "address". For most BigInts that's a small, silently-wrong offset
+// (reads/corrupts adjacent heap garbage, no trap). For 0x7fffffffffffffffn
+// (i64 max) and 0xffffffffffffffffn (2^64-1, wraps to the all-ones i64 bit
+// pattern), the low 32 bits are 0xFFFFFFFF — ~4 GiB — which is out of bounds
+// for any realistically-sized instance, so `i64.load` there TRAPS instead of
+// merely corrupting: "memory access out of bounds". `__unbox_bigint` itself
+// stays the raw, unconditional primitive on purpose (its own doc comment:
+// exposes ir.js's unboxBigInt directly, nothing production calls it) —
+// calling it on a bare, un-boxed literal is a genuine precondition violation,
+// not the bug; these two pins document that precondition rather than expect
+// it to somehow stop trapping.
 test('carrier: unboxBigInt applied to a RAW (never-boxed) i64-max payload traps — documents the precondition unboxBigInt trusts unconditionally', () => {
   const { f } = run(`export let f = () => { let a=[0]; return __unbox_bigint(9223372036854775807n) }`)
   throws(f)
@@ -377,14 +341,9 @@ test('carrier: box/unbox roundtrip — -2^62 control (comfortably inside range)'
   is(f64BitsBig(f()), -4611686018427387904n)
 })
 
-// maybeUnboxBigInt (the fix's actual replacement primitive) applied to the
-// exact same traps-when-raw payloads above, via its pre-existing production
-// consumer (readI64's schema-slot arm, ir.js isSchemaSlotBigintPossible) — a
-// polymorphic object field the write-side census saw both Number and BigInt
-// on, so the read is boxed-but-unproven, exactly maybeUnboxBigInt's own
-// contract. No trap, correct value: the runtime tag check means a genuinely
-// boxed payload still dereferences (this IS a real box here), proving the
-// fix's replacement primitive is sound, not merely non-crashing.
+// No trap, correct value: the runtime tag check means a genuinely boxed
+// payload still dereferences (this IS a real box here), proving the fix's
+// replacement primitive is sound, not merely non-crashing.
 for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   const schemaSlotBig = (lit, expect) => {
@@ -404,39 +363,16 @@ for (const optimize of levels(false, 2, 3)) {
   test(`carrier: maybeUnboxBigInt via schema-slot read — i64 min, ${lbl}`, () => schemaSlotBig('-9223372036854775808n', -9223372036854775808n))
 }
 
-// Self-host-only representation divergence, readI64's NAME arm (2026-08,
-// fix/selfhost-fixpoint-divergence): isPlanTaggedBigint's readI64 call site
-// (ir.js) was the one remaining PLAN-DIRECTED unbox site still routing
-// through the unconditional, unguarded unboxBigInt instead of the
-// maybeUnboxBigInt CONSERVATIVE PAIRING applyBigintRepresentationAction and
-// coerceArg (this file's own pins above) already use for the identical
-// fixpoint-proof-not-runtime-fact hazard. A bare, NEVER-boxed local BigInt
-// whose LITERAL VALUE happens to alias a genuine box's own bit shape
-// (NAN_PREFIX_BITS | tag<<47 | aux<<32 | offset, layout.js) is the
-// adversarial case this arm is the last to guard: 0x7ffa800000000000n is
-// PTR.BIGINT's own box PREFIX (tag=5, aux=0, offset=0) reinterpreted as a
-// plain number. RepresentationPlan must never materialize a local this
-// simple — never escapes, never stored behind an unproven slot, never
-// reassigned — so it stays RAW by construction on every legitimate build;
-// isPlanTaggedBigint must read FALSE for it and readI64 must fall through
-// to the plain asI64 reinterpret, never touching unboxBigInt OR
-// maybeUnboxBigInt (a RAW-proven value must never route through the
-// runtime pairing — only a genuinely OPEN/uncertain verdict earns that).
+// RepresentationPlan must never materialize a local this simple — never
+// escapes, never stored behind an unproven slot, never reassigned — so it
+// stays RAW by construction on every legitimate build; isPlanTaggedBigint
+// must read FALSE for it and readI64 must fall through to the plain asI64
+// reinterpret, never touching unboxBigInt OR maybeUnboxBigInt (a RAW-proven
+// value must never route through the runtime pairing — only a genuinely
+// OPEN/uncertain verdict earns that).
 //
-// Traced live (four rounds of source-literal warn() instrumentation via
-// disposable self-compile probes, .work/archive/todo.md's selfhost-fixpoint-
-// divergence entry) against the fix/shape8-member-callee branch's own
-// self-compiled kernel, which DOES fail this exact repro at every optimize
-// level: every representation-plan.js/ir.js decision for `n` traced BYTE-
-// IDENTICAL natively vs in-kernel (materializedNames, the write action, the
-// read verdict, isPlanTaggedBigint, even the parsed decimal string) — the
-// corruption traces to that branch's OWN in-progress Tier-1 `.`-member-
-// callee resolution (kind.js's f.valResult read racing narrow.js's
-// whole-program fixpoint, corrupting watr's own baked-in i64.parse when the
-// KERNEL ITSELF is built — see representation-plan.js's activeRep doc
-// trail there), not to anything reachable from this branch. Confirmed
-// NOT reproducible here at any optimize level, natively or in-kernel;
-// pinned so a future change (including any eventual merge of that
+// Confirmed NOT reproducible here at any optimize level, natively or
+// in-kernel; pinned so a future change (including any eventual merge of that
 // in-progress work) that reopens the divergence is caught immediately, and
 // readI64 hardened here regardless as the established, documented pattern.
 for (const optimize of levels(false, 2, 3)) {
@@ -469,23 +405,22 @@ for (const optimize of levels(false, 2, 3)) {
 }
 
 test('carrier: box/unbox roundtrip — bit pattern that aliases a real NaN-box (round-2\'s own wall)', () => {
-  // The exact hazard round 2 could not resolve at read time: a raw i64 whose
-  // bits alias a genuine PTR.OBJECT-shaped NaN-box. Round 3's answer is
-  // structural (never re-derive box-vs-raw from bit SHAPE) — this pin proves
-  // the box/unbox PAIR round-trips such a value correctly regardless: the
-  // payload is opaque to boxBigInt/unboxBigInt, whatever bits it carries.
-  // boxShapedBits is itself a real PTR.BIGINT pointer (a NaN-boxed f64) —
-  // re-boxing ITS bits as a fresh BigInt payload and unboxing must yield
-  // those exact bits back, byte-identical, independent of what tag they
-  // happen to decode as. Compared entirely IN-WASM (i32 boolean result):
-  // CARRIER PROGRAM Slice 3 gave mem.read a real PTR.BIGINT decode arm, so
-  // returning the raw f64 bit pattern directly across the boundary is no
-  // longer a safe way to inspect it when those bits themselves alias a box
-  // shape (this test's own deliberate setup) — the boundary would
-  // (correctly, now) re-decode it as ANOTHER box's payload instead of
-  // preserving the bits verbatim. Bit-identical operands take $__eq's exact-
-  // bits fast path (top of the function, before any tag dispatch), so this
-  // comparison is sound regardless of what tag the shared bits alias.
+  // Round 3's answer is structural (never re-derive box-vs-raw from bit
+  // SHAPE) — this pin proves the box/unbox PAIR round-trips such a value
+  // correctly regardless: the payload is opaque to boxBigInt/unboxBigInt,
+  // whatever bits it carries. boxShapedBits is itself a real PTR.BIGINT
+  // pointer (a NaN-boxed f64) — re-boxing ITS bits as a fresh BigInt payload
+  // and unboxing must yield those exact bits back, byte-identical,
+  // independent of what tag they happen to decode as. Compared entirely
+  // IN-WASM (i32 boolean result): CARRIER PROGRAM Slice 3 gave mem.read a
+  // real PTR.BIGINT decode arm, so returning the raw f64 bit pattern
+  // directly across the boundary is no longer a safe way to inspect it when
+  // those bits themselves alias a box shape (this test's own deliberate
+  // setup) — the boundary would (correctly, now) re-decode it as ANOTHER
+  // box's payload instead of preserving the bits verbatim. Bit-identical
+  // operands take $__eq's exact-bits fast path (top of the function, before
+  // any tag dispatch), so this comparison is sound regardless of what tag
+  // the shared bits alias.
   const { f } = run(`export let f = () => {
     let a = [0]
     let boxShapedBits = __box_bigint(0n)
@@ -516,17 +451,8 @@ test('carrier: PTR.BIGINT (5) is disjoint from every other pointer tag', () => {
 })
 
 test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullish-BIGINT-arm ternary (.work/archive/carrier-representation-design.md §13/§14)', () => {
-  // isTernaryBoxedBigint (ir.js) exists for the ternary-NULLISH-merge shape
-  // (`cond ? BigInt(x) : null`) — the ONE decl-init form whose OWN storage IS
-  // a real box. emitDecl (emit.js) used to register a decl as ternary-boxed
-  // whenever `valTypeOf(init) === VAL.BIGINT` for a '?:' init, but kind.js
-  // VT['?:'] ALSO returns BIGINT for two same-kind, NEITHER-nullish arms
-  // (`ta && ta === tb`) — a shape the '?:' handler leaves entirely raw (its
-  // own box condition needs one arm nullish). That mismatch registered a
-  // false positive, so a later readI64 (ir.js) wrongly unboxed a genuinely-
-  // raw value: an `i64.load` at a garbage pointer offset derived from the
-  // raw bits. Found live compiling watr/src/optimize.js's own `_i64Canon`
-  // (`neg ? -BigInt(mag) : BigInt(mag)`, non-simple so jz's own inliner
+  // Found live compiling watr/src/optimize.js's own `_i64Canon` (`neg ?
+  // -BigInt(mag) : BigInt(mag)`, non-simple so jz's own inliner
   // (compile/plan/inline.js) binds it to a fresh temp DECL when splicing
   // `_i64Hex16`'s call — that decl is exactly the shape this test pins) under
   // JZ_CARRIER_BOX=1 at O3: `fold()` returned 5.826595490514274e+252 instead
@@ -537,9 +463,9 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
   // the failure mode observed here was OFTEN a trap (`memory access out of
   // bounds`), not just a wrong value, so running this compiled+called
   // unconditionally (regardless of which flag state the test process itself
-  // was started under) still catches a crash-class regression either way.
-  // A WASI export named `run` is the reserved void command entry; use a
-  // normal export so this carrier assertion remains meaningful on that leg.
+  // was started under) still catches a crash-class regression either way. A
+  // WASI export named `run` is the reserved void command entry; use a normal
+  // export so this carrier assertion remains meaningful on that leg.
   const src = `
     const hex16 = (v) => v.toString(16)
     const canon = (mag, neg) => hex16(neg ? -BigInt(mag) : BigInt(mag))
@@ -552,47 +478,22 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
   is(run(src, { optimize: { level: 3 } }).f(), '5')
 })
 
-// audit-#14 finding (.work/archive/carrier-representation-design.md §15), FIXED §16:
-// a heap object's BOXED BigInt schema field, read back via STATIC dot-access
-// (`obj.prop`, compiled to emitSchemaSlotRead's fixed-offset load,
-// module/core.js), used to never unbox — readI64 (ir.js) only recognizes a
-// bare-name AST node (a plain string), and `['.', obj, prop]` is never that,
-// so this read site was never wired into Slice 3's R-recovery at all.
-// Reproduces (pre-fix) with the REAL layout.js (a hand-mimicked single-call-
-// site shape does NOT reproduce — layout.js's i64Hex is called from ~9
-// sites, forcing its own param bigintBoxed=true per the box-site census, and
-// LAYOUT needs a dynamic shadow — some site elsewhere reads it via bracket
-// access — so its NAN_PREFIX_BITS field is written through the WIDE
-// storedValue/carrierF64 path, a real box). §16's fix: a per-schema-slot
-// fact (ctx.schema.slotBigintBoxed/slotBigintProven, module/schema.js —
-// the slotI32Certain idiom's BIGINT twin) pairs the write side's boxing
-// decision (module/object.js literal/spread construction, src/compile/
-// emit-assign.js field-assign + structInline element-store) with
-// emitSchemaSlotRead's read side at SCHEMA granularity, so a proven-BIGINT
-// slot unboxes unconditionally instead of handing every consumer the box's
-// raw pointer bits.
-// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§5/§9):
-// this fixture imports the REAL layout.js, exercising `i64Hex`'s `bits`
-// param — the ONE jz-own-source site Slice 0's own rewrite could not
-// resolve (".work/evidence.md 'BigInt retirement Slice 0'": both rewrite
-// techniques tried either miscompiled the self-compiled kernel for unrelated
-// programs or broke this very test; reverted, banked not forced). Under
-// Slice 1's flip, this residual "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a compile-time
-// refusal instead of a box — the CONSERVATIVE PAIRING read-side machinery
-// this test verified has no remaining input to exercise (nothing ever
-// reaches a real box for it to correctly unbox). Converted to expect-error,
-// not deleted: the shape (a genuinely unprovable BigInt schema field read
-// through layout.js's real i64Hex) remains valuable coverage that Slice 0's
-// documented gap surfaces as a NAMED diagnostic, not a silent miscompile.
+// Reproduces (pre-fix) with the REAL layout.js (a hand-mimicked single-call-site shape does NOT
+// reproduce — layout.js's i64Hex is called from ~9 sites, forcing its own param bigintBoxed=true per
+// the box-site census, and LAYOUT needs a dynamic shadow — some site elsewhere reads it via bracket
+// access — so its NAN_PREFIX_BITS field is written through the WIDE storedValue/carrierF64 path, a real
+// box). §16's fix: a per-schema-slot fact (ctx.schema.slotBigintBoxed/slotBigintProven,
+// module/schema.js — the slotI32Certain idiom's BIGINT twin) pairs the write side's boxing decision
+// (module/object.js literal/spread construction, src/compile/ emit-assign.js field-assign +
+// structInline element-store) with emitSchemaSlotRead's read side at SCHEMA granularity, so a
+// proven-BIGINT slot unboxes unconditionally instead of handing every consumer the box's raw pointer
+// bits. Under Slice 1's flip, this residual "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a
+// compile-time refusal instead of a box — the CONSERVATIVE PAIRING read-side machinery this test
+// verified has no remaining input to exercise (nothing ever reaches a real box for it to correctly
+// unbox).
 test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and decode raw-exact (.work/archive/carrier-representation-design.md §15/§16 → decl-literal raw slots + const-field staticValue fold)', () => {
   if (onKernel()) return
-  // Third era of this pin. Era 1: asserted the boxed payload unboxed
-  // correctly. Era 2 [RETIRED]: asserted the shape REFUSED under strict
-  // (residual call-arg ambiguity as a named diagnostic). Era 3 (now): the
-  // decl-literal raw-slot predicate (module/schema.js) + the const-object-
-  // field staticValue fold made the whole LAYOUT class PROVABLE — strict
-  // compiles it clean, slots hold raw i64 bits, and every derived hex string
-  // must match the native oracle bit-for-bit.
+  // Third era of this pin.
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
   const exp = withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 }))
   is(exp.rawField(), 0x7FF8000000000000n)
@@ -601,31 +502,13 @@ test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and 
   is(exp.ptrHex(), '0x7FFB000300000400')
 })
 
-// CONSERVATIVE PAIRING (.work/archive/carrier-representation-design.md — the §15/§16
-// chain's closing move, .work/archive/context-sensitivity-survey.md's COORDINATOR
-// RULING): §16 closed the PROVEN half of the read-side gap (a schema slot
-// whose write-side census uniformly, provably resolves BIGINT unboxes
-// unconditionally) but left the UNPROVEN half open whenever `pointsTo==='ALL'`
-// (§17-§21's own audited, load-bearing blanket, REFUTED as narrowable)
-// poisons `slotTypes` program-wide — the exact shape the real self-compiled
-// `scripts/self.js` compile hits (§16/§17's own diagnosis: LAYOUT's own
-// schema never proves BIGINT there, only observes+boxes it). This fixture
-// reproduces that precondition in isolation: `corrupt`'s `obj[key] = val`
-// (unresolvable receiver AND key) trips the SAME `keyedWrite` 'ALL'
-// blanket, so `slotBigintProvenAt('LAYOUT', 'NAN_PREFIX_BITS')` is FALSE
-// here even though `slotBigintBoxedAt` (write-side, fail-open, unaffected
-// by it) is TRUE — the exact possible∧unproven precondition
-// isSchemaSlotBigintPossible (src/ir.js) targets. Pre-fix, this reproduces
-// the identical §15 corruption pattern (a box's own NaN-tag bits misread as
-// the payload, `nan:0x7FFA8...`-shaped) via `atomNanHex`/`i64Hex`'s
-// arithmetic-core BigInt operand dispatch (readI64's own naive `asI64`
-// fallback, `typeof node === 'string'` never matching a `.`-node) — verified
-// live via a disposable pre-fix diff before landing the fix, not assumed.
-// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§5/§9):
-// same class as the §15/§16 test just above — CONSERVATIVE PAIRING's
-// read-side dispatch has no remaining input to exercise once the
-// write-side ambiguity it existed to cover is a compile-time refusal
-// instead. Converted to expect-error.
+// This fixture reproduces that precondition in isolation: `corrupt`'s `obj[key] =
+// val` (unresolvable receiver AND key) trips the SAME `keyedWrite` 'ALL' blanket, so
+// `slotBigintProvenAt('LAYOUT', 'NAN_PREFIX_BITS')` is FALSE here even though
+// `slotBigintBoxedAt` (write-side, fail-open, unaffected by it) is TRUE — the exact
+// possible∧unproven precondition isSchemaSlotBigintPossible (src/ir.js) targets.
+// CONSERVATIVE PAIRING's read-side dispatch has no remaining input to exercise once
+// the write-side ambiguity it existed to cover is a compile-time refusal instead.
 test('carrier: LAYOUT-class bigint fields stay provable-raw UNDER the pointsTo=ALL blanket (.work/archive/carrier-representation-design.md CONSERVATIVE PAIRING → decl-literal discipline survives the hazard blanket)', () => {
   if (onKernel()) return
   // Third era (see the sibling test above). The load-bearing extra here: the
@@ -661,18 +544,14 @@ test('nan-box: large offset', () => {
   is(f(), 1048576)  // 1MB
 })
 
-// Regression pin, independent of eager-stdlib/region-arena: stripStaticDataPrefix's
-// shift() heuristic (src/wat/assemble.js) used to rebase ANY __mkptr literal offset
-// >= ctx.runtime.staticDataLen, with no upper bound — so once the static-data prefix
-// was nonzero, a user program's own unrelated large __mkptr offset got silently
-// corrupted (fixed by ae5dc024, which added `< buf.length`). A bare string literal
-// is enough to make the prefix nonzero on a plain NATIVE compile (no eager loading
-// needed): a string pulls in the 'string' module, which MOD_DEPS-chains to 'number'
-// (src/autoload.js), and module/number.js unconditionally seeds
-// `ctx.runtime.staticDataLen` with its canonical NaN/Infinity/true/false/… constant
-// block the moment it loads — 77 bytes for the source below, confirmed by direct
-// instrumentation. The offset (1048576) is chosen to sit far past any plausible
-// static-data segment length, so a correct implementation must leave it untouched.
+// A bare string literal is enough to make the prefix nonzero on a plain NATIVE
+// compile (no eager loading needed): a string pulls in the 'string' module, which
+// MOD_DEPS-chains to 'number' (src/autoload.js), and module/number.js
+// unconditionally seeds `ctx.runtime.staticDataLen` with its canonical
+// NaN/Infinity/true/false/… constant block the moment it loads — 77 bytes for the
+// source below, confirmed by direct instrumentation. The offset (1048576) is chosen
+// to sit far past any plausible static-data segment length, so a correct
+// implementation must leave it untouched.
 for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   for (const ty of [1, 6]) {  // ARRAY, OBJECT — both were affected; ATOM (0) never is
