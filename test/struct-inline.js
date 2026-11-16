@@ -135,6 +135,10 @@ export let main = () => {
   return (h + t.n) | 0
 }`
   both(src)
+  // (a loop not split at the array's end, the size tier's, reads its cursor boxed:
+  // the field store unboxes it as the read does, an i32 into its packed cell)
+  const truth = oracle(src).main()
+  for (const optimize of levels('size', 'speed')) is(run(src, { optimize }).main(), truth, `main bit-matches JS (optimize:${optimize})`)
 })
 
 test('struct-inline: alias read after the replace store keeps JS identity (plain layout)', () => {

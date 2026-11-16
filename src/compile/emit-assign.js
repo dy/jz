@@ -1219,6 +1219,23 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // dynamic read finds the stored value through the schema arm.
   {
     const vaProbe = emit(obj)
+    // A cursor into packed i32 cells that may be missing (`const p = ps[i]`, the
+    // read not proven inside the length) keeps its OBJECT box (ir/vars.js
+    // readVar's `.cellI32`): the field is a raw i32 at +slot*4 of the address the
+    // box holds, as the read unboxes it (module/core.js emitPropAccess). The
+    // schema's f64 slot store wrote eight bytes over two cells.
+    if (vaProbe?.cellI32 && vaProbe.ptrKind == null && vaProbe.type === 'f64' && typeof obj === 'string' && vaProbe.unionKey == null) {
+      const sid = ctx.schema.idOf(obj), si = sid != null ? ctx.schema.list[sid]?.indexOf(prop) ?? -1 : -1
+      if (si >= 0) {
+        const t = tempI32('pcw'), test = missingTest(obj, vaProbe)
+        const base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(obj))]], 'i32')
+        return block64(
+          ['local.set', `$${t}`, asI32(emit(val))],
+          ...(test ? [test(cloneIR(vaProbe))] : []),
+          packedI32.ops.store(base, si, ['local.get', `$${t}`]),
+          ['f64.convert_i32_s', ['local.get', `$${t}`]])
+      }
+    }
     if (vaProbe?.ptrKind === VAL.OBJECT && vaProbe.ptrAux != null) {
       const sch = ctx.schema.list[vaProbe.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
