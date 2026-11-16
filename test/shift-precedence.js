@@ -1,9 +1,9 @@
 // A shift binds tighter than a comparison: `a < b >> c` is `a < (b >> c)`.
-// subscript tries the operators of a first character newest-first and commits
-// to the first whose text matches, so `>`, registered after `>>`, took the
+// subscript tried the operators of a first character newest-first and committed
+// to the first whose text matched, so `>`, registered after `>>`, took the
 // first character of a shift standing right of a comparison, and the loop
-// bound `k < n >> 1` never held. The parser entry orders every character's
-// operators longest first (src/parse.js).
+// bound `k < n >> 1` never held. subscript orders every character's operators
+// longest first since 10.8.4 (its issue 41); until then the parser entry did.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { parse } from '../src/parse.js'
