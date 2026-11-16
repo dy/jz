@@ -1642,10 +1642,6 @@ export default (ctx) => {
     if (useRuntimeKeyDispatch && !numericKey)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = keyIndex(typed(keyExpr, 'f64'))
-        // recvArrTyped: the receiver-CLASS proof above rules out OBJECT/HASH/
-        // STRING at every call site, so neither runtime tag test below can ever
-        // take its other arm — collapse straight to the bare __typed_idx call.
-        if (recvArrTyped) return ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]
         // Receiver AND key kind are both statically unproven here (the runtime
         // boxed-key dispatch above already ruled out boxes — this arm is
         // the "real number, unknown receiver" case). ARRAY/TYPED keep the lean
@@ -1661,6 +1657,12 @@ export default (ctx) => {
             ['then', arrayPropertyLoad(keyExpr)],
             ['else', ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]]]
           : ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]
+        // recvArrTyped: the receiver-CLASS proof above rules out OBJECT/HASH/
+        // STRING at every call site, so neither runtime tag test below can ever
+        // take its other arm: the element read alone, an array's arm reading the
+        // property a Number no index names (`X[2 ** 32]`) as the proven-NUMBER
+        // key's `arrayLoad` does below.
+        if (recvArrTyped) return numericIndexed
         const typedOrDyn = ['if', ['result', 'f64'],
           ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
           ['then', numericIndexed],
