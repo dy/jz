@@ -42,10 +42,7 @@ const TEST262 = join(import.meta.dirname, 'test262')
 const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
 
 // Ensure test262 is checked out AT the pinned commit (main thread only —
-// workers inherit the checkout). `git fetch --depth 1 origin <sha>` works
-// directly against GitHub for any reachable commit, not just a ref, so this
-// stays a shallow (single-commit) checkout — just a deterministic one instead
-// of "whatever main tipped to when the clone ran".
+// workers inherit the checkout).
 function ensureTest262() {
   if (!existsSync(TEST262)) {
     console.log(`Cloning test262 @ ${PINNED_COMMIT.slice(0, 8)} (this may take a minute)...`)
@@ -142,24 +139,7 @@ function isArgumentsObjectTest(rel) {
   return rel.includes('language/arguments-object/') && ARGUMENTS_OBJECT_TESTS.has(baseName(rel))
 }
 
-// audit-#11 item 7 sub-1: this used to ALSO redefine Error/EvalError/
-// RangeError/ReferenceError/SyntaxError/TypeError/URIError as dummy
-// string-returning functions. jz has real, sound classes for all seven
-// (construction, .message/.name, and instanceof all work natively — verified
-// live) — the redefinitions only SHADOWED them with a plain user function.
-// Since jz's sound `instanceof` (38c7dde5) only recognizes its own catalog of
-// classes on the right-hand side, `e instanceof TypeError` against the
-// shadowed local loud-rejected at compile time ("instanceof: unsupported
-// right-hand side") for every test file that (a) needed this harness AND
-// (b) checked `instanceof <one of the seven>` anywhere in its own content —
-// 108 of the language suite's fails, and the matching bulk of the built-ins
-// suite's. Not shadowing them lets jz's real classes answer those checks
-// soundly. `Test262Error` has no jz-native equivalent (it's a harness-only
-// sentinel) and stays a plain function — `instanceof Test262Error` still
-// loud-rejects the same way (no prototype chain jz can model for an
-// arbitrary user constructor), which is now classified as a skip (see
-// runTest's catch below), matching the existing "structurally out of scope"
-// treatment the file already gives instanceof-across-a-custom-hierarchy.
+// Not shadowing them lets jz's real classes answer those checks soundly.
 const ASSERT_HARNESS = `
 function Test262Error(message) { return message || 'Test262Error' }
 let __sameValue = (a, b) => {
@@ -193,10 +173,7 @@ function needsAssertHarness(content, rel = '') {
 // Features to exclude entirely. CONTENT-based — keep this list to features with
 // NO clean jz rejection (silent-wrong risk) or whole absent protocols. Features
 // that reject cleanly ('not supported'/'not in scope'/…) need no pattern: the
-// runTest message allowlist absorbs them per-file. Unblanketed 2026-07-10:
-// this/class/super (jzify lowers; survivors reject cleanly), new.target (clean
-// reject), WeakMap/WeakSet (fold to Map/Set and run), for-of (supported over
-// Array/String/Map/Set/TypedArray; iterator-protocol tests absorb below).
+// runTest message allowlist absorbs them per-file.
 const EXCLUDED_PATTERNS = [
   /async/i, /await/, /generator/i, /yield/,
   /reflect/i, /proxy/i, /\bwith\b/,
@@ -261,7 +238,6 @@ function countJs(dir) {
 // jz cannot yet model. Exact rel paths only — a Map can never over-skip a
 // passing test the way a pattern can. Revisit entries as the named fix lands.
 const LEGACY_LANG_LIMITATIONS = new Map([
-  // Surfaced by the generator-blanket lift (2026-07-12):
   ['test/language/expressions/addition/S11.6.1_A2.2_T3.js', 'function source text via toString coercion'],
   ['test/language/expressions/addition/S11.6.1_A3.2_T1.2.js', 'function source text via toString coercion'],
   ['test/language/expressions/call/S11.2.4_A1.1_T2.js', 'function .length reflection'],
@@ -386,15 +362,11 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/statements/try/S12.14_A18_T7.js', 'caught-exception object identity'],
   ['test/language/statements/try/S12.14_A19_T1.js', 'Error.prototype.toString on caught exception'],
   ['test/language/statements/try/S12.14_A19_T2.js', 'Error.prototype.toString on caught exception'],
-  // `delete` is no longer blanket-excluded (property deletion works); these
-  // residual files each hit a delete-operator corner jz does not model yet.
   ['test/language/expressions/delete/S8.12.7_A3.js', 'delete via numeric computed key (coerced to string) on static-schema object'],
   ['test/language/statements/for-in/S12.6.4_A7_T1.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
   ['test/language/statements/for-in/S12.6.4_A7_T2.js', 'property deleted mid for-in is still enumerated (snapshot, not live)'],
   ['test/language/statements/function/S13_A11_T3.js', 'delete of an arguments-object element'],
   ['test/language/statements/function/S13_A11_T4.js', 'delete of an arguments-object element'],
-  // Surfaced by the 2026-07-10 unblanketing (for-of / destructuring / this /
-  // class / WeakMap patterns removed) — each residual hits a specific corner.
   ['test/language/statements/try/S12.14_A15.js', 'finally block with continue/break/return'],
   ['test/language/statementList/class-regexp-literal.js', 'regex literal directly after class body — slash disambiguation parser gap (subscript)'],
   ['test/language/statements/for-of/head-var-bound-names-let.js', 'let-as-identifier parser edge outside current jz scope'],
@@ -419,8 +391,6 @@ function shouldSkip(content, rel = '') {
   return r
 }
 function shouldSkipBase(content, rel = '') {
-  // Exact-file audited-out ledger — replaces the broad family regexes below
-  // that ate would-pass files (JZ_AUDIT sweep 2026-07-12).
   if (AUDITED_OUT.has(rel)) return AUDITED_OUT.get(rel)
   if (LEGACY_LANG_LIMITATIONS.has(rel)) return LEGACY_LANG_LIMITATIONS.get(rel)
   const codeContent = content
@@ -503,9 +473,6 @@ function shouldSkipBase(content, rel = '') {
   // Map/Set normalization still snapshots entries; arrays use a live bound.
   if (/\/for-of\/(map|set)(?:-(?:contract|expand))+\.js$|\/for-of\/set\.js$/.test(rel))
     return 'Map/Set for-of live-iteration mutation contract (snapshot iteration)'
-  // Member-expression targets in for-of heads / destructuring patterns
-  // (`for (obj.x of …)`, `[o.x] = arr` inside a for-of head) — recorded
-  // small-lowering gap (.work/archive/todo.md, extension-surface archive).
   if (rel.includes('put-prop-ref') || rel.includes('/for-of/head-lhs-member') || rel.includes('/for-of/head-lhs-cover'))
     return 'member-expression for-of/destructure target outside current lowering (recorded)'
   // Per-iteration lexical binding closure — the recorded for-head let-capture item.
@@ -520,12 +487,6 @@ function shouldSkipBase(content, rel = '') {
   if (rel.endsWith('/for-of/dstr/obj-prop-name-evaluation.js')) return 'pattern computed-key evaluation-order corner'
   // super(...spread) forwarding is outside the jzify class lowering's ctor model.
   if (rel.includes('/expressions/super/call-spread-')) return 'super(...spread) outside jzify class lowering'
-  // generators + generator methods landed (state machines; subscript 10.6
-  // grammar). The broad family skips this lift surfaced were AUDITED
-  // (JZ_AUDIT bypass sweep, 2026-07-12): every file that genuinely fails now
-  // sits in the exact-path AUDITED_OUT ledger (test262-out.js) — the two
-  // regex families kept below hide no passing files (verified by bypass).
-  // .caller/.arguments forbidden-extension reflection.
   if (rel.includes('/forbidden-ext/')) return 'function .caller/.arguments reflection outside jz scope'
   // Function-name binding immutability + IsConstructor reflection.
   if (/-reassign-fn-name-in-body|invoke-as-constructor|invoke-ctor|isCtor-after-args-eval/.test(rel))
@@ -654,8 +615,7 @@ function shouldSkipBase(content, rel = '') {
   if (/\/identifiers\/start-unicode-(5\.2\.0|7\.0\.0|8\.0\.0|9\.0\.0|1[0357]\.0\.0|16\.0\.0)(-escaped)?\.js$/.test(rel)) return 'large unicode identifier table parser stack outside current jz scope'
   // Runtime ReferenceError on unresolved bare identifiers — `assert.throws(ReferenceError, …undeclared…)`.
   // jz refuses to emit unresolved references at compile time, so these tests are structurally
-  // unimplementable in a static-compile model. Includes the generated spread/logical-assignment
-  // unresolvable families, `var o = {notDefined}` shorthand, `typeof x.x` GetValue ref-err, etc.
+  // unimplementable in a static-compile model.
   if (/-unresolvable(-rhs(-put)?|-lhs)?\.js$/.test(rel)) return 'runtime ReferenceError on unresolved ident outside static-compile model'
   if (/\/(expressions|statements)\/(call|new|logical-assignment)\/.*-unresolved-/.test(rel)) return 'runtime ReferenceError on unresolved ident outside static-compile model'
   if (rel.endsWith('/expressions/object/not-defined.js')) return 'runtime ReferenceError on unresolved ident outside static-compile model'
@@ -747,9 +707,6 @@ function shouldSkipBase(content, rel = '') {
     if (CLASS_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
     // fall through to the harness/negative-test filters below
   } else if (isAsyncFnTest(rel)) {
-    // async fns AND async generators/for-await landed (jzify/async.js tagged-
-    // yield machines + __ag_run driver) — narrow exclusions; the rest RUN via
-    // the $DONE shim.
     if (/asyncDispose|await\s+using/i.test(codeContent)) return 'await using / asyncDispose outside the sync dispose model'
     // `async *m()` method shorthand (class/object) — v1 covers declaration +
     // expression forms; `async function*` never matches (word between).
@@ -759,15 +716,12 @@ function shouldSkipBase(content, rel = '') {
     if (/dflt-params|params-dflt|arguments/.test(rel)) return 'default-param/arguments reflection outside jz scope'
     // fall through to the generic filters below
   } else if (rel.includes('/statements/using/')) {
-    // `using` landed (jzify try/finally + [Symbol.dispose], subscript 10.6).
     // Narrow exclusions; the rest RUN.
     if (/getOwnProperty|defineProperty|propertyHelper|\bProxy\b/i.test(codeContent)) return 'descriptor reflection outside jz scope'
     // fall through to the generic filters below
   } else if (isGeneratorTest(rel)) {
-    // v1 machines: function*-declaration/expression bodies with statement-
-    // position yields. Everything else is a named out-of-scope family.
-    // generator METHOD syntax (class { *m() }, { *g() {} }) landed with subscript 10.6
-    // .throw(v) landed: closes the machine + rethrows (no try spans a yield)
+    // v1 machines: function*-declaration/expression bodies with statement-position
+    // yields.
     if (/GeneratorFunction|%Generator/i.test(codeContent)) return 'GeneratorFunction reflection outside jzify subset'
     if (/function\.sent/.test(codeContent)) return 'function.sent outside jzify subset'
     if (/__proto__|\bprototype\b|Object\.(getPrototypeOf|getOwnPropertyDescriptor|defineProperty)/.test(codeContent)) return 'generator prototype reflection outside jzify subset'
@@ -975,7 +929,6 @@ function* filesUnder(rootDir, opts = {}) {
   yield* walk(rootDir)
 }
 
-// ─── Work collection (main thread) ──────────────────────────────────────────
 // Walk the tracked dirs once, applying dir-level skips and the --quick cap, and
 // produce a flat work list — one entry per test file. Content-level skip
 // classification and compile/run happen later, in parallel workers.
@@ -1008,186 +961,30 @@ function collectWork() {
   return { work, dirSkip }
 }
 
-// ─── Expected failures ──────────────────────────────────────────────────────
 // Tests that fail for a reason outside jz's correctness contract: a subset the
 // distilled-JS subset deliberately omits, or an upstream parser gap. They still
 // run, but bucket as `xfail` rather than `fail`, so the `fail` count gates
 // *in-scope* correctness honestly — any non-zero `fail` is a genuine miscompile.
 // If a listed file ever passes it surfaces as `xpass` so the entry can be pruned.
 // (Mirrors the builtins suite.) Paths are `relative(TEST262, file)` form.
-// (subscript 10.4.17 fixed the `1.e3` digit-dot-exponent lexer gap — the 8
-// S7.8.3_A3.3 numeric tests + the decimal-e computed-key test now pass, so their
-// former EXPECTED_FAIL entries were pruned and the baseline bumped 1428→1437.)
 const EXPECTED_FAIL_PREFIXES = [
 ]
-// Boolean kind-loss residue (2026-07-10 → audit-#12 category-(iii) closure,
-// this commit): predicate-builtin kinds landed (CALLEE_VAL BOOL entries — the
-// isNaN()/isArray() families were pruned as xpasses). What remained was the
-// JOIN family plus two more MECHANISM-A gaps the audit's reproductions
-// exposed as ACCEPTED-WRONG (not merely xfail-and-forget):
-//  1. FIXED exactly — the throw slot (src/compile/emit.js 'throw' emitter)
-//     used a raw `asF64(emit(expr))`, the 18th unnamed site of the untyped-
-//     boxed-value-slot gap bridge.js's storedValue doc comment describes.
-//     Routed through storedValue (the established chokepoint) instead —
-//     `throw true`/`throw b&&false` and the catch-bound read-back now box
-//     correctly. 3 files below now pass.
-//  2. FIXED exactly — RegExp flag getters (module/regex.js .regex:global
-//     etc.) emitted a raw `f64.const 0/1` instead of the boxed TRUE/FALSE
-//     atom; `regexp.global === true` bit-compared a plain NUMBER against the
-//     atom and always lost. The flag is a compile-time-known constant, so
-//     this now emits TRUE_IR/FALSE_IR directly. 6 files below now pass.
-//  3. FIXED exactly — emitStrictEq's "one BOOL side, one dynamic-unknown
-//     side" branch assumed an unresolved (null) static kind can never carry a
-//     raw BOOL bit. False for `true || undefined`/`true || null`: VT['||']
-//     can't unify BOOL with NULL/UNDEF so the join's own static kind comes
-//     back null, but the arm actually taken at runtime (`true`) is still raw
-//     BOOL. Now boxed via mayCarryRawBool + emitIdentitySafeArms. 1 file
-//     below (A4_T4) now passes.
-//  5. STILL XFAILS, REJECTS (not the ambiguous-merge shape at all — a THIRD,
-//     narrower gap surfaced by 2 of the audit's logical-or/-and files):
-//     `true || x` / `false && x` with `x` a genuinely undeclared identifier
-//     in the dead (never-evaluated) short-circuit arm. mayCarryRawBool's
-//     structural check now reaches for `x`'s emission when boxing the join's
-//     identity — and jz's "not in scope" reject fires (test262.js's own
-//     skip-message allowlist already treats that as skip, not fail/xfail —
-//     see the two entries' reason text below). Was silently wrong (a raw
-//     NUMBER bit-compare loss, same as #4); now loud. The IDEAL fix (true
-//     short-circuit dead-code elision reaching identity-safe emission too, so
-//     `x` is never touched and the comparison folds to the correct `true`/
-//     `false` at compile time) is a separate, un-scoped optimizer gap — see
-//     .work/archive/todo.md if picked up.
-// [WRONG-VALUE] tag below = release-blocking per README.md's semantics
-// contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
-// matches README "What differs from JS?").
-// Audit-#12 classification pass (this commit) — every entry below is tagged
-// by OUTCOME, not just symptom, so a category-(iii) accepted-wrong value can
-// never hide behind a plausible-sounding xfail reason again:
-//   [REJECT]   — valid source, cleanly rejected at compile time as
-//                unsupported. No value was ever silently produced. Acceptable.
-//   [DIALECT]  — documented dialect divergence (README "What differs from
-//                JS?" — generators/async lower to state machines, jobs drain
-//                at host boundaries). Acceptable.
-//   [WRONG-VALUE] — accepted, ran, and produced a plausible-looking value that
-//                silently differs from JS with NO README coverage. Release-
-//                blocking per README.md's semantics contract; NOT fixed by
-//                this commit (out of the two assigned families — Family A
-//                rest-destructure isArray — surfaced
-//                here as a byproduct of walking the full xfail list). Pinned
-//                so it stays visible rather than reading as "just an xfail".
-//   [VERIFY]   — outcome not conclusively determined (deep engine-internal
-//                spec corner); flagged honestly rather than guessed into
-//                either acceptable bucket.
+//  [WRONG-VALUE] tag below = release-blocking per README.md's semantics
+//     contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
+//     matches README "What differs from JS?"). [DIALECT] — documented dialect
+//     divergence (README "What differs from JS?" — generators/async lower to
+//     state machines, jobs drain at host boundaries). Pinned so it stays
+//     visible rather than reading as "just an xfail". [VERIFY] — outcome not
+//     conclusively determined (deep engine-internal spec corner); flagged
+//     honestly rather than guessed into either acceptable bucket.
 const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed this commit] '
-// Second pass (fix/wrong-values-2, this commit) — every [WRONG-VALUE] entry
-// from the audit-#12 pass above was run down to ONE of two outcomes; entries
-// that now cleanly REJECT with a message matching runTest's own skip-message
-// allowlist need no map entry at all (same established convention the
-// switch-decl-onlystrict prune below already documents) — pruned rather than
-// retagged. Entries resolved:
-//  - comma/S11.14_A2.1_T2.js: the root cause was emit()'s bare-identifier
-//    fallback (index.js's fallback in the OLD src/compile/emit.js) blindly
-//    guessing `local.get $name` for ANY unresolved identifier, valid or not
-//    — real only by accident when the read's value was USED (watr's "Unknown
-//    local" then surfaced); when the value was merely DISCARDED (`x, 1`;
-//    bare `x;`), dead-code elimination silently dropped the bogus reference
-//    before that safety net ever ran. Fixed at the root (src/compile/emit.js
-//    emit()'s final string-node fallback): reject unconditionally instead of
-//    guessing — every legitimate resolution channel (bound name/global/
-//    top-level function/namespace member/host global) had already failed by
-//    that point, so the guess was NEVER valid. Now rejects "is not in scope"
-//    → skip.
-//  - instanceof/S11.8.6_A2.1_T1.js: `var OBJECT = Object; ({}) instanceof
-//    OBJECT`: jzify's default-mode shape fold named the constructor by the
-//    RHS's SPELLING, so `OBJECT` read as "not Object" and the check folded
-//    to false (the unread `OBJECT = Object` store then vanished before emit
-//    could reject `Object` as a value). A binding the program declares now
-//    folds only what holds for any constructor (jzify/transform.js
-//    staticInstanceofFold `spelled`); prepare rejects the rest: "instanceof:
-//    unsupported right-hand side" → skip.
-//  - break+continue/line-terminators.js: root cause isolated to bare CR
-//    (U+000D) specifically — LF/LS/PS already correctly flip subscript's
-//    restricted-production `parse.newline` flag (feature/asi.js), only a
-//    lone CR (not part of CRLF) was skipped as ordinary whitespace without
-//    setting it, so `break\rLABEL` parsed as a labeled break instead of
-//    ASI-splitting. Fixed in src/parse.js: one more wrapper layered onto
-//    subscript's shared `parse.space` (same "monkey-patch the shared parser
-//    object" pattern as this file's pre-existing NaN/true/false/BigInt token
-//    overrides) that also flags CR. The fixed ASI split makes the label an
-//    unreachable-after-break bare identifier reference, which now correctly
-//    rejects via the SAME comma-class fix above → skip.
-//  - for-in/scope-body-var-none.js (was [VERIFY]): root-caused to
-//    module/object.js's emitKeysGeneric — an object LITERAL argument with a
-//    complete static schema took a compile-time-constant-keys fast path
-//    (pooling the schema's key list directly) that never called emit() on
-//    the literal AT ALL, so any side effect in a property VALUE (an
-//    assignment, a call, a closure) silently never ran — confirmed as BOTH a
-//    silently-skipped IIFE side effect AND (the escaping-closure shape this
-//    file exercises) a WebAssembly "table index is out of bounds" trap on a
-//    stale/default bit pattern. Fixed by vetoing the fast path when the
-//    literal's values aren't provably side-effect-free (falls through to the
-//    existing, already-correct emitRuntimeKeys path instead). Sibling-swept:
-//    the identical bug reached directly via Object.keys/getOwnPropertyNames
-//    (not just for-in) is fixed by the same veto. This file now PASSES
-//    outright (was a genuine V8-authored spec-corner regression test, not
-//    merely a reject) — removed as newly-passing, not pruned as skip.
-//  - function/S13_A15_T4.js: `return typeof arguments; var arguments = X;` —
-//    jzify/arguments.js's lowerArguments renamed EVERY `arguments` reference
-//    in a body containing `var arguments = X` to an independent fresh
-//    variable (defaulting to undefined) the moment the declaration existed
-//    anywhere, even textually after the point spec requires the REAL
-//    Arguments object to still be visible. Fixed: `var arguments = X` (no
-//    parameter shadowing — that's the separate, already-correct
-//    paramsBindArguments path) now has its `var`-ness stripped in place
-//    (`arguments = X`, a plain reassignment) instead of triggering an
-//    independent rename, so every `arguments` reference — including this one
-//    — resolves through the SAME real-arguments-object materialization, and
-//    the dead reassignment after the early return stays exactly as
-//    unreached as spec requires. This file now PASSES outright — removed.
+//  - function/S13_A15_T4.js: `return typeof arguments; var arguments = X;`
+//    — jzify/arguments.js's lowerArguments renamed EVERY `arguments`
+//    reference in a body containing `var arguments = X` to an independent
+//    fresh variable (defaulting to undefined) the moment the declaration
+//    existed anywhere, even textually after the point spec requires the REAL
+//    Arguments object to still be visible.
 const EXPECTED_FAIL_FILES = new Map([
-  // for-await grammar edges (2026-07-13, wired with async generators):
-  // iterator binding and generator abrupt-completion cases pass, and so do
-  // the two job-ordering files (2026-10-25): the async generator driver
-  // settles requests in Node's order, and a for await no longer awaits an
-  // async iterator's values a second time.
-  // Short-circuit dead-arm identity box reaching an undeclared other arm —
-  // see point 5 in the comment above for the mechanism.
-  // `logical-or/S11.11.2_A2.1_T4.js` and `logical-and/S11.11.1_A2.1_T4.js`
-  // used to list here — both now REJECT "not in scope", which (like the
-  // switch-decl-onlystrict entries pruned above) matches runTest's own
-  // skip-message allowlist and so classifies as skip, not fail — never
-  // actually reaching expectedFailReason. No map entry needed.
-  // FIXED (audit-#12 category-(iii) closure, this commit) — was: Array.isArray
-  // of a REST-pattern result (derived from a typed-PROMOTED array literal)
-  // answered false at O2+ — the promotion pass's isArray disqualifier
-  // (src/compile/plan/literals.js _disqualifyPromotion) tracked the literal's
-  // OWN direct name only; `const [...x] = [1]` desugars to `%tmp = [1], x =
-  // %tmp.slice(0)` (prepare/index.js expandDestruct), so `Array.isArray(x)`
-  // never disqualified `%tmp`'s promotion — a DERIVED name, not a candidate.
-  // Fixed by _collectDerivedArrayNames: `%tmp.slice/map/filter(…)`-derived
-  // bindings are walked through the SAME _disqualifyPromotion logic a second
-  // time (as their own candidates-shaped map, zero changes to the existing
-  // function), and a hit propagates back to the literal root — precision over
-  // the blanket disqualifier a prior attempt rejected (see that function's
-  // own doc comment). All 12 files below now pass at O0-O3; pinned at
-  // test/rest-params.js.
-  // FIXED (three-bug bundle, this commit) — was: pre-eval folded a compile-time-
-  // constant multi-operator numeric subtree (src/prepare/pre-eval.js foldNumBinary/
-  // foldNumAdd) as ONE exact rational, rounding to f64 only at the very end instead
-  // of after EACH binary op, so an overflow-to-Infinity that ES 12.6.3/12.8.3
-  // mandates AT an intermediate op (`Number.MAX_VALUE*1.1` alone rounds to
-  // Infinity) got silently reassociated away by the exact rational carrying a
-  // finite value forward (`Number.MAX_VALUE*(1.1*0.9)`'s exact product, still
-  // < MAX_VALUE) instead of propagating that Infinity to the parent op. Fixed by
-  // checking, at every rational-fold binary-op node, whether THIS node's own
-  // correctly-rounded f64 result overflowed — if so, the node's `.r` (the exact
-  // rational handed to the PARENT op) is dropped, forcing the parent back onto
-  // plain per-op float arithmetic from the actual (overflowed) value, matching
-  // spec. Sub-Infinity precision (the documented "more accurate, never less"
-  // rational-carry feature, e.g. 0.1+0.2-0.3) is untouched — the check only fires
-  // at the finite/±Infinity boundary. Exactly two files in the whole tracked
-  // corpus exercised this (searched `grep -rl "is not always associative"` across
-  // language/expressions/) — the multiplication and addition "not always
-  // associative" MAX_VALUE probes; both now pass.
 ])
 function expectedFailReason(rel) {
   if (EXPECTED_FAIL_FILES.has(rel)) return EXPECTED_FAIL_FILES.get(rel)
@@ -1196,7 +993,6 @@ function expectedFailReason(rel) {
   return null
 }
 
-// ─── Worker: classify + compile/run an assigned slice of the work list ──────
 // Pure given its inputs (jz resets all state per call), so a worker's tallies
 // are identical to running the same files sequentially.
 async function runChunk(items) {
@@ -1251,7 +1047,6 @@ if (!isMainThread) {
   // Spawned worker: run the assigned slice and report tallies back.
   runChunk(workerData.items).then(r => parentPort.postMessage(r))
 } else {
-  // ─── Main: collect work, fan out to a worker pool, aggregate ──────────────
   const languageTest262Files = countJs(testDir)
   const allTest262Files = countJs(join(TEST262, 'test'))
   const { work, dirSkip } = collectWork()
@@ -1345,20 +1140,14 @@ if (!isMainThread) {
 
   // CI gating, four guards (skipped in --quick mode, which runs only a subset
   // so its counts aren't comparable):
-  //   1. fail===0 — the language suite's in-scope baseline is zero failures, so
-  //      ANY fail is a regression. Out-of-scope/upstream gaps are bucketed as
-  //      xfail (see EXPECTED_FAIL above), and unsupported syntax as skip, so a
-  //      real fail is always a jz miscompile. This catches a one-for-one
-  //      pass↔fail swap that leaves the count unchanged (invisible to guard 3).
-  //   2. xpass===0 — a file listed in EXPECTED_FAIL_FILES that now passes means
-  //      the entry is stale; prune it (keeps the expected-fail list honest).
-  //   3. pass-count ratchet — pass must not drop below the committed lock's
-  //      `language` floor (test/test262-baseline.json, audit-#12 item 3).
-  //      Always enforced (previously only when JZ_TEST262_BASELINE was set —
-  //      the CI-vs-local split this closes: CI carried its own stale
-  //      JZ_TEST262_BASELINE env value, 2975, while local runs were
-  //      floorless). JZ_TEST262_BASELINE, if set, still overrides the file —
-  //      a one-off diagnostic escape hatch, not the source of truth.
+  //   Out-of-scope/upstream gaps are bucketed as xfail (see EXPECTED_FAIL
+  //      above), and unsupported syntax as skip, so a real fail is always a
+  //      jz miscompile. This catches a one-for-one pass↔fail swap that leaves
+  //      the count unchanged (invisible to guard 3).
+  //   3. pass-count ratchet — pass must not drop below the committed
+  //      lock's `language` floor (test/test262-baseline.json, audit-#12 item
+  //      3). JZ_TEST262_BASELINE, if set, still overrides the file — a
+  //      one-off diagnostic escape hatch, not the source of truth.
   //   4. exact accepted-negative ledger — both the count and every path must
   //      equal test262-neg-accepts.json. Additions, removals, and one-for-one
   //      swaps all require an explicit reviewed ledger update.

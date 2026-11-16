@@ -216,24 +216,9 @@ const TRACKED_BUILTIN_PATHS = [
   'RegExp/prototype/global',
   'RegExp/prototype/sticky',
   'RegExp/prototype/unicode',
-  // Promise pool wired 2026-07-13: the jzify async runtime implements
-  // resolve/reject/all/race/allSettled/any/try/withResolvers + executor +
-  // then/catch/finally; flags:[async] tests run through the $DONE shim
-  // (module-level, polled via __t262_check — same design as the language
-  // runner). Subclassing/species/descriptor tests absorb as skips.
+  // Subclassing/species/descriptor tests absorb as skips.
   'Promise',
-  // Iterator pool wired 2026-07-13: generator objects in helper-using
-  // programs mint through __it_mk (jzify/generators.js) — map/filter/take/
-  // drop/flatMap + toArray/reduce/forEach/some/every/find as value-position
-  // methods, Symbol.iterator identity, `instanceof Iterator` shape probe.
-  // %Iterator.prototype% reflection / Iterator-as-constructor absorb as skips.
   'Iterator',
-  // Atomics/SharedArrayBuffer pool wired 2026-07-13: SharedArrayBuffer
-  // canonicalizes to ArrayBuffer (within one module the buffer IS jz's linear
-  // memory — sharedness is a pool.js LINKING concern, not an object property);
-  // Atomics map to wasm atomic ops on proven Int32Array views (module/
-  // atomics.js). $262.agent multi-thread tests need the agent harness over
-  // pool.js — a recorded follow-up; they absorb as skips meanwhile.
   'Atomics',
   'SharedArrayBuffer',
 ]
@@ -721,65 +706,29 @@ const DATE_UNSUPPORTED_TESTS = new Map([
   ['built-ins/Date/UTC/coercion-order.js', 'object ToPrimitive coercion'],
 ])
 
-// ── Expected failures ───────────────────────────────────────────────────────
 // Built-ins tests that COMPILE and RUN but assert-fail because they exercise a
 // feature jz deliberately does not implement (out of scope for the distilled-JS
-// subset) or a documented representation divergence. They still run, but bucket
-// as `xfail` instead of `fail`, so the `fail` count gates *in-scope* correctness
-// honestly — any non-zero `fail` is a genuine regression. If a listed *file*
-// ever passes it is reported as `xpass` so the entry can be pruned. Compile-time
-// fails ("… is not in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
+// subset) or a documented representation divergence. Compile-time fails ("… is
+// not in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
 //
 // A prefix covers a whole feature family that will not be implemented; a file
 // entry is an exact, individually-reviewed expectation (and gets xpass tracking).
-// Audit-#12 classification pass (this commit, same tagging scheme as
-// test262.js's own EXPECTED_FAIL_FILES banner — see that file for the full
-// [REJECT]/[DIALECT]/[WRONG-VALUE] legend). A representative sample
-// across this file's clusters was compiled and RUN (not just read) to check
-// the label against actual behavior — result: several long-standing "out of
-// scope" reasons here describe a SILENT wrong value, not a reject (confirmed
-// live: `parseInt({valueOf:()=>"42"})` → null not NaN; `typeof Promise` →
-// 'undefined' not 'function'; `Object.keys(fnWithOwnProp)` → [] not the real
-// keys; `JSON.stringify({toJSON:()=>42})` → "{}" not "42";
+// A representative sample across this file's clusters was compiled and RUN (not
+// just read) to check the label against actual behavior — result: several
+// long-standing "out of scope" reasons here describe a SILENT wrong value, not a
+// reject (confirmed live: `parseInt({valueOf:()=>"42"})` → null not NaN; `typeof
+// Promise` → 'undefined' not 'function'; `Object.keys(fnWithOwnProp)` → [] not
+// the real keys; `JSON.stringify({toJSON:()=>42})` → "{}" not "42";
 // `"abcxdef".indexOf({valueOf:()=>"x"})` → 3 not -1 (real ToPrimitive tries
 // toString before valueOf for a string-hint coercion — jz calls valueOf
 // directly)). The common thread: a dynamic-dispatch / ToPrimitive coercion /
-// function-object-reflection protocol that jz's static object model can't
-// invoke, so it silently falls back to SOME other behavior instead of
-// rejecting. NOT fixed by this commit (out of the two assigned families);
-// tagged so the "out of scope" prose can't be mistaken for "safely rejects"
-// again. Files not yet run were left unclassified rather than assumed into
-// either bucket; the final classification pass below resolves them.
+// function-object-reflection protocol that jz's static object model can't invoke,
+// so it silently falls back to SOME other behavior instead of rejecting. Files
+// not yet run were left unclassified rather than assumed into either bucket; the
+// final classification pass below resolves them.
 const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/BigInt/', '[DIALECT] BigInt arithmetic/coercion — out of scope (README: BigInt is a signed 64-bit integer, not arbitrary precision)'],
   ['built-ins/Symbol/', '[REJECT] Symbol primitive semantics — out of scope (confirmed: bare `Symbol` reference rejects \'not in scope\')'],
-  // audit-#11 item 7 sub-2 (pin bump 05bb0329 → b363f29d, 2026-06-04 →
-  // 2026-07-31): four Iterator helper methods this newer upstream snapshot
-  // added tests for that jz's Iterator pool (module/collection.js) does not
-  // implement at all — chunks/windows silently no-op (external-method
-  // fallback returns undefined), includes/join hit jz's internal
-  // unregistered-stdlib guard. Not a miscompile of a supported feature;
-  // genuinely unimplemented, same class as the take/drop/map/filter/flatMap
-  // entries already tracked below (those four ARE implemented, only a narrow
-  // corner of each is out of scope — chunks/windows/includes/join are not
-  // implemented at all).
-  // audit-#12: this comment's OWN text says chunks/windows "silently no-op…
-  // returns undefined" — if accurate, that IS a silent wrong value, not a
-  // clean reject. A direct probe (`[1,2,3,4].values().chunks(2)`) instead hit
-  // a clean 'not a host object' REJECT, contradicting the comment above —
-  // so either the comment describes a different receiver shape (an external/
-  // host-object iterator) than the plain-array one just probed, or it's
-  // stale. Genuinely conflicting evidence was left unclassified, not asserted
-  // either way, rather than trusting either source uncritically.
-  // fix/wrong-values-2: resolved by evidence — [REJECT], not [WRONG-VALUE].
-  // Re-probed live (a plain array iterator's `.chunks(2)`/`.windows(2)`):
-  // both cleanly throw "'chunks'/'windows' — jz dispatched this method call
-  // to the host, but the receiver is not a host object" — a loud runtime
-  // reject, not a silent no-op. The message doesn't match this runner's own
-  // skip-allowlist (no "not supported"/"is not in scope" substring), so it
-  // stays a tracked xfail rather than an auto-skip — that's a message-text
-  // gap, not a silent-value gap; out of this pass's scope to also patch the
-  // message.
   ['built-ins/Iterator/prototype/chunks/', '[REJECT] Iterator.prototype.chunks — not implemented; confirmed live: a plain-array-iterator receiver rejects cleanly ("not a host object"), no silent no-op'],
   ['built-ins/Iterator/prototype/windows/', '[REJECT] Iterator.prototype.windows — not implemented; confirmed live: a plain-array-iterator receiver rejects cleanly ("not a host object"), no silent no-op'],
   ['built-ins/Iterator/prototype/includes/', '[REJECT] Iterator.prototype.includes — not implemented (unregistered-stdlib guard rejects)'],
@@ -791,36 +740,8 @@ const EXPECTED_FAIL_FILES = new Map([
   // fix/wrong-values-2: JSON.parse/parseInt/parseFloat/encodeURIComponent/
   // encodeURI's object-argument ToPrimitive gap (jz's stdlib coercion layer
   // has no general dynamic valueOf/toString dispatch) gained a COMPILE-TIME
-  // reject (module/number.js rejectObjectArg, module/string.js
-  // uriEncodeBind, module/json.js JSON.parse) for the statically-provable-
-  // object case. Confirmed live at the SIMPLE case (a single, try/catch-free
-  // `var o = {...}; parseInt(o)`); JSON.parse/text-object.js's own shape is
-  // exactly that simple case and now cleanly rejects "not supported" → skip,
-  // no entry needed. The full parseInt/encodeURIComponent test262 FILES
-  // (below) were NOT resolved at the time, though — full-battery re-run
-  // surfaced a GENUINE gate regression the isolated probes during
-  // development missed: valTypeOf(name) — the check's only signal — stayed
-  // unresolved (neither VAL.OBJECT nor anything else conclusive) for a `var
-  // object = {…}` once the SAME function ALSO contained a try/catch
-  // ANYWHERE, even unrelated, even textually after the affected call (both
-  // files' remaining CHECK blocks use try/catch for abrupt-completion
-  // assertions). Adding a ctx.schema.slotOf(name,'valueOf'/'toString')
-  // fallback (the same resolution src/ir.js's toPrimitiveChain already leans
-  // on) did NOT resolve it either at the time — the deeper cause was left
-  // open (JSON.parse's own shape was unaffected — it has no map entry
-  // because IT stays try/catch-free).
-  //
-  // fix/wrong-values-3: root-caused and fixed — see the parseInt/
-  // encodeURIComponent note further below (near those two files' former xfail
-  // entries) for the actual mechanism. valTypeOf itself was never the bug;
-  // the fix lives in emit.js's flow-value overlay, not kind.js. Both files
-  // now REJECT cleanly at compile time; no map entry needed.
-  // JSON.stringify — replacer argument (jz stringify is single-arg). Function
-  // replacers confirmed REJECT cleanly ("JSON.stringify with a runtime
-  // replacer is not supported"); array replacers confirmed WORK for the
-  // basic case (`JSON.stringify(o, ['a'])` filters correctly) — these three
-  // specific files test array-replacer EDGE behavior (duplicate keys / key
-  // order / an explicit undefined element) not covered by that basic probe.
+  // reject (module/number.js rejectObjectArg, module/string.js uriEncodeBind,
+  // module/json.js JSON.parse) for the statically-provable-object case.
   ['built-ins/JSON/stringify/replacer-array-duplicates.js', '[REJECT] getter-dependent array-replacer edge rejects because accessors are unsupported'],
   ['built-ins/JSON/stringify/replacer-array-order.js', '[REJECT] runtime JSON.stringify array replacers are unsupported'],
   ['built-ins/JSON/stringify/replacer-array-undefined.js', '[REJECT] runtime JSON.stringify array replacers are unsupported'],
@@ -829,174 +750,65 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/JSON/stringify/replacer-function-result-undefined.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/replacer-function-tojson.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/value-bigint-replacer.js', '[REJECT] runtime JSON.stringify replacers are unsupported'],
-  // Main-stabilization interim flip (2026-08-14, src/ir.js's bigintStrict()
-  // doc comment): BigInt retirement Slice 1 added 8 entries here for files
-  // that construct a BigInt inside a heterogeneous array/object literal or
-  // call-arg (Iterator.concat/reduce/zip/zipKeyed, JSON.stringify) — none
-  // test BigInt semantics themselves, they just incidentally hold one BigInt
-  // value among many. Under Slice 1's default-error that flow-class refused
-  // to compile, so these files newly, correctly xfailed. With boxing
-  // restored as the default consequence (an unprovable BigInt flow boxes,
-  // not refuses, unless JZ_BIGINT_STRICT=1), these compile again exactly as
-  // they did pre-Slice-1 — removed, not converted, restoring the pre-Slice-1
-  // baseline (852/0, not Slice 1's 851/0).
-  // JSON.stringify — toJSON() hook. audit-#12: a DIRECT probe
-  // (`JSON.stringify({toJSON:()=>42})`) confirmed jz silently IGNORES the
-  // hook (gives "{}" — the function-valued prop dropped like any function —
-  // instead of "42", the hook's return). This specific file's name
+  // With boxing restored as the default consequence (an unprovable BigInt flow
+  // boxes, not refuses, unless JZ_BIGINT_STRICT=1), these compile again exactly
+  // as they did pre-Slice-1 — removed, not converted, restoring the pre-Slice-1
+  // baseline (852/0, not Slice 1's 851/0). This specific file's name
   // ("not-function") suggests it tests the INVERSE case (a `toJSON` property
-  // present but not callable, where real JS also ignores it) — plausibly
-  // still correct for the WRONG reason, not verified either way.
-  // fix/wrong-values-2: resolved by evidence. Per-line probes confirmed the
-  // file's OWN question (does jz wrongly INVOKE a non-callable toJSON
-  // property?) is answered correctly — jz never invokes ANY toJSON hook at
-  // all (SEPARATELY confirmed, still true, still unfixed: a genuinely
-  // CALLABLE toJSON is silently ignored, `JSON.stringify({toJSON:()=>42})`
-  // gives "{}" not "42" — a real gap, but not what THIS file tests, and no
-  // test262 file currently pinned below needs it either), so "not invoked"
-  // is spec-correct here regardless of the reason. fix/wrong-values-2 left
-  // the file failing on an UNRELATED bug its own probes surfaced: line 25's
-  // `JSON.stringify({toJSON: /re/})` (a RegExp VALUE, not a toJSON
-  // question) serialized as "{\"toJSON\":0}" instead of "{\"toJSON\":{}}".
-  // fix/wrong-values-3: root-caused and fixed. module/regex.js's own doc
-  // ("Regex literals become compile-time WASM functions") names the actual
-  // cause — a regex VALUE (ctx.core.emit['//']) is a bare i32 compile-time
-  // table index, boxed to f64 the same as any real number, so once it
-  // reaches __json_val's runtime tag dispatch (module/json.js) it is
-  // bit-identical to the NUMBER 0/1/2/… (the literal's table index) and gets
-  // misrendered as that raw index — no runtime tag can recover "this was a
-  // regex" after that degradation. Fixed at the STATIC layer instead, before
-  // the value degrades: literalValue's new '//' case (module/json.js) folds
-  // any regex reachable through a literal tree straight to its ALWAYS-`{}`
-  // answer (RegExp has no own ENUMERABLE property — verified against Node/
-  // V8 — so this needs no pattern/flags parsing at all), and a matching
-  // top-level valTypeOf(x)===VAL.REGEX fast path in JSON.stringify's own
-  // emitter covers a non-literal-but-statically-regex-typed top-level value.
-  // Sibling-swept the same value-kind switch for functions (module/core.js's
-  // __json_omit — already correct: omitted from objects, null in arrays,
-  // undefined at top level, all confirmed against Node) and Symbol (jz's
-  // OTHER PTR.ATOM producer, module/symbol.js — was NOT correct: __json_omit
-  // didn't recognize it, so `{a: Symbol()}` kept the key with a wrong `null`
-  // value and a top-level Symbol rendered the STRING "null" instead of the
-  // value undefined; both now match Node exactly, fixed by teaching
-  // __json_omit to treat any PTR.ATOM that isn't the three reserved null/
-  // false/true bit patterns as omit-worthy, the same treatment a function
-  // already got). This file's own 4 assertions (null/false/[]/regex toJSON
-  // values) now all pass exactly; removed from this map, not retagged — see
-  // the JSON.stringify emitter's own doc for the residual, out-of-scope
-  // narrower case this pass did NOT chase: a regex reachable only through a
-  // DYNAMIC, non-top-level property (`{toJSON: aRegexVariable}` where the
-  // whole object isn't itself a literal tree) still degrades the same way —
-  // no test262 file currently exercises that shape.
-  // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges.
-  // fix/wrong-values-2: space-string-object.js retagged [DIALECT] — confirmed
-  // live it does NOT silently compute a plausible value; it loudly THROWS
-  // (test262's own assert.sameValue catching a real mismatch), because jz's
-  // `new String(x)`/`new Boolean(x)` lowering (jzify/transform.js's `new`
-  // handler) treats a boxed-primitive constructor call as its bare primitive
-  // — documented elsewhere in this exact file as "boxed primitive object
-  // outside current jz scope" (shouldSkip's `new (Boolean|Number|String)`
-  // rule, for the LANGUAGE suite) — so a later `str.toString = fn` override
-  // on the "wrapper" has nothing real to attach to and is silently a no-op,
-  // same as assigning a property to any primitive in sloppy mode. Same
-  // family, not independently re-verified line-by-line: value-boolean-object.js
-  // is UNCHANGED — direct probe confirms `JSON.stringify(new Boolean(true))`
-  // already gives "true" correctly, but the full file's third assertion uses
-  // a runtime FUNCTION replacer, which was ALREADY correctly rejecting
-  // ("JSON.stringify with a runtime replacer is not supported") before this
-  // pass — that reject fires at compile time regardless of assertion order,
-  // so the whole file already classified as skip; no entry needed, pruned.
+  // present but not callable, where real JS also ignores it) — plausibly still
+  // correct for the WRONG reason, not verified either way. fix/wrong-values-2:
+  // resolved by evidence. Per-line probes confirmed the file's OWN question
+  // (does jz wrongly INVOKE a non-callable toJSON property?) is answered
+  // correctly — jz never invokes ANY toJSON hook at all (SEPARATELY confirmed,
+  // still true, still unfixed: a genuinely CALLABLE toJSON is silently ignored,
+  // `JSON.stringify({toJSON:()=>42})` gives "{}" not "42" — a real gap, but not
+  // what THIS file tests, and no test262 file currently pinned below needs it
+  // either), so "not invoked" is spec-correct here regardless of the reason.
+  // fix/wrong-values-2 left the file failing on an UNRELATED bug its own probes
+  // surfaced: line 25's `JSON.stringify({toJSON: /re/})` (a RegExp VALUE, not a
+  // toJSON question) serialized as "{\"toJSON\":0}" instead of
+  // "{\"toJSON\":{}}". fix/wrong-values-3: root-caused and fixed.
+  // module/regex.js's own doc ("Regex literals become compile-time WASM
+  // functions") names the actual cause — a regex VALUE (ctx.core.emit['//']) is
+  // a bare i32 compile-time table index, boxed to f64 the same as any real
+  // number, so once it reaches __json_val's runtime tag dispatch
+  // (module/json.js) it is bit-identical to the NUMBER 0/1/2/… (the literal's
+  // table index) and gets misrendered as that raw index — no runtime tag can
+  // recover "this was a regex" after that degradation. Fixed at the STATIC
+  // layer instead, before the value degrades: literalValue's new '//' case
+  // (module/json.js) folds any regex reachable through a literal tree straight
+  // to its ALWAYS-`{}` answer (RegExp has no own ENUMERABLE property — verified
+  // against Node/ V8 — so this needs no pattern/flags parsing at all), and a
+  // matching top-level valTypeOf(x)===VAL.REGEX fast path in JSON.stringify's
+  // own emitter covers a non-literal-but-statically-regex-typed top-level
+  // value.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
-  // fix/wrong-values-2: String.prototype.indexOf/slice's wrapper-object
-  // receiver coercion (`new String(obj)` where obj has valueOf/toString) and
-  // indexOf's position-argument ToPrimitive coercion are both FIXED — full
-  // files now PASS outright (confirmed live via the harness), removed as
-  // newly-passing, not pruned as skip. Root cause was shared, in
-  // src/ir.js's toPrimitiveChain (OrdinaryToPrimitive's method-fallback
-  // chain, called by both toNumF64 and toStrI64 — every ToPrimitive call
-  // site in the compiler shares this one function): `present` (from
-  // primMethodIdx) only proves a method NAME exists in the object's schema,
-  // not that its stored VALUE is callable — `{toString: void 0}` (an
-  // ordinary object literal, `S15.5.4.7_A1_T9.js`'s exact shape) has
-  // "toString" in its schema with a non-callable value, and the chain called
-  // it anyway via ctx.closure.call, a WebAssembly "table index is out of
-  // bounds" trap on the non-closure bit pattern. Fixed by guarding each
-  // slot's call behind a PTR.CLOSURE check (GetMethod, ES 7.3.11: a
-  // non-callable method value is treated as absent, not invoked) — restructured
-  // around `br` instead of `br_if` inside the guard (a non-taken `br_if`
-  // leaves its value on the stack, which doesn't balance inside a void `if`;
-  // an unconditional `br` has no not-taken path to leave anything on).
-  // position-tointeger.js's remaining "valueOf never invoked" symptom was a
-  // SEPARATE, sibling bug in src/prepare/pre-eval.js's evalStringMethod:
-  // `indexOf`'s constant-fold used `args[1]?.v` directly (unlike its
-  // slice/charAt siblings just above it in that file, already guarded by
-  // isNumOrAbsent from an earlier fix) — an unfoldable position argument
-  // (an object, evalConst → null) and a genuinely OMITTED one (undefined)
-  // both read as `undefined` through optional chaining, so the fold silently
-  // treated "present but unfoldable" as "absent", masking the real runtime
-  // coercion path (which the toPrimitiveChain fix above now computes
-  // correctly) from ever running. Fixed by applying the same isNumOrAbsent
-  // guard indexOf's siblings already used.
-  // Not one of the flagged files, but a residual worth naming: a plain
-  // object with NO own toString/valueOf at all (relying on JS's INHERITED
-  // Object.prototype.toString → "[object Object]") still isn't matched —
-  // jz's toPrimitiveChain only ever consults an object's OWN schema (jz has
-  // no prototype chain at all, a documented v1 limitation), so e.g.
-  // `"abcxdef".indexOf({valueOf:()=>"x"})` still returns 3 (valueOf's "x"),
-  // not -1 (real ES: inherited toString wins first, finds nothing). Left
-  // open — no flagged entry in either corpus exercises it, and implementing
-  // an inherited-toString fallback is a materially bigger feature than a
-  // per-call-site coercion fix.
-  // audit-#11 item 7 sub-3 (gate honesty pass): three PRE-EXISTING real fails,
-  // A1_T9 is the one PRE-EXISTING fail from that trio that's still genuinely out of
-  // scope (not a bug — see the String/indexOf entries above for the same class):
-  //   A1_T9: `new String(obj).slice(...)` where obj has a custom valueOf/toString —
-  //   same ToPrimitive-coercion-on-a-wrapped-object class as the String/indexOf
-  //   entries just above (out of scope, not new).
-  // Its two siblings (A1_T14 `"x".slice(function(){}())`'s internal-compiler crash,
-  // A2_T2 `new String(x).slice(NaN, Infinity)`'s wrong slice) and the sibling
-  // `includes(needle, Infinity)` clamping fail below are FIXED (three-bug bundle,
-  // this commit): A1_T14/A2_T2's root cause was evalStringMethod's `isNumOrAbsent`
-  // (src/prepare/pre-eval.js) treating a present-but-unfoldable argument (evalConst
-  // returning `null` for `NaN`'s dedicated `['nan']` AST node, or for a genuinely
-  // unfoldable IIFE) the same as an omitted one — `args[i].v` then crashed on `null`,
-  // or (charAt) silently substituted 0. `includes(…, Infinity)`'s root cause was
-  // separate: module/string.js's position-argument lowering used `asI32` (ES ToInt32
-  // WRAP semantics — src/ir.js) for what's actually an ES ToIntegerOrInfinity
-  // SATURATING position arg; asI32's not-provably-i32-ranged fallback routes through
-  // `i64.trunc_sat_f64_s` + `i32.wrap_i64`, and wrapping i64::MAX's low 32 bits gives
-  // -1 (read downstream as "one before the end") instead of saturating to
-  // INT32_MAX ("past the end") — also reachable via any position >= 2^63 (e.g.
-  // `1e20`), not only literal Infinity. Fixed by routing every ToIntegerOrInfinity
+  // Fixed by guarding each slot's call behind a PTR.CLOSURE check (GetMethod, ES
+  // 7.3.11: a non-callable method value is treated as absent, not invoked) —
+  // restructured around `br` instead of `br_if` inside the guard (a non-taken `br_if`
+  // leaves its value on the stack, which doesn't balance inside a void `if`; an
+  // unconditional `br` has no not-taken path to leave anything on).
+  // position-tointeger.js's remaining "valueOf never invoked" symptom was a SEPARATE,
+  // sibling bug in src/prepare/pre-eval.js's evalStringMethod: `indexOf`'s
+  // constant-fold used `args[1]?.v` directly (unlike its slice/charAt siblings just
+  // above it in that file, already guarded by isNumOrAbsent from an earlier fix) — an
+  // unfoldable position argument (an object, evalConst → null) and a genuinely
+  // OMITTED one (undefined) both read as `undefined` through optional chaining, so
+  // the fold silently treated "present but unfoldable" as "absent", masking the real
+  // runtime coercion path (which the toPrimitiveChain fix above now computes
+  // correctly) from ever running. Left open — no flagged entry in either corpus
+  // exercises it, and implementing an inherited-toString fallback is a materially
+  // bigger feature than a per-call-site coercion fix. audit-#11 item 7 sub-3 (gate
+  // honesty pass): three PRE-EXISTING real fails, A1_T9 is the one PRE-EXISTING fail
+  // from that trio that's still genuinely out of scope (not a bug — see the
+  // String/indexOf entries above for the same class): A1_T9: `new
+  // String(obj).slice(...)` where obj has a custom valueOf/toString — same
+  // ToPrimitive-coercion-on-a-wrapped-object class as the String/indexOf entries just
+  // above (out of scope, not new). Fixed by routing every ToIntegerOrInfinity
   // position/index argument in module/string.js (`.slice`'s start/end,
   // `.indexOf`/`.includes`'s shared `posIndex`, `.lastIndexOf`'s explicit `from`)
-  // through the new `asI32Sat` (src/ir.js) instead. Array.prototype's parallel
-  // start/end arguments (module/array.js) share the same `asI32` misuse and the
-  // same latent bug (confirmed live: `[1,2,3,4,5].slice(NaN, Infinity)` drops the
-  // last element) — out of this bundle's scope (no test262 baseline row exercises
-  // it), reported here, not fixed.
-  // fix/wrong-values-2: S15.5.4.13_A1_T9.js (`new String(obj).slice(undefined,
-  // obj)`, obj = {valueOf:function(){}, toString:void 0}) is the SAME
-  // toPrimitiveChain callable-guard fix as the String/indexOf entries above —
-  // now PASSES outright, removed as newly-passing (not pruned as skip).
-  // fix/wrong-values-2: Array.isArray.length — same function-object
-  // .length/.name reflection gap as Promise's own entries below (jz compiles
-  // closures/named functions AND builtins straight to WASM funcs with no
-  // reflectable metadata object). Fixed with a compile-time reject
-  // (prepare/index.js's `.` handler, NS_CTORS-name check) — confirmed live,
-  // now cleanly rejects "not supported" → skip, no entry needed.
-  // Object — function objects, array-likes, dynamic schema, iterable coercion.
-  // fix/wrong-values-2: Object.keys on a function receiver is the SAME
-  // function-object-reflection gap — module/object.js's emitKeysGeneric now
-  // rejects a VAL.CLOSURE receiver ("not supported") → skip, no entry needed.
-  // Promise — jz promises are fixed-shape values adopted STRUCTURALLY
-  // (`__p === 1` → subscribe), not via a dynamic `.then` lookup, so overriding
-  // `.then` on a native promise is not observed (documented divergence).
-  // audit-#12: a deliberate, self-consistent architectural choice (not an
-  // accident) — tagged [DIALECT] though this specific behavior has no
-  // verbatim README bullet; the general "method dispatch is static... traps
-  // cannot attach" Objects bullet covers it in spirit.
+  // through the new `asI32Sat` (src/ir.js) instead.
   ['built-ins/Promise/prototype/then/resolve-pending-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/prototype/then/resolve-pending-rejected-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/prototype/then/resolve-settled-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
@@ -1004,102 +816,28 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Promise/race/resolve-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/resolve-prms-cstm-then-deferred.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/resolve-prms-cstm-then-immed.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
-  // Iterator — reflection / coercion edges.
-  // fix/wrong-values-2: `typeof Iterator` (constructor.js) is the SAME
-  // bare-builtin-name-as-value gap as `typeof Promise` below. Root cause:
-  // src/prepare/index.js's isUnresolvableBareIdent folded it straight to the
-  // literal string 'undefined' per spec §13.5.3's "unresolvable reference"
-  // rule — WRONG, because `Promise`/`Iterator` are real, spec-defined
-  // globals (not unresolvable), just ones jz has no first-class VALUE for.
-  // Fixed by excluding NS_CTORS members + 'Iterator' from that fold, so the
-  // bare identifier reaches REAL emission instead, where it now correctly
-  // rejects via the SAME emit.js root fix as the language corpus's comma/
-  // instanceof entries — "is not in scope" → skip, no entry needed.
+  // Iterator — reflection / coercion edges. fix/wrong-values-2: `typeof
+  // Iterator` (constructor.js) is the SAME bare-builtin-name-as-value gap as
+  // `typeof Promise` below. Root cause: src/prepare/index.js's
+  // isUnresolvableBareIdent folded it straight to the literal string
+  // 'undefined' per spec §13.5.3's "unresolvable reference" rule — WRONG,
+  // because `Promise`/`Iterator` are real, spec-defined globals (not
+  // unresolvable), just ones jz has no first-class VALUE for.
   ['built-ins/Iterator/prototype/take/limit-tonumber.js', '[REJECT] take limit object ToPrimitive coercion — jz has no general dynamic-dispatch ToPrimitive for a value received through an untyped parameter (fixed to an HONEST runtime TypeError in jzify/generators.js\'s __it_lim, was a misleading "limit must not be NaN" RangeError before this pass; confirmed live, still a genuine — if now honestly worded — runtime reject, not silent)'],
   ['built-ins/Iterator/prototype/drop/limit-tonumber.js', '[REJECT] drop limit object ToPrimitive coercion — same as take/limit-tonumber.js above, same fix, same residual (honest runtime TypeError, not a compile-time reject)'],
   ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
-  // Promise — function-object / namespace reflection.
-  // fix/wrong-values-2: `typeof Promise` (constructor.js) — same
-  // isUnresolvableBareIdent fix as `typeof Iterator` above; now rejects
-  // "is not in scope" → skip, no entry needed.
-  // catch/S25.4.5.1_A2.1_T1.js / then/S25.4.5.3_A1.1_T2.js's `instanceof
-  // Function` assertions are FIXED exactly (jzify/transform.js's
-  // 'instanceof' handler gained a function-shape probe — `typeof===
-  // 'function'` — alongside its existing Promise/Iterator shape probes,
-  // fixing the general "closure instanceof Function/Object" gap the
-  // permissive typeof-object fallback always answered false for). then's OWN
-  // file still fails on an UNFIXED sibling assertion in the same file
-  // (`p.then.length` must be 2) — kept below under its real remaining cause.
-  // fix/wrong-values-3: root-caused and fixed — all three now reject at
-  // COMPILE TIME ("is not supported" → skip, no entry needed below).
+  // 'instanceof' handler gained a function-shape probe — `typeof
   //
-  // The static reject (prepare/index.js's `.` handler, isFuncValueRecv) only
-  // ever proved a receiver function-valued through a BOUND NAME's own
-  // literal `=>` RHS — a closure reached only through an untyped PARAMETER
-  // (exec-args.js's executor resolve/reject) or an object PROPERTY
-  // (withResolvers().resolve/.reject, p.then) had no such static proof and
-  // fell through to a silent wrong value at the generic dynamic-property
-  // layer (module/core.js emitPropAccess/buildLengthHelper).
-  //
-  // FIRST ATTEMPT (reverted): a RUNTIME guard on that dynamic-property layer
-  // — check the receiver's PTR tag for CLOSURE, reject if so. Correct in
-  // isolation, but that dispatcher runs for the COMPILER'S OWN self-hosted
-  // code too: module/core.js's emitArity (`h?.argc ?? h?.length`, src/
-  // ctx.js) reads `.length` off exactly this shape (an unresolved-kind
-  // closure PARAMETER) throughout the compiler's own emit-table arity
-  // probes, as a normal, gracefully-tolerated-as-undefined pattern — the
-  // runtime guard turned that into an uncaught throw, crashing the KERNEL
-  // (self-compiled dist/jz.wasm) on every single compile (kernel-oracle
-  // 14/14 → 3/14, confirmed live via the full battery before landing).
-  // Reverted whole — src/ir.js/module/core.js carry no trace of it.
-  //
-  // ACTUAL FIX: three STATIC extensions to prepare/index.js's existing
-  // isFuncValueRecv proof, each narrowly scoped to a construct jz's own
-  // compiler source never writes (verified: zero `new Promise`/`.then(`/
-  // `Promise.withResolvers` hits anywhere in src/**, module/**), so none of
-  // them can ever fire while compiling the compiler itself:
-  //   1. `new Promise(executor)` (→ jzify's `__p_exec(executor)`) — scan the
-  //      executor's own literal body for `outer = firstOrSecondParam` (also
-  //      recognizing jzify's lowerArguments rewrite, when the executor's own
-  //      body reads `arguments`: params collapse to one rest param, real
-  //      names recovered from its own `let a = arg0[0], b = arg0[1]`
-  //      destructure) — adds `outer`'s post-rename spelling to
-  //      funcValueNames, the SAME set isFuncValueRecv already consults for a
-  //      directly-literal-bound name. Fixes exec-args.js.
-  //   2. A name bound directly to `__p_exec(...)`'s result (`new Promise`)
-  //      → promiseRecvNames; `.then`/`.catch`/`.finally` read off it join
-  //      isFuncValueRecv. Fixes then/S25.4.5.3_A1.1_T2.js.
-  //   3. A name bound directly to `__p_withResolvers()`'s result
-  //      (`Promise.withResolvers()`) → withResolversRecvNames; `.resolve`/
-  //      `.reject` read off it join isFuncValueRecv. Fixes
-  //      withResolvers/resolvers.js.
-  // Both (2)/(3) are checked at BOTH a decl site (`let`/`const`) and a bare
-  // reassignment site — `var p = new Promise(fn)` is ALREADY a reassignment
-  // by the time prepare sees it (jzify/hoist-vars.js splits it into a bare
-  // `let p` elsewhere plus this plain assignment), so the decl-site check
-  // alone missed it.
-  // parseInt / encodeURIComponent object-argument coercion — module/number.js
-  // rejectObjectArg / module/string.js uriEncodeBind (see the JSON.parse
-  // entry near the top of this map) used to reject the SIMPLE, try/catch-free
-  // case cleanly but not once the file's OTHER assertions (all three below
-  // use try/catch for abrupt-completion checks) sat in the same function.
-  // fix/wrong-values-3: root-caused and fixed — the actual mechanism was
-  // never valTypeOf itself (kind.js, unowned by this branch, was never the
-  // bug) but emit.js's flow-sensitive localValTypesOverlay ("tier #2" of
-  // lookupValType): collectNestedAssigns computed ONE whole-block veto set
-  // up front, so a name reassigned ANYWHERE at a nested position (inside an
-  // if/try/catch/loop, anywhere later in the block, even textually AFTER a
-  // dominating read) blocked setFlowVal from recording ANY fact for that name
-  // ANYWHERE in the block — including at its first, textually-dominating
-  // write. Split into a loop-reachable set (unchanged blanket veto — a loop's
-  // static body runs dynamically many times, so no position in it is safe)
-  // and a non-loop set, now invalidated POSITION-SENSITIVELY: only from the
-  // point the nested if/try/catch/finally write is actually passed, in
-  // emitBlockBody's own per-statement walk. All three now REJECT cleanly at
-  // compile time ("is not supported" — jz's own skip-classification, no xfail
-  // entry needed) instead of silently computing the wrong value.
+  // Correct in isolation, but that dispatcher runs for the COMPILER'S OWN
+  // self-hosted code too: module/core.js's emitArity (`h?.argc ?? h?.length`,
+  // src/ ctx.js) reads `.length` off exactly this shape (an unresolved-kind
+  // closure PARAMETER) throughout the compiler's own emit-table arity probes,
+  // as a normal, gracefully-tolerated-as-undefined pattern — the runtime
+  // guard turned that into an uncaught throw, crashing the KERNEL
+  // (self-compiled dist/jz.wasm) on every single compile (kernel-oracle 14/14
+  // → 3/14, confirmed live via the full battery before landing).
 ])
 
 function expectedFailReason(rel) {
@@ -1121,11 +859,7 @@ function isFunctionalTest(rel) {
   return FUNCTIONAL_TESTS.has(rel) || isNumberFunctionalTest(rel)
 }
 
-// audit-#11 item 7 sub-1: see test/test262.js's copy of this comment — jz's
-// seven Error classes are real and sound (native instanceof works); this used
-// to shadow them with dummy string-returning functions, which broke every
-// `instanceof <ErrorClass>` check against a REAL jz-thrown error with a loud
-// compile-time reject. Test262Error has no jz-native equivalent and stays.
+// Test262Error has no jz-native equivalent and stays.
 const ASSERT_HARNESS = `
 function Test262Error(message) { return message || 'Test262Error' }
 let __sameValue = (a, b) => {
@@ -1171,18 +905,13 @@ function isAsyncFlagged(content) {
 function shouldSkip(raw, rel) {
   if (DATE_UNSUPPORTED_TESTS.has(rel)) return DATE_UNSUPPORTED_TESTS.get(rel)
   if (isFunctionalTest(rel)) return null
-  // Pools wired 2026-07-13 (Iterator, Promise) classify on CODE, not YAML:
-  // frontmatter `info:` prose routinely names `X.prototype`, `class`,
-  // `iterator` … and was skipping runnable tests. Legacy dirs keep raw-content
-  // matching — their pass/skip balance was hand-curated under that rule, and
-  // code-only matching there admits hundreds of coercion/sparse-array tests
-  // that need individual triage first.
+  // Legacy dirs keep raw-content matching — their pass/skip balance was
+  // hand-curated under that rule, and code-only matching there admits hundreds
+  // of coercion/sparse-array tests that need individual triage first.
   const codeOnly = /^built-ins\/(Iterator|Promise|Atomics|SharedArrayBuffer)\//.test(rel)
-  // $262.agent tests (all 112 include atomicsHelper.js) are host-object
-  // reflection machinery — they patch methods on the $262 host object, use
-  // .bind/this.setTimeout/Date.now — the family jz sheds by design. The
-  // CAPABILITY they exercise (cross-thread atomicity + wait/notify blocking
-  // over shared memory) is proven end-to-end by test/workers.js over pool.js.
+  // The CAPABILITY they exercise (cross-thread atomicity + wait/notify
+  // blocking over shared memory) is proven end-to-end by test/workers.js over
+  // pool.js.
   if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness — host reflection surface (capability proven by test/workers.js over pool.js)'
   const content = codeOnly ? raw.replace(/\/\*---[\s\S]*?---\*\//, '') : raw
   if (codeOnly) {
@@ -1204,8 +933,6 @@ function shouldSkip(raw, rel) {
   if (/\bAggregateError\s*\(/.test(content) || /instanceof AggregateError/.test(content)) return 'AggregateError constructor semantics'
   if (/Symbol\.(species|toPrimitive|hasInstance|asyncIterator|match|replace|search|split)/.test(content)) return 'Symbol runtime hook'
   if (!codeOnly) {
-    // legacy-dir calibration (see codeOnly note above): these features ARE
-    // supported by jzify now, but admitting them here needs per-dir triage.
     if (/Symbol\.iterator/.test(content)) return 'Symbol runtime hook'
     if (/\biterator\b/i.test(content)) return 'iterator semantics'
     if (/\bgenerator\b/i.test(content) || /\byield\b/.test(content)) return 'generator semantics'
@@ -1232,7 +959,7 @@ const { jz } = await import(join(ROOT, 'test/util.js'))
 
 // flags:[async] tests — module-level $DONE shim (doneprintHandle.js stand-in);
 // the host polls __t262_check, each call draining the module's microtask queue
-// at the boundary. Same design as the language runner's ASYNC_DONE_SHIM.
+// at the boundary.
 const ASYNC_DONE_SHIM = `
 let __t262d = 0
 let __t262e = undefined
@@ -1314,7 +1041,6 @@ function runTest(src, isAsync) {
 
 const builtinsDir = join(TEST262, 'test', 'built-ins')
 
-// ─── Work collection (main thread) ──────────────────────────────────────────
 // Walk the tracked built-in paths once, applying the --filter, and produce a
 // flat work list — one entry per test file. Content-level skip classification
 // and compile/run happen later, in parallel workers.
@@ -1333,7 +1059,6 @@ function collectWork() {
   return work
 }
 
-// ─── Worker: classify + compile/run an assigned slice of the work list ──────
 // Pure given its inputs (jz resets all state per call), so a worker's tallies
 // are identical to running the same files sequentially.
 async function runChunk(items) {
@@ -1377,7 +1102,6 @@ if (!isMainThread) {
   // Spawned worker: run the assigned slice and report tallies back.
   runChunk(workerData.items).then(r => parentPort.postMessage(r))
 } else {
-  // ─── Main: collect work, fan out to a worker pool, aggregate ──────────────
   const allBuiltinsFiles = countJs(builtinsDir)
   const work = collectWork()
 
@@ -1456,13 +1180,10 @@ if (!isMainThread) {
     fails.sort().forEach(f => console.log(`  x ${f}`))
   }
 
-  // Gating — always on, locally and in CI (audit-#11 item 7 sub-3: this used
-  // to only gate when JZ_TEST262_BASELINE was set, so a local run exited 0
-  // despite in-scope failures). Any in-scope `fail`, any stale xpass, or a
-  // pass count below the committed baseline (test/test262-baseline.json,
-  // refreshed alongside a corpus pin bump or a real fix) is a hard failure.
-  // JZ_TEST262_BASELINE, if set, overrides the file — an escape hatch, not
-  // the source of truth.
+  // Any in-scope `fail`, any stale xpass, or a pass count below the
+  // committed baseline (test/test262-baseline.json, refreshed alongside a
+  // corpus pin bump or a real fix) is a hard failure. JZ_TEST262_BASELINE,
+  // if set, overrides the file — an escape hatch, not the source of truth.
   const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
   // audit-#12 item 3: the lock's corpus SHA must match the checkout this run
   // just measured against — a stale lock (PINNED_COMMIT bumped here without
