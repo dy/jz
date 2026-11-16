@@ -6,7 +6,7 @@
  *
  * @module static
  */
-import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned, nodeKey } from './ast.js'
+import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned, nodeKey, hasOwnContinue, some } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { STRING, K, tagOf, paramOf, typedAux, UNKNOWN } from './summary/kind.js'
@@ -545,13 +545,16 @@ export function counterInit(init, name) {
 
 // A string's length is an i32 field (abi/string.js): below 2^31 by construction.
 const STRING_LENGTH_TOP = 0x7fffffff
+// An array's elements are eight bytes each in a 2^32-byte memory: fewer than 2^29
+// of them (module/core.js DENSE_MAX, the allocation's own limit, is below this).
+export const ARRAY_LENGTH_TOP = 0x1fffffff
 
 /** The most elements a receiver of this name can hold, by its kind alone, or null:
  *  an array's are eight bytes each in a 2^32-byte memory, a typed array's of two
  *  bytes or more no more than that memory holds, a string's length an i32 field. */
 const lengthTop = (name) => {
   const k = ctx.summary?.at?.(ctx.func?.current)?.kindOfExpr?.(name)
-  if (repOf(name)?.val === VAL.ARRAY || k != null && tagOf(k) === K.ARRAY) return 0x1fffffff
+  if (repOf(name)?.val === VAL.ARRAY || k != null && tagOf(k) === K.ARRAY) return ARRAY_LENGTH_TOP
   return typedLengthCap(name) ?? (isStringName(name) ? STRING_LENGTH_TOP : null)
 }
 /**
@@ -579,7 +582,78 @@ export function elementCounter(cond, step) {
   return last <= I32_MAX ? { name, recv: read[1], post, top: last } : null
 }
 // `++i` as a loop's whole step (a Number's step by one, src/normalize.js; a step's postfix is its update).
-const unitStep = (s, name) => Array.isArray(s) && s[0] === '++' && s.length === 2 && s[1] === name
+export const unitStep = (s, name) => Array.isArray(s) && s[0] === '++' && s.length === 2 && s[1] === name
+
+/** The store sibling of `elementCounter`. An array holds fewer than 2^29
+ *  elements: an element store at an index at or past every length it can
+ *  reach throws the allocation's RangeError (module/core.js __dense_check,
+ *  DENSE_MAX), where a store under a number no index names (2^32 - 1 and
+ *  above, a negative one) stores a property and goes on. So a counter a `for`
+ *  takes up by one, each round of which that reaches the step stores into a
+ *  plain array at an index rising with it (`out[i] = v`, `sol[o + 2] = v`
+ *  under `const o = i * 6`, a store statement of the body no `continue` before
+ *  it skips), rises only while the store completes: past a store at `a·i + b`
+ *  below the length's top, the step takes it to `⌊(top − 1 − b) / a⌋ + 1` at
+ *  most, and the first index past the top the stores reach is still an index
+ *  (its start's no larger than 2^32 − 2), whose store throws. → that top, the
+ *  least of the stores', or null. `startHi` is the start's largest value; the
+ *  counter written nowhere but its step, and its start, are the caller's. */
+export function storeCounterTop(body, name, startHi) {
+  const consts = new Map()
+  let top = null
+  const visit = (stmts) => {
+    for (const s of stmts) {
+      if (!Array.isArray(s)) continue
+      if (s[0] === ';' || s[0] === '{}' && s.length === 2) { if (visit(statementsOf(s))) return true; continue }
+      const lhs = s[0] === '=' && s.length === 3 ? s[1] : null
+      if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3 && arrayKindOf(lhs[1])) {
+        const f = affineIn(lhs[2], name, consts, 0)
+        if (f && f[0] >= 1 && f[0] <= I32_MAX && f[0] * startHi + f[1] <= 0xfffffffe) {
+          const t = Math.floor((ARRAY_LENGTH_TOP - 1 - f[1]) / f[0]) + 1
+          top = top == null ? t : Math.min(top, t)
+        }
+      }
+      if (s[0] === 'const') for (let k = 1; k < s.length; k++) {
+        const d = s[k]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') consts.set(d[1], d[2])
+      }
+      // (a statement that may take the round to its step leaves the stores after it unproven)
+      if (hasOwnContinue(s) || some(s, n => n[0] === 'continue' && n.length > 1)) return true
+    }
+    return false
+  }
+  visit(statementsOf(body))
+  return top
+}
+const statementsOf = (b) => Array.isArray(b) && b[0] === '{}' && b.length === 2 ? statementsOf(b[1])
+  : Array.isArray(b) && b[0] === ';' ? b.slice(1) : [b]
+/** A receiver the summary types a plain array, perhaps missing: a store into it
+ *  past every length throws, and so does one into a missing receiver. */
+export const arrayKindOf = (recv) => {
+  const k = ctx.summary?.at?.(ctx.func?.current)?.kindOfExpr?.(recv)
+  return k != null && tagOf(k) === K.ARRAY
+}
+// `e` as `a·name + b`, literal a and b, through the body's constants declared
+// before it (`const o = i * 6`), or null.
+export const affineIn = (e, name, consts, depth = 0) => {
+  if (e === name) return [1, 0]
+  const c = constIntExpr(e)
+  if (c != null) return [0, c]
+  if (typeof e === 'string') return depth < 4 && consts.has(e) ? affineIn(consts.get(e), name, consts, depth + 1) : null
+  if (!Array.isArray(e) || e.length !== 3) return null
+  const op = e[0]
+  if (op === '+' || op === '-') {
+    const p = affineIn(e[1], name, consts, depth), q = p && affineIn(e[2], name, consts, depth)
+    return q ? (op === '+' ? [p[0] + q[0], p[1] + q[1]] : [p[0] - q[0], p[1] - q[1]]) : null
+  }
+  if (op === '*') {
+    const k = constIntExpr(e[1]), m = k == null ? constIntExpr(e[2]) : null
+    const p = k != null ? affineIn(e[2], name, consts, depth) : m != null ? affineIn(e[1], name, consts, depth) : null
+    const s = k ?? m
+    return p ? [p[0] * s, p[1] * s] : null
+  }
+  return null
+}
 /** A typed array of elements, as the summary names it: no DataView, whose
  *  `length` is undefined (summary/kind.js isCount: an element aux proves it). */
 const typedElements = (name) => {

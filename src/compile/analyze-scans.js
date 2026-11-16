@@ -8,6 +8,7 @@ import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
   constIntExpr, counterInit, guardCounterName, elementCounter, forCounterBounds, typedCtorRawOf,
+  unitStep, storeCounterTop, arrayKindOf, ARRAY_LENGTH_TOP,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
@@ -1459,7 +1460,8 @@ export function stampLoopCounterRanges(body) {
     if (node[0] !== 'for' || node.length !== 5) return
     const [, init, cond, step, loopBody] = node
     const exit = guardCounterName(cond) ? null : elementCounter(cond, step)
-    const name = exit ? exit.name : guardCounterName(cond)
+    // (a counter of any test its step alone moves: a store each round may bound it, static.js storeCounterTop)
+    const name = exit ? exit.name : guardCounterName(cond) ?? (Array.isArray(step) && typeof step[1] === 'string' && unitStep(step, step[1]) ? step[1] : null)
     if (!name) return
     // declared by this loop's own `let`: scoped to the loop, so no later write;
     // or declared once ahead of it, every write of it the loop's step (a
@@ -1499,8 +1501,17 @@ export function stampLoopCounterRanges(body) {
       return
     }
     const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf, loopBody)
+    // A store at a rising index each round bounds the counter however far its
+    // test reaches (static.js storeCounterTop): from its start, up to the top.
+    const startAt = unitStep(step, name) ? own ? counterInit(init, name) : entry : null
+    const start = startAt != null ? rangeOf(startAt) : null
+    const top = start && Number.isInteger(start[0]) && Number.isInteger(start[1]) && !Object.is(start[0], -0)
+      ? storeCounterTop(loopBody, name, start[1]) : null
+    const stored = top == null ? null : [start[0], Math.max(start[1], top)]
+    const test = range && stored ? [Math.max(range.test[0], stored[0]), Math.min(range.test[1], stored[1])] : range?.test ?? stored
+    if (!test || test[0] < -2147483648 || test[1] > 2147483647) return
+    updateRep(name, { range: test })
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
-    updateRep(name, { range: range.test })
     // Other loop-local counters move at the same bounded number of step
     // evaluations. Bound both directions separately, including the final
     // update: an index's body-only hull cannot authorize its stored width.
@@ -1519,6 +1530,72 @@ export function stampLoopCounterRanges(body) {
         updateRep(other, { range: [lo, hi] })
     }
   } })
+  stampStoreCursors(body)
+}
+
+/** A cursor every write of which steps it by one with an element store into a
+ *  plain array at the index it held: as the store's index (`out[dst++] = v`,
+ *  `out[++k] = v`), or as a statement after a store at it in the same sequence,
+ *  nothing writing it between (`out[k] = v; k++`). Each step goes with a store
+ *  at the index one past the last one's, and a store past every length an
+ *  array reaches throws (static.js storeCounterTop), so from its start the
+ *  cursor rises only while those stores complete, to the top of the lengths,
+ *  one more while the store at the last evaluates its value. A local declared
+ *  once, its start of integer hull, no closure naming it, and no `try` around a
+ *  store of it in the body: a throw from one leaves the function, the cursor
+ *  with it. */
+function stampStoreCursors(body) {
+  const steps = new Set(), names = new Set(), bad = new Set()
+  let guarded = 0
+  // a store statement into a plain array at a bare name its value leaves alone: that name
+  const storedAt = (s) => {
+    const lhs = Array.isArray(s) && s[0] === '=' && s.length === 3 ? s[1] : null
+    return !guarded && Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3 && typeof lhs[2] === 'string' &&
+      !isReassigned(s[2], lhs[2]) && arrayKindOf(lhs[1]) ? lhs[2] : null
+  }
+  const stepOf = (s) => { const n = Array.isArray(s) && s[0] === 'postfix' ? s[1] : s; return Array.isArray(n) && n[0] === '++' && n.length === 2 && typeof n[1] === 'string' ? n : null }
+  const visit = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') visit(d[2]) }
+      return
+    }
+    if (op === ';') {
+      // (the names a store of this sequence left at their index, nothing having written them since)
+      let held = null
+      for (let i = 1; i < n.length; i++) {
+        const s = n[i], step = stepOf(s)
+        if (step && held?.has(step[1])) { steps.add(step); names.add(step[1]) }
+        if (held) for (const x of held) if (isReassigned(s, x)) held.delete(x)
+        const at = storedAt(s)
+        if (at != null) (held ??= new Set()).add(at)
+      }
+    }
+    const lhs = op === '=' && n.length === 3 ? n[1] : null
+    if (!guarded && Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3) {
+      const step = stepOf(lhs[2])
+      if (step && arrayKindOf(lhs[1])) { steps.add(step); names.add(step[1]) }
+    }
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string' && !steps.has(n)) bad.add(n[1])
+    const tried = op === 'try' || op === 'catch' || op === 'finally'
+    if (tried) guarded++
+    for (let i = 1; i < n.length; i++) visit(n[i])
+    if (tried) guarded--
+  }
+  visit(body)
+  if (!names.size) return
+  const { closureWrites } = bodyQueries(body)
+  const uses = scanBindingUses(body)
+  for (const name of names) {
+    const binding = uses.get(name)
+    if (bad.has(name) || binding?.[BINDING_USE_DECLS] !== 1 || ctx.scope.globals?.has(name) || closureWrites(name)) continue
+    const r = intExprRange(binding[BINDING_USE_INIT])
+    if (!r || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || Object.is(r[0], -0) || r[1] >= ARRAY_LENGTH_TOP) continue
+    const own = repOf(name)?.range, hull = [r[0], ARRAY_LENGTH_TOP + 1]
+    updateRep(name, { range: own ? [Math.max(own[0], hull[0]), Math.min(own[1], hull[1])] : hull })
+  }
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])

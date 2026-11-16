@@ -140,6 +140,41 @@ test('index store: a binding staged before the right side follows its array as i
   ok(/global\.set \$table/.test(funcWat(wat(source, { optimize: 2 }), 'fill')), 'the growing store rebinds the module binding')
 })
 
+// A store into an array whose index is a Number no proof makes an element index
+// takes the inline arm inside the length and one call past it: an element's
+// growth, or the property any other Number names (module/collection.js
+// `__arr_set_num`). A counter its loop bounds by a parameter, a running cursor
+// and an affine index of a counter are element indices (static.js
+// storeCounterTop, compile/analyze-scans.js stampStoreCursors): their stores
+// link no hash store at all, and none warns of a dynamic write, the receiver
+// being an array.
+const HASH = /\$__dyn_set\b|\$__dyn_set_own\b|\$__hash_set_local\b|\$__typed_set_idx/
+const kernels = [
+  ['a counter a parameter bounds', `const buf = []
+export let f = (n) => { for (let i = 0; i < n; i++) buf[i] = i; return buf[1] }`],
+  ['a local array', `export let f = (n) => { const buf = []; for (let i = 0; i < n; i++) buf[i] = i; return buf[1] }`],
+  ['a running cursor', `const buf = []
+export let f = (n) => { let k = 0; for (let i = 0; i < n; i++) { buf[k++] = i; buf[k++] = i + 1 } return k + buf[1] }`],
+  ["a helper's parameter", `const buf = []
+const fill = (out, n) => { for (let i = 0; i < n; i++) out[i] = i }
+export let f = (n) => { fill(buf, n); return buf[1] }`],
+  ['an affine index under a constant of the counter', `const sol = [], bones = []
+for (let i = 0; i < 100; i++) { bones.push({ s: [i, i + 1] }); sol.push(0, 0) }
+const save = (bones, sol) => { for (let i = 0; i < bones.length; i++) { const b = bones[i], o = i * 2; sol[o] = b.s[0]; sol[o + 1] = b.s[1] } }
+export let f = (n) => { save(bones, sol); return sol[1] }`],
+]
+
+test('index store: a counter, a cursor and an affine index link no hash store and warn of no dynamic write', () => {
+  if (belowOpt(2)) return
+  for (const [name, src] of kernels) for (const optimize of levels(2, 3, 'size')) {
+    const seen = []
+    const text = wat(src, { optimize, warnings: (w) => seen.push(w.code) })
+    ok(!HASH.test(text), `${name} at ${optimize}: no hash store`)
+    ok(!/\$__arr_set_num\b/.test(text), `${name} at ${optimize}: an element index's call is the element store`)
+    ok(!seen.includes('deopt-dyn-write'), `${name} at ${optimize}: no dynamic write`)
+  }
+})
+
 // Any other Number key is one call past the inline arm: no key-kind dispatch.
 test('index store: a Number key of any value is one call past the inline arm', () => {
   if (belowOpt(2)) return
