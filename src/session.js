@@ -193,7 +193,7 @@ export function targetProfileFor(host) {
  *                                / ctx.func.typedElem / ctx.schema.slotI32Certain
  *                                changing without a signature retype) remains
  *                                under the explicit phase/overlay invalidation
- *                                contract in CONTRIBUTING.md. A global flush
+ *                                contract in analyze/body-facts.js's header. A global flush
  *                                clears the whole store, including anonymous bodies.
  *   bindingUses                  scanBindingUses's per-body free/mutated-name
  *                                summary. Invalidated by: a fresh session only

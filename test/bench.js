@@ -1,6 +1,6 @@
 // Bench pin tests — the competitive-regression gate.
 //
-// Project invariant (see docs/CONTRIBUTING.md): on the bench corpus, jz wasm is
+// Project invariant (see CONTRIBUTING.md, "Performance & size invariant"): on the bench corpus, jz wasm is
 //   • at least as fast as V8 and AssemblyScript (speed-tuned build),
 //   • within the native-parity band of `clang -O3` (geomean jz/C ≈ parity),
 //   • at least as small as AssemblyScript (-Oz), and

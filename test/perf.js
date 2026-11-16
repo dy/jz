@@ -738,7 +738,7 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   // the select exists ONLY to remap +∞→0 (trunc_sat+wrap gives −1 there). When value-range
   // analysis PROVES X finite & within i32 (here a u8 load /255 scaled into [10,210]), the guard
   // is dead: the wrapped i64 truncation alone, which V8 runs faster than the bare
-  // `i32.trunc_sat_f64_s` (CONTRIBUTING, ToInt32).
+  // `i32.trunc_sat_f64_s` (src/optimize/to-int32.js).
   // Pervasive in colour-packing / coordinate truncation. (Range analysis is structural — it sees an
   // INLINED finite expression; a value CSE'd into an f64 local stays guarded, by design.) Pin both:
   // the guard is gone AND the result still equals JS ToInt32 across in-range, wrap-boundary, ±∞.
