@@ -291,6 +291,7 @@ const TESTS = [
   'handler-population',
   'reset-population',
   'start-population',
+  'store-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
