@@ -85,6 +85,11 @@ const builtinPropDeps = () => [
 ]
 
 // Shared physical layout constants for collection helpers and diagnostics.
+// A Number that names an array element: an integer in [0, 2^32 - 2]. The store
+// takes its index saturated at 2^31 - 1, past every length an array reaches, so
+// one past 2^29 - 1024 throws the grow's RangeError (README: `32-bit element indices`).
+const arrayIndexWat = (k) => `(i32.and (f64.eq (f64.trunc ${k}) ${k})
+          (i32.and (f64.ge ${k} (f64.const 0)) (f64.le ${k} (f64.const 4294967294))))`
 const SET_ENTRY = 16  // hash + key
 export const MAP_ENTRY = 24  // hash + key + value
 const INIT_CAP = 8    // user-program default (must be power of 2)
@@ -410,6 +415,7 @@ export default (ctx) => {
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
     __dyn_set_own: () => [...viewDeps('__view_set'), ...(hasDurableReset() && ctx.types.anyDelete ? ['__durable_words_snap'] : []), ...(recordsOn() ? ['__rec_slot', '__rec_put', '__rec_hash'] : []), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
+    __arr_set_num: ['__arr_set_idx_ptr', '__dyn_set_own', '__to_str'],
     __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...tblSnapDeps()],
@@ -2793,11 +2799,9 @@ export default (ctx) => {
         (local.set $kf (f64.reinterpret_i64 (local.get $key)))
         (if (f64.eq (local.get $kf) (local.get $kf))
           (then
-            (local.set $kidx (i32.trunc_sat_f64_s (local.get $kf)))
-            (if (i32.and (f64.eq (f64.convert_i32_s (local.get $kidx)) (local.get $kf))
-                         (i32.ge_s (local.get $kidx) (i32.const 0)))
+            (if ${arrayIndexWat('(local.get $kf)')}
               (then
-                (drop (call $__arr_set_idx_ptr (local.get $obj) (local.get $kidx) (f64.reinterpret_i64 (local.get $val))))
+                (drop (call $__arr_set_idx_ptr (local.get $obj) (i32.trunc_sat_f64_s (local.get $kf)) (f64.reinterpret_i64 (local.get $val))))
                 (return (local.get $val)))))
           (else
             ;; key is non-number here (NaN-boxed) — a bare tag test IS the
@@ -2835,6 +2839,20 @@ export default (ctx) => {
             (drop (call $__arr_set_length (local.get $obj) (local.get $val)))
             (return (local.get $val))))))
     (call $__dyn_set_own (local.get $obj) (local.get $key) (local.get $val)))`
+
+  // The out-of-line arm of a store into a known array under a Number no proof
+  // makes an element index (compile/emit-assign.js storeArrayPayload): the
+  // store's inline arm took an index inside the length. An index, an integer
+  // in [0, 2^32 - 2], stores the element, growing the array and filling the
+  // gap, past 2^31 as 2^31 - 1, past every length an array reaches, whose grow
+  // throws (README: an array holds fewer than 2^29 elements); any other Number
+  // (negative, fractional, NaN, ±Infinity, 2^32 - 1 and above) names the
+  // property of its string, as `__dyn_set` stores it. → the array, moved by a grow.
+  ctx.core.stdlib.__arr_set_num = () => `(func $__arr_set_num (param $ptr i64) (param $k f64) (param $val f64) (result f64)
+    (if ${arrayIndexWat('(local.get $k)')}
+      (then (return (call $__arr_set_idx_ptr (local.get $ptr) (i32.trunc_sat_f64_s (local.get $k)) (local.get $val)))))
+    (drop (call $__dyn_set_own (local.get $ptr) (call $__to_str (i64.reinterpret_f64 (local.get $k))) (i64.reinterpret_f64 (local.get $val))))
+    (f64.reinterpret_i64 (local.get $ptr)))`
 
   // Ordinary property storage after exotic array/typed writes and key conversion.
   // A numeric store on a proven OBJECT/HASH can enter here directly.

@@ -135,14 +135,22 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
 
 /** Emit an ARRAY element write via `__arr_set_idx_ptr`. The helper may relocate
  *  the array header (capacity grow); `persist` writes the new pointer back to
- *  the receiver binding. Returns the stored value as the block result.
+ *  the receiver binding after it. Returns the stored value as the block result.
  *  An index proven inside the length stores in place at every tier: the header
  *  is left alone and the pointer stays. Any other index, in the speed tiers,
  *  stores in place where it is inside the length, so the call is only for an
  *  index at or past the end (`out[dst++] = v` filling an array it grew last
  *  round); the size tier calls the helper for it. `test` (missingTest) tests
- *  a receiver that may be missing once the value is evaluated. */
-function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false, arrName = null, test = null) {
+ *  a receiver that may be missing once the value is evaluated.
+ *  `key` says what the key is: 'index', an element index below 2^31 (keyIndex
+ *  names it); 'wide', an element index that may pass 2^31, which saturates
+ *  there, past every length an array reaches, so the helper's grow throws (an
+ *  array holds fewer than 2^29 elements); 'num', any Number: the inline arm
+ *  stores at the index it names inside the length (keyIndex: -1 for none,
+ *  which no length holds), and the call (`__arr_set_num`, module/collection.js)
+ *  takes the rest, an element past the length or the property any other
+ *  Number names. */
+function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false, arrName = null, test = null, key = 'index') {
   const arrTmp = `${T}asi${freshId(ctx)}`
   const idxTmp = `${T}asj${freshId(ctx)}`
   const valTmp = `${T}asv${freshId(ctx)}`
@@ -151,17 +159,26 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
   ctx.func.locals.set(valTmp, 'f64')
   const lean = !!ctx.transform.optimize?.leanRuntime
   const arrG = ['local.get', `$${arrTmp}`], idxG = ['local.get', `$${idxTmp}`], valG = ['local.get', `$${valTmp}`]
-  const helper = () => (inc('__arr_set_idx_ptr'), ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]])
+  const keyTmp = key === 'num' ? temp('ask') : null
+  const helper = () => keyTmp
+    ? (inc('__arr_set_num'), ['local.set', `$${arrTmp}`, ['call', '$__arr_set_num', ['i64.reinterpret_f64', arrG], ['local.get', `$${keyTmp}`], valG]])
+    : (inc('__arr_set_idx_ptr'), ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]])
+  // (a grown array moves: the binding takes the move after the call alone)
+  const slow = () => persist && !inBounds ? [helper(), persist(arrG)] : [helper()]
+  const index = keyTmp ? keyIndex(typed(['local.get', `$${keyTmp}`], 'f64'))
+    : key === 'wide' && !(Array.isArray(idxNode) && idxNode[0] === 'f64.convert_i32_s') ? typed(['i32.trunc_sat_f64_s', asF64(idxNode)], 'i32')
+    : keyIndex(typed(idxNode, 'f64'))
   // (an in-bounds store of a named binding reads the binding for its hop: no
   // temp, so a loop's hoist (optimize/licm.js presentPtr, hoistParamPtrOffset) can lift the hop)
   const direct = inBounds && arrName != null
   const body = [
     ...(direct ? [] : [['local.set', `$${arrTmp}`, arrExpr]]),
-    ['local.set', `$${idxTmp}`, keyIndex(typed(idxNode, 'f64'))],
+    ...(keyTmp ? [['local.set', `$${keyTmp}`, asF64(idxNode)]] : []),
+    ['local.set', `$${idxTmp}`, index],
     ['local.set', `$${valTmp}`, valueExpr],
   ]
   if (test) body.push(test(direct ? cloneIR(arrExpr) : arrG))
-  if (lean && !inBounds) body.push(helper())
+  if (lean && !inBounds) body.push(...slow())
   else {
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
     // (a binding the loop around saved for the reset ahead of it needs no snapshot test here: control-flow.js durableLoopArrays)
@@ -179,9 +196,8 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
     if (inBounds && saved.length) body.push(...saved, ctx.abi.array.ops.store(baseG, idxG, valG))
     else if (!inBounds) body.push(['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
         ['then', ...saved, ctx.abi.array.ops.store(baseG, idxG, valG)],
-        ['else', helper()]])
+        ['else', ...slow()]])
   }
-  if (persist && !inBounds) body.push(persist(['local.get', `$${arrTmp}`]))
   body.push(['local.get', `$${valTmp}`])
   return block64(...body)
 }
@@ -225,9 +241,11 @@ function mayBeDeleted(obj) {
 }
 // A name, or a member chain over one: reading it twice has no effect.
 const isPureChain = (n) => typeof n === 'string' || (Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && isPureChain(n[1]))
-function ensureDynSetAllowed(arr) {
+// (`advise` false: a known array under a Number, whose element arm stores
+// inline and whose property arm, the only dynamic one, is out of line)
+function ensureDynSetAllowed(arr, advise = true) {
   const arrLabel = exprText(arr) ?? '<expr>'
-  warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
+  if (advise) warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
   if (!strictCode()) return
   err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
 }
@@ -579,8 +597,10 @@ function emitElementStore(arr, idx, val, node) {
   // Canonical array loops prove an element key even on tiers that skip the
   // interval solve. An ordinary array's wasm32 cells also bound it below i32.
   const boundedArray = typeof arr === 'string' && typeof idx === 'string' && valTypeOf(arr) === VAL.ARRAY && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
-  const indexOnly = isPresentNumber(ctx, idx) && wholeKey(idx) &&
-    (boundedArray || indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff)
+  const whole = isPresentNumber(ctx, idx) && wholeKey(idx)
+  const indexOnly = whole && (boundedArray || indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff)
+  // An array index past 2^31 too, below 2^32 - 1 (storeArrayPayload 'wide')
+  const arrayIndex = indexOnly || whole && indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0xfffffffe
   // Static object fields and array length use the same carrier, setter and
   // resize semantics as dot syntax, including expression receivers.
   if (isLiteralStr(idx) && (idx[1] === 'length' || ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null))
@@ -848,15 +868,23 @@ function emitElementStore(arr, idx, val, node) {
       ...(held?.notNullish ? [] : [['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]]),
       storeArrayPayload(ptr, keyExpr, valueExpr, persistBinding(arr)))
   }
-  // 7. Known-ARRAY receiver, generic key.
+  // 7. Known-ARRAY receiver. A Number key stores in place where it names an
+  //    element inside the length; the rest is one call (storeArrayPayload's
+  //    `key`): growth past the length for an index, the named property any
+  //    other Number names. A receiver of an expression keeps no binding to
+  //    move: a grow leaves the forward its readers follow. A key of no known
+  //    kind converts first (dispatchByKeyKind).
+  if (valTypeOf(arr) === VAL.ARRAY && numericKey) {
+    const named = typeof arr === 'string', va = emit(arr)
+    const key = indexOnly ? 'index' : arrayIndex ? 'wide' : 'num'
+    if (key === 'num') { ensureDynSetAllowed(arr, false); ctx.module.include('collection'); ctx.module.include('string') }
+    return storeArrayPayload(asF64(va), keyExpr, valueExpr, named ? persistBinding(arr) : null, boundedArray, named ? arr : null, missingTest(arr, va), key)
+  }
   if (typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
     const persist = persistBinding(arr)
-    if (useRuntimeKeyDispatch)
-      return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
-        storeArrayPayload(receiver, keyNode, valueExpr, ptr =>
-          ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]], false, null, missingTest(arr)))
-    const va = emit(arr)
-    return storeArrayPayload(asF64(va), keyExpr, valueExpr, persist, boundedArray, arr, missingTest(arr, va))
+    return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
+      storeArrayPayload(receiver, keyNode, valueExpr, ptr =>
+        ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]], false, null, missingTest(arr)))
   }
 
   // A local the dictionary census classified (lean or i32-lean) is a HASH whatever

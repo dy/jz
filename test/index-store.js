@@ -139,3 +139,51 @@ test('index store: a binding staged before the right side follows its array as i
   // (`reg` inlines into `fill`)
   ok(/global\.set \$table/.test(funcWat(wat(source, { optimize: 2 }), 'fill')), 'the growing store rebinds the module binding')
 })
+
+// Any other Number key is one call past the inline arm: no key-kind dispatch.
+test('index store: a Number key of any value is one call past the inline arm', () => {
+  if (belowOpt(2)) return
+  const src = `const buf = [1, 2, 3]
+export let f = (k, v) => { buf[+k] = v; return buf.length }`
+  for (const optimize of levels(2, 'size')) {
+    const seen = []
+    const text = wat(src, { optimize, warnings: (w) => seen.push(w.code) })
+    // (the helper may be spliced into its one caller)
+    ok(!/\$__dyn_set\b/.test(text), `no key-kind dispatch at ${optimize}`)
+    ok(!seen.includes('deopt-dyn-write'), `no dynamic write warned at ${optimize}: the receiver is an array`)
+  }
+})
+
+// An index names an element up to 2^32 - 2, a store at one an array cannot
+// reach throws the allocation's RangeError (README: `32-bit element indices`),
+// through a key of any kind; a Number past it, negative, fractional or NaN names
+// a property, as the host stores it.
+test('index store: an index past every length throws, any other Number stores its property', () => {
+  const src = `const A = [1, 2, 3]
+const T = [1, 2, 3]
+export let num = (k, v) => { A[+k] = v; return A.length * 1000 + (A[k] === undefined ? -1 : A[k]) }
+export let any = (k, v) => { T[k] = v; return T.length * 1000 + (T[k] === undefined ? -1 : T[k]) }
+export let lit = () => { const L = [1]; L[3e9] = 5; return L.length }
+export let wide = (i) => { const L = [1]; const o = (i >>> 0) * 2; L[o] = 5; return L.length }`
+  const DENSE = 0x1ffffc00
+  const store = (a, k, v) => { if (Number.isInteger(k) && k >= DENSE && k <= 4294967294) throw new RangeError('length'); a[k] = v }
+  const host = { A: [1, 2, 3], T: [1, 2, 3] }
+  const answer = (a, k, v) => { try { store(a, +k, v); return a.length * 1000 + (a[k] === undefined ? -1 : a[k]) } catch { return 'throws' } }
+  const keys = [-1, 1.5, NaN, 2 ** 31, 3e9, 4294967294, 4294967295, 2 ** 32, 1e21, 5, -0]
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const wasm = run(src, { optimize })
+    host.A = [1, 2, 3]; host.T = [1, 2, 3]
+    for (const k of keys) for (const [name, arr] of [['num', 'A'], ['any', 'T']]) {
+      let got
+      try { got = wasm[name](k, 7) } catch { got = 'throws' }
+      is(got, answer(host[arr], k, 7), `${name}(${k}) at ${optimize}`)
+    }
+    let lit
+    try { lit = wasm.lit() } catch { lit = 'throws' }
+    is(lit, 'throws', `a literal index past every length throws at ${optimize}`)
+    let wide
+    try { wide = wasm.wide(1610612736) } catch { wide = 'throws' }
+    is(wide, 'throws', `an index past 2^31 an array cannot reach throws at ${optimize}`)
+    is(wasm.wide(3), 7, `a small one grows the array at ${optimize}`)
+  }
+})

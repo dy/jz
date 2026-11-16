@@ -79,8 +79,14 @@ test('member targets: saved numeric keys keep their value across RHS mutations a
     for (const optimize of levels(0,1,2,3,'size')) {
       const got=jz(source,{optimize:{level:optimize,sourceInline:false}}).exports.f, want=oracle(source).f
       for (const args of [[0,1,0],[0,1,0],[1,0,0],[0,1,1],[-0,1,0],[0.5,0,0],
-        [2147483648,0,0],[4294967296,0,0],[NaN,0,0],[Infinity,0,0],[undefined,0,0],[0,1,0]])
-        is(got(...args),want(...args),`O${optimize}, captured=${captured}, ${args}`)
+        [2147483648,0,0],[4294967296,0,0],[NaN,0,0],[Infinity,0,0],[undefined,0,0],[0,1,0]]) {
+        // (an array index no array reaches, 2^31: the store throws the allocation's RangeError,
+        // README `32-bit element indices`, where Node's array goes sparse; the catch takes it)
+        if (array === '[2,3]' && args[0] === 2147483648) {
+          const [a0, a1, at, index, calls, caught] = got(...args), w = want(...args)
+          is([a0, a1, at, index, calls, caught?.name], [w[0], w[1], undefined, w[3], w[4], 'RangeError'], `O${optimize}, captured=${captured}, ${args}`)
+        } else is(got(...args),want(...args),`O${optimize}, captured=${captured}, ${args}`)
+      }
     }
   }
   for (const source of [

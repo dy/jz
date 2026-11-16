@@ -62,9 +62,10 @@ const HANDLERS = new Set(['try', 'try_table', 'catch', 'catch_all', 'delegate'])
 const LEAVES = new Set(['return_call', 'return_call_indirect', 'return_call_ref'])
 const BOX = new Set(['f64', 'i64'])
 // The runtime calls that move a block only on a loop's cold paths: a push's or
-// an index store's growth, the iteration's release past its budget, a durable
+// an index store's growth (a Number key's too, `__arr_set_num`, which grows the
+// array or stores the property the key names), the iteration's release past its budget, a durable
 // array's first save of a round.
-const COLD = new Set(['$__arr_room', '$__arr_grow', '$__arr_grow_known', '$__arr_set_idx_ptr', '$__iter_release', '$__iter_take', '$__durable_arr_snap'])
+const COLD = new Set(['$__arr_room', '$__arr_grow', '$__arr_grow_known', '$__arr_set_idx_ptr', '$__arr_set_num', '$__iter_release', '$__iter_take', '$__durable_arr_snap'])
 const COPY = new Set(['i32.wrap_i64', 'i64.reinterpret_f64', 'f64.reinterpret_i64'])
 
 const isConst = (n, op, v) => isArr(n) && n.length === 2 && n[0] === op && String(n[1]) === String(v)
