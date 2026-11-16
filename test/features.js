@@ -312,6 +312,27 @@ test('collection: number keys probe by the hash their store took', () => {
   ok(/call \$__set_has_ob\b/.test(wat) && !/call \$__set_has\s/.test(wat), 'a counter probes by the bits form')
 })
 
+// The speed tier lays a Set's and a Map's table a quarter full (collection/ordered.js
+// load): its index holds four buckets an entry, so a find walks a shorter run; a new
+// table starts with the entries a half-full one of eight buckets holds. A Set's block
+// is then eight bytes a bucket, an array's stride, and is filled with zeros as every
+// table's is (ir/arrays.js allocPtr): a block a call frees holds the bytes of the
+// last, which read as buckets in use.
+test('collection: the speed tier\'s tables are a quarter full', () => {
+  const src = `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = 0; i < n; i++) { m.set(i * 3, i); s.add(i * 5) } let c = 0; for (let i = 0; i < n; i++) c += (m.get(i) ?? 0) + (s.has(i) ? 1 : 0); return c + m.size + s.size }`
+  const js = oracle(src).f
+  // (the speed tier on every leg: its tables are the ones laid out so)
+  for (const optimize of ['speed', ...levels(2, 'size')]) {
+    const f = run(src, { optimize }).f
+    for (const n of [0, 1, 3, 4, 40, 1000, 7, 3]) is(f(n), js(n), `O${optimize}, n ${n}`)
+  }
+  const speed = compile(src, { wat: true, optimize: 'speed' }), half = compile(src, { wat: true, optimize: { level: 2 } })
+  ok(/call \$__alloc_hdr_n\s+\(i32\.const 16\)\s+\(i32\.const 10\)/.test(speed) && /call \$__alloc_hdr_n\s+\(i32\.const 16\)\s+\(i32\.const 8\)/.test(speed),
+    'at speed a Map\'s table of 16 buckets of 10 bytes, a Set\'s of 8')
+  ok(/call \$__alloc_hdr_n\s+\(i32\.const 8\)\s+\(i32\.const 16\)/.test(half) && /call \$__alloc_hdr_n\s+\(i32\.const 8\)\s+\(i32\.const 12\)/.test(half),
+    'at level 2 a Map\'s table of 8 buckets of 16 bytes, a Set\'s of 12')
+})
+
 test('Map: get missing returns nullish', () => {
   const r = jz(`export let f = () => {
     let m = new Map()

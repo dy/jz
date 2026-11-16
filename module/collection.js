@@ -253,7 +253,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat, genHashBits, genHashStr, genEqBits, genEqStr, genOrdProbe, genOrdProbeForm, genOrdInsert, genOrdFull } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordInitCap, ordStride, ordStrideWat, ordBytesWat, genHashBits, genHashStr, genEqBits, genEqStr, genOrdProbe, genOrdProbeForm, genOrdInsert, genOrdFull } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, noteProbeKeyOf, keyArmsOn, pinKeyWat } from './collection/identity.js'
@@ -267,7 +267,7 @@ export default (ctx) => {
   // Fixed for this one compilation while stdlib templates materialize. The
   // self-compile artifact sets 0; ordinary compilations retain the 4-byte lane.
   const lane = collectionLaneBytes()
-  const initCap = collectionInitCap()
+  const initCap = ordInitCap(collectionInitCap())
   // a Set's and a Map's table block: bytes per bucket (collection/ordered.js ordStride)
   const SET_BLOCK = ordStride(SET_ENTRY), MAP_BLOCK = ordStride(MAP_ENTRY)
   // Size tier: `__str_hash` links its plain walk and the probes call it

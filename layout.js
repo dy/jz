@@ -79,7 +79,7 @@ export const HIDDEN_PROPERTY_SEQ = 0xffffffff
 
 // A Set's and a Map's table of `cap` buckets (module/collection/ordered.js),
 // entries of `es` bytes: `load` eighths of the buckets less one hold entries
-// (4 in a program, so a missed key's probe ends soon; 6 in the compact
+// (4 in a program, so a missed key's probe ends soon, 2 at the speed tier; 6 in the compact
 // collections of the compiler's own artifact, which keep its memory small, and
 // at the size tier). A bucket's bytes are that share of the entry's stride and
 // its index word; the block is `cap × ordStride(es, load)` bytes, its last word

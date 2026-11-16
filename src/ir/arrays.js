@@ -131,8 +131,10 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
  *  Caller emits init, fills via local, then uses ptr (or local for further work). */
 export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap', fill = true }) {
   // stride=8 (f64 slots — Array/HASH/OBJECT) hits the specialized __alloc_hdr which
-  // hardcodes the multiply. Everything else (Set:16, Map probe:24, raw bytes:1) goes
-  // through the generic __alloc_hdr_n(len, cap, stride).
+  // hardcodes the multiply and fills nothing (a slot is written before it is read).
+  // Everything else (a raw byte block: 1) and every Set's or Map's table, whose empty
+  // buckets are zeros (a Set's stride is 8 at the speed tier, collection/ordered.js
+  // ordStride), goes through the generic __alloc_hdr_n(len, cap, stride), which fills.
   const local = tempI32(tag)
   const irOf = v => typeof v === 'number' ? ['i32.const', v] : v
   let capture
@@ -158,7 +160,7 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap', fill
       ['local.set', `$${local}`, ['i32.add', at, ['i32.const', 16]]]]
   } else {
     let helper
-    if (stride === 8) helper = '__alloc_hdr'
+    if (stride === 8 && type !== PTR.SET && type !== PTR.MAP) helper = '__alloc_hdr'
     else { helper = '__alloc_hdr_n'; args.push(typeof stride === 'number' ? ['i32.const', stride] : stride) }
     inc(helper)
     allocate = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]

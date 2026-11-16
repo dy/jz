@@ -57,28 +57,35 @@ const TAG = 0xFC000000 | 0      // a bucket's hash bits
 const IDX = 0x03FFFFFF          // a bucket's entry index plus one (TABLE_MAX buckets hold fewer entries)
 const GROW_QUAD_CAP = 8192      // past it a table quadruples (module/collection/upsert.js nextCapIR)
 
-// The geometry (layout.js): a program's table fills half its buckets less one;
-// the compact collections of the compiler's own artifact (upsert.js
-// collectionLaneBytes reads the same flag) and the size tier three in four.
-const load = () => ctx.transform.compactCollections || ctx.transform.optimize?.leanRuntime ? 6 : 4
+// The geometry (layout.js): a program's table fills half its buckets less one,
+// a quarter at the speed tier (`tableLoad` 2): a find walks a run of taken
+// buckets before it reaches its key or an empty one, and a bucket is four bytes
+// beside an entry's 16 or 24, so a sparser index shortens every probe for a
+// quarter more memory a Map's entry, a third a Set's (mapint, a breadth-first
+// search over integer-keyed Maps, 2.65 to 2.11 ms). The compact collections of the compiler's own artifact
+// (upsert.js collectionLaneBytes reads the same flag) and the size tier fill
+// three in four.
+const load = () => ctx.transform.compactCollections || ctx.transform.optimize?.leanRuntime ? 6
+  : ctx.transform.optimize?.tableLoad === 2 ? 2 : 4
 const constOf = (w) => { const c = /^\(i32\.const (-?\d+)\)$/.exec(w); return c ? +c[1] : null }
 /** A table block's bytes per bucket, for entries of `es` bytes (a Set's 12 and
- *  a Map's 16 in a program, 16 and 22 in compact collections and at the size tier). */
+ *  a Map's 16 in a program, 8 and 10 at the speed tier, 16 and 22 in compact
+ *  collections and at the size tier). */
 export const ordStride = (es) => ordStrideAt(es, load())
 /** The usable entries of a table of `cap` buckets. */
 export const ordEntries = (cap) => ordEntriesAt(cap, load())
+/** The buckets a new table starts with: the entries a half-full one of `cap` holds. */
+export const ordInitCap = (cap) => load() === 2 ? cap * 2 : cap
+// `load` eighths of `n` as WAT: a quarter, a half, three quarters
+const share = (n) => load() === 6 ? `(i32.sub ${n} (i32.shr_u ${n} (i32.const 2)))` : `(i32.shr_u ${n} (i32.const ${load() === 2 ? 2 : 1}))`
 /** The same as i32 WAT expressions, of constants or runtime values. */
 export const ordStrideWat = (es) => {
   const e = constOf(es)
-  if (e != null) return `(i32.const ${ordStride(e)})`
-  return load() === 6 ? `(i32.add (i32.sub ${es} (i32.shr_u ${es} (i32.const 2))) (i32.const 4))`
-    : `(i32.add (i32.shr_u ${es} (i32.const 1)) (i32.const 4))`
+  return e != null ? `(i32.const ${ordStride(e)})` : `(i32.add ${share(es)} (i32.const 4))`
 }
 export const ordEntriesWat = (cap) => {
   const c = constOf(cap)
-  if (c != null) return `(i32.const ${ordEntries(c)})`
-  return load() === 6 ? `(i32.sub (i32.sub ${cap} (i32.shr_u ${cap} (i32.const 2))) (i32.const 1))`
-    : `(i32.sub (i32.shr_u ${cap} (i32.const 1)) (i32.const 1))`
+  return c != null ? `(i32.const ${ordEntries(c)})` : `(i32.sub ${share(cap)} (i32.const 1))`
 }
 /** The bytes of the block of a table of `cap` buckets. */
 export const ordBytesWat = (cap, es) => `(i32.mul ${cap} ${ordStrideWat(es)})`
@@ -86,13 +93,13 @@ export const ordBytesWat = (cap, es) => `(i32.mul ${cap} ${ordStrideWat(es)})`
 export const ordUsedAddrWat = (off, cap, es) => `(i32.sub (i32.add ${off} ${ordBytesWat(cap, es)}) (i32.const 4))`
 /** The buckets of the smallest table that holds `n` entries, at least `floor` (a
  *  power of two): `$__ord_cap`, which every seeded and copied table sizes by.
- *  Half full, the power of two at least 2(n + 1); three in four full, at least
- *  4(n + 1)/3, or two buckets for one entry. */
+ *  Half full, the power of two at least 2(n + 1), a quarter at least 4(n + 1);
+ *  three in four full, at least 4(n + 1)/3, or two buckets for one entry. */
 export const genOrdCap = (floor) => {
   const pow2 = (t) => `(i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz (i32.sub ${t} (i32.const 1)))))`
   const c = load() === 6
     ? `(select (i32.const 2) ${pow2('(i32.div_u (i32.add (i32.shl (i32.add (local.get $n) (i32.const 1)) (i32.const 2)) (i32.const 2)) (i32.const 3))')} (i32.le_u (local.get $n) (i32.const 1)))`
-    : pow2('(i32.shl (i32.add (local.get $n) (i32.const 1)) (i32.const 1))')
+    : pow2(`(i32.shl (i32.add (local.get $n) (i32.const 1)) (i32.const ${load() === 2 ? 2 : 1}))`)
   return `(func $__ord_cap (param $n i32) (result i32)
     (local $c i32)
     (local.set $c ${c})

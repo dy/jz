@@ -175,6 +175,7 @@ export const PASS_NAMES = [
  *  read off the optimize object is an unregistered flag and fails the gate. */
 export const TUNING_KEYS = [
   'level', 'arrayMinCap', 'arrayLiteralMinCap', 'hashSmallInitCap', 'collectionInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
+  'tableLoad',                // eighths of a Set's or a Map's buckets that hold entries: 2 at the speed tier, else 4 (module/collection/ordered.js)
   'watrLsr',                  // watr's loop strength reduction: addresses affine in a counter become pointers (speed tier)
   'compactStubs',             // entries of the stub log a loop's compaction reads (module/core/stub-log.js); default 65536
   'compactSlack',             // bytes a loop's kept memory grows past twice the last walk before it compacts (module/core/stub-log.js)
