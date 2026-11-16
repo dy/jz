@@ -277,5 +277,3 @@ export function scalarCase(id) {
   if (!entry) throw new Error(`unknown scalar-core case '${id}'`)
   return entry
 }
-
-export const scalarCasesIn = (group) => SCALAR_CORE_CASES.filter(entry => entry.groups.includes(group))

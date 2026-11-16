@@ -1,5 +1,4 @@
 {
-  "_comment": "Committed floors for the pinned test262 corpus. language and builtins are pass floors. negAcceptExact must match the exact path ledger. Reviewed 2026-08-29: explicit Script/Module goals and if/else boundary validation reduced accepted-invalid syntax from 10 to 0; builtins classification and exact-or-reject fixes raised the builtins floor from 858 to 862 and reduced xfails from 70 to 50. Both suites retained zero failures.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
   "language": 2976,
   "builtins": 862,

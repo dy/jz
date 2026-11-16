@@ -1,5 +1,4 @@
 {
-  "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every invalid ECMAScript input is now rejected under its explicit Script or Module parse goal. Any future addition is a release blocker and requires review.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
   "count": 0,
   "families": {}
