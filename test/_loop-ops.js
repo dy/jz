@@ -1,25 +1,28 @@
 // Loop-body op counts and the inputs that select the loops a call enters, shared
-// by the codegen ratchet (test/perf-ratchet.js) and the spelling gate
-// (test/spellings.js).
+// by the codegen ratchet (test/perf-ratchet.js), the spelling gate
+// (test/spellings.js) and the data-form gate (test/data-forms.js).
 import { instantiate } from '../interop.js'
 import encodeWat from 'watr/compile'
 
-// Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
+// Count instruction nodes (every S-expr array) lexically inside any `(loop …)`;
+// `weigh` takes the place of the count of one per node (the data-form gate
+// counts the calls and the SIMD ops with it, and a called function's body).
 const isLoop = (n) => Array.isArray(n) && n[0] === 'loop'
-const isSite = (n) => n[0] === 'if' && Array.isArray(n[1]) && n[1][0] === 'call' && n[1][1] === '$__gc_begin'
-export const loopBodyOps = (tree, entered) => {
+export const isSite = (n) => n[0] === 'if' && Array.isArray(n[1]) && n[1][0] === 'call' && n[1][1] === '$__gc_begin'
+const isOp = (n) => typeof n[0] === 'string'
+export const loopBodyOps = (tree, entered, weigh = isOp) => {
   let count = 0
   const walk = (n, inLoop) => {
     if (!Array.isArray(n) || n[0] === 'loop' && entered && !entered.has(n) || isSite(n)) return
     const here = inLoop || n[0] === 'loop'
-    if (here && typeof n[0] === 'string') count++
+    if (here) count += Number(weigh(n))
     let end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length
     const copy = n[0] === 'block' && typeof n[1] === 'string' && /__sp\.f\d+d$/.test(n[1])
     if (copy && isLoop(n[end - 1])) end--
     for (let i = 1; i < end; i++) {
       const c = n[i]
       if (!copy || !Array.isArray(c) || c[0] !== 'block' || !isLoop(c[c.length - 1])) { walk(c, here); continue }
-      if (here) count++
+      if (here) count += Number(weigh(c))
       for (let k = 1; k < c.length - 1; k++) walk(c[k], here)
     }
   }
@@ -29,7 +32,10 @@ export const loopBodyOps = (tree, entered) => {
 
 // Identify the loops selected by real entry guards, after all codegen passes.
 // Instrument only a temporary assembly: counters never enter the measured tree.
-export const runEntered = (tree, calls) => {
+// `keep`: every call goes through the host bridge (a boxed result decoded, the
+// host imports given) and the memory is not reset between calls, whose state
+// later calls read (test/data-forms.js).
+export const runEntered = (tree, calls, keep = false) => {
   const loops = [], start = new Map(), runs = []
   let cur = start
   const walk = n => {
@@ -57,9 +63,9 @@ export const runEntered = (tree, calls) => {
     }
   }
   // numbers cross a raw instance; arrays go through the host bridge
-  if (calls.some(([, args]) => args.some(a => typeof a === 'object'))) {
+  if (keep || calls.some(([, args]) => args.some(a => typeof a === 'object'))) {
     const { exports, memory } = instantiate(new WebAssembly.Module(binary), { imports })
-    each(exports, () => memory?.reset?.())
+    each(exports, keep ? null : () => memory?.reset?.())
   } else {
     const { exports } = new WebAssembly.Instance(new WebAssembly.Module(binary), imports)
     each(exports)
