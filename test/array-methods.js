@@ -1954,13 +1954,8 @@ test('every: typed-array field of heap-returned object', () => {
 // …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e. `dispatchByPtrType`'s
 // (src/ir.js) own `['then', ir]` construction with `ir` unresolved to `null`.
 // JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
-// localization run above used `npm run build`'s O3 default. DIRECTION (a) TRIED PRIOR
-// SESSION AND REVERTED — UNSAFE, do not repeat as-is. Build-crash gate PASSED clean:
-// `npm run build` × 5/5 (was 5/5 FAIL without the guard). It is NOT dead code: watr's
-// assembler rejects malformed IR at BUILD time regardless of reachability (explaining
-// the clean 5/5 build), but at least one of the ~112 census-found sites sits on the
-// kernel's live tokenizer/parser hot path and IS reached with real data — `generic`'s
-// wrong-layout read there corrupts the compiled parser itself.
+// localization run above used `npm run build`'s O3 default. Build-crash gate PASSED
+// clean: `npm run build` × 5/5 (was 5/5 FAIL without the guard).
 //
 // Differentially verified against real Node/V8 typed arrays (not hand-picked literals)
 // for Int8Array wrap (ECMA-262 ToInt8, 7.1.11), Uint8Array wrap-not-clamp (ToUint8,
@@ -1984,8 +1979,6 @@ test('set: into typed-array field added dynamically to an empty object', () => {
 // never fires — there is no `new XArray(...)` literal for it to see). Uses
 // `r.memory.Float64Array(...)` (test/buffer.js's own host-marshaling idiom) to
 // pass real host typed arrays into params the compiler never pins a vt for.
-// Differentially confirmed load-bearing pre-fix (agent/typed-decline-b): 1003
-// (misdispatched to a guessed-array read of dst's raw bytes), not 1004.
 test('set: host-provided typed receiver (source names no typed ctor at all)', () => {
   const r = jz(`export function setIt(dst, src) { dst.set(src); return dst[0] * 1000 + dst[3] }`)
   is(Number(r.exports.setIt(r.memory.Float64Array([0, 0, 0, 0]), r.memory.Float64Array([1, 2, 3, 4]))), 1004)
@@ -2164,15 +2157,6 @@ test('.map: Float32Array keeps f32 store-rounding through the runtime decline pa
 // `cb.call([item, idxArg` in module/array.js — only `.reduce`'s (acc, item,
 // idx) needs a 3-wide floor); adding a receiver-array arg just for typed
 // `.map` would be new, inconsistent surface, not a mirror of anything.
-//
-// Fixed by excluding `r.isBigInt` from the SIMD and scalar branches instead,
-// letting it fall through to the SAME runtime aux-dispatch loop the `!r`
-// (unresolved) case already used — which was already proven BigInt-sound (its
-// aux mask already preserved TYPED_ELEM_BIGINT_FLAG;
-// `__typed_get_idx`/`__typed_set_idx` already roundtrip BigInt elements
-// bit-exact via f64.reinterpret_i64) since
-// dynamically-unresolved-but-actually-BigInt receivers always reached it —
-// only the STATICALLY-known case was diverted away from it.
 
 test('.map: callback receives (item, idx) — static scalar path (Uint8Array)', () => {
   // ECMA-262 23.2.3.20 ToIntegerOrInfinity / ToUint8 (7.1.10): element writes
@@ -2331,8 +2315,7 @@ test('Array.isArray: statically-known arrays (slice/rest results)', () => {
 // `.valueOf()` on an unresolved-static-type receiver (a heterogeneous array's
 // element, or a plain parameter with no call-site type proof) must return the
 // receiver UNCHANGED (Object.prototype.valueOf, ES2024 20.1.3.7 — Array/plain
-// Object inherit it verbatim). Not a self-compile-only bug — reproduces with
-// plain native compile(), zero Date usage anywhere in this source.
+// Object inherit it verbatim).
 test('valueOf on unresolved-type receiver returns identity, not element 0 (date.js flat-key regression)', () => {
   // Array element read through a computed index — the exact shape self-
   // compile's WAT printer uses (node[i]?.valueOf?.() ?? node[i]).

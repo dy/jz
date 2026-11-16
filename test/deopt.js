@@ -48,10 +48,6 @@ test('deopt D1: all sized kinds narrow — typed/plain .length in +', () => {
   is(count(plain, /\$__str_concat/g), 0, 'plain-array .length + : no concat')
 })
 
-// `s` here is exported with no call-site proof, so `propValType`'s `.length`
-// narrow is correctly gated off (objType unknown — same soundness rule as the
-// "untyped receiver .length stays conservative" pin below) and `+` keeps the
-// string-capable dispatch.
 test('deopt D1: SOUNDNESS — an unproven string-shaped param keeps .length + conservative (methodEvidence retired)', () => {
   if (belowOpt(1)) return
   const str = compile('export let f=(s)=>{let n=0;for(let i=0;i<s.length;i++)n+=s.charCodeAt(i)+s.length;return n}', { wat: true })

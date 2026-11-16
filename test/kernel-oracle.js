@@ -126,20 +126,6 @@ export let f = (s) => g(s) === false`,
   { name: 'and-bool-merge-eq',
     src: `export let f = (x) => ((x > 0) && 1) === false`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
-  // Also required two ROOT-CAUSE type-inference fixes (not container-store
-  // sites, but load-bearing for these exact rows): src/type.js's exprType
-  // '?:'/'&&'/'||' conciliation vetoes i32 STORAGE classification for an
-  // ambiguous-merge node (it only asked "is each branch i32-representable",
-  // not "do the branches carry the same represented value" — this fed BOTH
-  // narrowI32Results' return-tail narrowing and the param lattice's
-  // argWasmType, silently narrowing a whole function or parameter to i32 and
-  // permanently losing the FALSE atom at the f64 export/callee rebox no
-  // downstream boxing fix could recover); and narrow.js's inferValAtSite
-  // declines to harden a param's `val` fact to NUMBER from an ambiguous-merge
-  // call-site argument (the SAME "unknown side → no claim" principle
-  // valTypeOfWithLocals's SOUND `+` rule already applies), closing a
-  // cross-function-boundary identity fold in emitStrictEq's
-  // differing-primitive-class shortcut.
   { name: 'array literal',
     src: `export let f = (x) => { let a = [x > 0 && 1]; return a[0] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
@@ -365,13 +351,6 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // syntax; `b.jz` (imported second) is the ONLY module with bigint syntax anywhere
 // in the program.
 //
-// VERDICT: structural, not small — true fix is either (a) scrub all real-BigInt
-// syntax from the self-compiled-bundle-reachable source (layout.js rewritten to
-// hi/lo-split plain-Number i64 arithmetic, mirroring bignum.js's own deliberate
-// BigInt-avoidance rewrite) to restore the "compiler source is bigint-free"
-// invariant, or (b) redesign the carrier disambiguation off a single
-// whole-program boolean toward something that survives the self-hosting identity
-// conflation (compiler-as-program vs compiler-as-target share one flag today).
 // BANKED, not fixed — pinned precisely (exact corrupted value, both native AND
 // kernel legs, both optimize tiers) so a future close of either (a) or (b) flips
 // this test's asserted values from the corrupted carrier to `want` in one edit.

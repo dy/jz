@@ -418,14 +418,8 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
 // followForwardingWat/ptrOffsetFwdWat (the ARRAY/SET/MAP/HASH relocation-forwarding
 // chase every dyn-prop/collection dereference runs through) bounded a pointer offset
 // against `i32.shl(memory.size, 16)` — which overflows to exactly 0 the one time
-// memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32). Fixed by
-// comparing in i64 against a cached $__heap_end64 global (module/core.js, layout.js)
-// instead of the overflowing i32 shift. 40 rounds/program comfortably exceeds every
-// round this bug was observed to fire at across multiple builds (22-52,
-// layout-dependent) without running long enough to reach the genuine 4 GiB ceiling
-// itself (~100+ rounds, where an honest `unreachable` OOM trap is the correct
-// outcome, not a bug). Keep at or above 40 rather than shrinking it back down to
-// "looks clean in a quick run".
+// memory.size() reaches 65536 (65536*65536 == 2^32, unrepresentable in i32). Keep at
+// or above 40 rather than shrinking it back down to "looks clean in a quick run".
 test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
   const warm = instantiate(selfBytes())
   const PROGRAMS = [

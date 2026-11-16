@@ -1325,23 +1325,12 @@ test('statements: return-kind inference: unary BigInt family (u- ~ ++ --) proves
   is(run(`export let f = () => { let n = 5; return -n }`).f(), -5)
 })
 
-// The bitwise compound-assign family (&= |= ^= <<= >>=) already routed BigInt
-// through i64 arithmetic (a prior, separate fix) but — unlike the binary '&'/
-// '|'/etc operators — never called bigintMixReject, so a genuinely mixed
-// BigInt/Number compound-assign (`n &= 1` on a BigInt n) silently computed a
-// wrong value instead of throwing like real JS.
 test('statements: bitwise compound-assign on BigInt rejects a Number mix like the binary operator does', () => {
   is(run(`export let f = () => { let n = 4611686018427387903n; n &= 15n; return n }`).f(), 4611686018427387903n & 15n)
   is(run(`export let f = () => { let n = 1n; n <<= 40n; return n }`).f(), 1n << 40n)
   throws(() => run(`export let f = () => { let n = 8n; n &= 1; return n }`), /Cannot mix BigInt/)
 })
 
-//  (1) prepare's `.`/`[]` ++/-- desugar (index.js) hardcoded a spelled-out
-//      `obj.n = obj.n + 1` with a plain NUMBER literal `1` — STRUCTURALLY
-//      IDENTICAL to whatever a genuine `obj.p += 1`/`obj.p = obj.p + 1` also
-//      produces (same shape at emit time), so bigintMixReject could not tell
-//      them apart (was live for arrays: their elem-kind census already proved
-//      BIGINT, so the false mix hit every time).
 //  Boundary values 2^62±1, host-JS-authority — same convention as the
 //      sibling tests above.
 test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i64 arithmetic', () => {

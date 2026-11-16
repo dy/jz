@@ -8136,10 +8136,7 @@ export let main = () => {
 
 test('versioned nest: inner-unrolled level keeps its assumptions (fast arm raw)', () => {
   // The biquad cascade shape: outer sample loop versioned at the top, inner
-  // stage loop (const trip) unrolls INSIDE the arms. Level-owned assumption
-  // scoping broke here — an unrolled loop pushes no frame, so its cands could
-  // never validate and the guarded arm re-emitted every checked read (40
-  // coefficient loads, 5.6% → 1.7% vs zig-wasm).
+  // stage loop (const trip) unrolls INSIDE the arms.
   const src = `
 const proc = (x, coeffs, state, nStages, out) => {
   const n = x.length
@@ -8363,14 +8360,9 @@ export let main = () => {
 })
 
 test('scalar range facts: q16 chain stays i32 end-to-end (delayline class)', () => {
-  // `t`'s own bound (intExprRange chains its mask→ternary decl chain) is real and
-  // plenty tight — but at the point `d`'s LOCAL STORAGE TYPE gets decided (an
-  // early per-function fixpoint), `t`'s decl-range rep hasn't been stamped yet
-  // (that's a separate, LATER analyze.js walk over the same body) — a pre-existing
-  // pass-ordering gap the old, single-sided rule never had to exercise (DSPAN's
-  // bound alone was always enough). `d` is still computed in native i32
-  // (`i32.add`/`i32.mul`, confirmed below) and every value below is exact — this
-  // is a lost shift-strength-reduction, not a correctness gap.
+  // `d` is still computed in native i32 (`i32.add`/`i32.mul`, confirmed below) and
+  // every value below is exact — this is a lost shift-strength-reduction, not a
+  // correctness gap.
   const src = `
 const DMIN = 96, DSPAN = 2000
 export let f = (p) => {
@@ -8452,11 +8444,6 @@ test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary ke
 })
 
 test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-compare cond keeps select', () => {
-  // `&&`'s short-circuit lowering (emit.js, the i32 fast path of the '&&' handler) builds
-  // a nested value-`if` — `if (result i32) (local.tee $t cond1) (then <cond2>) (else
-  // (local.get $t))` — whenever cond2 isn't eagerly-safe (a load-bearing comparison over
-  // array reads is the canonical case: eagerSelectOK already refuses it because f64.load
-  // isn't in PURE_OPS).
   const heap = new Float64Array([5, 1, 8, 3, 9, 2, 7, 4])
   const pickChild = `
     export const f = (n, child) => {

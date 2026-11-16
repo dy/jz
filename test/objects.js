@@ -2381,13 +2381,9 @@ test('devirt schema-slot: two schemas sharing a field name at different slots ne
   is(r.getA(r.buildB()), 99)
 })
 
-// narrow.js's applyPointerParamAbi unboxes a non-exported function's OBJECT-kind
-// param to a raw i32 offset when every live call site proves the same schema —
-// here `chase`'s own recursive call (`chase(o, n-1)`) plus its one external entry
-// (`chase(mk(), n)`, mk's return schema provably `a,b,c`). `other`'s DIFFERENT
-// field layout is declared FIRST so it claims schema 0 — mk is provably schema 1+
-// — making the defaulted-to-0 aux read `other`'s slot for 'a' (or nothing) instead
-// of mk's.
+// `other`'s DIFFERENT field layout is declared FIRST so it claims schema 0 — mk is
+// provably schema 1+ — making the defaulted-to-0 aux read `other`'s slot for 'a'
+// (or nothing) instead of mk's.
 test('devirt schema-slot: recursive OBJECT param keeps its real schema id, not schema 0', () => {
   const r = run(`
     const other = () => ({ z: 0, a: 99 })

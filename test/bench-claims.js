@@ -45,13 +45,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // maintained lanes (go/zig families) genuinely port 43/60 = 0.72 of cases; a
 // healthy lane clears 0.7, a token lane cannot.
 const COVERAGE_FLOOR = 0.7
-// The JS-SEMANTICS-TAX finding from that control experiment still explains WHERE the
-// bytes go (AS's bench ports wrap every array access in `unchecked()` — compiling
-// them WITH assertions is byte-identical output, i.e. AS's baseline assumes zero
-// bounds checking unconditionally — while jz pays real guards because JS
-// out-of-bounds semantics are load-bearing: an OOB read yields `undefined`, a write
-// drops silently, ir.js's rationale) — that's the shape-class the engine fixes below
-// have to close, not a reason to excuse it. Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
+// Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
 const SIZE_GEOMEAN_MAX = 1.05
 // Kept as an explicit list because the repo also holds non-codegen trees
 // (tests/site/bench evidence); the watr version is additionally cross-checked
@@ -638,10 +632,6 @@ test('claims: named exceptions — each excepted case stays within its band', ()
   ok(broken.length === 0, `named exception past its band, a regression the exception does not cover: ${broken.map(v => `${verdictText(v)} — ${v.cause}`).join('; ')}`)
 })
 
-// The JS-semantics-tax rationale in the removed comment here explained WHY
-// some cases trail (AS's bench ports assume unchecked array access; jz pays
-// for real OOB semantics) — that's a real cost model, not license to trail: it
-// names the shape-class an engine fix has to close, same as any other gap.
 // Both checks read only committed evidence (bench/results.json), consistent
 // with this file's own architecture (test/bench.js is the live-measurement
 // counterpart).

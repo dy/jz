@@ -1138,10 +1138,6 @@ test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range
 //      of exprType's callers are LOCAL/PARAM storage-type decisions, where magnitude-blind "both operands i32"
 //      typing is SAFE — every read of that storage re-applies the same ToInt32 the write did) — `strict=true`
 //      additionally requires addFitsI32's AST-level twin.
-//   `strict=true` wired into exactly the two callers with a genuine "value may escape BARE" concern:
-//      narrowI32Results' return-tail classification (narrow.js — a return IS the canonical bare-escape position)
-//      and tryI32Arith's own admission (emit.js — the SAME "result used bare, right here" footing as the primary
-//      fast path, for the "peeled" typed-array-read operand shape).
 test('addFitsI32 sum-range soundness (P0-2 sibling): two full-range i32 operands can overflow signed i32', () => {
   const fAdd = run(`export let f = (a, b) => { let x = a | 0, y = b | 0; return x + y }`).f
   is(fAdd(2147483647, 2147483647), 4294967294, 'I32_MAX + I32_MAX, returned bare, matches JS exactly (was -2)')
@@ -2001,13 +1997,7 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 // BIGINT is the one kind with no runtime tag — raw i64 bits ride the f64 slot — so `c ?
 // BigInt(x) : null` must CARRY the kind through the nullish arm (VT['?:'], kind.js) or the
 // receiver falls to tryRuntimeStringFork's non-NaN arm and `.toString(16)` formats the bits as a
-// NUMBER denormal ("0.000…"). The counterweight: the val claim must not FOLD `x == null` guards
-// — the decl keeps rep.nullable (analyze.js mayBeNullish), and narrow.js re-derives it for
-// BIGINT params whose call sites can pass null (watr's `_i64Arith(r)` shape: fold-miss null
-// flows for real; the guard must return null, not hex-format atom bits). This test's whole
-// purpose was verifying the boxed carrier's isTernaryBoxedBigint tracking for exactly this shape
-// — under JZ_BIGINT_STRICT (opt-in) a compile-time refusal instead, since the merge's kind
-// (bigint vs null) is only knowable at runtime, never statically uniform.
+// NUMBER denormal ("0.000…").
 test('bigint∪null: kind carries through the nullish ternary arm, guards stay live — BigInt-or-null ternary merge strict-mode (opt-in) ternary-nullish diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`
@@ -2387,14 +2377,10 @@ test('narrowMutatedParams: float-mutated param stays f64', () => {
 
 // A genuinely NON-MONOTONE rule can't be authored from JS source — the four
 // guarded loops close over lattices the surrounding code proves monotone by
-// construction (finite height: i32→f64 widening, 0|1|2 int-certainty
-// levels, meet-semilattice paramReps facts), so tripping the guard would
-// require literally breaking a rule's monotonicity in the compiler itself,
-// not compiling adversarial input. There is therefore no source-level
-// "deliberately non-converging shape" to compile here — attempting one
-// would only test whether `err()` throws (already covered generically by
-// the "compiler internal name conflict" case in test/errors.js), not real
-// compiler behavior.
+// construction (finite height: i32→f64 widening, 0|1|2 int-certainty levels,
+// meet-semilattice paramReps facts), so tripping the guard would require
+// literally breaking a rule's monotonicity in the compiler itself, not
+// compiling adversarial input.
 //
 // Pin both well past their guard's stated budget as a canary: if a future
 // change shrinks a cap, reorders a sweep from full-program to per-edge, or
@@ -2432,18 +2418,13 @@ test('convergence caps: 150-deep self-referential schema domino compiles (domain
   is(result, 1, 'domino still resolves to the seed value')
 })
 
-// NOT shipped this round (deliberately, not an oversight): a same-body
-// extension — narrowValResults (Phase E2, "planning" — runs even before any
-// closure exists) resolving `return parse(v)` (watr's own uleb/limits shape,
-// `parse` a local closure declared earlier in the SAME enclosing function)
-// through this exact derivation, so the ENCLOSING function's own valResult
-// sees through the call too. It round-tripped correctly native but diverged
-// self-compiled (JZ_TEST_TARGET=jz.wasm) specifically when a typeof guard was
-// involved — reproduced identically across two independent implementations,
-// so left OUT rather than shipped uncertain (self-compiling correctness is
-// load-bearing here — see narrow.js's narrowValResults doc for the trail).
-// `return parse(v)` as a function's OWN tail therefore still fails open
-// (unproven, same as any not-yet-provable callee) — pinned below.
+// It round-tripped correctly native but diverged self-compiled
+// (JZ_TEST_TARGET=jz.wasm) specifically when a typeof guard was involved —
+// reproduced identically across two independent implementations, so left OUT
+// rather than shipped uncertain (self-compiling correctness is load-bearing
+// here — see narrow.js's narrowValResults doc for the trail). `return
+// parse(v)` as a function's OWN tail therefore still fails open (unproven,
+// same as any not-yet-provable callee) — pinned below.
 
 test('closure return-kind: direct-dispatched closure call skips __to_num at the call site (typeof-guarded)', () => {
   // watr's own uleb/limits shape: a local closure whose return is guarded by
@@ -2486,10 +2467,6 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   const { f } = run(src)
   is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
   is(f(5n), 6n, 'closure-mediated normalizer: host BigInt ingress now computes correctly (was: loud reject)')
-  // Companion shapes verified live (probe script, not independently pinned
-  // here — same `f`): f(0n)→1n, f(-5)→-4n (plain-number path, unaffected),
-  // f('5')→6n (BigInt('5') decimal-string idiom, matches BigInt('5')+1n===6n).
-  //
   // JS truth: -5n + 1n === -4n.
   is(f(-5n), -4n, 'negative host BigInt via tagged ingress computes correctly (was: read back as magnitude 0)')
 })

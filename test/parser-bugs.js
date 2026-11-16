@@ -257,10 +257,8 @@ test('unparenthesized unary base of ** rejected (PARSE-2, ES2016 §13.6)', () =>
     is(jz('export let f = (x) => -(x ** 2)').exports.f(3), -9)
 })
 
-// The rewritten tokenizer core (dispatch/register descriptor machinery) exposed
-// six latent jz miscompiles when the kernel self-compiled it. Each pin below is
-// the ddmin-reduced shape; the kernel build (test/self-compile.js) is the
-// integration-level pin for the same set.
+// Each pin below is the ddmin-reduced shape; the kernel build
+// (test/self-compile.js) is the integration-level pin for the same set.
 
 test('i32 param narrow excludes body-mutated params', () => {
     // All-i32 callsites narrowed `a` to i32 while `a += 1` emitted through the
@@ -523,12 +521,6 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
     for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
     is(st, 'cc=1')
 
-    // The promise runtime once spliced into the user module, and its own
-    // transform wrapped `__p_try`'s `fn(...aa)` in `__it_drain` AFTER the
-    // splice chain had checked the drain flag – the reference was left a FREE
-    // NAME and emitted `local.get $__it_drain` (undeclared local, zero-init
-    // garbage → call_indirect table[0]; masked because the path was dead
-    // here).
     const codeTry = code.replace('go(); return 1', 'go(); Promise.try(() => 0); return 1')
     const wat0 = compile(codeTry, { jzify: true, wat: true, optimize: 0 })
     ok(wat0.includes('(func $jz_async$__p_try'), '`Promise.try` reaches the std runtime helper at O0')

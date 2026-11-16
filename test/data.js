@@ -1418,10 +1418,6 @@ test('RepresentationPlan: ordinary array storage preserves a dynamic BigInt memb
 const MIN_NORMAL = 2.2250738585072014e-308
 
 test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value on export (audit repro)', () => {
-  // Closed by gating that heuristic on `ctx.features.bigint`: the compiler's own source is
-  // itself bigint-free (bignum.js's rational limbs are plain numbers, never a real BigInt — see
-  // its own doc comment), so the gate is OFF for the compiler's self-compiled compilation too,
-  // same as any other bigint-free program.
   const cases = [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
   for (const v of cases) {
     const f = run(`export let f = () => ${v}`).f
@@ -3252,18 +3248,6 @@ test('bigint: C5b adjacent join gaps — bare params, nested nullish unions, and
 })
 
 test('bigint: storage-read box-pointer-bits leak through a reassigned param across a call (shape #6 — was corrupt)', () => {
-  // Pre-fix, the callee's reassigned param never entered its OWN materializedNames
-  // (five compounding gaps in representation-plan.js: 1-2
-  // currentOf/plannedOf/edgeMaterializable didn't recognize the full
-  // STORAGE_READ_METHODS set as boxed-by-construction; 3 same gap for plain
-  // []/.member reads; 4 the readiness gate rejected every compound-assign def
-  // outright; 5 a covered callee's OWN boundary semantic inherited an
-  // uninformative "any of 14 kinds, closed" legacy census answer for a
-  // storage-read call argument, tripping the BOOL-member veto permanently — plus
-  // two emission-side companions: the bitwise/arithmetic compound-assign
-  // write-back never boxed a materialized target, and coerceArg gated its
-  // UNBOX/BOX application behind valTypeOf(node), which is deliberately blind to
-  // storage-read call-member nodes).
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3462,10 +3446,6 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
 })
 
 test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-name callee argument (shape #9 — FIXED)', () => {
-  // Exactly the residual `solveBigintProvenance`'s own `paramBigintOnly` doc
-  // comment already named and scoped out: "a bare-name argument... resolves
-  // through exprRep as ANY_BIGINT — open, not closed ... a missed
-  // opportunity, not a soundness gap".
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3517,23 +3497,6 @@ test('bigint: shape #9 sibling materializes through an index-resolved member cal
 })
 
 test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding write, not the RAW-consuming callee itself (FIXED)', () => {
-  // THIS pin is the residual its own comment separately named:
-  // `directCallBoundary` (buildBodyData's callee lookup, feeding
-  // semanticOf/currentOf/plannedOf/ walkEdges) was bare-name-only, so a
-  // caller's OWN bigint-provenance proof for a reassigned local depended on
-  // resolving a `.`-member callee — here, `i64.parse` (a lifted named-function
-  // property, watr's own real shape, matching the "shape #7-residual" pin
-  // above) is the RHS of `i64`'s own binding write `n = i64.parse(n)`; `leb`
-  // (the eventual RAW-consuming callee) stays bare-name, unlike the pin above.
-  //
-  // (2) That alone surfaced a SECOND, narrower gap: `edgeMaterializable`'s
-  // BOX/UNBOX safety check (guards buildBodyData's
-  // materializedNames/materializedResult fixpoints against boxing a value that
-  // isn't actually proven bigint) trusted ONLY `valTypeOf(node) ===
-  // VAL.BIGINT` — kind.js's OWN Tier-1 bare-name call resolution (narrow.js's
-  // whole-program valResult census), which has no `.`-member equivalent
-  // (deliberately — that was the shelved fix/shape8-member-callee branch's own
-  // kernel-taint lesson).
   for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -3609,14 +3572,7 @@ test('bigint: one-authority fix — `.`-member callee result as a ternary arm fe
 test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2/O3 all correct)', () => {
   // Same edge class with the BOXED source coming from a genuine call-site
   // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s
-  // own `n` — rather than from a reassignment inside the caller. `relay`
-  // stays covered (no property/value use anywhere): both `relay(900n)`
-  // (real, executed) and `relay(5)` (real, executed, but structurally routed
-  // away from `leb`'s raw arithmetic by relay's own typeof guard — avoids
-  // the genuine JS TypeError mixing Number/BigInt in `>>=` would throw) are
-  // visible call sites, so the legacy census sees a real {number, bigint}
-  // union and `relay`'s target is BOXED by construction (targetRepFor's
-  // default), never reassigned, `stable` throughout.
+  // own `n` — rather than from a reassignment inside the caller.
   const src = `
     function leb(n) { n >>= 7n; return n }
     function relay(n) { return typeof n === 'bigint' ? leb(n) : n }
@@ -4097,17 +4053,6 @@ test("RepresentationPlan: possibleKinds census is pass-order-independent — swa
   is(watUlebFirst, watWlebFirst, 'O3: declaring uleb before wleb or after compiles to byte-identical WAT — the census no longer depends on which function the worklist happens to visit first')
 })
 
-// This half is a deliberate fail-closed conservatism for the STATIC type fold
-// — sound BY ITSELF, as long as the runtime fallback for "kind unknown" stays
-// correct.
-//
-// `.subarray` has no generic Array analog (real JS:
-// TypedArray.prototype.subarray only — kind-traits.js methodValType's own
-// comment: "no plain-array analog"), so `genEmitter` is always undefined for
-// it and the whole runtime fork silently declined — even though
-// `.typed:subarray` (module/typedarray.js) was right there, itself already
-// capable of a further runtime dispatch when only the TYPED array's element
-// ctor (not its typed-ness) is unknown.
 test('typed array: .subarray() stays sound after a same-property dynamic-index write elsewhere (tryRuntimePtrTypeFork genEmitter gate)', () => {
   // Minimal shape: a closure ATTACHED to the object literal post-construction
   // (`b.set = ...`, not a literal-time method) whose body writes `b.buf[i] =
@@ -4181,18 +4126,6 @@ test('typed array: .subarray() stays sound across a real (zero-iteration-at-runt
   }
 })
 
-//   - module/core.js's emitLengthAccess (property READ, not a method
-//     call) unconditionally reads a jz Array's length HEADER WORD for any
-//     VAL.ARRAY receiver — sound for a REAL array (no own-property shadow
-//     is ever possible there), unsound here: a `.length` read elsewhere in
-//     the SAME function silently read the wrong memory offset instead of
-//     the object's real (dynamic, hash-keyed) `length` property.
-//     `ARRAY_ONLY_POISON` (a strict superset of the names) still proves the
-//     sound negative ("not a STRING"), restoring the module's own
-//     documented contract ("Default is never wrong, only sometimes wider
-//     than necessary" — infer.js header). emit.js's tryGenericEmitter also
-//     gained a narrower, defense-in-depth widening of its own shadow probe
-//     for the same shape, kept as a second layer.
 test('object mutated via a parameter: plain field reassignment propagates back', () => {
   for (const optimize of levels(false, 2, 3)) {
     const src = `

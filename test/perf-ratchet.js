@@ -29,39 +29,11 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // Reset-log reuse adds 26 loop nodes to __durable_slot_log in each of the 40
 // condref modules (+1040).
 
-// This structural baseline includes string runtime work; timing and binary-size
-// gates do not move.
-
-// The proxy rises where the measurement falls; re-baselined here. The
-// object-capable store must remain for opaque receivers; the old helper silently
-// ignored dictionary writes (test/to-primitive.js, numeric keys on opaque
-// receivers). Timing/size/memory caps do not move.
-//
-// Timing/size/memory caps do not move. Timing/size/memory caps do not move. The
-// loops run in constant memory for that store; timing/size/memory caps do not
-// move. The count (loopBodyOps, enteredLoopOps) and the inputs the calls take
+// The count (loopBodyOps, enteredLoopOps) and the inputs the calls take
 // (NUMERIC_CALLS, ARRAY_CALLS) are in test/_loop-ops.js, shared with
 // test/spellings.js.
 
-// The bench corpus exports no array parameter; its sizes do not move.
-
-// Two shapes pay per iteration, both in the export wrapper's variant for
-// receivers of unknown kind. condref's `t[i] = u[i]` asks the value it
-// copied out of another array whether a running call made it (`__esc_new`, a
-// number leaving at its first compare): 11 programs, 50 nodes each, 83015 ->
-// 83565. slice's `a[o + i] = a[o + i]` stores what its receiver held already
-// and asks nothing, but `o + i` over an `o` of unknown kind may concatenate,
-// so the loop allocates besides the store and the growth check stays after
-// the store instead of around the loop (45 nodes), its mark moved past the
-// value read, which a host's receiver answers with a copy (16 nodes): 8
-// programs, 61 nodes each, 68598 -> 69086.
-
-// Do not hide those remaining costs.
-// The totals count both arms from here on.
-
-// On wasi, which links no `__gc_mark`: buf 24683 -> 24693, condref 147364 -> 147378, slice 166684
-// -> 165884 (f$exp -480), the entered counts as on the JS host. Total loop-body ops across the
-// fixed corpus, per category. Deterministic.
+// Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
   for (const cat of categories) {

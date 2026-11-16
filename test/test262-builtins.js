@@ -753,35 +753,24 @@ const EXPECTED_FAIL_FILES = new Map([
   // With boxing restored as the default consequence (an unprovable BigInt flow
   // boxes, not refuses, unless JZ_BIGINT_STRICT=1), these compile again exactly
   // as they did pre-Slice-1 — removed, not converted, restoring the pre-Slice-1
-  // baseline (852/0, not Slice 1's 851/0). This specific file's name
-  // ("not-function") suggests it tests the INVERSE case (a `toJSON` property
-  // present but not callable, where real JS also ignores it) — plausibly still
-  // correct for the WRONG reason, not verified either way. fix/wrong-values-2:
-  // resolved by evidence. Per-line probes confirmed the file's OWN question
-  // (does jz wrongly INVOKE a non-callable toJSON property?) is answered
-  // correctly — jz never invokes ANY toJSON hook at all (SEPARATELY confirmed,
-  // still true, still unfixed: a genuinely CALLABLE toJSON is silently ignored,
-  // `JSON.stringify({toJSON:()=>42})` gives "{}" not "42" — a real gap, but not
-  // what THIS file tests, and no test262 file currently pinned below needs it
-  // either), so "not invoked" is spec-correct here regardless of the reason.
-  // fix/wrong-values-2 left the file failing on an UNRELATED bug its own probes
-  // surfaced: line 25's `JSON.stringify({toJSON: /re/})` (a RegExp VALUE, not a
-  // toJSON question) serialized as "{\"toJSON\":0}" instead of
-  // "{\"toJSON\":{}}". fix/wrong-values-3: root-caused and fixed.
-  // module/regex.js's own doc ("Regex literals become compile-time WASM
-  // functions") names the actual cause — a regex VALUE (ctx.core.emit['//']) is
-  // a bare i32 compile-time table index, boxed to f64 the same as any real
-  // number, so once it reaches __json_val's runtime tag dispatch
-  // (module/json.js) it is bit-identical to the NUMBER 0/1/2/… (the literal's
-  // table index) and gets misrendered as that raw index — no runtime tag can
-  // recover "this was a regex" after that degradation. Fixed at the STATIC
-  // layer instead, before the value degrades: literalValue's new '//' case
-  // (module/json.js) folds any regex reachable through a literal tree straight
-  // to its ALWAYS-`{}` answer (RegExp has no own ENUMERABLE property — verified
-  // against Node/ V8 — so this needs no pattern/flags parsing at all), and a
-  // matching top-level valTypeOf(x)===VAL.REGEX fast path in JSON.stringify's
-  // own emitter covers a non-literal-but-statically-regex-typed top-level
-  // value.
+  // baseline (852/0, not Slice 1's 851/0). Per-line probes confirmed the file's
+  // OWN question (does jz wrongly INVOKE a non-callable toJSON property?) is
+  // answered correctly — jz never invokes ANY toJSON hook at all (SEPARATELY
+  // confirmed, still true, still unfixed: a genuinely CALLABLE toJSON is
+  // silently ignored, `JSON.stringify({toJSON:()=>42})` gives "{}" not "42" — a
+  // real gap, but not what THIS file tests, and no test262 file currently
+  // pinned below needs it either), so "not invoked" is spec-correct here
+  // regardless of the reason. fix/wrong-values-2 left the file failing on an
+  // UNRELATED bug its own probes surfaced: line 25's `JSON.stringify({toJSON:
+  // /re/})` (a RegExp VALUE, not a toJSON question) serialized as
+  // "{\"toJSON\":0}" instead of "{\"toJSON\":{}}". fix/wrong-values-3:
+  // root-caused and fixed. module/regex.js's own doc ("Regex literals become
+  // compile-time WASM functions") names the actual cause — a regex VALUE
+  // (ctx.core.emit['//']) is a bare i32 compile-time table index, boxed to f64
+  // the same as any real number, so once it reaches __json_val's runtime tag
+  // dispatch (module/json.js) it is bit-identical to the NUMBER 0/1/2/… (the
+  // literal's table index) and gets misrendered as that raw index — no runtime
+  // tag can recover "this was a regex" after that degradation.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
   // Fixed by guarding each slot's call behind a PTR.CLOSURE check (GetMethod, ES
@@ -829,15 +818,6 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   // 'instanceof' handler gained a function-shape probe — `typeof
-  //
-  // Correct in isolation, but that dispatcher runs for the COMPILER'S OWN
-  // self-hosted code too: module/core.js's emitArity (`h?.argc ?? h?.length`,
-  // src/ ctx.js) reads `.length` off exactly this shape (an unresolved-kind
-  // closure PARAMETER) throughout the compiler's own emit-table arity probes,
-  // as a normal, gracefully-tolerated-as-undefined pattern — the runtime
-  // guard turned that into an uncaught throw, crashing the KERNEL
-  // (self-compiled dist/jz.wasm) on every single compile (kernel-oracle 14/14
-  // → 3/14, confirmed live via the full battery before landing).
 ])
 
 function expectedFailReason(rel) {

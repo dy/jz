@@ -2280,11 +2280,6 @@ test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n,
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); let x = m.get('m1'); let y = m.get('m2'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
 })
 
-// Re-verified differentially against real JS with the census dormant (this
-// revert): every row the audit named as broken by VT promotion is
-// JS-correct again via the generic dynamic path — no new mechanism, the
-// same "disable costs nothing, the generic path already handles it" finding
-// every prior slice disable also confirmed.
 test('audit #10: composed expressions (ternary/&&/||/comma) around an absent census-NUMBER read are JS-correct with the census dormant', () => {
   const ternary = jz(`export let f = () => { const m = new Map(); m.set('present', 1); return (true ? m.get('missing') : 999) + 1 }`, { jzify: true }).exports.f
   is(ternary(), NaN, 'JS: (true ? undefined : 999) + 1 = NaN')

@@ -411,9 +411,7 @@ test('bigint tag: a module binding holds its BigInt in one carrier for every wri
 
 // A tagged local beside an operand with no evidence: `at` copies the
 // `length` of an untyped parameter (a builder from a closure table), and the
-// program holds a BigInt elsewhere, so the plan tags `at`. The subtraction
-// took the i64 path unconditionally and read the Number's bits as a carrier
-// (the self-compiled encoder's item length came out subnormal).
+// program holds a BigInt elsewhere, so the plan tags `at`.
 test('bigint tag: a tagged carrier beside an unresolved operand dispatches on the tag', () => {
   const SRC = `const makeBuf = (cap) => {
     const b = { buf: new Uint8Array(cap), length: 0 }

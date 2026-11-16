@@ -624,9 +624,6 @@ test('layout: i64Hex is self-compile-safe across the full 64-bit range', async (
   ok(/^0xFFF8/.test(nanPrefixMaskHex()), 'sign-bit-forced mask formats unsigned')
 })
 
-// (`redeclaresName` in type.js is the same walk shape and often paired at call
-// sites — left unmemoized deliberately: it never showed in the m86 profile. If
-// it ever does, it takes this same treatment and this same test.)
 test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async () => {
   const { isReassigned, beginAssignedMemo, endAssignedMemo } = await import('../src/ast.js')
   const both = (node, name) => {
