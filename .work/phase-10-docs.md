@@ -2,8 +2,7 @@
 
 Source: `CONTRIBUTING.md` at 5d3f9d9ae (501,512 bytes, 6,606 lines, 270 blocks split at blank lines outside code fences).
 Each block's sentences each have one state; the last column splits the block's bytes by them.
-`guide`: in the new CONTRIBUTING.md. `kept`: placed verbatim (comment markers and line breaks aside) in the named file's header,
-or README.md for the public contract. `cut: describes`: says what the code does. `cut: duplicate`: the place named says it already.
+`guide`: in the new CONTRIBUTING.md (the public contract, by the same test of value, among it). `kept`: placed verbatim (comment markers and line breaks aside) in the named file's header. `cut: describes`: says what the code does. `cut: duplicate`: the place named says it already.
 `cut: stale`: the tree contradicts it. `cut: history`: what changed or when. No block is `pending`: of the text about the files
 branch worktree-agent-a0535e0f76860e45e deletes, block 22 (address and tag caches) is what src/optimize/cse-address.js:104-105 says,
 block 188 names reuseLoads in passing, and block 17's load reuse is src/compile/cse-load.js's; none is a warning kept elsewhere.
@@ -12,10 +11,10 @@ The check: `python3 /private/tmp/claude-501/-Users-div-projects-jz/36e8fd26-a3d4
 | bytes per state | |
 |---|---|
 | cut: describes | 393,718 |
-| cut: duplicate | 48,329 |
-| kept | 34,347 |
-| guide | 20,360 |
-| cut: stale | 3,028 |
+| cut: duplicate | 52,427 |
+| guide | 27,859 |
+| kept | 22,496 |
+| cut: stale | 3,282 |
 | cut: history | 1,730 |
 | total | 501,512 |
 
@@ -195,7 +194,7 @@ The check: `python3 /private/tmp/claude-501/-Users-div-projects-jz/36e8fd26-a3d4
 | 172 | 5423-5428 | 1041 | guide | guide 1041 B: CONTRIBUTING.md | 1. Find or create the module file in `module/` (e.g. `module |
 | 173 | 5429-5430 | 41 | guide | guide 41 B: CONTRIBUTING.md | ## Adding an auto-vectorizer recognizer  |
 | 174 | 5431-5433 | 129 | guide | guide 129 B: CONTRIBUTING.md | Generic recognizer work belongs in watr. The discipline belo |
-| 175 | 5434-5438 | 396 | guide | guide 254 B: CONTRIBUTING.md · cut: stale 142 B: names src/optimize/vectorize.js, now the directory src/optimize/vectorize/ (sentence rewritten with the path vectorize/index.js) | The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/ |
+| 175 | 5434-5438 | 396 | cut: stale | cut: stale 396 B: its first clause: since phase 6c every lowering is asked and the cheapest legal lift emitted (src/optimize/vectorize/index.js:284-294); its last clause, a null is fail-safe, stays in the guide verbatim; names src/optimize/vectorize.js, now the directory src/optimize/vectorize/ (sentence rewritten with the path vectorize/index.js) | The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/ |
 | 176 | 5439-5454 | 1346 | cut: describes | cut: describes 1346 B | Every scaffold a recognizer reads is a view of one descripti |
 | 177 | 5455-5480 | 2204 | kept | cut: describes 1347 B · kept 857 B: src/optimize/vectorize/legality.js | No wrapper reaches the output but past one legality, the sam |
 | 178 | 5481-5503 | 1546 | cut: describes | cut: describes 1410 B · cut: duplicate 136 B: src/type/loop-versioning.js:160 | Typed extent guards may give their fast arm fresh signed-wor |
@@ -267,23 +266,23 @@ The check: `python3 /private/tmp/claude-501/-Users-div-projects-jz/36e8fd26-a3d4
 | 244 | 6363-6364 | 25 | guide | guide 25 B: CONTRIBUTING.md | ### Adding a bench case  |
 | 245 | 6365-6374 | 772 | guide | guide 772 B: CONTRIBUTING.md | 1. `mkdir bench/<name>/` and add `bench/<name>/<name>.js` —  |
 | 246 | 6375-6377 | 166 | guide | guide 166 B: CONTRIBUTING.md | Prefer cases that mirror real JZ target workloads (numeric/D |
-| 247 | 6378-6379 | 28 | kept | kept 28 B: README.md#public-contract-and-abi | ## Public contract and ABI  |
-| 248 | 6380-6388 | 613 | kept | kept 613 B: README.md#public-contract-and-abi | The public surface is deliberately small (README owns it): t |
-| 249 | 6389-6400 | 826 | kept | kept 826 B: README.md#public-contract-and-abi | The public options are a closed set: `normalizeOptions` (src |
-| 250 | 6401-6414 | 1581 | kept | kept 1581 B: README.md#public-contract-and-abi | \| Internal option \| Public spelling \| Notes \| \|---\|---\|---\|  |
-| 251 | 6415-6439 | 1758 | kept | kept 1758 B: README.md#public-contract-and-abi | Advisories reach the `warnings` callback, one per site (the  |
-| 252 | 6440-6441 | 24 | kept | kept 24 B: README.md#public-contract-and-abi | ### Semantics contract  |
-| 253 | 6442-6457 | 1120 | kept | kept 1120 B: README.md#public-contract-and-abi | Outside the dialect differences the README lists, accepted p |
-| 254 | 6458-6459 | 26 | kept | kept 26 B: README.md#public-contract-and-abi | ### Host memory contract  |
-| 255 | 6460-6478 | 1355 | kept | kept 1355 B: README.md#public-contract-and-abi | Strings use UTF-16 code units; UTF-8 belongs at encoding and |
-| 256 | 6479-6489 | 731 | kept | kept 731 B: README.md#public-contract-and-abi | Plain arrays retained by the host have open element types. T |
-| 257 | 6490-6497 | 491 | kept | kept 491 B: README.md#public-contract-and-abi | Array/object writes stage replacement values before committi |
-| 258 | 6498-6499 | 22 | kept | kept 22 B: README.md#public-contract-and-abi | ### Experimental ABI  |
-| 259 | 6500-6508 | 626 | kept | kept 626 B: README.md#public-contract-and-abi | Every export the program does not declare is the module's AB |
-| 260 | 6509-6512 | 194 | kept | kept 194 B: README.md#public-contract-and-abi | A prebuilt module loads with the interop of the jz that buil |
-| 261 | 6513-6535 | 1555 | kept | kept 1555 B: README.md#public-contract-and-abi | The raw ABI is not frozen across versions: NaN-box layouts,  |
-| 262 | 6536-6537 | 23 | kept | kept 23 B: README.md#public-contract-and-abi | ### Known limitations  |
-| 263 | 6538-6551 | 878 | kept | kept 878 B: README.md#public-contract-and-abi | - DataView indexed own properties are unsupported; indexed w |
+| 247 | 6378-6379 | 28 | guide | guide 28 B: CONTRIBUTING.md | ## Public contract and ABI  |
+| 248 | 6380-6388 | 613 | guide | guide 613 B: CONTRIBUTING.md | The public surface is deliberately small (README owns it): t |
+| 249 | 6389-6400 | 826 | guide | cut: duplicate 505 B: src/options.js:1-9 (the CLI, the tests, the bench and the tools pass the internal flags); src/options.js:1-9 and src/compiler.js compileInternal state the internal entry and its folding · guide 321 B: CONTRIBUTING.md | The public options are a closed set: `normalizeOptions` (src |
+| 250 | 6401-6414 | 1581 | cut: duplicate | cut: duplicate 1581 B: index.d.ts CompileOptions (its docs at L47-63) spells the public options; src/options.js foldOptions holds the map | \| Internal option \| Public spelling \| Notes \| \|---\|---\|---\|  |
+| 251 | 6415-6439 | 1758 | guide | cut: duplicate 1072 B: index.d.ts Warning (L14-); scripts/why-census.mjs prints it; src/ctx.js warn() is the rendering it describes · guide 686 B: CONTRIBUTING.md | Advisories reach the `warnings` callback, one per site (the  |
+| 252 | 6440-6441 | 24 | guide | guide 24 B: CONTRIBUTING.md | ### Semantics contract  |
+| 253 | 6442-6457 | 1120 | guide | guide 857 B: CONTRIBUTING.md · cut: duplicate 263 B: README.md:187 (Numeric export parameters) | Outside the dialect differences the README lists, accepted p |
+| 254 | 6458-6459 | 26 | guide | guide 26 B: CONTRIBUTING.md | ### Host memory contract  |
+| 255 | 6460-6478 | 1355 | guide | guide 1355 B: CONTRIBUTING.md | Strings use UTF-16 code units; UTF-8 belongs at encoding and |
+| 256 | 6479-6489 | 731 | guide | guide 731 B: CONTRIBUTING.md | Plain arrays retained by the host have open element types. T |
+| 257 | 6490-6497 | 491 | guide | guide 491 B: CONTRIBUTING.md | Array/object writes stage replacement values before committi |
+| 258 | 6498-6499 | 22 | guide | guide 22 B: CONTRIBUTING.md | ### Experimental ABI  |
+| 259 | 6500-6508 | 626 | guide | guide 626 B: CONTRIBUTING.md | Every export the program does not declare is the module's AB |
+| 260 | 6509-6512 | 194 | guide | guide 194 B: CONTRIBUTING.md | A prebuilt module loads with the interop of the jz that buil |
+| 261 | 6513-6535 | 1555 | guide | guide 878 B: CONTRIBUTING.md · cut: duplicate 677 B: index.d.ts JzMemory, which test/mem.js holds equal to the memory; interop.js applies jz:hostabi.skip; interop.js applies jz:hostabi.skip; test/interop.js pins it (+1) | The raw ABI is not frozen across versions: NaN-box layouts,  |
+| 262 | 6536-6537 | 23 | guide | guide 23 B: CONTRIBUTING.md | ### Known limitations  |
+| 263 | 6538-6551 | 878 | guide | guide 878 B: CONTRIBUTING.md | - DataView indexed own properties are unsupported; indexed w |
 | 264 | 6552-6553 | 12 | guide | guide 12 B: CONTRIBUTING.md | ## Commits  |
 | 265 | 6554-6555 | 57 | guide | guide 57 B: CONTRIBUTING.md | Small, focused commits. Describe what and why, not how.  |
 | 266 | 6556-6557 | 24 | cut: describes | cut: describes 24 B | ### Runtime inspection  |
