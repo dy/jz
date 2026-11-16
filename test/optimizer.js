@@ -6,8 +6,6 @@
  *     in slice-length setup AND inside the slice copy loop. Earlier passes
  *     can share the IR subtree; mutating it inside the loop must not affect
  *     the outside reference.
- *   - arrayElemValType:      .map closure on numeric array elides __to_num
- *     coercion in the body since the param type is known to be NUMBER.
  */
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
@@ -342,7 +340,7 @@ test('LICM effects: non-mutating allocation still changes allocator globals', ()
 test('LICM pure calls: invariant transcendental / substr search hoist out of the loop', () => {
   // V8's wasm tier treats every call as opaque and recomputes it each iteration; jz proves
   // math + immutable-string search/compare are pure functions of their args and lifts the
-  // invariant ones to the pre-header. Measured: invariant indexOf 649ms→2ms, Math.log 75→16ms.
+  // invariant ones to the pre-header.
   const log = `export const f = (x, n) => { let a = 0.0; for (let r = 0; r < n; r = r + 1) a = a + Math.log(x + 3.0); return a }`
   is(callsInLoop(log, '$math.log'), 0, 'invariant Math.log is hoisted out of the loop')
 
@@ -377,8 +375,6 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
   // The raytrace shape: the invariant only EXISTS after watr's inlineOnce splices the helper
   // body into the loop — jz's pre-watr LICM can't see it (a user call isn't hoistable), so
   // the hoist must come from watr's own licm pass, enabled by cfg.watrLicm at speed.
-  // Math.max lowers to the pure `f64.max` (a ternary would lower to `if`, which licm
-  // rightly refuses — control flow isn't a hoistable value op).
   const src = `
     const g = (x, y) => Math.max(x, y) * 3.0 + 1.0
     export let f = (k, n) => { let s = 0.0; for (let i = 0; i < n; i++) s = s + g(k, 2.5) + i; return s }`
@@ -398,7 +394,7 @@ test('LSR (watr): speed tier advances record and summed-index addresses as point
   if (onKernel()) return  // kernel bundles its own watr at build time: host-codegen assertion only
   // An address affine in the loop counter (a record at rows[i], `src[row + x + 1]`) becomes a
   // pointer set before the loop and advanced with the counter: watr's lsr, enabled by
-  // cfg.watrLsr at speed. The record stride's multiply and the index sum leave the loop.
+  // cfg.watrLsr at speed.
   const rec = `export let f = (n) => {
     const rows = []
     for (let i = 0; i < n; i++) rows.push({ a: i, b: i * 2, c: (i * 3) | 0 })
@@ -443,16 +439,7 @@ test('LICM: checked-access length HEADER decode hoists once per function (neverG
   // params `v`/`z` inside a while-pop nested in a for-loop — an UNPROVEN index (k isn't a
   // canonical monotone `i<arr.length` counter), so every read takes the checked-access
   // branchless form, whose length guard decodes the header fresh EVERY site:
-  // `i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`. `v`/`z` are TYPED-array params (fixed-size
-  // allocations — module/typedarray.js's typedBase: "no grow op, so it can never relocate")
-  // never reassigned in the body, so the DECODED LENGTH is loop-invariant — but was re-fetched
-  // from memory at every guard site regardless (ledger 'SDF GAP DISSECTED WITH SHARES
-  // 2026-07-25'). hoistInvariantLoop now admits this load (compile/index.js stamps
-  // `fn.stableHeaderNames` from VAL.TYPED / ARRAY-neverGrown reps; optimize/index.js's
-  // pureGiven recognizes `i32.load(i32.sub(local.get $X, i32.const 8))` for $X in that set as
-  // invariant with NO alias-analysis needed — the header word can never change once the
-  // receiver is allocated) — cascading bottom-up through the nested while and the outer for
-  // collapses every site to ONE decode, shared by both loops.
+  // `i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`.
   const src = `
     const scan = (v, z, n) => {
       let k = 0
@@ -510,13 +497,7 @@ test('LICM: checked-access length HEADER decode hoists once per function (neverG
 })
 
 test('recursionUnroll: non-zero acc init fuses as += (shared-acc reset bug)', () => {
-  // watr's count(): `let s = 1; for(..) s += cnt(n[i]); return s`. The fused
-  // inlined frame SHARES the accumulator with the caller — the callee's own
-  // `s = 1` init (non-zero, survives zeroinit) cloned verbatim RESET the
-  // caller's running total at every unrolled level: cnt of a 3-child tree
-  // returned 3 instead of 8 at O3. The O3-built self-compile kernel carried the
-  // miscompiled count() and mis-fired watr's select fold (dict parity rows).
-  // The init must clone as `acc += init`; zero-init accumulators stay exact.
+  // watr's count(): `let s = 1; for(..) s += cnt(n[i]); return s`.
   const src = `
     const cnt = (n) => { if (!Array.isArray(n)) return 1; let s = 1; for (let i = 0; i < n.length; i++) s += cnt(n[i]); return s }
     const sum = (n) => { if (!Array.isArray(n)) return n; let s = 0; for (let i = 0; i < n.length; i++) s += sum(n[i]); return s }
@@ -605,13 +586,12 @@ test('LICM: does not fire when loop contains calls', () => {
 })
 
 test('LICM: self-referential tee induction in loop condition is not hoisted (rfft stage-loop regression)', () => {
-  // `while ((nn = nn >>> 1))` — the loop's induction update is a self-referential
-  // tee in the condition (nn = f(nn)). hoistInvariantLoop treated the operand's
-  // `nn` read as the in-subtree teed value (it is actually the loop-carried previous
-  // value, read before the tee writes) and hoisted the whole update to the pre-header,
-  // freezing nn nonzero → a non-terminating loop and out-of-bounds stores. This is the
-  // rfft split-radix stage loop (examples/rfft/rfft.js transform()). The `count > 1000`
-  // guard bounds a regression to a wrong value instead of a hang.
+  // `while ((nn = nn >>> 1))` — the loop's induction update is a self-referential tee
+  // in the condition (nn = f(nn)). hoistInvariantLoop treated the operand's `nn` read
+  // as the in-subtree teed value (it is actually the loop-carried previous value, read
+  // before the tee writes) and hoisted the whole update to the pre-header, freezing nn
+  // nonzero → a non-terminating loop and out-of-bounds stores. This is the rfft
+  // split-radix stage loop (examples/rfft/rfft.js transform()).
   const src = `
     export const main = (n) => {
       let nn = n >>> 0, count = 0, acc = 0
@@ -734,15 +714,11 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   // Receiver-stable refinement (shapes bench residual): a never-written
   // receiver's schemaId is constant (aux bits; jz OBJECT shape never changes),
   // so a multi-read function computes `sid | -1` ONCE (entry-hoisted select)
-  // and every read drops its per-read __ptr_type guard + aux extract. A prop
-  // that EVERY schema carries at the SAME slot (`.t` first key of every
-  // variant — the discriminant pattern) needs no dispatch at all. Caller
-  // element-shape propagation proves this receiver belongs to the registered
-  // schema set, so the read is a bare fixed-slot load.
-  // Receiver flows through a mixed array (rows[i] — the shapes-bench shape), so
-  // emit can't specialize and the reads reach the pass tagged. `x` sits at
-  // DIFFERENT slots across schemas (slot 1 vs slot 2), forcing a real br_table;
-  // `t` is first everywhere → collapse.
+  // and every read drops its per-read __ptr_type guard + aux extract. Receiver
+  // flows through a mixed array (rows[i] — the shapes-bench shape), so emit
+  // can't specialize and the reads reach the pass tagged. `x` sits at DIFFERENT
+  // slots across schemas (slot 1 vs slot 2), forcing a real br_table; `t` is
+  // first everywhere → collapse.
   const src = `const mkRows = () => {
     const rows = []
     for (let i = 0; i < 9; i++) {
@@ -771,8 +747,6 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
     if (!discriminant && (n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === '$s') discriminant = n[2]
   })
   // Later writes may reuse s's dead slot; only its first definition is the discriminant.
-  // The array-element argument can be absent. Its null check remains, but
-  // the discriminant itself needs one slot load and no property dispatch.
   is(count(discriminant, n => n[0] === 'f64.load'), 1, 'discriminant reads one slot')
   is(count(discriminant, n => n[0] === 'br_table' || n[0] === 'call' && n[1] !== '$__throw_property_nullish'), 0,
     'only the nullish error path can call; the field load stays direct')
@@ -817,11 +791,8 @@ test('schema discriminant hint narrows one guard but preserves alien-schema fall
 
 test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one dispatch', () => {
   // The shapes-bench k=1/6 residual: `o.r * (o.r + 3)` paid TWO full
-  // sid-dispatch blocks. The receiver is a never-written local and a jz
-  // OBJECT's shape never changes, so within a straight-line region the second
-  // read IS the first — tee'd i64, reused. A non-readonly call between the
-  // reads could dyn-write the slot, so it clears the memo.
-  // Two schemas carry r so the reads exercise dispatch memoization.
+  // sid-dispatch blocks. Two schemas carry r so the reads exercise dispatch
+  // memoization.
   const mkSrc = (body) => `const mkRows = () => {
     const rows = []
     for (let i = 0; i < 9; i++) {
@@ -935,9 +906,7 @@ test('devirtSchemaReads: a receiver local the function writes keeps its reads to
 
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
   // The dispatch-bench shape: a module-const array of capture-free operators,
-  // one data-indexed call site. The generic call_indirect (bounds + sig check
-  // per call) becomes a br_table over direct uniform-ABI calls, its default arm
-  // an index past the table (with nothing left to call it, the table goes).
+  // one data-indexed call site.
   const src = `const ops = [
     (x, k) => (x + k) | 0,
     (x, k) => x ^ k,
@@ -1001,8 +970,7 @@ test('trunc-range fold: a WRITTEN param must not resolve to its later write (ToU
   // The single-textual-def map behind the bare-trunc_sat range fold saw `p0 = 0` and
   // resolved p0 -> [0,0] at a USE BEFORE the write — but a param's entry value is the
   // caller's: `1 >>> Math.abs(-Infinity)` must shift by ToUint32(Inf) = 0, not by a
-  // saturated 31. (fuzz seeds 6465/7026.) Params are now excluded from the map;
-  // unwritten params never entered it, so sound firings are untouched.
+  // saturated 31.
   const s1 = `export let f = (p0, p1, p2) => { p1 = (1 >>> Math.abs(p0)); p0 = 0; return p1; }`
   const s2 = `export let f = (p0, p1, p2) => { let v0 = p0; let i4 = 0; while (i4 < 14) { p2 = 0; p0 = 0; i4 = (i4 + 1); } return (1 >> Math.abs(v0)); }`
   for (const o of [1, 2, 'speed']) {
@@ -1014,13 +982,9 @@ test('trunc-range fold: a WRITTEN param must not resolve to its later write (ToU
 })
 
 test('rotateLoops: speed tier rotates a scan loop to a fused conditional back-edge', () => {
-  // The lz/qoi class of hot scalar loop. Top-test `loop { br_if exit ¬C; body; br loop }`
-  // → guarded `br_if exit ¬C; loop { body; br_if loop C }`. The fused `br_if $loop`
-  // back-edge is the do-while shape LLVM gives rust/zig (1.34× on lz's match scan);
-  // V8 lowers it to one hardware loop branch vs the top-test's exit-branch + back-jump.
-  // PRE-watr + scoped to $firstGt: rotation is jz's pass; watr's inliner splices
-  // stdlib loops (their labels/back-edges) into the module, so a module-wide
-  // label-regex sweep reads THEIR shapes, not the user loop's.
+  // The lz/qoi class of hot scalar loop. PRE-watr + scoped to $firstGt: rotation is jz's
+  // pass; watr's inliner splices stdlib loops (their labels/back-edges) into the module,
+  // so a module-wide label-regex sweep reads THEIR shapes, not the user loop's.
   const src = `export const firstGt = (a, n, t) => { let i = 0; while (i < n && a[i] <= t) i++; return i }`
   const backEdges = (opt) => {
     const f = findFunc(parse(src, { ...opt, watr: false }), '$firstGt')
@@ -1227,10 +1191,6 @@ test('inline: large multi-caller leaf folds at speed (transitive candidacy + exp
   ok(calls(2) >= 1, 'level 2: strict policy keeps the multi-caller leaf outlined for tier-up')
 })
 
-// The leaf site cap bounds duplication at sites outside loops; a site inside a
-// loop is the call the splice exists to remove. three's Vector3.fromArray has a
-// dozen callers in the library and a handful per element in a frame's kernels:
-// the library's straight-line callers no longer keep the kernels' calls.
 test('inline: a small leaf called from many straight-line sites still splices into the loops that call it', () => {
   // seven straight-line callers and four calls in the loop: over the leaf's site cap together, under it apart
   const cold = Array.from({ length: 7 }, (_, i) => `let c${i} = (a) => leaf(a, ${i})`).join('\n')
@@ -1358,8 +1318,7 @@ test('inline: expression-position hoist preserves evaluation order of side effec
   if (!onKernel()) is((compile(ALL_CAND, { wat: true, optimize: { level: 'speed' } }).match(/call \$helper/g) || []).length, 0, 'helper still inlines when nothing effectful precedes it')
 
   // A READ before the call sees the value before the callee's store: `s.v * 1000 + bump(s)`
-  // reads 99, then bump stores 100 (the hoist would have read 100). A callee that stores
-  // nothing an earlier read could see still folds (`sum + amp * perlin(x)`).
+  // reads 99, then bump stores 100 (the hoist would have read 100).
   const READ_FIRST = `const reveal = (s) => s.v
     const bump = (s) => { s.v = s.v + 1; return s.v }
     let g = 1
@@ -1390,7 +1349,7 @@ test('cross-call param narrowing: local typed-array elem arg narrows callee para
   // caller's local typed arrays (not just module globals / typed PARAMS), else
   // the param stays f64, `1 << n` coerces via __to_num, and that single call
   // transitively links the ENTIRE string↔number stdlib (__ftoa/__dec_to_f64/…)
-  // — ~8 KB of otherwise-dead code. Pins the local-typed-elem overlay fix.
+  // — ~8 KB of otherwise-dead code.
   const wat = compile(`
     const countN = (n) => (1 << n) - 1
     export const main = () => {
@@ -1532,12 +1491,6 @@ test('dynamic prop reads reuse receiver type tag', () => {
 
 test('monomorphic schema-slot devirtualization: singleton-schema dot-read compiles to aux-guard + load, no call', () => {
   if (onWasi()) return  // wasi: external object WAT name differs in the fallback arm
-  // `o`'s static type is fully unknown (exported-fn parameter, no caller evidence —
-  // the exact __dyn_get_any_t_h precondition), but "a" names a field on exactly one
-  // registered schema program-wide (mk's {a,b,c}), so ctx.schema.guardedSlotOf fires.
-  // optimize:0 keeps the emitted shape stable regardless of the outer test run's
-  // JZ_TEST_OPTIMIZE leg — this pins module/core.js's emit-time lever itself, not
-  // a watr optimizer pass.
   const wat = compile(`
     const mk = () => ({ a: 1, b: 2, c: 3 })
     export const build = () => mk()
@@ -1659,9 +1612,7 @@ test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds'
   if (belowOpt(3) || onKernel()) return
   // Any small typed-index loop nested in a larger loop has this shape: each
   // unrolled copy defines scalar scratch from invariant table entries, then a
-  // varying expression consumes it. Sharing one wasm local across copies makes
-  // every scratch multi-def and blocks LICM; fresh per-copy bindings let the
-  // complete `ox² + oy² - r²` compound move before the outer loop.
+  // varying expression consumes it.
   const src = `
     const kernel = (out, x, y, rr, n) => {
       for (let p = 0; p < n; p++) {
@@ -1697,10 +1648,7 @@ test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds'
 test('a small typed-index loop unrolls around a closure that writes a binding of its body', () => {
   if (onKernel()) return
   // The unroller names each copy's block-scoped bindings anew so the per-copy
-  // scratch stays single-def (splitScratch). A closure of the body is cloned as
-  // it is, so a binding it captures keeps its name: renamed, the closure wrote
-  // a binding of its own and the copy read the initializer (the Web Audio
-  // render's `complete` listener, spliced into the bench's timing loop).
+  // scratch stays single-def (splitScratch).
   const src = `
     class Ctx {
       #ls
@@ -1729,12 +1677,7 @@ test('a small typed-index loop unrolls around a closure that writes a binding of
 
 test('a leaf called only from a method a dispatcher reaches still splices', () => {
   if (onKernel()) return
-  // The inliner counts sites in the functions that run. A class method reached
-  // through a member access the census cannot name (two classes answer
-  // `valueAt`: a dispatcher tests each) is one of them, as the program index's
-  // call graph seeds it; the liveness the inliner read seeded only from direct
-  // calls, so every leaf such a method called kept its call (the Web Audio
-  // render's automation guards, 3.4× slower than the inlined render).
+  // The inliner counts sites in the functions that run.
   const src = `
     const isRamp = (e) => e.kind === 'ramp'
     const isStep = (e) => e.kind === 'step'
@@ -1937,11 +1880,9 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
 
   // At the speed/relaxedFloat tier the OUTER-loop-invariant partial products are hoisted
   // out of the n-loop (rust/LLVM's mat4-prologue trick — only a[0],a[5],b[0],b[5] mutate,
-  // so most of each a[r]·b[c] dot is constant across iterations). Each unrolled dot then
-  // has < DOT_UNROLL accumulate steps, so it stays scalar instead of f64x2 — measured ~1.9×
-  // faster than the pack/extract SIMD form, beating rust-wasm. The reassociation (invariant
-  // terms summed first) is ULP-level, so it is gated to speed; the level-2 path above keeps
-  // the bit-exact f64x2 dot pairs.
+  // so most of each a[r]·b[c] dot is constant across iterations). The reassociation
+  // (invariant terms summed first) is ULP-level, so it is gated to speed; the level-2 path
+  // above keeps the bit-exact f64x2 dot pairs.
   const speedWat = compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
   ok(/\$__rinv_/.test(speedWat), 'speed tier hoists loop-invariant dot partials into $__rinv locals')
   // (a precision trade, not an engine feature: an engine without relaxed SIMD keeps it)
@@ -2008,10 +1949,6 @@ test('nested small const-count for-loop unroll is opt-in', () => {
 })
 
 test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => {
-  // Static len + masked idx: the accesses are PROVEN in-bounds (mask class), so the
-  // bare loads the fusion peephole matches survive Root F's checked-by-default
-  // typed indexing (unprovable single accesses now emit branchless checked selects,
-  // which have no shared-base contract).
   const wat = compile(`
     export const main = (idx) => {
       const a = new Float64Array(64)
@@ -2107,9 +2044,7 @@ test('known array numeric index skips generic array tag dispatch', () => {
   const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
   // A known plain ARRAY + numeric key lowers to a monomorphic access: the
   // inline bounds-checked f64.load fast path (`idx < len ? load : undefined`,
-  // no call) — or, for back-compat, the `__arr_idx_known` helper. Both are
-  // monomorphic; neither goes through the generic tag-dispatch helper. The
-  // inline load is the current (faster) form: no call, hoistable base/len.
+  // no call) — or, for back-compat, the `__arr_idx_known` helper.
   if (!onKernel()) ok(/f64\.load/.test(mainBody) || /\((?:return_)?call \$__arr_idx_known\b/.test(mainBody),
     'known ARRAY numeric index should use the monomorphic inline load (or __arr_idx_known helper)')  // self-compile kernel codegen differs; in-process leg owns the shape check
   if (!onKernel()) ok(!/\((?:return_)?call \$__arr_idx\b(?!_known)/.test(mainBody), 'known ARRAY numeric index should skip generic tag-dispatch helper')
@@ -2452,11 +2387,6 @@ test('sourceInline: trailing-return helper inlines into `X = call(...)` assignme
 
 test('sourceInline: nested calls flatten — lerp(grad(a), grad(b), t) fully inlines', () => {
   if (belowOpt(2)) return
-  // A call whose args are THEMSELVES candidate calls (noise's `lerp(grad(aa,…), grad(ba,…), u)`)
-  // must flatten end-to-end: non-simple args bind to temps (no duplication), then a follow-up
-  // pass folds the inner candidate into the temp decl. `grad` is a branchy leaf (`?:`), so this
-  // also exercises pureFlattenExpr accepting conditionals + comparisons. Result: the per-pixel
-  // kernel `perlin` carries zero helper calls.
   const src = `
     const grad = (h, x, y) => { const g = h & 3; const u = (g & 1) === 0 ? x : -x; const v = (g & 2) === 0 ? y : -y; return u + v }
     const lerp = (a, b, t) => a + t * (b - a)
@@ -2579,13 +2509,11 @@ test('typed-array assignment statement does not materialize assigned value', () 
 })
 
 test('byte transform `out[i] = table[in[j]]` stores i32 directly — no f64 round-trip', () => {
-  // An integer typed-array element READ materializes as `f64.convert_i32_*(load8_u …)`, but when
-  // its only consumer is an integer typed-array STORE the value is integer-backed: store the i32
-  // low bits via `store8` and skip the sign-branch + i64-trunc + wrap. Eradicates the f64 detour
-  // on every byte/codec transform (base64/qoi/wav). General: any `dst[i] = src[j]` of int elements.
-  // xform is INTERNAL (its array params are typed Uint8Array via main's `new Uint8Array` call sites)
-  // and called twice so it survives as a function to inspect. The store value `table[src[i]]` is a
-  // Uint8 read (materialized f64.convert) whose only consumer is the Uint8 store → i32.store8 directly.
+  // An integer typed-array element READ materializes as `f64.convert_i32_*(load8_u …)`, but when its
+  // only consumer is an integer typed-array STORE the value is integer-backed: store the i32 low bits
+  // via `store8` and skip the sign-branch + i64-trunc + wrap. General: any `dst[i] = src[j]` of int
+  // elements. xform is INTERNAL (its array params are typed Uint8Array via main's `new Uint8Array` call
+  // sites) and called twice so it survives as a function to inspect.
   const SRC = `
     const xform = (src, table, out, n) => { for (let i = 0; i < n; i++) out[i] = table[src[i]] }
     export const main = () => {
@@ -2608,7 +2536,7 @@ test('byte transform `out[i] = table[in[j]]` stores i32 directly — no f64 roun
 test('integer === integer compares in i32 — no f64.eq widen', () => {
   // `a[i] === b[j]` (two u8 reads) and `intLocal === b[j]` (the levenshtein DP cell) materialize
   // operands as f64 under the universal value model, but the equality must lower to i32.eq, not
-  // widen both to f64 and `f64.eq`. General: any integer-backed === / == / !==. Bit-exact.
+  // widen both to f64 and `f64.eq`. Bit-exact.
   const SRC = `
     const eqcount = (a, b, n) => {
       let c = 0
@@ -2644,9 +2572,8 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
 
 test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier)', () => {
   // A data-dependent guarded scalar update (min/max/clamp reduction) becomes a `select` instead
-  // of a branch — kills misprediction in hot loops (levenshtein's DP min, ~27% faster). General:
-  // any no-else `if (cheapCond) local = cheapPureExpr`. Only at the speed tier (select is a
-  // latency/size trade, like boolConvertToSelect). Bit-exact vs the branchy form.
+  // of a branch — kills misprediction in hot loops (levenshtein's DP min, ~27% faster).
+  // Bit-exact vs the branchy form.
   const SRC = `
     const reduce = (xs, n) => {
       let m = xs[0]
@@ -2679,11 +2606,9 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
 })
 
 test('if→select: load-bearing condition + postfix x++ → branchless select (heapsort child-pick)', () => {
-  // The sift-down child pick `if (a[c] < a[c+1]) c++` is the canonical unpredictable branch. Its
-  // condition READS memory — unlike a pure min/max guard — but the condition is evaluated exactly
-  // once whether the lowering branches or selects, so if→select still applies (only the assigned
-  // VALUE must be trap-free; the postfix `c++` is admitted as `c = c+1`). Wins on Cranelift/x86,
-  // which keep the branch where V8/arm64 if-converts it itself. Bit-exact everywhere.
+  // The sift-down child pick `if (a[c] < a[c+1]) c++` is the canonical unpredictable branch. Wins
+  // on Cranelift/x86, which keep the branch where V8/arm64 if-converts it itself. Bit-exact
+  // everywhere.
   const SRC = `
     const pick = (a, n) => {
       let hits = 0
@@ -2709,9 +2634,9 @@ test('if→select: load-bearing condition + postfix x++ → branchless select (h
 })
 
 test('if→select: a condition that MUTATES a var the value arm reads is NOT converted (reorder safety)', () => {
-  // `select` evaluates its arms BEFORE its condition; the branch evaluates the condition FIRST. So
-  // converting is sound only when the condition is side-effect-free. Here the condition assigns `x`
-  // and the value arm reads `x` — converting would read x stale. The gate must keep the branch.
+  // `select` evaluates its arms BEFORE its condition; the branch evaluates the condition FIRST.
+  // Here the condition assigns `x` and the value arm reads `x` — converting would read x stale. The
+  // gate must keep the branch.
   const SRC = `
     const f = (a, n) => {
       let x = 0, acc = -1
@@ -2760,7 +2685,7 @@ test('if→select: f64 ternary with pure arms+cond → branchless select (sign/c
 test('if→select: short-circuit || with a side-effecting cond is NOT folded (regression: tee reorder)', () => {
   // `a || b` lowers to (if (result f64) is_truthy(local.tee $t a) (then $t)(else b)) — the cond
   // hides a tee the then-arm reads. wasm `select` evaluates its arms BEFORE the cond, so folding
-  // would read $t stale. The cond-purity gate must reject it (this broke ||/??= before the gate).
+  // would read $t stale.
   const SRC = `export const f = (a, b) => a || b
     export const main = () => { let n = 0; if (f(0, 5) === 5) n = n + 1; if (f(7, 9) === 7) n = n + 2; if (f(false, 3) === 3) n = n + 4; return n }`
   is(jz(SRC).exports.main(), 7, '|| short-circuit stays correct (0||5=5, 7||9=7, false||3=3)')
@@ -2768,13 +2693,7 @@ test('if→select: short-circuit || with a side-effecting cond is NOT folded (re
 
 test('Math.floor(bounded)|0 → one exact word, no +∞ guard', () => {
   // f64Range maps through f64.floor: Math.floor(u8 * scale) is a finite value, so toI32
-  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard. The default
-  // tier keeps that i64 form (V8 arm64's fastest; bytebeat 1521 → 1370 µs against the bare
-  // i32.trunc_sat this used to pin); the speed tier takes the word of the bounded integer by
-  // the add (its 1.5·2^52 sum read as bits), no conversion at all: x64 4.1 → 1.0 ns, arm64
-  // within 0.1 ns (bench/lowering.mjs). The image/audio index class (`Math.floor(pixel *
-  // scale)`). Bit-exact. (Inert when the floor's input is a bare param/local — f64Range
-  // can't bound those without range-of-locals.)
+  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard. Bit-exact.
   const SRC = `
     const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
     export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
@@ -2937,11 +2856,8 @@ test('vectorized single-caller helper still participates in inlineOnce', () => {
 })
 
 test('param-distinctness LICM: invariant load from a proven-distinct param hoists across a store', () => {
-  // proc reads src[0]/src[1] (invariant) and writes dst[i]. With src,dst proven distinct buffers
-  // (every call site passes distinct fresh `new TypedArray` locals), the src loads are loop-
-  // invariant ACROSS the dst store and hoist to the pre-header — the alias-analysis LICM rust/clang
-  // do (raytrace's read-only sphere arrays vs the framebuffer). No loads left in the loop body.
-  // Large (non-scalarizable) arrays + 3 call sites keep proc a standalone function to inspect.
+  // proc reads src[0]/src[1] (invariant) and writes dst[i]. Large (non-scalarizable) arrays + 3
+  // call sites keep proc a standalone function to inspect.
   const SRC = `
     const proc = (src, dst, n) => { for (let i = 0; i < n; i++) dst[i] = src[0] + src[1] * i + src[2] - src[3] }
     export const main = () => {
@@ -2979,9 +2895,8 @@ test('param-distinctness LICM: SOUND — same array passed for two params is NOT
 })
 
 test('param-distinctness: a function returning what it allocates hands each call a buffer of its own', () => {
-  // src and dst come from calls of a maker, each allocating; the src loads of proc hoist across
-  // the dst store as they do for two `new` locals. A maker returning one cached array gives both
-  // calls the same buffer: no fact, the loads stay, and the answer is JS's, the store clobbering src.
+  // src and dst come from calls of a maker, each allocating; the src loads of proc hoist across the
+  // dst store as they do for two `new` locals.
   const SRC = (mk) => `
     ${mk}
     const proc = (src, dst, n) => { for (let i = 0; i < n; i++) dst[i] = src[0] + src[1] * i + src[2] - src[3] }
@@ -3041,21 +2956,16 @@ test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself'
   // f64.convert_i32_u of the char code. Inspect jz's type decisions before
   // watr `coalesceLocals` renames `$c`.
   //
-  // P0-2 ledger (2026-08-02): the digit accumulator `n = n*10 + (c-48)` is a
-  // loop-carried, unbounded local (reassigned every iteration — never a
-  // never-reassigned decl, so it never gets a range-rep fact either) — `n*10`
-  // no longer qualifies for `i32.mul` under the corrected, bilateral-bound
-  // `mulFitsI32` (10 alone bounding the product used to be enough; now `n`'s
-  // side needs a bound too, and a general loop accumulator has none). `n`
-  // itself is genuinely value-correct either way (verified below, incl. an
-  // input long enough to overflow i32 — `n` stays exact up to the f64 safe-
-  // integer range, matching JS; the OLD i32-wraps-throughout codegen was only
-  // accidentally correct here because EVERY use of `n` before the final `|0`
-  // stays inside the +/× ring — proving that in general needs a "closed loop-
-  // carried ring under a terminal ToInt32" analysis nothing in jz does today,
-  // so it's not reproduced here). The trade is one `i64.trunc_sat_f64_s` at
-  // the final `n|0` (was 0) instead of a same-signed local the whole way —
-  // `c` itself, this test's actual subject, is unaffected.
+  // `n` itself is genuinely value-correct either way (verified below, incl.
+  // an input long enough to overflow i32 — `n` stays exact up to the f64
+  // safe-integer range, matching JS; the OLD i32-wraps-throughout codegen was
+  // only accidentally correct here because EVERY use of `n` before the final
+  // `|0` stays inside the +/× ring — proving that in general needs a "closed
+  // loop-carried ring under a terminal ToInt32" analysis nothing in jz does
+  // today, so it's not reproduced here). The trade is one
+  // `i64.trunc_sat_f64_s` at the final `n|0` (was 0) instead of a same-signed
+  // local the whole way — `c` itself, this test's actual subject, is
+  // unaffected.
   const wat = compile(`
     export const main = (s) => {
       let n = 0
@@ -3092,13 +3002,10 @@ test('charCodeAt: runtime correctness — digit parse', () => {
   is(main('  9  '), 9)
 })
 
-// P0-2 ledger: without the final `|0`, the accumulator's exact value must
-// escape as a genuine JS number — this is where the OLD i32.mul admission
-// (bounding only the literal `10` side, not `n`) would have wrapped mod 2^32
-// once the digit string grew past i32 range. Host JS is the authority (plain
-// `n=n*10+digit` repeated — exact IEEE-754 double arithmetic, no ToInt32
-// anywhere without the `|0`); '99999999999' (11 nines) accumulates well past
-// 2^31-1 (~2.147e9) but stays exact in f64 (well under 2^53).
+// Host JS is the authority (plain `n=n*10+digit` repeated — exact IEEE-754
+// double arithmetic, no ToInt32 anywhere without the `|0`); '99999999999'
+// (11 nines) accumulates well past 2^31-1 (~2.147e9) but stays exact in f64
+// (well under 2^53).
 test('charCodeAt: digit parse stays exact past i32 range without a truncating sink', () => {
   const { main } = run(`
     export const main = (s) => {
@@ -3235,9 +3142,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(undefined).watr, true)
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
-  // string presets. 'balanced' was removed (it was a pure synonym for the default
-  // level 2); a stray 'balanced' now FAILS like any unknown preset — the silent
-  // level-2 fallback shipped the wrong pipeline on typos ('sped') with no signal.
+  // string presets.
   try { resolveOptimize('balanced'); ok(false, `removed 'balanced' must throw`) }
   catch (e) { ok(/optimize takes true, false, 'size' or 'speed'; got 'balanced'/.test(String(e.message)), `removed 'balanced' throws the unknown-preset error`) }
   const size = resolveOptimize('size')
@@ -3263,9 +3168,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(sizePlusVec.smallConstForUnroll, false)
   is(sizePlusVec.scalarTypedArrayLen, 8)
 
-  // Pre-analyze loop transforms (compile/index.js) must be OFF at level 0/1 and ON at 2+. They were
-  // absent from PASS_NAMES, so ALL_OFF lacked the keys and `undefined !== false` ran them at EVERY
-  // level — including the self-compile L0 fast path the "fastest compile, no opt" contract turns off.
+  // Pre-analyze loop transforms (compile/index.js) must be OFF at level 0/1 and ON at 2+.
   for (const n of ['loopIVDivMod', 'loopSquare', 'unrollRecurrence', 'clampPeel']) {
     is(resolveOptimize(0)[n], false, `${n} off at level 0`)
     is(resolveOptimize(1)[n], false, `${n} off at level 1`)
@@ -3329,13 +3232,8 @@ test('dead-store elimination (watr): side-effecting RHS of an overwritten local 
   is(main(), 5)
 })
 
-// === Inliner: expression-bodied arrow whose entire body is a candidate call ===
 // plan.js's `inlineHotInternalCalls` walks non-exported function bodies and
-// passes them to `inlineInStmt`. For a block-bodied function that's right —
-// statement-position calls discard their return value. For an expression-
-// bodied arrow (`func.body[0] !== '{}'`), the same path silently dropped the
-// value: the body became an empty block and the caller observed 0/undefined.
-// Fix: dispatch on body shape — non-block bodies route through `inlineInExpr`.
+// passes them to `inlineInStmt`.
 
 test('inliner preserves return value of an expr-bodied arrow whose entire body is a candidate call', () => {
   const { entry } = jz(`
@@ -3355,18 +3253,10 @@ test('inliner: expr-bodied arrow with arg-forwarding candidate', () => {
   is(entry(21), 42)
 })
 
-// === promoteIntArrayLiterals (Workstream #4) ===
+// promoteIntArrayLiterals (Workstream #4)
 //
-// `let xs = [intLit, …]` with read-only usage and no shape-changing methods
-// gets rewritten to `let xs = new Int32Array([intLit, …])`. The carrier
-// becomes PTR.TYPED (4-byte i32 slots) instead of PTR.ARRAY (8-byte f64
-// slots); `.typed:[]` indexing fires, and `.typed:map` activates the SIMD
-// vectorizer on i32x4-shaped lambdas. The pass is purely conservative —
-// any operation that's not provably safe on a TYPED carrier disqualifies.
-//
-// Detection markers in WAT:
-//   promoted   → `(local $NAME i32)`, i32.load with 4-byte stride, no $__arr_idx_known
-//   unchanged  → `(local $NAME f64)`, $__arr_idx_known or 8-byte stride
+// `let xs = [intLit, …]` with read-only usage and no shape-changing methods gets
+// rewritten to `let xs = new Int32Array([intLit, …])`.
 
 const compileMain = (src, passes = {}) => {
   // Representation pins name the original locals, before slot allocation.
@@ -3443,8 +3333,7 @@ test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
 })
 
 // A test the summary decides folds before promotion (plan/fold-kind-tests.js):
-// the promoted literal never meets it. One an inlined helper brings in after
-// the fold is still there to see a typed array, so it disqualifies.
+// the promoted literal never meets it.
 test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return false)', () => {
   const decided = `
     export const main = () => {
@@ -3573,7 +3462,7 @@ test('promoteIntArrayLiterals: .filter promotes (.typed:filter emits same-elemen
 test('promoteIntArrayLiterals: string-literal key disqualifies (NaN-coercion would return a[0] instead of undefined)', () => {
   // `a[k]` where k is a string literal: after promotion to Int32Array,
   // `i32.trunc_sat_f64_s(NaN-boxed-string) = 0` silently returns a[0] = 1
-  // instead of undefined. The candidate must be disqualified.
+  // instead of undefined.
   const src = `
     export const str_key = () => {
       const a = [1, 2, 3]
@@ -3596,8 +3485,7 @@ test('promoteIntArrayLiterals: string-literal key disqualifies (NaN-coercion wou
 
 test('promoteIntArrayLiterals: unknown-type param key disqualifies (string at runtime → NaN-coerce)', () => {
   // `a[k]` where k is a function parameter of unknown type: the caller may
-  // pass a string. After promotion the read must still route through the
-  // __is_str_key → __dyn_get dispatch rather than a raw Int32Array load.
+  // pass a string.
   const src = `
     export const test_str = (k) => {
       const a = [10, 20, 30]
@@ -3696,9 +3584,7 @@ test('.typed:slice with negative and OOB indices', () => {
 test('promoteIntArrayLiterals: a .filter().map() chain answers as an Array\'s does', () => {
   // The map of a filter's result is no promoted map: the summary holds the
   // filter's array to no count (an index past what it kept is undefined), so
-  // a walk over it may miss and its map's elements are not known words. The
-  // literal stays an Array there; a walk over a receiver nothing else reaches
-  // cannot miss, which the summary does not say yet.
+  // a walk over it may miss and its map's elements are not known words.
   const src = `
     export const main = () => {
       const xs = [1, 2, 3, 4, 5]
@@ -3742,9 +3628,8 @@ test('promoteIntArrayLiterals: a derived array is an Array where it is told from
 })
 
 test('promoteIntArrayLiterals: hole disqualifies', () => {
-  // Sparse literal: [1, , 3] — middle slot is a hole. intLiteralValue
-  // returns null for non-literal elements, so the candidate gate skips it.
-  // (a method keeps the list a list: read at constant positions only, it would be its elements' locals)
+  // Sparse literal: [1, , 3] — middle slot is a hole. intLiteralValue returns null for non-literal
+  // elements, so the candidate gate skips it.
   const src = `
     export const main = () => {
       const xs = [1, , 3]
@@ -3794,9 +3679,6 @@ test('promoteIntArrayLiterals: large int-only literal stays promoted (length / i
 
 test('captureIntCertain: intCertain propagates across capture (Math.floor elides)', () => {
   // Parent has `let i = n | 0` — every defining RHS is integer (bitwise-or).
-  // Inner closure captures `i` and calls `Math.floor(i)`. Math.floor on an
-  // intCertain operand is a no-op: the emitter (module/math.js:fInt) should
-  // skip `f64.floor` and just load the f64 from the env slot.
   const src = `
     export const make = (n) => {
       let i = n | 0
@@ -3815,9 +3697,6 @@ test('captureIntCertain: intCertain propagates across capture (Math.floor elides
 })
 
 test('captureIntCertain: intCertain skips __to_num in arithmetic on captures', () => {
-  // `toNumF64` (src/ir.js) skips the __to_num wrapper when the operand is an
-  // intCertain name. With propagation, the captured `i` won't be wrapped in
-  // a __to_num call. Without it, __to_num would be emitted.
   // We use string concat (forces __to_num path) to make the difference visible.
   const src = `
     export const make = (n) => {
@@ -3914,8 +3793,7 @@ test('schemaSlotIntCertain: later non-int assign poisons slot', () => {
 
 test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
   // Slot fed by a local `k` that the per-body intCertain fixpoint marks as
-  // integer-shaped (`let k = n | 0`). The slot's write source resolves through
-  // the body-local intCertain map (not a direct literal).
+  // integer-shaped (`let k = n | 0`).
   const src = `
     export const main = (n) => {
       const k = n | 0
@@ -3929,22 +3807,18 @@ test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
   is(run(src).main(5.9), 5)
 })
 
-// ───────────────────────────────────────── pass semantic-preservation pins
-// Each pins one optimizer pass against a class of value-corrupting regression.
 // Behavioural (run + assert), since the failure mode is a wrong runtime value.
 
 test('zero-init drop (watr zeroinit): -0.0 initializer is preserved (not coerced to +0)', () => {
   // -0 and +0 share an i64/f64 zero bit pattern under `===`, but `1/-0` is
   // -Infinity. The zero-init drop must exclude -0.0 (locals default to +0.0).
-  // (jz's own dropDeadZeroInit pass was retired — both ablation sweeps showed it
-  // net-harmful: watr reaches a smaller fixpoint from the un-dropped form.)
   is(run('export let main = () => { let x = -0.0; return 1 / x }').main(), -Infinity)
   is(run('export let main = () => { let x = 0.0; return 1 / x }').main(), Infinity)
 })
 
 test('zero-init drop (watr zeroinit): i64 0n zero-init survives into later arithmetic', () => {
-  // BigInt locals init to `i64.const 0`; the i32/f64 zero-init dropper must not
-  // touch the i64 slot. (A raw `bigint` return now crosses as a Number too — see test/data.js.)
+  // BigInt locals init to `i64.const 0`; the i32/f64 zero-init dropper must not touch the i64
+  // slot.
   is(run('export let main = () => { let x = 0n; return Number(x + 5n) }').main(), 5)
 })
 
@@ -3975,9 +3849,6 @@ test('arenaRewind: an allocation that is returned must persist (no rewind)', () 
   is(ex.main(), 6)
 })
 
-// ── WAT copy-propagation (watr/optimize) ──────────────────────────────
-// The value-model lowering leaves local round-trips `$b = $a; $b = f($b)`; copy-prop
-// rewrites the use to $a and the adjacent-dead-store pass drops the now-dead copy.
 const watStr = n => JSON.stringify(n)
 
 test('wat copy-prop: collapses a local copy round-trip, dropping the copy', () => {
@@ -4047,18 +3918,16 @@ test('narrowLoopBound: fractional / NaN / negative / zero bounds match JS', () =
 
 test('bounded loop copy: negative starts preserve NaN zero-work behavior', () => {
   // i ∈ [-2, …): with bound NaN the f64 compare is false at i=-2 (zero trips);
-  // a naive i32 rewrite (NaN→0) would run two iterations. NaN takes the
-  // original Number loop, where the comparison remains false.
+  // a naive i32 rewrite (NaN→0) would run two iterations.
   const src = `export const main = (n) => { let s = 0; for (let i = -2; i < n; i++) s += 1; return s }`
   const js = (n) => { let s = 0; for (let i = -2; i < n; i++) s += 1; return s }
   const { main } = run(src)
   for (const n of [NaN, -1, 0, 2.5, 3]) is(main(n), js(n), `n=${n}`)
 })
 
-// === splitCharScan (charCodeAt iteration-range splitting) ===
+// splitCharScan (charCodeAt iteration-range splitting)
 // `for (i = 0; i < N; i++) … s.charCodeAt(i) …` with an arbitrary bound paid
-// the OOB NaN arm per char (f64 carrier + f64 classifier compares). The split
-// at Math.min(N, s.length) lets the bound proof fire in the main loop.
+// the OOB NaN arm per char (f64 carrier + f64 classifier compares).
 
 test('splitCharScan: main loop narrows the char carrier to i32', () => {
   const wat = compile(`
@@ -4076,10 +3945,6 @@ test('splitCharScan: main loop narrows the char carrier to i32', () => {
   ok(/f64\.min|call \$math\.min/.test(wat), 'main bound is min(N, s.length)')
 })
 
-// The main loop's bound, `Math.min(n, s.length)`, has no hull below (n is any Number) but
-// rises no further than a string's length, an i32 field: the counter is a word, and the
-// char it reads is a raw word too (static.js topOf; lost between 8a84ee53 and 9b2826b7,
-// when tokenizer ran its scan on a Number counter with the NaN arm per char).
 test('splitCharScan: the main loop counts in a word and reads a raw char', () => {
   const wat = compile(`
     const count = (s, n) => {
@@ -4123,10 +3988,8 @@ test('splitCharScan: integral / fractional / NaN / negative bounds match JS', ()
   for (const n of [0, 3, 6, 9, 4.5, 7.5, NaN, -1]) is(scan(s, n), js(s, n), `n=${n}`)
 })
 
-// The tail starts at the string's length (or runs no step): every character it
-// reads is NaN, so it classifies nothing. Copied verbatim it was a second scan as
-// large as the first, and V8, allocating registers over the whole function,
-// spilled the main loop's hash to the stack (tokenizer: a store and a reload a char).
+// The tail starts at the string's length (or runs no step): every character it reads
+// is NaN, so it classifies nothing.
 test('splitCharScan: the tail reads no character past a string\'s end', () => {
   const src = `
     const isAlpha = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
@@ -4195,10 +4058,6 @@ test('splitCharScan: break in body disables the split (a main-loop break must no
 })
 
 test('for-bound snapshot: read-only builtin calls do not block the .length hoist', () => {
-  // `callFree` used to disqualify ANY call in the loop body — a charCodeAt /
-  // Math.imul body re-decoded the NaN-boxed string length every iteration
-  // (≈3× slower on byte loops). Read-only builtins can't resize the receiver,
-  // so the proven immutable string bound can snapshot into a pre-loop local.
   const src = `export const main = (s) => {
     let h = 0x811c9dc5 | 0
     for (let i = 0; i < s.length; i++) {
@@ -4259,12 +4118,10 @@ test('for-bound snapshot: a mutating call in the body still re-reads the bound',
   is(run(src).main(), 3)
 })
 
-// === narrowI32: general int-accumulator narrowing (ir.js toI32 ring algebra) ===
 // ToInt32 is reduction mod 2^32; {+,−,×} are ring ops under it, so exact-int f64
 // trees compute in i32 with no trunc/Infinity guard. `/`/`%` narrow with const
 // divisors (`/` only at the ToInt32 root; `%` peels faithful converts at emit).
 
-// ---- wrapped words: a wrapped i64 operation over extended words is the word operation ----
 test('wrapped words: `avail & -avail` negates in the word, exact at the int32 extreme', () => {
   // A negation of a word may exceed int32 (-INT_MIN), so the narrowing widened it to
   // i64 and wrapped the result for its bitwise consumer: `i32.wrap_i64(i64.sub(0,
@@ -4419,7 +4276,6 @@ test('word numbers: a fraction, a -0 or a NaN stored behind the local is read ba
   }
 })
 
-// ---- nanCanon: a canonical-NaN step only arithmetic reads is its value (optimize/nan-canon.js) ----
 const SIGN_SELECT_SRC = `const hs = new Int32Array(8), xs = new Float64Array(8)
   export let set = (i, h, x) => { hs[i] = h; xs[i] = x }
   const grad = (h, x, y) => { const u = (h & 1) === 0 ? x : -x; const v = (h & 2) === 0 ? y : -y; return u + v }
@@ -4427,8 +4283,7 @@ const SIGN_SELECT_SRC = `const hs = new Int32Array(8), xs = new Float64Array(8)
 
 test('nanCanon: a sign-select through a const local adds without its canon', () => {
   // The emitter folds a negation's NaN to the canonical pattern; through `u` the
-  // sum cannot strip it at the consumer. Every read of `u` is a sum's operand,
-  // which propagates any NaN alike, so the pass takes the negation as the value.
+  // sum cannot strip it at the consumer.
   const m = jz(SIGN_SELECT_SRC, { optimize: 'speed' }).exports
   const hs = [0, 1, 2, 3, 1, 2], xs = [1.5, -2, 3.25, NaN, 0.5, -0]
   for (let i = 0; i < hs.length; i++) m.set(i, hs[i], xs[i])
@@ -4773,8 +4628,7 @@ test('narrowI32: f64 edges (NaN/±Inf/fraction) keep exact ToInt32 semantics', (
 })
 
 // Regressions for the former duplicated truthiness expansion: it omitted
-// false, then boxed BigInt zero. Runtime semantics now have one owner, and
-// the inline and outlined forms share the complete predicate builder.
+// false, then boxed BigInt zero.
 
 test('truthiness: || sees boolean false through a boxed local as falsy', () => {
   const src = `
@@ -4896,11 +4750,7 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // `&&` parses left-deep (subscript's binary() combinator), so a 2-D bounds test
   // `x>=0 && x<W && y>=0 && y<H` is `((x>=0 && x<W) && y>=0) && y<H` — the y-pair
   // straddles an intervening `&&` node (y>=0 is that node's right child, y<H is the
-  // outer call's `b`), not immediate AST siblings the way the x-pair is. Before the
-  // chain-recursion fix, only the FIRST (innermost) pair fused; every later pair kept
-  // its two signed compares + i32.and. This is the 2D-bounds-check shape from trace.js
-  // and any scanner/raster code with more than one range test chained
-  // (.work/archive/todo.md §deletion-sweep, rival-wat TRANSFERABLE item 1, LANDED).
+  // outer call's `b`), not immediate AST siblings the way the x-pair is.
   const wat = compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })
@@ -4966,7 +4816,7 @@ test('range-check fusion: untyped f64 chain never fuses, even across a multi-pai
 test('LICM: nested-loop invariant arithmetic is hoisted (V8 wasm under-hoists it)', () => {
   // A subexpression invariant w.r.t. an INNER loop (`(a-b)*K` recomputed every `j`)
   // is hoisted out of it — the per-pixel cost in nested rasterizers/convolutions
-  // (penrose, waves). Top-level loops still defer plain arithmetic to V8's own LICM.
+  // (penrose, waves).
   const wat = compile(
     `export let f = (a, b, n, m) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<m;j++) s = s + (a-b)*3.5 + j; return s }`,
     { wat: true, optimize: 'speed' })
@@ -5094,9 +4944,7 @@ test('loop-SR: escaped reads and callee writes keep the original counter domain'
 })
 
 // A dividend affine in a `for` counter, ascending or descending, through a `const` the
-// body declares: its floored quotient and remainder step with the counter. A remainder
-// against zero reads `r === 0` whatever the sign, a quotient under that test is `q`,
-// `Math.floor` is `q`, `~~` and `%` are `q` and `r` where the dividend is not negative.
+// body declares: its floored quotient and remainder step with the counter.
 const loopDivisions = (src, optimize) => {
   const fn = parse(src, optimize).find(n => n?.[0] === 'func' && n.some(x => x?.[0] === 'export' && x[1] === '"f"'))
   const loops = []
@@ -5242,11 +5090,11 @@ test('recursion unroll: the size gate reads the narrowed body', () => {
   const wat = compileJzAt({ id: 'nqueens', js: join(ROOT, 'bench/nqueens/nqueens.js') }, { level: 'speed' }, (code, opts) => compile(code, { ...opts, wat: true }))
   ok(/_ru2/.test(wat), 'two levels of the call are unrolled into the solver')
 })
-// (a helper whose one `if` a sweep decided leaves `[';', null]`: the stdlib's iterator
-// callback check under a known callback, in webaudio)
-// The speed tier reads each nonzero float literal from an immutable global: V8 rematerializes a
-// float constant through an integer register at each use (two instructions on x64), a global is
-// one load the engine folds into the arithmetic. Zero stays inline; a literal keeps its bits.
+// (a helper whose one `if` a sweep decided leaves `[';', null]`: the stdlib's iterator callback
+// check under a known callback, in webaudio) The speed tier reads each nonzero float literal
+// from an immutable global: V8 rematerializes a float constant through an integer register at
+// each use (two instructions on x64), a global is one load the engine folds into the
+// arithmetic.
 test('poolFloats: nonzero float literals read immutable globals at speed, bit for bit', () => {
   const src = `export let f = (n) => {
     let x = 0.1, y = 0, z = 0, s = 0
@@ -5271,9 +5119,7 @@ test('poolFloats: nonzero float literals read immutable globals at speed, bit fo
 })
 
 // x64 V8 branches around a float select; a condition the data decides (a hash bit picking a
-// gradient's sign) mispredicts half the time. The speed tier picks between the operands' bits
-// instead, a conditional move; a running minimum is the operands' pseudo-minimum (below); a
-// clamp against a literal keeps its select.
+// gradient's sign) mispredicts half the time.
 test('selectBits: a float select the data decides picks the operands\' bits at speed', () => {
   const src = `export let f = (n) => {
     const h = new Int32Array(64), v = new Float64Array(64)
@@ -5309,8 +5155,7 @@ test('selectBits: a float select the data decides picks the operands\' bits at s
 
 // A clamp against limits its loop reads before it (a range record's min and max)
 // holds the same way nearly always, as one against a literal does: its select
-// stays a float select, whose branch predicts. A bound the loop writes (a running
-// minimum) is still the data's: its choice is the pseudo-minimum.
+// stays a float select, whose branch predicts.
 test('selectBits: a clamp against bounds its loop never writes keeps its float select', () => {
   const src = `export let f = (lo, hi, n) => {
     const v = new Float64Array(64)
@@ -5348,8 +5193,7 @@ test('selectBits: a clamp against bounds its loop never writes keeps its float s
 // -maximum, `pmin(m, d)` = `d < m ? d : m` by definition, NaN and signed zeros included:
 // lane 0 of f64x2.pmin/pmax over splats, `minpd` on x64 and `fcmgt` + `bsl` on arm64,
 // where the bits route moved both operands between register files on the chain a running
-// extreme carries to the next iteration (worley's nine feature points). Without SIMD the
-// choice keeps the bits.
+// extreme carries to the next iteration (worley's nine feature points).
 test('selectBits: a choice between its test\'s operands is their pseudo-minimum or -maximum', () => {
   const src = `export let f = (n, seed) => {
     const v = new Float64Array(64)
@@ -5385,9 +5229,6 @@ test('selectBits: a choice between its test\'s operands is their pseudo-minimum 
 // A running minimum of values of no sign (squared distances, worley's nine feature points) chooses
 // by their words: for +0, the positives and +Infinity the unsigned order of the bits is the floats'
 // order, and every NaN's bits, either sign, lie above +Infinity's, where `d < m` never picks one.
-// The minimum lives in an integer local: a compare and a select between integer registers carry it
-// from one step to the next on x64 and arm64 alike. A minimum a parameter starts, one of a value
-// that may be negative, or a maximum keeps the pseudo-operator.
 test('selectBits: a running minimum of values of no sign chooses by their words', () => {
   // a nearest feature point over a cell's neighbours (worley's sampler), and beside it the
   // extremes that keep their pseudo-operators
@@ -5443,8 +5284,7 @@ test('selectBits: a running minimum of values of no sign chooses by their words'
 
 // A signed division or remainder of a value the intervals prove non-negative by a positive one is
 // the unsigned one: an engine divides an unsigned word by a constant with a multiply-high and a
-// shift, the signed one adds a negative quotient's correction. A window's sum of bytes and a byte's
-// remainder divide unsigned; a dividend that may be negative stays signed.
+// shift, the signed one adds a negative quotient's correction.
 test('unsignedDivision: a non-negative dividend divides unsigned', () => {
   const src = `export let f = (n) => {
     const src = new Uint8Array(256), out = new Int32Array(256)
@@ -5469,8 +5309,7 @@ test('unsignedDivision: a non-negative dividend divides unsigned', () => {
 
 // An innermost loop of 4 to 16 iterations known at compile time is its body written out once per
 // iteration at speed: V8 writes out only loops of fewer than four, and otherwise keeps the exit
-// test and the counter's step on every copy. A box window's nine taps (`k` from -r to r, r a
-// literal) are written out; a loop of seventeen stays a loop.
+// test and the counter's step on every copy.
 test('unrollTrips: a loop of 4 to 16 known iterations is written out at speed', () => {
   const src = `export let f = (n) => {
     const src = new Uint8Array(256), out = new Int32Array(256)
@@ -5538,11 +5377,7 @@ test('unrollTrips: which loops it writes out', () => {
   is(JSON.stringify(rot).split('"$k"').length - 1, 2 + 2 + 9 * 3, 'each copy keeps the step the test made')
 })
 
-// A Number a loop holds unchanged takes a register through the whole loop. Where the values it
-// carries and the ones a pass would hold for it outnumber the floating-point registers (V8: 15 on
-// x64), V8 spills what the loop carries, a store and a reload on its chain every iteration; the
-// coefficients of a cascade of eight sections (40, beside 16 carried values) are read where the
-// loop uses them instead, a load off every chain. Two sections (10 beside 4) still fit, held.
+// A Number a loop holds unchanged takes a register through the whole loop.
 test('fp-registers: a loop keeps the invariant reads its registers have no room for', () => {
   const src = (stages) => `const design = (n) => { const sos = []; for (let i = 0; i < n; i++) sos.push({ b0: 0.1 + i * 0.001, b1: 0.2 - i * 0.0005, b2: 0.1, a1: -1.5 + i * 0.01, a2: 0.6 - i * 0.005 }); return sos }
     const filter = (data, params) => {
@@ -5588,8 +5423,6 @@ test('fp-registers: a loop keeps the invariant reads its registers have no room 
 
 // V8 builds a `v128.const` where it stands: a lane ramp `i32x4 0 1 2 3` is five instructions on
 // arm64, two immediates through a general register on x64, every iteration of the loop around it.
-// The speed tier reads a costly vector constant of a loop from a local set before it; all zeros
-// and all ones (one instruction on either target) stay.
 test('hoistVectorConsts: a vector loop reads its lane ramp from a local set before it', () => {
   const src = `export let f = (n) => {
     const buf = new Uint8Array(n)
@@ -5623,8 +5456,7 @@ test('hoistVectorConsts: a vector loop reads its lane ramp from a local set befo
 })
 
 // x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register
-// into itself on every path, over `x` alone (still live after) it is a renamed move. The speed tier
-// masks the operand that sets bits past the mask; no path grows, the instruction count holds.
+// into itself on every path, over `x` alone (still live after) it is a renamed move.
 test('maskOperands: a byte mask over `^`/`|` moves onto the operand it narrows', () => {
   const g = (n) => ['local.get', n], ld8 = (n) => ['i32.load8_u', g(n)], k = (v) => ['i32.const', v]
   const and = (x, m) => ['i32.and', x, k(m)]
@@ -5667,7 +5499,7 @@ test('maskOperands: a byte mask over `^`/`|` moves onto the operand it narrows',
 
 // A scan whose rounds mostly leave by the guard paid the loop header (V8's stack
 // check) and two taken branches a round; the scan alone, an innermost loop, V8
-// unrolls under one check. The guard's tests and the latch run in the order they did.
+// unrolls under one check.
 test('searchLoops: a loop whose body is a guarded loop scans for its guard in a loop of its own', () => {
   const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
   const latch = ['br_if', '$L', ['i32.lt_s', ['local.tee', '$x', ['i32.add', g('$x'), k(1)]], k(9)]]
@@ -6678,9 +6510,7 @@ test('inline: a callee returning a Math call splices into its loop site (a pure 
 })
 
 test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / INT_MIN÷-1', () => {
-  // The JS integer-division idiom. Lowering to i32.div_s avoids the f64 round-trip;
-  // sound for all i32 a,b (the f64 quotient never rounds across the trunc boundary)
-  // except b=0 (→0, div_s traps) and INT_MIN/-1 (→INT_MIN wrap, div_s traps) — guarded.
+  // The JS integer-division idiom.
   const constSrc = `export let f = (x0) => { let x = x0|0; return (x/9)|0 }`
   const runSrc = `export let f = (x0, v0) => { let x = x0|0, v = v0|0; return (x/v)|0 }`
   ok(/i32\.div_s/.test(compile(constSrc, { wat: true, optimize: 'speed' })), 'constant divisor → i32.div_s')
@@ -6719,16 +6549,11 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
   // (bitwise, provably [0,mask]) → tri = a ternary of two range-provable arms → dq =
   // DMIN*65536 + tri*DSPAN (a magnitude-BOUND product against a NAMED module const, not
   // just exprType's magnitude-blind `+`) → (dq/65536)|0, dq also feeding a second, real
-  // (non-`|0`) division for the fractional part. `*`'s exprType rule always checks
-  // intExprRange(tri) — a real ordering gap (fixed 2026-08-05, analyze.js processDecl)
-  // let `tri`'s range go unstamped until AFTER local storage types were decided, so the
-  // product-bound check fell back to the unproven ±2^31 default and pinned `dq` to f64
-  // storage permanently (widenLocalTypes only ever demotes i32→f64, never promotes
-  // back) — even though `dq`'s true magnitude was always bounded. Mirrors the real
-  // file's shape exactly (module-level named consts, dual dq use, loop-scoped decls) —
-  // a same-looking single-use/literal-only variant reaches a DIFFERENT, still-open
-  // bare-escape gap (intLevelMap/collectBareEscapes, not touched by this fix) and must
-  // not be conflated with what this pin covers.
+  // (non-`|0`) division for the fractional part. Mirrors the real file's shape exactly
+  // (module-level named consts, dual dq use, loop-scoped decls) — a same-looking
+  // single-use/literal-only variant reaches a DIFFERENT, still-open bare-escape gap
+  // (intLevelMap/collectBareEscapes, not touched by this fix) and must not be conflated
+  // with what this pin covers.
   const src = `
     const DMIN = 96
     const DSPAN = 2000
@@ -6750,8 +6575,7 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
   const w = compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor with a proven-nonneg dividend strength-reduces to i32.shr_u')
   // i64.trunc_sat_f64_s is the ordinary NaN-boxed param-unboxing ABI boundary (n0's
-  // own coercion) — unrelated to the div lever. Only the i32 form is the round-trip
-  // this lever removes (convert_i32_s → f64.mul-by-reciprocal → i32.trunc_sat_f64_s).
+  // own coercion) — unrelated to the div lever.
   ok(!/i32\.trunc_sat_f64_s/.test(w), 'no f64 round-trip survives for the div')
   const { f } = run(src, { optimize: 'speed' })
   const ref = (n) => {
@@ -6781,8 +6605,7 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
   // stamps a real closed hull for any never-reassigned decl `intExprRange` can bound.
   // `dq` here is exactly that: `raw` is bitwise-bounded ([0,0x1ffff]), `dq = raw+5000`
   // closes to [5000, 0x1ffff+5000] — well inside i32 — so the bare `(dq/65536)|0` read
-  // can never see a wrapped value. Fix: Pass D now exempts a name whose proven range
-  // fits signed i32 from the demotion.
+  // can never see a wrapped value.
   const src = `
     export let f = (n0) => {
       let lfo = 0, acc = 0
@@ -6832,14 +6655,6 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
 })
 
 test('co-induction accumulator fact: base64 op-counter recovers i32 storage (INDUCTION-VARIABLE FACT project)', () => {
-  // `op` is declared BEFORE the loop, stepped only by a body literal (`op += 4`),
-  // guarded by a SHIFTED loop bound (`i + 3 <= N`) — the exact base64 encode/decode
-  // shape f95b56bc/efe34b1c/d6460bce/c8700daa all named as "no existing slot in any
-  // current channel". The interval proof bounds op over the loop's own trip count
-  // (type/interval-proof.js accumulatedHull, under the shifted guard) and publishes
-  // its binding hull as the range, so Pass D's
-  // bare-escape check (the `return op` at the end) sees a real hull instead of
-  // demoting op to f64.
   const N = 3072
   const src = `
     const N = ${N}
@@ -6988,11 +6803,6 @@ test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', 
   for (const w of [1, 2, 3, 7, 16, 64, 100]) for (const r of [0, 1, 2, 4, 8])
     is(blurOn(w, r), blurOff(w, r), `blur w=${w} r=${r}`)
 
-  // guards must bail (and stay bit-exact) on: non-monotonic iv, mutated bound, asymmetric
-  // tap, closure-mutated bound, plus — found by the adversarial panel — a clamp var
-  // mutated between its `xi=x+k` source and the clamp (so the clamp guards a DIFFERENT
-  // value than the peel assumes), two tap loops sharing the tap var (tapRadius would pick
-  // the wrong radius), and an `x++` living inside the tap loop (real outer step ≠ 1).
   const danger = {
     ivJump: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if((x&3)===0)x=x+2;x++}return s|0}`,
     boundMut: `${A}export let f=(w,r)=>{let s=0,x=0;while(x<w){let a=0,k=-r;while(k<=r){let xi=x+k;if(xi<0)xi=0;else if(xi>=w)xi=w-1;a+=A[xi&4095];k++}s=(s+a)|0;if(s>9000000)w=w-1;x++}return s|0}`,
@@ -7015,7 +6825,7 @@ test('clamp-peel: stencil edge-peel fires + bit-exact + soundness guards bail', 
 test('clamp-peel: for-loop stencils (the bench shape) peel + bit-exact + guards bail', () => {
   // The bench blur uses `for` loops (prepare keeps them as ['for',...]); the peel
   // must normalize them (init + 3 while-loops with the step re-appended), with the
-  // same guards. A non-unit step must bail.
+  // same guards.
   const A = 'let A=new Int32Array(4096);'
   const fires = stencilPeels
   const on = (s) => run(s, { optimize: 'speed' }).f, off = (s) => run(s, { optimize: { level: 'speed', clampPeel: false } }).f
@@ -7103,13 +6913,6 @@ test('clamp-peel: tap dominance, transfer targets and initializer scopes remain 
 })
 
 test('forward-propagation: typed-array global swap must survive (double-buffer idiom)', () => {
-  // The canonical ping-pong swap `let s = f; f = g; g = s` over reassignable typed-array
-  // module globals. forwardPropagate tracked `s = (global.get $f)` as a single-use copy but
-  // had NO invalidation for the intervening `f = g` (global.set $f) — so it substituted the
-  // now-stale `(global.get $f)` into `g = s`, collapsing it to `g = g` (a vacuumed self-store).
-  // After the swap f AND g then aliased the SAME buffer, so a stencil sim (lbm) streamed into
-  // the buffer it was reading → noise. purgeGlobalRefs on every global.set is the fix. Pin all
-  // opt levels, both swap legs, and the cross-call persistence (the bug also breaks getG alone).
   const SRC = `
     let f = new Float64Array(2)
     let g = new Float64Array(2)
@@ -7129,7 +6932,7 @@ test('forward-propagation: typed-array global swap must survive (double-buffer i
 test('unroll: flattened bodies re-init their accumulators (zero-init elided only once)', () => {
   // Loop unrolling flattens an outer body's `let s = 0` into one scope, duplicating it.
   // WASM zero-inits locals, so the FIRST is elided — but the 2nd+ are genuine per-iteration
-  // resets. Dropping them let `s` carry across iterations (the matmul N≤4 miscompile).
+  // resets.
   const { main } = run(`
     export const main = () => {
       const A = new Float64Array(4)
@@ -7151,12 +6954,10 @@ test('unroll: flattened bodies re-init their accumulators (zero-init elided only
 })
 
 test('sourceInline preserves side effects of an expr-bodied callee at statement position', () => {
-  // `setS = v => s = v` is an expression-bodied arrow whose BODY is the effect
-  // (the assignment). Called as a statement (`setS(7);`), the result is unused —
-  // but inlineHotInternalCalls used to splice only the prefix and DROP the value
-  // expression, losing the `s = v` write. (This is what froze the self-compile parser:
-  // its `seek = n => idx = n` stopped advancing `idx`, so comment-skip looped
-  // forever.) The effect must survive inlining.
+  // `setS = v => s = v` is an expression-bodied arrow whose BODY is the effect (the
+  // assignment). (This is what froze the self-compile parser: its `seek = n => idx =
+  // n` stopped advancing `idx`, so comment-skip looped forever.) The effect must
+  // survive inlining.
   const setter = run(`
     let s = 0
     let setS = (v) => s = v
@@ -7174,10 +6975,6 @@ test('sourceInline preserves side effects of an expr-bodied callee at statement 
 
 test('dead helper does not leak the Eisel-Lemire decimal table', () => {
   if (onKernel()) return  // needs host-side { modules } wiring + optimize:'size' (the kernel owns its pipeline and ignores both — it can't resolve './lib.js')
-  // A dead lib export whose `arr[i] | 0` on an untyped param pulls __to_num →
-  // __dec_to_f64 (consumer of the 10.4 KB power-of-10 table). watr treeshakes the dead
-  // function but not the data segment, so the table used to bloat every such module.
-  // The pre-watr lazy-span pass drops it when no live code parses decimals at runtime.
   const lib = `export let used = (h, x) => ((h ^ (x | 0)) * 16777619) | 0
 export let dead = (arr) => { let h = 0; for (let i = 0; i < arr.length; i++) h = used(h, arr[i]); return h }`
   const bytes = compile(
@@ -7190,8 +6987,6 @@ test('post-watr dead conversion owners leave no orphaned numeric tables', async 
   if (onKernel()) return
   // This shape is still conservatively live before watr: dynamic HASH values flow
   // through an integer coercion while generated integer keys flow through ToString.
-  // Watr later specializes both paths and erases the generic decimal/float owners.
-  // The final data-range sweep must follow that exact graph, not ship 11 KB of tables.
   const src = `const run = (words) => {
     const counts = {}
     for (let i = 0; i < words.length; i++) {
@@ -7241,7 +7036,6 @@ test('range-narrowing: ToInt32 of a bounded value through a reused local drops t
   }`
   const t = parse(src, 'speed')
   // INVARIANT: the bounded index path carries no +∞ guard and no bare i32 trunc_sat — the wrapped i64 truncation.
-  // `xi` is read by `&` alone, so it holds its word (narrowWordLocals): the one truncation is at its write.
   is(loopCount(t, n => n[0] === 'f64.const' && n[1] === 'Infinity'), 0, 'no +∞ guard in loop')
   is(loopCount(t, n => n[0] === 'i32.trunc_sat_f64_s'), 0, 'no bare i32 trunc_sat in loop')
   ok(loopCount(t, n => n[0] === 'i64.trunc_sat_f64_s') >= 1, 'bounded index truncated through i64')
@@ -7259,10 +7053,9 @@ test('range-narrowing: ToInt32 of a bounded value through a reused local drops t
 
 test('int narrowing: bounded typed-array element products use i32.mul (faithful), bit-exact', () => {
   // `int8[i] * int8[j]` (and i8/u8/i16 pairs, plus i16×u16) — the int-conv / correlation /
-  // quantised-MAC shape — has a product that provably fits SIGNED i32. Its sum from +0
-  // erases the product's possible -0, permitting i32.mul in this consumer context.
-  // Rides the i32 ABI (one op, no convert→f64.mul→convert
-  // round-trip) on V8 / JSC / wasmtime alike. u16×u16 (65535² > 2^31) must STAY f64 — unfaithful.
+  // quantised-MAC shape — has a product that provably fits SIGNED i32. Rides the i32 ABI (one op,
+  // no convert→f64.mul→convert round-trip) on V8 / JSC / wasmtime alike. u16×u16 (65535² > 2^31)
+  // must STAY f64 — unfaithful.
   const i8sum = `export let f = (n) => {
     const a = new Int8Array(64); const b = new Int8Array(64)
     for (let i = 0; i < 64; i++) { a[i] = (i % 13) - 6; b[i] = (i % 7) - 3 }
@@ -7424,11 +7217,9 @@ for (const src of [
 
 test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const exponent compiles at every tier (colorpq shape)', () => {
   if (belowOpt(2)) return  // tier bit-identity premise needs BOTH sides vectorized — the opt0 leg forces the default side scalar
-  // Regression: the arm's crPow branch read the optimize config off the LIFT ctx, which never
-  // carries it (`ctx.transform` undefined → TypeError at compile). The config rides a module
-  // flag now (the _relaxF32 pattern). Reaching the arm needs the exact colorpq shape: a pure
-  // fn kept as a call (multi-site, so sourceInline declines), inlined only DURING lift, its
-  // const exponent found via ctx.constLocals inside an AoS interleaved-channel loop.
+  // Reaching the arm needs the exact colorpq shape: a pure fn kept as a call (multi-site, so
+  // sourceInline declines), inlined only DURING lift, its const exponent found via
+  // ctx.constLocals inside an AoS interleaved-channel loop.
   const src = `
     const spow = (a, e) => { const s = a < 0 ? -1 : 1, av = a < 0 ? -a : a; return s * av ** e }
     const nv = 2610 / 16384, p = 1.7 * 2523 / 32, c1 = 3424 / 4096, c2 = 2413 / 128, c3 = 2392 / 128
@@ -7464,7 +7255,6 @@ test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const expone
 // and that entry: the guard reads the entry at the loop and tests both ends of
 // every index (`coefs[k]`, `out[pb - k]`), where no static hull of `n` exists
 // (an int32 the program cannot bound) or a static one would fail at run time.
-// An entry past the array runs the loop as written.
 test('versioning: a counter running down is guarded by its entry', () => {
   const src = `
     const adapt = (coefs, out, n, pb, top, del) => {
@@ -7501,12 +7291,10 @@ test('versioning: a counter running down is guarded by its entry', () => {
   ok(loops.some(l => !/i32\.lt_u|i32\.ge_u/.test(l)), 'the adapting loop runs with no bounds test')
 })
 
-// The same counter where the walk holds the index to a static hull looser
-// than the array: ALAC's predictor (bench/_audiojs/repro/decode/param-range.js,
-// its order an int32 of no known range over a 4096-sample frame) bounds a tap
-// `k <= 4095` against a 32-entry table. That hull's test never passes; the
-// entry's (`order - 1 < 32`) does, so the adapting loops run their fast arm,
-// testing what the hull would have, nothing more.
+// The same counter where the walk holds the index to a static hull looser than
+// the array: ALAC's predictor (bench/_audiojs/repro/decode/param-range.js, its
+// order an int32 of no known range over a 4096-sample frame) bounds a tap `k <=
+// 4095` against a 32-entry table.
 test('versioning: a counter running down past a loose hull is guarded by its entry', () => {
   const src = `
     function signOf(i) { return (((-i) >>> 31) | (i >> 31)) }
@@ -7569,11 +7357,6 @@ test('versioning: a counter running down past a loose hull is guarded by its ent
   ok(!/i64\.const 4095/.test(compile(src, { optimize: 2, wat: true })), 'no guard tests the loose hull')
 })
 
-// Mirror index in the versioning guard: `inp[N−k]` (symmetric fill — FFT
-// log-magnitude, reverse copies) has iv-coefficient −1; affineIdxOfIV used to
-// reject a<0 outright, so the versioned FAST arm kept a per-iteration bounds
-// check + header load on the mirror store. Extremes now follow the sign of a
-// (max at ENTRY, min at maxIv), and the fast arm stores raw.
 test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm', () => {
   const src = `
     const fill = (spec, inp, n, half) => {
@@ -7607,11 +7390,6 @@ test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm'
   is(exports.go(16, 8), 8000, 'undersized: checked twin drops the OOB mirror, keeps in-range')
 })
 
-// While-loop versioning guard off-by-one: maxIv used the EXCLUSIVE bound, so
-// `maxIv < len` failed exactly when len == bound — every half-spectrum /
-// tail-increment while loop (cepstrum's log fill, medianUs) silently ran the
-// CHECKED arm forever. maxIv is now the true pre-increment max (bound−1);
-// only genuinely post-increment accesses widen (cand.post).
 test('versioning: len == bound while-loop takes the fast arm at runtime', () => {
   const src = `
     const fill = (spec, inp, n, half) => {
@@ -7670,8 +7448,7 @@ test('interval walk: downward for-loop proves its reads', () => {
 // src[j+len] === src[ip+len]) len++` — the countable bound is the LEFTMOST
 // conjunct; the comparison conjunct short-circuits after it, so its accesses
 // run only at iv < bound (exact pre-increment extents) and can only exit the
-// loop early. The fast arm compares raw bytes (no checked-read undef arms in
-// the scan loop); a bound-not-first shape stays fully checked (fail-closed).
+// loop early.
 test('versioning: &&-cond match-scan while takes the fast arm', () => {
   const src = `
     const scan = (src, n) => {
@@ -7759,14 +7536,6 @@ test('versioning: ||-cond never versions (accesses run past the bound)', () => {
   is(exports.go(20), 20, 'missing element stays false beyond the boundary')
 })
 
-// S2 narrowing + short-circuit refinement + range-rhs — the heapsort family:
-// copy-chain hulls (`i = child` — i only ever receives root- or cond-clamped
-// child-values; the widened signed-word invariant narrows back to the true range),
-// `&&`-guarded lookahead reads (`child+1 < n && a[child] < a[child+1]` — the
-// rhs conjunct evaluates under the lhs), and var-bounded whiles
-// (`while (child < end)` — end is the enclosing downward iv; the refine takes
-// the range's hi endpoint). All of heapsort's reads/writes prove — no undef
-// arms in the kernel.
 test('interval walk: heapsort proves both sift loops (narrowing + && + range-rhs)', () => {
   const src = `
 const heapsort = (a) => {
@@ -7876,9 +7645,7 @@ export function loop(n, flag) {
 })
 
 test('interval walk: strided companion cursor + packed OR index erase codec bounds checks', () => {
-  // A 3→4 codec loop has two coupled induction variables. The output cursor's
-  // pre-increment window is [0, 12], while the two masked fields OR to [0,63].
-  // Both output stores and table reads should therefore be raw.
+  // A 3→4 codec loop has two coupled induction variables.
   const src = `
 const pack = (input, table, out) => {
   let op = 0
@@ -8311,9 +8078,7 @@ test('i32 count slots preserve missing keys, negative counts, and assignment val
     export let f=()=>count('seen','missing')`
   is(run(negative, { optimize: 'speed' }).f(), -20, 'i32 slots preserve negative bits and missing-key zero')
 
-  // 2^32 is truthy as a JS assignment result but ToInt32(2^32) is zero. The
-  // write therefore cannot use the i32-only slot representation when its value
-  // is consumed by the `if` condition, even though every later read is `|0`.
+  // 2^32 is truthy as a JS assignment result but ToInt32(2^32) is zero.
   const src = `const count=(k)=>{const d={};let r=0;if(d[k]=4294967296)r=1;return r+(d[k]|0)}
     export let f=()=>count('x')`
   is(run(src, { optimize: 'speed' }).f(), 1, 'condition observes the original boxed assignment value')
@@ -8374,9 +8139,7 @@ test('versioned nest: inner-unrolled level keeps its assumptions (fast arm raw)'
   // stage loop (const trip) unrolls INSIDE the arms. Level-owned assumption
   // scoping broke here — an unrolled loop pushes no frame, so its cands could
   // never validate and the guarded arm re-emitted every checked read (40
-  // coefficient loads, 5.6% → 1.7% vs zig-wasm). Assumptions are top-owned
-  // now; the fast arm must be sentinel-free while the checked twin keeps the
-  // exact semantics (guard-fail = OOB reads undefined).
+  // coefficient loads, 5.6% → 1.7% vs zig-wasm).
   const src = `
 const proc = (x, coeffs, state, nStages, out) => {
   const n = x.length
@@ -8434,15 +8197,7 @@ export let run = (n, nStages) => {
 
 test('versioned nest: an inner scan reading the outer iv lifts to one guard at the nest entry', () => {
   // The LZ match scan: a decreasing loop over candidate positions `j`, an
-  // inner while comparing bytes at `j + len` and `ip + len`. The position loop
-  // steps by the match length, so it is no versioning root: the `j` loop is
-  // the nest's top. The inner guard reads `j`, which the top step writes by
-  // construction; the top level's own hull bounds those accesses, so the inner
-  // level lifts and the nest pays one guard at entry (the hull needs the
-  // static extent `N`, as lz has: a parameter length leaves the top without a
-  // hull and the inner guard stays per iteration, which is the sound choice).
-  // Evaluating it per `j` iteration around a one-to-three-step loop cost the
-  // lz case 68%.
+  // inner while comparing bytes at `j + len` and `ip + len`.
   const src = `
 const N = 300
 const scan = (src) => {
@@ -8495,10 +8250,7 @@ test('cursor-versioning: monotone stream cursor guards fast-arm bare loads, chec
   // model can't hull it (its per-iteration advance isn't iv-linear), so it
   // needs its own MONOTONE CURSOR candidate kind. K = per-iteration max
   // advance (here `r++` contributes 1, `r += 2` contributes 2 → K=3); the
-  // guard is `entryR + K·trips + K0 < len`, once per loop entry. The fast arm
-  // then reads `stream[r]` bare (typedIdxProven's assumedBounds channel); the
-  // checked else arm keeps the exact JS OOB semantics (numeric read past the
-  // end → undefined → NaN through arithmetic → `|0` → 0).
+  // guard is `entryR + K·trips + K0 < len`, once per loop entry.
   const src = `
 const cursorScan = (stream, out, n) => {
   let r = 0
@@ -8593,12 +8345,6 @@ export let crc = (len) => {
 })
 
 test('cse-load: element read must not CSE across a control boundary', () => {
-  // Pre-existing latent hole exposed by the pair+tail unroll shape: reads()
-  // walked INTO a while nested in a block statement, so the loop body's a[i]
-  // (loop-VARYING) shared a CSE key with a textual twin after the loop and the
-  // "common" load hoisted above the while — reading a[0] forever. reads() now
-  // stops and flushes at control boundaries; each nested sequence gets its own
-  // table via descend().
   const src = `
 export let main = () => {
   const a = new Int32Array(8)
@@ -8617,26 +8363,14 @@ export let main = () => {
 })
 
 test('scalar range facts: q16 chain stays i32 end-to-end (delayline class)', () => {
-  // Module-const names (DSPAN) failed the product-i32 rule's literal check, so
-  // the whole q16 chain fell to f64 (f64.div + trunc per sample). intExprRange
-  // chains const names + ranged decl reps (mask → ternary hull → bounded
-  // product); the divide strength-reduces to a shift (or, since the P0-2 fix
-  // below, an exact-reciprocal f64 multiply) and the f64 fraction split
-  // multiplies by the exact reciprocal.
-  //
-  // P0-2 ledger (2026-08-02): `t*DSPAN`'s admission now requires a magnitude
-  // BOUND on BOTH operands (not `DSPAN`'s literal bound alone — the old rule's
-  // unsoundness). `t`'s own bound (intExprRange chains its mask→ternary decl
-  // chain) is real and plenty tight — but at the point `d`'s LOCAL STORAGE
-  // TYPE gets decided (an early per-function fixpoint), `t`'s decl-range rep
-  // hasn't been stamped yet (that's a separate, LATER analyze.js walk over the
-  // same body) — a pre-existing pass-ordering gap the old, single-sided rule
-  // never had to exercise (DSPAN's bound alone was always enough). `d` is
-  // still computed in native i32 (`i32.add`/`i32.mul`, confirmed below) and
-  // every value below is exact — this is a lost shift-strength-reduction, not
-  // a correctness gap. Flagged for a follow-up (see .work/archive/todo.md ledger);
-  // not fixed here (would mean reordering or duplicating an existing
-  // whole-function analysis pass, out of scope for the mulFitsI32 fix).
+  // `t`'s own bound (intExprRange chains its mask→ternary decl chain) is real and
+  // plenty tight — but at the point `d`'s LOCAL STORAGE TYPE gets decided (an
+  // early per-function fixpoint), `t`'s decl-range rep hasn't been stamped yet
+  // (that's a separate, LATER analyze.js walk over the same body) — a pre-existing
+  // pass-ordering gap the old, single-sided rule never had to exercise (DSPAN's
+  // bound alone was always enough). `d` is still computed in native i32
+  // (`i32.add`/`i32.mul`, confirmed below) and every value below is exact — this
+  // is a lost shift-strength-reduction, not a correctness gap.
   const src = `
 const DMIN = 96, DSPAN = 2000
 export let f = (p) => {
@@ -8661,11 +8395,10 @@ export let f = (p) => {
 
 test('sign-bit mask yields no non-negative hull (x & 0x80000000 can be negative)', () => {
   // `&` is ToInt32: a mask with bit 31 set produces 0 or -2^31, never [0, m].
-  // The unguarded hull let div→shr_u strength-reduce a negative dividend
-  // (wasm 32768 vs JS -32768). Same class in narrow's walk and the typed
-  // value-range walk — all three sites gate m ≤ 0x7fffffff now. (Products that
-  // EXCEED i32 under such masks are outside the i32 contract — the fuzzer's
-  // "i32 contract exceeded" exclusion — so only in-range results are pinned.)
+  // The unguarded hull let div→shr_u strength-reduce a negative dividend (wasm
+  // 32768 vs JS -32768). (Products that EXCEED i32 under such masks are
+  // outside the i32 contract — the fuzzer's "i32 contract exceeded" exclusion
+  // — so only in-range results are pinned.)
   const src = `export let f = (x) => ((x & 0x80000000) / 65536) | 0`
   for (const optimize of levels(0, 2, 'speed')) {
     const { f } = run(src, { optimize })
@@ -8685,18 +8418,10 @@ test('f64 power-of-two division folds to exact reciprocal multiply', () => {
 })
 
 test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary keeps select', () => {
-  // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): the '?:' select gate (emit.js) and
-  // the post-watr f64 if→select fold (optimize/index.js) both chose `select` purely on
-  // isPureIR — which admits f64.div/f64.sqrt (non-trapping, so "pure", but 10-40+ cycle
-  // latency). The synth ADSR envelope's 4-way cascade (t/ATTACK : .../DECAY : SUSTAIN :
-  // .../RELEASE) got compiled to chained `select`s that eagerly pay for THREE f64.div
-  // every sample regardless of which arm is live — measured ~8% slower than a branch.
-  // hasExpensiveOp (ir.js, consulted as `eagerSelectOK` in emit.js) vetoes any arm whose
-  // subtree contains f64.div/f64.sqrt, recursively — so a cascade with a div ANYWHERE
-  // compiles entirely to nested if/else. A cheap ternary (no div/sqrt in either arm) must
-  // still take `select` — the noise lane's gradient sign-flip flagship, here reproduced as
-  // a tiny leaf inlined directly into a multiply (the shape that lets stripCanon clear its
-  // NaN-canon guard so the arms are pure AND cheap).
+  // A cheap ternary (no div/sqrt in either arm) must still take `select` — the noise
+  // lane's gradient sign-flip flagship, here reproduced as a tiny leaf inlined directly
+  // into a multiply (the shape that lets stripCanon clear its NaN-canon guard so the arms
+  // are pure AND cheap).
   const divCascade = `export const f = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2`
   const jsDiv = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2
   for (const optimize of levels(2, 3, 'speed')) {
@@ -8727,21 +8452,11 @@ test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary ke
 })
 
 test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-compare cond keeps select', () => {
-  // SHAPES + SORT DISSECTED (2026-07-26): a DIFFERENT axis from the arm-cost veto above —
-  // this one is about the select's CONDITION, not its arms. `&&`'s short-circuit lowering
-  // (emit.js, the i32 fast path of the '&&' handler) builds a nested value-`if` — `if
-  // (result i32) (local.tee $t cond1) (then <cond2>) (else (local.get $t))` — whenever
-  // cond2 isn't eagerly-safe (a load-bearing comparison over array reads is the canonical
-  // case: eagerSelectOK already refuses it because f64.load isn't in PURE_OPS). Feeding
-  // that nested if straight into an outer `select` (the ternary's own select-gate, which
-  // only ever vetted its ARMS, never its `cond`) pays the load's latency and the tee/get
-  // shuffle on every iteration, where the lazy if/else it lowered from would only pay for
-  // it when cond1 passed. Sort's "pick larger child" (heapify's `if (child + 1 < n &&
-  // a[child] < a[child + 1]) child++`, if-converted to a select-fed ternary by
-  // boolConvertToSelect) is the exact measured repro: branch-form surgery on this shape
-  // closed a 1.115x gap vs zig-wasm. dataDependentFlag (ir.js) + selectCondOK (emit.js)
-  // veto scoped to nested-if conds that carry a memory load; a plain multi-compare flag
-  // (noise's `(h & 1) === 0` class) never builds this shape and must keep `select`.
+  // `&&`'s short-circuit lowering (emit.js, the i32 fast path of the '&&' handler) builds
+  // a nested value-`if` — `if (result i32) (local.tee $t cond1) (then <cond2>) (else
+  // (local.get $t))` — whenever cond2 isn't eagerly-safe (a load-bearing comparison over
+  // array reads is the canonical case: eagerSelectOK already refuses it because f64.load
+  // isn't in PURE_OPS).
   const heap = new Float64Array([5, 1, 8, 3, 9, 2, 7, 4])
   const pickChild = `
     export const f = (n, child) => {
@@ -8755,8 +8470,7 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
   // the real emitted function, which is what let this pin assert "zero `select` ANYWHERE in
   // the function" — the atom-decode ladder that dispatch legitimately lowers to now
   // resurfaces as nested `select`s of its own, unrelated to the select-gate veto under test
-  // here). Scope the check to the function's own top-level return expression — that's the
-  // one node the select-gate veto actually governs (outer ternary → if/else, not select).
+  // here).
   const topExpr = (fn) => { const last = fn[fn.length - 1]; return Array.isArray(last) && last[0] === 'return' ? last[1] : last }
   for (const optimize of levels(2, 3, 'speed')) {
     // Inspect the branch result before the independent arena epilogue moves
@@ -8793,18 +8507,6 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
 })
 
 test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def binding)', () => {
-  // SYNTH DISSECTED WITH MEASURED SHARES (2026-07-25): stripCanon (emit.js) recurses
-  // structurally into `select`/`if` arms to drop a redundant NaN-canon guard (the guard is
-  // dead when the consumer re-canons its own escape) — but a NESTED call inside a bigger
-  // expression (`trig(ph) * env`, the synth's `sinTau(ph) * env` shape) gets rewritten by
-  // hoistNestedCalls (plan/inline.js) to `const __tmp = trig(ph); … __tmp * env` at the
-  // speed tier. The use site is then a bare fresh `local.get $__tmp` with no `.canonOf` of
-  // its own, severing stripCanon's walk — the guard survived every sample. The fix carries
-  // provenance through the single-def/single-use compiler temp (isHoistTemp + hoistTempDefs
-  // in emit.js): stripCanon looks up the temp's def and, if anything strips, mutates that
-  // def node in place. Direct (non-hoisted) inlining already worked; this pins the
-  // previously-broken call-inlined shape and checks it now matches (bit-exact, and — once
-  // canon-free — cheap enough to become the branchless `select` LEVER 1 restores).
   const src = `
     const trig = (ph) => {
       const q = Math.sqrt(ph + 1)
@@ -8838,10 +8540,8 @@ test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def b
   ok(!/local\.tee[\s\S]{0,40}f64\.neg/.test(fn), 'no tee-guarded NaN-canon wrapper survives around f64.neg')
 })
 
-// watr lowers `&&`/`||` in a condition position to branch chains:
-// one conditional branch per operand, no value diamond, no phi. The short-circuit
-// order and count of evaluations are those of the diamond, so side effects in the
-// operands land exactly once and only when reached.
+// watr lowers `&&`/`||` in a condition position to branch chains: one conditional
+// branch per operand, no value diamond, no phi.
 test('condition chains: short-circuit tests branch per operand, evaluating each once', () => {
   if (onKernel()) return
   const src = `let log = 0
@@ -8928,8 +8628,7 @@ test('devirtSchemaReads: an empty inline cache cannot match zero or subnormal nu
 test('devirtSchemaReads: past the dispatch budget a read site keeps an inline cache', () => {
   // 30 shapes carry `x` at three different slots: too many for a jump table,
   // so the site caches the last static schema it resolved (high word, slot)
-  // and reads the next receiver of that schema behind one compare. Other
-  // receivers, a Number included, take the generic read and refill the cache.
+  // and reads the next receiver of that schema behind one compare.
   const shapes = Array.from({ length: 30 }, (_, i) => i % 3 === 0 ? `{ x: ${i}, k${i}: ${i} }` : i % 3 === 1 ? `{ k${i}: ${i}, x: ${i} }` : `{ a${i}: 1, b${i}: 2, x: ${i} }`)
   const src = `const mk = (i) => { switch (i % 30) { ${shapes.map((s, i) => `case ${i}: return ${s}`).join('\n')} } return { x: -1, z: 0 } }
     export const f = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = mk(i); t += o.x } return t }
@@ -8950,10 +8649,8 @@ test('versioned nest: an inner guard that reads the top counter is bounded by it
   // once read the counter's entry value — its maximum going down, so the upper
   // bound held, and its MINIMUM going up, so an ascending scan's `src[j + len]`
   // read past the array unchecked (jz returned a sum where JS returns NaN). The
-  // low bound has the mirror hole going down. The lifted term is bounded by the
-  // counter's extent now: entry and loop bound, whichever is which. The last
-  // window is the one whose entry is in bounds and whose later iterations are
-  // not — a later checked out-of-bounds read would mask the unchecked one.
+  // last window is the one whose entry is in bounds and whose later iterations
+  // are not — a later checked out-of-bounds read would mask the unchecked one.
   const mk = (header, first, last) => `const N = 300
 export let main = () => {
   const src = new Uint8Array(N)
@@ -9093,9 +8790,8 @@ test('array bounds: a module array keeps no stale length proof across conversion
 })
 
 // A local array a closure captures is truncated by the call that runs it: by a
-// store to its length, by a method of its own (`splice`), or through another
-// name (`cut(h.a)`). A getter's read runs code too (`o.value` truncating the
-// array), whether an operator or `Math.imul` reads it. None leaves a present read.
+// store to its length, by a method of its own (`splice`), or through another name
+// (`cut(h.a)`).
 test('array bounds: a captured array keeps no stale length proof across calls and getter reads', () => {
   const loops = {
     closureLen: 'function cut() { a.length = 0 } for (let i = 0; i < a.length; i++) { cut(); reads++; return a[i].x }',
@@ -9234,9 +8930,7 @@ test('narrowLoopBound: raw i32 comparisons preserve every Number threshold', () 
 
 test('a record of several shapes held by a local is read as the pointer, boxed only where a box is read', () => {
   // shapes' scan: `measure(rows[i])` inlined into the kernel, its parameter holding one
-  // of four record shapes. The element is a pointer boxed into the parameter's local and
-  // unboxed at every field read: the local holds the pointer, so the field reads are
-  // plain loads (int-narrow.js narrowBoxedLocals). The sums are bit-identical.
+  // of four record shapes.
   const src = `const N = 256
     const initRows = () => {
       const rows = []
@@ -9324,8 +9018,7 @@ test('a word converted to a Number and rounded back is the word; a flag of liter
 
 test('a flag of literals: a write nested in another write\'s value is a write of its own', () => {
   // `for (let i = 0, d; (d = ops[i++]); )`: the counter's step sits inside the test's
-  // assignment. A census that returned at the outer write never saw the step, took
-  // the counter for a flag written `0` alone, and the loop never ended.
+  // assignment.
   const src = `const mk = (ops, fn = (a) => { for (let i = 0, d; (d = ops[i++]); ) { if (d === a) return i } return 0 }) => fn
     export let main = () => mk([3, 4, 5])(4)`
   for (const optimize of levels(0, 2, 'speed')) is(run(src, { optimize }).main(), 2, `at ${optimize}`)
@@ -9355,7 +9048,7 @@ test('an argument a spliced loop tests is bound once before it, so the loop it b
   // `n - (i & 7)` is Number arithmetic over bindings nothing writes while `dot` runs,
   // but `dot` reads it in its loop's test: substituted there it is no bound of names,
   // and the versioning that takes the counter integral (and the lane vectorizer after
-  // it) passed the loop by. Bound to a local once, the counter counts in words.
+  // it) passed the loop by.
   if (onKernel()) return
   const src = `function dot(N, x, y) { let s = 0; for (let i = 0; i < N; i++) s += x[i] * y[i]; return s }
     const fn = dot
@@ -9373,9 +9066,7 @@ test('an argument a spliced loop tests is bound once before it, so the loop it b
 test('an argument a spliced loop body reads is bound once before the loop, so its guarded arm takes a word of it', () => {
   // `r * 0.5` is read once in the callee's text, at an index of its loop's body:
   // substituted there it is computed every iteration and no binding the guard can
-  // prove whole, so the copy stayed a byte loop and the sums scalar. Bound to a local
-  // once, the guarded arm reads a word of it (a fractional start fails the guard
-  // into the checked arm, which reads undefined as JS does).
+  // prove whole, so the copy stayed a byte loop and the sums scalar.
   if (onKernel()) return
   const drive = (call) => `export let main = (m) => {
       const x = new Float64Array(256), y = new Float64Array(64)
@@ -9458,8 +9149,7 @@ test('a neighborhood walk over literals unrolls like a count from zero', () => {
 test('a grown array read from a slot is rebound there', () => {
   // `o.xs.push(v)` that outgrows its storage moves the array; the field is
   // rebound to the moved header, as a named receiver is, so its reads skip the
-  // forwarding chase. So is a field a cached read holds (`o.xs.length` tested
-  // first), and an element of a known array at a variable index.
+  // forwarding chase.
   if (onKernel()) return
   const srcs = {
     field: `const o = { xs: [], n: 0 }
@@ -9515,10 +9205,7 @@ test('an element a loop only reads is read once, before it', () => {
   // A matrix applied to every point of a buffer as three.js applies one
   // (`const e = this.elements`, then `e[3]`, `e[7]`, … per point), its cells
   // filled by a `fromArray` that may read past its source's end: each read
-  // tests for a missing cell. The loop stores only into the Float32Array,
-  // storage of the other family, so each element is read once before it, its
-  // test with it. A loop that stores into the matrix reads it each time; one
-  // storing into an array of another construction cell does not.
+  // tests for a missing cell.
   if (onKernel()) return
   const src = `class M {
   constructor() { this.elements = [1, 0.1, 0, 0, 0, 1, 0.2, 0, 0, 0, 1, 0, 0.5, 0.25, 0, 1] }
@@ -9629,10 +9316,8 @@ test('peephole: a word tested against zero and a constant bound is one unsigned 
   }
 })
 
-// A choice whose arms compute one tree (optimize/select-arms.js): the tree over a select
-// of the leaves the arms differ in, so data that decides the test mispredicts nothing.
-// An exponential's sign-dependent rounding (`x < 0 ? trunc(c·x − ½) : trunc(c·x + ½)`) is the
-// kernel; a rounding the arm's sign decides is the truncation, a dead tee its value.
+// A choice whose arms compute one tree (optimize/select-arms.js): the tree over a select of
+// the leaves the arms differ in, so data that decides the test mispredicts nothing.
 test('selectArms: arms that share their tree select their leaves', () => {
   const arm = (round, op) => `(${round} (${op} (f64.mul (f64.const 1.4426950408889634) (local.get $x)) (f64.const 0.5)))`
   const teed = `(f64.trunc (local.tee $t (f64.sub (f64.mul (f64.const 1.4426950408889634) (local.get $x)) (f64.const 0.5))))`
@@ -9662,8 +9347,7 @@ test('selectArms: arms that share their tree select their leaves', () => {
 
 // The interval each i32 value holds where it is computed (optimize/word-ranges.js),
 // read off control flow: a counter under its loop test, a mask, a byte; a sum a word
-// could wrap in has none. Every interval holds: each value the analysis bounds traps
-// when it leaves its interval, and the instrumented programs answer as before.
+// could wrap in has none.
 const WORD_KERNELS = [
   // an insertion sort: a counter stepped down past zero, `a[j + 1]` at j = -1
   `export let f = () => {
@@ -9755,10 +9439,8 @@ test('wordRanges: every interval holds where its value is computed', () => {
 })
 
 // The walk holds the locals' intervals at a point as a value, shared between points
-// in runs of 32: a write costs a run and a join the runs that differ. Held as a Map
-// copied at each write, a function of thousands of word locals (a decoder inlined
-// whole: decode-wav) cost every local at every write, 8 s for the function below and
-// 49 s of that case's 71 s compile. The bound is the old cost with a wide margin.
+// in runs of 32: a write costs a run and a join the runs that differ. The bound is
+// the old cost with a wide margin.
 test('wordRanges: a write costs a run of locals, not every local of the function', () => {
   const N = 6000, g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
   const fn = ['func', '$f', ['param', '$p', 'i32'], ['result', 'i32']]
@@ -9777,8 +9459,7 @@ test('wordRanges: a write costs a run of locals, not every local of the function
 
 // A constant base moves into the memarg (optimize/const-bases.js): where the flow holds a
 // local to one address, an access adding it to an index the flow holds non-negative reads
-// `offset=N` from the index. An index that may be negative keeps the add: `a[j + 1]` at
-// j = -1 adds -8 and takes its 8 from the memarg, the sum wrapping below the base.
+// `offset=N` from the index.
 test('constBases: a base the flow holds to one address is the memarg offset', () => {
   const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
   const load = (base, index, off) => ['i32.load', ...(off ? [`offset=${off}`] : []), ['i32.add', g(base), index]]
@@ -9841,9 +9522,7 @@ export let f = () => {
 })
 
 // A cell is 8 bytes from `$__alloc`, their address in an i32 local, read and
-// written through plain loads and stores of one type. Where the address goes
-// nowhere else the value lives in the local; any other use of the address, a
-// second type, or a write of another address keeps the cell.
+// written through plain loads and stores of one type.
 test('promoteCells: a cell is a local only where its address goes nowhere', () => {
   const g = (n) => ['local.get', n], alloc = (n = 8) => ['call', '$__alloc', ['i32.const', n]]
   const fn = (decls, ...body) => ['func', '$f', ['param', '$p', 'f64'], ['param', '$e', 'i32'], ['result', 'f64'], ...decls.map(([n, t]) => ['local', n, t]), ...body]
