@@ -626,7 +626,7 @@ export function pullStdlib(sec) {
       // round found them, so it wins over a slot the value write of a fused update
       // logged inside a Map's table too (`__slot_write`, which a dictionary shares).
       // Same explicit-include reasoning as __durable_fwd_heal above.
-      if (ctx.core.includes.has('__durable_arr_snap') || ctx.core.includes.has('__durable_obj_snap') || ctx.core.includes.has('__durable_tbl_snap')) {
+      if (ctx.core.includes.has('__durable_arr_snap') || ctx.core.includes.has('__durable_obj_snap') || ctx.core.includes.has('__durable_words_snap')) {
         inc('__durable_arr_heal')
         // an object's heal asks each saved value whether it names memory of the round
         if (ctx.core.includes.has('__durable_obj_snap')) inc('__is_eph_bits')

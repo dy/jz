@@ -283,6 +283,19 @@ export const durableObjSnapNode = (base, value, slot) => {
       ['then', ['call', '$__durable_obj_snap', addr]]]]]
 }
 
+// An object of fixed fields made at start whose field a delete takes, or a store
+// gives back: the field's value (its record, core/durable-log.js
+// `__durable_obj_snap`) where `idx` names it, and the mask of its deleted fields,
+// the header's word (layout.js markDeletedSlotWat), saved once a round.
+export const durableMaskSnapIR = (off, idx = null) => {
+  if (!hasDurableReset()) return ''
+  return `
+    (if (i32.lt_u (local.get $${off}) ${heapResetWat()})
+      (then${idx ? `
+        (call $__durable_obj_snap (i32.add (local.get $${off}) (i32.shl (local.get $${idx}) (i32.const 3))))` : ''}
+        (call $__durable_words_snap (i32.sub (local.get $${off}) (i32.const 8)) (i32.const 1))))`
+}
+
 // A Map's or a Set's table (module/collection/ordered.js) at `off` of `bytes`
 // is saved whole at the round's first mutation (core/durable-log.js
 // `__durable_tbl_snap`): a table the call made pays this compare, one saved

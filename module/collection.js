@@ -20,7 +20,7 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { isNumericIR, ptrOffsetIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, walk, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
+import { ptrOffsetIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, walk, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, general, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { NUMBER, K as KIND, hasTag, tagOf, core } from '../src/summary/kind.js'
@@ -109,7 +109,7 @@ export const dynPropsFilterSetIR = (offExpr) =>
 const dynPropsFilterMissIR = (offExpr) =>
   `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
 
-import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode, durableObjSnapIR, durableTblSnapIR } from './collection/durable.js'
+import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode, durableObjSnapIR, durableTblSnapIR, durableMaskSnapIR } from './collection/durable.js'
 // Re-exported from their new home (module/collection/durable.js — the
 // durable-heap logging primitives, pure-moved out of this file) so
 // module/core.js's/module/json.js's `heapResetWat` imports, module/core.js's
@@ -328,7 +328,7 @@ export default (ctx) => {
     __keys_have: ['__key_eq'],
     __view_get: ['__view_find'],
     __view_set: ['__view_find'],
-    __view_del: ['__view_find'],
+    __view_del: () => ['__view_find', ...(hasDurableReset() ? ['__durable_obj_snap', '__durable_words_snap'] : [])],
     __view_has: [],
     __view_data: ['__view_copy'],
     __view_copy: ['__hash_get_local_hm', '__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__own_order', '__prop_order', '__obj_props', '__dyn_get_t_hm', '__dyn_get_t_h', '__str_hash'],
@@ -367,9 +367,7 @@ export default (ctx) => {
     __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
       ...(ctx.linkDemand.external ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__key_eq', '__ptr_type', '__dyn_set']),
-      '__zomb_scan', '__coll_rehash',
-      ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),
-      ...slotLogDeps(),
+      '__zomb_scan', '__coll_rehash', ...tblSnapDeps(),
     ],
     __hash_get: () => ctx.linkDemand.external
       ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_get']
@@ -381,8 +379,8 @@ export default (ctx) => {
     __hash_new_small: ['__alloc_hdr_n', '__mkptr'],
     __hash_get_local: ['__str_hash', '__key_eq'],
     __hash_get_local_h: ['__key_eq'],
-    __hash_set_local_h: () => ['__key_eq', '__zomb_scan', ...slotLogDeps()],
-    __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_set_local_h: () => ['__key_eq', '__zomb_scan', ...tblSnapDeps()],
+    __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps()],
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
     __map_slot: () => ordUpsertDeps(),
     __coll_step: ['__ptr_offset_fwd', '__coll_seek'],
@@ -395,7 +393,7 @@ export default (ctx) => {
     __ord_rebuild: ['__alloc_hdr_n', '__ord_live', '__ord_index'],
     __ord_copy: ['__ord_rebuild', '__alloc_hdr_n'],
     __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check', '__ord_cap'],
-    __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...tblSnapDeps()],
     __hash_lookup_slot: ['__str_hash', '__key_eq', '__ptr_offset_fwd'],
     __hash_hide: ['__hash_lookup_slot'],
     __hide_member: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__ihash_get_local', '__hash_hide'],
@@ -404,7 +402,7 @@ export default (ctx) => {
     __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
     __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
-    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...slotLogDeps()],
+    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
@@ -425,12 +423,12 @@ export default (ctx) => {
     ],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
-    __dyn_set_own: () => [...viewDeps('__view_set'), ...(recordsOn() ? ['__rec_slot', '__rec_put', '__rec_hash'] : []), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
+    __dyn_set_own: () => [...viewDeps('__view_set'), ...(hasDurableReset() && ctx.types.anyDelete ? ['__durable_words_snap'] : []), ...(recordsOn() ? ['__rec_slot', '__rec_put', '__rec_hash'] : []), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
     __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
-    __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...relogDeps()],
+    __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...tblSnapDeps()],
     // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
-    __dyn_del: () => [...viewDeps('__view_del'), ...(recordsOn() ? ['__rec_del'] : []), ...(ctx.schema.regexSids.size ? ['__is_regexp'] : []), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_key', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__key_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
+    __dyn_del: () => [...viewDeps('__view_del'), ...(hasDurableReset() ? ['__durable_obj_snap', '__durable_words_snap'] : []), ...(recordsOn() ? ['__rec_del'] : []), ...(ctx.schema.regexSids.size ? ['__is_regexp'] : []), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_key', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__key_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
     __str_arr_idx: ['__str_length'],
     __str_u32_idx: ['__str_length'],
     __typed_str_idx: ['__str_length'],
@@ -1101,15 +1099,13 @@ export default (ctx) => {
       ['if', ['i32.eqz', g(s.entry)], ['then', ['call', `$${put}`, ['i64.reinterpret_f64', g(s.recv)], g(s.key), g(s.b), g(s.h)]]],
       ['f64.const', 0]], 'f64')
     const t = temp('cpv'), value = asF64(storedValue(v))
-    // a number needs no durable write barrier (compile/slot-update.js)
-    const bare = isNumericIR(value)
-    if (!bare) inc('__slot_write')
+    // (the find that opened the slot saved its table for the reset: collection/ordered.js genOrdFind)
     const at = ['i32.add', g(s.entry), ['i32.const', 16]], bits = ['i64.reinterpret_f64', g(t)]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, value],
       ['if', ['i32.eqz', g(s.entry)],
         ['then', ['call', `$${put}`, ['i64.reinterpret_f64', g(s.recv)], g(s.key), bits, g(s.b), g(s.h)]],
-        ['else', bare ? ['i64.store', at, bits] : ['call', '$__slot_write', at, bits]]],
+        ['else', ['i64.store', at, bits]]],
       g(t)], 'f64')
   }
 
@@ -1826,7 +1822,8 @@ export default (ctx) => {
     (i64.store (local.get $a) (local.get $v)))`
   // Tombstones an entry in a HASH (string keys). Returns 1 if found+deleted, 0 otherwise.
   // Used as the bucket-level primitive for __dyn_del.
-  ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', propEqG, PTR.HASH)
+  // (thunked: the reset's save reads whether the module has a reset mark, known once it links)
+  ctx.core.stdlib['__hash_del_local'] = () => genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', propEqG, PTR.HASH)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64 bits), value is per-object props hash.
   // Uses bit-hash + i64.eq — no string allocation for the unique integer key.
   ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))', PTR.HASH)
@@ -2089,11 +2086,13 @@ export default (ctx) => {
       (then (return (i32.const 0))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $s (i32.and (i32.wrap_i64 (local.get $e)) (i32.const 0xffffff)))
+    ${durableMaskSnapIR('off', 's')}
     (i64.store (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3))) (i64.const ${UNDEF_NAN}))
     ${markDeletedSlotWat('$off', '$s', true)}
     (local.set $s (i32.wrap_i64 (i64.shr_u (local.get $e) (i64.const 26))))
     (if (local.get $s) (then
       (local.set $s (i32.sub (local.get $s) (i32.const 1)))
+      ${durableMaskSnapIR('off', 's')}
       (i64.store (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3))) (i64.const ${UNDEF_NAN}))
       ${markDeletedSlotWat('$off', '$s', true)}))
     (i32.const 1))`
@@ -2237,7 +2236,7 @@ export default (ctx) => {
             ${ctx.types.anyDelete ? `(local.set $dmask ${deletedMaskWat('$off')})
             (local.set $oldval (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
             (local.set $reinsert ${deletedSlotWat('$dmask', '$idx', '$oldval')})` : ''}
-            ${durableObjSnapIR('off', 'val', 'idx')}
+            ${durableObjSnapIR('off', 'val', 'idx')}${ctx.types.anyDelete ? durableMaskSnapIR('off') : ''}
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
             ${markDeletedSlotWat('$off', '$idx', false)}
             ${ctx.types.anyDelete ? `(if (i32.eqz (local.get $reinsert)) (then (return (local.get $val))))
@@ -3067,6 +3066,7 @@ export default (ctx) => {
         (local.set $idx (call $__schema_slot (local.get $obj) (local.get $key)))
         (if (i32.ge_s (local.get $idx) (i32.const 0))
           (then
+            ${durableMaskSnapIR('off', 'idx')}
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
             ${markDeletedSlotWat('$off', '$idx', true)}
             (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))

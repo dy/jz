@@ -6,7 +6,7 @@ import { valTypeOf } from '../kind.js'
 import { VAL, repOf } from '../reps.js'
 import { K, tagOf } from '../summary/kind.js'
 import { dictCapacity } from '../static.js'
-import { typed, asF64, asI32, temp, tempI32, isLiteralStr, isNumericIR } from '../ir.js'
+import { typed, asF64, asI32, temp, tempI32, isLiteralStr } from '../ir.js'
 import { emit, storedValue } from '../bridge.js'
 import { provenTable, keyForm } from '../../module/collection/forms.js'
 
@@ -86,13 +86,9 @@ export function trySlotUpdate(arr, idx, val, map = false) {
   inc(map ? mapSlot : fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot')
   if (form != null && ctx.transform.optimize?.leanRuntime) inc('__map_slot_o')
   const resIR = i32Values ? asI32(emit(subst(val))) : asF64(map ? storedValue(subst(val)) : emit(subst(val)))
-  // Numeric results need no durable-pointer write barrier.
-  const bare = i32Values || isNumericIR(resIR)
-  if (!bare) inc('__slot_write')
-  const writeBack = bare
-    ? ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
-    : ['call', '$__slot_write', ['local.get', `$${slotT}`],
-      ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
+  // (the slot's table was saved for the reset as its slot was handed out:
+  // collection/upsert.js genUpsert, collection/ordered.js genOrdUpsert)
+  const writeBack = ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
   // A proven dictionary has a slot for every normalized key. Normalize
   // once, then probe, load, compute and store through that slot.
   if (!map && !keyStr) inc('__to_str')

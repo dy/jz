@@ -67,7 +67,7 @@ const generate = (seed, count) => {
 }
 
 // A program's own names, numbered.
-const OWN = /\b(b|o|h|m\d|n|at|t|code)\b/g
+const OWN = /\b(b|o|h|m\d|n|at|t|code|K)\b/g
 const reads = (j) => [[`n_${j}`, []], ...Array.from({ length: READ }, (_, i) => [`at_${j}`, [i]])]
 
 // A seed's programs as one module on one instance: each round, every program's calls, every
@@ -190,7 +190,12 @@ for (const [name, text, rounds = [['m0'], ['m0', 'm0']]] of FIXED)
 // Before (e521f93b8) the Maps' seeds differed in 398 and 388 reads, the Sets' in 349 and 187, the
 // objects' in 363 and 312; with the table's save taken out the Maps and a Set never answer in
 // 30 s and the other Set differs in 366; with the field record back to pointers alone the
-// objects differ in 351 and 294 (2026-11-16, levels 1, 2 and size).
+// objects differ in 351 and 294 (2026-11-16, levels 1, 2 and size). A dictionary (an object
+// whose keys a program computes, its storage a table of its own, module/collection/upsert.js)
+// is saved whole as the tables are, its numbers too: at 152b40849, whose dictionaries kept the
+// entries' own logs, the dictionaries' seeds differed in 312 and 354 reads and the objects' in
+// 3 and 6 (a key the start added, written in a round); with the dictionary's save taken out
+// the dictionaries differ in 168 and 193 and some never answer, the objects in 48 and 99.
 const generateTables = (seed, count, target) => {
   let state = (seed * 7919 + target.length) >>> 0 || 1
   const rnd = () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296 }
@@ -207,6 +212,7 @@ const generateTables = (seed, count, target) => {
     const k = () => pick([`'p'`, `'q'`, `'r'`, `'s'`, `'kz'`, '3', '4'])
     const made = target === 'map' ? `new Map([${keys.map((key, i) => `[${key}, ${vals[i]}]`).join(', ')}])`
       : target === 'set' ? `new Set([${vals.join(', ')}])`
+      : target === 'dict' ? '{}'
       : `{ ${keys.map((key, i) => `${/^\d/.test(key) ? `[${key}]` : key.slice(1, -1)}: ${i % 2 ? `'${String.fromCharCode(97 + i)}'` : vals[i]}`).join(', ')} }`
     const decl = holder === 'bind' ? `const b = ${made}` : `const o = { k: 1, a: ${made} }`
     const P = holder === 'bind' ? 'b' : 'o.a'
@@ -215,18 +221,21 @@ const generateTables = (seed, count, target) => {
         `${P}.set('p', ${P}.get('q'))`, `if (!${P}.has(${k()})) ${P}.set(${k()}, ${v()})`]
       : target === 'set' ? [`${P}.add(${v()})`, `${P}.add('a0')`, `${P}.delete(${v()})`, `${P}.delete(11 + 1)`, `${P}.delete('a0')`, `${P}.clear()`,
         `for (let i = 0; i < 9; i++) ${P}.add(i * 7)`, `${P}.add(${P}.size)`, `if (!${P}.has('c2')) ${P}.add('c2')`]
-      : [`${P}.p = ${vo()}`, `${P}.q = ${vo()}`, `${P}.zz = ${v()}`, `${P}[3] = ${v()}`, `${P}.p = ${P}.q`]
+      : target === 'dict' ? [`${P}[K[${int(0, 6)}]] = ${v()}`, `${P}[K[${int(0, 6)}]] = ${v()}`, `delete ${P}[K[${int(0, 6)}]]`,
+        `${P}[K[${int(0, 6)}]] = ${P}[K[${int(0, 6)}]]`, `for (let i = 0; i < 9; i++) ${P}['g' + i] = ${v()}`, `for (const key of Object.keys(${P})) delete ${P}[key]`]
+      : [`${P}.p = ${vo()}`, `${P}.q = ${vo()}`, `${P}.zz = ${vo()}`, `${P}[3] = ${vo()}`, `${P}.p = ${P}.q`]
     const read = target === 'map' ? `let c = 0; for (const [k, v] of ${P}) { if (c++ === i) return code(k) * 1000 + code(v) } return -1`
       : target === 'set' ? `let c = 0; for (const v of ${P}) { if (c++ === i) return code(v) } return -1`
       : `const ks = Object.keys(${P}); return i < ks.length ? code(ks[i]) * 1000 + code(${P}[ks[i]]) : -1`
     const nm = int(2, 3), muts = []
     for (let i = 0; i < nm; i++) muts.push(Array.from({ length: int(1, 4) }, () => pick(MUT)).join('; '))
-    // (the start gives an object no key its literal lacks: a dictionary's entries keep their own logs,
-    // and one the start added, overwritten in a round, does not read as it started; listed apart)
-    const start = rnd() >= 0.3 ? '' : target !== 'obj' ? pick(MUT) : size >= 2 ? pick([`${P}.p = ${vo()}`, `${P}.q = ${vo()}`]) : ''
-    const text = ['let t = 0', decl, start,
+    // a dictionary's keys, the start's values at them (strings it makes, numbers, arrays), and a mutation
+    const fill = target !== 'dict' ? '' : `const K = ['p', 'q', 'r', 's', 'kz', 'k5', 'k6']
+for (let i = 0; i < ${size}; i++) ${P}[K[i]] = i % 3 === 0 ? 's' + i : i % 3 === 1 ? 11 + i : [i, 'a' + i]`
+    const start = rnd() >= 0.3 ? '' : pick(MUT)
+    const text = ['let t = 0', decl, fill, start,
       ...muts.map((body, i) => `export let m${i} = () => { ${body}; return 0 }`),
-      `export let n = () => ${target === 'obj' ? `Object.keys(${P}).length` : `${P}.size`}`,
+      `export let n = () => ${target === 'obj' || target === 'dict' ? `Object.keys(${P}).length` : `${P}.size`}`,
       `const code = (v) => typeof v === 'string' ? 100 + v.length * 7 + v.charCodeAt(0) : typeof v === 'number' ? v : Array.isArray(v) ? 500 + v.length : v === true ? 700 : -2`,
       `export let at = (i) => { ${read} }`].filter(Boolean).join('\n')
     const rounds = Array.from({ length: int(2, 3) }, () => Array.from({ length: int(1, 3) }, () => `m${int(0, nm - 1)}`))
@@ -234,8 +243,8 @@ const generateTables = (seed, count, target) => {
   }
   return Array.from({ length: count }, (_, j) => one(j))
 }
-for (const target of ['map', 'set', 'obj']) for (const seed of [1, 2])
-  test(`reset population: seed ${seed}, 60 ${target === 'obj' ? 'objects' : target === 'map' ? 'Maps' : 'Sets'} made at start, read after each reset as a fresh instance reads them`,
+for (const target of ['map', 'set', 'obj', 'dict']) for (const seed of [1, 2])
+  test(`reset population: seed ${seed}, 60 ${{ obj: 'objects', dict: 'dictionaries', map: 'Maps', set: 'Sets' }[target]} made at start, read after each reset as a fresh instance reads them`,
     () => population(`${target} seed ${seed}`, generateTables(seed, 60, target)))
 // (a string the call makes short enough to be held inline names no memory: the entries' own
 // value log let it stay past the reset)

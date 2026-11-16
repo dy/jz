@@ -27,7 +27,7 @@
 import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, HIDDEN_PROPERTY_SEQ } from '../../layout.js'
-import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
+import { durableLenLogIR, durableTblSnapIR } from './durable.js'
 import { stubLogIR } from '../core/stub-log.js'
 import { arrayKeysOn } from './identity.js'
 
@@ -40,6 +40,9 @@ const LANE = 4
 export const collectionLaneBytes = () => ctx.transform.compactCollections ? 0 : LANE
 const collectionStride = (entrySize) => entrySize + collectionLaneBytes()
 const hasProbeLane = () => collectionLaneBytes() !== 0
+// The dictionary at `$off` of `$cap` slots saved for the reset before its first write of a
+// round, as a Set's or a Map's table is (collection/durable.js durableTblSnapIR).
+const saveDict = (entrySize) => durableTblSnapIR('off', `(i32.mul (local.get $cap) (i32.const ${collectionStride(entrySize)}))`)
 
 // Probes address allocated entries: key/value fields use their fixed memargs
 // directly. The layout proof belongs here, before generic WAT optimization.
@@ -279,15 +282,15 @@ function genRehash() {
  *  possibly aliased) forward rather than remint like HASH (whose pointer lives in a single
  *  owner's propsPtr slot that genUpsertGrow can rewrite). */
 // slotOnly returns the value address, inserting undefined only on a miss.
-// It shares growth, forwarding, insertion order and durable logs with set/add.
+// It shares growth, forwarding, insertion order and the reset's save with set/add.
 function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt, slotOnly = false, prologue = '') {
   const valParam = hasVal && !slotOnly ? '(param $val i64) ' : ''
-  const slotLog = hasVal && !slotOnly ? durableSlotLogIR('slot', 16, 'val') : ''
   const storeVal = slotOnly ? `\n          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
-    : hasVal ? `\n          (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}` : ''
+    : hasVal ? `\n          (i64.store offset=16 (local.get $slot) (local.get $val))` : ''
+  // a found key writes its value, or hands its slot out for one
   const onMatch = hasVal && !slotOnly
-    ? `(then\n          ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}\n          (br $done))`
-    : `(then ${slotOnly ? revealProperty() : ''} (br $done))`
+    ? `(then\n          ${saveDict(entrySize)} ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))\n          (br $done))`
+    : slotOnly ? `(then ${saveDict(entrySize)} ${revealProperty()} (br $done))` : '(then (br $done))'
 
   const extBranch = hasVal
     ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
@@ -333,6 +336,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (br_if $insert (i32.ge_s (local.get $ztr) (local.get $cap)))
       (br $probe)))
+    ${saveDict(entrySize)}
     (br_if $grow (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
     (if (i32.ge_s (local.get $ztr) (local.get $cap))
       (then
@@ -341,7 +345,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         ${restoreZombieProbe()}))
           ${seqStore()}
           ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
+          (i64.store offset=8 (local.get $slot) (local.get $key))${storeVal}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
     (br $done))
@@ -351,7 +355,6 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
         (call $__coll_rehash (local.get $off) (local.get $newptr)
           (local.get $cap) (local.get $newcap) (i32.const ${entrySize}))
-        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         ${stubLogIR('off', 'newptr', expectedType)}
@@ -451,12 +454,8 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
         (br_if $absent (i32.ge_s (local.get $tries) (local.get $cap)))
         (br $probe)))
       (return (i32.const 0)))
-    ;; $slot holds the entry to remove ($ls its lane word). Cancel any pending
-    ;; durable log for THIS key's own address before the shift walk below can
-    ;; relocate a DIFFERENT (still-live) entry onto that same address — cancelling
-    ;; after the walk instead cannot tell the two apart once they collide (see
-    ;; durableSlotCancelIR's comment for the full native repro).
-    ${durableSlotCancelIR('slot', entrySize)}
+    ;; $slot holds the entry to remove ($ls its lane word)
+    ${saveDict(entrySize)}
     ;; Walk forward; move back any entry whose home is not cyclically within
     ;; (i, j], else it would become unreachable from its home. The normal
     ;; layout moves the redundant lane word in parallel.
@@ -474,7 +473,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
       (if (i32.le_u (local.get $i) (local.get $j))
         (then (br_if $shift (i32.and (i32.lt_u (local.get $i) (local.get $k)) (i32.le_u (local.get $k) (local.get $j)))))
         (else (br_if $shift (i32.or  (i32.lt_u (local.get $i) (local.get $k)) (i32.le_u (local.get $k) (local.get $j))))))
-      (memory.copy (local.get $i) (local.get $j) (i32.const ${entrySize}))${durableSlotRelogIR('j', 'i', entrySize)}
+      (memory.copy (local.get $i) (local.get $j) (i32.const ${entrySize}))
       ${deleteShiftLaneMove()}
       (br $shift)))
     (i64.store (local.get $i) (i64.const 0))
@@ -533,13 +532,15 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
               (then ${rememberZombie()})))
             (else (if ${eqExpr}
               (then
+                ${saveDict(entrySize)}
                 ${revealProperty()}
-                (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+                (i64.store offset=16 (local.get $slot) (local.get $val))
                 (br $done)))))))
       ${probeNext(entrySize)}
       (local.set $ztr (i32.add (local.get $ztr) (i32.const 1)))
       (br_if $insert (i32.ge_s (local.get $ztr) (local.get $cap)))
       (br $probe)))
+    ${saveDict(entrySize)}
     (br_if $grow (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
     (if (i32.ge_s (local.get $ztr) (local.get $cap))
       (then
@@ -548,8 +549,8 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
         ${restoreZombieProbe()}))
           ${seqStore()}
           ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}
-          (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
+          (i64.store offset=8 (local.get $slot) (local.get $key))
+          (i64.store offset=16 (local.get $slot) (local.get $val))
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
     (br $done))
@@ -564,12 +565,9 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           // Forward-mark the old header (cap=-1 sentinel at -4, new offset at -8) and
           // keep the boxed pointer the caller holds: any alias resolves through
           // __ptr_offset. This preserves JS reference identity for a grown dict held in
-          // multiple places (e.g. ctx.core.emit), which remint cannot. Log the pre-grow
-          // (off, size, cap) first (durableFwdLogIR — no-op unless $off predates this
-          // round) so `_clear` can heal a durable header instead of leaving it forwarded
-          // at an ephemeral target that the next round overwrites.
-          ? `${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
-        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
+          // multiple places (e.g. ctx.core.emit), which remint cannot. A table older
+          // than the round was saved before the miss that grows it, its header with it.
+          ? `(i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         ${stubLogIR('off', 'newptr', typeConst)}
         (local.set $off (local.get $newptr))
@@ -770,9 +768,9 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
 // byte-for-byte.
 function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal = true) {
   const valParam = hasVal ? '(param $val i64) ' : ''
-  const storeValNew = hasVal ? `\n          (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}` : ''
+  const storeValNew = hasVal ? `\n          (i64.store offset=16 (local.get $slot) (local.get $val))` : ''
   const storeValMatch = hasVal
-    ? `(then\n                ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}\n                (br $done))`
+    ? `(then\n                ${saveDict(entrySize)} ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))\n                (br $done))`
     : `(then (br $done))`
   return `(func $${name} (param $obj i64) (param $key i64) (param $h i32) ${valParam}(result i64)
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $zb i32) (local $ztr i32)
@@ -791,9 +789,10 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
           (if (local.get $zb)
             (then ${useRememberedZombie()})
             (else ${slotFromLane(entrySize)}))
+          ${saveDict(entrySize)}
           ${seqStore()}
           ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeValNew}
+          (i64.store offset=8 (local.get $slot) (local.get $key))${storeValNew}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
@@ -812,9 +811,10 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
           ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
           ${restoreZombieProbe()}
+          ${saveDict(entrySize)}
           ${seqStore()}
           ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeValNew}
+          (i64.store offset=8 (local.get $slot) (local.get $key))${storeValNew}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
           (br $done)))
