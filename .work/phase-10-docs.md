@@ -1,6 +1,6 @@
 # Phase 10: CONTRIBUTING.md cut to a guide, the ledger
 
-Source: `CONTRIBUTING.md` at 5d3f9d9ae (501,512 bytes, 6,606 lines, 270 blocks split at blank lines outside code fences).
+Source: `CONTRIBUTING.md` at ea0795b7d (501,512 bytes, 6,606 lines, 270 blocks split at blank lines outside code fences).
 Each block's sentences each have one state; the last column splits the block's bytes by them.
 `guide`: in the new CONTRIBUTING.md (the public contract, by the same test of value, among it). `kept`: placed verbatim (comment markers and line breaks aside) in the named file's header. `cut: describes`: says what the code does. `cut: duplicate`: the place named says it already.
 `cut: stale`: the tree contradicts it. `cut: history`: what changed or when. No block is `pending`: of the text about the files
@@ -138,7 +138,7 @@ The check: `python3 /private/tmp/claude-501/-Users-div-projects-jz/36e8fd26-a3d4
 | 116 | 3660-3661 | 3126 | cut: duplicate | cut: duplicate 3126 B: src/compile/program-index.js:721-725, 990 | **ProgramIndex:** `src/compile/program-index.js` owns four d |
 | 117 | 3662-3663 | 17 | guide | guide 17 B: CONTRIBUTING.md | ## Architecture  |
 | 118 | 3664-3665 | 189 | guide | guide 189 B: CONTRIBUTING.md | Current pipeline: `source → parse (subscript/jessie) → jzify |
-| 119 | 3666-3680 | 1030 | cut: duplicate | cut: duplicate 618 B: src/parse.js:253; src/parse.js:256; src/parse.js:258 (+1) · cut: stale 412 B: src/parse.js no longer orders operators: 5d3f9d9ae moved that into subscript 10.8.4 and deleted it here | The parser entry (`src/parse.js`) orders the operators of ev |
+| 119 | 3666-3680 | 1030 | cut: duplicate | cut: duplicate 618 B: src/parse.js:253; src/parse.js:256; src/parse.js:258 (+1) · cut: stale 412 B: src/parse.js no longer orders operators: ea0795b7d moved that into subscript 10.8.4 and deleted it here | The parser entry (`src/parse.js`) orders the operators of ev |
 | 120 | 3681-3696 | 1134 | cut: describes | cut: describes 1134 B | It also reads source text the way ECMAScript does where subs |
 | 121 | 3697-3710 | 939 | cut: describes | cut: describes 939 B | A parsed node's `loc` indexes the compile's sources laid end |
 | 122 | 3711-3712 | 404 | guide | guide 404 B: CONTRIBUTING.md | **One shared optimizer, owned by watr (`~/projects/watr`).** |

@@ -76,7 +76,7 @@ The tape (`src/ir/tape.js`) transports WAT through link. Settled program summari
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
-Design lives beside the code. A file's header comment states what the file owns, the invariants its readers rely on and the measurements behind its choices: read it before changing the file. The optimizer's order is one table (`src/optimize/pass-table.js`), the local WAT rewrites another (`src/optimize/rules.js`), the product's speed and size claims a third (`bench/claims.mjs`). The design notes this file held before it became a guide are in Git history: `git show 5d3f9d9ae:CONTRIBUTING.md`.
+Design lives beside the code. A file's header comment states what the file owns, the invariants its readers rely on and the measurements behind its choices: read it before changing the file. The optimizer's order is one table (`src/optimize/pass-table.js`), the local WAT rewrites another (`src/optimize/rules.js`), the product's speed and size claims a third (`bench/claims.mjs`). The design notes this file held before it became a guide are in Git history: `git show ea0795b7d:CONTRIBUTING.md`.
 
 A comment citing a `.work/` path or `PLAN.md` that the tree no longer holds refers to Git
 history: the notes retired on 2026-09-08 read as `git show 66e72c46:<path>`, PLAN.md and the
