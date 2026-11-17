@@ -54,7 +54,7 @@ const SPEED = {
   // guarantee"). Local calibration 2026-07: jz beats rust-wasm on slices/resample/ glyfparse (the
   // last also edges native C), ties bezfit AND (since the scalar range-facts wave) delayline — paired
   // 1.020× vs rust-wasm, cs exact: the q16 chain stays i32 end-to-end, /65536 strength-reduces to
-  // shr_u, the fraction split to an exact reciprocal multiply (pinned in test/optimizer.js). The
+  // shr_u, the fraction split to an exact reciprocal multiply (pinned in test/optimizer-words.js). The
   // matching shape-classes (ring/fgather/slice/condref) are ratcheted in test/perf-ratchet.js so
   // progress is machine-independently pinned.
   slices:         { v8: 'win',  as: 'win' },

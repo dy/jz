@@ -91,7 +91,23 @@ const TESTS = [
   'abi',
   'external',
   'watr',
-  'optimizer',
+  'optimizer-words',
+  'optimizer-licm',
+  'optimizer-unroll',
+  'optimizer-devirt',
+  'optimizer-promote',
+  'optimizer-induction',
+  'optimizer-passes',
+  'optimizer-inline',
+  'optimizer-branches',
+  'optimizer-versioning',
+  'optimizer-word-numbers',
+  'optimizer-nan-canon',
+  'optimizer-schedule',
+  'optimizer-cursors',
+  'optimizer-typed-bounds',
+  'optimizer-array-reads',
+  'optimizer-array-bounds',
   'tape',
   'summary',
   'summary-queries',
@@ -392,7 +408,7 @@ if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core 
 //     compiler-under-test, so the kernel leg would only re-run it identically.
 //
 // Optimizer-shape class (kernel runs optimize:false; shape asserts can't match
-// — same as perf-ratchet above): simd, optimizer, never-grown, slot-hazards.
+// — same as perf-ratchet above): simd, optimizer-*, never-grown, slot-hazards.
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'spellings', 'data-forms', 'vector-coverage', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   'runner', 'bench-build', 'source-map', // JS entry/CLI options and debug metadata are outside the kernel ABI
   'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
@@ -403,7 +419,8 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-sm
   'pass-table', // the optimizer's order as data, read in the host: the kernel leg would run it again unchanged
   'effects', // the effects summary and the passes that ask it, called in the host on hand-written IR
   'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
-  'simd', 'optimizer', 'slot-hazards', 'struct-inline',
+  'simd', 'slot-hazards', 'struct-inline',
+  'optimizer-words', 'optimizer-licm', 'optimizer-unroll', 'optimizer-devirt', 'optimizer-promote', 'optimizer-induction', 'optimizer-passes', 'optimizer-inline', 'optimizer-branches', 'optimizer-versioning', 'optimizer-word-numbers', 'optimizer-nan-canon', 'optimizer-schedule', 'optimizer-cursors', 'optimizer-typed-bounds', 'optimizer-array-reads', 'optimizer-array-bounds',
   ])
   // Files whose compile inputs are the same on every leg — measured, not assumed: each was run
   // under the default, opt0, opt3 and wasi legs with every in-process compile hashed (source

@@ -1605,8 +1605,8 @@ test('inference runtime sanity: notString + intConst + array element schema', ()
 // The converse — an accumulator with *unanimous* i32 signals (i32 init + i32 steps /
 // Int32Array elements) stays i32 and wraps mod 2^32 past 2^31 — is the deliberate i32
 // value-model trade, the same feature that lets integer reductions auto-vectorize
-// (`i32x4`) and digit parsers stay scalar-i32. See test/optimizer.js ("auto-vectorize
-// via i32x4 SIMD", "no f64 widen/truncate in tokenizer-shape loop").
+// (`i32x4`) and digit parsers stay scalar-i32. See test/optimizer-promote.js ("auto-vectorize
+// via i32x4 SIMD") and test/optimizer-words.js ("no f64 widen/truncate").
 
 test('i32 range-safety: ambiguous accumulator defaults to f64 (no silent 2^31 wrap)', () => {
   // Each accumulator is fed by a non-i32 source and pushed past 2^31. The f64
