@@ -527,9 +527,11 @@ function canonSymbols(node, bindings = false) {
 // `=== Float32Array`) is the function `jz:typed` makes of it. `new`,
 // `instanceof` and a static member name the constructor itself, where the
 // compiler resolves it; `Float32Array.BYTES_PER_ELEMENT` is its number.
-// `E.constructor` asks `__ctor` of the same module, which answers a typed
-// array's function and reads any other value's member; `this.constructor` is
-// the member a class's instance carries (classes.js).
+// `Float32Array.of(...items)` (ECMA-262 23.2.2.2) is `Float32Array.from([...items])`:
+// both evaluate the items in order, then convert each into its element, so `of`
+// is no name of its own to any later stage. `E.constructor` asks `__ctor` of the
+// same module, which answers a typed array's function and reads any other value's
+// member; `this.constructor` is the member a class's instance carries (classes.js).
 function typedCtorValues(node) {
   if (!Array.isArray(node) || node[0] == null || node[0] === 'str') return node
   const prior = enterBuiltinScope(node)
@@ -537,6 +539,11 @@ function typedCtorValues(node) {
     const op = node[0]
     const named = (n) => typeof n === 'string' && TYPED_CTORS.has(n) && !scopeHasBuiltin(activeBuiltinScope, n)
     if (op === '.' && named(node[1]) && node[2] === 'BYTES_PER_ELEMENT') { node.splice(0, node.length, null, TYPED_BYTES[node[1]]); return node }
+    // (the parser's call is `['()', callee, args]` and its array literal `['[]', args]`, one args form)
+    if (op === '()' && node.length === 3 && Array.isArray(node[1]) && node[1][0] === '.' && named(node[1][1]) && node[1][2] === 'of') {
+      node[1] = withLoc(['.', node[1][1], 'from'], node[1])
+      node[2] = withLoc(['[]', node[2]], node)
+    }
     // a shorthand property `{ Float32Array }` keeps its name
     if (op === '{}' || op === ',') for (let i = 1; i < node.length; i++) if (op === '{}' ? named(node[i]) : node.shorthand && named(node[i])) node[i] = [':', node[i], '__' + node[i]]
     if (op === '{}' && Array.isArray(node[1]) && node[1][0] === ',') node[1].shorthand = true

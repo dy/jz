@@ -101,6 +101,38 @@ test('typed constructors: a literal\'s elements convert after the last is evalua
   agreeAll(LOGGED, rows)
 })
 
+// `T.of(...items)` (ECMA-262 23.2.2.2) is `T.from([...items])` (jzify typedCtorValues): its
+// items evaluated in order, then each converted into its element; a binding of the name is
+// no constructor. (A BigUint64Array element past 2^63 reads signed, README: one representation.)
+test('typed constructors: of', () => {
+  const KINDS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float16Array', 'Float32Array', 'Float64Array']
+  agreeAll(LOGGED + `const K = Float64Array.of(0.25, 0.75), L = Uint8Array.of(255, 256)
+const mk = (v) => () => Int16Array.of(v, v + 1)
+const g = (Uint8Array) => Uint8Array.of(4, 5)
+`, [
+    ...KINDS.map(T => [T, `() => { const a = ${T}.of(1.5, -2, 300, 70000.25, NaN); return [a.length, a[0], a[1], a[2], a[3], a[4], a instanceof ${T}].join() }`]),
+    ['BigInt64Array', `() => { const a = BigInt64Array.of(1n, -2n, 9223372036854775807n); return [a.length, a[0], a[1], a[2]].join() }`],
+    ['BigUint64Array', `() => { const a = BigUint64Array.of(1n, 1099511627776n); return [a.length, a[0], a[1]].join() }`],
+    ['a spread among items', `() => { const xs = [3, 4, 5]; const a = Int16Array.of(1, ...xs, 6); return [a.length, a[1], a[4]].join() }`],
+    ['a spread alone', `() => { const xs = []; for (let i = 0; i < 5; i++) xs.push(i * 1.5); const a = Float32Array.of(...xs); return [a.length, a[4]].join() }`],
+    ['no items', `() => [Float64Array.of().length, Int8Array.of().length, BigInt64Array.of().length].join()`],
+    ['one item is an element, not a length', `() => { const a = Uint8Array.of(7); return [a.length, a[0]].join() }`],
+    ['items of every primitive kind', `() => { const a = Float64Array.of('2.5', true, null, undefined, '', ' 7 '); return a.join() }`],
+    ...LISTS.map(xs => [`Int32Array.of(${xs})`, `() => { log = ''; const a = Int32Array.of(${xs}); return log + ':' + a.join() }`]),
+    ['a valueOf that throws', `() => { log = ''; try { Int32Array.of({ valueOf() { log += 'A'; throw 1 } }, o('b', 2)) } catch (e) { log += 'caught' + e } return log }`],
+    ['a fresh array each call', `() => { const all = []; for (let i = 0; i < 4; i++) { const a = Float64Array.of(i, i * 2); a[0] += 10; all.push(a) } return all.map(a => a[0] + ':' + a[1]).join() }`],
+    ['at module level', `() => [K[0] + K[1], K.length, L[0], L[1]].join()`],
+    ['in a closure', `() => { const a = mk(40000)(); return [a[0], a[1]].join() }`],
+    ['its methods', `() => { const a = Int32Array.of(5, 1, 4); a.sort(); return [a.join('-'), a.indexOf(4), a.map(v => v * 2).join('-')].join() }`],
+    ['beside Array.of', `() => [Array.of(1, 2).length, Float64Array.of(1, 2).length].join()`],
+    ['a local of the name', `() => { const Float64Array = { of: (...a) => a.length * 100 }; return Float64Array.of(1, 2, 3) }`],
+    ['a parameter of the name', `() => g({ of: (a, b) => a * b })`],
+    ['a binding of the name in an inner block', `() => { let s = 0; { const Int8Array = { of: () => 7 }; s += Int8Array.of() } return s + Int8Array.of(1, 2).length }`],
+  ])
+  agreeAll(`const Int32Array = { of: (a, b) => a - b }\n`, [['a module binding of the name', `() => Int32Array.of(10, 3)`]])
+  agreeAll(`function Float32Array() {}\nFloat32Array.of = (v) => v + 1\n`, [['a function of the name', `() => Float32Array.of(41)`]])
+})
+
 // The constructors are a `jz:` module's functions, the compiler's runtime and not the program:
 // O0, which keeps what the program's own code lowered to, links only those something reaches.
 test('typed constructors: O0 links only the constructors the program names', () => {
