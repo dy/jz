@@ -61,7 +61,7 @@
 import { SPAN_BINARY, spanBinary } from './span.js'
 import { NR_NONE, nrPoint, nrInts, nrReals, nrValue, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
 import { powRuntime } from '../prepare/math-kernel.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, onEveryPath, STATIC_BASE, T as SEP, nodeEqual, hasOwnContinue } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, onEveryPath, REFS_THROUGH_ARROWS, STATIC_BASE, T as SEP, nodeEqual, hasOwnContinue } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -1460,6 +1460,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return out
   }
   const cells = new Map()        // construction node (an array literal, a `new Map`) → cell id
+  // A cell constructed with a count a name holds (`new Array(n)`, arrayCtor): a
+  // counter under `i < n` stays inside it. The count of a joined cell is the one
+  // every construction in it takes, or none (unify folds it, as every fact that
+  // takes a possibility away must be): the construction's own is `ownCount`.
+  const ownCount = new Map()       // a construction's own cell id → the name of its count
+  const cellLenAlias = new Map()   // cell root → the name of the count of every array in it
   const cell = (id) => { while (cellUp[id] !== id) id = cellUp[id] = cellUp[cellUp[id]]; return id }
   const canon = (k) => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   // A string literal key (`o['k']`, or a folded `o[KEY]`) names a slot.
@@ -1606,6 +1612,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     built[a] = ba === bb ? ba : LEN_OPEN
     if (unknown.has(b)) unknown.add(a)
     if (resizedElsewhere.has(b)) resizedElsewhere.add(a)
+    // (a count the arrays of both take, or none)
+    if (cellLenAlias.has(a) && cellLenAlias.get(a) !== cellLenAlias.get(b)) cellLenAlias.delete(a)
     const ga = grown.get(a), gb = grown.get(b)
     if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) ga.n += gb.n; else { unknown.add(a); resizedElsewhere.add(a) } }
     multiSite.add(a)
@@ -3042,20 +3050,56 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // arguments; `Array.from(src)` the source's elements (an array's, a typed
   // array's, a string's characters, else unknown) or, with a callback, what
   // the callback makes of each element and its index.
-  // `new Array(n).fill(v)`, as written or as the plan names the construction
-  // (`#site = new Array(n)` read by the fill alone): the cells are filled before
-  // any read sees them, so the cell has no hole of its own (the fill marks the
-  // cell; the round it marks it in clears what the construction raised)
-  const filledCells = new Set()
-  // a cell constructed with a count a name holds (`new Array(n)`): a counter under
-  // `i < n` stays inside it, and a loop over it that stores every index fills it
-  const cellLenAlias = new Map()   // cell id → the name of its count
+  // A construction of a count whose every element is stored before any read
+  // sees it: `new Array(n).fill(v)`, as written or as the plan names the
+  // construction (`#site = new Array(n)` read by the fill alone), and `x = new
+  // Array(n)` followed at once by a loop storing each index below n (covers).
+  // It raises no hole of its own. A fact of the construction, not of its cell:
+  // a cell joins every array that may reach where it is read, and holds a hole
+  // where any of them may (a filled array and `new Array(3)` passed to one
+  // reader); a filled mark on the cell, or a hole bit cleared from it, would
+  // take the other's holes away. Marked before the construction is walked
+  // (filling, the statement list's look at the statement after), so the round
+  // that first walks it raises nothing to take back.
+  const filledSites = new Set()   // construction node
+  const countCtor = (e) => Array.isArray(e) && e.length === 3 && (e[0] === 'new' && e[1] === 'Array' || e[0] === '()' && (e[1] === 'new.Array' || e[1] === 'Array'))
+  // (`r.fill()` or `r.fill(v)`: every element; a start or an end leaves the rest)
+  const fillsAll = (n, r) => Array.isArray(n) && n[0] === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'fill' && n[1][1] === r && argList(n[2]).length <= 1 && !(Array.isArray(n[2]) && n[2][0] === '...')
+  // the declaration or assignment of a construction of a count a statement is
+  const countDecl = (s) => {
+    const d = Array.isArray(s) && s[0] === '=' ? s : Array.isArray(s) && (s[0] === 'let' || s[0] === 'const') && s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' ? s[1] : null
+    return d && countCtor(d[2]) ? d : null
+  }
+  // `target = new Array(count)` followed at once by `for (let i = 0; i < count;
+  // i++) target[i] = v`, the store the loop's only statement, v reading neither
+  // the array nor the count: every element is written before any read.
+  const covers = (d, loop) => {
+    if (!Array.isArray(loop) || loop[0] !== 'for' || loop.length !== 5 || typeof d[2][2] !== 'string') return false
+    const target = d[1], count = d[2][2]
+    const [, init, test, step, body] = loop
+    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
+    const i = init[1][1], from = init[1][2]
+    if (!(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== count) return false
+    if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return false
+    const only = Array.isArray(body) && body[0] === '{}' ? (Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 ? body[1][1] : body[1]) : body
+    if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || !nodeEqual(only[1][1], target)) return false
+    const v = only[2]
+    return !(typeof target === 'string' ? some(v, m => m.includes(target) || m.includes(count), REFS_THROUGH_ARROWS) : some(v, m => nodeEqual(m, target) || m.includes(count), REFS_THROUGH_ARROWS))
+  }
+  // a list's statement before it is walked: a construction it fills, or the next statement does
+  const markFilled = (list, i) => {
+    const d = countDecl(list[i])
+    if (!d) return
+    const next = list[i + 1]
+    if (covers(d, next) || typeof d[1] === 'string' && d[1].startsWith(SEP + 'site') && Array.isArray(next) && some(next, m => fillsAll(m, d[1]))) filledSites.add(d[2])
+  }
   const arrayCtor = (node, base, n) => {
+    const fresh = !cells.has(node)
     const arr = arrayOf(node, K.NONE)
     if (n === 1) {
       const k = ks[base]
-      if (typeof node?.[2] === 'string' && celled(arr)) cellLenAlias.set(cell(paramOf(arr)), node[2])
-      if (hasTag(k, K.NUMBER) && !(celled(arr) && filledCells.has(cell(paramOf(arr))))) raiseHole(arr)
+      if (fresh && typeof node?.[2] === 'string' && celled(arr)) { ownCount.set(paramOf(arr), node[2]); cellLenAlias.set(paramOf(arr), node[2]) }
+      if (hasTag(k, K.NUMBER) && !filledSites.has(node)) raiseHole(arr)
       if ((k & TAGS & ~bitOf(K.NUMBER)) !== 0 || kspread[base]) raiseElem(arr, kspread[base] ? k : k & ~bitOf(K.NUMBER))
     } else for (let i = 0; i < n; i++) raiseElem(arr, ks[base + i])
     return arr
@@ -3325,14 +3369,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i], false, false, false, i > 0 || !hasTag(ks[base], K.NUMBER) ? NR_NONE : kspread[base] || !node ? null : numRangeOf(argAt(node[2], 0)))
         // (`fill()` stores undefined in every cell)
         if (n === 0) raiseElem(recv, NULLISH)
-        // (a construction of a count filled whole: no hole; the cell loses the hole the construction raised this round)
-        const made = node && Array.isArray(node[1]) && node[1][0] === '.' ? node[1][1] : null
-        const construction = Array.isArray(made) && made.length === 3 && (made[0] === 'new' && made[1] === 'Array' || made[0] === '()' && (made[1] === 'new.Array' || made[1] === 'Array'))
-        const sited = typeof made === 'string' && made.startsWith(SEP + 'site')
-        if (n <= 1 && (construction || sited) && celled(recv)) {
-          const c = cell(paramOf(recv))
-          if (!filledCells.has(c)) { filledCells.add(c); elems[c] = elems[c] & ~bitOf(K.ABSENT) }
-        }
+        // (a construction of a count filled whole raised no hole: filledSites)
         return recv
       }
       if (name === 'reduce' || name === 'reduceRight') return reduceResult(recv, base, n)
@@ -4002,6 +4039,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const callee = n[1]
       // The receiver is evaluated before arguments can reassign its binding.
       const memberCall = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string'
+      // (`new Array(n).fill(v)`: the construction fills before it is walked, filledSites)
+      if (memberCall && countCtor(callee[1]) && fillsAll(n, callee[1])) filledSites.add(callee[1])
       const recv = memberCall ? receiver(callee[1]) : null
       // a keeping builtin (`Array.isArray(x)`) retains nothing of its arguments: a mixed binding's join stays unread
       const keeping = typeof callee === 'string' && KEEPING_BUILTINS.test(callee)
@@ -4882,27 +4921,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
   }
   // The counters of the loops being walked that their array's own length bounds (`i < x.length`) → the array's key.
-  // `target = new Array(count)` followed at once by `for (let i = 0; i < count;
-  // i++) target[i] = v`, the store the loop's only statement: every cell is
-  // written before any read, so the cell is filled (as `fill` fills it).
-  const coveringLoop = (prev, loop) => {
-    if (!Array.isArray(prev) || !Array.isArray(loop) || loop.length !== 5) return
-    const decl = prev[0] === '=' ? prev : (prev[0] === 'let' || prev[0] === 'const') && prev.length === 2 && Array.isArray(prev[1]) && prev[1][0] === '=' ? prev[1] : null
-    if (!decl) return
-    const target = decl[1], made = decl[2]
-    if (!Array.isArray(made) || made[0] !== '()' || (made[1] !== 'new.Array' && made[1] !== 'Array') || made.length !== 3 || typeof made[2] !== 'string') return
-    const [, init, test, step, body] = loop
-    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return
-    const i = init[1][1], from = init[1][2]
-    if (!(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== made[2]) return
-    if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return
-    const only = Array.isArray(body) && body[0] === '{}' ? (Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 ? body[1][1] : body[1]) : body
-    if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || !nodeEqual(only[1][1], target)) return
-    const k = typeof target === 'string' ? readKey(keyOf(target)) : selectedExpr(target, 7)
-    if (k == null || !celled(k)) return
-    const c = cell(paramOf(k))
-    if (!filledCells.has(c)) { filledCells.add(c); elems[c] = elems[c] & ~bitOf(K.ABSENT) }
-  }
   const lenBounds = new Map()   // counter → the keys of the arrays whose lengths bound it
   const loopBodies = new Map()      // counter → the body of the loop it counts
   // whether the counter `idx` (bounded by an array's length, lenBounds) stays inside cell `c`'s count
@@ -5081,9 +5099,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const mark = rtop
       for (let i = 1; i < n.length; i++) {
         const from = missingCount
+        markFilled(n, i)
         noteDefinite(n, i); stmt(n[i])
         const st = n[i]
-        if (i > 1 && Array.isArray(st) && st[0] === 'for') coveringLoop(n[i - 1], st)
         if (exits(st)) break
         // (one that reads through a receiver held only missing on every path through it throws: missingReads)
         let throws = false
@@ -6388,7 +6406,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
+    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

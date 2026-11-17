@@ -288,3 +288,36 @@ test('array holes: typed numeric reads fold only their missing arm', () => {
     }
   }
 })
+
+// A construction every element of which is stored before any read sees it (a
+// covering loop, `fill`) raises no hole of its own; another array that reaches
+// the same reader joins its cell and keeps its holes (summary/index.js
+// filledSites), whatever order the joins come in. So does a count alias: the
+// count of one construction does not bound a read of another joined with it.
+// Each program is a module of its own: the order of the joins is the case.
+const HOLES = `const holes = (a) => { let s = 0; for (let i = 0; i < a.length; i++) if (a[i] === undefined) s++; return s }\n`
+const FILLED = {
+  covering: HOLES + `export let main = (n) => { const y = new Array(3); const r1 = holes(y); const x = new Array(n); for (let i = 0; i < n; i++) x[i] = i; return r1 * 100 + holes(x) }`,
+  coveringBoth: HOLES + `export let main = (n) => { const y = Array(3); const x = new Array(n); for (let i = 0; i < n; i++) x[i] = i; return holes(y) * 100 + holes(x) }`,
+  coveringFirst: HOLES + `export let main = (n) => { const x = new Array(n); for (let i = 0; i < n; i++) x[i] = i; const r0 = holes(x); const y = new Array(3); return holes(y) * 100 + r0 }`,
+  fill: HOLES + `export let main = (n) => { const y = new Array(3); const r1 = holes(y); const x = new Array(n).fill(7); return r1 * 100 + holes(x) }`,
+  literal: HOLES + `export let main = (n) => { const y = [1, , 3]; const r1 = holes(y); const x = new Array(n); for (let i = 0; i < n; i++) x[i] = i; return r1 * 100 + holes(x) }`,
+  closure: `export let main = (n) => { const y = new Array(3); const x = new Array(n); for (let i = 0; i < n; i++) x[i] = i
+    const holes = (a) => { let s = 0; for (let i = 0; i < a.length; i++) if (a[i] === undefined) s++; return s }
+    const r1 = holes(y); return r1 * 100 + holes(x) }`,
+  field: HOLES + `export let main = (n) => { const y = new Array(3); const o = { a: y }; const r1 = holes(o.a); const x = new Array(n); for (let i = 0; i < n; i++) x[i] = i; o.a = x; return r1 * 100 + holes(o.a) }`,
+  // (a store that reads the array it fills reads its holes: the loop covers nothing)
+  readsSelf: `export let main = (n) => { const x = new Array(n); for (let i = 0; i < n; i++) x[i] = x[n - 1 - i] === undefined ? 1 : 2; let s = 0; for (let i = 0; i < n; i++) s += x[i]; return s }`,
+  countAlias: `export let main = (k) => { const z = [1, 2, 3, 4, 5, 6, 7, 8]; const n = z.length; const x = new Array(n); const y = new Array(3)
+    const w = k ? x : y; let s = 0; for (let i = 0; i < z.length; i++) s += w[i] === undefined ? 1 : 100; return s }`,
+}
+
+test('array holes: a filled array leaves the holes of an array its cell joins', () => {
+  for (const [name, src] of Object.entries(FILLED)) {
+    const js = oracle(src)
+    for (const optimize of tiers()) {
+      const wasm = jz(src, { optimize }).exports
+      for (const n of [4, 0, 1]) is(wasm.main(n), js.main(n), `${name}(${n}) O${optimize}`)
+    }
+  }
+})

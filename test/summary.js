@@ -795,15 +795,17 @@ test('summary: array constructions own cells; concat, splice, split, JSON.parse 
   summarize(filled)
   is(tagOf(kindOf('f', 'n')), K.NUMBER, 'a compared parameter that also sizes an array is demanded')
   is(tagOf(elemOf('f', 'a')), K.NUMBER, 'so Array(n) holds numbers, not an element of any kind')
-  // The loop after the construction stores every index from 0 before any read
-  // (coveringLoop) and each store lands at the length (appendReceivers): the
-  // cell holds no hole. Below level 2 the summary reads that loop as written;
-  // from level 2 the plan's array split (plan/loops.js trySplitArrayFor) puts
-  // the main loop's bound `const b = min(⌈n⌉, a.length)` between the
-  // construction and the loop, and a tail loop after it: coveringLoop finds no
-  // loop under `i < n` after the declaration, and the construction keeps the
-  // hole it raises. A read past the length (`a[0]` of `Array(0)`) misses by
-  // the length, never by the hole: f(0) answers undefined at every level.
+  // The loop after the construction stores every index from 0 before any read:
+  // the construction raises no hole of its own (summary/index.js filledSites,
+  // marked as the statement list looks at the statement after the
+  // declaration), and each store lands at the length (appendReceivers). Below
+  // level 2 the summary reads that loop as written; from level 2 the plan's
+  // array split (plan/loops.js trySplitArrayFor) puts the main loop's bound
+  // `const b = min(⌈n⌉, a.length)` and the main loop and its tail, a list of
+  // three, where the loop stood: the statement after the declaration is no
+  // loop under `i < n`, and the construction keeps the hole it raises. A read
+  // past the length (`a[0]` of `Array(0)`) misses by the length, never by the
+  // hole: f(0) answers undefined at every level.
   is(hasTag(elemOf('f', 'a'), K.ABSENT), OPT_LEVEL >= 2, `Array(n) a covering loop fills holds a hole at level ${OPT_LEVEL} only where the split hides the loop`)
   for (const optimize of levels(0, 1, 2, 3)) {
     const host = oracle(filled), wasm = jz(filled, { optimize }).exports
