@@ -521,3 +521,12 @@ test('session: a compile keeps no function record of the compile before it', asy
 export let g = (n) => { let s = 0; for (let i = 0; i < n; i++) s += dbl(i); return s }`
   is(await recordsLeftBy(GROWS, SPLICED, { optimize: 2 }), 0, 'none of GROWS\'s records after SPLICED compiles')
 })
+
+test('session: a compile that runs no inliner keeps no function record of the compile before it', async () => {
+  if (onKernel()) return
+  // (plan/inline.js kept its candidates' records and a summary view until a later run with
+  // candidates replaced them)
+  is(await recordsLeftBy(GROWS, MINIMAL, { optimize: 2 }), 0, 'none after a compile with nothing to splice')
+  is(await recordsLeftBy(GROWS, MINIMAL, { optimize: { level: 2, sourceInline: false } }), 0, 'none after a compile with inlining off')
+  is(await recordsLeftBy(GROWS, MINIMAL, { optimize: false }), 0, 'none after a compile at the level off')
+})

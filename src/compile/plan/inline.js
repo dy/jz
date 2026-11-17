@@ -1153,7 +1153,19 @@ const closureSpliceable = (func) => {
   return !some(func.body, x => x[0] === '=>' && !extractParams(x[1]).every(p => typeof p === 'string'))
 }
 
+// What a run holds of its compile, the candidates' records and a summary view, is dropped
+// as it starts and as it ends, by a return or a throw: a module binding outlives the
+// compile, and the hosted compiler frees nothing one holds.
+const releaseRun = () => {
+  candidatesView = new Map()
+  callerView = null
+  callerStable = null
+}
 export const inlineHotInternalCalls = (programFacts, ast) => {
+  releaseRun()
+  try { return inlineHot(programFacts, ast) } finally { releaseRun() }
+}
+const inlineHot = (programFacts, ast) => {
   let changed = false
   const cfg = ctx.transform.optimize
   if (cfg && cfg.sourceInline === false) return false
@@ -1819,14 +1831,15 @@ export const inlineLocalLambdas = () => {
   // (the program's candidates are no lambdas: none of their names is shared here)
   sharedBodies = new Set()
   let changed = false
-  for (const func of ctx.funcs.list) {
-    if (!func.body || func.raw) continue
-    callerView = ctx.summary?.at(func.sig) ?? null
-    callerStable = stableNames(func)
-    if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
-    if (Array.isArray(func.body) && func.body[0] === '{}' && Array.isArray(func.body[1]) && inlineLambdasInLists(func.body[1], func.body)) changed = true
-  }
-  callerStable = null
+  try {
+    for (const func of ctx.funcs.list) {
+      if (!func.body || func.raw) continue
+      callerView = ctx.summary?.at(func.sig) ?? null
+      callerStable = stableNames(func)
+      if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
+      if (Array.isArray(func.body) && func.body[0] === '{}' && Array.isArray(func.body[1]) && inlineLambdasInLists(func.body[1], func.body)) changed = true
+    }
+  } finally { releaseRun() }
   return changed
 }
 
