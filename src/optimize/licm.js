@@ -808,15 +808,17 @@ const constLocals = (fn, bodyStart) => {
 // bench build 14 bytes larger for no work saved. So does an operation with its identity, which
 // folds to its other operand: the address of element 0, `a + (0 << 3)`, hoisted, left a copy of
 // `a` (heapsort's `a[0]` in bench/sort, 4 bytes, in 20 bench builds the like).
-const IDENTITY_RIGHT = /^i32\.(add|sub|or|xor|shl|shr_[su]|rotl|rotr)$/, IDENTITY_LEFT = /^i32\.(add|or|xor)$/
-const VIEW_OP = /^(i32\.wrap_i64|i64\.extend_i32_[su]|[if](32|64)\.reinterpret_[if](32|64))$/
+// (Sets, not regexes: a regex literal compiles to a matcher of its own, kilobytes of the hosted compiler)
+const IDENTITY_RIGHT = new Set(['i32.add', 'i32.sub', 'i32.or', 'i32.xor', 'i32.shl', 'i32.shr_s', 'i32.shr_u', 'i32.rotl', 'i32.rotr'])
+const IDENTITY_LEFT = new Set(['i32.add', 'i32.or', 'i32.xor'])
+const VIEW_OP = new Set(['i32.wrap_i64', 'i64.extend_i32_s', 'i64.extend_i32_u', 'i32.reinterpret_f32', 'i64.reinterpret_f64', 'f32.reinterpret_i32', 'f64.reinterpret_i64'])
 const doesWork = (n) => {
   if (!Array.isArray(n) || typeof n[0] !== 'string') return false
   const op = n[0]
   if (op === 'local.get' || op.endsWith('.const')) return false
-  if (n.length === 3 && IDENTITY_RIGHT.test(op) && constant(n[2]) === 0) return doesWork(n[1])
-  if (n.length === 3 && IDENTITY_LEFT.test(op) && constant(n[1]) === 0) return doesWork(n[2])
-  if (!TEST_OP.test(op) && !VIEW_OP.test(op)) return true
+  if (n.length === 3 && IDENTITY_RIGHT.has(op) && constant(n[2]) === 0) return doesWork(n[1])
+  if (n.length === 3 && IDENTITY_LEFT.has(op) && constant(n[1]) === 0) return doesWork(n[2])
+  if (!TEST_OP.test(op) && !VIEW_OP.has(op)) return true
   return n.slice(1).some(doesWork)
 }
 const foldsToConst = (n, consts) => {
