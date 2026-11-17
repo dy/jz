@@ -3123,6 +3123,21 @@ test('declared keys: registration calls between the literal and its store keep t
   const { keys, has } = jz(main, { modules: modulesOf(main, mods) }).exports
   is(keys(), '//;/*;#!;'); is(has(), true)
 })
+// The dispatcher files its operators in a table through a callback a builtin
+// calls in place (`by.forEach(l => l.push(...ops))`): the census reads the
+// callback's parameter through the callback's own scope, which the summary
+// still knows after flattenFuncNamespaces rewrote the bodies around it.
+test('declared keys: a registration that fills a table through a callback keeps the layout closed', () => {
+  const table = `const lookup = []\nconst dispatch = (ops) => { const by = []; for (const d of ops) (by[d.op.charCodeAt(0)] ||= []).push(d); by.forEach(l => l.push(...ops)); return (a) => by.length + a }\nconst token = (op) => { lookup[op.charCodeAt(0)] = dispatch([{ op }]) }\n`
+  for (const [name, src, want] of [
+    ['a let global', `let cfg = { a: 1 }\n${table}token('+')\ntoken('-')\ncfg.b = 2\nexport let keys = () => { let out = ''; for (const k in cfg) out += k + ';'; return out }\nexport let has = () => 'b' in cfg`, 'a;b;|true'],
+    ['a function property', `const parse = (s) => s\nparse.comment ??= { '//': '\\n', '/*': '*/' }\n${table}token('+')\ntoken('-')\nparse.comment['#!'] = '\\n'\nexport let keys = () => { let out = ''; for (const k in parse.comment) out += k + ';'; return out }\nexport let has = () => '#!' in parse.comment`, '//;/*;#!;|true'],
+  ]) {
+    for (const optimize of levels(0, 2, 3)) { const { keys, has } = jz(src, { optimize }).exports; is(keys() + '|' + has(), want, `${name} O${optimize}`) }
+    if (onKernel() || belowOpt(1)) continue
+    ok(!/call \$__(prop_order|keys_ro|keys_dyn)\b/.test(funcWat(compile(src, { wat: true }), 'keys')), `${name}: no runtime enumeration, the layout closed`)
+  }
+})
 test('declared keys stand down for a call that reaches the literal, an alias, a callback, a default', () => {
   const probeMod = { './probe.js': `import { parse } from './parse.js'\nexport const seen = []\nexport const look = () => seen.push('#!' in parse.comment)\nexport const noop = () => 0\nexport const withDefault = (o = parse.comment) => seen.push('#!' in o)\nexport const each = (arr, fn) => arr.forEach(fn)\nexport const viaLook = () => look()\nexport const hooks = [look]\nexport const fire = () => hooks[0]()\nexport const left = n => n > 0 ? right(n - 1) : look()\nexport const right = n => n > 0 ? left(n - 1) : noop()` }
   for (const [name, between] of [
@@ -3133,6 +3148,9 @@ test('declared keys stand down for a call that reaches the literal, an alias, a 
     ['call of a callee the census cannot see', `fire()`],
     ['alias', `const cm = parse.comment; noop(); seen.push('#!' in cm)`],
     ['callback argument', `each([1], () => seen.push('#!' in parse.comment))`],
+    ['a callback\'s parameter\'s method', `;[{ run: () => look() }].forEach(o => o.run())`],
+    ['a callback\'s parameter called', `;[() => look()].forEach(g => g())`],
+    ['a callback\'s parameter\'s element called', `;[[() => look()]].forEach(l => l[0]())`],
     ['parameter default', `withDefault()`],
   ]) {
     const main = `import { parse } from './parse.js'\nimport { seen, look, noop, withDefault, each, viaLook, fire, left, right } from './probe.js'\n${between}\nparse.comment['#!'] = '\\n'\nexport let f = () => seen.join(',') + '|' + ('#!' in parse.comment)`

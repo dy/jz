@@ -96,3 +96,50 @@ test('function properties: a property read during initialization before its firs
   ['through a getter', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nclass P { get v() { return parse(3) } }\nconst before = new P().v\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, parse(x)]`, 5],
   ['through a conversion', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nclass Q { valueOf() { return parse(3) } }\nconst before = new Q() + 0\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, parse(x)]`, 5],
 ]))
+
+// The builtin calls initialization makes ahead of a property's first store: a
+// method of an element, of an assignment's or a choice's value, of a receiver
+// holding an own member of the name, a for-of, an object a builtin calls a
+// member of. Each but the last two reaches the reader, so the property is
+// undefined there; the last two run nothing of the program.
+test('function properties: initialization reaches a reader through a builtin call on an element, a choice or an own member', () => {
+  const p = `function parse(x) { return parse.p ? parse.p(x) : -1 }\n`, after = `parse.p = (x) => x * 2\nparse.p = (x) => x * 4\n`
+  agree([
+    ['an element\'s method', p + `const hs = [{ run: (x) => parse(x) }]\nconst before = hs[0].run(3)\n` + after + `export let f = (x) => [before, hs[0].run(x)]`, 5],
+    ['an element of a table built by stores', p + `const by = []\nby[2] = { run: (x) => parse(x) }\nconst before = by[2].run(3)\n` + after + `export let f = (x) => [before, by[2].run(x)]`, 5],
+    ['an assignment\'s value', p + `let o\nconst before = (o ||= { run: (x) => parse(x) }).run(3)\n` + after + `export let f = (x) => [before, o.run(x)]`, 5],
+    ['a choice\'s second arm', p + `const a = { run: (x) => 0 }, b = { run: (x) => parse(x) }\nlet on = 0\nconst before = (on ? a : b).run(3)\n` + after + `export let f = (x) => [before, b.run(x)]`, 5],
+    ['a logical\'s right operand', p + `const b = { run: (x) => parse(x) }\nlet z = null\nconst before = (z || b).run(3)\n` + after + `export let f = (x) => [before, b.run(x)]`, 5],
+    ['an own member named like a table method', p + `const hs = []\nhs.push = (x) => parse(x)\nconst before = hs.push(3)\n` + after + `export let f = (x) => [before, hs.push(x)]`, 5],
+    ['an own member named like a builtin method', p + `const hs = []\nhs.map = (x) => parse(x)\nconst before = hs.map(3)\n` + after + `export let f = (x) => [before, hs.map(x)]`, 5],
+    ['an own member of an element', p + `const by = [[]]\nby[0].push = (x) => parse(x)\nconst before = by[0].push(3)\n` + after + `export let f = (x) => [before, by[0].push(x)]`, 5],
+    ['a for-of over closures', p + `const hs = [(x) => parse(x)]\nlet before = 0\nfor (const h of hs) before = h(3)\n` + after + `export let f = (x) => [before, hs[0](x)]`, 5],
+    ['a for-of over an iterable of the program', p + `const it = { *[Symbol.iterator]() { yield parse(3) } }\nlet before = 0\nfor (const v of it) before = v\n` + after + `export let f = (x) => [before, parse(x)]`, 5],
+    ['a callback over a table built by stores', p + `const by = []\nby[2] = [(x) => parse(x)]\nlet before = 0\nby.forEach(l => { before = l[0](3) })\n` + after + `export let f = (x) => [before, by[2][0](x)]`, 5],
+    ['a closure pushed, then called', p + `const hs = []\nhs.push((x) => parse(x))\nconst before = hs[0](3)\n` + after + `export let f = (x) => [before, hs[0](x)]`, 5],
+    ['an object a builtin calls a member of', p + `const o = { toJSON: () => parse(3) }\nconst before = JSON.stringify(o)\n` + after + `export let f = (x) => [before, parse(x)]`, 5],
+    ['a closure pushed, never called', p + `const hs = []\nhs.push((x) => parse(x))\nconst before = hs.length\n` + after + `export let f = (x) => [before, hs[0](x)]`, 5],
+    ['a number handed to a string method', p + `let i = 1\nconst before = 'abc'.charCodeAt(i)\n` + after + `export let f = (x) => [before, parse(x)]`, 5],
+  ])
+})
+
+// The parser's operator table (subscript's dispatcher filed by second char):
+// a call during initialization that runs none of the program's code keeps a
+// later property initialized, and a for-in over it unrolls. Each of these
+// calls made the walk take every function made so far as run, the comment
+// reader among them, and the property nullable everywhere.
+test('function properties: a builtin call during initialization that runs nothing of the program keeps a later property initialized', () => {
+  const reader = `const parse = (s) => parse.space(s)\nparse.space = (s) => s.length\n`
+  const tail = `const run = build(['+=', '++', '-'])\nparse.comment = { '//': 1, '/*': 2 }\nconst space = parse.space\nparse.space = (s) => { let n = space(s); for (const k in parse.comment) n += parse.comment[k] * k.length; return n }\nexport let f = (s) => run(s)\n`
+  const table = (body) => reader + `const build = (ops) => { ${body} }\n` + tail
+  const rows = [
+    ['an element\'s method', table(`const by = []; for (let i = 0; i < ops.length; i++) { const c = ops[i].charCodeAt(0); if (!by[c]) by[c] = []; by[c].push(ops[i]) } return (s) => parse(s) + by.length`), 'ab'],
+    ['an assignment\'s value', table(`const by = []; for (let i = 0; i < ops.length; i++) (by[ops[i].charCodeAt(0)] ||= []).push(ops[i]); return (s) => parse(s) + by.length`), 'ab'],
+    ['a for-of over an array', table(`const by = [[], []]; for (const l of by) l.push(ops[0]); return (s) => parse(s) + by.length`), 'ab'],
+    ['a table method handed an object', table(`const by = []; for (let i = 0; i < ops.length; i++) { const d = { op: ops[i] }; (by[ops[i].length] ||= []).push(d) } return (s) => parse(s) + by.length`), 'ab'],
+    ['a number handed to a string method', table(`let n = 0; for (let i = 0; i < ops.length; i++) { const s = ops[i]; for (let k = 0; k < s.length; k++) n += s.charCodeAt(k) } return (s) => parse(s) + n`), 'ab'],
+  ]
+  agree(rows)
+  if (onKernel() || belowOpt(1)) return   // the unroll is an optimization pass
+  for (const [name, src] of rows) ok(!/call \$__(prop_order|keys_ro|keys_dyn)\b/.test(compile(src, { wat: true })), `${name}: the for-in unrolls`)
+})

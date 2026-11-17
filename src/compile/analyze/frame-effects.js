@@ -460,7 +460,10 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
  * and callbackArg run synchronously and for local arrows called from this scope.
  */
-function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null, carried = NO_NAMES, inBounds = NO_NODES) {
+function census(scopeView, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null, carried = NO_NAMES, inBounds = NO_NODES) {
+  // the view the walk reads kinds through: the scope's, an arrow's own while
+  // the walk is in its body (scanArrow)
+  let view = scopeView
   // These tables belong only to this walk; published facts own their storage.
   const decl = takeScratchMap(), arrows = takeScratchMap(), reads = takeScratchMap()
   const assigned = takeScratchSet(), scanned = takeScratchSet(), writtenNested = takeScratchSet(), nestedDecl = takeScratchSet()
@@ -753,11 +756,13 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     if (scanned.has(arrow)) return
     scanned.add(arrow)
     loops.push(opaque)
-    // an arrow may run where no test around it holds
-    const around = tests
+    // an arrow may run where no test around it holds; its own parameters and
+    // declarations are bindings of its scope, which the summary names
+    const around = tests, outside = view
     tests = null
+    if (ctx.summary?.closureIdOfBody?.(arrow[2]) != null) view = ctx.summary.at(arrow[2])
     walkExpr(arrow[arrow.length - 1])
-    tests = around
+    tests = around; view = outside
     loops.pop()
   }
   // The arrow a name holds wherever it is called: bound once in this scope,

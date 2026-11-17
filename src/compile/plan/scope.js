@@ -477,21 +477,24 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
       if (d?.global) return withLoc(['=', d.global, d.flag && stmt ? [null, 1] : rewrite(node[2])], node)
       if (d?.drop) return stmt ? [';'] : rewrite(node[2])  // dead write — statement: nothing; value: the rhs
     }
-    const out = [op]
     // Filter dropped writes out of statement sequences (an empty `[';']` left in
-    // a body would lower to an unrenderable node).
+    // a body would lower to an unrenderable node). A node none of whose children
+    // changed stays itself: the summary the next passes read until it is rebuilt
+    // (plan/index.js) knows a closure by its body node (declareWrittenKeys' frame
+    // census reads a callback's parameters through it).
+    let out = null
     for (let i = 1; i < node.length; i++) {
       const c = rewrite(node[i], op === ';')
-      if (op === ';' && isEmptySeq(c)) continue
-      out.push(c)
+      if (op === ';' && isEmptySeq(c)) { out ??= node.slice(0, i); continue }
+      if (out) out.push(c)
+      else if (c !== node[i]) { out = node.slice(0, i); out.push(c) }
     }
-    return withLoc(out, node)
+    return out ? withLoc(out, node) : node
   }
   // (an entry of re-exports alone has no statements of its own)
   if (ast) {
     const newAst = rewrite(ast)
-    ast.length = 0
-    for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
+    if (newAst !== ast) { ast.length = 0; for (let i = 0; i < newAst.length; i++) ast.push(newAst[i]) }
     invalidateProgramFactsCache(ast)
   }
   for (const fn of ctx.funcs.list) {

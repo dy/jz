@@ -210,6 +210,8 @@ const ARRAY_RESULTS = new Set(['map', 'filter', 'slice', 'concat', 'flat', 'flat
 const STRING_RESULTS = new Set(['slice', 'substring', 'trim', 'trimStart', 'trimEnd', 'toLowerCase', 'toUpperCase', 'padStart', 'padEnd', 'repeat', 'concat', 'charAt', 'at', 'normalize'])
 // Receivers whose methods are the builtins' alone: no program code runs in them but what they are passed.
 const BUILTIN_RECEIVERS = new Set([K.STRING, K.NUMBER, K.BOOL, K.BIGINT, K.TYPED, K.MAP, K.SET, K.DATE, K.REGEX, K.BUFFER])
+// The operators besides `=` and `,` whose value is one of two operands' (a choice's two arms).
+const OPERAND_VALUE = new Set(['||', '&&', '??', '||=', '&&=', '??=', '?:'])
 
 function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null, conversions = true, byCalls = true }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
@@ -6080,10 +6082,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const hooks = conversions || accessors?.size > 0 || funcs.some(f => f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET))
     return () => {
       const bindingKind = (name, scope) => { const key = keyOf(name, scope); return key === null ? null : kinds[key] ?? K.NONE }
-      // The callables a kind names: [] where it holds none, null where it may hold any.
+      // The callables a kind names: [] where it holds none (a primitive is no
+      // function: a call of one throws, a builtin handed one calls none), null
+      // where it may hold any.
       const callablesOf = (k) => {
         const c = core(k)
-        if (c === K.NONE || tagOf(c) === K.NONE) return []
+        if (c === K.NONE || tagOf(c) === K.NONE || primitiveKinds(c)) return []
         return tagOf(c) === K.CLOSURE && paramOf(c) !== UNKNOWN ? membersOf(paramOf(c)) : null
       }
       // The kinds a read may have, from the settled kinds, unjoined (a join would
@@ -6101,6 +6105,28 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           if (rs === null || !rs.length) return null
           if (rs.every(r => tagOf(core(r)) === K.STRING)) return m === 'split' ? [ARRAY_ANY] : STRING_RESULTS.has(m) ? [STRING] : null
           return rs.every(r => tagOf(core(r)) === K.ARRAY) && ARRAY_RESULTS.has(m) ? [ARRAY_ANY] : null
+        }
+        // An element: an array's holds what its cell holds, a typed array's a
+        // number, a string's a string (a hole or an index past the end, nothing).
+        if (e[0] === '[]' && e.length === 3) {
+          const rs = readKinds(e[1], scope)
+          if (rs === null) return null
+          const out = []
+          for (const r of rs) {
+            const c = core(r), t = tagOf(c)
+            if (t === K.NONE) continue
+            if (t === K.ARRAY && paramOf(c) !== UNKNOWN) out.push(elems[cell(paramOf(c))])
+            else if (t === K.TYPED) out.push(typedElemKind(c))
+            else if (t === K.STRING) out.push(STRING)
+            else return null
+          }
+          return out
+        }
+        // An operator whose value is one of its operands' (`(by[c] ||= []).push(d)`).
+        if (e[0] === '=' || e[0] === ',') return readKinds(e[e.length - 1], scope)
+        if (OPERAND_VALUE.has(e[0])) {
+          const i = e[0] === '?:' ? 2 : 1, a = readKinds(e[i], scope), b = a && readKinds(e[i + 1], scope)
+          return b && [...a, ...b]
         }
         if ((e[0] !== '.' && e[0] !== '?.') || typeof e[2] !== 'string') return null
         const rs = readKinds(e[1], scope)
@@ -6139,6 +6165,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           const cs = rs.map(core).filter(c => tagOf(c) !== K.NONE)
           if (!cs.length) return []
           const tags = cs.map(tagOf)
+          // (a member of the name the program stored on such a receiver is its own: anything)
+          if (tags.some(t => builtinReceiverMayHaveOwn(t, m))) return null
           if (tags.every(t => BUILTIN_RECEIVERS.has(t))) return 'builtin'
           if (tags.every(t => t === K.ARRAY)) return ARRAY_METHODS.has(m) ? 'builtin' : null
           if (cs.every(c => tagOf(c) === K.CLOSURE && paramOf(c) !== UNKNOWN)) {
@@ -6164,6 +6192,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         scan(f ? f.body : closureBodies[key], u, key)
         return u
       }
+      // A call that runs none of the program's code, of what it is handed
+      // either: a table's method on receivers of its builtin kind, a `for…of`'s
+      // walk of a builtin sequence (`builtinCall`'s, of any receiver the walk reads).
+      const runsNothing = (n, scope) => {
+        const f = n[1]
+        if (f === '__iter_arr') {
+          const rs = n.length === 3 && !(Array.isArray(n[2]) && n[2][0] === ',') ? readKinds(n[2], scope) : null
+          return rs !== null && rs.every(r => { const t = tagOf(core(r)); return t === K.NONE || WALKED.has(t) })
+        }
+        if (!Array.isArray(f) || (f[0] !== '.' && f[0] !== '?.') || typeof f[2] !== 'string' || memberMayBeOwn(f[2])) return false
+        const rs = readKinds(f[1], scope)
+        return rs !== null && rs.every(r => { const t = tagOf(core(r)); return t === K.NONE || TABLE_METHODS[t]?.has(f[2]) === true && !builtinReceiverMayHaveOwn(t, f[2]) })
+      }
       const runArg = (a, u, scope) => {
         if (Array.isArray(a) && a[0] === '=>') { u.runs.add(closureId(a)); return }
         if (typeof a !== 'string') return
@@ -6187,7 +6228,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if ((op === '=' || op === '??=') && typeof n[1] === 'string') { scan(n[2], u, scope); return }
         if (op === '...' && iterates) u.dynamic = true
         if (op === '()' || op === '?.()') {
-          const t = targetsOf(n[1], scope)
+          const t = runsNothing(n, scope) ? [] : targetsOf(n[1], scope)
           if (t === null) { u.dynamic = true; scan(n[1], u, scope) }
           else {
             if (t !== 'builtin') for (const id of t) u.runs.add(id)
