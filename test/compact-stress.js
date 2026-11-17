@@ -45,8 +45,9 @@ const FILES = [
   ['handler-population', 'what a compaction keeps'], ['finalizer-population', 'a finalizer in a loop'],
   ['store-population', false], ['elem-population', false], ['map-population', false], ['plain-lift-population', false],
 ].filter(([, cut]) => FULL || cut !== false).map(([file, cut]) => [file, FULL || cut === true ? '' : cut])
-// A file's run, at most this long: a hang fails here.
-const LIMIT = 900000
+// A file's run, at most this long: a hang fails here (a whole population under the switch, an hour:
+// store-population took 850 to 980 seconds on a loaded machine)
+const LIMIT = FULL ? 3600000 : 900000
 const runner = fileURLToPath(new URL('./index.js', import.meta.url))
 
 // One file under the switch: its failed tests' lines, or why it gave no answer.
@@ -80,8 +81,12 @@ test('compact stress: the files that move memory, every chance to compact taken'
   await Promise.all(Array.from({ length: jobs }, async () => {
     while (next < FILES.length) { const i = next++; results[i] = await run(...FILES[i]) }
   }))
+  // every file's line, the ones that answered first: a failed assertion ends the test
+  const bad = []
   FILES.forEach(([file, grep], i) => {
-    const { failed, s } = results[i]
-    ok(!failed.length, `${file}${grep ? ` (${grep})` : ''} under JZ_DEBUG_COMPACT=1, ${s} s${failed.length ? '\n' + failed.join('\n') : ''}`)
+    const { failed, s } = results[i], name = `${file}${grep ? ` (${grep})` : ''} under JZ_DEBUG_COMPACT=1, ${s} s`
+    if (failed.length) bad.push(name + '\n' + failed.join('\n'))
+    else ok(true, name)
   })
+  ok(!bad.length, `${bad.length} of ${FILES.length} files differ or give no answer${bad.length ? ':\n' + bad.join('\n') : ''}`)
 })
