@@ -635,12 +635,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // the host (`hostSchemas`). The store raises the slots of those schemas by
   // the stored value, and of any schema that joins either set later
   // (`poisonLost`); a schema every holder of which the summary still names is
-  // untouched. `wildValues` joins every value stored under a computed key
+  // untouched. `wildStore.values` joins every value stored under a computed key
   // through such a receiver, `wildProps` the values stored under a literal
   // name: a read through a receiver of unknown shape sees them (`member`).
   // Propagate each new effect once; newly lost sites replay it in poisonLost.
   // Poisoning is monotone within a run; the seeded rerun clears it all.
-  let pendingAll = false, pendingIndexed = false, wildValues = K.NONE
+  // (`wildStore`: whether such a store ran, and the join of what it stored, a record
+  // the readers keep by reference and the walk changes in place: published
+  // before the solve runs, a value copied out would stay the first one)
+  const wildStore = { all: false, values: K.NONE }
+  let pendingIndexed = false
   // The shapes a `delete` can reach: a known receiver's, and every lost shape
   // once a delete goes through a receiver of unknown shape. A field store on
   // any other shape needs no presence-mask update (emit-assign.js).
@@ -687,7 +691,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) raiseSlot(sid, i, k)
   }
   const poisonLost = (sid) => {
-    if (pendingAll) raiseAllSlots(sid, wildValues)
+    if (wildStore.all) raiseAllSlots(sid, wildStore.values)
     if (pendingIndexed) poisonIndexed(sid)
     if (wildProps.size) schemas[sid].forEach((p, i) => { const k = wildProps.get(p); if (k !== undefined) raiseSlot(sid, i, k) })
   }
@@ -1629,7 +1633,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (cellLostObject.has(b)) addCellLost(a)
     if (!shapeCells.has(b)) shapeCells.delete(a)
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
-    if (propArrays.has(b)) propArrays.add(a)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
     if (cellNumeric.has(b)) raiseNumeric(kind(K.ARRAY, a), cellNumeric.get(b), elemNums[b] === undefined ? NR_NONE : elemNums[b])
     if (setCells.has(b)) setCells.add(a)
@@ -2394,7 +2397,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // An object whose `then` the runtime may call, or that it takes for one of its promises.
   const thenable = (sid) => layouts[sid] === PROMISE_LAYOUT || schemas[sid].includes('then') || schemas[sid].includes('__p') ||
     schemas[sid].includes(getterOf('then')) || classMember(kind(K.OBJECT, sid), 'then') !== null || memberMayBeOwn('then') ||
-    tagOf(sideOf(sid, 'then')) !== K.NONE || lostSchema(sid) && (wildProps.has('then') || pendingAll)
+    tagOf(sideOf(sid, 'then')) !== K.NONE || lostSchema(sid) && (wildProps.has('then') || wildStore.all)
   /** The value an await of a value of kind `k` resumes with (std/async `__await`, which takes a function for a value). */
   const awaited = (k) => {
     const t = tagOf(k)
@@ -3737,7 +3740,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const lostObjectRead = (prop, members = true) => {
     if (!isPrivate(prop) && (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop)) || (members && (membersByName.has(prop) || membersByName.has(getterOf(prop))))) return ANY
     let k = merge(ABSENT, merge(wildProps.get(prop) ?? K.NONE, sideByProp.get(prop) ?? K.NONE))
-    if (pendingAll) k = merge(k, wildValues)
+    if (wildStore.all) k = merge(k, wildStore.values)
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) { k = merge(k, slots(sid)[i]); for (const a of (mixedSlots.get(sid) ?? NO_MIX).get(i) ?? NO_ARRAYS) escape(a) }
     for (const sides of mixedSides.values()) for (const a of sides.get(prop) ?? NO_ARRAYS) escape(a)
     return k
@@ -3811,7 +3814,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // `Object.assign` from a host value: `sideWild`, escapeObject).
       const side = merge(NULLISH, mixedReadIn(mixedSides.get(paramOf(recv)) ?? NO_MIX, prop, sideOf(paramOf(recv), prop)))
       if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, side)
-      return optionalResult(op, recv, memberMayBeOwn(prop) ? ANY : pendingAll ? merge(side, wildValues) : side)
+      return optionalResult(op, recv, memberMayBeOwn(prop) ? ANY : wildStore.all ? merge(side, wildStore.values) : side)
     }
     if (unknownReceiver(recv)) {
       callCandidates(recv, getterOf(prop), 0, 0)
@@ -4279,13 +4282,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       for (const sid of hostSchemas) poisonIndexed(sid)
       return
     }
-    const first = !pendingAll
-    pendingAll = true
-    const k = merge(wildValues, v)
-    if (!first && k === wildValues) return
-    if (k !== wildValues) { wildValues = k; changed = true }
-    for (const sid of opaqueSchemas) raiseAllSlots(sid, wildValues)
-    for (const sid of hostSchemas) raiseAllSlots(sid, wildValues)
+    const first = !wildStore.all
+    wildStore.all = true
+    const k = merge(wildStore.values, v)
+    if (!first && k === wildStore.values) return
+    if (k !== wildStore.values) { wildStore.values = k; changed = true }
+    for (const sid of opaqueSchemas) raiseAllSlots(sid, wildStore.values)
+    for (const sid of hostSchemas) raiseAllSlots(sid, wildStore.values)
   }
 
   // Definite initialization: `let self = { f: undefined, … }` followed, in the
@@ -5701,7 +5704,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
+    sideProps, sideWild, wildStore, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
     mapKeys, heldKeys, absentStored,
     held,
     boolKeys, storeBits, paramKeys, fnAssigned,
@@ -6408,7 +6411,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
+    wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
     settleInitOrder()

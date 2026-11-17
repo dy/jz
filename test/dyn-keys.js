@@ -3267,3 +3267,28 @@ test('a module binding given an empty literal inside a function reads its keys f
     is(m.read(), js.read(), `O${optimize}`)
   }
 })
+
+// A store under a computed key through a receiver the summary lost the shape of
+// (a function the host can take, so its parameter is any object) reaches every
+// lost layout's fields; a read of such a field joins what those stores put
+// (summary/index.js wildStore). The record is read by reference: the facts are
+// published before the solve runs, and a copy of its first values made the
+// read of `o.y` a Number while a string went there.
+const WILD = {
+  inPlace: `const o = { x: 1 }
+const put = (r, k, v) => { r[k] = v }
+export let getPut = () => put
+export let run = (s, v) => { put(o, s, v); return o.y + 1 }`,
+  helper: `const o = { x: 1 }
+const put = (r, k, v) => { r[k] = v }
+const get = (r) => r.y
+export let getPut = () => put
+export let run = (s, v) => { put(o, s, v); return get(o) + 1 }`,
+}
+
+test('dyn keys: a field a computed-key store reaches through a lost shape reads every value stored', () => {
+  for (const [name, src] of Object.entries(WILD)) for (const optimize of [false, true, 'size', 'speed']) {
+    const host = oracle(src), m = jz(src, { optimize }).exports
+    for (const [s, v] of [['y', 'a'], ['y', 5], ['x', 'b'], ['y', 2.5]]) is(m.run(s, v), host.run(s, v), `${name} run(${s}, ${v}) at ${optimize}`)
+  }
+})
