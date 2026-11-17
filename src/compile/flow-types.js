@@ -25,6 +25,7 @@ import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst, MUTATE_OPS, isBrand, some, collectAssignedNames } from '../ast.js'
 import { constIntExpr } from '../static.js'
+import { isNullishLit } from '../ir/classify.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 import { mayHoldHostValue } from './func-exports.js'
 import { runsAccessor, runsConversion } from '../evaluation-effects.js'
@@ -64,6 +65,9 @@ export const heldOver = (name, fact, code, view = ctx.summary?.at(ctx.func.curre
   const k = fact.notNullish ? view?.bindingKindOf?.(name) : null
   return k != null && HEAP_VALS.has(ctx.summary.coreValOfKind(k)) ? PRESENT : null
 }
+// The name a loose comparison with `null` or `undefined` tests (`x == null`, `undefined != x`)
+const nullish = (n) => isNullishLit(n) || n === 'undefined' || n === 'null'
+const missingOf = (c) => typeof c[1] === 'string' && nullish(c[2]) ? c[1] : typeof c[2] === 'string' && nullish(c[1]) ? c[2] : null
 // a call, a construction, a closure or a write inside a condition
 const effectful = (n) => Array.isArray(n) && (n[0] === '()' || n[0] === '?.()' || n[0] === 'new' || n[0] === '=>' || MUTATE_OPS.has(n[0]) || n.slice(1).some(effectful))
 // What the later side of a condition writes is no longer what the earlier side tested:
@@ -110,6 +114,9 @@ export function extractRefinements(cond, out, sense = true) {
     const positiveEq = (op === '==' || op === '===') ? sense : !sense
     if (positiveEq) refineIntegerDiscriminant(cond[1], cond[2], out)
     else excludeIntegerDiscriminant(cond[1], cond[2], out)
+    // `x != null` on its arm, `x == null` off it: x is neither undefined nor null
+    const missing = !positiveEq && (op === '==' || op === '!=') ? missingOf(cond) : null
+    if (missing) mergeRefinement(out, missing, { notNullish: true })
     const tp = typeofPredicate(cond)
     if (tp) {
       const wantPositive = tp.eq ? sense : !sense

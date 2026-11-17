@@ -69,3 +69,27 @@ test('block present: a length read past the receiver\'s check reads the header',
   const g = funcWat(text, 'g$exp') || funcWat(text, 'g')
   ok(g.length > 0 && !/call \$__(length|str_eq|str_length|ptr_offset_fwd)/.test(g), 'no length dispatch')
 })
+
+// A loose comparison with null or undefined proves the name present where it
+// holds (flow-types.js extractRefinements): `a != null` on its arm, `a == null`
+// off it. The array a module `let` holds, missing until its init call, is read
+// on that arm with no missing-receiver test, in a loop and out of one.
+const guarded = `let a
+export let fill = (n) => { a = []; for (let i = 0; i < n; i++) a.push(i * 1.5); return 0 }
+export let sum = (m) => { let s = 0; if (a != null) for (let i = 0; i < m; i++) s += a[i] | 0; return s }
+export let either = (k) => a == null ? -2 : a.length + k
+export let undef = (k) => undefined != a ? a[k] : -3`
+
+test('block present: a name compared loosely with null answers as the host does', () => {
+  const calls = [['sum', 3], ['either', 1], ['undef', 0], ['fill', 5], ['sum', 3], ['sum', 8], ['either', 1], ['undef', 4], ['undef', 9]]
+  for (const optimize of levels(0, 2, 3)) {
+    const host = oracle(guarded), m = run(guarded, { optimize })
+    for (const [name, arg] of calls) is(m[name](arg), host[name](arg), `${name}(${arg}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(guarded, { optimize: 2 })
+  for (const name of ['sum', 'either', 'undef']) {
+    const f = funcWat(text, `${name}$exp`) || funcWat(text, name)
+    ok(f.length > 0 && !/__throw_property_nullish/.test(f), `${name} reads the array with no missing-receiver test`)
+  }
+})
