@@ -1305,10 +1305,31 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const noteLengthAlias = (name, value) => {
     const key = keyOf(name)
     if (key === null) return
-    let v = value
-    if (Array.isArray(v) && v[0] === '|' && Array.isArray(v[2]) && v[2][0] == null && v[2][1] === 0) v = v[1]
+    const v = wordOf(value), least = leastLengths(value)
     if (Array.isArray(v) && v[0] === '.' && v[2] === 'length' && typeof v[1] === 'string') lengthAliases.set(key, v[1]); else lengthAliases.delete(key)
+    if (least) leastAliases.set(key, least); else leastAliases.delete(key)
   }
+  // (prepare's `x | 0` of a length, or of the least of several)
+  const wordOf = (v) => Array.isArray(v) && v[0] === '|' && Array.isArray(v[2]) && v[2][0] == null && v[2][1] === 0 ? v[1] : v
+  // A binding that holds the least of several counts, the bound of a split
+  // loop's main steps (plan/loops.js: `min(B, a.length, n) | 0`, n an array's
+  // length, under `max(…, 0)` where B may be below zero): it is at most each
+  // of those arrays' lengths, so a counter below it is below every one.
+  const leastAliases = new Map()   // binding id → the array bindings whose lengths it is at most
+  const atMostZero = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number' && e[1] <= 0
+  const leastLengths = (value) => {
+    let v = wordOf(value)
+    if (Array.isArray(v) && v[0] === '()' && v[1] === 'math.max') { const a = argList(v[2]); if (a.length !== 2 || !atMostZero(a[1])) return null; v = a[0] }
+    if (!Array.isArray(v) || v[0] !== '()' || v[1] !== 'math.min') return null
+    const out = []
+    for (const t of argList(v[2])) {
+      const u = wordOf(t)
+      if (Array.isArray(u) && u[0] === '.' && u[2] === 'length' && typeof u[1] === 'string') out.push(u[1])
+      else if (typeof u === 'string' && lengthAliasOf(u) !== null) out.push(lengthAliasOf(u))
+    }
+    return out.length ? out : null
+  }
+  const leastAliasesOf = (name) => { const key = keyOf(name); return key === null ? null : leastAliases.get(key) ?? null }
   // A length a binding took stands for its array's while nothing after shrinks
   // or rebinds the array: a statement that may (a call that may run the
   // program's code or a shrinking method, a store to a length, a delete, an
@@ -1324,7 +1345,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (op === 'delete') { may = true; return }
       if (MUTATE_OPS.has(op)) {
         const t = m[1]
-        if (typeof t === 'string' && [...lengthAliases.values()].includes(t)) { may = true; return }
+        if (typeof t === 'string' && ([...lengthAliases.values()].includes(t) || [...leastAliases.values()].some(l => l.includes(t)))) { may = true; return }
         if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.') && t[2] === 'length') { may = true; return }
         if (Array.isArray(t) && t[0] === '[]' && literalKeyOf(t[2]) === null && !numberKey(t[2]) && !(Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'number')) { may = true; return }
       }
@@ -1338,7 +1359,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const freshStorage = (m) => m[0] === '()' && typeof m[1] === 'string' && FRESH.test(m[1]) && argList(m[2]).every(pureOperand)
   const ownParts = (n) => n[0] === 'for' ? [n[1], n[2], n[3]] : n[0] === 'if' || n[0] === 'while' ? [n[1]]
     : n[0] === ';' || n[0] === '{}' || n[0] === 'catch' || n[0] === 'finally' || n[0] === 'label' || n[0] === 'export' ? [] : [n]
-  const endAliases = () => { for (const [key, arr] of lengthAliases) { const k = nameKind(arr); if (k === null || fixedLen(k) < 0) lengthAliases.delete(key) } }
+  const resizable = (arr) => { const k = nameKind(arr); return k === null || fixedLen(k) < 0 }
+  const endAliases = () => {
+    for (const [key, arr] of lengthAliases) if (resizable(arr)) lengthAliases.delete(key)
+    for (const [key, arrs] of leastAliases) if (arrs.some(resizable)) leastAliases.delete(key)
+  }
   const lengthBoundedLoop = (n) => {
     // a test of several pure terms bounds the body by each of them
     const terms = conjuncts(n[2])
@@ -1347,13 +1372,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return null
   }
   const conjuncts = (t) => Array.isArray(t) && (t[0] === '&&' || t[0] === '__eager&&') ? [...conjuncts(t[1]), ...conjuncts(t[2])] : [t]
+  // (the counter, the arrays whose lengths bound it, its start)
   const boundedBy = (n, test) => {
     const c = loopCounter(n, test)
-    let b = c?.test[2]
-    if (Array.isArray(b) && b[0] === '|' && Array.isArray(b[2]) && b[2][0] == null && b[2][1] === 0) b = b[1]   // prepare's `x.length | 0`
-    if (typeof b === 'string' && c && lengthAliasOf(b) !== null && !assignedIn(n[4]).includes(b)) b = ['.', lengthAliasOf(b), 'length']
-    if (!c || c.from[0] < 0 || c.test[0] !== '<' || !Array.isArray(b) || b[0] !== '.' || b[2] !== 'length' || typeof b[1] !== 'string') return null
-    return assignedIn(n[4]).includes(b[1]) ? null : [c.name, b[1], c.from[0]]
+    if (!c || c.from[0] < 0 || c.test[0] !== '<') return null
+    const b = wordOf(c.test[2]), body = assignedIn(n[4])
+    const arrs = Array.isArray(b) && b[0] === '.' && b[2] === 'length' && typeof b[1] === 'string' ? [b[1]]
+      : typeof b === 'string' && !body.includes(b) ? (lengthAliasOf(b) !== null ? [lengthAliasOf(b)] : leastAliasesOf(b) ?? []).filter(a => !body.includes(a)) : []
+    return arrs.length ? [c.name, arrs, c.from[0]] : null
   }
   // An array holds fewer than 2^32 elements: a counter its length bounds is an index.
   const LENGTH_BOUND = 0xfffffffe
@@ -1366,7 +1392,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // (a counter the loop bounds by the length the cell's count aliases: `new Array(n)` under `i < n`, `n = coefs.length`)
     if (typeof idx === 'string' && countBounds(c, idx)) return
     // (a counter the loop bounds by this array's own length, which it leaves alone: a cell the array has, as a read there is present)
-    if (recvName !== null && typeof idx === 'string' && lenStable.has(idx) && lenBounds.get(idx) === keyOf(recvName)) return
+    if (recvName !== null && typeof idx === 'string' && lenStable.get(idx)?.has(keyOf(recvName))) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
     // (a counter whose every round stores here at it, from 0: each store lands at the length at most)
     const appends = recvName !== null && typeof idx === 'string' && appendCounters.get(idx)?.has(recvName) === true
@@ -3917,7 +3943,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         // So does a counter the loop bounds by the array's own length (`c < inp.length`),
         // the length fixed or left alone by the loop (lenStable: no call reaches the array, no store to its length).
         // (a binding reassigned elsewhere still bounds the loop that reads it: the alias of its length survived every assignment before the loop)
-        if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && (fixedLen(recv) >= 0 && stable(n[1], current ?? MODULE) || lenStable.has(idx))) { presentReads.add(n); return elemOf(recv) }
+        if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx)?.has(keyOf(n[1])) && (fixedLen(recv) >= 0 && stable(n[1], current ?? MODULE) || lenStable.get(idx)?.has(keyOf(n[1])))) { presentReads.add(n); return elemOf(recv) }
         // (a cell constructed with the count the loop's bound aliases, `state = new Array(n)` read under `i < n`: inside it, where the loop leaves its length alone;
         // a receiver of no cell has no count: `cell` of an unknown parameter would write past the table)
         if (typeof idx === 'string' && typeof n[1] === 'string' && loopBodies.has(idx) && celled(recv) && countBounds(cell(paramOf(recv)), idx) && !lengthMayChange(idx, loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
@@ -4082,7 +4108,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const assignName = (name, v) => {
     const key = keyOf(name)
     if (key !== null) {
-      pre.delete(key); endProofs(key); lengthAliases.delete(key)
+      pre.delete(key); endProofs(key); lengthAliases.delete(key); leastAliases.delete(key)
       // A straight-line assignment is the value the reads after it see; one on a path is not.
       if (followed(key)) post.set(key, v); else { post.delete(key); loopNote(key, v) }
       raise(kinds, key, v)
@@ -4848,18 +4874,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const c = cell(paramOf(k))
     if (!filledCells.has(c)) { filledCells.add(c); elems[c] = elems[c] & ~bitOf(K.ABSENT) }
   }
-  const lenBounds = new Map()
+  const lenBounds = new Map()   // counter → the keys of the arrays whose lengths bound it
   const loopBodies = new Map()      // counter → the body of the loop it counts
   // whether the counter `idx` (bounded by an array's length, lenBounds) stays inside cell `c`'s count
   const countBounds = (c, idx) => {
     const count = cellLenAlias.get(c)
     if (count === undefined || unknown.has(c) || !lenBounds.has(idx)) return false
     const by = lengthAliasOf(count)
-    return by !== null && lenBounds.get(idx) === keyOf(by)
+    return by !== null && lenBounds.get(idx).has(keyOf(by))
   }
   // the counters whose loop leaves the bounding array's length alone: no code
   // of the program's runs in its body, and no statement stores to the length
-  const lenStable = new Set()
+  const lenStable = new Map()   // counter → the keys of the arrays it is bounded by whose lengths its loop leaves alone
   // A loop body that runs no code of the program's but its own statements: no
   // call or construction (a closure may rebind what it captured, a method may
   // shrink its receiver; `Math.*` of pure operands runs none), no read of a
@@ -5001,7 +5027,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const typedReadPresent = (scope, node) => {
     if (typeof node[1] !== 'string') return false
     const idx = node[2]
-    if (typeof idx === 'string' && lenBounds.get(idx) === keyOf(node[1], scope) && stable(node[1], scope)) return true
+    if (typeof idx === 'string' && lenBounds.get(idx)?.has(keyOf(node[1], scope)) && stable(node[1], scope)) return true
     const len = typedLenOf(scope, node[1])
     if (len === null) return false
     const i = staticValue(scope, idx)
@@ -5016,7 +5042,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const op = n[0]
     // (a compound statement's own expressions: its statements are walked here in turn,
     // and a loop's body is the loop's own question, lengthMayChange)
-    if (lengthAliases.size && ownParts(n).some(shrinksArrays)) endAliases()
+    if ((lengthAliases.size || leastAliases.size) && ownParts(n).some(shrinksArrays)) endAliases()
     if (op === 'let' || op === 'const') return decl(n)
     if (op === 'return') { if (current != null) raiseResult(current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') {
@@ -5037,18 +5063,24 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A loop's test guards its body the way an `if` guards its branch.
     if (op === 'for') {
       stmt(n[1]); const loop = loopEnter(n); loopAssigns(n); branch++; flowPath++; selectedExpr(n[2], 0)
-      const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
+      // (a split loop's main steps are counted by its bound's hull and bounded by each length it is the least of, leastAliases)
+      const mark = rtop, counted = countedLoop(n), bounded = !counted || typeof wordOf(n[2]?.[2]) === 'string' && leastAliasesOf(wordOf(n[2][2])) ? lengthBoundedLoop(n) : null
       const ranged = counted || bounded ? null : boundedCounter(n), appending = appendReceivers(n), counter = appending && loopCounter(n).name
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); exactTrips.push(exactTrip(n)); countedDepth++ }
       if (ranged) spans.set(ranged[0], [ranged[1], ranged[2]])
       if (appending) appendCounters.set(counter, appending)
-      if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); loopBodies.set(bounded[0], n[4]); loopPure.set(bounded[0], !bodyRunsCode(n[4])); if (!lengthMayChange(bounded[0], n[4], bounded[1])) lenStable.add(bounded[0]) }
+      if (bounded) {
+        const [name, arrs, from] = bounded, keys = (as) => new Set(as.map(a => keyOf(a)).filter(k => k !== null))
+        lenBounds.set(name, keys(arrs)); if (!counted) spans.set(name, [from, LENGTH_BOUND]); loopBodies.set(name, n[4]); loopPure.set(name, !bodyRunsCode(n[4]))
+        const kept = keys(arrs.filter(a => !lengthMayChange(name, n[4], a)))
+        if (kept.size) lenStable.set(name, kept)
+      }
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); exactTrips.pop(); countedDepth-- }
       if (ranged) spans.delete(ranged[0])
       if (appending) appendCounters.delete(counter)
-      if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); loopBodies.delete(bounded[0]); loopPure.delete(bounded[0]); lenStable.delete(bounded[0]) }
+      if (bounded) { lenBounds.delete(bounded[0]); if (!counted) spans.delete(bounded[0]); loopBodies.delete(bounded[0]); loopPure.delete(bounded[0]); lenStable.delete(bounded[0]) }
       unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
       loopExit(loop)
       return
@@ -5543,7 +5575,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); constSpans.clear(); lengthAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); constSpans.clear(); lengthAliases.clear(); leastAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()

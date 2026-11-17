@@ -421,6 +421,23 @@ test('summary: a construction filled whole has no hole, a store the guard bounds
   })(), 'computes as JS does')
 })
 
+// A split loop's main steps run under the least of its bound and the lengths
+// it indexes (plan/loops.js, `min(⌈n⌉, a.length, b.length)`): a counter below
+// that is below each length (leastAliases), so an element read there is
+// present, as under a bound of the array's own length.
+test('summary: an element read under the least of the lengths is present', () => {
+  if (belowOpt(2)) return
+  const src = `const pair = (a, b, n) => { let s = 0; for (let i = 0; i < n; i++) { s += a[i]; b[i] = s } return s }
+    export const go = (n) => { const a = [], b = []; for (let i = 0; i < 6; i++) { a.push(i * 1.5); b.push(0) } return pair(a, b, n) + b.length }`
+  summarize(src)
+  const pair = ctx.summary.at('pair'), reads = []
+  const find = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith('a' + MARK) && typeof n[2] === 'string' && n[2].startsWith('i' + MARK)) reads.push(n); n.forEach(find) }
+  find(ctx.funcs.list.find(f => f.name === 'pair').body)
+  ok(reads.length > 0 && reads.every(n => !hasTag(pair.kindOfExpr(n), K.ABSENT)), 'a read of the main steps is present')
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const n of [0, 3, 6, 9, 2.5]) is(jz(src, { optimize }).exports.go(n), host.go(n), `go(${n}) at ${optimize}`)
+})
+
 test('summary: a declaration copying a conditional\'s candidates mixes nothing when none is an array', () => {
   // `const o = c` where `c` left an if as one shape or another: the member read
   // through `o` reads both shapes (an empty mix once shadowed it with nothing).
