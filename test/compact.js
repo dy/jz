@@ -290,6 +290,9 @@ const LIVE = {
   // a container a closure captures and grows in its loop, reached through
   // the environment address the closure took at its entry
   captured: `export const f = n => { const log = []; const g = () => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) log.push({ i, s: s.length }) } return s.length }; const r = g(); let t = 0; for (const e of log) t += e.i + e.s; return r + t }`,
+  // a module array of the static data the loop stores into and grows (its stub left there)
+  static: `const at = [0, 0], grown = [1]
+    export const f = n => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 1000 == 0) { at[(i / 1000) & 1] = { v: i }; grown.push([i]) } } return s.length + at[0].v + at[1 & (n > 1000)].v + grown[grown.length - 1][0] + grown.length }`,
 }
 
 test('compact: every pointer a loop still leads to survives its compactions', () => {
@@ -396,6 +399,62 @@ test('compact: dynamic properties on a static literal, replaced call after call,
     const want = oracle(src), { exports } = jz(src, { optimize: { level } })
     for (let i = 0; i < 3000; i++) { const got = exports.step(i), ref = want.step(i); if (got !== ref) { is(got, ref, `O${level} step(${i})`); break } }
     ok(true, `O${level}: 3000 steps agree`)
+  }
+})
+
+// A module's array literal of constants lies in the static data (module/array.js
+// arrayLiteral) and stays writable: what a call stores into it, and the stub
+// a growth leaves there, are the walk's to reach (module/core/compact.js). The
+// walk skipped the static data: a stored value was freed (a read gave
+// 1.06e-307 for 5) and a stub there was listed past the visited bitmap (a
+// trap), at levels 2, 3 and speed, in 1.0.3 too. Each program keeps a little
+// in a module binding at every call, so the host compacts within the calls.
+const STATIC = {
+  store: [`const arr = [1, 2]
+    export const put = (k, i) => { arr[0] = { v: i }; return 0 }
+    export const read = () => arr[0].v + ':' + arr.length`],
+  'a store through a receiver of unknown kind': [`const arr = [1, 2], o = { a: 1 }
+    export const put = (k, i) => { const r = k ? arr : o; r[0] = { v: i, s: 'made ' + i }; return 0 }
+    export const read = () => arr[0].v + ':' + arr[0].s`],
+  'a push through a receiver of unknown kind': [`const bag = { n: 0, push(x) { this.n += x; return this.n } }, arr = [1]
+    export const put = (k, i) => { const r = k ? arr : bag; r.push({ v: i }); return 0 }
+    export const read = () => arr[arr.length - 1].v + ':' + arr.length`],
+  'a splice that grows it': [`const arr = [21, 22]
+    export const put = (k, i) => { arr.splice(1, 0, [i], 'made ' + i); return 0 }
+    export const read = () => arr[1][0] + ':' + arr[2] + ':' + arr.length`],
+  // an object of the static data (its field never written) naming an array grown, then shifted, at start:
+  // the walk now reaches the chain from the object, its last stub the base record (fix 4's rule)
+  'an object of constants naming an array grown then shifted at start': [`const oa = { k: 1, a: ['p', 12, 'r', 14] }
+    oa.a[oa.a.length] = 'yz'
+    while (oa.a.length > 1) oa.a.shift()
+    export const put = (k, i) => { for (let j = 0; j < 5; j++) oa.a.push(i); oa.a.push(oa.a.shift()); return 0 }
+    export const read = () => oa.a.join() + ':' + oa.k`],
+  'an array of arrays': [`const rows = [[1, 2], [3, 4]]
+    export const put = (k, i) => { rows[1][0] = { v: i }; rows[0].push([i, i]); return 0 }
+    export const read = () => rows[1][0].v + ':' + rows[0][rows[0].length - 1][1] + ':' + rows[0].length`],
+  // an object of constants is laid out on the heap once a property may be written: no sidecar lands in the static data
+  'an object literal given properties through a receiver of unknown kind': [`const cfg = { a: 1, b: 2 }, other = [0]
+    export const put = (k, i) => { const r = k ? cfg : other; r['x' + i] = { v: i }; r.tag = 'made ' + i; return 0 }
+    export const read = () => cfg['x5'].v + ':' + cfg.tag + ':' + Object.keys(cfg).length`],
+  'a typed array of literal length given a named property': [`const buf = new Float64Array(4)
+    export const put = (k, i) => { buf.tag = { v: i }; buf.name = 'n' + i; buf[1] = i; return 0 }
+    export const read = () => buf.tag.v + ':' + buf.name + ':' + buf[1]`],
+  // runtime layouts of the JSON parser, in the schema table's reserve (static data), name key arrays of the heap
+  'the schema table\'s reserve': [`let kept = []
+    export const put = (k, i) => { kept.push(JSON.parse('{"key' + i + '": ' + i + ', "n": [' + i + ']}')); return 0 }
+    export const read = () => kept.map(o => Object.keys(o).join('/') + '=' + o.n[0]).join(',')`],
+}
+test('compact: what a call stores into the static data, and a stub it leaves there, survive the compactions after it', () => {
+  if (onWasi()) return
+  const churn = `\n    let keep = []
+    export const step = (i) => { keep = [...keep, 'item ' + i + ' ' + 'x'.repeat(200)].slice(-20); return keep.length }`
+  for (const [name, [body]] of Object.entries(STATIC)) {
+    const src = body + churn
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+      const { exports: m } = jz(src, { optimize }), want = oracle(src)
+      for (const x of [m, want]) { x.put(1, 5); for (let i = 0; i < 400; i++) x.step(i) }
+      is(m.read(), want.read(), `${name}, ${optimize}`)
+    }
   }
 })
 
