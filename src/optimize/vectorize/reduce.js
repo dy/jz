@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { _offsetLocalStride, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
+import { _offsetLocalStride, affineAddr, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, NARROW_LANES, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
@@ -578,6 +578,71 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   for (const s of body) walkAst(s, { enter: n => { if (n[0] === 'local.tee' && typeof n[1] === 'string') teed.add(n[1]) } })
   const newLocalDecls = []
   const fresh = () => { const n = `$__mr${freshIdRef.next++}`; newLocalDecls.push(['local', n, 'v128']); return n }
+  // A field of a record of k elements (`pts[2 * (o + i) + 1]`, k = 2..8): its address moves 8k
+  // bytes a pass (addr-model.js affineAddr), so its lane 1 is what the next pass reads, 8k bytes
+  // on. Where the loop reads every field of a record of two, three or four, the two records are
+  // k vectors loaded once and each field a shuffle of two of them (`blocks`); any other field
+  // is a gather, a load for each lane, its address computed once. Either reads only what the
+  // two scalar passes read.
+  // (each load's form, taken in the order the pass evaluates: an address tee, `(local.tee $a
+  // (i32.add o i))` written once, stands for its value in the loads after it)
+  const once = new Map()
+  for (const s of body) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') once.set(n[1], (once.get(n[1]) || 0) + 1) } })
+  const affine = affineAddr(incVar, writes, defs, new Map(), (t) => once.get(t) === 1 && fnLocals.get(t) === 'i32')
+  const offsetOf = (e) => { for (let i = 1; i < e.length - 1; i++) if (typeof e[i] === 'string' && e[i].startsWith('offset=')) return +e[i].slice(7); return 0 }
+  const forms = new Map()        // load → its form
+  const fieldSites = new Map()   // `c|key` → [{ e, C, s, tee }]
+  if (bl.dir !== -1) for (const s of body) walkAst(s, { enter: n => {
+    if (n[0] !== 'f64.load' || siteAccess.get(n)) return
+    const addr = n[n.length - 1], f = affine(addr)
+    if (!f) return
+    forms.set(n, f)
+    if (f.c % 8 !== 0 || f.c < 16 || f.c > 64) return
+    let tee = false
+    walkAst(addr, { enter: x => { if (x[0] === 'local.tee') tee = true } })
+    const k = `${f.c}|${f.key}`
+    if (!fieldSites.has(k)) fieldSites.set(k, [])
+    fieldSites.get(k).push({ e: n, C: f.k + offsetOf(n), s: f.c, tee })
+  } })
+  // (a block: every field of a record of two, three or four read; the vectors load where the
+  // pass first reads one, at that load's address moved back to the record's first field, so a
+  // tee in it runs where it ran; the other loads' addresses, tee-free, go)
+  const blocks = new Map()       // load → { g, field }
+  for (const sites of fieldSites.values()) {
+    const s = sites[0].s, k = s / 8, C0 = Math.min(...sites.map(x => x.C))
+    const fields = new Set(sites.map(x => (x.C - C0) / 8))
+    if (k > 4 || fields.size !== k || sites.some(x => x.C - C0 >= s || (x.C - C0) % 8 !== 0)) continue
+    if (sites.some((x, i) => i > 0 && x.tee)) continue
+    const first = sites[0], back = first.C - C0, off = offsetOf(first.e) - back
+    let addr = first.e[first.e.length - 1]
+    if (off < 0) addr = ['i32.sub', addr, ['i32.const', -off]]
+    const g = { k, addr, off: Math.max(off, 0), temps: null }
+    for (const x of sites) blocks.set(x.e, { g, field: (x.C - C0) / 8 })
+  }
+  let shuffles = 0
+  const bytes = (lane) => Array.from({ length: 8 }, (_, b) => String(lane * 8 + b))
+  const blockLanes = ({ g, field }) => {
+    // lane 0 is element `field` of the two records' 2k, lane 1 element `field + k`
+    const shuffle = (temps) => { shuffles++; const m = field + g.k; return ['i8x16.shuffle', ...bytes(field & 1), ...bytes(2 + (m & 1)), ['local.get', temps[field >> 1]], ['local.get', temps[m >> 1]]] }
+    if (g.temps) return shuffle(g.temps)
+    g.temps = Array.from({ length: g.k }, () => fresh())
+    // (the address once: the first vector's tees it, the others read it)
+    const a = `$__mra${freshIdRef.next++}`
+    newLocalDecls.push(['local', a, 'i32'])
+    const loads = g.temps.map((t, v) => ['local.set', t, ['v128.load', ...(g.off + 16 * v ? [`offset=${g.off + 16 * v}`] : []), v ? ['local.get', a] : ['local.tee', a, g.addr]]])
+    return ['block', ['result', 'v128'], ...loads, shuffle(g.temps)]
+  }
+  const gatherLanes = (e, s) => {
+    let off = 0
+    const rest = []
+    for (let i = 1; i < e.length - 1; i++) { const x = e[i]; if (typeof x === 'string' && x.startsWith('offset=')) off = +x.slice(7); else rest.push(x) }
+    let a0 = e[e.length - 1], a1
+    if (isArr(a0) && a0[0] === 'local.get') a1 = a0
+    else if (isArr(a0) && a0[0] === 'local.tee' && a0.length === 3) a1 = ['local.get', a0[1]]
+    else { const t = `$__mra${freshIdRef.next++}`; newLocalDecls.push(['local', t, 'i32']); a0 = ['local.tee', t, a0]; a1 = ['local.get', t] }
+    const load = (o, a) => ['f64.load', ...(o ? [`offset=${o}`] : []), ...rest, a]
+    return ['f64x2.replace_lane', 1, ['f64x2.splat', load(off, a0)], load(off + s, a1)]
+  }
   let bad = false, calls = 0
   const lift = (e) => {
     if (bad || !isArr(e)) { bad = true; return null }
@@ -588,15 +653,34 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
       // 16 bytes = 2 consecutive f64s; the f64x2 op reads them (a memarg kept)
       const addr = e[e.length - 1]
       const m = siteAccess.get(e) ?? (matchStrideAddr(addr, 8, writes, offTees, addrTees, ivCoeff) && { strideLog2: 3 })
-      if (!m || m.strideLog2 !== 3) { bad = true; return null }
-      return ['v128.load', ...e.slice(1)]
+      if (m && m.strideLog2 === 3 && (m.pixelStride ?? 1) === 1) return ['v128.load', ...e.slice(1)]
+      if (blocks.has(e)) return blockLanes(blocks.get(e))
+      const f = forms.get(e)
+      if (!f || f.c % 8 !== 0 || f.c < 16 || f.c > 64) { bad = true; return null }
+      return gatherLanes(e, f.c)
     }
     if (op === 'local.get' && typeof e[1] === 'string') {
       if (e[1] === incVar || accSet.has(e[1])) { bad = true; return null }   // IV-as-data / acc-dependent contribution
       if (laneV.has(e[1])) return ['local.get', laneV.get(e[1])]
       // a body local read BEFORE its write this iteration → loop-carried, not a fresh lane
-      if (writeCount.has(e[1]) || teed.has(e[1])) { bad = true; return null }
+      // (a write anywhere in the loop: a statement's, a tee's, a value block's)
+      if (writes.has(e[1]) || teed.has(e[1])) { bad = true; return null }
       return ['f64x2.splat', e]   // genuine loop-invariant scalar (xi, …)
+    }
+    // A value block (an inlined helper's let-binding, `(block (result f64) (local.set $u …) V)`):
+    // straight-line, its sets lane temps as the body's statements are, its last child the value.
+    if (op === 'block' && isArr(e[1]) && e[1][0] === 'result' && e[1][1] === 'f64' && e[1].length === 2) {
+      const out = ['block', ['result', 'v128']]
+      for (let i = 2; i < e.length - 1; i++) {
+        const s = e[i]
+        if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3) || s[1] === incVar || accSet.has(s[1]) || defs.has(s[1]) || fnLocals.get(s[1]) !== 'f64') { bad = true; return null }
+        const v = lift(s[2])
+        if (bad) return null
+        if (!laneV.has(s[1])) laneV.set(s[1], fresh())
+        out.push(['local.set', laneV.get(s[1]), v])
+      }
+      out.push(lift(e[e.length - 1]))
+      return bad ? null : out
     }
     // (an operand here is an f64, as wasm types it; the body writes no global, its statements all locals')
     if (op === 'global.get') return ['f64x2.splat', e]
@@ -665,7 +749,8 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   // out and carried in order: the lanes may do no more weighted work (cost-model.js), a
   // kernel's evaluation one for two passes. A plain sum is the case they lose: one load
   // saved, a read of the lanes and of the accumulator for each pass paid.
-  if (liftWeight(lifted) + calls * CALL_WEIGHT > 2 * (liftWeight(body) + calls * CALL_WEIGHT)) return null
+  // (a record field's shuffle weighs one, as the lane ops do: cost-model.js weighs it nothing)
+  if (liftWeight(lifted) + shuffles + calls * CALL_WEIGHT > 2 * (liftWeight(body) + calls * CALL_WEIGHT)) return null
 
   // SIMD prefix over the even prefix [0, bound & ~1); the original block is the ≤1 scalar
   // remainder (continues j and the accumulators). IV advances by 2.
