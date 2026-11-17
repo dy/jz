@@ -162,7 +162,39 @@ export let f = (n) => { fill(buf, n); return buf[1] }`],
 for (let i = 0; i < 100; i++) { bones.push({ s: [i, i + 1] }); sol.push(0, 0) }
 const save = (bones, sol) => { for (let i = 0; i < bones.length; i++) { const b = bones[i], o = i * 2; sol[o] = b.s[0]; sol[o + 1] = b.s[1] } }
 export let f = (n) => { save(bones, sol); return sol[1] }`],
+  // two counters closing from both ends (pmndrs/math's reverse): the one taken up
+  // by its step beside the other's, the one taken down held above it by the test
+  // and below its start, a count the one call fixes (compile/analyze-scans.js, static.js counterMove)
+  ['two counters closing from both ends', `const reverse = (out, v, n) => {
+  for (let lo = 0, hi = n - 1; lo < hi; lo++, hi--) { const x = v[lo * 2], y = v[lo * 2 + 1]; out[lo * 2] = v[hi * 2]; out[lo * 2 + 1] = v[hi * 2 + 1]; out[hi * 2] = x; out[hi * 2 + 1] = y }
+  return out
+}
+const pts = []
+for (let i = 0; i < 48; i++) pts.push(i * 0.5)
+const copy = (out, v, n) => { for (let k = 0; k < n * 2; k++) out[k] = v[k]; return reverse(out, out, n) }
+export let f = (n) => copy([], pts, 24)[n & 31]`],
 ]
+
+// The counter taken down at its edges, its value read at the test before a first round
+// (a count of 0 or 1) and after the body's last step, each count fixed by its one call.
+test('index store: two counters closing from both ends answer at every count', () => {
+  const src = (n) => `const rev = (out, n) => {
+  let last = -99
+  for (let lo = 0, hi = n - 1; lo < hi; lo++, hi--) { const t = out[lo]; out[lo] = out[hi]; out[hi] = t; last = hi }
+  for (let lo = 0, hi = n - 1; lo <= hi; lo++, hi--) { out[hi] = out[hi] + 1; last = last * 10 + hi }
+  return last
+}
+export let f = () => { const a = [10, 20, 30, 40, 50]; const r = rev(a, ${n}); return r * 1000 + a[0] + a[1] * 3 + a[2] * 7 + a.length }`
+  for (const n of [0, 1, 2, 3, 5, 7]) for (const optimize of levels(0, 2, 3, 'size'))
+    is(run(src(n), { optimize }).f(), oracle(src(n)).f(), `a count of ${n} at ${optimize}`)
+})
+
+test('index store: the kernels answer what the host answers', () => {
+  for (const [name, src] of kernels) for (const optimize of levels(0, 2, 3, 'size')) {
+    const host = oracle(src), wasm = run(src, { optimize })
+    for (const n of [3, 5, 9]) is(wasm.f(n), host.f(n), `${name}: f(${n}) at ${optimize}`)
+  }
+})
 
 test('index store: a counter, a cursor and an affine index link no hash store and warn of no dynamic write', () => {
   if (belowOpt(2)) return

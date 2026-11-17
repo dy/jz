@@ -584,6 +584,37 @@ export function elementCounter(cond, step) {
 // `++i` as a loop's whole step (a Number's step by one, src/normalize.js; a step's postfix is its update).
 export const unitStep = (s, name) => Array.isArray(s) && s[0] === '++' && s.length === 2 && s[1] === name
 
+// A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`
+// (a Number's every step, src/normalize.js) → { name, by, sign }, else null.
+export function counterStep(s) {
+  if (!Array.isArray(s) || typeof s[1] !== 'string') return null
+  const [op, x, v] = s
+  if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }
+  if (op === '+=' || op === '-=') return { name: x, by: v, sign: op === '+=' ? 1 : -1 }
+  return null
+}
+
+// The one step moving `iv` each pass (compile/loop-model.js loopFacts): the loop's own,
+// alone or beside other counters' (`++i`, `i += 2`, `lo++, hi--`), or where it has none,
+// a `while` body's last statement when nothing else there writes it →
+// { sign, by } with `by` a positive integer, else null.
+export function counterMove(step, body, iv) {
+  const of = (s) => {
+    const m = counterStep(s)
+    if (!m || m.name !== iv) return null
+    const by = typeof m.by === 'number' ? m.by : constIntExpr(m.by)
+    return Number.isInteger(by) && by > 0 ? { sign: m.sign, by } : null
+  }
+  if (step != null) {
+    const steps = Array.isArray(step) && step[0] === ',' ? step.slice(1) : [step]
+    const moves = steps.filter(s => isReassigned(s, iv))
+    return moves.length === 1 && !isReassigned(body, iv) ? of(moves[0]) : null
+  }
+  if (!Array.isArray(body) || body[0] !== ';' || body.length < 2) return null
+  const last = body[body.length - 1], m = of(last)
+  return m && !isReassigned([';', ...body.slice(1, -1)], iv) ? m : null
+}
+
 /** The store sibling of `elementCounter`. An array holds fewer than 2^29
  *  elements: an element store at an index at or past every length it can
  *  reach throws the allocation's RangeError (module/core.js __dense_check,

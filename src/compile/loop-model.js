@@ -12,7 +12,7 @@
 import { MUTATE_OPS, walkAst, isReassigned } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
-import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr, nameShift } from '../static.js'
+import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr, nameShift, counterStep, counterMove } from '../static.js'
 
 // Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
 // a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
@@ -173,25 +173,6 @@ export function loopFacts(init, cond, step, body) {
   })
 }
 
-// The one step moving `iv` each pass: the loop's own (`++i`, `i += 2`, `i -= K`), or
-// where it has none, a `while` body's last statement when nothing else there writes it →
-// { sign, by } with `by` a positive integer, else null.
-function counterMove(step, body, iv) {
-  const of = (s) => {
-    const m = counterStep(s)
-    if (!m || m.name !== iv) return null
-    const by = typeof m.by === 'number' ? m.by : constIntExpr(m.by)
-    return Number.isInteger(by) && by > 0 ? { sign: m.sign, by } : null
-  }
-  if (step != null) {
-    const steps = Array.isArray(step) && step[0] === ',' ? step.slice(1) : [step]
-    const moves = steps.filter(s => isReassigned(s, iv))
-    return moves.length === 1 && !isReassigned(body, iv) ? of(moves[0]) : null
-  }
-  if (!Array.isArray(body) || body[0] !== ';' || body.length < 2) return null
-  const last = body[body.length - 1], m = of(last)
-  return m && !isReassigned([';', ...body.slice(1, -1)], iv) ? m : null
-}
 
 /** The refinements a loop's facts give its body: each counter's range there. */
 export function counterRefinements(facts) {
@@ -206,15 +187,6 @@ export function testRefinements(facts) {
   return facts.test ? new Map([[facts.iv, { rlo: facts.test.lo, rhi: facts.test.hi }]]) : null
 }
 
-// A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`
-// (a Number's every step, src/normalize.js) → { name, by, sign }, else null.
-function counterStep(s) {
-  if (!Array.isArray(s) || typeof s[1] !== 'string') return null
-  const [op, x, v] = s
-  if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }
-  if (op === '+=' || op === '-=') return { name: x, by: v, sign: op === '+=' ? 1 : -1 }
-  return null
-}
 
 // The loop's secondary counters and their body ranges, given at most `trips` passes per entry.
 // A step amount is a literal or a name that neither the body nor the step writes.

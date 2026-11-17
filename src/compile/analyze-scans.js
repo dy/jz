@@ -8,7 +8,7 @@ import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
   constIntExpr, counterInit, guardCounterName, elementCounter, forCounterBounds, typedCtorRawOf,
-  unitStep, storeCounterTop, arrayKindOf, ARRAY_LENGTH_TOP,
+  unitStep, counterMove, storeCounterTop, arrayKindOf, ARRAY_LENGTH_TOP,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
@@ -1503,7 +1503,9 @@ export function stampLoopCounterRanges(body) {
     const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf, loopBody)
     // A store at a rising index each round bounds the counter however far its
     // test reaches (static.js storeCounterTop): from its start, up to the top.
-    const startAt = unitStep(step, name) ? own ? counterInit(init, name) : entry : null
+    // (the loop's facts' one move of the counter, its step alone or beside another counter's: `lo++, hi--`)
+    const move = counterMove(step, loopBody, name)
+    const startAt = move?.sign === 1 && move.by === 1 ? own ? counterInit(init, name) : entry : null
     const start = startAt != null ? rangeOf(startAt) : null
     const top = start && Number.isInteger(start[0]) && Number.isInteger(start[1]) && !Object.is(start[0], -0)
       ? storeCounterTop(loopBody, name, start[1]) : null
@@ -1511,6 +1513,17 @@ export function stampLoopCounterRanges(body) {
     const test = range && stored ? [Math.max(range.test[0], stored[0]), Math.min(range.test[1], stored[1])] : range?.test ?? stored
     if (!test || test[0] < -2147483648 || test[1] > 2147483647) return
     updateRep(name, { range: test })
+    // A counter the loop takes down that its test holds above this one (`lo < hi`
+    // under `lo++, hi--`): at most its own start; in the body above the least this
+    // one is, and one step below that after the body's last step, or its start where
+    // the loop runs none (the loop's facts' move of it, static.js counterMove).
+    const closing = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && cond[1] === name && typeof cond[2] === 'string' ? cond[2] : null
+    if (closing && closing !== name && decls.get(closing) === 1 && !closureWrites(closing) && lets.some(d => Array.isArray(d) && d[0] === 'let' && d.some(x => Array.isArray(x) && x[0] === '=' && x[1] === closing))) {
+      const down = counterMove(step, loopBody, closing), from = down?.sign === -1 ? counterInit(init, closing) : null
+      const top = from != null ? rangeOf(from) : null
+      const low = top && Math.min(top[0], test[0] + (cond[0] === '<' ? 1 : 0) - down.by)
+      if (top && Number.isInteger(low) && Number.isInteger(top[1]) && low >= -2147483648 && top[1] <= 2147483647) updateRep(closing, { range: [low, top[1]] })
+    }
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
     // Other loop-local counters move at the same bounded number of step
     // evaluations. Bound both directions separately, including the final
