@@ -5531,6 +5531,12 @@ test('unrollTrips: which loops it writes out', () => {
   is([loops(rot), reads(rot)], [0, 9], 'a bottom test against a local bound of nine: nine copies')
   is(new Set(JSON.stringify(rot).match(/\$x_u\d+/g)).size, 9, 'each copy names its block afresh')
   is(JSON.stringify(rot).split('"$k"').length - 1, 2 + 2 + 9 * 3, 'each copy keeps the step the test made')
+  // the counter set in the guard's test (watr sinks a counter's first set into its first read): the
+  // way into the loop is the one the guard did not take, past the set
+  const guarded = (k0) => fn(set('$n', c(9)), ['block', '$b', ['br_if', '$b', ['i32.ge_s', k0, g('$n')]], ['loop', '$l', work,
+    ['br_if', '$l', ['i32.lt_s', ['local.tee', '$k', ['i32.add', g('$k'), c(1)]], g('$n')]]]])
+  is(loops(unrollTrips(guarded(['local.tee', '$k', c(0)]))), 0, 'a counter the guard\'s test sets: nine copies')
+  is(loops(unrollTrips(guarded(['local.tee', '$k', ['if', ['result', 'i32'], g('$p'), ['then', c(0)], ['else', c(1)]]]))), 1, 'one it sets from a choice stays')
 })
 
 // A Number a loop holds unchanged takes a register through the whole loop.

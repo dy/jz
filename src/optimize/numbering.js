@@ -21,9 +21,16 @@
  * record, is held by no local, nor a part of it: the lane lift gathers the load, each lane its
  * own address (vectorize/map.js), and a local holds one lane's.
  *
+ * A local holds a value too: a copy of another local is named as that local, and a constant
+ * written to a local is the constant at each read the write reaches as the walk goes (CONSTANT).
+ * What holds past a join, a loop's head and a handler is as for runs, but that a loop keeps what
+ * holds of every local it never writes, and what holds at its end holds past it: a branch out of
+ * the loop goes to a block's end, which keeps nothing a branch reaches.
+ *
  * The uses, each a kind of value asked by a step of the table where its pass stood: TAG
- * (`hoistPtrType`), OFFSET (`hoistPtrOffset`), SUBSCRIPT (`hoistAddrBase`), LOAD (`reuseLoads`)
- * (optimize/pass-table.js; no record keyed by a step's name, its header says why).
+ * (`hoistPtrType`), OFFSET (`hoistPtrOffset`), SUBSCRIPT (`hoistAddrBase`), LOAD (`reuseLoads`),
+ * CONSTANT (`propagateConstants`) (optimize/pass-table.js; no record keyed by a step's name, its
+ * header says why).
  *
  * @module optimize/numbering
  */
@@ -97,6 +104,18 @@ const own = (name) => name
 export const OFFSET = { prefix: 'po', type: () => 'i32', site: (n, root) => { const s = boxCall(n, '$__ptr_offset', root); if (s) s.moves = true; return s } }
 export const SUBSCRIPT = { prefix: 'ab', type: () => 'i32', consts: true, site: subscriptSite }
 export const LOAD_AT = { prefix: 'rl', type: (n) => n[0].slice(0, 3), shallow: true, site: loadSite }
+// a read of a local where the walk knows the constant it holds: the constant, for the folds after it.
+// The emitter's value of an assignment and forwardStores leave one in a temporary (`te[3] = 0`
+// stored, then read back); watr propagates a constant no wider than the read, and from a write at
+// the head of a statement, not one inside a store (its forwardPropagate), so the temporary stayed.
+// Read as constants, watr drops the temporaries and their writes: the bench's speed builds 0.5%
+// smaller, its size builds 0.3%. V8 reads a constant through a local already where the write
+// reaches the read on every way, as in threescene's hot loop: no time moved there.
+export const CONSTANT = { site: () => null, reads: true }
+const CONST = new Set(['i32.const', 'i64.const', 'f32.const', 'f64.const'])
+const isConst = (n) => isArr(n) && n.length === 2 && CONST.has(n[0])
+// (one constant at two writes: -0 is not 0, and a NaN, whose payload `===` does not see, is none)
+const sameConst = (a, b) => a === b || a[0] === b[0] && a[1] === b[1] && Object.is(a[1], b[1])
 // (a call of a helper on a box a local holds: named by the local, a copy as the local it copies)
 const boxCall = (n, callee, root) => {
   if (n[0] !== 'call' || n[1] !== callee || n.length !== 3) return null
@@ -106,26 +125,29 @@ const boxCall = (n, callee, root) => {
 const look = (root) => (x) => x[0] === 'local.get' && root(x[1]) !== x[1] ? 'l:' + root(x[1]) : undefined
 const tee = (a) => isArr(a) && a[0] === 'local.tee' ? ['local.get', a[1]] : a
 
-/** Number `fn`'s values of `kind` (TAG, OFFSET, SUBSCRIPT, LOAD_AT) and read each run of two sites or more from one local; `fx` the module's effects. */
+/** Number `fn`'s values of `kind` (TAG, OFFSET, SUBSCRIPT, LOAD_AT) and read each run of two sites or more from one local,
+ *  or (CONSTANT) read each local where it holds a constant as the constant; `fx` the module's effects. */
 export function numberValues(fn, kind, fx = NO_MODULE) {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return false
   const refs = buildRefcount(fn)
   const consts = kind.consts ? constLocals(fn, bodyStart) : null
-  // state: open runs by key, and copies (a local → the local it holds the value of)
-  let open = new Map(), alias = new Map()
+  // state: open runs by key, copies (a local → the local it holds the value of) and, asked, constants
+  // (a local → the constant it holds)
+  let open = new Map(), alias = new Map(), held = kind.reads ? new Map() : null
   const root = (name) => alias.get(name) ?? name
   const runs = new Map()   // key → its runs: [{ parent, idx, tee }]
-  let shared = 0, depth = 0
+  let shared = 0, depth = 0, did = false
   // the loops the walk is in, each with the locals it writes once asked
   const loops = []
   const steps = (atom) => { const l = loops[loops.length - 1]; return !!l && atom.startsWith('l:') && (l.writes ??= writesIn(l.node)).has(atom.slice(2)) }
-  const meet = (a, b) => { if (!a || !b) return new Map(a ?? b ?? []); const m = new Map(); for (const [k, v] of a) if (b.get(k) === v) m.set(k, v); return m }
-  const clear = () => { open = new Map(); alias = new Map() }
+  const meet = (a, b, same) => { if (!a || !b) return new Map(a ?? b ?? []); const m = new Map(); for (const [k, v] of a) { const w = b.get(k); if (w !== undefined && (same ? same(v, w) : w === v)) m.set(k, v) } return m }
+  const clear = () => { open = new Map(); alias = new Map(); if (held) held = new Map() }
   const wrote = (name) => {
     for (const [k, r] of [...open]) if (r.deps.includes(name)) open.delete(k)
     for (const [a, r] of [...alias]) if (a === name || r === name) alias.delete(a)
+    held?.delete(name)
   }
   const forgetLoads = (acc) => { for (const [k, r] of [...open]) if (r.load && (!acc || mayAlias(acc, r.load))) open.delete(k) }
   const walk = (n, parent, idx) => {
@@ -135,6 +157,12 @@ export function numberValues(fn, kind, fx = NO_MODULE) {
   }
   const visit = (n, parent, idx) => {
     const op = n[0]
+    // (a node several parents hold is one node at each: its read stays a read)
+    if (held && op === 'local.get') {
+      const c = !shared && held.get(n[1])
+      if (c) { parent[idx] = [c[0], c[1]]; did = true }
+      return
+    }
     let s = !shared && kind.site(n, root, consts, parent, steps)
     // (a value no local holds: neither it nor a part of it is a site)
     if (s === GATHERED) return
@@ -156,17 +184,18 @@ export function numberValues(fn, kind, fx = NO_MODULE) {
       let i = 1
       while (i < n.length && (!isArr(n[i]) || n[i][0] === 'result' || n[i][0] === 'param' || n[i][0] === 'type')) i++
       for (; i < n.length && !(isArr(n[i]) && (n[i][0] === 'then' || n[i][0] === 'else')); i++) walk(n[i], n, i)
-      const before = open, beforeAlias = alias
+      const before = open, beforeAlias = alias, beforeHeld = held
       const ends = []
       for (const arm of ['then', 'else']) {
         const a = n.find((c, j) => j > 0 && isArr(c) && c[0] === arm)
-        open = new Map(before); alias = new Map(beforeAlias)
+        open = new Map(before); alias = new Map(beforeAlias); if (held) held = new Map(beforeHeld)
         depth++
         if (a) for (let j = 1; j < a.length; j++) walk(a[j], a, j)
         depth--
-        ends.push(a && never(a[a.length - 1]) ? [null, null] : [open, alias])
+        ends.push(a && never(a[a.length - 1]) ? [null, null, null] : [open, alias, held])
       }
       open = meet(ends[0][0], ends[1][0]); alias = meet(ends[0][1], ends[1][1])
+      if (held) held = meet(ends[0][2], ends[1][2], sameConst)
       if (leftTo(n)) clear()
       return
     }
@@ -177,11 +206,16 @@ export function numberValues(fn, kind, fx = NO_MODULE) {
       return
     }
     if (op === 'loop' || op === 'try' || op === 'try_table' || typeof op === 'string' && op.startsWith('catch') || op === 'delegate') {
+      const loop = op === 'loop' ? { node: n, writes: held ? writesIn(n) : null } : null
+      const kept = loop && held ? [...held].filter(e => !loop.writes.has(e[0])) : null
       clear()
-      if (op === 'loop') loops.push({ node: n, writes: null })
+      if (kept) held = new Map(kept)
+      if (loop) loops.push(loop)
       for (let i = 1; i < n.length; i++) walk(n[i], n, i)
-      if (op === 'loop') loops.pop()
+      if (loop) loops.pop()
+      const end = held
       clear()
+      if (loop && end) held = end
       return
     }
     for (let i = 1; i < n.length; i++) walk(n[i], n, i)
@@ -189,6 +223,7 @@ export function numberValues(fn, kind, fx = NO_MODULE) {
       wrote(n[1])
       const v = n[2]
       if (n.length === 3 && get(v) && root(v[1]) !== n[1]) alias.set(n[1], root(v[1]))
+      if (held && n.length === 3 && isConst(v)) held.set(n[1], v)
       return
     }
     if (typeof op !== 'string') return
@@ -198,6 +233,7 @@ export function numberValues(fn, kind, fx = NO_MODULE) {
     if (CLOBBER.test(op)) forgetLoads(null)
   }
   for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+  if (held) return did
   // the runs of two sites or more, one local a name
   let id = null
   const locals = []

@@ -90,8 +90,10 @@ const entryValues = () => {
         // (an arm runs alone: an else arm's path passes the test, not the then arm)
         if (list[0] === 'if' && isArr(s) && (s[0] === 'then' || s[0] === 'else')) continue
         if (!writes(s, x)) continue
-        // (an earlier operand of an instruction ran before, as an earlier statement did)
-        if (some(s, m => FLOW.has(m[0]))) return null
+        // (an earlier operand of an instruction ran before, as an earlier statement did; so did a
+        // br_if's operands, and the way on is the one it did not take: a loop's guard that sets
+        // its counter, `(br_if $b (i32.ge_s (local.tee $k (i32.const 0)) …))`)
+        if ((s[0] === 'br_if' ? s.slice(2) : [s]).some(o => some(o, m => FLOW.has(m[0])))) return null
         const key = s
         let env = memo.get(key)
         if (!env) {

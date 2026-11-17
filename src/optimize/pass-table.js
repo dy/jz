@@ -132,6 +132,8 @@ export const PASSES = [
   P('foldLoadCasts', 'func', 'fusedRewrite', { after: [['specializeLoops', 'the copies read hit elements bare']], drops: 'schemaSid' }),
   P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], takes: 'effects', reads: 'mem', lost: 'mem', drops: 'unsigned presentNumRead wrapSafe cellI32' }),
   P('narrowByteLoads', 'func', '+reuseLoads', { after: [['reuseLoads', 'a part of a word read alone, the narrow load of it']] }),
+  P('propagateConstants', 'func', 'propagateConstants', {
+    after: [['forwardStores', 'the temporaries its forwarded loads read'], ['specializeLoops', 'each copy\'s own'], ['narrowInts', 'the constants of the integer registers']] }),
   P('settledTests', 'func', 'settledTests', { after: [['combineGuards', 'over the guards every pass above left'], ['specializeLoops', 'the same']] }),
   // The loop passes above read a loop as the emitter wrote it: the lane lifts its arithmetic in
   // place, specializeLoops the values it reads (a copy that assumes `channels` an integer has

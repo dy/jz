@@ -17,7 +17,7 @@ import { forwardStores } from './forward-store.js'
 import { sinkStores } from './sink-stores.js'
 import { earlyStores } from './early-stores.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
-import { numberValues, narrowByteLoads, TAG, OFFSET, SUBSCRIPT, LOAD_AT } from './numbering.js'
+import { numberValues, narrowByteLoads, TAG, OFFSET, SUBSCRIPT, LOAD_AT, CONSTANT } from './numbering.js'
 import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs, foldLoadCasts, holdWordNumbers,
 } from './peephole.js'
@@ -133,6 +133,8 @@ export const RUN = [
   // A load an earlier one read, nothing stored between; then a part of a word read alone, the narrow load of it.
   ['reuseLoads', (fn, cfg, facts) => numberValues(fn, LOAD_AT, facts.effects)],
   ['narrowByteLoads', (fn) => narrowByteLoads(fn)],
+  // A read of a local that holds a constant there: the constant, for the folds and the engine.
+  ['propagateConstants', (fn) => numberValues(fn, CONSTANT)],
   // One a dominating test settled goes.
   ['settledTests', (fn) => dropSettledTests(fn)],
   // Preserve source-unrolled SSA scratch before propagation sinks its single
