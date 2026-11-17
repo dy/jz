@@ -5,7 +5,7 @@ import { f64Range } from '../../ir.js'
 import { isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
-import { laneStep, liftCtx, liftFail, liftStmt, peelNarrowConv } from './lift.js'
+import { laneStep, liftCtx, liftFail, liftStmt, peelNarrowConv, refusedFor } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop, simdBound } from './scaffold.js'
 
@@ -261,7 +261,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     if (name === incVar) continue
     if (writes.has(name)) {
       const access = laneAccess(body, name, bl.outsideReads)
-      if (access === 'read') return null  // loop-carried (reduction or stencil)
+      if (access === 'read') return refusedFor('carried')  // loop-carried (reduction or stencil)
       // A live-out lane-local never lands from its shadow: a constant flag
       // (constantFlagStore) lands after the loop, one every pass writes lands in the
       // last pass, which the strips leave to the loop as written (writtenEachPass).
@@ -682,7 +682,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
   // Cost model (Part 2 — see the header doc right before tryGeneralMap): decline
   // when the vector step costs at least as much per lane as the scalar iteration it replaces.
   if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes))
-    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
+    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost', 'cost')
 
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`

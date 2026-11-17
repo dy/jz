@@ -69,10 +69,59 @@ import { arrayPointers, globalCopies } from './alias.js'
 import { countsSigned, legal, localsHold } from './legality.js'
 import { canonicalizeIfBr, describeLoop, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks, stripScaffold, strips } from './scaffold.js'
 import { passCost } from './cost-model.js'
+import { STORE_OPS } from './lane-tables.js'
 import { irSize } from '../../growth.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
 import { tryToneMap } from './tone-map.js'
+
+// ---- A loop's verdict, for its advisories ------------------------------------
+
+// A loop some copy of which lifted.
+const LIFTED = { lifted: true }
+// Why no lowering lifted a loop: a float reduction its lanes would combine in another order (it
+// lifts with relaxed floats); a lift a lowering built that the legality refused, for what the
+// loop leaves in a local ('local'), an unsigned exit ('count') or two accesses no test tells
+// apart ('alias'), or that runs past the loop's passes ('trips'); one a cost gate refused; a
+// record wider than a lane gather reads ('stride'); the first lift's refusal of an operation
+// ('shape'); a local carried from one pass to the next, beside stores that do not read it
+// ('mixed': a reduction's lowerings read no loop that stores, a map's none that carries a local)
+// or not; else none of these. `said`: the lifts' refusals (vecState.reasons), those of the
+// reductions asked again with relaxed floats among them; `iv`: the loop's counter.
+function verdictOf(said, refused, reorder, node, iv) {
+  if (reorder) return { lifted: false, cause: 'order' }
+  if (refused) return { lifted: false, cause: refused }
+  let shape = null, carried = false, cost = false, stride = false
+  if (said) for (const e of said) {
+    if (e[0] === 'cost') cost = true
+    else if (e[0] === 'carried') carried = true
+    else if (e[0] === 'stride') stride = true
+    else if (shape == null) shape = e[1]
+  }
+  if (cost) return { lifted: false, cause: 'cost' }
+  if (stride) return { lifted: false, cause: 'stride' }
+  if (shape != null) return { lifted: false, cause: 'shape', detail: shape }
+  if (!carried) return { lifted: false, cause: 'none' }
+  return { lifted: false, cause: storesApart(node, iv) ? 'mixed' : 'carried' }
+}
+
+// Whether the loop stores, and no value it stores reads a local carried across its passes, the
+// counter `iv` aside, or one computed from such a local: a reduction beside a map, which split
+// apart lift each (`b[i] = a[i] * 2; s += a[i]`), not a recurrence a store needs (`s ^= s << 13;
+// out[i] = s & 255`).
+function storesApart(node, iv) {
+  const written = (n) => (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3 && n[1] !== iv
+  const reads = (n, names) => { let hit = false; walkAst(n, { enter: x => { if (x[0] === 'local.get' && names.has(x[1])) hit = true } }); return hit }
+  const carried = new Set()
+  walkAst(node, { enter: n => { if (written(n) && reads(n[2], new Set([n[1]]))) carried.add(n[1]) } })
+  for (let grew = true; grew;) {
+    grew = false
+    walkAst(node, { enter: n => { if (written(n) && !carried.has(n[1]) && reads(n[2], carried)) { carried.add(n[1]); grew = true } } })
+  }
+  let stores = false, apart = true
+  walkAst(node, { enter: n => { if (STORE_OPS[n[0]]) { stores = true; if (reads(n[n.length - 1], carried)) apart = false } } })
+  return stores && apart
+}
 
 // ---- Pass entry ------------------------------------------------------------
 
@@ -86,11 +135,14 @@ import { tryToneMap } from './tone-map.js'
 // and the facts of the compile it reads: `links` (each emitted loop's block → what the
 // emitter proved of it, src/ir/control.js), `typedView` (a typed view of another's
 // buffer exists, which the store pairing does not model), `settled` (whether no code
-// writes a global after start, optimize/globals.js settledGlobal) and `warn` (the advisory sink).
+// writes a global after start, optimize/globals.js settledGlobal), `warn` (the advisory sink)
+// and `verdicts`, where a warnings sink asks: each source loop's verdict by its body's position
+// (the link's `loc`), lifted where some copy of it lifted, else why the first copy asked was not
+// (compile/plan/advise.js adviseSimdLoops says it).
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFloat = false, relaxedSimd = false, blurMP = true, whyNot = false,
     stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
-    pairIterations = false, links = null, typedView = false, warn = null, settled = null } = opts
+    pairIterations = false, links = null, typedView = false, warn = null, settled = null, verdicts = null } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -238,7 +290,12 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // canonical one (`i < bound`, a step of one up), its envelope variants, and where that
       // refuses the loop, the strips' own (stripScaffold: a test `<=` or shifted, a loop
       // counting down), whose end a `setup` sets ahead of the lift.
-      const desc = describeLoop(node, links?.get(node))
+      const link = links?.get(node), desc = describeLoop(node, link)
+      // (the source loop's verdict, where a sink asks: the first refusal of a lift a lowering
+      // built, and each lift's own refusals in vecState.reasons)
+      const site = verdicts && link?.loc != null ? link.loc : null
+      let refused = null
+      if (site != null) vecState.reasons = []
       const canonical = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true }, desc)
       // (a canonical loop's test reads the emitter's own counter: checked across the battery)
       if (DBG_INVARIANTS && canonical && desc.own != null && desc.own !== canonical.incVar)
@@ -296,9 +353,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       const lifts = [], trips = desc?.facts?.trips
       const runs = (x) => { let ok = true; if (trips != null) walkAst(x.wrapper, { enter: n => { const at = strips.get(n); if (at && at.lanes > trips) ok = false } }); return ok }
       const take = (name, x, over = node) => {
-        if (!x || !runs(x)) return
+        if (!x) return
+        if (!runs(x)) { if (site != null) refused ??= 'trips'; return }
         const y = legal(x, over, liveAfter, env)
-        if (!y) return
+        if (!y) { if (site != null) refused ??= !localsHold(x, over, liveAfter) ? 'local' : !countsSigned(x, over) ? 'count' : 'alias'; return }
         y.lowering = name
         y.cost = passCost(y, over.find(c => isArr(c) && c[0] === 'loop'))
         y.size = irSize(y.wrapper)
@@ -360,6 +418,14 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           `${fnName.replace(/^\$/, '')}: loop #${whyNotN} not vectorized — ${vecState.whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
           { fn: `${fnName}#${whyNotN}` })
       }
+      if (site != null) {
+        if (r) liftedIn(node)
+        else if (!verdicts.has(site)) {
+          const reorder = !relaxedFloat && !!bl && reorders(bl, node, liveAfter, runs, of)
+          verdicts.set(site, verdictOf(vecState.reasons, refused, reorder, node, bl?.incVar))
+        }
+        vecState.reasons = null
+      }
       if (r) simdFired = true   // one of the real SIMD recognizers above matched
       if (paired) r = paired
       if (r) return [[parent, idx, node, r]]
@@ -374,6 +440,20 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       }
     }
     return inner
+  }
+  // (a lift takes the work of the loops inside its loop: each is lifted with it)
+  const liftedIn = (node) => walkAst(node, { enter: n => { if (n[0] === 'block') { const at = links.get(n)?.loc; if (at != null) verdicts.set(at, LIFTED) } } })
+  // Whether a reduction refused only for the order its lanes would combine in lifts with relaxed
+  // floats: asked again so, the ids it takes given back, so the output is the same.
+  const reorders = (bl, node, liveAfter, runs, of) => {
+    const ids = freshIdRef.next
+    vecState.relaxF32 = true
+    let yes = false
+    for (const x of [tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc), tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)])
+      if (x && runs(x) && legal(of(x), node, liveAfter, env)) yes = true
+    vecState.relaxF32 = false
+    freshIdRef.next = ids
+    return yes
   }
   const NONE = [], deferredSR = [], srConsumed = new Set()
   vecState.whyNotActive = whyNot

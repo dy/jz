@@ -289,6 +289,13 @@ test('warnings: jsstring-declined when param is reassigned', () => {
   ok(/reassign/.test(ws[0].message))
 })
 
+// The SIMD advisories speak after the lift (compile/plan/advise.js adviseSimdLoops): a loop
+// that carries a scalar or indexes with a stride, where no copy of it lifted, with the cause the
+// lift gave; nothing where some copy lifted. The advice to split only where splitting removes
+// the cause.
+const simdFor = (src, optimize) => warningsFor(src, { optimize }).filter(w => w.code.startsWith('simd-'))
+const SUM = 'const a = new Float64Array(1024); export let f = () => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }'
+
 test('warnings: simd-loop-carried on reduction-style loop', () => {
   if (belowOpt(2)) return  // advisory only emitted when vectorizeLaneLocal runs (optimize >= 2)
   const ws = warningsFor(`
@@ -298,18 +305,66 @@ test('warnings: simd-loop-carried on reduction-style loop', () => {
       return s
     }
   `)
-  ok(ws.some(w => w.code === 'simd-loop-carried'))
+  ok(ws.some(w => w.code === 'simd-loop-carried' && /is not vectorized: /.test(w.message)))
 })
 
-test('warnings: simd-aos-stride on interleaved index', () => {
-  if (belowOpt(2)) return  // advisory only emitted when vectorizeLaneLocal runs (optimize >= 2)
-  const ws = warningsFor(`
-    export let f = (a) => {
-      for (let i = 0; i < 10; i++) a[i * 3] = 1
-      return 0
-    }
-  `)
-  ok(ws.some(w => w.code === 'simd-aos-stride'))
+test('warnings: simd-loop-carried names the cause the lift refused the loop for', () => {
+  for (const optimize of levels(true, 'speed')) {
+    // a float sum lanes would add in another order: lifted with relaxed floats, at 'speed'
+    const sum = simdFor(SUM, optimize)
+    if (optimize === 'speed') is(sum, [], 'speed: lifted, no advisory')
+    else ok(sum.length === 1 && sum[0].code === 'simd-loop-carried' && /another order/.test(sum[0].message) && /relaxed floats/.test(sum[0].message), sum[0]?.message)
+    // a store and a carried scalar in one loop: the split lifts both
+    const mixed = simdFor(`const a = new Int32Array(1024), b = new Int32Array(1024)
+export let f = () => { let s = 0; for (let i = 0; i < a.length; i++) { b[i] = a[i] * 2; s = (s + a[i]) | 0 } return s + b[3] }`, optimize)
+    ok(mixed.length === 1 && /split the reduction into a loop of its own$/.test(mixed[0].message), mixed[0]?.message)
+    is(simdFor(`const a = new Int32Array(1024), b = new Int32Array(1024)
+export let f = () => { let s = 0; for (let i = 0; i < a.length; i++) b[i] = a[i] * 2; for (let i = 0; i < a.length; i++) s = (s + a[i]) | 0; return s + b[3] }`, optimize), [], 'split: both lift')
+    // a recurrence, and one a store reads: no split advice
+    const rec = simdFor('const a = new Float64Array(1024); export let f = () => { let s = 0; for (let i = 0; i < a.length; i++) s = s * 0.5 + a[i]; return s }', optimize)
+    ok(rec.length === 1 && !/split/.test(rec[0].message), rec[0]?.message)
+    const prng = simdFor('const out = new Uint8Array(1024); export let f = () => { let s = 7; for (let i = 0; i < out.length; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; out[i] = (s >>> 0) & 255 } return out[9] }', optimize)
+    ok(prng.length === 1 && !/split/.test(prng[0].message), prng[0]?.message)
+  }
+})
+
+test('warnings: no SIMD advisory on a loop the lift took', () => {
+  for (const optimize of levels(true, 'speed')) {
+    is(simdFor('const xs = new Int32Array(64); export let f = () => { let s = 0; for (let i = 0; i < xs.length; i++) s ^= xs[i]; return s }', optimize), [], 'an integer reduction')
+    is(simdFor('const a = new Float64Array(300); export let f = () => { for (let i = 0; i < 100; i++) a[i * 3] = 1; return a[3] }', optimize), [], 'a strided store')
+    is(simdFor('export let f = (a) => { for (let i = 0; i < 10; i++) a[i * 3] = 1; return 0 }', optimize), [], 'a strided store, a typed copy of the export lifted')
+  }
+})
+
+test('warnings: simd-aos-stride names its cause; the advice to split fields only for a record wider than a gather', () => {
+  for (const optimize of levels(true, 'speed')) {
+    const wide = simdFor('const a = new Float64Array(1200); export let f = () => { let s = 0; for (let i = 0; i < 100; i++) s += a[i * 12] * a[i * 12 + 5]; return s }', optimize)
+      .find(w => w.code === 'simd-aos-stride')
+    ok(wide && /stride 12/.test(wide.message) && /wider than the eight values/.test(wide.message) && /one typed array per field/.test(wide.message), wide?.message)
+    const three = simdFor('const a = new Float64Array(300), b = new Float64Array(100); export let f = () => { for (let i = 0; i < 100; i++) b[i] = a[i * 3] + a[i * 3 + 1] * a[i * 3 + 2]; return b[7] }', optimize)
+    ok(three.length === 1 && /cost more than the loop as written$/.test(three[0].message), three[0]?.message)
+  }
+})
+
+// One source loop, several emitted copies (a kind clone per caller's array kind here): the
+// advisory speaks once, and only where no copy lifted.
+test('warnings: a SIMD advisory speaks for every copy of its loop', () => {
+  const two = (k1, k2) => `const A = new ${k1}(37 * 8), B = new ${k2}(37 * 8)
+const rowx = (m, o) => { let s = 0; for (let i = 0; i < 37; i++) s ^= m[o + i]; return s }
+export let f = () => { let t = 0; for (let r = 0; r < 8; r++) t += rowx(A, r * 37); return t }
+export let g = () => { let t = 0; for (let r = 0; r < 8; r++) t += rowx(B, r * 37); return t }`
+  for (const optimize of levels(true, 'speed')) {
+    is(simdFor(two('Int32Array', 'Float64Array'), optimize), [], 'the Int32Array copy lifted')
+    const none = simdFor(two('Float64Array', 'Float32Array'), optimize)
+    ok(none.length === 1 && none[0].code === 'simd-loop-carried' && none[0].fn === 'rowx' && none[0].line === 2, JSON.stringify(none))
+  }
+})
+
+test('warnings: the SIMD advisories leave the bytes as a compile without a sink makes them', () => {
+  for (const optimize of levels(true, 'speed')) {
+    const quiet = compile(SUM, { optimize }), ws = []
+    is(compile(SUM, { optimize, warnings: w => ws.push(w) }), quiet, 'the reduction asked again with relaxed floats leaves no trace')
+  }
 })
 
 // opts.whyNotSimd (CLI --why): per-loop diagnostic naming the op that blocked

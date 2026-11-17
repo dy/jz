@@ -4,7 +4,7 @@ import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
 
-/** Compile-time advisories — heap growth, SIMD hints. */
+/** Compile-time advisories: heap growth, generic dispatch; the SIMD hints after the lift. */
 const HEAP_LOOP_OPS = new Set(['for', 'while'])
 // What the host holds of a result: a typed array is a view of the module's
 // memory, a closure and a regex are handles on it. A string, an array, an
@@ -149,32 +149,47 @@ function simdLoopIssues(body, iv) {
   return { indexed, carried, maxStride }
 }
 
-function adviseSimdLoops() {
-  if (!ctx.warnings) return
-  if (ctx.transform.optimize?.vectorizeLaneLocal === false) return
+// Why the lift refused a loop (optimize/vectorize/index.js verdictOf), in what a program can change.
+const simdCause = (v) =>
+  v.cause === 'order' ? "its lanes would combine its floating-point sum in another order than the loop; relaxed floats (optimize: 'speed') allow that"
+  : v.cause === 'local' ? 'a local it writes is carried to the next pass or read after the loop, and no lowering keeps it'
+  : v.cause === 'count' ? 'its exit compares the counter unsigned, with no bound a strip of lanes can test'
+  : v.cause === 'alias' ? 'it stores where it may also read or store at another index, and no test tells the two apart'
+  : v.cause === 'trips' ? 'it runs fewer passes than one strip of lanes'
+  : v.cause === 'cost' ? 'its lanes would cost more than the loop as written'
+  : v.cause === 'stride' ? 'its records are wider than the eight values a lane gather reads'
+  : v.cause === 'shape' ? `no lowering has a lane form for it (${v.detail})`
+  : v.cause === 'mixed' ? 'it stores, and carries a scalar from one pass to the next that its stores do not read, which no lowering lifts in one loop'
+  : v.cause === 'carried' ? 'it carries a scalar from one pass to the next, and no lowering of a reduction lifts its update'
+  : 'no lowering takes its shape'
 
+/** SIMD advisories, after the lift: a loop that carries a scalar or indexes with a stride, where
+ *  no copy of it lifted, with the cause the lift gave (`verdicts`, by the position of the loop's
+ *  body: the lowering link's `loc`). A loop the lift never asked (unrolled, removed, a guard's
+ *  cold twin alone) has no verdict and no advisory. A loop is advised once, in the first
+ *  function that holds it (its kind clones hold it too). The advice to split stays where the
+ *  cause is what splitting removes. */
+export function adviseSimdLoops(verdicts) {
+  const told = new Set()
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
     const fn = func.name
 
     walkAst(func.body, { enter: node => {
-      if (node[0] === 'for' && node.length >= 5) {
-        const [, , , step, body] = node
-        const iv = forInductionVar(step)
-        if (iv) {
-          const { indexed, carried, maxStride } = simdLoopIssues(body, iv)
-          if (indexed && carried) {
-            warn('simd-loop-carried',
-              `'${fn}' loop carries a scalar updated each iteration — SIMD vectorization skipped; split the reduction or use a separate accumulator`,
-              { fn }, node.loc)
-          }
-          if (indexed && maxStride > 1) {
-            warn('simd-aos-stride',
-              `'${fn}' indexed access stride ${maxStride} on loop counter — split into one typed array per field for SIMD (array-of-structures blocks vectorization)`,
-              { fn }, node.loc)
-          }
-        }
-      }
+      if (node[0] !== 'for' || node.length < 5) return
+      const [, , , step, body] = node
+      const iv = forInductionVar(step), v = iv && Array.isArray(body) ? verdicts.get(body.loc) : null
+      if (!v || v.lifted || told.has(body.loc)) return
+      told.add(body.loc)
+      const { indexed, carried, maxStride } = simdLoopIssues(body, iv)
+      if (indexed && carried)
+        warn('simd-loop-carried',
+          `'${fn}' loop carries a scalar updated each iteration and is not vectorized: ${simdCause(v)}${v.cause === 'mixed' ? '; split the reduction into a loop of its own' : ''}`,
+          { fn }, node.loc)
+      if (indexed && maxStride > 1)
+        warn('simd-aos-stride',
+          `'${fn}' loop indexes with stride ${maxStride} on its counter and is not vectorized: ${simdCause(v)}${v.cause === 'stride' ? '; one typed array per field reads each field in lanes' : ''}`,
+          { fn }, node.loc)
     } })
   }
 }
@@ -233,7 +248,6 @@ function adviseGenericDispatch() {
 export function adviseProgram(programFacts) {
   adviseHeapGrowth()
   if (programFacts) adviseJsstringCarrier(programFacts.paramReps, programFacts.programIndex.addressTaken)
-  adviseSimdLoops()
   adviseGenericDispatch()
 }
 

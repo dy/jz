@@ -446,7 +446,7 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl) {
   // Cost model (Part 2 — see the shared header doc before tryGeneralMap). Same
   // check, same reused arrays.
   if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes))
-    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
+    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost', 'cost')
 
   // ---- Codegen: tryStencil's own proven neighbourhood-gather wrapper, verbatim. ----
   const id = freshIdRef.next++

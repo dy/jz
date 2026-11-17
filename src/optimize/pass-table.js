@@ -109,7 +109,7 @@ export const PASSES = [
   P('unswitchTypedParamLoop', 'func', '+vectorizeLaneLocal unswitchTypedParamLoop', { takes: 'f16' }),
   P('vectorizeLaneLocal', 'func', '+vectorizeLaneLocal', {
     after: [['nanCanon', 'the lifts read the sums, a canon only arithmetic reads gone'], ['pureFuncMap', 'its inline candidates']],
-    takes: 'pureFuncMap loweringLinks typedView warn effects globals exports', reads: 'loweringLinks cold', makes: 'vectorized', drops: 'loweringLinks irange mem' }),
+    takes: 'pureFuncMap loweringLinks typedView warn effects globals exports', reads: 'loweringLinks cold', makes: 'vectorized loopVerdicts', drops: 'loweringLinks irange mem' }),
   P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
   P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
   P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),
@@ -140,6 +140,7 @@ export const PASSES = [
     last: true, why: 'the helper call is the form every pass above reasons about (LICM hoists it, unswitch and devirt recognize it); its inline fast path is lowering' }),
   // -- module, after the function walk ----------------------------------------------------------------
   P('vectorizedFns', 'module', '', { takes: 'vectorized', why: 'the functions the lane lift took, for the pins of watr\'s inliner' }),
+  P('simdAdvice', 'module', '+vectorizeLaneLocal', { takes: 'loopVerdicts', why: 'the advisories of the loops no copy of which lifted, with the cause the lift gave' }),
   P('clearIcSites', 'module', '', { after: [['devirtSchemaReads', 'the sites it made']], takes: 'icSite' }),
   P('quietCopies', 'module', '', {
     after: [['specializeLoops', 'a copy that allocates nothing as optimized']],

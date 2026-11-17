@@ -56,9 +56,13 @@ const pseudoOperand = (simd, expr, ctx) => {
 // vectorizeLaneLocal call made with the flag on (cleared on exit — never leaks into
 // codegen, which never reads it). `vecState.whyNotReason` captures the FIRST (deepest) lift
 // bail for the block currently under the recognizer chain; the walk reads it after.
+// `reasons`, where a warnings sink asks for a loop's verdict (index.js), every lift's first
+// refusal for that block, `[kind, text]`: 'cost' (the lanes would cost more), 'carried' (a
+// local carried from one pass to the next), 'stride' (a record wider than a gather reads) or
+// 'shape' (the rest).
 // `fn`: the function a vectorizeLaneLocal call lifts; `onceRead`: its once-read locals, taken
 // on the first question (onceReadOf)
-export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: false, relaxedSimd: false, crPow: false, fn: null, onceRead: null }
+export const vecState = { whyNotActive: false, whyNotReason: null, reasons: null, relaxF32: false, relaxedSimd: false, crPow: false, fn: null, onceRead: null }
 // Float32 storage still computes JavaScript expressions in f64 lanes. The
 // promote/demote strip for a pure f32 copy round-trips losslessly and stays
 // on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
@@ -77,7 +81,7 @@ export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: fal
 // reset()/beginSession(), even though within-compile correctness still relies on
 // the call-site arm/disarm (unchanged here). The module stage registers it
 // (wat/assemble/optimize-module.js): no pass reads the compile's state.
-export const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
+export const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.reasons = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
 
 // The one lift context shape: the self-compile kernel infers one struct layout per shared
 // callee (liftStmt/liftExprV/liftFail), so every recognizer builds its ctx here rather than
@@ -237,13 +241,17 @@ function gatherLanes(load, { name, step }, info, defs) {
 
 // Mark a lift bail and record its reason. First-write-wins: the innermost failing op
 // sets ctx.failReason; outer frames see ctx.fail already set and return without
-// overwriting, so the reason names the actual blocking op, not a wrapper.
-export const liftFail = (ctx, reason) => {
+// overwriting, so the reason names the actual blocking op, not a wrapper. `kind`: what the
+// refusal is, for a loop's verdict (vecState.reasons).
+export const liftFail = (ctx, reason, kind = 'shape') => {
   ctx.fail = true
-  if (ctx.failReason == null) ctx.failReason = reason
+  if (ctx.failReason == null) { ctx.failReason = reason; vecState.reasons?.push([kind, reason]) }
   if (vecState.whyNotActive && vecState.whyNotReason == null) vecState.whyNotReason = reason
   return null
 }
+
+/** A refusal of a lift built without a lift context (a cost gate): recorded as liftFail does. */
+export const refusedFor = (kind) => { vecState.reasons?.push([kind, null]); return null }
 
 // An arm's statements, through a single wrapping block.
 function armBody(arm) {
@@ -513,7 +521,7 @@ export function liftStmt(stmt, ctx) {
       noteLaneWrite(ctx, name, stmt[2])
       return ['local.set', laneName, v]
     }
-    return liftFail(ctx, `local.set ${name}: loop-carried or unclassified local`)
+    return liftFail(ctx, `local.set ${name}: loop-carried or unclassified local`, 'carried')
   }
 
   if (STORE_OPS[op]) {

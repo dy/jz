@@ -92,7 +92,7 @@ export const RUN = [
       slp: cfg.slp !== false,  // SLP default-on
       crPow: cfg.crPow === true,
       pairIterations: cfg.pairIterations === true,
-      links: facts.loweringLinks, typedView: !!facts.typedView, warn: facts.warn,
+      links: facts.loweringLinks, typedView: !!facts.typedView, warn: facts.warn, verdicts: facts.loopVerdicts,
       settled: (g) => settledGlobal(g, facts),
     }) && typeof fn[1] === 'string') facts.vectorized?.add(fn[1])
   }],

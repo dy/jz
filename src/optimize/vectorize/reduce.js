@@ -3,7 +3,7 @@ import { _offsetLocalStride, addressTees, affineAddr, constNum, hasSideEffect, i
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, NARROW_LANES, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
-import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
+import { liftCtx, liftExprV, liftFail, refusedFor, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop, simdBound, stripOpen } from './scaffold.js'
 
@@ -655,7 +655,8 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
       if (m && m.strideLog2 === 3 && (m.pixelStride ?? 1) === 1) return ['v128.load', ...e.slice(1)]
       if (blocks.has(e)) return blockLanes(blocks.get(e))
       const f = forms.get(e)
-      if (!f || f.c % 8 !== 0 || f.c < 16 || f.c > 64) { bad = true; return null }
+      // (a record wider than eight values: no gather of its fields, the advisories' 'stride')
+      if (!f || f.c % 8 !== 0 || f.c < 16 || f.c > 64) { if (f && f.c > 64) refusedFor('stride'); bad = true; return null }
       return gatherLanes(e, f.c)
     }
     if (op === 'local.get' && typeof e[1] === 'string') {
@@ -749,7 +750,7 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   // kernel's evaluation one for two passes. A plain sum is the case they lose: one load
   // saved, a read of the lanes and of the accumulator for each pass paid.
   // (a record field's shuffle weighs one, as the lane ops do: cost-model.js weighs it nothing)
-  if (liftWeight(lifted) + shuffles + calls * CALL_WEIGHT > 2 * (liftWeight(body) + calls * CALL_WEIGHT)) return null
+  if (liftWeight(lifted) + shuffles + calls * CALL_WEIGHT > 2 * (liftWeight(body) + calls * CALL_WEIGHT)) return refusedFor('cost')
 
   // SIMD prefix over the even prefix [0, bound & ~1); the original block is the ≤1 scalar
   // remainder (continues j and the accumulators). IV advances by 2.
@@ -928,7 +929,7 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Cost model (cost-model.js): the vector side is the one accumulate step the codegen below
   // emits per group, the reduce op (`reduceEntry.simd`) over `liftedExpr`.
   if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes))
-    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
+    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost', 'cost')
 
   return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, null, false)
 }

@@ -6,7 +6,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { collectWrites, isI32Const, isLocalGet, laneAccess, matchLaneAddr } from './addr-model.js'
 import { isProfitable } from './cost-model.js'
 import { LANE_PURE, LOAD_OPS } from './lane-tables.js'
-import { liftCtx, liftStmt } from './lift.js'
+import { liftCtx, liftStmt, refusedFor } from './lift.js'
 import { simdLoop, simdBound } from './scaffold.js'
 
 export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
@@ -102,7 +102,7 @@ export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
     packed.push(...tail.map(at))
   }
   packed.push(...lifted)
-  if (!isProfitable(body, packed, 2)) return null
+  if (!isProfitable(body, packed, 2)) return refusedFor('cost')
   const id = freshIdRef.next++, limit = `$__simd_bound${id}`
   const boundSetup = ['local.set', limit, simdBound(incVar, bound, 2)]
   const strip = simdLoop(id, incVar, limit, [...packed,

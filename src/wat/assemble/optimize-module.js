@@ -34,6 +34,7 @@ import { outlineToInt32 } from '../../optimize/to-int32.js'
 import { hoistForwardHops } from '../../optimize/forward-hops.js'
 import { resetVectorizeState } from '../../optimize/vectorize/lift.js'
 import { representationProgramHasBigint } from '../../compile/representation-plan.js'
+import { adviseSimdLoops } from '../../compile/plan/advise.js'
 import { compactSlack } from '../../../module/core/stub-log.js'
 const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh']
 
@@ -44,7 +45,7 @@ registerResetHook(resetVectorizeState)
  * What the optimizer's passes read of the compile: one value a compile, read
  * when the module stage starts. The facts the stage derives of the module as
  * it stands (what each call does, the pure functions, the quiet loops) join it
- * as they are made; `icSite`, `warn` and `vectorized` are
+ * as they are made; `icSite`, `warn`, `vectorized` and `loopVerdicts` are
  * what the passes hand back.
  */
 export const passFacts = (cfg) => ({
@@ -79,6 +80,8 @@ export const passFacts = (cfg) => ({
   quietLoops: null, masked: null,
   // handed back
   vectorized: new Set(),
+  // (each source loop's verdict, where a warnings sink asks: optimize/vectorize/index.js)
+  loopVerdicts: ctx.warnings ? new Map() : null,
   warn,
   icSite: () => {
     // A site's inline cache: two globals of its own (optimize/devirt.js devirtSchemaReads).
@@ -169,6 +172,8 @@ export const MODULE = [
   })],
   // The functions the lane vectorizer lifted, for the pins of watr's inliner (compile/index.js programPins).
   ['vectorizedFns', (sec, cfg, facts) => { ctx.plans.vectorizedFns = facts.vectorized }],
+  // The SIMD advisories of the loops no copy of which lifted, with the lift's cause (compile/plan/advise.js).
+  ['simdAdvice', (sec, cfg, facts) => { if (facts.loopVerdicts) adviseSimdLoops(facts.loopVerdicts) }],
   // A site's inline cache (optimize/devirt.js) may hold a layout JSON.parse
   // registered, whose id `__clear` reissues: the reset empties every site.
   ['clearIcSites', (sec) => {
