@@ -184,9 +184,12 @@ export function verifyFn(fn) {
 // === Lowering link: HIR loop facts on an emitted loop ===
 //
 // ctx.plans.loweringLinks maps an emitted `(block $brk (loop …))` node, by identity, to what
-// HIR proved about that loop: `{ plan, lowering }`. `plan` is the frozen loopFacts record
+// HIR proved about that loop: `{ plan, lowering, loc }`. `plan` is the frozen loopFacts record
 // (src/compile/loop-model.js); `lowering` holds the WAT names of its counter and guard, the
-// half a backend rename of the block's locals rewrites (freshenUnrolledScalarBindings). The
+// half a backend rename of the block's locals rewrites (freshenUnrolledScalarBindings); `loc`
+// the source position of the loop's body, which every copy of the loop keeps (an inlined one,
+// a versioned arm, a kind clone's): the advisories' name for the loop (compile/plan/advise.js
+// adviseSimdLoops). The
 // 'for' emitter is the only writer. A pass that keeps the node keeps its facts; one that
 // rebuilds the loop leaves the new node unlinked; one that keeps the node but changes what an
 // iteration does must delete its entry. A miss therefore means "no facts", never a negative

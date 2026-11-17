@@ -1488,7 +1488,7 @@ export const controlFlowOps = {
     // The lowering link hands this loop's facts to the optimizer (src/ir/control.js):
     // `plan` the facts, `lowering` the WAT names of its counter and guard, which a rename
     // of this block's locals keeps current (freshenUnrolledScalarBindings).
-    ctx.plans.loweringLinks.set(loopBlockNode, { plan: facts, lowering: { ivName: counterName, guardName } })
+    ctx.plans.loweringLinks.set(loopBlockNode, { plan: facts, lowering: { ivName: counterName, guardName }, loc: bodyNode0?.loc })
     result.push(loopBlockNode)
     if (release) result.push(release.post)
     return result.length === 1 ? result[0] : result
