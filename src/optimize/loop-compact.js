@@ -206,7 +206,7 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
       }
       return ['if', ['call', '$__gc_begin', floor],
         ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
-          ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]],
+          ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1], ['local.get', thresh]]]],
         ['else', ['local.set', thresh, next]]]
     }
     const locals = [], done = new Set()

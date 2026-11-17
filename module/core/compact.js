@@ -347,17 +347,25 @@ export const registerCompact = () => {
   // walks stays within twice the last one's cost. The pressure rule, once the
   // room to the cap less an eighth of the heap and a margin is short of that,
   // fires past mark + cost/8 + slack: heap > min(mark + need, max(8·room, mark + low)).
-  ctx.core.stdlib['__gc_thresh'] = `(func $__gc_thresh (param $mark i32) (param $cost i32) (param $cap1 i32) (result i32)
+  // A loop's first walk takes r = 1: what it keeps is what the loop's first
+  // rounds made, which no round after has had the chance to drop yet (one
+  // round's output kept beside older data, bench/decode-wav's timed loop, read
+  // as a builder's and waited 87 MB). \`prev\`, the threshold the walk was asked
+  // at, is the entry's own (the mark and the slack) on a loop's first walk.
+  ctx.core.stdlib['__gc_thresh'] = `(func $__gc_thresh (param $mark i32) (param $cost i32) (param $cap1 i32) (param $prev i32) (result i32)
     (local $need i64) (local $low i64) (local $m i64) (local $room i64) (local $p i64) (local $t i64) (local $above i64) (local $r i64)
     ${DBG_COMPACT ? ';; JZ_DEBUG_COMPACT: the next round that allocates walks\n    (return (global.get $__heap))' : ''}
     (local.set $m (i64.extend_i32_u (local.get $mark)))
     ${has('__park_base') ? `;; a parked lane caps the heap where it starts
     (if (global.get $__park_base) (then (local.set $cap1 (i32.sub (global.get $__park_base) (i32.const 9)))))` : ''}
     (local.set $above (i64.extend_i32_u (i32.sub (global.get $__g_top) (global.get $__g_floor))))
-    (local.set $r (i64.div_u (i64.shl (local.get $above) (i64.const 3))
-      (i64.add (i64.add (i64.shl (i64.extend_i32_u (i32.sub (global.get $__g_top) (global.get $__heap))) (i64.const 3)) (local.get $above)) (i64.const 1))))
-    (if (i64.eqz (local.get $r)) (then (local.set $r (i64.const 1))))
-    (if (i64.gt_u (local.get $r) (i64.const 8)) (then (local.set $r (i64.const 8))))
+    (if (i32.eq (i32.sub (local.get $prev) (local.get $mark)) (i32.const ${compactSlack()}))
+      (then (local.set $r (i64.const 1)))
+      (else
+        (local.set $r (i64.div_u (i64.shl (local.get $above) (i64.const 3))
+          (i64.add (i64.add (i64.shl (i64.extend_i32_u (i32.sub (global.get $__g_top) (global.get $__heap))) (i64.const 3)) (local.get $above)) (i64.const 1))))
+        (if (i64.eqz (local.get $r)) (then (local.set $r (i64.const 1))))
+        (if (i64.gt_u (local.get $r) (i64.const 8)) (then (local.set $r (i64.const 8))))))
     (local.set $need (i64.add (i64.mul (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (local.get $r)) (i64.const ${compactSlack()})))
     (local.set $low (i64.add (i64.shr_u (i64.extend_i32_u (local.get $cost)) (i64.const 3)) (i64.const ${PRESSURE_SLACK})))
     ;; 8 · (cap − 1 − mark − margin − need), the heap past which the pressure rule holds

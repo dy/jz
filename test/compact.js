@@ -337,10 +337,13 @@ console.log(JSON.stringify({
   const { builder: [b, bRuns, bWords], churn: [c, cRuns] } = JSON.parse(out.trim().split('\n').pop())
   is(b, 800000, 'the builder answers')
   is(c, oracle(LOOPS.prefix).f(20000), 'the churning loop answers')
-  // 400000 records and their arrays, 32 MB: walked at 2 MB and once more past
-  // up to sixteen times that walk, where twice it gave four walks of 4.9 million words
-  ok(bRuns <= 2, `the builder walks ${bRuns} times`)
-  ok(bWords < 2_500_000, `the builder walks ${bWords} words in all`)
+  // 400000 records and their arrays, 32 MB: walked at 2 MB, once more past twice
+  // that walk (a first walk takes the loop for one that drops, module/core/compact.js
+  // `__gc_thresh`), and once more past up to sixteen times the second, where twice
+  // it gave four walks of 4.9 million words (3.9 million in three walks; 2.4 million
+  // in two before a first walk took r = 1)
+  ok(bRuns <= 3, `the builder walks ${bRuns} times`)
+  ok(bWords < 4_000_000, `the builder walks ${bWords} words in all`)
   ok(cRuns >= 100, `the carried string is still walked as it churns (${cRuns} times)`)
 })
 
@@ -380,8 +383,24 @@ console.log(JSON.stringify([got, runs]))`
   const [got, runs] = JSON.parse(out.trim().split('\n').pop())
   const want = oracle(src)
   is(got.join(), [want.f(400000, 1, 24), ...[1, 2, 3].map(reps => want.f(400000, reps, 9))].join(), 'every call answers')
-  // the outer loop's walks of the dropped outputs, not one at every outer round
-  ok(runs < 12, `24 rounds of a one-round inner loop walk ${runs} times`)
+  // the outer loop's walks of the dropped outputs, about one in two rounds, not one at every outer round
+  ok(runs < 24, `24 rounds of a one-round inner loop walk ${runs} times`)
+})
+
+// A walk that sees less above its floor than twice what it reached is no measure
+// of what its loop drops (module/core/compact.js `__gc_thresh`): the site keeps
+// the yield it had. A round's output kept beside older data larger than it, the
+// first walk of the loop around freed none of it, took the loop for a builder
+// and waited eight times as long (bench/decode-wav's timed loop: 90 MB a main).
+test('compact: a first walk that sees one round beside older data keeps walking as a loop that drops', () => {
+  if (onWasi()) return
+  const src = `const keep = new Float64Array(600000)
+    export const f = (n) => { let out = null; const once = (k) => { for (let r = 0; r < k; r++) out = new Float64Array(400000) }; let s = 0; for (let i = 0; i < n; i++) { once(1); out[1] = i; s += out[1] } return s + keep.length }`
+  for (const optimize of levels(2, 'speed')) {
+    const { exports, memory } = jz(src, { optimize })
+    is(exports.f(30), oracle(src).f(30), `${optimize}: 30 rounds answer`)
+    ok(memory.buffer.byteLength <= 64 << 20, `${optimize}: 30 rounds of 3.2 MB stay within 64 MB (${memory.buffer.byteLength >> 20} MB)`)
+  }
 })
 
 // A later loop's floor never moves: what an earlier loop of the same function
