@@ -43,6 +43,12 @@ const condIvName = (cnd) => {
   return Array.isArray(c) && (c[0] === '<' || c[0] === '<=') && typeof c[1] === 'string' ? c[1] : null
 }
 
+// A length no program's receiver has: 2^26 elements (half a gibibyte of doubles). A
+// guard that asks for more than it, on a hull no fact bounds, is a guard that fails.
+// (The hulls so marked over the gallery and the bench corpus top at 4, 254 and 255, or
+// at 2^27 - 1 and more: a word shifted by five bits or fewer, a string's most.)
+const NO_REAL_LENGTH = 2 ** 26
+
 // The same byte-count ceiling applies to both owned storage and views.
 const lengthCeiling = (recv, locals) => {
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
@@ -196,7 +202,11 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       // its guard fails for any other, and its twin runs every pass. No candidate: the
       // access stays checked, as it is in that twin, and a loop nothing else versions
       // stays plain, which the passes that copy loops read as any loop.
-      if (c.range.noFact === true) return false
+      // Only where the hull's top is past any real receiver (NO_REAL_LENGTH): the mark
+      // is the second walk's, which gives a word operator over an unknown value no
+      // numbers, so a hull two tests found after one (`idx = (u * 255) | 0`, clamped to
+      // [0, 255] by two `if`s) opens there too, and its guard passes for a real table.
+      if (c.range.noFact === true && c.range[1] >= NO_REAL_LENGTH) return false
       const len = lengthCeiling(c.recv, locals)
       return len == null || c.range[1] < len
     })

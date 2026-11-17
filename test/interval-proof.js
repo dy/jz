@@ -1699,3 +1699,30 @@ test('interval proof: a hull no fact of the loop bounds versions no loop', () =>
   ok(consts('mix').has(255) && !consts('mix').has(2 ** 29 - 1), 'the mask still versions the loop, the field read checked in it')
   ok(consts('plan').has(1023 * 1024), 'the interval product keeps its guard')
 })
+
+// The mark is the second walk's (carriers off), which gives a word operator over an
+// unknown value no numbers: a hull two tests found after one (`(u * 255.0) | 0` clamped
+// to [0, 255]) opens there too, though no end of it is the word's. Its guard asks a table
+// of 256 and passes, so its nest is versioned as before the mark existed and the lift
+// behind the version stays: the veto holds only for a hull whose top is past any real
+// receiver (loop-versioning-nest.js NO_REAL_LENGTH). examples/plasma, the shape below,
+// lost its whole lift to the mark (585 f64x2 to none, 1.5 times slower).
+test('interval proof: a hull the tests found versions its nest, whatever a word operator began it with', () => {
+  const src = `let lut, W = 0, H = 0, buf
+    export let resize = (w, h) => { W = w; H = h; buf = new Uint32Array(w * h); lut = new Int32Array(256); let i = 0; while (i < 256) { lut[i] = (i * 3) | 0; i++ } return buf }
+    export let frame = (t, k) => { let y = 0; while (y < H) { let x = 0; while (x < W) { const u = Math.sin(x * 0.1 + t) * 0.5 + 0.5; let idx = (u * k) | 0; if (idx < 0) idx = 0; if (idx > 255) idx = 255; buf[y * W + x] = lut[idx]; x++ } y++ } }
+    export let sum = (w, h, t, k) => { resize(w, h); frame(t, k); let s = 0; for (let i = 0; i < buf.length; i++) s = (s * 31 + buf[i]) >>> 0; return s }
+    export let wide = (px, st, n) => { let s = 0; for (let i = 0; i < n; i++) { s += px[st.p >>> 3] | 0; st.p += 9 } return s }
+    export let both = () => { const px = new Float64Array(40); for (let i = 0; i < 40; i++) px[i] = i * 1.5; return wide(px, { p: 0 }, 60) }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h, t, k] of [[48, 32, 0.3, 255], [17, 5, 2, 255], [48, 32, 0.3, 1e9], [9, 9, 1, -400], [8, 8, 0, NaN], [1, 1, 0, 255], [0, 4, 0, 255]])
+      is(m.sum(w, h, t, k), host.sum(w, h, t, k), `sum(${w}, ${h}, ${t}, ${k}) at ${optimize}`)
+    is(m.both(), host.both(), `both at ${optimize}`)
+  }
+  const wat = compile(src, { optimize: 'speed', wat: true })
+  ok((wat.match(/f64x2\./g) || []).length > 20, `the clamped index's nest is versioned and lifted (${(wat.match(/f64x2\./g) || []).length} f64x2)`)
+  const consts = (name) => new Set([...funcWat(wat, name).matchAll(/\(i64\.const (\d+)\)/g)].map(m => +m[1]))
+  ok(!consts('wide').has(2 ** 29 - 1), 'the word operator over a field still bounds no guard')
+})
