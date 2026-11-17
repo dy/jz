@@ -294,6 +294,9 @@ export function toNumF64(node, v, word = false) {
   if (v.checkedNumRead && Array.isArray(v)) {
     const foldArm = (n) => Array.isArray(n) && n[0] === 'f64.const' && n[1] === `nan:${UNDEF_NAN}`
       ? ['f64.const', 'nan'] : n
+    // (a word conversion takes the miss's undefined to 0 as it would NaN: the read
+    // stays checked, its hit arm converted alone, ir/numeric.js i32CheckedRead)
+    if (word) return v
     if (v[0] === 'if')   // (if (result f64) cond (then load) (else UNDEF))
       return typed(v.map(c => Array.isArray(c) && c[0] === 'else' && c.length === 2
         ? ['else', foldArm(c[1])] : c), 'f64')

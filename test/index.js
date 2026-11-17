@@ -294,6 +294,7 @@ const TESTS = [
   'start-population',
   'store-population',
   'durable-join-population',
+  'elem-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',

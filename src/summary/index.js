@@ -59,9 +59,9 @@
  * @module summary
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
-import { NR_NONE, nrPoint, nrInts, nrReals, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
+import { NR_NONE, nrPoint, nrInts, nrReals, nrValue, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
 import { powRuntime } from '../prepare/math-kernel.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP, nodeEqual } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP, nodeEqual, hasOwnContinue } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -791,6 +791,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // four raises opens, so the fixpoint ends.
   const elemNums = []            // dense cell root → range | null
   const elemNumRaises = new Map() // cell root → [rounds it widened in, the last such round]
+  // A store's numbers read intervals the walk settles over rounds (an argument's,
+  // a module constant's, a counter's): an unbounded one defers until a round
+  // without a change, after which the rounds run strict, an unbounded store
+  // opening its cell, until another round without a change confirms them.
+  let numsStrict = false, numsDeferred = false
+  const NR_DEFER = Object.freeze({ deferred: true })   // a store's numbers a later round may bound (deferNums)
   // A range widens once a round at most by this count: past four rounds it opens.
   let numRound = 0
   const widened = (counts, key) => {
@@ -871,6 +877,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const ints = new Map()         // a name declared once as an integer literal → its value
   const spans = new Map()        // the counters of the loops being walked → [lo, hi]
   const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
+  const moduleConstRanges = new Map()  // module binding id → its const initializer's interval, for every frame
   const constSpans = new Map()   // binding id → the integer span of a const initializer (spanOf)
   // Bounds are immutable. Repeated literal/constant reads share their point
   // interval, within this summary alone; mutable expression facts stay live.
@@ -942,7 +949,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // conditional. null where the walk cannot bound it.
   const rangeOf = (e) => {
     if (typeof e === 'number') return Number.isFinite(e) ? pointRange(e) : null
-    if (typeof e === 'string') return spanOf(e) ?? constRanges.get(keyOf(e)) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
+    if (typeof e === 'string') return spanOf(e) ?? constRanges.get(keyOf(e)) ?? moduleConstRanges.get(keyOf(e)) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
     if (!Array.isArray(e)) return null
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? pointRange(e[1]) : null
@@ -974,6 +981,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // binding no number has reached yet decides it (a later round raises it);
   // null where the walk cannot bound it.
   const NUM_BINARY = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
+  // (a compound assignment stores its operation of the target and the value)
+  const COMPOUND_NUM = new Set([...NUM_BINARY].map(op => op + '='))
   const NUM_UNARY = new Set(['u-', 'u+', '~'])
   let numDepth = 0
   /** The expression a function returns, its body being that one expression; else null. */
@@ -986,6 +995,25 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const numArgs = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   // (a value that may be NaN or an infinity bounds no element: the summary keeps finite numbers)
   const numRangeOf = (e, scope = current, env = null) => nrReal(numsOf(e, scope, env))
+  // The numbers a stored value puts in a cell: an element of an array is one of
+  // the numbers its cell holds or no number at all (a miss, a hole); any other
+  // value, its own. (A cell whose property of a numeric name holds a number
+  // the elements' numbers do not show answers such a read too: none.)
+  // (a key that is a Number: a numeric literal, a name of Numbers, their sums and products; `length` is none)
+  const numericKey = (k) => typeof k === 'string' ? nameKind(k) === NUMBER : Array.isArray(k) && (k[0] == null ? typeof k[1] === 'number'
+    : (k[0] === '+' || k[0] === '-' || k[0] === '*') && k.length === 3 && numericKey(k[1]) && numericKey(k[2]))
+  // A store the walk meets every round states its numbers; one it leaves unbounded
+  // (an argument's or a constant's interval not settled yet) opens its cell only
+  // in the rounds that confirm the fixpoint (numsStrict): earlier, it defers.
+  const deferNums = (r) => r !== null || numsStrict ? r : NR_DEFER
+  const storedNums = (e) => {
+    if (!(Array.isArray(e) && e[0] === '[]' && e.length === 3 && typeof e[1] === 'string')) return deferNums(numRangeOf(e))
+    const key = keyOf(e[1]), k = key === null ? K.NONE : kinds[key] ?? K.NONE
+    if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN || !numericKey(e[2])) return deferNums(null)
+    const c = cell(paramOf(k))
+    for (const name of cellProps.get(c)?.keys() ?? []) if (canonicalNumeric(name)) return deferNums(null)
+    return elemNums[c] === undefined ? NR_NONE : elemNums[c]
+  }
   const numsOf = (e, scope, env) => {
     if (typeof e === 'number') return nrPoint(e)
     if (typeof e === 'string') {
@@ -997,7 +1025,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const key = keyOf(e, scope ?? MODULE)
       if (key === null) return null
       const s = bindingScope[key]
-      return typeof s === 'number' && closureParams[s]?.includes(e) ? paramNumsOf(key) : null
+      if (typeof s === 'number' && closureParams[s]?.includes(e)) return paramNumsOf(key)
+      return typeof scope === 'string' && key === keyIn(scope, e) ? argNumsOf(scope, e) : null
     }
     if (!Array.isArray(e)) return null
     const op = e[0]
@@ -1100,6 +1129,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const i = paramNamesOf(f).indexOf(name)
     return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
   }
+  // The numbers a named function's parameter holds (num-range.js): its
+  // arguments' hull over every call, the integers of it where every argument is
+  // an integer; NR_NONE before a round has bound it, null where a call or the
+  // body leaves it unbounded.
+  const argNumsOf = (fn, name) => {
+    const f = funcByName.get(fn)
+    if (!f || !paramNamesOf(f).includes(name)) return null
+    if (!argRanges.has(fn)) return openCaller(fn, f) ? null : NR_NONE
+    const r = paramRangeOf(fn, name)
+    // (an argument may be -0: the hull's ends do not say it never is)
+    return r === null ? null : nrValue(r[0], r[1], argRanges.get(fn).ints[paramNamesOf(f).indexOf(name)] !== false, false, false)
+  }
   // Every bind of a named function's parameters notes the call's arguments
   // (`bind`): the argument list aligned with the parameters, or null where
   // the channel cannot name them (a callback, `.call`/`.apply`, a member
@@ -1111,10 +1152,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!f || openCaller(name, f)) return
     let entry = roundArgs.get(name)
     if (!entry) {
-      entry = { name, ranges: names.map(() => undefined), round: argumentRound }
+      entry = { name, ranges: names.map(() => undefined), ints: names.map(() => true), round: argumentRound }
       roundArgs.set(name, entry); argumentEntries.push(entry)
     }
-    else if (entry.round !== argumentRound) { entry.ranges.fill(undefined); entry.round = argumentRound }
+    else if (entry.round !== argumentRound) { entry.ranges.fill(undefined); entry.ints.fill(true); entry.round = argumentRound }
     let spread = false
     for (let i = 0; i < names.length; i++) {
       if (i < n && kspread[base + i]) spread = true
@@ -1123,6 +1164,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // Later bounds cannot narrow it, so do not build and discard their hulls.
       if (prev === null) continue
       const r = spread || i >= n || args === null || moved.get(name)?.[i] >= 4 ? null : rangeOf(argAt(args, i))
+      // (every argument at the position an integer: the parameter's numbers are the hull's integers)
+      if (r !== null && entry.ints[i] !== false && numRangeOf(argAt(args, i))?.int !== true) entry.ints[i] = false
       if (prev === undefined || r === null) entry.ranges[i] = r
       else {
         const lo = Math.min(prev[0], r[0]), hi = Math.max(prev[1], r[1])
@@ -1145,7 +1188,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         let r = entry.ranges[i]
         if (r === undefined) r = entry.ranges[i] = null
         const p = prev?.[i] ?? null
-        if (r === p || (r && p && r[0] === p[0] && r[1] === p[1])) continue
+        // (an integrality that changes moves the position as a hull that changes does)
+        const intsMoved = !!(r && p) && (entry.ints[i] !== false) !== (last.ints[i] !== false)
+        if (!intsMoved && (r === p || (r && p && r[0] === p[0] && r[1] === p[1]))) continue
         changed = true
         let moves = moved.get(name)
         if (!moves) moved.set(name, moves = [])
@@ -1153,9 +1198,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         moves[i] = m
         if (m >= 4) entry.ranges[i] = null
       }
-      if (!last) argRanges.set(name, last = { ranges: [] })
-      const reusable = last.ranges
+      if (!last) argRanges.set(name, last = { ranges: [], ints: [] })
+      const reusable = last.ranges, reusableInts = last.ints
       last.ranges = entry.ranges; entry.ranges = reusable
+      last.ints = entry.ints; entry.ints = reusableInts
     }
     argumentRound++
   }
@@ -1184,6 +1230,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!c) return null
     const to = spanOf(c.test[2])
     return to ? [c.name, c.from[0], c.test[0] === '<' ? to[1] - 1 : to[1]] : null
+  }
+  // The integers a counter takes under a bound of any Number whose interval is
+  // known (`i < n`, n a parameter its calls bound): below its ceiling, or at its
+  // floor at most; a span alone, no trip count.
+  const boundedCounter = (n) => {
+    const c = loopCounter(n)
+    const to = c && rangeOf(c.test[2])
+    if (!to) return null
+    const hi = c.test[0] === '<' ? Math.ceil(to[1]) - 1 : Math.floor(to[1])
+    return hi >= c.from[0] && hi <= Number.MAX_SAFE_INTEGER ? [c.name, c.from[0], hi] : null
   }
   // The trips a counted loop runs on every entry: -1 where its start or its end
   // may be several values, it strides, or its body may leave or skip a pass.
@@ -1303,9 +1359,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // (a counter the loop bounds by this array's own length, which it leaves alone: a cell the array has, as a read there is present)
     if (recvName !== null && typeof idx === 'string' && lenStable.has(idx) && lenBounds.get(idx) === keyOf(recvName)) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
+    // (a counter whose every round stores here at it, from 0: each store lands at the length at most)
+    const appends = recvName !== null && typeof idx === 'string' && appendCounters.get(idx)?.has(recvName) === true
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
-    if (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c]) raiseHole(arr)
+    if (!appends && (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c])) raiseHole(arr)
     if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c); resizedElsewhere.add(c) }
     else if (!(stores.get(c) >= span[1])) {
       if (onOpen && lens[c] >= 0 && span[1] >= lens[c]) onOpen(lens[c], `stored at index ${span[1]}`, current, site)
@@ -1439,6 +1497,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const raiseNums = (id, r) => {
     const old = elemNums[id]
     if (old === null || r === NR_NONE) return
+    // (a deferred store into a cell still bounded: the confirming rounds open it)
+    if (r === NR_DEFER) { numsDeferred = true; return }
     let next = old === undefined ? r : nrJoin(old, r)
     if (old !== undefined && next !== null && !nrEqual(old, next) && widened(elemNumRaises, id)) next = null
     if (old === undefined || !nrEqual(old, next)) { elemNums[id] = next; changed = true }
@@ -1500,7 +1560,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
     if (propArrays.has(b)) propArrays.add(a)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
-    if (cellNumeric.has(b)) raiseNumeric(kind(K.ARRAY, a), cellNumeric.get(b))
+    if (cellNumeric.has(b)) raiseNumeric(kind(K.ARRAY, a), cellNumeric.get(b), elemNums[b] === undefined ? NR_NONE : elemNums[b])
     if (setCells.has(b)) setCells.add(a)
     if (enumerated.has(b)) enumerateKeys(a)
     if (heldKeys.has(b)) for (const k of heldKeys.get(b)) holdKey(a, k)
@@ -1637,15 +1697,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (core(ik) === NUMBER) return anyPropOf(arr)
     return merge(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
   }
-  const raiseNumeric = (arr, k) => {
+  const raiseNumeric = (arr, k, nums = null) => {
     const c = cell(paramOf(arr)), old = cellNumeric.get(c) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { cellNumeric.set(c, nk); changed = true }
-    raiseElem(arr, k)
+    raiseElem(arr, k, false, false, false, nums)
   }
-  const raiseEntry = (arr, ik, k, idx) => {
+  // `nums`: the numbers the stored value can be (storedNums), null where unbounded.
+  const raiseEntry = (arr, ik, k, idx, nums = null) => {
     const t = tagOf(ik), r = ik === NUMBER ? spanOf(idx, current, true) : null
-    if (r && r[0] >= 0 && r[1] < 0xffffffff) raiseElem(arr, k)
-    else if (ik === NUMBER) raiseNumeric(arr, k)
+    if (r && r[0] >= 0 && r[1] < 0xffffffff) raiseElem(arr, k, false, false, false, nums)
+    else if (ik === NUMBER) raiseNumeric(arr, k, nums)
     else if (t === K.STRING) raiseWild(arr, k)
     else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) }
   }
@@ -3179,7 +3240,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         }
       } else if (name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, onOpen ? `resized by ${name}` : null)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
-      if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return NUMBER }
+      if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i], false, false, false, kspread[base + i] || !node ? null : storedNums(argAt(node[2], i))); return NUMBER }
       // The searches compare by strict equality or SameValueZero and keep nothing of their argument.
       if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
       if (name === 'includes') return BOOL
@@ -4060,17 +4121,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (Array.isArray(target) && target[0] === '[]') {
       // a store through a mixed binding (above) reaches each of its arrays
       const mixedArrays = typeof target[1] === 'string' && mixed.size && literalKeyOf(target[2]) === null ? mixed.get(keyOf(target[1])) : undefined
+      // (the numbers the store puts in the cell: an assignment's value's, a compound one's operation's)
+      const nums = () => op === '=' ? storedNums(value) : COMPOUND_NUM.has(op) && value != null ? deferNums(numRangeOf([op.slice(0, -1), target, value])) : null
       if (mixedArrays) {
         testing++; receiver(target[1]); testing--
-        const ik = expr(target[2])
-        for (const a of mixedArrays) { storeAt(a, target[2]); raiseEntry(a, ik, v, target[2]) }
+        const ik = expr(target[2]), n = nums()
+        for (const a of mixedArrays) { storeAt(a, target[2]); raiseEntry(a, ik, v, target[2], n) }
         return v
       }
       const recv = receiver(target[1]), idx = target[2], t = tagOf(recv)
       if (literalKeyOf(idx) !== null) return assign(op, ['.', target[1], literalKeyOf(idx)], value)
       const ik = expr(idx)
       if (ik !== K.NONE && hasTag(recv, K.TYPED) && !typedElementKey(idx, ik === NUMBER)) raise(elems, typedPropsCellOf(recv), v)
-      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx, typeof target[1] === 'string' ? target[1] : null); raiseEntry(recv, ik, v, idx) } else escape(v) }
+      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx, typeof target[1] === 'string' ? target[1] : null); raiseEntry(recv, ik, v, idx, hasTag(v, K.NUMBER) ? nums() : NR_NONE) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseWild(recv, v); else escape(v) }
       else if (dictOrObject(recv)) { const c = cell(paramOf(recv)); raiseWild(recv, v); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, v); raiseSideWild(sid, v) } if (cellLostObject.has(c)) poisonAll(recv, ik, v) }
       // a function's property under a computed name: any of its names may hold it
@@ -4339,6 +4402,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           const r = rangeOf(d[2]), key = keyOf(d[1])
           if (r) constRanges.set(key, r)
           else constRanges.delete(key)
+          // (a module's constant holds its initializer's interval in every function: a frame's reset keeps it)
+          if (current === null && key !== null) { if (r) moduleConstRanges.set(key, r); else moduleConstRanges.delete(key) }
           // (an integer one keys an element as its initializer does: spanOf)
           const sp = key === null ? null : spanOf(d[2])
           if (sp) constSpans.set(key, sp)
@@ -4892,6 +4957,29 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const storesLength = (body, arr, counter) => lengthStoresOf(body).some(([recv, key]) =>
     key !== null && key === counter ? false : recv === arr || (!numberKey(key) && mayHold(recv, arr)))
   const lengthMayChange = (counter, body, arr) => !Array.isArray(body) || loopPure.get(counter) !== true || storesLength(body, arr, counter)
+  // A counter from 0 that its loop takes up by one, each round of which stores
+  // into an array at it before any statement may take the round to its step
+  // (`out[k] = v` in a copy): a store lands at an index the stores before it
+  // reached, so it leaves no hole, where the loop's test and body run no code
+  // of the program's, write no length and call no member that may shrink an
+  // array (only `push`, which appends). → the receivers' names, or null.
+  const appendCounters = new Map()   // counter → the receivers its rounds store at it
+  const stepStatements = (b) => Array.isArray(b) && b[0] === '{}' && b.length === 2 ? stepStatements(b[1]) : Array.isArray(b) && b[0] === ';' ? b.slice(1) : [b]
+  const shrinksAny = (body) => some(body, m => m[0] === '()' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][2] !== 'push')
+  const appendReceivers = (n) => {
+    const c = loopCounter(n), body = n[4]
+    // (a split's tail starts where its main loop's stores stopped: the loop as written's start, plan/loops.js)
+    const from = typeof n.splitFrom === 'number' ? [n.splitFrom, n.splitFrom] : c?.from
+    if (!c || from[0] !== 0 || from[1] !== 0 || n[3]?.[0] !== '++' || !Array.isArray(body)) return null
+    // (a store under a key that is no number may name `length`)
+    if (bodyRunsCode(body) || bodyRunsCode(n[2]) || shrinksAny(body) || lengthStoresOf(body).some(([, key]) => key === null || key !== c.name && !numberKey(key))) return null
+    const out = new Set(), assigns = assignedIn(body)
+    for (const s of stepStatements(body)) {
+      if (Array.isArray(s) && s[0] === '=' && Array.isArray(s[1]) && s[1][0] === '[]' && typeof s[1][1] === 'string' && s[1][2] === c.name && !assigns.includes(s[1][1])) out.add(s[1][1])
+      if (hasOwnContinue(s)) break
+    }
+    return out.size ? out : null
+  }
   // A typed element read inside the count: the index's span within the length
   // the walk knows, or a counter the loop bounds by that array's length.
   // The walk's verdict for a read is kept by node (`presentReads`): a counter's
@@ -4937,11 +5025,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === 'for') {
       stmt(n[1]); const loop = loopEnter(n); loopAssigns(n); branch++; flowPath++; selectedExpr(n[2], 0)
       const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
+      const ranged = counted || bounded ? null : boundedCounter(n), appending = appendReceivers(n), counter = appending && loopCounter(n).name
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); exactTrips.push(exactTrip(n)); countedDepth++ }
+      if (ranged) spans.set(ranged[0], [ranged[1], ranged[2]])
+      if (appending) appendCounters.set(counter, appending)
       if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); loopBodies.set(bounded[0], n[4]); loopPure.set(bounded[0], !bodyRunsCode(n[4])); if (!lengthMayChange(bounded[0], n[4], bounded[1])) lenStable.add(bounded[0]) }
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); exactTrips.pop(); countedDepth-- }
+      if (ranged) spans.delete(ranged[0])
+      if (appending) appendCounters.delete(counter)
       if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); loopBodies.delete(bounded[0]); loopPure.delete(bounded[0]); lenStable.delete(bounded[0]) }
       unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
       loopExit(loop)
@@ -5878,6 +5971,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const rounds = (step) => { for (let round = 0; ; round++) { if (round === 10000) throw new Error('summary: no fixpoint'); if (!step()) return } }
   const fixpoint = () => rounds(() => {
     changed = false
+    numsDeferred = false
     numRound++
     grown.clear()   // the init pushes are counted afresh by every round's walk
     decisions.clear()   // as are the tests: the round without a change, its kinds settled, decides
@@ -5920,6 +6014,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (lostFieldsRead & 2 || canonicalNumeric(name)) escapeLostReads(prop)
     }
     settleArgs()
+    if (!changed && numsDeferred && !numsStrict) { numsStrict = true; changed = true }
     return changed
   })
   // What the host may pass: an exported function's parameters; one the export
@@ -6174,7 +6269,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
+    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

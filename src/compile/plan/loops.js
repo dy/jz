@@ -290,7 +290,12 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   // below 2^29 there.
   const start = ['&', ['()', 'math.max', [',', [null, C], M]], [null, 0x7fffffff]]
   const tailInit = ['let', ['=', i2, start]]
-  parent[idx] = [';', ['const', bound], node, ['for', tailInit, ['<', i2, clonePlain(B)], tailStep, tailBody]]
+  const tail = ['for', tailInit, ['<', i2, clonePlain(B)], tailStep, tailBody]
+  // (the tail's counter starts where the loop as written would be at its step:
+  // an array its every round stores into at the counter grew to it from C, which
+  // the summary reads as the loop's start, summary/index.js appendReceivers)
+  tail.splitFrom = C
+  parent[idx] = [';', ['const', bound], node, tail]
   return true
 }
 

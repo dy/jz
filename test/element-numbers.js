@@ -2,15 +2,20 @@
 // the interval every store into the cell keeps, whether all are integers, none
 // -0 and how far from zero. A literal's elements, a `map`'s callback results
 // (its parameters bound to the receiver's numbers and the index), a `fill`'s
-// value; any other store of a number opens it. A dense array of words read
+// value, a push's and an indexed store's value (an element of another array the
+// numbers its cell holds, a compound store its operation's); a store of a number
+// the walk cannot bound opens it. A dense array of words read
 // inside its fixed length is read as a word, so the arithmetic it feeds stays
 // integer: a dequantization table `tab[sf][q]` built by `.map` over
-// `Math.round` (QOA's `qoa_dequant_tab`) adds and clamps in i32.
+// `Math.round` (QOA's `qoa_dequant_tab`) adds and clamps in i32. ToInt32 of any
+// element whose numbers are bounded truncates it with no test of its magnitude
+// (ir/numeric.js hullWord), and a read of an array a counter from 0 fills tests
+// for no hole; test/elem-population.js holds the answers around them against Node.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
-import { levels } from './_matrix.js'
-import { agree, wat, funcWat, compileInProcess as compile } from './util.js'
+import { belowOpt, levels } from './_matrix.js'
+import { agree, wat, funcWat, compileInProcess as compile, oracle, run } from './util.js'
 
 // The summary's numbers of the array an expression holds (module scope), as `[lo, hi, int, nz]`.
 const nums = (src, e) => {
@@ -186,4 +191,77 @@ test('element numbers: the remainder of an integer of any magnitude', async () =
   ok(nrBinary('%', nrPoint(Infinity), nrPoint(16)).nan, 'an infinite dividend: NaN')
   const half = nrBinary('%', nrInts(0, Infinity), nrPoint(2.5))
   ok(!half.int && half.hi === 2.5, 'a fractional divisor: no integer, below its magnitude')
+})
+
+test('element numbers: pushes, indexed stores, copies and compound stores state their elements', () => {
+  is(nums(`const a = []\nfor (let i = 0; i < 4; i++) a.push(i * 2)\n${use}a[i & 3]`, 'a'), [0, 6, true, true], 'a push in a counted loop')
+  is(nums(`const a = []\nfor (let i = 0; i < 4; i++) a[i] = 3 - i\n${use}a[i & 3]`, 'a'), [0, 3, true, true], 'an indexed store from 0, no hole')
+  is(nums(`const a = [5, 6], b = []\nfor (let i = 0; i < 2; i++) b[i] = a[i]\n${use}b[i & 1]`, 'b'), [5, 6, true, true], 'a copy of another array\'s element')
+  is(nums(`const a = [1, 2]\nexport const f = (i) => { a[i & 1] |= 0x80000000; return a[0] }`, 'a'), [-(2 ** 31), 2 ** 31 - 1, true, true], 'a compound bitwise store: a word')
+  // (n of [3, 5] less a counter below it, of [0, 4]: intervals, no relation between them)
+  is(nums(`const g = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(n - i); return a }\nconst a = g(3), b = g(5)\n${use}a[i & 1] + b[i & 1]`, 'a'), [-1, 5, true, true], 'a parameter its calls bound')
+})
+
+const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
+// the exponent test of a truncation whose magnitude is unknown (optimize/to-int32.js)
+const MAGNITUDE = '(i64.const 1075)'
+const HOLE = /0x7FF87FFFFFFFFFFF/i
+
+// pmndrs/math's triangulation's read, `vertices[(indices[s] & MASK) * 2]`, over pushed arrays
+const masked = `const MASK = 0x0fffffff, N = 64
+const vertices = [], indices = []
+for (let i = 0; i < N; i++) { vertices.push(i * 0.5, i * 0.25); indices.push(((N - 1 - i) | (i % 3 === 0 ? 0x80000000 : 0)) >>> 0) }
+const vX = (vertices, indices, s) => vertices[(indices[s] & MASK) * 2]
+const vY = (vertices, indices, s) => vertices[(indices[s] & MASK) * 2 + 1]
+export const walk = (n) => { let a = 0; for (let k = 0; k < n; k++) { const k1 = k + 1 < n ? k + 1 : 0; a += (vX(vertices, indices, k) - vX(vertices, indices, k1)) * (vY(vertices, indices, k) + vY(vertices, indices, k1)) } return a }`
+
+// an index array a count makes, filled, flagged by a compound store and shifted by its own copy
+const shifted = `const MASK = 0x0fffffff, FLAG = 0x80000000
+const pts = []
+for (let i = 0; i < 32; i++) pts.push(i * 1.5)
+function ring(n) {
+  const ix = new Array(n)
+  for (let i = 0; i < n; i++) ix[i] = n - 1 - i
+  for (let i = 0; i < n; i += 3) ix[i] |= FLAG
+  let h = 0
+  for (let m = n; m > 2; m--) {
+    for (let k = 0; k < m - 1; k++) ix[k] = ix[k + 1]
+    for (let s = 0; s < m; s++) h += pts[(ix[s] & MASK) % 32]
+  }
+  return h
+}
+export const rings = () => ring(16) + ring(7) * 1000`
+
+// an array a counter from 0 fills by index, its elements compared (a hole would read undefined)
+const filled = `const A = []
+export const fill = (n) => { const m = n | 0; for (let i = 0; i < m; i++) A[i] = i * 0.5; return A.length }
+export const sum = (v) => { let c = 0; for (let i = 0; i < A.length; i++) if (A[i] === v) c++; return c }`
+
+test('element numbers: masked, shifted and filled arrays answer what the host answers', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const host = oracle(masked), jz = run(masked, { optimize })
+    for (const n of [64, 10, 1, 0]) is(jz.walk(n), host.walk(n), `walk(${n}) at ${optimize}`)
+    is(run(shifted, { optimize }).rings(), oracle(shifted).rings(), `rings() at ${optimize}`)
+    const fh = oracle(filled), fj = run(filled, { optimize })
+    for (const [name, ...args] of [['fill', 5], ['sum', 1], ['sum', undefined], ['fill', 3], ['sum', 1.5], ['fill', 9], ['sum', 4], ['sum', undefined]]) is(fj[name](...args), fh[name](...args), `${name}(${args.join(', ')}) at ${optimize}`)
+  }
+})
+
+test('element numbers: an element of bounded Numbers converts with no test of its magnitude', () => {
+  if (belowOpt(2)) return
+  for (const optimize of [2, 3]) {
+    const w = fnText(wat(masked, { optimize }), 'walk')
+    ok(w && !w.includes(MAGNITUDE), `walk at ${optimize}: the index's word with no magnitude test`)
+    const text = wat(shifted, { optimize })
+    const r = fnText(text, 'ring') || fnText(text, 'rings')
+    ok(r && !r.includes(MAGNITUDE), `ring at ${optimize}: a flagged, shifted index's word with no magnitude test`)
+  }
+})
+
+test('element numbers: an array a counter from 0 fills reads with no hole test', () => {
+  if (belowOpt(2)) return
+  for (const optimize of [2, 3]) {
+    const s = fnText(wat(filled, { optimize }), 'sum')
+    ok(s && !HOLE.test(s), `sum at ${optimize}: no hole's test`)
+  }
 })

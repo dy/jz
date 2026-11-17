@@ -332,11 +332,13 @@ export function summaryQueries(facts, internal = false) {
     const readKind = name => aliases.has(name) ? aliasKind(aliases.get(name)) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     // The numbers of a dense numeric array's elements (index.js `elemNums`).
-    const elemNumsOf = (node) => {
+    const elemNumsOf = (node, present = false) => {
       const k = kindOfExpr(node)
       if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
       const c = cell(paramOf(k)), r = elemNums?.[c]
-      return elems[c] === NUMBER && r && Number.isFinite(r.lo) ? r : null
+      // (`present`: the Numbers among elements that may also be missing: a hole, undefined, null)
+      const only = present ? hasTag(elems[c], K.NUMBER) && (elems[c] & TAGS & ~(bitOf(K.NUMBER) | NULL_BITS)) === 0 : elems[c] === NUMBER
+      return only && r && Number.isFinite(r.lo) ? r : null
     }
     const spreadSourceKind = (e, site) => canon(spreadSources.get(site) ?? kindOfExpr(e))
     // Only an unseen object literal needs a captured name builder. Keeping it
@@ -795,6 +797,9 @@ export function summaryQueries(facts, internal = false) {
       // inside its length finds, null where a store the summary cannot bound,
       // a hole or another value may be there.
       elemNumsOfExpr: node => elemNumsOf(node),
+      // The numbers the elements that are Numbers hold, where the others are
+      // only missing (a hole, undefined, null), which ToInt32 takes to 0 as it does NaN.
+      elemNumsPresentOfExpr: node => elemNumsOf(node, true),
       // A read the summary holds inside the length of a dense array of words
       // (presentArrayRead, elemNumsOfExpr): an integer of one signed word,
       // never -0, `[lo, hi]` of every element; null for any other read.

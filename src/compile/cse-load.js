@@ -58,6 +58,8 @@ export const ARRAY = 'array'
 export const TYPED_ANY = 'typed'
 
 const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-compile a builtin as a first-class value
+// The operators that read a Number's word alone (ToInt32, or ToUint32 of the same bits).
+const WORD_OPS = new Set(['|', '&', '^', '<<', '>>', '>>>', '~'])
 const isName = (x) => typeof x === 'string'
 
 const stableIdx = (e, runsUserCode) => {
@@ -410,15 +412,17 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
         // read every use of which is numeric normalizes once, at the binding).
         const numeric = isNumeric(node) && (NUMERIC_BINARY_OPS.includes(parent[0]) ||
           NUMERIC_UNARY_OPS.has(parent[0]) || parent[0] === '+' && isNumeric(parent))
+        // (an operand of a bitwise operator: what it reads of the Number is its word)
+        const word = numeric && WORD_OPS.has(parent[0])
         const e = avail.get(key)
         if (e) {
           if (e.occ.length === 1) shared.push(e)
-          e.occ.push({ parent, idx: pi, numeric })
+          e.occ.push({ parent, idx: pi, numeric, word })
           eliminated++
           return
         }
         const vars = new Set(); idxVars(node[2], vars)
-        avail.set(key, { arr, ctor, idxNode: node[2], idxVars: vars, firstStmt: si, occ: [{ parent, idx: pi, numeric }] })
+        avail.set(key, { arr, ctor, idxNode: node[2], idxVars: vars, firstStmt: si, occ: [{ parent, idx: pi, numeric, word }] })
         return                                            // don't descend into a stable index
       }
       // A call or a user conversion runs after its operands: loads read in them are cached
@@ -456,7 +460,9 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
         continue
       }
       const read = ['[]', e.arr, e.idxNode], allNumeric = e.occ.every(o => o.numeric)
-      const cached = allNumeric ? ['u+', read] : read, temp = freshName(cached)
+      // A load every use of which is a bitwise operand holds its word: ToInt32 of
+      // ToInt32 is the one, so the uses read it as they read the Number, converted once.
+      const cached = e.occ.every(o => o.word) ? ['|', read, [null, 0]] : allNumeric ? ['u+', read] : read, temp = freshName(cached)
       // Declare storage before the statement, but evaluate the load exactly at
       // its first occurrence, after preceding operands and their effects.
       // The first load dominates every use; the initializer is unobservable.

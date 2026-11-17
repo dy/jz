@@ -426,6 +426,9 @@ export const f64Range = (n, get, allowNaN = false) => {
   const arm = (a, env, refined) => r(a, refined !== env && writes(a, refined.name) ? env : refined)
   const r = (n, env = null) => {
     if (!Array.isArray(n)) return null
+    // an element load the summary bounds (module/array.js numHullOf); one that may
+    // be missing instead (`raw`) may be a NaN, as a query admitting one reads it
+    if (n.numHull) return n.numHull.raw && !allowNaN ? null : fin(n.numHull.lo, n.numHull.hi)
     const op = n[0]
     if (op === 'local.tee' && n.length === 3) return r(n[2], env)
     // A value block (the emitter's checked element read: its index and bound
@@ -578,6 +581,14 @@ export const i32Narrowed = n => {
     const checked = i32CheckedRead(n)
     if (checked) return checked
   }
+  // an element load the summary bounds, inside the length (module/array.js numHullOf)
+  if (n.numHull) {
+    const word = hullWord(n, false)
+    if (word) return word
+  }
+  // a checked read of one, its miss undefined, which ToInt32 takes to 0
+  const hulled = hulledRead(n)
+  if (hulled) return hulled
   if (Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'number') {
     const v = n[1]
     return typed(['i32.const', int32(v)], 'i32')
@@ -620,14 +631,16 @@ const unclamp = (n, valid) => {
 
 // Shared by integer conversion and comparison. Only callers holding the
 // checkedNumRead proof may replace the missing arm with its numeric answer.
-const mapCheckedRead = (n, hitOf, miss, branchOnly = false) => {
+// (`missIs`: where no checkedNumRead proof stands, the miss arm the caller's answer is for)
+const mapCheckedRead = (n, hitOf, miss, branchOnly = false, missIs = null) => {
   if (!Array.isArray(n)) return null
   if (n[0] === 'block' && n[1]?.[0] === 'result' && n[1][1] === 'f64') {
-    const tail = mapCheckedRead(n[n.length - 1], hitOf, miss, branchOnly)
+    const tail = mapCheckedRead(n[n.length - 1], hitOf, miss, branchOnly, missIs)
     return tail && typed(['block', ['result', 'i32'], ...n.slice(2, -1), tail], 'i32')
   }
   const branch = n[0] === 'if' && n.length === 5 && n[3]?.[0] === 'then' && n[3].length === 2 && n[4]?.[0] === 'else' && n[4].length === 2
   if (!branch && !(n[0] === 'select' && n.length === 4)) return null
+  if (missIs && !missIs(branch ? n[4][1] : n[2])) return null
   // a select turned into a branch runs its hit under the guard
   const guarded = !branch && branchOnly && n[3]?.[0] === 'local.get' ? unclamp(n[1], n[3][1]) : null
   const hit = hitOf(branch ? n[3][1] : guarded ?? n[1])
@@ -639,7 +652,31 @@ const mapCheckedRead = (n, hitOf, miss, branchOnly = false) => {
 }
 const i32CheckedRead = (n, signedOnly = false) => mapCheckedRead(n, v =>
   v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u' && (!signedOnly || topBitClear(v[1]))
-    ? typed(v[1], 'i32') : null, 0)
+    ? typed(v[1], 'i32') : hullWord(v, signedOnly), 0)
+// A load the summary bounds (module/array.js numHullOf), finite: ToInt32 of a
+// number whose truncation is a word is that truncation; of any other below
+// 2^63, the low word of its i64 truncation. A signed word's value is an integer's.
+const hullWord = (v, signedOnly) => {
+  const h = v.numHull
+  if (!h || signedOnly && !(h.int && h.lo >= I32_MIN && h.hi <= I32_MAX && !h.raw)) return null
+  // A Number of the hull or a missing value (h.raw, the load as stored: a hole's,
+  // undefined's or null's box, a NaN): a saturating truncation takes the NaN to 0.
+  if (h.raw) {
+    if (h.lo > -0x80000001 && h.hi < 0x80000000) return typed(['i32.trunc_sat_f64_s', h.raw], 'i32')
+    return h.lo > -(2 ** 63) && h.hi < 2 ** 63 ? typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', h.raw]], 'i32') : null
+  }
+  // Where the word truncation takes the sum (wordTruncation 'add', optimize/to-int32.js): within
+  // ±2^51 the truncation plus 1.5·2^52 holds the word in its low bits, no conversion and no test.
+  if (ctx.transform.optimize?.wordTruncation === 'add' && h.lo >= -(2 ** 51) && h.hi < 2 ** 51)
+    return typed(['i32.wrap_i64', ['i64.reinterpret_f64', ['f64.add', h.int ? v : ['f64.trunc', v], ['f64.const', 6755399441055744]]]], 'i32')
+  return h.lo > -(2 ** 63) && h.hi < 2 ** 63 ? typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', v]], 'i32') : null
+}
+
+// ToInt32 of a bounds-checked element read whose hit arm the summary bounds
+// (module/array.js numHullOf) and whose miss arm is undefined: the hit arm's
+// truncation, the miss 0. (A read whose miss throws keeps its throw.)
+const undefinedConst = m => Array.isArray(m) && m[0] === 'f64.const' && m[1] === `nan:${atomNanHex(ATOM.UNDEF)}`
+const hulledRead = n => mapCheckedRead(n, v => v.numHull ? hullWord(v, false) : null, 0, true, undefinedConst)
 
 /** A signed word's value: an i32, an integer element's read with its
  *  convert peeled, a checked read of one (its miss the 0 ToInt32 takes

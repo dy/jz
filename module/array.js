@@ -226,6 +226,23 @@ const currentBinding = (name) => ctx.func.localReps?.get(name)?.ownCurrent === t
 // specializer's copy reads it as a Number and leaves at anything else
 // (optimize/specialize.js `cellRead`).
 const holeNumberRead = (rd, number) => { if (number) rd.holeNumRead = true; return rd }
+// An element load of an array whose Numbers the summary bounds (elemNumsOfExpr,
+// finite, never NaN): ToInt32 of it is a truncation with no test of its magnitude
+// (ir/numeric.js hullWord). `raw`, where an element may be missing instead (a
+// hole, undefined, null: elemNumsPresentOfExpr), is the load before the hole's
+// canonical box, whose NaN the conversion takes to 0 as it takes any missing value.
+const numHullOf = (load, nums, raw = null) => {
+  if (!Array.isArray(load) || !nums || nums.nan || !Number.isFinite(nums.lo) || !Number.isFinite(nums.hi)) return load
+  load.numHull = { lo: nums.lo, hi: nums.hi, int: nums.int, raw }
+  // (a consumer that reads the cell as stored takes the raw load for the value: ir/coerce.js asStored)
+  if (raw && raw !== load) raw.numHull = load.numHull
+  return load
+}
+// The numbers of the elements of `arr` a read finds: every element (dense) or those present.
+const elemHull = (arr, dense) => {
+  const s = ctx.summary?.at(ctx.func.current)
+  return dense ? s?.elemNumsOfExpr(arr) : s?.elemNumsPresentOfExpr?.(arr)
+}
 // Whether `obj.key` has a home of fixed layout a store reaches without the
 // dynamic property table: a flattened object's local, or a schema slot by the
 // binding, its pointer, or the summary (emit-assign.js emitPropertyAssign).
@@ -1517,9 +1534,10 @@ export default (ctx) => {
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        const rd = typed(value(markElem(ctx.abi.array.ops.load(
+        const load = markElem(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
-          vi), arr)), 'f64')
+          vi), arr)
+        const rd = typed(value(load), 'f64')
         // The local holding the key, for a call through the element: a table
         // whose elements never change dispatches on it (optimize/devirt.js).
         if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
@@ -1532,6 +1550,7 @@ export default (ctx) => {
           word.wordOf = rd
           return word
         }
+        numHullOf(rd, nums ?? elemHull(arr, false), nums ? null : load)
         return holeNumberRead(rd, holeNumber)
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
@@ -1556,11 +1575,15 @@ export default (ctx) => {
         // a loop that writes no header hoists each as an invariant of its own
         // (optimize/licm.js), where a temp shared between them would keep the
         // length load inside; watr's value numbering merges what stays.
+        const load = markElem(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]), arr), hit = value(load)
+        // (the numbers every element is, where the summary bounds them: Numbers alone, no hole)
+        const nums = dense ? ctx.summary?.at(ctx.func.current)?.elemNumsOfExpr(arr) : null
+        numHullOf(hit, nums ?? elemHull(arr, false), nums ? null : load)
         const rd = typed(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
-          ['then', value(markElem(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]), arr))],
+          ['then', hit],
           ['else', throwing ? throwTypeErrorIR() : undefExpr()]], 'f64')
         if (throwing && dense) rd.presentRead = true
         rd.elemKey = `$${idxI32}`
@@ -1573,6 +1596,9 @@ export default (ctx) => {
         // may also be undefined in the hit arm and keeps ordinary coercion.
         if (dense && typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER)
           rd.checkedNumRead = true
+        // The summary's numbers of every element (Numbers alone, finite, never NaN)
+        // prove the same, and the hit arm canonical: no NaN to take to the canonical one.
+        if (nums) { rd.checkedNumRead = true; rd.numberArmsCanonical = true }
         return holeNumberRead(rd, holeNumber)
       }
       const baseTmp = temp()
