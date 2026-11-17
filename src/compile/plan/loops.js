@@ -14,7 +14,7 @@ import { constIntExpr, affineIn } from '../../static.js'
 import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
 import { includeModule } from '../../autoload.js'
 import { clonePlain, collectBindings, nodeSize, optimizing } from './common.js'
-import { SOURCE_FULL } from '../../growth.js'
+import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { K, NULL_BITS, core, tagOf } from '../../summary/kind.js'
 import { lengthRecvs, preservesLoopBounds } from '../../type/canonical-bounds.js'
 
@@ -304,8 +304,10 @@ export const splitArrayScanLoops = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    // (a split loop runs a copy of its body past the array: none past the function's growth budget, src/growth.js)
-    if (nodeSize(func.body) > SOURCE_FULL) continue
+    // (a split loop runs a copy of its body past the array: past the function's growth budget, a
+    // kernel loop's alone, as the function takes its kernel loops' versions there, src/growth.js:
+    // a function the inliner grew holds the loops its callees ran, fabrik's save of each bone in `run`)
+    const full = nodeSize(func.body) > SOURCE_FULL
     const view = ctx.summary?.at(func.sig) ?? null
     if (!view) continue
     // a local no closure names: only the function's own statements write it
@@ -330,7 +332,7 @@ export const splitArrayScanLoops = () => {
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
       if (node[0] === 'for' && node.length === 5 && parent &&
-          trySplitArrayFor(node, parent, idx, view, stable, consts)) { changed = true; return false }
+          (!full || kernelLoop(node)) && trySplitArrayFor(node, parent, idx, view, stable, consts)) { changed = true; return false }
     } })
   }
   return changed

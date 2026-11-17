@@ -235,3 +235,32 @@ test('array scan: a loop the split would leave a bounds test in keeps one copy o
   ok(!split(left), 'a body it leaves a test in is not')
 })
 
+
+// Past its growth budget (src/growth.js SOURCE_FULL, 3000 source nodes) a
+// function still splits its kernel loops, as it versions them: a function the
+// inliner grew holds the loops its callees ran (fabrik's save of each bone,
+// spliced into `run`), whose stores past the end of the array would otherwise
+// test its forward word and length and keep the growth call every pass.
+test('array scan: a kernel loop splits in a function past the growth budget', () => {
+  const pad = Array.from({ length: 500 }, (_, k) => `pad[${k}] = n * ${k % 7} + ${k}`).join('\n  ')
+  const big = `const sol = []
+const pts = []
+for (let i = 0; i < 4; i++) pts.push({ x: i, y: i * 2 })
+const pad = new Float64Array(500)
+export let go = (n) => {
+  ${pad}
+  const s = pad[0] + pad[499]
+  for (let i = 0; i < pts.length; i++) { const p = pts[i], o = i * 2; sol[o] = p.x + n; sol[o + 1] = p.y }
+  return s + sol[1] + sol[7] + sol.length
+}`
+  const host = oracle(big)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const jz = run(big, { optimize })
+    for (const n of [0, 1, 5]) is(jz.go(n), host.go(n), `go(${n}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  for (const level of [2, 'speed']) {
+    const loops = innerLoops(funcWat(wat(big, { optimize: { level, ...shape } }), 'go'))
+    ok(loops.some(l => /f64\.store/.test(l) && !/\$__arr_set_idx_ptr/.test(l) && !/\$__ptr_offset_fwd/.test(l)), `at ${level}: a loop stores without the growth call or the forward test`)
+  }
+})
