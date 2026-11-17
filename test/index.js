@@ -463,7 +463,8 @@ if (argFilters.length && selected.length !== argFilters.length) {
 
 // test/native-costs.json: each file's [CPU seconds, tests, assertions] by suite and leg.
 // --costs times every file of this run (test/_run.js): a run of named files prints the
-// times, a whole suite writes them over its row, and an ordinary run never writes.
+// times, a whole suite writes them over its row once every file is timed, counting the
+// tests that failed, and an ordinary run never writes.
 const COSTS = new URL('./native-costs.json', import.meta.url), row = `${suite}-${legOf()}`, load = loadavg()[0]
 if (costs && onKernelTarget) throw new Error('--costs times the native legs; the hosted suite has test/hosted-costs.json')
 if (costs && process.env.TST_GREP) throw new Error('--costs times whole files; TST_GREP would time a part of each')
@@ -471,13 +472,13 @@ if (costs && process.env.TST_GREP) throw new Error('--costs times whole files; T
 // Listing is side-effect free: do not load the compiler or any test fixtures.
 if (list) { console.log(selected.join('\n')); process.exit(0) }
 
-function record(times, passed, processes) {
+function record(times, failed, processes) {
   const missing = selected.filter(f => !times[f])
-  if (!passed || missing.length) return console.error(`--costs: ${row} not written: ${passed ? `no time for ${missing.join(', ')}` : 'the run failed'}`)
+  if (missing.length) return console.error(`--costs: ${row} not written: no time for ${missing.join(', ')}`)
   const table = JSON.parse(readFileSync(COSTS, 'utf8')), files = {}
   for (const f of selected) files[f] = [Math.round(times[f][0] * 10) / 10, times[f][1], times[f][2]]
   const commit = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.trim() || 'an unknown commit'
-  const measured = `${new Date().toISOString().slice(0, 10)} at ${commit} on ${cpus()[0]?.model}, ${processes === 1 ? 'one process' : `${processes} processes at a time`}, load average ${Math.round(load)} at the start and ${Math.round(loadavg()[0])} at the end`
+  const measured = `${new Date().toISOString().slice(0, 10)} at ${commit} on ${cpus()[0]?.model}, ${processes === 1 ? 'one process' : `${processes} processes at a time`}, load average ${Math.round(load)} at the start and ${Math.round(loadavg()[0])} at the end${failed ? `, ${failed} test${failed > 1 ? 's' : ''} failed` : ''}`
   table.runs = Object.fromEntries(Object.entries({ ...table.runs, [row]: { measured, files } }).sort(([a], [b]) => a < b ? -1 : 1))
   writeFileSync(COSTS, JSON.stringify(table, null, 1).replace(/\[\n\s+([^\]]*?)\n\s+\]/g, (_, items) => `[${items.split(/,\n\s+/).join(', ')}]`) + '\n')
   console.log(`--costs: ${row} written: ${selected.length} files, ${Math.round(Object.values(files).reduce((sum, [s]) => sum + s, 0))} CPU seconds`)
@@ -504,7 +505,7 @@ if (jobs > 1) {
     Object.assign(times, JSON.parse([...log.matchAll(/^# costs (.*)$/gm)].at(-1)?.[1] ?? '{}'))
   }
   console.log(Object.entries(totals).map(([key, n]) => `# ${key} ${n}`).join('\n'))
-  if (costs) record(times, results.every(r => !r.code), jobs)
+  if (costs) record(times, totals.fail || 0, jobs)
   process.exit(results.some(r => r.code) ? 1 : 0)
 }
 
@@ -525,6 +526,6 @@ const result = await runFiles(selected.map(name => new URL(`./${name}.js`, impor
 if (costs) {
   const times = Object.fromEntries(selected.map((f, i) => [f, result.costs[i]]))
   if (argFilters.length) console.log(`# costs ${JSON.stringify(times)}`)
-  else record(times, !result.failed.length, 1)
+  else record(times, result.failed.length, 1)
 }
 process.exit(result.failed.length ? 1 : 0)
