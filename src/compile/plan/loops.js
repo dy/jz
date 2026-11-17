@@ -17,6 +17,8 @@ import { clonePlain, collectBindings, nodeSize, optimizing } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { K, NULL_BITS, core, tagOf } from '../../summary/kind.js'
 import { lengthRecvs, preservesLoopBounds } from '../../type/canonical-bounds.js'
+import { frameNode } from '../../function.js'
+import { closureCensus } from '../loop-model.js'
 
 // === Char-scan range splitting ===
 //
@@ -91,7 +93,7 @@ const propagateNaNConsts = (node) => {
 }
 const CATCHES = new Set(['catch'])
 
-const trySplitFor = (node, parent, idx, view) => {
+const trySplitFor = (node, parent, idx, view, moved) => {
   const [, init, cond, step, body] = node
   if (!Array.isArray(cond) || cond[0] !== '<' || typeof cond[1] !== 'string' || typeof cond[2] !== 'string') return false
   const i = cond[1], B = cond[2]
@@ -103,7 +105,8 @@ const trySplitFor = (node, parent, idx, view) => {
   if (!isUnitIncrement(step, i)) return false
   if (hasOp(body, SPLIT_BLOCKERS)) return false
   if (nodeSize(body) > 250) return false
-  if (isReassigned(body, i) || isReassigned(body, B) || containsDeclOf(body, i)) return false
+  // (a closure of the frame that assigns the bound or the receiver may run in the body: `moved`)
+  if (isReassigned(body, i) || isReassigned(body, B) || moved.has(B) || containsDeclOf(body, i)) return false
   // at least one `recv.charCodeAt(i)` with a stable name receiver
   let recv = null
   some(body, n => {
@@ -111,7 +114,7 @@ const trySplitFor = (node, parent, idx, view) => {
         && typeof n[1][1] === 'string' && n[2] === i) { recv = n[1][1]; return true }
     return false
   })
-  if (!recv || recv === i || recv === B || isReassigned(body, recv)) return false
+  if (!recv || recv === i || recv === B || isReassigned(body, recv) || moved.has(recv)) return false
 
   // tail clone: fresh induction var + fresh names for every body decl
   const declNames = new Set()
@@ -143,11 +146,11 @@ export const splitCharScanLoops = () => {
     if (func.raw || !func.body) continue
     // (a split loop runs a copy of its body past the string: none past the function's growth budget, src/growth.js)
     if (nodeSize(func.body) > SOURCE_FULL) continue
-    let view
+    let view, moved
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
       if (node[0] === 'for' && node.length === 5 && parent &&
-          trySplitFor(node, parent, idx, view ??= ctx.summary?.at(func.sig) ?? null)) { changed = true; return false }
+          trySplitFor(node, parent, idx, view ??= ctx.summary?.at(func.sig) ?? null, moved ??= closureCensus(frameNode(func)).assigned)) { changed = true; return false }
     } })
     // body root itself can't be a bare `for` without a parent slot — wrap-walk
     // handles every nested position; a top-level-for body is `{}`-wrapped.
@@ -334,13 +337,8 @@ export const splitArrayScanLoops = () => {
     const full = nodeSize(func.body) > SOURCE_FULL
     const view = ctx.summary?.at(func.sig) ?? null
     if (!view) continue
-    // a local no closure names: only the function's own statements write it
-    const captured = new Set()
-    walkAst(func.body, { enter: (n) => {
-      if (n[0] !== '=>') return
-      walkAst(n, { enter: (m) => { for (let k = 1; k < m.length; k++) if (typeof m[k] === 'string') captured.add(m[k]) } })
-      return false
-    } })
+    // a local no closure of the frame names: only the function's own statements write it
+    const captured = closureCensus(frameNode(func)).mentioned
     const locals = new Set((func.sig?.params ?? []).map(p => p.name))
     collectBindings(func.body, locals)
     // a local no closure names, or a module binding: the loop's own statements and

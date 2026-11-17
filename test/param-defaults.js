@@ -264,3 +264,17 @@ test('param defaults: a name an equality guards keeps its reads where a closure 
     for (const x of [3, 4]) is(got(x), ref(x), `${name}, value(${x}) at ${JSON.stringify(optimize)}`)
   }
 })
+
+test('param defaults: a scan split keeps a bound or a receiver a closure of the frame assigns', () => {
+  // (plan/loops.js splitCharScanLoops ran the main steps to min(n, s.length) taken once, though a
+  // call in the loop runs a closure that moves `n` or rebinds `s`)
+  const cases = [
+    ['a bound a default closure cuts', `export const value = (s, n, cut = () => { n = 2 }) => { let t = 0; for (let i = 0; i < n; i++) { t += s.charCodeAt(i); if (i === 0) cut() } return t }`],
+    ['a bound a body closure cuts', `export const value = (s, n) => { const cut = () => { n = 2 }; let t = 0; for (let i = 0; i < n; i++) { t += s.charCodeAt(i); if (i === 0) cut() } return t }`],
+    ['a receiver a default closure rebinds', `export const value = (s, n, swap = () => { s = 'zz' }) => { let t = 0; for (let i = 0; i < n; i++) { t += s.charCodeAt(i) | 0; if (i === 0) swap() } return t }`],
+  ]
+  for (const [name, src] of cases) for (const optimize of levels(false, true, 'size', 'speed', { level: 2, sourceInline: false })) {
+    const got = jz(src, { optimize }).exports.value, ref = oracle(src).value
+    for (const args of [['abcdef', 6], ['abc', 6], ['abcdef', 1]]) is(got(...args), ref(...args), `${name}, value(${args}) at ${JSON.stringify(optimize)}`)
+  }
+})
