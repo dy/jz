@@ -38,6 +38,30 @@ median_us=<int> checksum=<u32> samples=<int> stages=<int> runs=<int>
 The orchestrator runs selected cases against selected targets and flags checksum
 drift as `DIFF`.
 
+A lane is timed after its engine's tiers settle, and the first pass is recorded
+beside it. An engine compiles a function again, optimized, only after it has run a
+while, and a wasm function's new code serves its next call, never the one running,
+so a case whose pass ends first runs its timed loop in the baseline tier. Every
+engine lane's runner (`_lib/passes.js`: jz's wasm, the rivals' wasm, the wat lane,
+Javy, QuickJS-NG and js2wasm under V8; V8, Deno, Bun and the JavaScriptCore,
+SpiderMonkey and GraalJS shells on the JavaScript) repeats the program's pass, its
+`main`, in one process until the engine has run it 300 ms, and counts the pass after
+that. A wasm lane's pass is a fresh instance of the one compiled module (the code
+stays, the memory starts over); a JS lane's is another call of the same module's
+`main`. A first pass of 2.4 s or more counts as it is: its warm-ups, never under 3 of
+24 runs in the corpus (`test/bench-build.js` holds every case to that share), alone
+outlast the 300 ms. Each pass prints its line; every pass must answer the first's
+checksum, and the row keeps the first pass's median as `firstUs`. A case whose `main`
+advances module state answers another checksum on its next call, another workload
+(under Node on 2026-11-17: `fabrik`, `jsontransform`, `setops`, `stringify`,
+`threegeom` and `threescene`, of 106): its JS lanes run the first pass alone, the row
+marked `settled: false`, while its wasm lanes settle. The native binaries have no tiers, NumPy's lane is no JavaScript or
+wasm engine, and wasmtime (`jz-wasmtime`, the two componentizers) compiles a module
+whole before it runs, so these run once; `moonbit`'s moonrun, a V8 of its own, runs
+its program once with no hook for a second instance. `--passes=first` (or `JZ_BENCH_PASSES=first`) times every lane's
+first pass alone, the protocol before 2026-11-17; `meta.passes` names the protocol
+a dataset was timed by, and `--merge` refuses to mix two.
+
 New cases remain `unclassified` until an independently verified checksum is
 pinned in `REFERENCE_CHECKSUMS` in `bench.mjs`. A new measurement never replaces
 an existing reference checksum. Entity's initial oracle is 1275530752, verified
@@ -151,7 +175,8 @@ fftplan, provenance and gainclass, ties stdlib-exp, and trails on munsell, the t
 and pmndrs/math cases and @stdlib's erf, pow and gamma. These are gaps to close, not
 claims: the wasm class's gates (`test/bench.js`, `test/bench-claims.js`) report each one
 red until JZ leads (`test/bench-claims.js` holds <!-- fig:pending-cases -->stdlib-exp, polytri, fabrik, stringify, jsontransform, mapstr, mapint, mapobj, setops, async, jsonroundtrip, arraynumeric and arraydowngrade<!-- /fig --> as
-`PENDING_CASES`). Two port rows run V8's baseline code for their timed loop, since V8
+`PENDING_CASES`). The table predates the pass rule (above): it timed each lane's
+first pass, where two port rows ran V8's baseline code for their timed loop, since V8
 replaces a wasm function's code only between calls: in direct runs, Rust → wasm on hsl
 takes 25.3 ms under `--no-liftoff` against 42.0 ms by default, and C → wasm on
 stdlib-ddot 0.89 ms against 3.12 ms. The lanes run V8's defaults for every producer,
@@ -290,6 +315,9 @@ bound.
 # fast refresh: jz + jz-w2c only, full corpus, ~10-15 min instead of hours
 node bench/bench.mjs --targets=jz,jz-w2c --json --merge --verify-anchors
 ```
+
+A merge and an anchor check take the pass protocol of the file they read
+(`meta.passes`): into a dataset timed before the pass rule, add `--passes=first`.
 
 A claim is decided per case by the best rival of each class, so a verdict needs
 only the lanes that could lead. `--contenders[=N]` (default 2) measures, per
@@ -1055,8 +1083,12 @@ The `mem` column (`memKb` in `results.json`) is the peak resident set of the
 whole per-case process — engine + module + data — read from the child's rusage
 by wrapping every measured run in `time(1)` (`/usr/bin/time -l` on darwin, GNU
 `-v` on linux; no wrapper on the host → the field stays null and the page shows
-an unmeasured value). One number per lane run, the footprint a deploy
-actually pays: node-hosted rows carry the engine baseline (so same-host rows
+an unmeasured value). One number per lane run of one pass, the footprint a deploy
+actually pays: more passes (the pass rule above) raise the peak with a second
+instance beside the first's garbage or a heap that grew, so a lane that ran more
+takes its figure from a process of the first pass alone, once per lane and case
+(`JZ_BENCH_PASSES=first`, or a shell's plain script). Node-hosted rows carry the
+engine baseline (so same-host rows
 differ by their heap alone), native rows just the binary, `porf` compiles
 in-process each run (its deployment shape). Under `--paired` the recorded
 value is the cross-round median of each forward/reverse pair's mean. Both

@@ -48,7 +48,8 @@ jobs so each case runs whole on one machine (`bench/shards.mjs`), the claim lane
 paired rounds; it commits `bench/results.json` only when the claims gate passes. The
 weekly run refreshes `bench/results-ci.json` the same way. By hand, the lean protocol
 (`node bench/bench.mjs --contenders --paired=6 --json=…`) measures jz against the
-nearest rivals of each claim class per case.
+nearest rivals of each claim class per case. A lane is timed after its engine's tiers
+settle, and the first pass is recorded beside it.
 
 What this implies for HOW we optimize:
 

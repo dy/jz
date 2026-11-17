@@ -1,6 +1,7 @@
 // The rivals and bands of the published speed claims. One definition for the
 // release gate (test/bench-claims.js), the ledger (scripts/ledger.mjs) and the
-// harness's contenders (bench/bench.mjs --contenders).
+// harness's contenders (bench/bench.mjs --contenders). A lane is timed after its
+// engine's tiers settle, and the first pass is recorded beside it (_lib/passes.js).
 import { timedBenchmarkRow } from '../assets/headline.js'
 
 /** "Fastest wasm": every wasm producer the reference dataset must contest, each built
