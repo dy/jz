@@ -17,8 +17,8 @@
       "entered": 581
     },
     "buf": {
-      "total": 29838,
-      "entered": 2390
+      "total": 30360,
+      "entered": 2912
     },
     "nest": {
       "total": 5545,
@@ -59,23 +59,23 @@
       "entered": 581
     },
     "buf": {
-      "total": 23928,
-      "entered": 2390
+      "total": 24245,
+      "entered": 2912
     },
     "nest": {
       "total": 5545,
       "entered": 2034
     },
     "slice": {
-      "total": 159492,
-      "entered": 25088
+      "total": 156704,
+      "entered": 24358
     },
     "ring": {
       "total": 30720,
       "entered": 4720
     },
     "condref": {
-      "total": 141195,
+      "total": 139203,
       "entered": 4001
     },
     "fgather": {
