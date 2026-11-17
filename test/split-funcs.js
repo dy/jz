@@ -518,7 +518,9 @@ test('loop passes: a void export\'s rounds move out of its boundary wrapper', ()
     for (const r of [0, 5, 11]) is(exports.read(r), native.read(r), `n=${n}: read(${r})`)
   }
   if (onKernel()) return
-  ok(/\(func \$main\$exp\$s\d+/.test(compile(VOID_SRC, { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
+  // (a body the lane lift took is kept from watr's inliner, pass-table.js vectorizedFns: its rounds
+  // come off the body, which runs once a call as the wrapper does, `$main$s0`)
+  ok(/\(func \$main(\$exp)?\$s\d+/.test(compile(VOID_SRC, { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
 })
 
 // Rounds that keep what they allocate (a kernel returning a fresh array, held past the round)
