@@ -831,6 +831,29 @@ test('compact: an array grown then shifted at init survives the compactions afte
   }
 })
 
+// A grown array whose named properties went to the global table holds [-1, -1]
+// in its header's props word (module/array.js DYN_PROPS_GLOBAL_SENTINEL); a
+// shifted array's mark is [base, -1]. Read by its high word alone, the walk took
+// the first for the second (`__gc_canon`), the growth stub for a base record,
+// and left the stub naming the block's old place as the block moved: the array
+// read empty or another block's words after the next compaction, at levels 2,
+// 3 and speed, in 1.0.3 too.
+test('compact: an array given named properties and grown keeps them across the compactions after it', () => {
+  if (onWasi()) return
+  const src = `const O = { t: 1, a: [] }
+    export const c = (k, v) => { O.a[k] = v; return O.a.length }
+    export const ks = () => Object.keys(O.a).map(k => k + '=' + O.a[k]).join('|') + '/' + O.a.length
+    let keep = []
+    export const step = (i) => { keep = [...keep, 'item ' + i + ' ' + 'x'.repeat(200)].slice(-20); return keep.length }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const { exports: m } = jz(src, { optimize }), want = oracle(src)
+    for (const x of [m, want]) { for (const [k, v] of [[-1, 0], [7, 1], [-3, 1], [-5, 2]]) x.c(k, v); for (let i = 0; i < 400; i++) x.step(i) }
+    is(m.ks(), want.ks(), `${optimize}: the array and its properties after the compactions`)
+    m.c(4294967295, 3); want.c(4294967295, 3)
+    is(m.ks(), want.ks(), `${optimize}: and a property more`)
+  }
+})
+
 // A phase checkpoint that declines (scripts/self.js checkpointPhase: the phase
 // wrote into storage older than itself) compacts the phase's memory
 // (module/core.js `__gc_phase`): what the phase filed into module state, what

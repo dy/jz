@@ -217,9 +217,15 @@ export const registerCompact = () => {
       ;; the target a live, shifted header: this stub is its base record, the handle.
       ;; Its words are read only once it lies in the heap: a stale pointer into
       ;; memory a rewind released names a stub of ones, whose forward is anything.
+      ;; The mark is [base, -1], as layout.js arrBaseWat reads it: a grown array's
+      ;; header whose properties went to the global table holds [-1, -1] there
+      ;; (module/array.js DYN_PROPS_GLOBAL_SENTINEL), no mark, and the stub that
+      ;; forwards to it is a growth's, whose forward the move rewrites; taken for
+      ;; a base record, its block moved and the stub still named the old place
       (if (i32.and (i32.ge_u (local.get $to) (i32.const 16)) (i32.le_u (local.get $to) (global.get $__g_top)))
         (then (if (i32.and (i32.ne (i32.load (i32.sub (local.get $to) (i32.const 4))) (i32.const -1))
-                           (i32.eq (i32.load (i32.sub (local.get $to) (i32.const 12))) (i32.const -1)))
+                           (i32.and (i32.eq (i32.load (i32.sub (local.get $to) (i32.const 12))) (i32.const -1))
+                                    (i32.ne (i32.load (i32.sub (local.get $to) (i32.const 16))) (i32.const -1))))
           (then (br $done)))))
       (local.set $off (local.get $to))
       (br $hop)))
