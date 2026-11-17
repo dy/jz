@@ -223,6 +223,9 @@ const DEFAULT_CLOSURE_LOOPS = [
   ['a flag a default closure flips', `export const value = (n, flag = 0, flip = () => { flag = !flag }) => { let s = 0; for (let i = 0; i < n; i++) { if (flag) s += 1; else s += 100; flip() } return s }`, [[4], [5], [0]]],
   ['a default closure a callee calls', `const call = (g) => g()
 export const value = (n, flag = 0, flip = () => { flag = !flag }) => { let s = 0; for (let i = 0; i < n; i++) { if (flag) s += 1; else s += 100; call(flip) } return s }`, [[4], [5]]],
+  // (a function with a destructuring parameter has every default taken into its body by
+  // prepare, `defaults` null: this closure is the body's, and the pin holds that shape, not
+  // the frame census; it answers as Node with closureCensus given the body alone)
   ['a closure in a destructuring default', `export const value = (n, { flag = 0, flip = () => { flag = !flag } } = {}) => { let s = 0; for (let i = 0; i < n; i++) { if (flag) s += 1; else s += 100; flip() } return s }`, [[4], [5]]],
   ['a counter a default closure steps', `export const value = (n, i, skip = () => { i += 2 }) => { let s = 0; for (i = 0; i < n; i++) { s += i; skip() } return s }`, [[6], [7], [0]]],
   ['a counter a closure\'s default steps', `export const value = (n) => { const run = (m, i, skip = () => { i += 2 }) => { let s = 0; for (i = 0; i < m; i++) { s += i; skip() } return s }; return run(n) * 100 + run(n + 1) }`, [[6], [2]]],
