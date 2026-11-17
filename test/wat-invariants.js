@@ -103,7 +103,8 @@ test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a
       if (mode) { let fn = ops[mode]; return fn ? fn(x) : cc }
       return acc + cc
     }`
-  ok(loopHas(parse(src, { hoistLoopGlobalPtrOffset: false, promoteGlobals: false }), STRING_BASE_DECODE),
+  // (the general LICM lifts the decode too, out of every loop, since helper writes no global: off as well)
+  ok(loopHas(parse(src, { hoistLoopGlobalPtrOffset: false, promoteGlobals: false, hoistInvariantLoop: false }), STRING_BASE_DECODE),
     'control: string base re-decoded inside the scan loop with the per-loop pass OFF')
   ok(!loopHas(parse(src, 2), STRING_BASE_DECODE),
     'INVARIANT: string base decoded once at the loop preheader, never per-char, with pass ON')

@@ -103,10 +103,6 @@ export const RUN = [
   ['guardedUpdate', (fn) => foldGuardedUpdates(fn)],
   // A view's length is fixed only where no buffer of the program resizes.
   ['typedDecode', (fn, cfg, facts) => { if (!facts.resizable) hoistTypedDecode(fn) }],
-  // Preserve source-unrolled SSA scratch before propagation sinks its single
-  // definition into a local.tee. The transform is gated while it matures.
-  ['splitLoopPrivateScratch', (fn, cfg, facts) => splitLoopPrivateScratch(fn, facts)],
-  ['hoistInvariantLoop.scratch', (fn, cfg, facts) => hoistInvariantLoop(fn, facts)],
   // Const-fn-array dispatch devirt: emit tagged the call_indirect of
   // `constOps[idx](args)` — rewrite to a br_table of direct calls with
   // the original call_indirect as the always-sound default arm.
@@ -139,6 +135,11 @@ export const RUN = [
   ['narrowByteLoads', (fn) => narrowByteLoads(fn)],
   // One a dominating test settled goes.
   ['settledTests', (fn) => dropSettledTests(fn)],
+  // Preserve source-unrolled SSA scratch before propagation sinks its single
+  // definition into a local.tee. The transform is gated while it matures.
+  ['splitLoopPrivateScratch', (fn, cfg, facts) => splitLoopPrivateScratch(fn, facts)],
+  // Plain arithmetic out of every loop with no vector code, the loop passes done (optimize/licm.js).
+  ['hoistInvariantLoop.post', (fn, cfg, facts) => hoistInvariantLoop(fn, facts, true)],
   ['inlinePtrOffsetFast', (fn) => inlinePtrOffsetFastPass(fn)],
 ]
 const STEPS = stage('func', RUN)

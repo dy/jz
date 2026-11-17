@@ -130,12 +130,13 @@ export function hoistInvariantPtrOffset(fn, fx = NO_MODULE) {
 // `'$cell_'` literal silently omits the invisible T and never matches.
 const CELL_PREFIX = '$' + T + 'cell_'
 
-// Ops V8's wasm tier (TurboFan) will NOT hoist out of a loop itself: saturating
-// f64→int truncation and `select` are not LICM-eligible there, memory loads are
-// blocked by conservative aliasing, and calls are opaque. These are the ONLY
-// things worth hoisting — V8 already does general arithmetic LICM, and hoisting
-// pure arithmetic ourselves only bloats the body and breaks the lane-vectorizer's
-// straight-line pattern match. So a subtree is hoisted only if it contains one.
+// The ops worth a hoist out of any loop: a load, a call, a saturating truncation, a
+// `select`. Plain arithmetic is hoisted too, where no lift still reads it in place
+// (hoistInvariantLoop, its `everyLoop`): V8 hoists none of it out of a wasm loop
+// itself. Measured on Node 25.9 (Turboshaft, `--print-wasm-code`, an M4): in
+// `for (i < n) s = s * 0.5 + a * b + i` the product stays in the loop body; V8
+// unrolls the loop four times and computes `a * b` once per unrolled pass, and a
+// body too large to unroll computes it every round.
 const HARD_OPS = new Set([
   'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
   'select', 'f64.load', 'f32.load', 'i32.load', 'call',
@@ -373,25 +374,27 @@ const stableBase = (n, names, present) => {
 // allocation. Only unchanged owned parameters with a settled byte extent and
 // a literal byte displacement qualify. Following local definitions here would
 // additionally need dominance (a conditional initializer is not an address).
+// The word an i32 tree of constants holds, or null.
+const constant = n => {
+  if (!Array.isArray(n)) return null
+  if (n[0] === 'i32.const') {
+    const value = Number(n[1])
+    return Number.isInteger(value) && value >= -0x80000000 && value <= 0xffffffff ? value | 0 : null
+  }
+  if (n.length !== 3) return null
+  const a = constant(n[1]), b = constant(n[2])
+  if (a == null || b == null) return null
+  if (n[0] === 'i32.add') return (a + b) | 0
+  if (n[0] === 'i32.sub') return (a - b) | 0
+  if (n[0] === 'i32.mul') return Math.imul(a, b)
+  if (n[0] === 'i32.shl') return a << b
+  return null
+}
+
 function fixedTypedLoad(fn) {
   const extents = fn.fixedTypedBytes
   if (!extents?.size) return null
   const changed = writtenLocals(fn)
-  const constant = n => {
-    if (!Array.isArray(n)) return null
-    if (n[0] === 'i32.const') {
-      const value = Number(n[1])
-      return Number.isInteger(value) && value >= -0x80000000 && value <= 0xffffffff ? value | 0 : null
-    }
-    if (n.length !== 3) return null
-    const a = constant(n[1]), b = constant(n[2])
-    if (a == null || b == null) return null
-    if (n[0] === 'i32.add') return (a + b) | 0
-    if (n[0] === 'i32.sub') return (a - b) | 0
-    if (n[0] === 'i32.mul') return Math.imul(a, b)
-    if (n[0] === 'i32.shl') return a << b
-    return null
-  }
   const address = n => {
     if (!Array.isArray(n)) return null
     if (n[0] === 'local.get' && extents.has(n[1]) && !changed.has(n[1])) return { name: n[1], offset: 0 }
@@ -666,15 +669,14 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
     // those definitions in the same invariance proof, with the same lifetime
     // checks, so they can move together with the unrolled scratch they feed.
     if (![...seen].some(isUnrolledScratch)) return
-    // Stage 1 — collect SAFE candidates (loop-local, straight-line, first-write, set-only,
-    // ≥2 defs) and record each one's def RHS list for the invariance fixpoint.
-    const cand = new Map()  // name → { defs: [rhs…] }
+    // Stage 1 — collect SAFE candidates (loop-local, straight-line, first-write, set-only).
+    const cand = new Set()
     for (const name of seen) {
       if (!SCALAR.has(localTypes.get(name))) continue
       let inLoop = 0
       walkAst(loop, { enter: n => { if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) inLoop++ } })
       if (inLoop !== (fnRefs.get(name) || 0)) continue
-      let safe = true, first = null, defs = []
+      let safe = true, first = null, defs = 0
       const scan = (n, depth) => {
         if (!safe || !Array.isArray(n)) return
         const op = n[0]
@@ -683,7 +685,7 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
           // (a set whose value an earlier instruction pushes, the flat form an inlined body may keep, moves with no value)
           if (depth > 0 || n.length !== 3) { safe = false; return }
           if (first === null) first = 'w'
-          defs.push(n[2])
+          defs++
           scan(n[2], depth)
           return
         }
@@ -696,17 +698,20 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
         for (let i = 1; i < n.length; i++) scan(n[i], depth + (ctrl ? 1 : 0))
       }
       for (let i = 2; i < loop.length; i++) scan(loop[i], 0)
-      if (safe && first === 'w' && defs.length >= 1) cand.set(name, defs)
+      if (safe && first === 'w' && defs >= 1) cand.add(name)
     }
     if (!cand.size) return
-    // Stage 2 — invariance fixpoint over the SHARED proven predicate. `pureGiven(def, hoistable)`
-    // decides loop-invariance with hoistInvariantLoop's exact model: a `$__cell_`/distinct-param
+    // Stage 2 — a definition at a time, in the loop's order, the version SSA gives each def.
+    // `pureGiven` decides invariance with hoistInvariantLoop's exact model: a `$__cell_`/distinct-param
     // read-only load is invariant across the loop's stores (sound alias analysis), a global is
-    // invariant only without a loop write or call, and the `bound` set (here `hoistable`) carries
-    // the cascade — a def reading an already-split sibling is invariant once that sibling moves out
-    // (c = ox²+… invariant only after ox hoists). `motionSafe` adds the one extra obligation a
-    // whole-assignment MOTION needs beyond value-invariance: no `local.tee` writing a local read
-    // elsewhere (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
+    // invariant only without a loop write or call. A def's value is read at the versions in force
+    // where it stands: a candidate whose last def moved out reads as that def's version, a local
+    // the loop never writes (so invariant); one whose last def stayed reads as its own name, which
+    // the loop writes (so not). The cascade follows (c = ox²+… moves once ox has; an unrolled sum
+    // `s = 0; s = s + p0; s = s + p1` moves its invariant prefix, a def after a varying one stays,
+    // since it reads the name). `motionSafe` adds the one extra obligation a whole-assignment
+    // MOTION needs beyond value-invariance: no `local.tee` writing a local read elsewhere
+    // (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
     // address-local-disjointness load test, which was unsound in general (two distinct locals can
     // hold the same address) and only worked by luck on the bench shapes.
     const { pureGiven } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, allowPrivateSets: true })
@@ -720,8 +725,10 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
       walkAst(n, { enter: x => { if ((x[0] === 'local.get' || x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) c++ } })
       return c
     }
-    const privateInternalWrites = (def, base) => {
-      const bound = new Set(base), writes = new Set()
+    // The locals a def writes inside its value (a canon's scratch), when no other statement of
+    // the loop names them: bound to the def, they move with it.
+    const privateInternalWrites = (def) => {
+      const bound = new Set(), writes = new Set()
       const gather = n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.add(n[1]) }
       walkAst(def, { enter: gather })
       for (const name of writes) {
@@ -730,23 +737,11 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
       }
       return bound
     }
-    const hoistable = new Set()
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const [name, defs] of cand) {
-        if (hoistable.has(name)) continue
-        if (defs.every(d => {
-          const bound = privateInternalWrites(d, hoistable)
-          return bound && motionSafe(d) && pureGiven(d, bound)
-        })) { hoistable.add(name); changed = true }
-      }
-    }
-    // Stage 3 — one linear pass over the loop body: each hoistable def is RENAMED to a
-    // fresh version and MOVED OUT of the loop (before it), in source order so the cascade's
-    // data deps stay intact (c = ox²+… emitted after ox). The cheap arithmetic AND the load
-    // both leave the loop; gets stay, rebound to the moved version. (hoistInvariantLoop only
-    // snapshots expensive subexprs, not whole invariant assignments — so we do the motion.)
+    // Stage 3 — the walk itself: an invariant def is RENAMED to a fresh version and MOVED OUT
+    // of the loop (before it), in the loop's order so the cascade's data deps stay intact; a def
+    // that stays keeps its name, and the reads after it read the name again. Gets of a moved
+    // version stay in the loop, rebound to it. (hoistInvariantLoop only snapshots expensive
+    // subexprs, not whole invariant assignments — so we do the motion.)
     const curOf = new Map()
     const rewriteGets = (n) => {
       if (!Array.isArray(n)) return n
@@ -757,16 +752,15 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
     const hoisted = []
     const kept = loop.slice(0, 2)  // 'loop' + label
     for (let i = 2; i < loop.length; i++) {
-      const s = loop[i]
-      if (Array.isArray(s) && s[0] === 'local.set' && hoistable.has(s[1])) {
-        const name = s[1], ty = localTypes.get(name)
-        const nv = `$${name.replace(/^\$/, '')}__sr${minted++}`
-        newDecls.push(['local', nv, ty]); localTypes.set(nv, ty)
-        hoisted.push(['local.set', nv, rewriteGets(s[2])])
-        curOf.set(name, nv)
-      } else {
-        kept.push(rewriteGets(s))
-      }
+      const s = rewriteGets(loop[i])
+      if (s[0] !== 'local.set' || !cand.has(s[1])) { kept.push(s); continue }
+      const name = s[1], bound = privateInternalWrites(s[2])
+      if (!bound || !motionSafe(s[2]) || !pureGiven(s[2], bound)) { curOf.delete(name); kept.push(s); continue }
+      const ty = localTypes.get(name)
+      const nv = `$${name.replace(/^\$/, '')}__sr${minted++}`
+      newDecls.push(['local', nv, ty]); localTypes.set(nv, ty)
+      hoisted.push(['local.set', nv, s[2]])
+      curOf.set(name, nv)
     }
     loop.length = 0
     for (const x of kept) loop.push(x)
@@ -790,13 +784,64 @@ export function splitLoopPrivateScratch(fn, { freshTypedGlobals = null, effects 
 // immediate at each use: its local stays the cheaper spelling.
 const constTree = (n) => Array.isArray(n) && typeof n[0] === 'string' && n[0].startsWith('i32.') && (n[0] === 'i32.const' ||
   n.length > 1 && !/load|^i32\.(wrap|trunc|reinterpret)/.test(n[0]) && n.slice(1).every(constTree))
+// So does arithmetic over a local the function sets once, to a constant, and constants: the
+// constant reaches it by propagation. Hoisted, it is a local the folds after see no constant in
+// (a coalesced slot), and a counted loop's trip count stays unknown to unrollTrips
+// (`const r = 4; for (…) for (let k = -r; k <= r; k++)`).
+const constLocals = (fn, bodyStart) => {
+  const defs = new Map()
+  const note = n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') defs.set(n[1], defs.has(n[1]) ? null : n[2]) }
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: note })
+  const out = new Set()
+  for (const [name, v] of defs) if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && v[0].endsWith('.const')) out.add(name)
+  return out
+}
+// What a hoist saves is the subtree's work a round, and it holds a register for the loop. A
+// comparison of plain operands is tested where it stands (a branch or a select takes it with
+// the test: x64 cmp and jcc, arm64 cbz, csel), so a hoisted one is a boolean still to test; a
+// wrap or an extension between the words, and a reinterpretation of the bits, are a view of a
+// register, and a box's bits held across a loop that keeps memory are one more root its
+// compaction marks and forwards (data-forms: `__gc_mark` and `__gc_fwd` in the loops of 27
+// cells, `__ptr_offset_fwd` in one). A subtree of only those, over
+// locals and constants, saves nothing and stays. Measured: hoisted, the four such tests of the
+// collector's compaction loops (`$__compact`: `i32.eqz row`, `i32.eq e 24`) made every speed-tier
+// bench build 14 bytes larger for no work saved. So does an operation with its identity, which
+// folds to its other operand: the address of element 0, `a + (0 << 3)`, hoisted, left a copy of
+// `a` (heapsort's `a[0]` in bench/sort, 4 bytes, in 20 bench builds the like).
+const IDENTITY_RIGHT = /^i32\.(add|sub|or|xor|shl|shr_[su]|rotl|rotr)$/, IDENTITY_LEFT = /^i32\.(add|or|xor)$/
+const VIEW_OP = /^(i32\.wrap_i64|i64\.extend_i32_[su]|[if](32|64)\.reinterpret_[if](32|64))$/
+const doesWork = (n) => {
+  if (!Array.isArray(n) || typeof n[0] !== 'string') return false
+  const op = n[0]
+  if (op === 'local.get' || op.endsWith('.const')) return false
+  if (n.length === 3 && IDENTITY_RIGHT.test(op) && constant(n[2]) === 0) return doesWork(n[1])
+  if (n.length === 3 && IDENTITY_LEFT.test(op) && constant(n[1]) === 0) return doesWork(n[2])
+  if (!TEST_OP.test(op) && !VIEW_OP.test(op)) return true
+  return n.slice(1).some(doesWork)
+}
+const foldsToConst = (n, consts) => {
+  let local = false
+  const ok = n => {
+    if (!Array.isArray(n) || typeof n[0] !== 'string') return false
+    if (n[0] === 'local.get') { if (!consts.has(n[1])) return false; local = true; return true }
+    if (n[0].endsWith('.const')) return true
+    return n.length > 1 && PURE_LICM_OPS.has(n[0]) && n.slice(1).every(ok)
+  }
+  return ok(n) && local
+}
 
 // JZ supplies only the language/representation proof and profitability policy.
 // Watr owns traversal, private-local checks, extraction, deduplication and typing.
 // Facts: the module bindings that hold typed arrays of their own (`freshTypedGlobals`,
 // plan/literals.js) and the functions a loop may call without a header changing
 // (`effects`, optimize/effects.js).
-export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_MODULE } = {}) {
+// What a run takes: a subtree holding a HARD_OP, out of any loop; plain arithmetic out of a loop
+// that holds no vector code, from a loop nested in another in the runs before the lane lifts, and
+// from every loop with `everyLoop`, the run after them (pass-table.js `hoistInvariantLoop.post`).
+// The lifts read the arithmetic in place: an unrolled dot's `acc += a * b` steps are the pattern
+// of its pair lift and of the relaxed tier's regrouping of its invariant terms
+// (vectorize/dot-slp.js), and a product moved into a local first is a term neither matches.
+export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_MODULE } = {}, everyLoop = false) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
   const distinctParams = distinctBases(fn, freshTypedGlobals)
@@ -805,6 +850,7 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_
   const presentArrays = fn.presentArrays || null
   const defs = presentArrays || stableHeaderNames ? singleDefs(fn, bodyStart) : null
   const hardOpCache = new Map()
+  const consts = constLocals(fn, bodyStart)
   const fixedLoad = fixedTypedLoad(fn)
   // Parent links are an occurrence proof, not a function-wide load license.
   // A moved read can climb inner loops only while its owning loop remains a
@@ -833,7 +879,9 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_
         return false
       } : null
       const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
-      return (node, bound) => !constTree(node) && ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
+      const arith = !hasV128 && (nested || everyLoop)
+      return (node, bound) => !constTree(node) &&
+        (hasHardOp(node, hardOpCache) || isPtrBaseDecode(node) || arith && doesWork(node) && !foldsToConst(node, consts)) && pureGiven(node, bound)
     },
   })
 }

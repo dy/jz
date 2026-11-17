@@ -113,9 +113,6 @@ export const PASSES = [
   P('foldV128Memargs', 'func', '+vectorizeLaneLocal', { after: [['vectorizeLaneLocal', 'the v128 memargs it made'], ['fusedRewrite', 'whose memarg fold ran before the lift']] }),
   P('guardedUpdate', 'func', '+guardedUpdate', { after: [['vectorizeLaneLocal', 'the vectorizer reads a conditional update in its branch form']], drops: 'irange' }),
   P('typedDecode', 'func', '+typedDecode', { after: [['unswitchTypedParamLoop', 'the accesses it left to the helpers'], ['vectorizeLaneLocal', 'the same']], takes: 'resizable', drops: 'irange' }),
-  P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', { takes: 'freshTypedGlobals effects', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey dvProp wordOf checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
-  P('hoistInvariantLoop.scratch', 'func', '+splitScratch hoistInvariantLoop', {
-    after: [['splitLoopPrivateScratch', 'its moved invariants ride the LICM once more']], takes: 'freshTypedGlobals effects', reads: 'boundsOwner', lost: 'boundsOwner' }),
   P('devirtFnArrays', 'func', 'devirtFnArrays', {
     takes: 'constFnArrays dvArmFns staticArrs arrResized nameEscapes', reads: 'dvArr dvOpen dvKey dvKeyed',
     why: 'the table\'s candidates fill only when module init emits, after the bodies', drops: 'dvArr' }),
@@ -136,6 +133,17 @@ export const PASSES = [
   P('reuseLoads', 'func', '+reuseLoads', { after: [['forwardStores', 'after every pass that places loads'], ['cseScalarLoad', 'the same'], ['specializeLoops', 'the same']], takes: 'effects', reads: 'mem', lost: 'mem', drops: 'unsigned presentNumRead wrapSafe cellI32' }),
   P('narrowByteLoads', 'func', '+reuseLoads', { after: [['reuseLoads', 'a part of a word read alone, the narrow load of it']] }),
   P('settledTests', 'func', 'settledTests', { after: [['combineGuards', 'over the guards every pass above left'], ['specializeLoops', 'the same']] }),
+  // The loop passes above read a loop as the emitter wrote it: the lane lifts its arithmetic in
+  // place, specializeLoops the values it reads (a copy that assumes `channels` an integer has
+  // nothing to assume once the tests of `channels` left the loop: decode-qoa ran 1.17x slower),
+  // the integer pass its locals. Plain arithmetic moves out of the loops after them.
+  P('splitLoopPrivateScratch', 'func', '+splitScratch hoistInvariantLoop', {
+    after: [['specializeLoops', 'its copies read the loop as written'], ['narrowInts', 'the versions take the narrowed types']],
+    takes: 'freshTypedGlobals effects', drops: 'schemaSid loweringLinks irange unsigned presentNumRead wrapSafe iterRelease elemKey dvProp wordOf checkedTwin cold checkedNumRead provenWord boundsSnapshot dvObject boundsOwner' }),
+  P('hoistInvariantLoop.post', 'func', 'hoistInvariantLoop', {
+    after: [['vectorizeLaneLocal', 'plain arithmetic out of every loop, once the lifts have read it in place'], ['specializeLoops', 'its copies speculate on the values a loop reads'],
+      ['wideAccumulator', 'its accumulator reads the loop as written'], ['splitLoopPrivateScratch', 'its moved invariants ride the LICM once more']],
+    takes: 'freshTypedGlobals effects', reads: 'boundsOwner', lost: 'boundsOwner', drops: 'schemaSid irange provenWord' }),
   P('inlinePtrOffsetFast', 'func', '+inlinePtrOffsetFast', {
     last: true, why: 'the helper call is the form every pass above reasons about (LICM hoists it, unswitch and devirt recognize it); its inline fast path is lowering' }),
   // -- module, after the function walk ----------------------------------------------------------------

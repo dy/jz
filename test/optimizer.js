@@ -390,6 +390,51 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
   for (const args of [[1.0, 4], [9.0, 4], [2.5, 3], [1.0, 0]]) is(on(...args), off(...args), `watr licm on===off ${JSON.stringify(args)}`)
 })
 
+test('LICM: an invariant subexpression leaves every loop, at any position of a larger one', () => {
+  // A product in the middle and at the end of a strict sum, an integer product, and a product
+  // invariant to both loops of a nest: jz's own hoist takes each out of the outermost loop (V8
+  // hoists none of them itself: optimize/licm.js, the measurement above HARD_OPS). Moving one
+  // product reorders no sum, so the levels at JavaScript's float results take it too.
+  const get = (n, name) => Array.isArray(n) && n[0] === 'local.get' && n[1] === name
+  const product = (x, y) => n => n[0] === 'f64.mul' && get(n[1], x) && get(n[2], y)
+  const kernels = [
+    ['a product in the middle and at the end of a sum', `export let f = (a, b, c, n) => { let s = 0; for (let i = 0; i < n; i++) s = s * 0.5 + a * b + i - b * c; return s }`,
+      n => product('$a', '$b')(n) || product('$b', '$c')(n), [[1.5, 2.5, -3, 4], [-0, 3, 1e308, 2], [2, 3, 4, 0]]],
+    ['an integer product', `export let f = (a, b, n) => { const p = a | 0, q = b | 0; let t = 0; for (let i = 0; i < n; i++) t = (t ^ (Math.imul(p, q) + i)) | 0; return t }`,
+      n => n[0] === 'i32.mul', [[65537, 65539, 5], [-7, 3, 2], [7, 3, 0]]],
+    ['a product invariant to a nest', `export let f = (a, b, m, n) => { let s = 0; for (let j = 0; j < m; j++) for (let i = 0; i < n; i++) s = s * 0.5 + a * b + i * j; return s }`,
+      product('$a', '$b'), [[1.5, 2.5, 3, 4], [1.5, 2.5, 0, 4], [-0, 1, 2, 2]]],
+  ]
+  for (const [what, src, pred, args] of kernels) {
+    const want = oracle(src).f
+    for (const optimize of [2, { level: 'speed', relaxedFloat: false }]) {
+      is(loopCount(findFunc(parse(src, preWatr(optimize)), '$f'), pred), 0, `${what}: out of every loop at ${JSON.stringify(optimize)}`)
+      const f = jz(src, { optimize }).exports.f
+      for (const a of args) ok(Object.is(f(...a), want(...a)), `${what} (${a}) at ${JSON.stringify(optimize)}`)
+    }
+  }
+  // What may trap stays: an invariant division in a loop that may run no round, beside a product
+  // that moves. What saves nothing stays too: a comparison of plain operands, which its branch
+  // tests where it stands; an address with its identity, `x + (0 << 2)`, which folds to `x`; the
+  // bits of a float, a view of its register.
+  const ast = parseWat(`(module (memory 1) (func $f (export "f") (param $n i32) (param $x i32) (param $y i32) (param $z f64) (result i32)
+    (local $i i32) (local $out i32)
+    (block $done (loop $loop
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      (local.set $out (i32.add (local.get $out) (i32.add (i32.div_s (local.get $x) (local.get $y)) (i32.mul (local.get $x) (local.get $y)))))
+      (if (i32.eq (local.get $x) (i32.const 7)) (then (local.set $out (i32.add (local.get $out) (i32.const 1)))))
+      (local.set $out (i32.add (local.get $out) (i32.load (i32.add (local.get $x) (i32.shl (i32.const 0) (i32.const 2))))))
+      (local.set $out (i32.xor (local.get $out) (i32.wrap_i64 (i64.reinterpret_f64 (local.get $z)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $out)))`), fn = findFunc(ast, '$f')
+  hoistInvariantLoop(fn, {}, true)
+  is(['i32.mul', 'i32.div_s', 'i32.eq', 'i32.shl', 'i64.reinterpret_f64'].map(op => loopCount(fn, n => n[0] === op)), [0, 1, 1, 1, 1],
+    'the product moves; the division, the test, the address and the bits stay')
+  const f = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+  is([f(0, 7, 0, 0), f(0, -2147483648, -1, 0), f(3, 7, 2, 0), f(2, 5, 1, 0)], [0, 0, 54, 20], 'a loop that runs no round divides by nothing')
+})
+
 test('LSR (watr): speed tier advances record and summed-index addresses as pointers', () => {
   if (onKernel()) return  // kernel bundles its own watr at build time: host-codegen assertion only
   // An address affine in the loop counter (a record at rows[i], `src[row + x + 1]`) becomes a
@@ -1763,6 +1808,63 @@ test('unrolled scalar scratch includes lowered temporaries without changing thei
   }
 })
 
+test('unrolled scalar scratch moves each invariant definition, as SSA would', () => {
+  if (onKernel()) return
+  // A def moves out of the loop where its value is invariant read at the versions before it,
+  // whatever the name's other defs are: an unrolled sum's invariant prefix (`s = 0; s = s +
+  // x * x`) moves and the def after a varying one stays. A name defined under a test or in an
+  // inner loop, or read after the loop, keeps every def where it is.
+  const S = '$ul0'
+  const get = n => `(local.get ${n})`, set = (n, v) => `(local.set ${n} ${v})`
+  const cases = [
+    ['invariant, then varying, then a read', 0, [set(S, `(i32.mul ${get('$x')} ${get('$x')})`), set(S, `(i32.add ${get(S)} ${get('$i')})`),
+      set('$out', `(i32.add ${get('$out')} ${get(S)})`)]],
+    ['a read between two defs', 1, [set(S, `(i32.mul ${get('$x')} ${get('$x')})`), set('$out', `(i32.add ${get('$out')} ${get(S)})`),
+      set(S, `(i32.mul ${get(S)} ${get('$i')})`), set('$out', `(i32.xor ${get('$out')} ${get(S)})`)]],
+    ['an invariant def after a varying one', 1, [set(S, `(i32.add ${get('$i')} (i32.const 7))`), set('$out', `(i32.add ${get('$out')} ${get(S)})`),
+      set(S, `(i32.mul ${get('$x')} ${get('$x')})`), set('$out', `(i32.add ${get('$out')} ${get(S)})`),
+      set(S, `(i32.add ${get(S)} ${get('$i')})`), set(S, `(i32.mul ${get(S)} ${get(S)})`), set('$out', `(i32.xor ${get('$out')} ${get(S)})`)]],
+    ['a def under a test', 1, [set(S, `(i32.mul ${get('$x')} ${get('$x')})`), `(if ${get('$i')} (then ${set(S, `(i32.add ${get(S)} (i32.const 1))`)}))`,
+      set('$out', `(i32.add ${get('$out')} ${get(S)})`)]],
+    ['a def in an inner loop', 1, [set(S, `(i32.mul ${get('$x')} ${get('$x')})`), set('$j', '(i32.const 0)'),
+      `(block $in (loop $inner (br_if $in (i32.ge_s ${get('$j')} ${get('$i')})) ${set(S, `(i32.add ${get(S)} ${get('$j')})`)} ${set('$j', `(i32.add ${get('$j')} (i32.const 1))`)} (br $inner)))`,
+      set('$out', `(i32.add ${get('$out')} ${get(S)})`)]],
+    ['a name read after the loop', 1, [set(S, `(i32.mul ${get('$x')} ${get('$x')})`), set('$out', `(i32.add ${get('$out')} ${get(S)})`)], get(S)],
+  ]
+  for (const [name, stays, body, afterLoop] of cases) {
+    const source = `(module (func $f (export "f") (param $n i32) (param $x i32) (result i32)
+      (local $i i32) (local $j i32) (local ${S} i32) (local $out i32)
+      (block $done (loop $loop
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        ${body.join('\n        ')}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+      ${afterLoop ? `(i32.add (local.get $out) ${afterLoop})` : '(local.get $out)'}))`
+    const ast = parseWat(source), fn = findFunc(ast, '$f')
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+    splitLoopPrivateScratch(fn)
+    is(loopCount(fn, n => n[0] === 'i32.mul'), stays, `${name}: ${stays} of its products stay in the loop`)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+    for (const [n, x] of [[0, 0], [0, 5], [1, 3], [4, -2], [5, 65537], [3, 1]])
+      is(after(n, x), before(n, x), `${name}: n=${n}, x=${x}`)
+  }
+  // The sum's `0 + x` moves with the add kept: x = -0 gives +0, as before.
+  const ast = parseWat(`(module (func $f (export "f") (param $n i32) (param $a f64) (result f64)
+    (local $i i32) (local ${S} f64) (local $out f64)
+    (local.set $out (f64.const 7))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      ${set(S, '(f64.const 0)')} ${set(S, `(f64.add ${get(S)} (f64.mul ${get('$a')} (f64.const 2)))`)} ${set('$out', get(S))}
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (local.get $out)))`), fn = findFunc(ast, '$f')
+  splitLoopPrivateScratch(fn)
+  is(loopCount(fn, n => n[0] === 'f64.add' || n[0] === 'f64.mul'), 0, 'the invariant sum leaves the loop')
+  is(count(fn, n => n[0] === 'f64.add'), 1, 'its add is kept')
+  const f = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+  for (const [n, a, want] of [[1, -0, 0], [2, -0, 0], [0, -0, 7], [1, -3, -6], [1, NaN, NaN]]) ok(Object.is(f(n, a), want), `0 + (${a} * 2) over ${n} rounds`)
+})
+
 test('fixed Float64Array locals scalar-replace static slots', () => {
   const src = `
     export const main = () => {
@@ -1904,10 +2006,12 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   // faster than the pack/extract SIMD form, beating rust-wasm. The reassociation (invariant
   // terms summed first) is ULP-level, so it is gated to speed; the level-2 path above keeps
   // the bit-exact f64x2 dot pairs.
+  // (The partials' local is a name of the split after it: the products the n-loop keeps are counted, 23 without the hoist.)
   const speedWat = compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
-  ok(/\$__rinv_/.test(speedWat), 'speed tier hoists loop-invariant dot partials into $__rinv locals')
+  const products = wat => loopCount(findFunc(parseWat(wat), '$main'), n => n[0] === 'f64.mul')
+  is(products(speedWat), 9, 'speed tier hoists loop-invariant dot partials out of the n-loop')
   // (a precision trade, not an engine feature: an engine without relaxed SIMD keeps it)
-  ok(/\$__rinv_/.test(compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false, relaxedSimd: false } })), 'relaxedSimd:false keeps the hoist')
+  is(products(compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false, relaxedSimd: false } })), 9, 'relaxedSimd:false keeps the hoist')
   ok(!/f64x2\./.test(speedWat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || speedWat), 'hoisted dots drop the f64x2 pack/extract')
   const speed = run(src, { optimize: 'speed' })
   almost(speed.main(0), refMain(0), 1e-9)
