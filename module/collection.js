@@ -1057,6 +1057,7 @@ export default (ctx) => {
     // a key of a known kind takes its form's hash and equality, the table its offset, as a method's probe does (tableProbe)
     const form = provenTable(m, s.map ? VAL.MAP : VAL.SET) ? keyForm(k) : ''
     const find = form ? `${base}_o${form}` : base
+    s.form = form
     inc(find)
     const recv = ['i64.reinterpret_f64', ['local.get', `$${s.recv}`]]
     return typed(['block', ['result', 'f64'],
@@ -1089,10 +1090,12 @@ export default (ctx) => {
   ctx.core.emit['__slot_val'] = (m, id) => { const s = slotOf(id); return typed(slotValue(m, s.key0, s), 'f64') }
   ctx.core.emit['__slot_put'] = (m, v, id) => {
     const s = slotOf(id), g = (n) => ['local.get', `$${n}`]
-    const put = s.map ? '__map_put_at' : '__set_put_at'
+    // (the insertion takes the forms its find took: the table's offset, the key's form)
+    const put = (s.map ? '__map_put_at' : '__set_put_at') + (s.form ? '_o' + s.form : '')
     inc(put)
+    const recv = s.form ? ['i32.wrap_i64', ['i64.reinterpret_f64', g(s.recv)]] : ['i64.reinterpret_f64', g(s.recv)]
     if (!s.map) return typed(['block', ['result', 'f64'],
-      ['if', ['i32.eqz', g(s.entry)], ['then', ['call', `$${put}`, ['i64.reinterpret_f64', g(s.recv)], g(s.key), g(s.b), g(s.h)]]],
+      ['if', ['i32.eqz', g(s.entry)], ['then', ['call', `$${put}`, recv, g(s.key), g(s.b), g(s.h)]]],
       ['f64.const', 0]], 'f64')
     const t = temp('cpv'), value = asF64(storedValue(v))
     // (the find that opened the slot saved its table for the reset: collection/ordered.js genOrdFind)
@@ -1100,7 +1103,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, value],
       ['if', ['i32.eqz', g(s.entry)],
-        ['then', ['call', `$${put}`, ['i64.reinterpret_f64', g(s.recv)], g(s.key), bits, g(s.b), g(s.h)]],
+        ['then', ['call', `$${put}`, recv, g(s.key), bits, g(s.b), g(s.h)]],
         ['else', ['i64.store', at, bits]]],
       g(t)], 'f64')
   }
@@ -1522,6 +1525,9 @@ export default (ctx) => {
       const findDeps = () => [...keyDeps(), '__ptr_offset_fwd', ...tblSnapDeps()]
       reg('__map_find', n => genOrdFind(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, '', form), findDeps)
       reg('__set_find', n => genOrdFind(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, '', form), findDeps)
+      // its insertion where the find missed, a full table's by this form's upsert
+      reg('__map_put_at', n => genOrdPutAt(n, MAP_ENTRY, true, '__map_set' + sfx, form), () => ['__map_set' + sfx, '__ptr_offset_fwd'])
+      reg('__set_put_at', n => genOrdPutAt(n, SET_ENTRY, false, '__set_add' + sfx, form), () => ['__set_add' + sfx, '__ptr_offset_fwd'])
     }
   }
   probeForms('', undefined)

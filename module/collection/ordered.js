@@ -411,19 +411,20 @@ export function genOrdFind(name, es, hashFn, eqExpr, prologue = '', form = null)
 
 /** The insertion a find that missed leaves for its statement: the entry
  *  appended, bucket `b` (empty since: nothing ran between) pointing at it; a
- *  full table takes the ordinary insertion, which grows it. */
-export function genOrdPutAt(name, es, hasVal, fallback) {
-  return `(func $${name} (param $coll i64) (param $key i64) ${hasVal ? '(param $val i64) ' : ''}(param $b i32) (param $h i32)
+ *  full table takes the ordinary insertion, which grows it, of the find's forms
+ *  (`form`, the table's offset and the key's form, as genOrdFind took them). */
+export function genOrdPutAt(name, es, hasVal, fallback, form = null) {
+  return `(func $${name} ${form ? formParams(form) : '(param $coll i64) (param $key i64)'} ${hasVal ? '(param $val i64) ' : ''}(param $b i32) (param $h i32)
     (local $off i32) (local $cap i32) (local $ecap i32) (local $ix i32) (local $used i32) (local $slot i32)
-    ${resolve('$coll')}
+    ${form ? formResolve(form) : resolve('$coll')}
     (local.set $ecap ${ordEntriesWat('(local.get $cap)')})
     (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)}))
     (if (i32.ge_u (local.get $used) (local.get $ecap))
-      (then (drop (call $${fallback} (local.get $coll) (local.get $key)${hasVal ? ' (local.get $val)' : ''})) (return)))
+      (then ${form ? '' : '(drop '}(call $${fallback} (local.get $${form ? 'o' : 'coll'}) (local.get $key)${hasVal ? ' (local.get $val)' : ''})${form ? '' : ')'} (return)))
     (local.set $ix (i32.add (local.get $off) (i32.mul (local.get $ecap) (i32.const ${es}))))
     (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (i32.const ${es}))))
     ${seqStore()}
-    ${keyStore}${hasVal ? `
+    ${keyStoreOf(form)}${hasVal ? `
     (i64.store offset=16 (local.get $slot) (local.get $val))` : ''}
     (i32.store (i32.add (local.get $ix) (i32.shl (local.get $b) (i32.const 2)))
       (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))

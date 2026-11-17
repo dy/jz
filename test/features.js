@@ -349,6 +349,7 @@ test('collection: a statement\'s find takes its key\'s form', () => {
   ok(/call \$__map_find_or\b/.test(wat) && /call \$__map_find_os\b/.test(wat) && /call \$__set_find_or\b/.test(wat), 'an object\'s, a string\'s and a Set\'s object\'s find by their forms')
   const ints = compile(`export let f = (n) => { const m = new Map(); let c = 0; for (let i = 0; i < n; i++) { const k = i * 7 % 13; if (!m.has(k)) { m.set(k, i); c++ } } return c + m.size }`, { wat: true, optimize: { level: 2, watr: false } })
   ok(/call \$__map_find_ob\b/.test(ints) && !/call \$__map_find\b/.test(ints), 'a number\'s find by the bits form')
+  ok(/call \$__map_put_at_ob\b/.test(ints) && !/call \$__map_put_at\b/.test(ints) && !/call \$__map_set\b/.test(ints), 'its insertion by the same form, a full table\'s by the bits form\'s upsert')
 })
 
 // The speed tier lays a Set's and a Map's table a quarter full (collection/ordered.js
