@@ -1953,7 +1953,7 @@ const ANCHORS = [
   { case: 'synth', target: 'as' },
 ]
 // Within 10%: same machine state, stored rival evidence still trustworthy.
-// Wider than the WASM_BAND_TOL (1.05) claims use for jz-vs-rival comparisons —
+// Wider than the WASM_BAND_TOL (1.08) claims use for jz-vs-rival comparisons —
 // this tolerance is for the SAME toolchain's output against itself run-to-run,
 // which should be tighter than a cross-toolchain claim band, but the anchors
 // intentionally run cold (no warm round, unlike --paired) so a little more

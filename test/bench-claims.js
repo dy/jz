@@ -13,10 +13,11 @@
  *   2. COMPLETE — every named rival (wasm, JIT, porf-native) contributes
  *                 parity-valid rows over ≥ COVERAGE_FLOOR of the corpus;
  *                 an absent or token lane is an uncontested (= unproven) claim.
- *   3. WINNING  — strict per-case leadership AND no case beyond the shared
- *                 jitter band, for BOTH promises: "fastest wasm" (CLAIM_RIVALS)
- *                 and "outruns the JIT" (JIT_RIVALS). Band rows are ties,
- *                 never leads; red rows void the claim outright.
+ *   3. WINNING  — no case beyond the tie band (bench/claims.mjs WASM_BAND_TOL),
+ *                 for BOTH promises: "fastest wasm" (CLAIM_RIVALS) and "outruns
+ *                 the JIT" (JIT_RIVALS). A row inside the band is a tie: it
+ *                 passes, is printed as a target and is never called a lead;
+ *                 red rows void the claim outright.
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
@@ -46,8 +47,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // V8-family engines (node's V8, Deno's V8) and bun/JSC (both JavaScriptCore) are
 // separate classes, so a lane's engine family, not its runtime name, decides which
 // claim it is held to. A case a class excepts by name (bench/claims.mjs
-// CLAIM_EXCEPTIONS: its measured cause and evidence) leaves that class's strict and
-// band tests and answers to its own band instead: a tripwire, not a claim.
+// CLAIM_EXCEPTIONS: its measured cause and evidence) leaves that class's band
+// test and answers to its own band instead: a tripwire, not a claim.
 // Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28:
 // the old ">=5 rows" floor let 5 successes from a 60-case corpus count as
 // "contested"). 0.7 is set from real corpus portability, not convenience: the
@@ -460,7 +461,7 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 //   over slots of number, object and string is the dynamic add in a loop that may
 //   allocate, so each element also pays the in-loop collector's heap and iterator
 //   tests, a forwarding check of the array's header, a bounds and a hole test.
-// Excluded from the strict and band tests, the Porffor floor and the corpus-coverage
+// Excluded from the band test, the Porffor floor and the corpus-coverage
 // test until the todo below flips; a case leaves this set the commit it leads.
 const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'stringify', 'jsontransform', 'mapstr', 'mapint', 'mapobj', 'setops', 'async',
   'jsonroundtrip', 'arraynumeric', 'arraydowngrade'])
@@ -535,23 +536,17 @@ const caseRatios = (rivals, ids = null, source = cases, base = 'jz') => {
   return out
 }
 
-// Separate from the band test below (audit: a ≤1.05 band row proves tolerance,
-// not leadership). Both gate the release, for every promise this file enforces
-// (fastest-wasm vs CLAIM_RIVALS; outruns-the-JIT vs the V8-family / bun-jsc
-// splits below).
-const strictTest = (label, rivals, ids = null, base = 'jz') => test(`claims: strict leadership — ${base} beats the best ${label} on every case`, () => {
-  const notLed = caseRatios(rivals, ids, cases, base).filter(([, r]) => r >= 1.0)
-    .map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
-  ok(notLed.length === 0, `strict ${label} leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
-})
-
-const bandTest = (label, rivals, ids = null, base = 'jz', tol = WASM_BAND_TOL) => test(`claims: no red cases — ${base} within the band of the best ${label} everywhere`, () => {
+// One test a class, for every promise this file enforces (fastest-wasm vs
+// CLAIM_RIVALS; outruns-the-JIT vs the V8-family / bun-jsc splits below): a case
+// past the band is red and fails; a case inside it is a tie, which passes and is
+// printed, since a tie is a target and never a lead.
+const bandTest = (label, rivals, ids = null, base = 'jz', tol = WASM_BAND_TOL) => test(`claims: no red cases — ${base} leads or ties (within ${tol}×) the best ${label} everywhere`, () => {
   const red = [], band = []
   for (const [id, r, who] of caseRatios(rivals, ids, cases, base)) {
     if (r > tol) red.push(`${id} ${r.toFixed(3)}× (${who})`)
     else if (r >= 1.0) band.push(`${id} ${r.toFixed(3)}× (${who})`)
   }
-  if (band.length) console.log(`  band (ties, not leads): ${band.join(', ')}`)
+  if (band.length) console.log(`  ties, to lead: ${band.join(', ')}`)
   ok(red.length === 0, `red cases void the ${label} claim: ${red.join(', ')}`)
 })
 
@@ -565,13 +560,12 @@ for (const [label, rivals] of CLAIM_CLASSES) {
   const name = NAMES[label] + (excepted.size ? ` (outside its named exceptions: ${[...excepted.keys()].join(', ')})` : '')
     + (unmet.size ? ` (unmet: ${[...unmet].join(', ')})` : '')
   const ids = new Set(Object.keys(cases).filter(id => !PENDING_CASES.has(id) && !excepted.has(id) && !unmet.has(id)))
-  strictTest(name, rivals, ids, baseOf(label))
   bandTest(name, rivals, ids, baseOf(label))
 }
 
 // What each class actually contests: the claimed cases where its jz lane and at least one
 // rival carry a timed, correct row. A class whose rivals vanish from a case leaves that
-// case out of its strict and band tests in silence; the count makes it seen and the floor
+// case out of its band test in silence; the count makes it seen and the floor
 // (bench/claims.mjs CONTESTED_FLOOR) makes it fail.
 const contested = (source = cases, pending = PENDING_CASES) => Object.fromEntries(CLAIM_CLASSES.map(([label, rivals]) => {
   const excepted = exceptionsOf(label), unmet = unmetOf(label)

@@ -12,8 +12,10 @@ export const FAST_RIVALS = ['c-wasm-fast']
 export const V8_FAMILY_RIVALS = ['v8', 'deno']
 export const JSC_FAMILY_RIVALS = ['bun', 'jsc']
 export const JIT_RIVALS = [...V8_FAMILY_RIVALS, ...JSC_FAMILY_RIVALS]
-/** A ratio inside the band is a tie, never a lead. */
-export const WASM_BAND_TOL = 1.05
+/** A ratio inside the band is a tie, never a lead: it passes the gate and is printed
+ *  as a target. 8% by the owner's ruling of 2026-11-17 ("5-8% can be said ties"),
+ *  5% before it. */
+export const WASM_BAND_TOL = 1.08
 
 /** The compiler's source: every input of what jz emits (test/bench-claims.js says why each
  *  is listed). Evidence is stale past a commit that changes one, and a held-out program's

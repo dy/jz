@@ -16,7 +16,9 @@ These are the product's promises. They are CI-gated (`test/bench.js`), not aspir
    (committed evidence).
    A case where another *wasm* target wins is a bug to fix, tracked as `todo` in the gate
    until jz takes the lead — never silently accepted (`vm`, whose same code leads or trails
-   by CPU, is the one named exception below).
+   by CPU, is the one named exception below). A case within 8% of the best rival is a
+   tie (`WASM_BAND_TOL` in `bench/claims.mjs`, the owner's ruling of 2026-11-17): it
+   passes the gate, which prints it as a target, and is never called a lead.
 2. **Faster than V8-family JITs, everywhere; faster than bun/JSC, almost everywhere.**
    jz beats V8-family engines (Node, Deno) on every case but those it does not lead yet:
    `watr`, the `jz` self-compile and four of the @audio/decode codecs (`decode-qoa`,
