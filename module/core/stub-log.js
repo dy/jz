@@ -50,8 +50,14 @@ export const SLACK = 2 << 20, MARGIN = 64 << 20
  *  still comes once per sixteen megabytes at most, not per two, so a large
  *  live set is not walked several times for each megabyte it frees. */
 export const PRESSURE_SLACK = 16 << 20
+/** JZ_DEBUG_COMPACT=1, read as the compiler loads: every chance to compact
+ *  takes it. The slack is a word, a loop's next walk waits for nothing past
+ *  the heap its move left (`__gc_thresh`), and the host walks at every
+ *  outermost return (interop.js `settle`): a pointer a compaction left stale
+ *  shows where, compacting rarely, it would hide. */
+export const DBG_COMPACT = typeof process !== 'undefined' && process.env?.JZ_DEBUG_COMPACT === '1'
 /** The slack a build asks for (`optimize.compactSlack`, bytes), SLACK unless set. */
-export const compactSlack = () => ctx.transform.optimize?.compactSlack ?? SLACK
+export const compactSlack = () => DBG_COMPACT ? 8 : ctx.transform.optimize?.compactSlack ?? SLACK
 export const declarePin = () => {
   if (ctx.scope.globals.has('__pin')) return
   declGlobal('__pin', 'i32', 0, { export: '__jz_pin' })

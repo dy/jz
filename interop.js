@@ -1341,13 +1341,16 @@ export const wrap = (src, state) => {
   // floor holds twice what the last walk reached (`__jz_g_cost`) and a page, or,
   // near the end of the address space, an eighth of that. The floor stands above
   // what the host allocated and what it was handed by address (`_pinAt`).
+  // JZ_DEBUG_COMPACT=1: at every outermost return, past anything above the floor
+  // (module/core/stub-log.js DBG_COMPACT, which the module's loops read as it compiles).
   const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20
+  const STRESS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_COMPACT === '1'
   const settle = (returned, held) => {
     if (!compact || mem.scalar) return
     if (held) { mem.pin = Math.max(mem.pin, mem.pinAt); mem.pinAt = 0; mem.pinSet?.(mem.pin) }
-    if (!returned || asyncMod || (mem.calls = (mem.calls + 1) & 15) !== 0) return
+    if (!returned || asyncMod || (mem.calls = (mem.calls + 1) & (STRESS ? 0 : 15)) !== 0) return
     const floor = Math.max(mem.base(), mem.pin), at = mem.top()
-    const since = at - floor, need = 2 * mem.live + COMPACT_MIN
+    const since = at - floor, need = STRESS ? 0 : 2 * mem.live + COMPACT_MIN
     if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem.live / 8 + COMPACT_MIN)) return
     // views handed out before the program's own allocation grew the memory are
     // detached: the walk's scratch may grow it again

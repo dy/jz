@@ -77,7 +77,7 @@ import { TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT, ARRAY_RAW } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
 import { ordEntriesWat, ordUsedAddrWat, ordStrideWat } from '../collection/ordered.js'
-import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, compactSlack, PRESSURE_SLACK, MARGIN } from './stub-log.js'
+import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, compactSlack, PRESSURE_SLACK, MARGIN, DBG_COMPACT } from './stub-log.js'
 export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
 import { valKindToPtr } from '../../src/ir/pointers.js'
 import { BIGINT_REP_RAW } from '../../src/compile/representation-plan.js'
@@ -349,6 +349,7 @@ export const registerCompact = () => {
   // fires past mark + cost/8 + slack: heap > min(mark + need, max(8·room, mark + low)).
   ctx.core.stdlib['__gc_thresh'] = `(func $__gc_thresh (param $mark i32) (param $cost i32) (param $cap1 i32) (result i32)
     (local $need i64) (local $low i64) (local $m i64) (local $room i64) (local $p i64) (local $t i64) (local $above i64) (local $r i64)
+    ${DBG_COMPACT ? ';; JZ_DEBUG_COMPACT: the next round that allocates walks\n    (return (global.get $__heap))' : ''}
     (local.set $m (i64.extend_i32_u (local.get $mark)))
     ${has('__park_base') ? `;; a parked lane caps the heap where it starts
     (if (global.get $__park_base) (then (local.set $cap1 (i32.sub (global.get $__park_base) (i32.const 9)))))` : ''}
