@@ -588,6 +588,25 @@ export function every(node, pred, opts) {
   return everyNode(node, pred, opts?.boundary ?? (opts?.skipArrow !== false ? isArrowNode : null))
 }
 
+// The operators that evaluate their first operand alone on some path: an arm,
+// a right side that may not run, an optional chain's rest.
+const FIRST_ALONE = new Set(['if', '?:', '?', '&&', '||', '??', '?.', '?.()', '?.[]', 'while', '&&=', '||=', '??='])
+// Nothing in these runs on every path through the statement that holds them,
+// or what runs there leaves the statement's list: a closure, a statement that
+// leaves, a `do` (a `break` in its body completes it), a `try`, a label.
+const NO_PATH = new Set(['str', '=>', 'return', 'throw', 'break', 'continue', 'do', 'catch', 'finally', 'label'])
+/** Whether `pred` holds of a node that every run of `n` evaluates, unless it
+ *  leaves the list that holds `n` first: the operands an operator always
+ *  evaluates, a `for`'s head and test, never an arm, a loop body or a closure. */
+export function onEveryPath(n, pred) {
+  if (!Array.isArray(n) || n[0] == null || NO_PATH.has(n[0])) return false
+  if (pred(n)) return true
+  if (FIRST_ALONE.has(n[0])) return onEveryPath(n[1], pred)
+  if (n[0] === 'for') return onEveryPath(n[1], pred) || onEveryPath(n[2], pred)
+  for (let i = 1; i < n.length; i++) if (onEveryPath(n[i], pred)) return true
+  return false
+}
+
 /** Options for {@link refsName} / {@link refsAny}. */
 // skipArrow (default true): stop at `=>` boundaries — matches `some()`.
 // skipStr: don't descend into `str` literal nodes.

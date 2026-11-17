@@ -15,7 +15,7 @@ import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, onEveryPath, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1384,19 +1384,15 @@ function nestedWritesOf(node, loopWrites) {
  *  Also drives early-return refinement: `if (!guard) return/throw` narrows `guard` for the
  *  rest of the enclosing block. Refinements added here are rolled back on block exit. */
 // The names a statement reads an element or a field of, or stores an element
-// into, on every path through it, the stored ones marked: the operands an operator
-// always evaluates, never an arm, a right side that may not run, a loop body
-// or a closure. A statement that leaves hands nothing to what follows it.
-const elementUses = (n, out) => {
-  if (!Array.isArray(n)) return out
-  const op = n[0]
-  if (op == null || op === 'str' || op === '=>' || op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return out
-  if (op === 'if' || op === '?:' || op === '?' || op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.()' || op === '?.[]' || op === 'while') return elementUses(n[1], out)
-  if (op === 'for') { elementUses(n[1], out); return elementUses(n[2], out) }
-  if (op === 'catch' || op === 'finally' || op === 'label') return out
-  if ((op === '[]' && n.length === 3 || op === '.' && typeof n[2] === 'string') && typeof n[1] === 'string' && !out.has(n[1])) out.set(n[1], false)
-  if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') out.set(n[1][1], true)
-  for (let i = 1; i < n.length; i++) elementUses(n[i], out)
+// into, on every path through it (ast.js onEveryPath), the stored ones marked.
+// A statement that leaves hands nothing to what follows it.
+const elementUses = (s, out) => {
+  onEveryPath(s, n => {
+    const op = n[0]
+    if ((op === '[]' && n.length === 3 || op === '.' && typeof n[2] === 'string') && typeof n[1] === 'string' && !out.has(n[1])) out.set(n[1], false)
+    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') out.set(n[1][1], true)
+    return false
+  })
   return out
 }
 
@@ -1572,6 +1568,15 @@ export function emitBlockBody(node) {
       // statement's shape did not prove. Neither form can reach the next
       // statement, whose reads and type checks must remain unevaluated.
       if (isTerminator(s) || isTerminator(out[out.length - 1])) break
+      // A statement that reads through a receiver the summary holds only
+      // missing, on every path through it, throws there: nothing after it runs
+      // (summary/index.js missingReads), and what the rest declares, which no
+      // value reaches, has no kind to compile by. The trap stands for what is
+      // dropped; a list it ends anyway needs none.
+      if (ctx.summary?.alwaysThrows?.(s)) {
+        if (stmts.slice(i + 1).some(t => t != null && typeof t !== 'number')) out.push(['unreachable'])
+        break
+      }
       // Position-sensitive invalidation FIRST, re-record SECOND: stmts[i]'s
       // own top-level target (if any) is the authoritative post-statement
       // state and must win over a same-statement nested self-write (e.g. a

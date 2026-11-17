@@ -1053,5 +1053,7 @@ export function summaryQueries(facts, internal = false) {
     },
     /** The truth an `if` or `?:` test has on every run, or null. */
     decisionOf: n => facts.decisions?.get(n) ?? null,
+    /** The statement reads through a receiver held only missing on every path through it: it always throws (index.js missingReads). */
+    alwaysThrows: n => facts.throws?.has(n) === true,
   }
 }

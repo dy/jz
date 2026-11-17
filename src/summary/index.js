@@ -61,7 +61,7 @@
 import { SPAN_BINARY, spanBinary } from './span.js'
 import { NR_NONE, nrPoint, nrInts, nrReals, nrValue, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
 import { powRuntime } from '../prepare/math-kernel.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP, nodeEqual, hasOwnContinue } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, onEveryPath, STATIC_BASE, T as SEP, nodeEqual, hasOwnContinue } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -853,6 +853,33 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // length (a counter's span), by node: the query has no loop in view and
   // reads them present through this set.
   const presentReads = new Set()
+  // A read of an element or a member through a receiver the walk holds only
+  // undefined or null throws, and so does a statement that makes one on every
+  // path through it (ast.js onEveryPath): what follows it in its list never
+  // runs, and the emitter drops it (emit/dispatch.js emitBlockBody). It stands
+  // on the receiver held only missing, never on a receiver of no kind, which is
+  // code no value has reached yet. The walk goes on past such a statement: a
+  // receiver an early round holds only missing may hold more once the kinds
+  // settle, and a list cut there would reach what follows a round late, so
+  // the solve would take more rounds (decode-tta took 41 for 36), for kinds of
+  // code no value reaches. A read is stamped by the count of such reads at its walk. A
+  // statement throws where every walk of the last round found it throwing: its
+  // record is the round, doubled, plus one while each walk of that round threw.
+  // A function is walked once a round, and again for each init context, the
+  // plain walk first: a walk under a context that finds a statement throwing
+  // for the first time cannot know what the walks before it in the round found,
+  // so it asks for another round, in which every walk of it is on record.
+  const missingReads = new Map()   // read node → the stamp of its last walk through a receiver held only missing
+  let missingCount = 0, missingFrom = 0
+  const throwing = new Map()        // statement node → 2·round + whether every walk of that round threw
+  const noteMissing = (n, recv, cop) => { if (cop !== '?.' && (recv & TAGS) !== 0 && (recv & TAGS & ~NULL_BITS) === 0) missingReads.set(n, ++missingCount) }
+  const missingSince = (n) => (missingReads.get(n) ?? 0) > missingFrom
+  const noteThrowing = (st, throws) => {
+    const at = throwing.get(st)
+    if (at === undefined) { if (throws) { throwing.set(st, 2 * numRound + 1); if (activeCtx !== null) changed = true } }
+    else if (at >> 1 !== numRound) throwing.set(st, 2 * numRound + (throws ? 1 : 0))
+    else if (!throws && (at & 1)) throwing.set(st, at - 1)
+  }
   // Spread storage depends on the source at this occurrence, including guards.
   // Emit must use the same facts instead of re-reading a whole-function binding.
   const spreadSources = new Map()
@@ -3896,6 +3923,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return optionalResult(cop, r, k)
       }
       const recv = receiver(n[1])
+      if (typeof prop === 'string') noteMissing(n, recv, cop)
       if (cop === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
       if (typeof prop !== 'string') { expr(prop); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
       const outerMember = memberNode; memberNode = n
@@ -3916,6 +3944,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return optionalResult(chainOp(op, n[1]), recv, k)
       }
       const recv = receiver(n[1]), cop = chainOp(op, n[1])
+      if (n.length === 3) noteMissing(n, recv, cop)
       return optionalResult(cop, recv, (() => {
       const idx = n[2], t = tagOf(recv)
       if (literalKeyOf(idx) !== null) return member(cop === '?.' ? '?.' : '.', recv, literalKeyOf(idx))
@@ -5051,10 +5080,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // what follows it never runs, so none of its values reach anything.
       const mark = rtop
       for (let i = 1; i < n.length; i++) {
+        const from = missingCount
         noteDefinite(n, i); stmt(n[i])
         const st = n[i]
         if (i > 1 && Array.isArray(st) && st[0] === 'for') coveringLoop(n[i - 1], st)
         if (exits(st)) break
+        // (one that reads through a receiver held only missing on every path through it throws: missingReads)
+        let throws = false
+        if (missingCount !== from) { missingFrom = from; throws = onEveryPath(st, missingSince) }
+        if (throws || throwing.size) noteThrowing(st, throws)
         if (Array.isArray(st) && st[0] === 'if' && st[3] == null && exits(st[2])) proves(st[1], false)
       }
       unwind(mark)
@@ -5653,6 +5687,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     held,
     boolKeys, storeBits, paramKeys, fnAssigned,
     contracts: null,   // the result contracts, built at the freeze below
+    throws: null,      // the statements every walk of the last round found throwing (missingReads), at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
   const kindOfExpr = n => queries.at(current ?? MODULE).kindOfExpr(n)
@@ -6353,7 +6388,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
+    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
@@ -6367,6 +6402,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // Publish settled hull records, not a closure over the solver and mutable
   // function inputs. No later round writes these buffers; queries borrow them.
   for (const f of funcs) if (openCaller(f.name, f)) argRanges.delete(f.name)
+  if (throwing.size) { const throws = new Set(); for (const [st, at] of throwing) if (at === 2 * numRound + 1) throws.add(st); queryFacts.throws = throws }
   // The result contracts (contract.js), from the settled results. A return
   // whose own kind names BigInt among a bounded set, through its joins and its
   // calls to such callables, is a BigInt member the join to ANY erased

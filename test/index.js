@@ -115,6 +115,7 @@ const TESTS = [
   'super-order',
   'definite-init',
   'missing-read',
+  'throwing-read',
   'number-or-missing',
   'typed-fill',
   'typed-copy',
