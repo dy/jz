@@ -218,6 +218,19 @@ export let f = (k) => gd(o, k) === undefined ? 1 : 0`]
   }
 })
 
+test('std: a function\'s prototype read in a program that writes no object', () => {
+  // (the getter's value is an empty object literal of its own, module/core.js `.closure:prototype`:
+  // with no other object in the program it compiled to "Unknown op: {}")
+  const srcs = [`function g() { return 1 }
+export let f = (k) => g.prototype ? k : 0`, `function g() { return 1 }
+export let f = (k) => { const p = g.prototype; return p === undefined ? 0 : k }`, `function g() { return 1 }
+export let f = (k) => (k ? g : null)?.prototype ? 1 : 0`]
+  for (const src of srcs) for (const optimize of levels(false, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (const k of [2, 0]) is(got.f(k), want.f(k), `${src.split('\n')[1]}, f(${k}) at ${optimize}`)
+  }
+})
+
 test('std: an error of each class made in a program that uses no string', () => {
   // (the object holds its class's name, a string the string module emits: every class but
   // Error compiled to "Unknown op: str" where nothing else loaded that module)

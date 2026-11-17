@@ -2922,8 +2922,12 @@ export default (ctx) => {
   }
   // Lowered classes have instance methods, so their prototype reflection is
   // empty. Register the getter once for direct and null-checked receiver reads.
-  registerGetter('.closure:prototype', obj => typed(['block', ['result', 'f64'],
-    ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64'))
+  registerGetter('.closure:prototype', obj => {
+    // the empty object is the getter's own literal: a program that writes no
+    // object has no object module to emit it
+    ctx.module.include('object')
+    return typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64')
+  })
 
   // The read an accessor's probe falls back to: no accessor dispatch, a class's
   // method still read as one (a receiver of no class with the getter may be
