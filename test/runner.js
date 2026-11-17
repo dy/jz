@@ -92,20 +92,20 @@ test('runner: grep and only select across the complete file list', () => {
   }
 })
 
-test('runner: costs charge a file its import and its own tests, a run that skips a test none', () => {
+test('runner: costs charge a file its import and its own tests, skipped ones counted; a grep is refused', () => {
   const spin = `{ const end = process.cpuUsage().user + 300_000; while (process.cpuUsage().user < end); }`
   const sources = [
-    `${spin}\ntest('a1', ({ is }) => is(1, 1))\ntest('a2', ({ is }) => { is(1, 1); is(2, 2) })`,
+    `${spin}\ntest('a1', ({ is }) => is(1, 1))\ntest.skip('a skipped', () => { throw Error('must not run') })\ntest('a2', ({ is }) => { is(1, 1); is(2, 2) })`,
     '',
-    `test('c1', ({ ok }) => { ${spin}; ok(true) })`,
+    `test.todo('c planned')\ntest('c1', ({ ok }) => { ${spin}; ok(true) })`,
   ]
   const r = fixture(sources, {}, { costs: true }), costs = JSON.parse(r.output.match(/^costs=(.*)$/m)?.[1] ?? 'null')
   is(r.status, 0, r.output)
-  is(costs?.map(([, tests, assertions]) => [tests, assertions]), [[2, 3], [0, 0], [1, 1]], 'tests and assertions by file, a file with none included')
+  is(costs?.map(([, tests, assertions]) => [tests, assertions]), [[3, 3], [0, 0], [2, 1]], 'tests (a skip and a todo among them) and assertions by file, a file with none included')
   ok(costs[0][0] >= 0.3 && costs[2][0] >= 0.3, 'the busy import and the busy test go to their own files')
   ok(costs[1][0] < 0.1, 'a file that does nothing costs nothing')
   const grep = fixture(sources, { TST_GREP: '^a1$' }, { costs: true })
-  ok(grep.status !== 0 && grep.output.includes('did not run'), grep.output)
+  ok(grep.status !== 0 && grep.output.includes('1 of 3 tests ran'), grep.output)
 })
 
 test('runner: completed tests release unreachable Wasm memories', () => {

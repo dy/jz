@@ -2,22 +2,33 @@ import test, { formats } from 'tst'
 import { collect } from './_gc.js'
 
 const cpu = () => { const { user, system } = process.cpuUsage(); return (user + system) / 1e6 }
-// The tests registered so far: a run whose grep matches no name runs none and counts each skipped.
-const registered = async () => (await test.run({ grep: /(?!)/, mute: true, parallel: false, format: { summary() {} } })).skipped
+// The tests registered so far, and how many of them will run: a run whose grep matches no
+// name counts every test skipped; one whose reporter stops it as the first test starts
+// has by then reported each skip and todo.
+const stop = new Error('the probe ends before a test runs')
+async function registered() {
+  const all = (await test.run({ grep: /(?!)/, mute: true, parallel: false, format: { summary() {} } })).skipped
+  let skipped = 0
+  await test.run({ grep: null, mute: false, parallel: false, format: { testSkip() { skipped++ }, testStart() { throw stop }, summary() {} } })
+    .catch(e => { if (e !== stop) throw e })
+  return [all, all - skipped]
+}
 
 // With `costs`, the result also holds each file's [CPU seconds, tests, assertions]: its
 // import, then its tests from the end of the previous file's last test to the end of its
 // own, collection included. tst runs the tests in the order the files register them, so
-// a test is its file's by its place; a run that skips any test cannot be read that way.
+// a test that runs is its file's by its place among those that run; a grep or an only
+// changes which run after the files are counted, and such a run cannot be read that way.
 export async function runFiles(files, { costs = false } = {}) {
   // Loading a slow file must not let tst start with only a partial test list.
   test.manual = true
-  const spent = [], ends = [], assertions = files.map(() => 0)
+  const spent = [], counts = [], ends = [], assertions = files.map(() => 0)
   let last = cpu(), done = 0, at = 0
   for (const file of files) {
     await import(file)
     if (!costs) continue
-    ends.push(await registered())
+    const [all, runs] = await registered()
+    counts.push(all); ends.push(runs)
     spent.push(cpu() - last)
     last = cpu()
   }
@@ -53,7 +64,7 @@ export async function runFiles(files, { costs = false } = {}) {
     testFail: completed(failed(base.testFail)),
   } })
   collect(true)
-  if (costs && done !== (ends.at(-1) ?? 0)) throw new Error(`costs: ${(ends.at(-1) ?? 0) - done} registered tests did not run (a grep, only, skip, todo or bail), so a test's place no longer names its file`)
-  if (costs) result.costs = files.map((_, i) => [spent[i], ends[i] - (ends[i - 1] ?? 0), assertions[i]])
+  if (costs && done !== (ends.at(-1) ?? 0)) throw new Error(`costs: ${done} of ${ends.at(-1) ?? 0} tests ran (a grep, an only or a bail), so a test's place no longer names its file`)
+  if (costs) result.costs = files.map((_, i) => [spent[i], counts[i] - (counts[i - 1] ?? 0), assertions[i]])
   return result
 }
