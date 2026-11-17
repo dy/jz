@@ -538,7 +538,7 @@
   "rec/spread/renew/2": {"calls":3,"ops":10},
   "rec/spread/renew/speed": {"calls":2,"ops":76},
   "rec/spreadOpen/step/2": {"simd":"lost","calls":20,"ops":423},
-  "rec/spreadOpen/step/speed": {"simd":"lost","calls":19,"ops":423},
+  "rec/spreadOpen/step/speed": {"simd":"lost","calls":65,"ops":1464},
   "rec/spreadOpen/advance/2": {"simd":"lost","calls":17,"ops":572},
   "rec/spreadOpen/advance/speed": {"simd":"lost","calls":22,"ops":676},
   "rec/spreadOpen/renew/2": {"simd":"lost","calls":93,"ops":1691},
