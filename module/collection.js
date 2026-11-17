@@ -2219,7 +2219,9 @@ export default (ctx) => {
             ${ctx.types.anyDelete ? `(local.set $dmask ${deletedMaskWat('$off')})
             (local.set $oldval (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
             (local.set $reinsert ${deletedSlotWat('$dmask', '$idx', '$oldval')})` : ''}
-            ${durableObjSnapIR('off', 'val', 'idx')}${ctx.types.anyDelete ? durableMaskSnapIR('off') : ''}
+            ${durableObjSnapIR('off', 'val', 'idx')}${ctx.types.anyDelete && hasDurableReset() ? `
+            ;; the mask changes where the store gives a deleted field back: saved then
+            (if (local.get $reinsert) (then ${durableMaskSnapIR('off')}))` : ''}
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
             ${markDeletedSlotWat('$off', '$idx', false)}
             ${ctx.types.anyDelete ? `(if (i32.eqz (local.get $reinsert)) (then (return (local.get $val))))
