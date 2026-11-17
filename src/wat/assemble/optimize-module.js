@@ -189,7 +189,10 @@ export const MODULE = [
   }],
   ['loopCompacts', (sec, cfg, facts, ms) => {
     if (ctx.plans.compactLoopLabels) ms.t('loopCompacts', () => {
-      if (insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels, facts)) ctx.plans.hasCompactLoops = true
+      // each site's window, the slack to begin with (optimize/loop-compact.js)
+      const windows = insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels, facts)
+      for (const name of windows) declGlobal(name, 'i32', facts.compactSlack)
+      if (windows.length) ctx.plans.hasCompactLoops = true
       ctx.plans.compactLoopLabels = null
     })
   }],

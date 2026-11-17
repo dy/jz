@@ -366,6 +366,25 @@ console.log(JSON.stringify({
   ok(cRuns >= 100, `the carried string is still walked as it churns (${cRuns} times)`)
 })
 
+// A loop entered again goes on at the window its last walk computed (a global
+// of its site, optimize/loop-compact.js), not at the slack: a builder entered
+// eight times by a loop of the program took its first walk at every entry
+// that passed the slack, and backed off from it again (11 walks of 7.75 million
+// words); now 5 of 6.03 million. A process of its own (`JZ_DEBUG_GC=1`).
+test('compact: a builder entered again walks at the pace its last walk set', () => {
+  if (onWasi() || onKernel() || !counted() || stressed()) return
+  const src = `const keep = []
+    const fill = (n) => { for (let i = 0; i < n; i++) keep.push({ x: i, y: [i, i + 1] }) }
+    export const f = (n, k) => { for (let j = 0; j < k; j++) fill(n); return keep.length + keep[keep.length - 1].y[1] }`
+  const script = `import jz from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+const { exports, instance } = jz(${JSON.stringify(src)})
+console.log(JSON.stringify([exports.f(40000, 8), instance.exports.__g_runs.value]))`
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, JZ_DEBUG_GC: '1' }, encoding: 'utf8' })
+  const [r, runs] = JSON.parse(out.trim().split('\n').pop())
+  is(r, oracle(src).f(40000, 8), 'the builder answers')
+  ok(runs <= 6, `eight entries of the builder walk ${runs} times`)
+})
+
 // A loop's walk empties nothing a frame around it reads: the log of what its
 // escapes wrote into names addresses the move changed, and reads full after it,
 // so the frame keeps all (module/core/compact.js `__gc_move`). Emptied, it read

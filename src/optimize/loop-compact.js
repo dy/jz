@@ -47,8 +47,9 @@
  *
  * Placed like the per-iteration rewind: after the lane vectorizer and the
  * loop passes, the loop found in its own function by its label. The marker
- * locals (`$<mark>lrcN`, `$<mark>lrcNth`) carry the mark and the threshold;
- * link treats the kernels as the protocol's own
+ * locals (`$<mark>lrcN`, `$<mark>lrcNth`) carry the mark and the threshold,
+ * and a global of the site (`$__g_winN`) the window its last walk computed,
+ * which its next entry takes up; link treats the kernels as the protocol's own
  * (optimize/arena-rewind.js). A caller's local across a spliced site names
  * memory below the floor, and reaches above it only through a logged stub.
 
@@ -114,13 +115,15 @@ const NONE = new Set()
  * @param owners Map of function name (`$name`) → { labels: Set of loop labels, raw: [[`$local`, tag, aux]…] }
  * @param facts  the memory (shared, its maximum in pages), the module's globals, the loops that
  *               allocate nothing as optimized (quietOptimizedLoops) and the build's slack in bytes
- * @returns whether a compaction went in
+ * @returns the names of the sites' window globals (i32, the slack to begin with), none where no
+ *          compaction went in
  */
 export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, quietLoops, compactSlack }) {
-  if (!owners?.size || shared || !globals.has('__heap')) return false
+  const windows = []
+  if (!owners?.size || shared || !globals.has('__heap')) return windows
   // the memory's cap in bytes, as an i32: its declared maximum, else the address space
   const cap = (memoryMax > 0 && memoryMax < 65536 ? memoryMax * 65536 : 2 ** 32) | 0
-  let id = 0, compacted = false
+  let id = 0
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
     const own = owners.get(fn[1])
@@ -172,7 +175,7 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
     // `__gc_end` on the window it has; declined, the threshold passes every
     // address, so the end that follows does not ask again on a window the
     // decline made.
-    const compaction = (mark, thresh, read, leaves, ends) => {
+    const compaction = (mark, thresh, win, read, leaves, ends) => {
       const marks = [], fwds = []
       const derived = new Set()
       for (const n of read) for (const s of sources.get(n) ?? []) if (f64Set.has(s)) derived.add(s)
@@ -206,7 +209,8 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
       }
       return ['if', ['call', '$__gc_begin', floor],
         ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
-          ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1], ['local.get', thresh]]]],
+          ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1], ['local.get', thresh]]],
+          ['global.set', win, ['i32.sub', ['local.get', thresh], ['local.get', mark]]]],
         ['else', ['local.set', thresh, next]]]
     }
     const locals = [], done = new Set()
@@ -241,6 +245,8 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && own.labels.has(written(n[2][1])) ? n[2] : null
         if (loopNode !== null && !done.has(loopNode) && !quietLoops?.has(loopNode)) {
           done.add(loopNode)
+          const win = `$__g_win${id}`
+          windows.push(win.slice(1))
           const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`, out = `$${MARK}lrc${id}out`, again = `$${MARK}lrc${id}again`, exit = `$${MARK}lrc${id}exit`, ended = `$${MARK}lrc${id}end`, endBlock = `$${MARK}lrc${id}ends`
           id++
           locals.push(['local', mark, 'i32'], ['local', thresh, 'i32'])
@@ -280,7 +286,7 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
           }
           const leaves = leavingTest(loopNode)
           loopNode.splice(2, 0, ['br_if', out, ['i32.gt_u', ['global.get', '$__heap'], ['local.get', thresh]]])
-          const walk = compaction(mark, thresh, top, leaves, ends)
+          const walk = compaction(mark, thresh, win, top, leaves, ends)
           const around = ends
             ? ['block', exit, ['loop', again,
               ['block', out, ['block', endBlock, loopNode, ['br', exit]], ['local.set', ended, ['i32.const', 1]]],
@@ -290,13 +296,19 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
             : ['block', exit, ['loop', again, ['block', out, loopNode, ['br', exit]], walk, ['br', again]]]
           if (n === loopNode) list[i] = around
           else n.splice(n.indexOf(loopNode), 1, around)
-          // The entry: the mark, and the threshold a slack past it, which is
-          // what the kernel's rule gives before a walk (the pressure rule's
-          // own floor is the same; a wrapped sum only asks a compaction early,
-          // which sets the threshold properly). Nothing else: a store to a
-          // global here cost a parser five percent.
+          // The entry: the mark, and the threshold the site's window past it:
+          // the slack before the site's first walk, which is what the kernel's
+          // rule gives before a walk (the pressure rule's own floor is the same),
+          // then the window its last walk computed (`$__g_win`, a global the
+          // site writes as it walks: the compaction's own state, which no frame
+          // around the loop takes for a value it keeps, optimize/arena-rewind.js
+          // GC_STATE), so a loop entered again goes on at the pace it had and
+          // does not take its first walk again (`__gc_thresh`, a yield of 1 for
+          // a threshold still a slack past the mark). A wrapped sum only asks a
+          // compaction early, which sets the threshold properly. No store here:
+          // a store to a global at the entry cost a parser five percent.
           const entry = [['local.set', mark, ['global.get', '$__heap']],
-            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack]]]]
+            ['local.set', thresh, ['i32.add', ['local.get', mark], ['global.get', win]]]]
           if (ends) entry.push(['local.set', ended, ['i32.const', 0]])
           list.splice(i, 0, ...entry)
           // past them, at the loop: the walk goes on with the statement after it (a second loop)
@@ -307,8 +319,7 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
     }
     visit(fn, 1)
     if (!locals.length) continue
-    compacted = true
     fn.splice(body, 0, ...locals)
   }
-  return compacted
+  return windows
 }
