@@ -208,3 +208,15 @@ export let f = (i) => Object.getOwnPropertyDescriptor(o, 'k' + i) ? 1 : 0`
     for (const i of [2, 3]) is(got.f(i), want.f(i), `a computed key, f(${i}) at ${optimize}`)
   }
 })
+
+test('std: an error of each class made in a program that uses no string', () => {
+  // (the object holds its class's name, a string the string module emits: every class but
+  // Error compiled to "Unknown op: str" where nothing else loaded that module)
+  for (const cls of ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'EvalError']) {
+    const src = `export let f = (x) => { try { if (x > 1) throw new ${cls}(); return 0 } catch (e) { return e instanceof ${cls} ? 1 : 2 } }`
+    for (const optimize of levels(false, true, 'size', 'speed')) {
+      const got = jz(src, { optimize }).exports, want = oracle(src)
+      for (const x of [2, 0]) is(got.f(x), want.f(x), `${cls}, f(${x}) at ${optimize}`)
+    }
+  }
+})

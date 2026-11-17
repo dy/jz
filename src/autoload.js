@@ -159,7 +159,9 @@ const CALL_MODULES = dict({
   Boolean: ['number'],
   TextEncoder: ['core', 'string'],
   TextDecoder: ['core', 'string'],
-  Error: ['core', 'string'],
+  // (an error object holds its class's name, a string, whatever the program's own strings)
+  Error: ['core', 'string'], TypeError: ['core', 'string'], RangeError: ['core', 'string'], SyntaxError: ['core', 'string'],
+  ReferenceError: ['core', 'string'], URIError: ['core', 'string'], EvalError: ['core', 'string'],
   BigInt: ['number'],
   'console.log': ['core', 'string', 'number', 'console'],
   'console.warn': ['core', 'string', 'number', 'console'],
