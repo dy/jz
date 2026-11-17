@@ -188,3 +188,23 @@ test('reflection: held class prototypes share guarded property reads and evaluat
     for (const mode of [0,0,2,0]) is(got.ordinary(mode), want.ordinary(mode), 'ordinary function receiver effects and error recovery')
   }
 })
+
+test('std: a descriptor tested in a program that uses no array', () => {
+  // (the lowering reads the key as `o[k]`, an operator of the array module, which the call's
+  // modules now name, src/autoload.js CALL_MODULES: `typeof d`, `d === undefined`, `d ? … : …`
+  // and `!d` compiled to "Unknown op: []")
+  // (each program reads nothing of the descriptor but whether there is one: a read of
+  // `d.value` asks for modules of its own)
+  const tests = `const o = { a: 1, u: undefined }
+export let f = (k) => { const d = Object.getOwnPropertyDescriptor(o, k); return (typeof d) + '|' + (d === undefined) + '|' + (d ? 1 : 0) + '|' + (!d) }`
+  const computed = `const o = { k2: 5 }
+export let f = (i) => Object.getOwnPropertyDescriptor(o, 'k' + i) ? 1 : 0`
+  for (const optimize of levels(false, true, 'size', 'speed')) {
+    let got = jz(tests, { optimize }).exports, want = oracle(tests)
+    for (const k of ['a', 'zz']) is(got.f(k), want.f(k), `present and absent keys, f('${k}') at ${optimize}`)
+    // README "Data descriptors only": a property whose value is undefined is reported as absent
+    is(got.f('u'), 'undefined|true|0|true', `an undefined-valued key at ${optimize}`)
+    got = jz(computed, { optimize }).exports, want = oracle(computed)
+    for (const i of [2, 3]) is(got.f(i), want.f(i), `a computed key, f(${i}) at ${optimize}`)
+  }
+})

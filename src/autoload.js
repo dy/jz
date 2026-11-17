@@ -172,6 +172,8 @@ const CALL_MODULES = dict({
   'Object.values': ['core', 'object', 'string'],
   'Object.entries': ['core', 'object', 'string'],
   'Object.hasOwn': ['core', 'object', 'string', 'collection'],
+  // (the lowering reads the key as `o[k]`, the array module's operator: the modules a source `o[k]` asks for, includeForArrayAccess)
+  'Object.getOwnPropertyDescriptor': ['core', 'object', 'array', 'collection'],
   'Object.groupBy': ['core', 'collection', 'object', 'string', 'array', 'fn'],
   'Map.groupBy': ['core', 'collection', 'array', 'fn'],
   'RegExp.escape': ['core', 'string', 'regex'],
