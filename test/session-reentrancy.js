@@ -530,3 +530,54 @@ test('session: a compile that runs no inliner keeps no function record of the co
   is(await recordsLeftBy(GROWS, MINIMAL, { optimize: { level: 2, sourceInline: false } }), 0, 'none after a compile with inlining off')
   is(await recordsLeftBy(GROWS, MINIMAL, { optimize: false }), 0, 'none after a compile at the level off')
 })
+
+// A kernel a caller splices, whose bytes read what the inliner holds while it splices into a
+// closure (plan/inline.js inClosure), and a closure it splices into.
+const KERNEL = `const sumTo = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }
+const h = (n) => { const r = sumTo(n); return r * 3 }
+export let f = (n) => h(n) + h(n + 1)`
+const CLOSURE = `const sq = (x) => x * x
+export let make = (k) => (y) => sq(y) + k`
+// (on every leg: the level the inliner runs at)
+const AT = { optimize: 2 }
+// Compile `src` with the summary's view of a closure throwing when the inliner, splicing
+// into that closure, asks it anything: no program is known to throw there, so the throw is put in.
+const throwInClosureSplice = (src) => {
+  const own = Object.getOwnPropertyDescriptor(ctx, 'summary')
+  let held = own.value
+  const inSplice = () => {
+    const limit = Error.stackTraceLimit
+    Error.stackTraceLimit = Infinity
+    const stack = new Error().stack
+    Error.stackTraceLimit = limit
+    return stack.includes('spliceClosures')
+  }
+  Object.defineProperty(ctx, 'summary', { configurable: true, enumerable: own.enumerable, get: () => held, set: (s) => {
+    if (s && typeof s.at === 'function') {
+      const at = s.at
+      s.at = (x) => {
+        const view = at(x)
+        if (!view || !Array.isArray(x) || !inSplice()) return view
+        return new Proxy(view, { get: (t, k) => typeof t[k] === 'function' ? () => { throw new Error('a throw in the closure splice') } : t[k] })
+      }
+    }
+    held = s
+  } })
+  try { return compile(src, AT) } finally { Object.defineProperty(ctx, 'summary', { ...own, value: held }) }
+}
+
+test('session: a compile that throws at any stage leaves the next one as a cold process makes it', () => {
+  if (onKernel()) return
+  const cold = compileFresh(KERNEL, AT)
+  for (const [stage, run] of [
+    ['a syntax error', () => compile('export let f = (n) => { return n +', AT)],
+    ['an early error', () => compile('export let f = (n) => { let n = 1; return n }', AT)],
+    ['an emit error', () => compile('export let f = (n) => { const a = new Float64Array(4); return a.foo(n) }', AT)],
+    ['a throw inside the inliner\'s closure splice', () => throwInClosureSplice(CLOSURE)],
+  ]) {
+    let message = null
+    try { run() } catch (e) { message = String(e.message) }
+    ok(message != null, `${stage} throws`)
+    ok(eq(compile(KERNEL, AT), cold), `after ${stage}, the bytes of a cold process`)
+  }
+})

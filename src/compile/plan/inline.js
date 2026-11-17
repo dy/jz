@@ -1155,11 +1155,13 @@ const closureSpliceable = (func) => {
 
 // What a run holds of its compile, the candidates' records and a summary view, is dropped
 // as it starts and as it ends, by a return or a throw: a module binding outlives the
-// compile, and the hosted compiler frees nothing one holds.
+// compile, and the hosted compiler frees nothing one holds. So is the closure flag a
+// throw inside the closure splice leaves set, which turns a later kernel splice down.
 const releaseRun = () => {
   candidatesView = new Map()
   callerView = null
   callerStable = null
+  inClosure = false
 }
 export const inlineHotInternalCalls = (programFacts, ast) => {
   releaseRun()
