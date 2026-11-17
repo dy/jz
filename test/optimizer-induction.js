@@ -634,3 +634,10 @@ test('min recurrence (watr): a cell joins the input carried from the cell before
     for (const seed of [1, 7, 12345, -3]) is(run(src(first, second), { optimize: 'speed' }).f(seed), host(seed), `${first} first: seed ${seed}`)
   }
 })
+
+test('loop rewrites: a body that holds a NaN literal and nothing to rewrite keeps its identity', () => {
+  // (compile/loop-model.js rewriteBlocks: the NaN child, unequal to itself, read as a change and
+  // copied the body, and a pass that takes a new body for its change ran the summary again)
+  const body = ['{}', [';', ['let', ['=', 'x', [null, NaN]]], ['return', ['+', 'x', [null, 1]]]]]
+  is(unrollRecurrence(body, new Set(), null) === body, true, 'the body comes back as it went in')
+})

@@ -125,7 +125,8 @@ export function rewriteBlocks(body, tryStmt) {
     for (let i = 0; i < node.length; i++) {
       const c = node[i], w = walk(c)
       if (n) n.push(w)
-      else if (w !== c) { n = node.slice(0, i); n.push(w) }
+      // (a primitive child comes back as it is: a NaN literal, unequal to itself, is no change)
+      else if (w !== c && Array.isArray(c)) { n = node.slice(0, i); n.push(w) }
     }
     n ??= node
     if (n[0] !== ';') return n
