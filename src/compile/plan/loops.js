@@ -185,8 +185,13 @@ export const splitCharScanLoops = () => {
 // stores into its array. An index is the counter or `a·i + d` (literal a ≥ 1,
 // d ≥ 0, through the body's constants), whose term is `⌈(len − d) / a⌉`
 // (canonical-bounds.js lengthForms). The
-// receivers are arrays of the same standing, never nullish, so reading their
-// lengths ahead of the loop throws nothing. Gates as the char scan's: a unit
+// receivers are arrays of the same standing, so reading their lengths ahead
+// of the loop throws nothing. One that may hold nothing (a module `let` an
+// init call sets, undefined until it runs) is tested first: its term is
+// `r != null ? term : 0`, the main loop runs under the test of each such
+// receiver, which reads each as present (flow-types.js), and where one is
+// missing the bound is zero and the tail runs from C, the loop as written,
+// which throws where it reads it. Gates as the char scan's: a unit
 // counter from a constant at or above zero, no break or label (a main-loop
 // break must not fall into the tail), no closure (the clone would duplicate
 // it), at most 250 body nodes; `splitArrayScan: false` under optimize:'size'.
@@ -195,6 +200,9 @@ const MODULE = 'module'
 // Whether `root` stores an element of the array `name` holds.
 const storesInto = (root, name) => some(root, n => MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1][1] === name)
 const isArrayKind = (k) => k != null && tagOf(k) === K.ARRAY && (k & NULL_BITS) === 0
+// (an array, or an array beside undefined and null alone)
+const isArrayOrMissing = (k) => k != null && tagOf(k) === K.ARRAY
+const present = (r) => ['!=', r, [null, null]]
 const isNumberKind = (k) => k != null && tagOf(k) === K.NUMBER && (k & NULL_BITS) === 0
 const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   const [, init, cond, step, body] = node
@@ -210,12 +218,21 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   if (isReassigned(body, i) || containsDeclOf(body, i)) return false
   const loop = [';', body, step]
   const steady = (name) => typeof name === 'string' && name !== i && stable(name) && !isReassigned(loop, name)
+  // (the receivers that may hold nothing, tested before the loop)
+  const missing = new Set()
+  const holds = (r) => {
+    const k = view.kindOfExpr(r)
+    if (isArrayKind(k)) return true
+    if (!isArrayOrMissing(k)) return false
+    missing.add(r)
+    return true
+  }
   // the bound: a constant, a steady Number, or a steady array's length (a
   // constant holding one, `const n = a.length`, is that length)
   const intBound = constIntExpr(B) != null
   const boundRecvs = intBound ? [] : lengthRecvs(typeof B === 'string' ? consts.get(B) : B)
   if (!intBound && !(typeof B === 'string' && steady(B) && isNumberKind(view.kindOfExpr(B))) &&
-      !(boundRecvs.length === 1 && steady(boundRecvs[0]) && isArrayKind(view.kindOfExpr(boundRecvs[0])))) return false
+      !(boundRecvs.length === 1 && steady(boundRecvs[0]) && holds(boundRecvs[0]))) return false
   // the arrays the counter indexes, by the form of each index (the counter, or
   // `a·i + d`, literal a ≥ 1 and d ≥ 0, through the body's constants: `const o =
   // i * 6; sol[o + 5]`), each receiver's most d for each a: those the bound does
@@ -238,7 +255,7 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
     if (n[0] !== '[]' || n.length !== 3 || Array.isArray(n[2]) && n[2][0] == null) return
     const f = n[2] === i ? [1, 0] : affineIn(n[2], i, bodyConsts)
     if (!f || f[0] < 1 || f[1] < 0) { tested ||= isArrayKind(view.kindOfExpr(n[1])); return }
-    if (typeof n[1] !== 'string' || n[1] === B || !steady(n[1]) || !isArrayKind(view.kindOfExpr(n[1]))) return
+    if (typeof n[1] !== 'string' || n[1] === B || !steady(n[1]) || !holds(n[1])) return
     // (a module binding the loop only reads has its hop out of the loop already, optimize/licm.js:
     // the split pays where it stores, whose growth call rebinds it in the loop and keeps every hop in)
     if (stable(n[1]) === MODULE && !storesInto(body, n[1])) return
@@ -248,14 +265,15 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   } })
   const recvs = [...forms.keys()]
   // (a module binding among them: what the loop calls writes none of them, the bound's name included)
-  if (tested || !recvs.length || !preservesLoopBounds(body, view, [...recvs, ...boundRecvs, i, ...(typeof B === 'string' ? [B] : [])])) return false
-  // each receiver's terms: `r.length` for the counter, `⌈(r.length − d) / a⌉` for `a·i + d` (lengthForms)
+  if (tested || !recvs.length || !preservesLoopBounds(body, view, [...recvs, ...boundRecvs, ...missing, i, ...(typeof B === 'string' ? [B] : [])])) return false
+  // each receiver's terms: `r.length` for the counter, `⌈(r.length − d) / a⌉` for `a·i + d` (lengthForms);
+  // `r != null ? term : 0` for one that may be missing, below which no step of a counter from C ≥ 0 runs
   let affine = false
   const terms = []
   for (const [r, at] of forms) for (const [a, d] of at) {
     if (a !== 1 || d !== 0) affine = true
-    const len = ['.', r, 'length'], below = d ? ['-', len, [null, d]] : len
-    terms.push(a === 1 ? below : ['()', 'math.ceil', ['/', below, [null, a]]])
+    const len = ['.', r, 'length'], below = d ? ['-', len, [null, d]] : len, term = a === 1 ? below : ['()', 'math.ceil', ['/', below, [null, a]]]
+    terms.push(missing.has(r) ? ['?:', present(r), term, [null, 0]] : term)
   }
 
   const declNames = new Set()
@@ -279,7 +297,11 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   // no step of a counter from C ≥ 0, and the word is exact; so is a term of an
   // index `a·i + d`, below zero where the length is below d)
   const M = `${T}asm${freshId(ctx)}`, numBound = !intBound && !boundRecvs.length, held = numBound || affine
-  const min = ['()', 'math.min', [',', numBound ? ['()', 'math.ceil', clonePlain(B)] : clonePlain(B), ...terms]]
+  // (a receiver that may be missing and has no term of its own, the bound's
+  // array or one the loop only reads, makes the bound zero where it is missing:
+  // the main loop runs none, and the tail from C reads it as written)
+  const bare = numBound ? ['()', 'math.ceil', clonePlain(B)] : clonePlain(B), alone = [...missing].filter(r => !forms.has(r))
+  const min = ['()', 'math.min', [',', alone.length ? ['?:', alone.map(present).reduce((a, b) => ['&&', a, b]), bare, [null, 0]] : bare, ...terms]]
   const bound = ['=', M, ['|', held ? ['()', 'math.max', [',', min, [null, 0]]] : min, [null, 0]]]
   const top = 0x1fffffff   // an array holds fewer than 2^29 elements
   bound.lo = intBound && !held ? Math.min(constIntExpr(B), 0) : 0
@@ -295,7 +317,9 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   // an array its every round stores into at the counter grew to it from C, which
   // the summary reads as the loop's start, summary/index.js appendReceivers)
   tail.splitFrom = C
-  parent[idx] = [';', ['const', bound], node, tail]
+  // (the main loop where each receiver that may be missing holds an array)
+  const main = missing.size ? ['if', [...missing].map(present).reduce((a, b) => ['&&', a, b]), ['{}', [';', node]]] : node
+  parent[idx] = [';', ['const', bound], main, tail]
   return true
 }
 

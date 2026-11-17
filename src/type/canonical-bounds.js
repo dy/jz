@@ -99,9 +99,11 @@ export const lengthRecvs = (expr) => lengthForms(expr).filter(f => f.c === 1 && 
  *  (so `c'·i + d'` too for `1 ≤ c' ≤ c`, `0 ≤ d' ≤ d`). `recv.length` is
  *  `{ recv, 1, 0 }`, `recv.length - d` is `{ recv, 1, d }`, `Math.ceil((recv.length
  *  - d) / c)` is `{ recv, c, d }` (`i < ⌈(len − d)/c⌉` is `c·i + d < len` for an
- *  integer `i`); a min holds each of its arguments' forms, a max those each of
- *  its arguments holds, a constant at most zero holding every one (the split
- *  scan's bound of a Number, `Math.max(Math.min(⌈B⌉, …), 0) | 0`, plan/loops.js). */
+ *  integer `i`); a min holds each of its arguments' forms, a max or a
+ *  conditional those each of its arguments or arms holds, a constant at most
+ *  zero holding every one (the split scan's bound of a Number, `Math.max(Math.min(⌈B⌉,
+ *  …), 0) | 0`, and its term of an array that may be missing, `a != null ?
+ *  a.length : 0`, plan/loops.js). */
 export function lengthForms(expr, out = []) {
   // (an assignment's value is its right side: the char scan's bound hands it on, plan/loops.js)
   while (Array.isArray(expr) && expr[0] === '=' && expr.length === 3 && typeof expr[1] === 'string') expr = expr[2]
@@ -122,9 +124,9 @@ export function lengthForms(expr, out = []) {
     if (t && c != null && c >= 1) out.push({ recv: t[0], c, d: t[1] })
   }
   else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') for (const a of args(expr)) lengthForms(a, out)
-  else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.max') {
+  else if (Array.isArray(expr) && (expr[0] === '()' && expr[1] === 'math.max' || expr[0] === '?:' && expr.length === 4)) {
     let common = null
-    for (const a of args(expr)) {
+    for (const a of expr[0] === '?:' ? [expr[2], expr[3]] : args(expr)) {
       const c = constIntExpr(a)
       if (c != null && c <= 0) continue
       const fs = lengthForms(a)

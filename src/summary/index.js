@@ -1344,9 +1344,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const wordOf = (v) => Array.isArray(v) && v[0] === '|' && Array.isArray(v[2]) && v[2][0] == null && v[2][1] === 0 ? v[1] : v
   // A binding that holds the least of several counts, the bound of a split
   // loop's main steps (plan/loops.js: `min(B, a.length, n) | 0`, n an array's
-  // length, under `max(…, 0)` where B may be below zero): it is at most each
-  // of those arrays' lengths, so a counter below it is below every one.
-  const leastAliases = new Map()   // binding id → the array bindings whose lengths it is at most
+  // length, under `max(…, 0)` where B may be below zero, the term of an array
+  // that may be missing `a != null ? a.length : 0`): a counter from zero or
+  // above below it is below each of those arrays' lengths (where a term is
+  // zero no such counter is).
+  const leastAliases = new Map()   // binding id → the array bindings whose lengths a counter below it is below
   const atMostZero = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number' && e[1] <= 0
   const leastLengths = (value) => {
     let v = wordOf(value)
@@ -1354,7 +1356,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!Array.isArray(v) || v[0] !== '()' || v[1] !== 'math.min') return null
     const out = []
     for (const t of argList(v[2])) {
-      const u = wordOf(t)
+      let u = wordOf(t)
+      if (Array.isArray(u) && u[0] === '?:' && u.length === 4) u = atMostZero(u[3]) ? wordOf(u[2]) : atMostZero(u[2]) ? wordOf(u[3]) : null
       if (Array.isArray(u) && u[0] === '.' && u[2] === 'length' && typeof u[1] === 'string') out.push(u[1])
       else if (typeof u === 'string' && lengthAliasOf(u) !== null) out.push(lengthAliasOf(u))
     }

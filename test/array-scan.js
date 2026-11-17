@@ -264,3 +264,33 @@ export let go = (n) => {
     ok(loops.some(l => /f64\.store/.test(l) && !/\$__arr_set_idx_ptr/.test(l) && !/\$__ptr_offset_fwd/.test(l)), `at ${level}: a loop stores without the growth call or the forward test`)
   }
 })
+
+// An array a module `let` holds is missing until the init call that sets it
+// runs: the split runs where each receiver holds an array, its loop reading
+// them as present, and the loop as written where one does not, which throws
+// where it reads it, past what the steps before that read did.
+const late = `const N = 40
+let a, c
+const out = []
+export let fill = (n) => { a = []; c = []; for (let i = 0; i < n; i++) { a.push(i * 0.5); c.push(0) } return 0 }
+export let drop = () => { a = undefined; return 0 }
+export let prefix = () => { let s = 0; for (let i = 0; i < N; i++) { s += a[i]; c[i] = s } return s + c.length * 1000 }
+export let first = () => { let s = 0; for (let i = 0; i < N; i++) { out[i] = i; s += a[i]; c[i] = s } return s }
+export let seen = () => out.length
+export let copy = () => { for (let i = 0; i < a.length; i++) c[i] = a[i] * 2; return c.length * 1000 + c[a.length - 1] }`
+const lateCalls = [['prefix'], ['first'], ['seen'], ['copy'], ['fill', 3], ['prefix'], ['first'], ['seen'], ['copy'], ['fill', 50], ['prefix'], ['copy'],
+  ['drop'], ['prefix'], ['first'], ['seen'], ['copy']]
+
+test('array scan: a receiver an init call sets splits where it holds an array', () => {
+  const answer = (m, [name, ...args]) => { try { return m[name](...args) } catch { return 'throws' } }
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const host = oracle(late), jz = run(late, { optimize })
+    for (const call of lateCalls) is(answer(jz, call), answer(host, call), `${call.join(' ')} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  for (const level of [2, 'speed']) {
+    const loops = innerLoops(funcWat(wat(late, { optimize: { level, ...shape } }), 'prefix'))
+    ok(loops.some(l => /f64\.store/.test(l) && !/\$__(arr_set_idx_ptr|ptr_offset_fwd|throw_property_nullish)/.test(l) && !/__durable_arr_seen/.test(l)),
+      `at ${level}: a loop stores in place, with no growth call, forward test, missing-receiver test or snapshot test`)
+  }
+})
