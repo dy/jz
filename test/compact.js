@@ -212,6 +212,8 @@ const LOOPS = {
   prefix: `export const f = n => { let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length * 7 + s.charCodeAt(0) + s.charCodeAt(s.length - 1) }`,
   // a loop right after another, each carrying its own growing value: each compacts
   prefixTwice: `export const f = n => { let s = '', t = '', i = 0, j = 0; while (i++ < n) s = (i % 10) + s; while (j++ < n) t = (j % 7) + t; return s.length * 7 + t.length + s.charCodeAt(0) + t.charCodeAt(t.length - 1) }`,
+  // a test that writes what it reads, asked once a round however the site asks it
+  countdown: `export const f = n => { let s = '', k = n + 1; while (--k) s = (k % 10) + s; return s.length * 3 + s.charCodeAt(0) + s.charCodeAt(s.length - 1) }`,
   concat: `export const f = n => { let a = []; for (let i = 0; i < n; i++) { a = a.concat([i]); if (a.length > 50) a = a.slice(25) } return a.length + a[0] + a[a.length - 1] }`,
   object: `export const f = n => { let cur = { x: 0, tag: 'a', list: [1] }; for (let i = 0; i < n; i++) { cur = { x: cur.x + i, tag: cur.tag + (i % 3), list: [...cur.list, i].slice(-4) }; if (cur.tag.length > 20) cur = { ...cur, tag: 'z' } } return cur.x + cur.tag.length + cur.list[0] + cur.list.length }`,
   map: `export const f = n => { let a = [1, 2, 3, 4]; for (let i = 0; i < n; i++) a = a.map(x => x + i); return a[0] + a[3] }`,
@@ -358,6 +360,28 @@ test('compact: a frame whose last escape came before a loop\'s last walk keeps w
     const want = oracle(src), { exports: m } = jz(src, { optimize })
     for (let call = 1; call <= 4; call++) is([m.main(1), m.churn(), m.read()].join(), [want.main(1), want.churn(), want.read()].join(), `O${optimize}: call ${call}`)
   }
+})
+
+// A loop past its threshold on the round it leaves walks nothing there: what
+// that round leaves is its result (optimize/loop-compact.js), and the loop
+// around it walks what is garbage of it. An inner loop of one round, its
+// result kept in a binding of the outer one (bench/decode-wav's `once`), had
+// its site ahead of its own test and walked at every outer round.
+test('compact: a loop past its threshold on the round it leaves does not walk there', () => {
+  if (onWasi() || onKernel() || !counted()) return
+  const src = `export const f = (n, reps, k) => { let out = null, s = 0; for (let i = 0; i < k; i++) { for (let r = 0; r < reps; r++) out = new Float64Array(n); out[1] = i; s += out[1] + out.length } return s }`
+  const script = `import jz from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+const { exports, instance } = jz(${JSON.stringify(src)}), got = []
+got.push(exports.f(400000, 1, 24))
+const runs = instance.exports.__g_runs.value
+for (const reps of [1, 2, 3]) got.push(exports.f(400000, reps, 9))
+console.log(JSON.stringify([got, runs]))`
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, JZ_DEBUG_GC: '1' }, encoding: 'utf8' })
+  const [got, runs] = JSON.parse(out.trim().split('\n').pop())
+  const want = oracle(src)
+  is(got.join(), [want.f(400000, 1, 24), ...[1, 2, 3].map(reps => want.f(400000, reps, 9))].join(), 'every call answers')
+  // the outer loop's walks of the dropped outputs, not one at every outer round
+  ok(runs < 12, `24 rounds of a one-round inner loop walk ${runs} times`)
 })
 
 // A later loop's floor never moves: what an earlier loop of the same function

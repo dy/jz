@@ -71,6 +71,30 @@ import { liveSeq } from './liveness.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
 const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)+$/, '') : label
+const clone = (n) => Array.isArray(n) ? n.map(clone) : n
+// An expression asked twice answers the same and changes nothing: reads of locals, globals and
+// memory and arithmetic over them, no write of a local (`while (--n)` tees what it reads), call,
+// store or branch.
+const PURE = /^(local\.get|global\.get|select|memory\.size|ref\.is_null|[if](32|64)\.(?!store|atomic)[\w.]+)$/
+const repeatable = (n) => !Array.isArray(n) || typeof n[0] === 'string' && PURE.test(n[0]) && n.every((c, i) => i === 0 || repeatable(c))
+const setsIn = (n, into) => { if (!Array.isArray(n)) return into; if (n[0] === 'local.set' || n[0] === 'local.tee') into.add(n[1]); for (let i = 1; i < n.length; i++) setsIn(n[i], into); return into }
+// an expression of locals and constants alone, none of them in `set`
+const localsOnly = (n, set) => !Array.isArray(n) || (n[0] === 'local.get' ? !set.has(n[1]) : !/^(global\.get|memory\.size)$|\.load/.test(n[0]) && n.every((c, i) => i === 0 || localsOnly(c, set)))
+const branchesTo = (n, label) => Array.isArray(n) && ((n[0] === 'br' || n[0] === 'br_if') && n[1] === label || n[0] === 'br_table' && n.includes(label) || n.some(c => branchesTo(c, label)))
+/** The test by which a loop leaves (its first `br_if` past the loop, the end
+ *  test the site finds), as a condition asked again at the loop's top, or
+ *  null: an expression asked twice to the same answer, and past statements
+ *  ahead of it (an iteration's release) one of locals they do not write, the
+ *  round never going on past it to the loop's next. */
+const leavingTest = (loop) => {
+  const at = loop.findIndex((c, i) => i > 1 && Array.isArray(c) && c[0] === 'br_if')
+  const t = loop[at]
+  if (!t || t.length !== 3 || t[1] === loop[1] || !repeatable(t[2])) return null
+  if (at === 2) return t[2]
+  const set = new Set()
+  for (let i = 2; i < at; i++) { if (branchesTo(loop[i], loop[1])) return null; setsIn(loop[i], set) }
+  return localsOnly(t[2], set) ? t[2] : null
+}
 /** A compaction pays off once the kept memory holds the slack (`SLACK`,
  *  `optimize.compactSlack`) beyond twice what the last one walked, times
  *  what it freed of the memory above the floor (1 for a walk that freed most
@@ -138,8 +162,17 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
       for (const [, set] of sources) for (const r of [...set]) if (!f64Set.has(r)) for (const s of sources.get(r) ?? []) if (!set.has(s)) { set.add(s); changed = true }
     }
     // what a compaction does, outside the loop: the loop's top tests the
-    // heap against the threshold and leaves for it, and re-enters after
-    const compaction = (mark, thresh, read) => {
+    // heap against the threshold and leaves for it, and re-enters after.
+    // `leaves`, the loop's own exit test where it opens the loop and changes
+    // nothing: past the threshold on the round that is about to leave, the
+    // kernel is asked from the heap's top, which it declines (what the round
+    // leaves is its result; a loop around, or the host past the call, takes
+    // what is garbage of it), where a walk then kept all it saw. A loop with
+    // an end (`ends`) walks that round only where its end would, by
+    // `__gc_end` on the window it has; declined, the threshold passes every
+    // address, so the end that follows does not ask again on a window the
+    // decline made.
+    const compaction = (mark, thresh, read, leaves, ends) => {
       const marks = [], fwds = []
       const derived = new Set()
       for (const n of read) for (const s of sources.get(n) ?? []) if (f64Set.has(s)) derived.add(s)
@@ -164,13 +197,19 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
       // declined (the kernel has no room, a checkpoint holds parked data, the
       // stub log overflowed): asked again a slack later, or never past the end
       const later = ['i32.add', ['global.get', '$__heap'], ['i32.const', compactSlack]]
-      return ['if', ['call', '$__gc_begin', ['local.get', mark]],
+      let floor = ['local.get', mark], next = ['select', later, ['i32.const', -1], ['i32.gt_u', later, ['global.get', '$__heap']]]
+      if (leaves) {
+        floor = ['select', ['global.get', '$__heap'], floor, ends
+          ? ['if', ['result', 'i32'], clone(leaves), ['then', ['i32.eqz', ['call', '$__gc_end', ['local.get', mark], ['local.get', thresh]]]], ['else', ['i32.const', 0]]]
+          : clone(leaves)]
+        next = ['select', ['i32.const', -1], next, clone(leaves)]
+      }
+      return ['if', ['call', '$__gc_begin', floor],
         ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
           ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]],
-        ['else', ['local.set', thresh, ['select', later, ['i32.const', -1], ['i32.gt_u', later, ['global.get', '$__heap']]]]]]
+        ['else', ['local.set', thresh, next]]]
     }
     const locals = [], done = new Set()
-    const setsIn = (n, into) => { if (!Array.isArray(n)) return into; if (n[0] === 'local.set' || n[0] === 'local.tee') into.add(n[1]); for (let i = 1; i < n.length; i++) setsIn(n[i], into); return into }
     // the locals live at each site loop's top, before any site reads them
     const liveAt = new Map(), all = new Set([...params, ...f64Locals, ...raws.map(([n]) => n)])
     // A site loop's own test: the first \`br_if\` among its statements that
@@ -239,8 +278,9 @@ export function insertLoopCompacts(funcs, owners, { shared, memoryMax, globals, 
             // the test keeps its shape (a later pass reads a loop's exit as a \`br_if\`), to a block of its own
             loopNode[loopNode.indexOf(test)] = ['br_if', endBlock, test[2]]
           }
+          const leaves = leavingTest(loopNode)
           loopNode.splice(2, 0, ['br_if', out, ['i32.gt_u', ['global.get', '$__heap'], ['local.get', thresh]]])
-          const walk = compaction(mark, thresh, top)
+          const walk = compaction(mark, thresh, top, leaves, ends)
           const around = ends
             ? ['block', exit, ['loop', again,
               ['block', out, ['block', endBlock, loopNode, ['br', exit]], ['local.set', ended, ['i32.const', 1]]],
