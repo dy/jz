@@ -29,6 +29,8 @@ import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { K, core, hasTag, tagOf, typedAux, UNKNOWN } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
+import { frameNode } from '../../function.js'
+import { closureCensus } from '../loop-model.js'
 
 const LOOPS = new Set(['for', 'while'])
 const MAX_SIZE = 4000, MAX_CTORS = 3, MAX_ARMS = 4
@@ -145,15 +147,11 @@ const sources = (e, cx, seen) => {
   return [[view, e]]
 }
 
-/** Split the loops of one body: a function's, or a closure's with its own view. */
-const splitBody = (func, body, view, params, rest, programFacts) => {
-  // what a closure of the body names, it reads or writes where the copy cannot see
-  const captured = new Set()
-  walkAst(body, { enter: (n) => {
-    if (n[0] !== '=>') return
-    walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
-    return false
-  } })
+/** Split the loops of one body: a function's, or a closure's with its own view
+ *  (`frame`, the body beside the parameter defaults that run before it). */
+const splitBody = (func, body, view, params, rest, programFacts, frame) => {
+  // what a closure of the frame names, it reads or writes where the copy cannot see
+  const captured = closureCensus(frame).mentioned
   const locals = new Set(params)
   collectBindings(body, locals)
   // every loop, outer first: a nest is copied whole under one test
@@ -237,13 +235,13 @@ export const splitLoopKinds = (programFacts) => {
     if (func.raw || !func.body) continue
     const view = ctx.summary?.at(func.sig)
     if (!view) continue
-    let rewrote = splitBody(func, func.body, view, (func.sig?.params ?? []).map(p => p.name), func.rest, programFacts)
+    let rewrote = splitBody(func, func.body, view, (func.sig?.params ?? []).map(p => p.name), func.rest, programFacts, frameNode(func))
     // a closure's loops, in its own body with its own view
     walkAst(func.body, { enter: (n) => {
       if (n[0] !== '=>') return
       const cv = ctx.summary.at(n[1])
       const ps = extractParams(n[1]).filter(p => typeof p === 'string')
-      if (cv && splitBody(func, n[2], cv, ps, null, null)) rewrote = true
+      if (cv && splitBody(func, n[2], cv, ps, null, null, [';', n[1], n[2]])) rewrote = true
     } })
     // rewritten in place: the facts cached for the body describe what it was
     if (rewrote) { invalidateProgramFactsCache(func.body); invalidateBodies([func.body]); changed = true }

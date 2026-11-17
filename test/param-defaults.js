@@ -215,3 +215,38 @@ test('param defaults: a Math constant is a number to the summary: a default of o
   if (belowOpt(2)) return
   ok(!/__to_num/.test(wat(src, { optimize: 2 })), 'no conversion of the defaulted parameter')
 })
+
+// A closure a default makes is called in the body as one the body makes: the
+// loop passes that ask what a closure names or assigns read the whole frame
+// (compile/loop-model.js closureCensus).
+const DEFAULT_CLOSURE_LOOPS = [
+  ['a flag a default closure flips', `export const value = (n, flag = 0, flip = () => { flag = !flag }) => { let s = 0; for (let i = 0; i < n; i++) { if (flag) s += 1; else s += 100; flip() } return s }`, [[4], [5], [0]]],
+  ['a default closure a callee calls', `const call = (g) => g()
+export const value = (n, flag = 0, flip = () => { flag = !flag }) => { let s = 0; for (let i = 0; i < n; i++) { if (flag) s += 1; else s += 100; call(flip) } return s }`, [[4], [5]]],
+  ['a closure in a destructuring default', `export const value = (n, { flag = 0, flip = () => { flag = !flag } } = {}) => { let s = 0; for (let i = 0; i < n; i++) { if (flag) s += 1; else s += 100; flip() } return s }`, [[4], [5]]],
+  ['a counter a default closure steps', `export const value = (n, i, skip = () => { i += 2 }) => { let s = 0; for (i = 0; i < n; i++) { s += i; skip() } return s }`, [[6], [7], [0]]],
+  ['a counter a closure\'s default steps', `export const value = (n) => { const run = (m, i, skip = () => { i += 2 }) => { let s = 0; for (i = 0; i < m; i++) { s += i; skip() } return s }; return run(n) * 100 + run(n + 1) }`, [[6], [2]]],
+  ['a cursor a default closure moves', `const A = new Float64Array(64).map((_, k) => k)
+const walk = (a, n, ix = 0, jump = () => { ix += 10 }) => { let s = 0; for (let i = 0; i < n; i++) { ix += 1; s += a[ix]; if (i === 1) jump() } return s }
+export const value = (n) => walk(A, n)`, [[5], [1]]],
+  ['a walk whose cursor a default closure moves', `const A = new Float64Array(64).map((_, k) => k)
+const unit = (a, x, e, jump = () => { x = e + 5 }) => { let s = 0; while (x !== e) { if (x > 40) break; s += a[x]; x++; if (x === 2) jump() } return s }
+export const value = (x) => unit(A, x | 0, 10)`, [[0], [3]]],
+]
+
+test('param defaults: a loop pass reads the closures a default makes', () => {
+  for (const [name, src, inputs] of DEFAULT_CLOSURE_LOOPS) for (const optimize of levels(false, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports.value, ref = oracle(src).value
+    for (const args of inputs) is(got(...args), ref(...args), `${name}, value(${args}) at ${optimize}`)
+  }
+})
+
+test('param defaults: a name a default closure rebinds splits no loop by its kind', () => {
+  if (belowOpt(2)) return
+  // (sourceInline off keeps `sum` a function of its own, the default its own)
+  const src = `const sum = (a, n, swap = () => { a = new Int32Array([1, 2, 3, 4]) }) => { let s = 0; for (let i = 0; i < n; i++) { s += a[i]; if (i === 1) swap() } return s }
+export const value = (n) => sum(new Float64Array([10, 20, 30, 40]), n) + sum([5, 6, 7, 8], n) * 1000`
+  const loops = (optimize) => (wat(src, { optimize }).match(/\(loop\b/g) || []).length
+  const alone = { level: 2, sourceInline: false }
+  is(loops(alone), loops({ ...alone, splitLoopKinds: false }), 'no copy of the loop where `a` holds the Float64Array')
+})

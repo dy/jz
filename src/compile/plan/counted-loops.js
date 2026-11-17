@@ -41,7 +41,8 @@
 
 import { ctx } from '../../ctx.js'
 import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, noted, extractParams, collectParamName, collectParamNames, nodeEqual } from '../../ast.js'
-import { frameRoots } from '../../function.js'
+import { frameNode, frameRoots } from '../../function.js'
+import { closureCensus } from '../loop-model.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { cloneWithSubst } from '../../type.js'
@@ -239,12 +240,7 @@ export const unitWalks = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    const captured = new Set()
-    walkAst(func.body, { enter: (n) => {
-      if (n[0] !== '=>') return
-      walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
-      return false
-    } })
+    const captured = closureCensus(frameNode(func)).mentioned
     const locals = new Set((func.sig?.params ?? []).map(p => p.name))
     collectBindings(func.body, locals)
     const loops = []
@@ -565,12 +561,10 @@ function adoptCounter(node, parent, idx, root, captured, local) {
   return true
 }
 
-/** Every `for` of one body adopting the counter it may (closures inside it are bodies of their own). */
-const adoptIn = (body, local) => {
-  const captured = new Set()
-  walkAst(body, { enter: node => {
-    if (node[0] === '=>') { walkAst(node, { enter: m => { for (let j = 1; j < m.length; j++) if (typeof m[j] === 'string') captured.add(m[j]) } }); return false }
-  } })
+/** Every `for` of one body adopting the counter it may (closures inside it are bodies of their own;
+ *  `frame`, the body beside the parameter defaults that run before it). */
+const adoptIn = (body, local, frame) => {
+  const captured = closureCensus(frame).mentioned
   // (innermost first: an outer loop's copy then carries its inner loop as adopted)
   const fors = []
   walkAst(body, { enter: (node, parent, idx) => {
@@ -607,14 +601,14 @@ export const adoptLoopCounters = (ast) => {
   const closures = (root) => walkAst(root, { enter: n => { if (n[0] === '=>') arrows.add(n) } })
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    if (adoptIn(func.body, name => !ctx.scope.globals.has(name))) changed = true
+    if (adoptIn(func.body, name => !ctx.scope.globals.has(name), frameNode(func))) changed = true
     for (const root of frameRoots(func)) closures(root)
   }
   for (const root of [...(ctx.module.moduleInits || []), ast]) if (root) closures(root)
   for (const arrow of arrows) {
     if (!Array.isArray(arrow[2]) || arrow[2][0] !== '{}') continue
     const own = closureNames(arrow)
-    if (adoptIn(arrow[2], name => own.has(name))) changed = true
+    if (adoptIn(arrow[2], name => own.has(name), [';', arrow[1], arrow[2]])) changed = true
   }
   return changed
 }
@@ -630,14 +624,11 @@ export const canonicalizeCountedLoops = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    const captured = new Set(), guarded = new Set()
+    const census = closureCensus(frameNode(func)), captured = census.mentioned, guarded = new Set()
     let protectedDepth = 0
     const strided = []
     walkAst(func.body, { enter: (node, parent, idx) => {
-      if (node[0] === '=>') {
-        walkAst(node, { enter: m => { for (let j = 1; j < m.length; j++) if (typeof m[j] === 'string') captured.add(m[j]) } })
-        return false
-      }
+      if (node[0] === '=>') return false
       if (TRY.has(node[0])) protectedDepth++
       if (node[0] === 'for' && node.length === 5 && parent) {
         // An exception bypasses delayed cursor writeback; its handler must
@@ -660,7 +651,7 @@ export const canonicalizeCountedLoops = () => {
     } })
     let levels = null
     const view = loops.length ? ctx.summary.at(func.sig) : null
-    for (const [node] of loops) if (offsetTest(node, func, () => levels ??= bindingNumbers(func))) changed = true
+    for (const [node] of loops) if (offsetTest(node, func, () => levels ??= bindingNumbers(func), census.assigned)) changed = true
     // innermost first: an outer loop is matched over its rewritten body
     for (let n = loops.length - 1; n >= 0; n--) {
       const [node, parent, idx] = loops[n]
@@ -687,7 +678,7 @@ export const canonicalizeCountedLoops = () => {
  * in the loop, by a closure, or anywhere a call reaches (a global), so the
  * difference is what every trip computed.
  */
-function offsetTest(node, func, levels) {
+function offsetTest(node, func, levels, closureAssigned) {
   const [, init, test, step, body] = node
   if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
   const i = init[1][1], a = init[1][2]
@@ -697,8 +688,7 @@ function offsetTest(node, func, levels) {
   const c = test[1][1] === i ? test[1][2] : test[1][2] === i ? test[1][1] : null, n = test[2]
   if (c == null || writes(body, i)) return false
   // loop constants: a local no write in the loop, no closure and no call reaches
-  const steady = (name) => typeof name === 'string' && name !== i && !ctx.scope.globals.has(name) && !writes(body, name) &&
-    !some(func.body, m => m[0] === '=>' && writes(m, name), { skipArrow: false })
+  const steady = (name) => typeof name === 'string' && name !== i && !ctx.scope.globals.has(name) && !writes(body, name) && !closureAssigned.has(name)
   if (!(isInt(c) || (steady(c) && levels().get(c)?.whole))) return false
   // a length: a name every write of which is one, or a typed array's (a list's grows)
   const isLength = (e) => Array.isArray(e) && e[0] === '.' && e[2] === 'length' && typeof e[1] === 'string'

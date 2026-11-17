@@ -24,6 +24,8 @@ import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, mutatesAny, nodeSize } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
+import { frameNode } from '../../function.js'
+import { closureCensus } from '../loop-model.js'
 
 const LOOPS = new Set(['for', 'while'])
 const TESTS = new Set(['if', '?:', '?'])
@@ -58,12 +60,7 @@ export const unswitchLoops = () => {
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
     // what a closure of the function names, it reads or writes where the copies cannot see
-    const captured = new Set()
-    walkAst(func.body, { enter: (n) => {
-      if (n[0] !== '=>') return
-      walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
-      return false
-    } })
+    const captured = closureCensus(frameNode(func)).mentioned
     const locals = new Set((func.sig?.params ?? []).map(p => p.name))
     collectBindings(func.body, locals)
     const loops = []

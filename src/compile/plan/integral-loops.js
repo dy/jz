@@ -201,6 +201,7 @@ import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize, landing } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { occursOutside } from './counted-loops.js'
+import { closureCensus } from '../loop-model.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange, int32 } from '../../static.js'
 import { normalTest } from '../../normalize.js'
@@ -627,16 +628,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   // The names a closure assigns are a census of their own: one closures only
   // read (`Array.from(…, () => new Float32Array(frames))`) holds one value
   // through a loop that does not write it, whatever those closures run.
-  const captured = new Set(), closureAssigned = new Set()
-  const assigned = (t) => walkAst(['', t], { enter: (x) => { if (x[0] === '.' || x[0] === '[]') return false; for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') closureAssigned.add(x[i]) } })
-  walkAst(frame, { enter: (n) => {
-    if (n[0] !== '=>') return
-    walkAst(n, { enter: (m) => {
-      for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i])
-      if (MUTATE_OPS.has(m[0])) assigned(m[1])
-    } })
-    return false
-  } })
+  const { mentioned: captured, assigned: closureAssigned } = closureCensus(frame)
   const locals = new Set(params)
   collectBindings(body, locals)
   // a loop a `try` of the body guards: a throw from the copy would hand the

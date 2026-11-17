@@ -55,6 +55,29 @@ export function closureMutatedVars(body) {
   return out
 }
 
+// What the closures of a frame name and assign, from one walk: `mentioned`, every name a
+// closure holds; `assigned`, the names a closure writes (`x = …`, `x++`, a pattern's
+// names; a member's object is no write of it). A pass reads one or the other for the
+// names a call in a loop may change. The frame is all a function runs: a closure its
+// parameter default makes is called in the body as one the body makes, so a function
+// gives frameNode(func) and a closure `[';', params, body]`.
+export function closureCensus(frame) {
+  const mentioned = new Set(), assigned = new Set()
+  const target = (t) => walkAst(['', t], { enter: (x) => {
+    if (x[0] === '.' || x[0] === '[]') return false
+    for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') assigned.add(x[i])
+  } })
+  walkAst(frame, { enter: (n) => {
+    if (n[0] !== '=>') return
+    walkAst(n, { enter: (m) => {
+      for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') mentioned.add(m[i])
+      if (MUTATE_OPS.has(m[0])) target(m[1])
+    } })
+    return false
+  } })
+  return { mentioned, assigned }
+}
+
 // The sole unit-increment statement of ANY variable in a `;`-body — { iv, ivIdx }
 // when exactly one statement is a `+1` increment (of whatever variable), else null.
 // This is loop-divmod's IV DISCOVERY form for a `while`: no candidate IV is known up
