@@ -28,9 +28,11 @@
  *
  * Phases, all in scratch memory above the heap's top, which stays the heap's:
  *  1. mark: a depth-first walk from the roots over every block they reach,
- *     the static data's included; a visited bit per word keeps cycles finite, a
- *     live bit per word above the floor names what stays, and a list keeps every
- *     block whose words hold pointers.
+ *     the static data's included; a visited bit per word keeps cycles finite
+ *     (cleared 1 KB at a time, for the 64 KB of memory it covers, as the walk
+ *     first meets them: what a walk clears is what it reaches, not the heap's
+ *     span), a live bit per word above the floor names what stays, and a list
+ *     keeps every block whose words hold pointers.
  *  2. prefix counts of the live bits, so an address forwards in constant time.
  *  3. update: every pointer word of every listed block, every root, forwarded
  *     in place; a pointer to a growth stub below the floor rewrites the stub's
@@ -87,7 +89,8 @@ import { K, bitOf, tagsOf, hasTag, NULL_BITS } from '../../src/summary/kind.js'
 // JZ_DEBUG_POISON=1: what a compaction frees is overwritten with all ones.
 const DBG_POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
 // JZ_DEBUG_GC=1: the module exports counters of the compactions asked for
-// (`__g_asks`), run (`__g_runs`) and the words they walked (`__g_walked`),
+// (`__g_asks`), run (`__g_runs`), the words they walked (`__g_walked`) and the
+// bytes of scratch they cleared (`__g_cleared`),
 // why the others were declined (`__g_no_floor`, `__g_no_stub`,
 // `__g_no_room`), the region of the last (`__g_floor`, `__g_top`, `__g_lo`,
 // `__g_fail`), the stub log's count (`__stubn`), and the first pointer whose
@@ -101,6 +104,9 @@ const SET_ENTRY = 16, MAP_ENTRY = 24
 /** Where the visited bitmap starts: the static data starts at 0, and no pointer
  *  the walk follows names memory below 8 (`__gc_mark`). */
 const VIS_LO = 8
+/** The visited bitmap is cleared a chunk at a time, as the walk first meets one: 1 KB of bits,
+ *  a word each of 64 KB of memory, a byte of `__g_dir` a chunk saying it is. */
+const CHUNK_SHIFT = 16, CHUNK_BITS = 1024
 /** Kinds beside a pointer's tags in the block list: a captured binding's cell,
  *  a reset-log record, a growth stub below the floor whose forward moves. */
 const KIND_CELL = 32, KIND_REC = 33, KIND_STUB = 34
@@ -152,8 +158,8 @@ export function gcTableBytes() {
 
 
 export const registerCompact = () => {
-  for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_vis', '__g_live', '__g_pre', '__g_list', '__g_ln', '__g_sp', '__g_lim', '__g_fail', '__g_nl']) declGlobal(g, 'i32', 0)
-  if (DBG_GC) for (const g of ['__g_asks', '__g_runs', '__g_walked', '__g_no_floor', '__g_no_stub', '__g_no_room', '__g_bad_n', '__g_bad_off', '__g_bad_hi', '__g_bad_cap', '__g_bad_len', '__g_walking', '__g_last', '__g_last_hi', '__g_bad_walking', '__g_bad_last', '__g_bad_last_hi']) declGlobal(g, 'i32', 0, { export: g })
+  for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_vis', '__g_dir', '__g_live', '__g_pre', '__g_list', '__g_ln', '__g_sp', '__g_lim', '__g_fail', '__g_nl']) declGlobal(g, 'i32', 0)
+  if (DBG_GC) for (const g of ['__g_asks', '__g_runs', '__g_walked', '__g_cleared', '__g_no_floor', '__g_no_stub', '__g_no_room', '__g_bad_n', '__g_bad_off', '__g_bad_hi', '__g_bad_cap', '__g_bad_len', '__g_walking', '__g_last', '__g_last_hi', '__g_bad_walking', '__g_bad_last', '__g_bad_last_hi']) declGlobal(g, 'i32', 0, { export: g })
   if (DBG_GC) for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_fail']) ctx.scope.globals.get(g).export = g
 
   const tagOf = (b) => `(i32.wrap_i64 (i64.and (i64.shr_u ${b} (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
@@ -293,20 +299,33 @@ export const registerCompact = () => {
     (i32.store (global.get $__g_sp) (local.get $at))
     (i32.store offset=4 (global.get $__g_sp) (local.get $v)))`
 
-  // Whether the word at `off` is met for the first time (a bit per word from VIS_LO).
+  // Whether the word at `off` is met for the first time (a bit per word from VIS_LO). The bits
+  // of a chunk of 64 KB are cleared as the walk first meets a word of it (`__g_dir`, a byte a
+  // chunk): the walk clears what it reaches, not the heap's span.
   ctx.core.stdlib['__gc_seen'] = `(func $__gc_seen (param $off i32) (result i32)
-    (local $i i32) (local $cell i32) (local $bit i32)
+    (local $i i32) (local $cell i32) (local $bit i32) (local $c i32)
     (local.set $i (i32.shr_u (i32.sub (local.get $off) (i32.const ${VIS_LO})) (i32.const 3)))
+    (local.set $c (i32.add (global.get $__g_dir) (i32.shr_u (local.get $i) (i32.const ${CHUNK_SHIFT - 3}))))
+    (if (i32.eqz (i32.load8_u (local.get $c))) (then (call $__gc_chunk (local.get $c))))
     (local.set $cell (i32.add (global.get $__g_vis) (i32.shr_u (local.get $i) (i32.const 3))))
     (local.set $bit (i32.shl (i32.const 1) (i32.and (local.get $i) (i32.const 7))))
     (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return (i32.const 1))))
     (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
     (i32.const 0))`
 
-  // Whether the walk visited the block at `off` (`__gc_seen` without marking).
+  // A chunk of the visited bitmap the walk meets first: its bits cleared, its byte set. Apart
+  // from \`__gc_seen\`, which stays small enough for the engine to inline into the walk.
+  ctx.core.stdlib['__gc_chunk'] = `(func $__gc_chunk (param $c i32)
+    (memory.fill (i32.add (global.get $__g_vis) (i32.shl (i32.sub (local.get $c) (global.get $__g_dir)) (i32.const 10))) (i32.const 0) (i32.const ${CHUNK_BITS}))
+    (i32.store8 (local.get $c) (i32.const 1))${DBG_GC ? `
+    (global.set $__g_cleared (i32.add (global.get $__g_cleared) (i32.const ${CHUNK_BITS})))` : ''})`
+
+  // Whether the walk visited the block at `off` (`__gc_seen` without marking): a chunk the walk
+  // never met holds no visited word, and its bits were never cleared.
   ctx.core.stdlib['__gc_was'] = `(func $__gc_was (param $off i32) (result i32)
     (local $i i32)
     (local.set $i (i32.shr_u (i32.sub (local.get $off) (i32.const ${VIS_LO})) (i32.const 3)))
+    (if (i32.eqz (i32.load8_u (i32.add (global.get $__g_dir) (i32.shr_u (local.get $i) (i32.const ${CHUNK_SHIFT - 3}))))) (then (return (i32.const 0))))
     (i32.and (i32.load8_u (i32.add (global.get $__g_vis) (i32.shr_u (local.get $i) (i32.const 3)))) (i32.shl (i32.const 1) (i32.and (local.get $i) (i32.const 7)))))`
 
   // A count read off a header, held to what the memory below the top has room for.
@@ -1027,7 +1046,7 @@ export const registerCompact = () => {
   // the first and forwards them after the second, while the memory they name
   // still stands.
   ctx.core.stdlib['__gc_begin'] = () => `(func $__gc_begin (param $floor i32) (result i32)
-    (local $top i32) (local $s i32) (local $nv i32) (local $nl i32)
+    (local $top i32) (local $s i32) (local $nv i32) (local $nd i32) (local $nl i32)
     (local.set $top (global.get $__heap))
     (global.set $__g_fail (i32.const 1))
     ${DBG_GC ? '(global.set $__g_asks (i32.add (global.get $__g_asks) (i32.const 1)))' : ''}
@@ -1041,27 +1060,34 @@ export const registerCompact = () => {
     (global.set $__g_top (local.get $top))
     ;; the static data's end, which the heap starts past (HEAP.START where the data is shorter)
     (global.set $__g_lo (select (global.get $__heap_start) (i32.const ${HEAP.START}) (i32.gt_u (global.get $__heap_start) (i32.const ${HEAP.START}))))
-    ;; scratch above the top: a visited bit per word from the static data's start (VIS_LO),
-    ;; a live bit per word above the floor, the prefix counts, then the list
-    ;; growing up and the stack growing down from the memory's end
+    ;; scratch above the top: a byte a chunk of the visited bitmap, a live bit per word above the
+    ;; floor, the prefix counts, the visited bitmap (a bit per word from the static data's start,
+    ;; VIS_LO, its chunks cleared as the walk meets them, \`__gc_seen\`), then the list growing up
+    ;; and the stack growing down from the memory's end. Only the chunks' bytes, the live bits
+    ;; and the counts are cleared here: a walk pays for its region and the chunks it reaches, not
+    ;; for the heap's span (a 3.4 MB region over a 234 MB span cleared 3.7 MB a walk).
     (local.set $s (i32.and (i32.add (local.get $top) (i32.const 7)) (i32.const -8)))
-    (local.set $nv (i32.shl (i32.shr_u (i32.add (i32.shr_u (i32.sub (local.get $top) (i32.const ${VIS_LO})) (i32.const 3)) (i32.const 64)) (i32.const 6)) (i32.const 3)))
+    (local.set $nd (i32.add (i32.shr_u (i32.sub (local.get $top) (i32.const ${VIS_LO})) (i32.const ${CHUNK_SHIFT})) (i32.const 1)))
+    (local.set $nv (i32.mul (local.get $nd) (i32.const ${CHUNK_BITS})))
+    (local.set $nd (i32.and (i32.add (local.get $nd) (i32.const 7)) (i32.const -8)))
     (local.set $nl (i32.shl (i32.shr_u (i32.add (i32.shr_u (i32.sub (local.get $top) (local.get $floor)) (i32.const 3)) (i32.const 64)) (i32.const 6)) (i32.const 3)))
     ;; the scratch must end before the address space does: a heap near the top of wasm32 declines
-    (if (i64.gt_u (i64.add (i64.add (i64.extend_i32_u (local.get $s)) (i64.extend_i32_u (local.get $nv)))
+    (if (i64.gt_u (i64.add (i64.add (i64.extend_i32_u (local.get $s)) (i64.add (i64.extend_i32_u (local.get $nv)) (i64.extend_i32_u (local.get $nd))))
                            (i64.add (i64.add (i64.extend_i32_u (local.get $nl)) (i64.extend_i32_u (i32.shr_u (local.get $nl) (i32.const 1)))) (i64.const ${8 + 65536})))
                   (i64.const 0xFFFFFFF8))
       (then ${DBG_GC ? '(global.set $__g_no_room (i32.add (global.get $__g_no_room) (i32.const 1)))' : ''} (return (i32.const 0))))
     (global.set $__g_nl (local.get $nl))
-    (global.set $__g_vis (local.get $s))
-    (global.set $__g_live (i32.add (local.get $s) (local.get $nv)))
+    (global.set $__g_dir (local.get $s))
+    (global.set $__g_live (i32.add (local.get $s) (local.get $nd)))
     (global.set $__g_pre (i32.add (global.get $__g_live) (local.get $nl)))
-    (global.set $__g_list (i32.add (global.get $__g_pre) (i32.add (i32.shr_u (local.get $nl) (i32.const 1)) (i32.const 8))))
+    (global.set $__g_vis (i32.add (global.get $__g_pre) (i32.add (i32.shr_u (local.get $nl) (i32.const 1)) (i32.const 8))))
+    (global.set $__g_list (i32.add (global.get $__g_vis) (local.get $nv)))
     (global.set $__g_ln (i32.const 0))
     (global.set $__g_cost (i32.const 0))
     (if (i32.eqz (call $__gc_room (i32.add (global.get $__g_list) (i32.const 65536)) (i32.eqz (global.get $__viewed)))) (then ${DBG_GC ? '(global.set $__g_no_room (i32.add (global.get $__g_no_room) (i32.const 1)))' : ''} (return (i32.const 0))))
     (global.set $__g_sp (global.get $__g_lim))
-    (memory.fill (local.get $s) (i32.const 0) (i32.sub (global.get $__g_list) (local.get $s)))
+    (memory.fill (local.get $s) (i32.const 0) (i32.sub (global.get $__g_vis) (local.get $s)))
+    ${DBG_GC ? '(global.set $__g_cleared (i32.add (global.get $__g_cleared) (i32.sub (global.get $__g_vis) (local.get $s))))' : ''}
     (global.set $__g_fail (i32.const 0))
     ${DBG_GC ? '(global.set $__g_runs (i32.add (global.get $__g_runs) (i32.const 1))) (global.set $__g_walked (i32.add (global.get $__g_walked) (i32.shr_u (i32.sub (local.get $top) (local.get $floor)) (i32.const 3))))' : ''}
     ;; 1. the module's roots, marked; what they reach waits on the stack
@@ -1256,7 +1282,9 @@ export const registerCompact = () => {
           (else
             ;; dead from here: the run, if one, ends; the zeros that follow are skipped
             (if (local.get $run) (then
-              (memory.copy (local.get $dst) (local.get $run) (i32.sub (i32.add (local.get $w) (i32.shl (local.get $i) (i32.const 3))) (local.get $run)))
+              ;; a run already where it goes (nothing freed below it) stays
+              (if (i32.ne (local.get $dst) (local.get $run))
+                (then (memory.copy (local.get $dst) (local.get $run) (i32.sub (i32.add (local.get $w) (i32.shl (local.get $i) (i32.const 3))) (local.get $run)))))
               (local.set $dst (i32.add (local.get $dst) (i32.sub (i32.add (local.get $w) (i32.shl (local.get $i) (i32.const 3))) (local.get $run))))
               (local.set $run (i32.const 0))))
             (local.set $i (i32.add (local.get $i) (i32.wrap_i64 (i64.ctz (i64.shr_u (local.get $bits) (i64.extend_i32_u (local.get $i)))))))))
@@ -1265,7 +1293,7 @@ export const registerCompact = () => {
       (br $group)))
     (if (local.get $run) (then
       (if (i32.gt_u (local.get $w) (local.get $top)) (then (local.set $w (local.get $top))))
-      (memory.copy (local.get $dst) (local.get $run) (i32.sub (local.get $w) (local.get $run)))
+      (if (i32.ne (local.get $dst) (local.get $run)) (then (memory.copy (local.get $dst) (local.get $run) (i32.sub (local.get $w) (local.get $run)))))
       (local.set $dst (i32.add (local.get $dst) (i32.sub (local.get $w) (local.get $run))))))
     ${DBG_POISON ? '(memory.fill (local.get $dst) (i32.const 255) (i32.sub (local.get $top) (local.get $dst)))' : ''}
     (global.set $__heap (local.get $dst))
@@ -1293,7 +1321,8 @@ export const COMPACT_DEPS = {
   __gc_more: ['__gc_room'],
   __gc_push: ['__gc_box', '__gc_more'],
   __gc_list: ['__gc_more'],
-  __gc_seen: [],
+  __gc_seen: ['__gc_chunk'],
+  __gc_chunk: [],
   __gc_stub: [],
   __gc_thresh: [],
   __gc_end: [],

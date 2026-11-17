@@ -394,6 +394,28 @@ console.log(JSON.stringify([got, runs]))`
   if (!stressed()) ok(runs < 24, `24 rounds of a one-round inner loop walk ${runs} times`)
 })
 
+// A walk clears the visited bits of the memory it reaches, not a bit per word
+// of the heap's span (module/core/compact.js `__gc_begin`, `__gc_seen`): 32 MB
+// of a typed array dropped before the loop lies below its floor, unreached, and
+// each of the loop's 1,672 walks of its carried string cleared a bit per word of
+// the 35 MB span and its region's bits, 607 KB; now 55 KB. The counts are the
+// debug build's (`JZ_DEBUG_GC=1` exports `__g_cleared`, `__g_top`): a process
+// of its own.
+test('compact: a walk clears the scratch of what it walks, not of the heap below its floor', () => {
+  if (onWasi() || onKernel() || !counted() || stressed()) return
+  const src = `export const f = (n) => { let junk = new Float64Array(4000000); junk[1] = n; const t = junk[1]; junk = null; let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + t }`
+  const script = `import jz from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+const { exports, instance } = jz(${JSON.stringify(src)})
+const r = exports.f(60000)
+console.log(JSON.stringify([r, instance.exports.__g_runs.value, instance.exports.__g_cleared.value >>> 0, instance.exports.__g_top.value >>> 0]))`
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, JZ_DEBUG_GC: '1' }, encoding: 'utf8' })
+  const [r, runs, cleared, top] = JSON.parse(out.trim().split('\n').pop())
+  is(r, oracle(src).f(60000), 'the loop answers')
+  ok(runs >= 2, `the loop walks (${runs} times)`)
+  // the bits of what a walk reaches, under a quarter of a bit per word of the span
+  ok(cleared / runs < top / 64 / 4, `a walk clears ${Math.round(cleared / runs / 1024)} KB of a ${Math.round(top / 1048576)} MB span`)
+})
+
 // A walk that sees less above its floor than twice what it reached is no measure
 // of what its loop drops (module/core/compact.js `__gc_thresh`): the site keeps
 // the yield it had. A round's output kept beside older data larger than it, the
