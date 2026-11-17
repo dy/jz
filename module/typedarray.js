@@ -43,6 +43,7 @@ import { runsInPlace } from '../src/compile/in-place.js'
 import { typedStoreHeadWat } from './array.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
 import { callbackSetup, isUndefinedNode } from './array/from.js'
+import { TO_PRIMITIVE, primitiveKind } from '../src/evaluation-effects.js'
 
 const _NAN_BITS = nanPrefixHex()
 
@@ -1523,11 +1524,28 @@ export default (ctx) => {
         // class (.work/archive/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS). The
         // loop below reads these locals, never the free variables.
         const strideS = stride, storeS = store, elemTypeS = elemType
+        // The literal is evaluated whole before an element converts (ECMA-262 23.2.5.1.2
+        // InitializeTypedArrayFromList takes the list): where the ToNumber of an element
+        // with another after it may run a valueOf, every element is held in a local in
+        // turn and converts after the last is evaluated. (A program with no valueOf or
+        // toString converts through none, and a constant has no effect.)
+        const view = ctx.summary.at(ctx.func.current)
+        const hold = !bigint && ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number) &&
+          elems.some((e, k) => k < elems.length - 1 && !primitiveKind(view, e))
+        const held = []
+        if (hold) for (let k = 0; k < elems.length; k++) {
+          const e = elems[k]
+          if (!Array.isArray(e) && typeof e !== 'string' || Array.isArray(e) && (e[0] == null || e[0] === 'str')) continue
+          const t = temp('tfe')
+          body.push(['local.set', `$${t}`, asF64(emit(e))])
+          held[k] = typed(['local.get', `$${t}`], 'f64')
+        }
         for (let k = 0; k < elems.length; k++) {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
             : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * strideS]]
           // Each element converts with ToNumber first (free for a Number).
-          const num = (e) => bigint ? asF64(emit(e)) : asF64(toNumF64(e, emit(e)))
+          const value = (e) => held[k] ?? emit(e)
+          const num = (e) => bigint ? asF64(value(e)) : asF64(toNumF64(e, value(e)))
           if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, num(elems[k]))); continue }
           if (elemTypeS <= 5) {
             // ES ToIntN, not saturation: a constant wraps exactly at compile time

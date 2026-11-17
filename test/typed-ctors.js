@@ -70,6 +70,37 @@ test('typed constructors: BYTES_PER_ELEMENT of a constructor and of an instance'
   ['an object\'s own property of the name', `const g = (x) => x.BYTES_PER_ELEMENT; export const f = () => g({ BYTES_PER_ELEMENT: 7 }) + (g({ a: 1 }) === undefined ? 10 : 0)`],
 ]))
 
+// Rows of [label, `() => …`], each function an export of one module after `pre`: what each
+// answers at every level against Node.
+const agreeAll = (pre, rows) => {
+  const src = pre + rows.map(([, f], i) => `export const c${i} = ${f}`).join('\n')
+  const want = oracle(src)
+  for (const optimize of levels(false, 1, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    rows.forEach(([label], i) => is(got[`c${i}`](), want[`c${i}`](), `${label}, optimize ${optimize}`))
+  }
+}
+// what each element's evaluation and conversion logs
+const LOGGED = `let log = ''
+const o = (t, v) => { log += t; return { valueOf() { log += t.toUpperCase(); return v } } }
+const n = (t, v) => { log += t; return v }
+const x = o('x', 9)
+`
+const LISTS = [`o('a', 1), o('b', 2)`, `n('a', 1), o('b', 2), n('c', 3)`, `o('a', 1), 7, o('b', 2)`, `n('a', 1), n('b', 2), o('c', 3)`,
+  `x, n('b', 2)`, `({ toString() { log += 'S'; return '5' } }), n('b', 2)`]
+const LOGGED_KINDS = ['Int32Array', 'Float64Array', 'Uint8ClampedArray', 'Float16Array', 'Float32Array']
+
+// A typed array of a literal (`T.from([…])`, `new T([…])`) converts its elements once the
+// literal is evaluated whole (ECMA-262 23.2.5.1.2 takes the list): a valueOf runs after
+// the elements behind it are evaluated, and a throwing one stops the rest.
+test('typed constructors: a literal\'s elements convert after the last is evaluated', () => {
+  const rows = []
+  for (const T of LOGGED_KINDS) for (const xs of LISTS) for (const made of [`${T}.from([${xs}])`, `new ${T}([${xs}])`])
+    rows.push([made, `() => { log = ''; const a = ${made}; return log + ':' + a.join() }`])
+  rows.push(['a valueOf that throws', `() => { log = ''; try { new Int32Array([{ valueOf() { log += 'A'; throw 1 } }, o('b', 2)]) } catch (e) { log += 'caught' + e } return log }`])
+  agreeAll(LOGGED, rows)
+})
+
 // The constructors are a `jz:` module's functions, the compiler's runtime and not the program:
 // O0, which keeps what the program's own code lowered to, links only those something reaches.
 test('typed constructors: O0 links only the constructors the program names', () => {
