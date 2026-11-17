@@ -821,15 +821,18 @@ test('summary: array constructions own cells; concat, splice, split, JSON.parse 
   // The loop after the construction stores every index from 0 before any read:
   // the construction raises no hole of its own (summary/index.js filledSites,
   // marked as the statement list looks at the statement after the
-  // declaration), and each store lands at the length (appendReceivers). Below
-  // level 2 the summary reads that loop as written; from level 2 the plan's
-  // array split (plan/loops.js trySplitArrayFor) puts the main loop's bound
-  // `const b = min(⌈n⌉, a.length)` and the main loop and its tail, a list of
-  // three, where the loop stood: the statement after the declaration is no
-  // loop under `i < n`, and the construction keeps the hole it raises. A read
-  // past the length (`a[0]` of `Array(0)`) misses by the length, never by the
-  // hole: f(0) answers undefined at every level.
-  is(hasTag(elemOf('f', 'a'), K.ABSENT), OPT_LEVEL >= 2, `Array(n) a covering loop fills holds a hole at level ${OPT_LEVEL} only where the split hides the loop`)
+  // declaration), and each store lands at the length (appendReceivers). From
+  // level 2 the plan's array split (plan/loops.js trySplitArrayFor) puts the
+  // main loop's bound `const b = min(⌈n⌉, a.length)`, the main loop from 0
+  // under b and its tail from b under n where the loop stood, which store the
+  // indexes the loop as written does, and the summary reads them so: no level
+  // leaves a hole. A read past the length (`a[0]` of `Array(0)`) misses by the
+  // length, never by the hole: f(0) answers undefined at every level.
+  ok(!hasTag(elemOf('f', 'a'), K.ABSENT), `Array(n) a covering loop fills holds no hole at level ${OPT_LEVEL}`)
+  for (const level of [0, 1, 2, 3]) {
+    compileInProcess(filled, { optimize: { level, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, splitByClosureArgs: false, aliases: false } })
+    ok(!hasTag(elemOf('f', 'a'), K.ABSENT), `Array(n) a covering loop fills holds no hole at level ${level}, split or not`)
+  }
   for (const optimize of levels(0, 1, 2, 3)) {
     const host = oracle(filled), wasm = jz(filled, { optimize }).exports
     for (const n of [0, 1, 3]) is(wasm.f(n), host.f(n), `f(${n}) at ${optimize}`)

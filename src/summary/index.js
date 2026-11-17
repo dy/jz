@@ -3079,26 +3079,40 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   // `target = new Array(count)` followed at once by `for (let i = 0; i < count;
   // i++) target[i] = v`, the store the loop's only statement, v reading neither
-  // the array nor the count: every element is written before any read.
-  const covers = (d, loop) => {
-    if (!Array.isArray(loop) || loop[0] !== 'for' || loop.length !== 5 || typeof d[2][2] !== 'string') return false
-    const target = d[1], count = d[2][2]
+  // the array nor the count: every element is written before any read. So is
+  // it followed by that loop as the plan's array split leaves it (plan/loops.js
+  // trySplitArrayFor, the tail's `splitFrom` 0): `const M = …`, the main loop
+  // under `i < M` from 0, and the tail from where the main loop stopped under
+  // `i < count`, the two ranges the one the loop as written stores (three
+  // statements of the list, or a list of three where the split left one).
+  const stepsStoring = (loop, target, bound, count, fromZero) => {
+    if (!Array.isArray(loop) || loop[0] !== 'for' || loop.length !== 5) return false
     const [, init, test, step, body] = loop
     if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
     const i = init[1][1], from = init[1][2]
-    if (!(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== count) return false
+    if (fromZero && !(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== bound) return false
     if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return false
     const only = Array.isArray(body) && body[0] === '{}' ? (Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 ? body[1][1] : body[1]) : body
     if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || !nodeEqual(only[1][1], target)) return false
     const v = only[2]
     return !(typeof target === 'string' ? some(v, m => m.includes(target) || m.includes(count), REFS_THROUGH_ARROWS) : some(v, m => nodeEqual(m, target) || m.includes(count), REFS_THROUGH_ARROWS))
   }
-  // a list's statement before it is walked: a construction it fills, or the next statement does
+  const covers = (d, list, i) => {
+    const target = d[1], count = d[2][2], next = list[i + 1]
+    if (typeof count !== 'string' || !Array.isArray(next)) return false
+    if (next[0] === 'for') return stepsStoring(next, target, count, count, true)
+    const at = next[0] === ';' ? 1 : i + 1, seq = next[0] === ';' ? next : list
+    const decl = seq[at], main = seq[at + 1], tail = seq[at + 2]
+    const bound = Array.isArray(tail) && tail.splitFrom === 0 && Array.isArray(decl) && decl[0] === 'const' && decl.length === 2 ? decl[1] : null
+    return Array.isArray(bound) && bound[0] === '=' && typeof bound[1] === 'string' &&
+      stepsStoring(main, target, bound[1], count, true) && stepsStoring(tail, target, count, count, false)
+  }
+  // a list's statement before it is walked: a construction it fills, or what follows does
   const markFilled = (list, i) => {
     const d = countDecl(list[i])
     if (!d) return
     const next = list[i + 1]
-    if (covers(d, next) || typeof d[1] === 'string' && d[1].startsWith(SEP + 'site') && Array.isArray(next) && some(next, m => fillsAll(m, d[1]))) filledSites.add(d[2])
+    if (covers(d, list, i) || typeof d[1] === 'string' && d[1].startsWith(SEP + 'site') && Array.isArray(next) && some(next, m => fillsAll(m, d[1]))) filledSites.add(d[2])
   }
   const arrayCtor = (node, base, n) => {
     const fresh = !cells.has(node)
