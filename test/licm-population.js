@@ -6,10 +6,13 @@
 // must not do, each a wrong answer if it did: an operand the loop writes on some path or after its
 // use, a division, a remainder, a call that counts or throws, a load a test in the loop guards, and
 // a read of memory the loop stores to (through the same name or another), moved ahead of a loop
-// that runs no round; a sum regrouped; -0, infinities, NaN (its payload as well), denormals and
-// words past 2^31 as operands. `n` is the trip count, 0 among them.
+// that runs no round; a sum regrouped; -0, infinities, NaN, denormals and words past 2^31 as
+// operands. `n` is the trip count, 0 among them. A NaN's payload is held apart, below: to jz with
+// no hoist, since JavaScript leaves it to the engine.
 import test from 'tst'
-import { population } from './_population.js'
+import { is } from 'tst/assert.js'
+import { jz } from './util.js'
+import { population, norm } from './_population.js'
 
 const CONFIGS = [0, 2, 3, 'size', { level: 'speed', relaxedFloat: false }]
 
@@ -74,9 +77,6 @@ export const f = (a, b, n) => { cell.fill(b); let s = 0; for (let i = 0; i < n; 
 export const f = (a, b, n) => { one.fill(1); const two = one; let s = 0; for (let i = 0; i < n; i++) { s = s * 0.5 + one[1] * a + i; two[1] = s + b } return s + one[1] }`,
   vec: `const src = new Float64Array(8), dst = new Float64Array(8)
 export const f = (a, b, n) => { for (let i = 0; i < 8; i++) { src[i] = i * 0.75 - 2; dst[i] = 0 } for (let i = 0; i < n; i++) dst[i] = src[i] * (a * b) + a; return [...dst] }`,
-  payload: `const word = new Uint32Array(2), bits = new Float64Array(word.buffer), outs = new Float64Array(2)
-export const f = (a, b, n) => { word[0] = 0x12345; word[1] = 0x7ff80000; const q = bits[0]; outs[0] = 0; outs[1] = 0
-  for (let i = 0; i < n; i++) outs[i & 1] = q * a + b; bits[0] = outs[0]; return [word[0], word[1]] }`,
 }
 
 // (a, b): signed zeros, infinities, NaN, a denormal, an overflow, words past 2^31, a zero divisor, INT_MIN / -1
@@ -96,4 +96,20 @@ const progs = [
 ]
 
 test(`licm population: ${progs.length} loops with invariant subexpressions, ${args.length} operand sets and trip counts, ${CONFIGS.length} configurations`, () =>
-  population('licm', progs, { configs: CONFIGS, own: ['cnt', 'twice', 'big', 'tbl', 'lst', 'cell', 'one', 'src', 'dst', 'word', 'bits', 'outs'] }))
+  population('licm', progs, { configs: CONFIGS, own: ['cnt', 'twice', 'big', 'tbl', 'lst', 'cell', 'one', 'src', 'dst'] }))
+
+// The bits of a NaN a product carries are the engine's own in JavaScript: Node 24 on x64 answers
+// the canonical NaN for this program where Node 25 on arm64 answers the operand's payload (the
+// hosted leg of CI met it). So the row is held to jz itself: every configuration that hoists
+// `q * a` answers what the level with no hoist answers.
+const PAYLOAD = `const word = new Uint32Array(2), bits = new Float64Array(word.buffer), outs = new Float64Array(2)
+export const f = (a, b, n) => { word[0] = 0x12345; word[1] = 0x7ff80000; const q = bits[0]; outs[0] = 0; outs[1] = 0
+  for (let i = 0; i < n; i++) outs[i & 1] = q * a + b; bits[0] = outs[0]; return [word[0], word[1]] }`
+test(`licm population: a hoisted product keeps a NaN operand's payload as the level off computes it, ${args.length} operand sets`, () => {
+  const plain = jz(PAYLOAD, { optimize: 0 }).exports
+  const want = args.map(a => norm(plain.f(...a)))
+  for (const optimize of CONFIGS.slice(1)) {
+    const got = jz(PAYLOAD, { optimize }).exports
+    args.forEach((a, i) => is(norm(got.f(...a)), want[i], `payload (${a.map(norm).join(', ')}) at ${JSON.stringify(optimize)}`))
+  }
+})
