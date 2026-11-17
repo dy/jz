@@ -45,7 +45,7 @@ import { frameRoots } from '../../function.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { cloneWithSubst } from '../../type.js'
-import { optimizing, nodeSize, collectBindings } from './common.js'
+import { optimizing, nodeSize, collectBindings, landing } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { bindingNumbers } from '../../type/interval-proof.js'
 import { K, NUMBER, core, tagOf } from '../../summary/kind.js'
@@ -460,7 +460,8 @@ function canonicalize(node, parent, idx, live, captured, view) {
   const setup = cursors.map(c => ['const', ['=', entries.get(c.name).entry, ['|', c.name, lit(0)]]])
   // (the landing runs under the guard, where the trips are a count within a word: written `trips | 0`,
   // an integer of integers to a pass reading the cursor's writes, as an enclosing loop's copy does)
-  for (const c of cursors) if (live(c.name)) post.push(['=', c.name, ['+', entries.get(c.name).entry, scale(c.K, ['|', trips, lit(0)])]])
+  const asWritten = ['for', ['let', ['=', i, from]], test, step, body]
+  for (const c of cursors) if (live(c.name)) post.push(landing(['=', c.name, ['+', entries.get(c.name).entry, scale(c.K, ['|', trips, lit(0)])]], asWritten))
 
   let out
   if (own) {
@@ -498,7 +499,7 @@ function canonicalize(node, parent, idx, live, captured, view) {
       ['for', ['let', ['=', counter, lit(0)]], ['<', counter, count], ['++', counter], ['{}', run.length === 1 ? run[0] : [';', ...run]]],
       ...post,
     ]
-    out = [...pre, ['if', guard, ['{}', [';', ...fast]], ['{}', [';', ['for', ['let', ['=', i, from]], test, step, body]]]]]
+    out = [...pre, ['if', guard, ['{}', [';', ...fast]], ['{}', [';', asWritten]]]]
   }
   parent[idx] = out.length === 1 ? out[0] : ['{}', [';', ...out]]
   return true

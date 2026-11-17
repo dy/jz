@@ -198,7 +198,7 @@ import { includeModule } from '../../autoload.js'
 import { T, I32_MIN, I32_MAX, MUTATE_OPS, TYPEOF, REFS_THROUGH_ARROWS, numberGuard, some, walkAst, cloneNode, extractParams, collectParamName, isReassigned, callArgs, refsName, nodeKey, nodeEqual } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
-import { collectBindings, nodeSize } from './common.js'
+import { collectBindings, nodeSize, landing } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
@@ -2602,14 +2602,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       for (const [n, m] of ren) { locals.add(m); origin.set(m, origin.get(n) ?? n) }
       const r = cloneWithSubst(loop, new Map(), ren)
       if (r[0] === 'for') r[1] = bailSave ? ['let', ['=', ren.get(counterName), bailSave]] : null
-      return ['{}', [';', ...outer.filter(n => loopWrites.has(n) && !readAfter(n)).map(n => ['=', n, own.get(n)]), r]]
+      return ['{}', [';', ...outer.filter(n => loopWrites.has(n) && !readAfter(n)).map(n => landing(['=', n, own.get(n)], r)), r]]
     }
     // (the declarations first: an enclosing copy reads them there, plan/integral-loops.js `undo`)
     const decl = ['let', ...boundDecl, ...strideDecls, ...outer.filter(n => !names.includes(n)).map(n => ['=', own.get(n), counters.includes(n) ? [null, counterBound.entry] : cursors.has(n) ? cursorEntry.has(n) ? [null, cursorEntry.get(n)] : ['|', n, [null, 0]] :
       boxed(n) ? box.entries.get(n).lit != null ? [null, box.entries.get(n).lit] : ['|', n, [null, 0]] : already(n) ? ['u+', n] : n])]
     // what the copy wrote under a name of its own, where the body reads it after the loop
     // or a loop around runs it again (a Number every write keeps an integer is renamed too: its sum is the copy's)
-    const back = outer.filter(n => loopWrites.has(n) && readAfter(n)).map(n => ['=', n, own.get(n)])
+    const back = outer.filter(n => loopWrites.has(n) && readAfter(n)).map(n => landing(['=', n, own.get(n)], loop))
     const version = ['{}', [';', decl, ...(bailFlag ? [['=', bailFlag, [null, 0]]] : []), copy, ...back, ...(bailFlag ? [['if', bailFlag, resumption()]] : [])]]
     // (nothing to test, a cursor from a literal: the copy alone, the loop as written for an enclosing version's other arm)
     const asWritten = ctx.transform.optimize?.coldTrap ? trap() : ['{}', [';', loop]]
@@ -2618,7 +2618,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // until the copy starts). An enclosing copy that takes its fast arm takes it with its own resumption.
     // (a `for` with an init is no resumption of itself: the loop as written would run `z += 5` again)
     const merged = bailFlag && test && !bailSave && (loop[0] === 'while' || loop[1] == null) && !ctx.transform.optimize?.coldTrap
-    const rest = merged ? outer.filter(n => loopWrites.has(n) && !readAfter(n)).map(n => ['=', n, own.get(n)]) : null
+    const rest = merged ? outer.filter(n => loopWrites.has(n) && !readAfter(n)).map(n => landing(['=', n, own.get(n)], loop)) : null
     const guarded = !test ? [version] : !merged ? [['if', test, version, asWritten]]
       : [['if', test, ['{}', [';', decl, ['=', bailFlag, [null, 0]], copy, ...back, ...(rest.length ? [['if', bailFlag, ['{}', [';', ...rest]]]] : [])]]], ['if', bailFlag, asWritten]]
     const aliases = [...names.map(n => own.get(n)), ...hoistedAliases, ...(bailFlag ? [bailFlag, ...(bailSave ? [bailSave] : [])] : [])]

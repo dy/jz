@@ -3,12 +3,12 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap, I32_MIN, I32_MAX } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
   constIntExpr, counterInit, guardCounterName, elementCounter, forCounterBounds, typedCtorRawOf,
-  unitStep, counterMove, storeCounterTop, arrayKindOf, ARRAY_LENGTH_TOP,
+  unitStep, unitIncVar, counterMove, storeCounterTop, arrayKindOf, ARRAY_LENGTH_TOP,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
@@ -1549,16 +1549,21 @@ export function stampLoopCounterRanges(body) {
 /** A cursor every write of which steps it by one with an element store into a
  *  plain array at the index it held: as the store's index (`out[dst++] = v`,
  *  `out[++k] = v`), or as a statement after a store at it in the same sequence,
- *  nothing writing it between (`out[k] = v; k++`). Each step goes with a store
- *  at the index one past the last one's, and a store past every length an
- *  array reaches throws (static.js storeCounterTop), so from its start the
- *  cursor rises only while those stores complete, to the top of the lengths,
- *  one more while the store at the last evaluates its value. A local declared
- *  once, its start of integer hull, no closure naming it, and no `try` around a
- *  store of it in the body: a throw from one leaves the function, the cursor
- *  with it. */
+ *  nothing writing it between (`out[k] = v; k++`, a loop copy's word
+ *  `k = (k + 1) | 0`). Each step goes with a store at the index one past the
+ *  last one's, and a store past every length an array reaches throws
+ *  (static.js storeCounterTop), so from its start the cursor rises only while
+ *  those stores complete, to the top of the lengths or one past its start's
+ *  largest, one more while the store at the last evaluates its value. A local
+ *  declared once, its start of integer hull (a word's within the word, where
+ *  its step wraps), no closure naming it, and no `try` around a store of it in
+ *  the body: a throw from one leaves the function, the cursor with it. A write
+ *  a copy of a loop lands (plan/common.js landing) is its loop as written's,
+ *  where that loop stands in the body and the walk reads its writes; and a
+ *  start may be another cursor's value (a copy's word, `kint = k | 0`), its
+ *  hull stamped first. */
 function stampStoreCursors(body) {
-  const steps = new Set(), names = new Set(), bad = new Set()
+  const steps = new Set(), names = new Set(), bad = new Set(), worded = new Set(), loops = new Set(), landings = []
   let guarded = 0
   // a store statement into a plain array at a bare name its value leaves alone: that name
   const storedAt = (s) => {
@@ -1567,6 +1572,8 @@ function stampStoreCursors(body) {
       !isReassigned(s[2], lhs[2]) && arrayKindOf(lhs[1]) ? lhs[2] : null
   }
   const stepOf = (s) => { const n = Array.isArray(s) && s[0] === 'postfix' ? s[1] : s; return Array.isArray(n) && n[0] === '++' && n.length === 2 && typeof n[1] === 'string' ? n : null }
+  // (a statement's step: by one, or a loop copy's word by one, `k = (k + 1) | 0`, static.js unitIncVar)
+  const statementStep = (s) => stepOf(s) ?? (Array.isArray(s) && s[0] === '=' && unitIncVar(s) != null ? s : null)
   const visit = (n) => {
     if (!Array.isArray(n)) return
     const op = n[0]
@@ -1579,8 +1586,8 @@ function stampStoreCursors(body) {
       // (the names a store of this sequence left at their index, nothing having written them since)
       let held = null
       for (let i = 1; i < n.length; i++) {
-        const s = n[i], step = stepOf(s)
-        if (step && held?.has(step[1])) { steps.add(step); names.add(step[1]) }
+        const s = n[i], step = statementStep(s)
+        if (step && held?.has(step[1])) { steps.add(step); names.add(step[1]); if (step[0] === '=') worded.add(step[1]) }
         if (held) for (const x of held) if (isReassigned(s, x)) held.delete(x)
         const at = storedAt(s)
         if (at != null) (held ??= new Set()).add(at)
@@ -1591,7 +1598,8 @@ function stampStoreCursors(body) {
       const step = stepOf(lhs[2])
       if (step && arrayKindOf(lhs[1])) { steps.add(step); names.add(step[1]) }
     }
-    if (MUTATE_OPS.has(op) && typeof n[1] === 'string' && !steps.has(n)) bad.add(n[1])
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string' && !steps.has(n)) { if (n.landing) landings.push(n); else bad.add(n[1]) }
+    if (op === 'for' || op === 'while') loops.add(n)
     const tried = op === 'try' || op === 'catch' || op === 'finally'
     if (tried) guarded++
     for (let i = 1; i < n.length; i++) visit(n[i])
@@ -1599,15 +1607,21 @@ function stampStoreCursors(body) {
   }
   visit(body)
   if (!names.size) return
+  // (a landing is the writes of its loop as written, which the walk read where it stands in the body)
+  for (const n of landings) if (!loops.has(n.landing)) bad.add(n[1])
   const { closureWrites } = bodyQueries(body)
   const uses = scanBindingUses(body)
-  for (const name of names) {
-    const binding = uses.get(name)
-    if (bad.has(name) || binding?.[BINDING_USE_DECLS] !== 1 || ctx.scope.globals?.has(name) || closureWrites(name)) continue
-    const r = intExprRange(binding[BINDING_USE_INIT])
-    if (!r || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || Object.is(r[0], -0) || r[1] >= ARRAY_LENGTH_TOP) continue
-    const own = repOf(name)?.range, hull = [r[0], ARRAY_LENGTH_TOP + 1]
-    updateRep(name, { range: own ? [Math.max(own[0], hull[0]), Math.min(own[1], hull[1])] : hull })
+  // (a start of a cursor's own value, a loop copy's word declared from it: its hull once stamped, so again till none is new)
+  const todo = [...names].filter(name => !bad.has(name) && uses.get(name)?.[BINDING_USE_DECLS] === 1 && !ctx.scope.globals?.has(name) && !closureWrites(name))
+  for (let stamped = true; stamped;) {
+    stamped = false
+    for (let i = 0; i < todo.length; i++) {
+      const name = todo[i], r = name == null ? null : intExprRange(uses.get(name)[BINDING_USE_INIT])
+      if (!r || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || Object.is(r[0], -0) || r[1] > I32_MAX - 1 || worded.has(name) && r[0] < I32_MIN) continue
+      const own = repOf(name)?.range, hull = [r[0], Math.max(r[1] + 1, ARRAY_LENGTH_TOP + 1)]
+      updateRep(name, { range: own ? [Math.max(own[0], hull[0]), Math.min(own[1], hull[1])] : hull })
+      todo[i] = null; stamped = true
+    }
   }
 }
 

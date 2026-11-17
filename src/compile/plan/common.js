@@ -16,6 +16,14 @@ import { PASS_NAMES } from '../../optimize/index.js'
 /** True iff the optimizer is active (any non-falsy pass under `ctx.transform.optimize`). */
 export const optimizing = () => { const c = ctx.transform.optimize; return !!c && PASS_NAMES.some(n => c[n]) }
 
+/** A write a copy of a loop makes of a name the loop as written writes: the value
+ *  the loop as written leaves it, or the one it holds where a resumption takes
+ *  that loop up again. Marked with that loop's node, a pass proving what every
+ *  write of the name keeps reads it as that loop's own writes, where the loop
+ *  stands in the body for it to read (compile/analyze-scans.js stampStoreCursors).
+ *  A clone of the write is an ordinary write: its names may be another's. */
+export const landing = (n, loop) => { n.landing = loop; return n }
+
 /** Ops whose body opens a new loop scope. (`for-in`/`for-of` excluded — they
  *  bind a fresh per-iter local on each entry, so jz lowers them differently.) */
 export const LOOP_OPS = new Set(['for', 'while'])

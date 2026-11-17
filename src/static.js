@@ -583,6 +583,17 @@ export function elementCounter(cond, step) {
 }
 // `++i` as a loop's whole step (a Number's step by one, src/normalize.js; a step's postfix is its update).
 export const unitStep = (s, name) => Array.isArray(s) && s[0] === '++' && s.length === 2 && s[1] === name
+// The induction variable a statement increments by exactly +1, else null: `++i`, the
+// step of every Number (src/normalize.js; a statement's postfix is its update), and the
+// step of a loop copy's word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own
+// wrap is the step, made after normalization and read by the passes after the copy).
+const isLit = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
+export function unitIncVar(stmt) {
+  if (!Array.isArray(stmt) || typeof stmt[1] !== 'string') return null
+  if (stmt[0] === '++') return stmt[1]
+  const sum = stmt[0] === '=' && Array.isArray(stmt[2]) && stmt[2][0] === '|' && isLit(stmt[2][2], 0) ? stmt[2][1] : null
+  return Array.isArray(sum) && sum[0] === '+' && sum[1] === stmt[1] && isLit(sum[2], 1) ? stmt[1] : null
+}
 
 // A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`
 // (a Number's every step, src/normalize.js) → { name, by, sign }, else null.

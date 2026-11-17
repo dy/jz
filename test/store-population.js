@@ -26,7 +26,7 @@
 // wrong at speed and a program reduced from it trapped out of bounds at the default level: the walk
 // did not keep the table only __dyn_set_own had written.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { bounded } from './_bounded.js'
 import { onKernel } from './_matrix.js'
 
@@ -134,3 +134,73 @@ const population = (seed, progs) => {
 
 for (const seed of [1, 2, 3])
   test(`store population: seed ${seed}, 60 modules storing into arrays under every kind of index, against Node`, () => population(seed, generate(seed, 60)))
+
+// ---- cursors the plan copies (plan/counted-loops.js's closed form, plan/integral-loops.js's copy),
+// each copy landing the cursor where its loop as written leaves it (plan/common.js landing), which
+// the store-cursor proof reads as that loop's writes where that loop stands in the body: a cursor in
+// one loop, in two, in a loop inside a loop, stepped after its store, by a word step written
+// `(c + 1) | 0`, or in the store's key, from a literal or a parameter's number; one a copied loop
+// moves first by a fraction, down or by a stride, one stepped past a store a `try` holds, one the
+// array's own methods meet between two loops. Their own stream of programs, so the population above
+// is the one its counts were taken on. At the four levels and under coldTrap at 2 and 3 (the loop as
+// written a throw in its place, its landings standing alone): there a run that throws is the copy's
+// guard failing, and every run that answers answers as Node, at least one in five.
+const TRAPS = [{ level: 2, coldTrap: true }, { level: 3, coldTrap: true }]
+const generateLandings = (seed, count) => {
+  let state = (seed * 2654435761) >>> 0 || 1
+  const rnd = () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296 }
+  const pick = (a) => a[Math.floor(rnd() * a.length)]
+  const int = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1))
+  const st = (R, K, V) => ({ R, K, V })
+  const render = (parts, node) => parts.map(p => typeof p === 'string' ? p : node ? `__st(${p.R}, ${p.K}, ${p.V})` : `${p.R}[${p.K}] = ${p.V}`).join('')
+  const one = () => {
+    const local = rnd() < 0.5, R = local ? 'L' : 'A'
+    const lit = pick(['[]', '[11, 12, 13]', '[11, , 13]', `['p', 12]`])
+    const V = () => pick(['i', 'i + 0.5', 'n', '-i', `'s'`])
+    // a loop stepping the cursor by its stores, its counter `i`
+    const loop = () => pick([
+      [`for (let i = 0; i < n; i++) { `, st(R, 'c', V()), `; c++ } `],
+      [`for (let i = 0; i < n; i++) { `, st(R, 'c', V()), `; c = (c + 1) | 0 } `],
+      [`for (let i = 0; i < n; i++) `, st(R, 'c++', V()), `; `],
+    ])
+    const shape = () => pick([
+      () => loop(),
+      () => [...loop(), ...loop()],
+      () => [`for (let j = 0; j < ${int(1, 3)}; j++) `, ...loop()],
+      // (a stride of 2^33, past every index, whose word steps take the cursor back below 2^31: a stride
+      // landing it between 2^20 and the README's 2^29 - 1024 would ask a dense array of that many elements)
+      () => [`for (let i = 0; i < n; i++) c ${pick(['+= 0.5', '-= 1', '+= 2 ** 33'])}; `, ...loop()],
+      () => [`for (let i = 0; i < n; i++) { try { `, st(R, 'c', V()), ` } catch (e) {} c++ } `],
+      () => [...loop(), `${R}.${pick(['push(7)', 'pop()', 'length = 2'])}; `, ...loop()],
+    ])()
+    const exportOf = (name) => [`export let ${name} = (n, k) => { `, local ? `const L = ${lit}; ` : '', `let c = ${pick(['0', '0', '2', 'k'])}; `, ...shape(), `return c * 7 + sig(${R}, 0) }`]
+    const parts = [`${VAL}\n${SIG}\n`, local ? '' : `const A = ${lit}\n`, ...exportOf('f'), '\n', ...exportOf('g')]
+    const N = [0, 1, 3, 4, 9, 2.5, -2, NaN], K = [0, 2, -1, 1.5, NaN, 3e9, 4294967295, 2 ** 32]
+    const schedule = Array.from({ length: int(4, 6) }, () => rnd() < 0.15 ? ['@reset', []] : [pick(['f', 'g']), [pick(N), pick(K)]])
+    return { text: render(parts, false), node: render(parts, true), names: ['f', 'g'], schedule }
+  }
+  return Array.from({ length: count }, one)
+}
+
+const landingPopulation = (seed, progs) => {
+  if (onKernel()) return
+  const bad = []
+  let checks = 0, trapped = 0, trapAnswers = 0
+  for (const p of progs) p.want = node(p)
+  for (const optimize of [...LEVELS, ...TRAPS]) for (const [j, p] of progs.entries()) {
+    const out = bounded({ src: p.text, optimize, runs: [p.schedule] }, LIMIT)
+    checks++
+    const got = out.hung ? null : out.results[0].map(r => r.startsWith('throws') ? 'throws' : r)
+    const calls = p.schedule.map(([n, a]) => `${n}(${a.join(', ')})`).join(' ')
+    if (!got) { bad.push(`program ${j} at ${JSON.stringify(optimize)}: no answer in ${LIMIT / 1000} s\n${p.text}\n  ${calls}`); continue }
+    // (under coldTrap a throw is the copy's guard failing: past it the module runs no further copy)
+    const upTo = optimize.coldTrap ? (got.indexOf('throws') < 0 ? got.length : got.indexOf('throws')) : got.length
+    if (optimize.coldTrap) { trapped += p.schedule.length; trapAnswers += got.slice(0, upTo).filter(r => r !== 'reset').length }
+    if (got.slice(0, upTo).join(' ') !== p.want.slice(0, upTo).join(' ')) bad.push(`program ${j} at ${JSON.stringify(optimize)}: ${got.join(' ')} for Node's ${p.want.join(' ')}\n${p.text}\n  ${calls}`)
+  }
+  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} runs at ${LEVELS.length + TRAPS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  ok(trapAnswers * 5 >= trapped, `seed ${seed}: under coldTrap ${trapAnswers} of ${trapped} calls answered before a guard failed`)
+}
+
+for (const seed of [1, 2, 3])
+  test(`store population: seed ${seed}, 40 modules whose cursors the plan copies and lands, against Node, coldTrap's among them`, () => landingPopulation(seed, generateLandings(seed, 40)))

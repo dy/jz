@@ -12,7 +12,7 @@
 import { MUTATE_OPS, walkAst, isReassigned } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
-import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr, nameShift, counterStep, counterMove } from '../static.js'
+import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr, nameShift, counterStep, counterMove, unitIncVar } from '../static.js'
 
 // Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
 // a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
@@ -28,16 +28,9 @@ export const freshLoopId = () => ctx.transform.loopXformId++
 export const loopLitVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == null && typeof n[1] === 'number' ? n[1] : null
 export const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 
-// The induction variable a statement increments by exactly +1, else null: `++i`, the
-// step of every Number (src/normalize.js; a statement's postfix is its update), and the
-// step of a loop copy's word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own
-// wrap is the step, made after normalization and read by the passes after the copy).
-export function unitIncVar(stmt) {
-  if (!Array.isArray(stmt) || typeof stmt[1] !== 'string') return null
-  if (stmt[0] === '++') return stmt[1]
-  const sum = stmt[0] === '=' && Array.isArray(stmt[2]) && stmt[2][0] === '|' && litN(stmt[2][2], 0) ? stmt[2][1] : null
-  return Array.isArray(sum) && sum[0] === '+' && sum[1] === stmt[1] && litN(sum[2], 1) ? stmt[1] : null
-}
+// The induction variable a statement increments by exactly +1 (static.js, beside the
+// store-cursor proof that reads it too).
+export { unitIncVar }
 
 // Normalize a `while` / flat `for` (`['for', init, cond, update, body]`) into a common
 // shape, else null. `init`/`step` are null for a while; a `for` with fewer than the 5

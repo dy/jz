@@ -173,7 +173,33 @@ const pts = []
 for (let i = 0; i < 48; i++) pts.push(i * 0.5)
 const copy = (out, v, n) => { for (let k = 0; k < n * 2; k++) out[k] = v[k]; return reverse(out, out, n) }
 export let f = (n) => copy([], pts, 24)[n & 31]`],
+  // a cursor stepped after its store, in a loop the plan copies (a closed form and
+  // an integral copy, each landing the cursor where the loop as written leaves it;
+  // the copy's word stepped `(k + 1) | 0`, declared from the cursor's own value)
+  ['a cursor stepped after its store, the loop copied', `const buf = []
+export let f = (n) => { let k = 0; for (let i = 0; i < n; i++) { buf[k] = i; k++ } return k + buf[1] }`],
+  ['a cursor two copied loops step', `export let f = (n) => { const out = []; let k = 0; for (let i = 0; i < n; i++) { out[k] = i; k++ } for (let i = 0; i < n; i++) { out[k] = -i; k++ } return k + out.length + out[k - 1] }`],
+  ['a cursor a loop inside a loop steps', `export let f = (n) => { const buf = []; let k = 0; for (let j = 0; j < 3; j++) for (let i = 0; i < n; i++) { buf[k] = i + j; k++ } return k * 1000 + buf.length + buf[k - 1] }`],
 ]
+
+// A landing proves nothing of its own: a cursor a copied loop moves by a fraction,
+// a cursor stepped past a store a `try` holds, and every copy under coldTrap (the
+// loop as written a throw, its landings standing alone) store at a Number key.
+test('index store: a cursor the plan lands is an index only where its loop as written steps it by its stores', () => {
+  const half = `export let f = (n) => { const buf = []; let k = 0; for (let i = 0; i < n; i++) { k += 0.5 } for (let i = 0; i < n; i++) { buf[k] = i; k++ } return buf.length * 1000 + (buf[k - 1] ?? -1) }`
+  const tried = `export let f = (n) => { const buf = []; let k = 0; for (let i = 0; i < n; i++) { try { buf[k] = i } catch (e) {} k++ } return k + buf.length }`
+  const after = kernels.find(([name]) => name.startsWith('a cursor stepped after'))[1]
+  // (under coldTrap a count the copy is not for throws: the counts it is for)
+  for (const src of [half, tried, after]) for (const optimize of levels(0, 2, 3, 'size', { level: 2, coldTrap: true }, { level: 3, coldTrap: true })) {
+    const host = oracle(src), wasm = run(src, { optimize })
+    for (const n of optimize?.coldTrap ? [0, 1, 3, 9] : [0, 1, 3, 7.5, -2]) is(wasm.f(n), host.f(n), `f(${n}) at ${JSON.stringify(optimize)}`)
+  }
+  if (belowOpt(2)) return
+  for (const optimize of levels(2, 3)) {
+    ok(/\$__arr_set_num\b/.test(wat(half, { optimize })), `a fractional step leaves a Number key at ${optimize}`)
+    ok(/\$__arr_set_num\b/.test(wat(tried, { optimize })), `a store under try leaves a Number key at ${optimize}`)
+  }
+})
 
 // The counter taken down at its edges, its value read at the test before a first round
 // (a count of 0 or 1) and after the body's last step, each count fixed by its one call.
