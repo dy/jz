@@ -397,3 +397,37 @@ landed and not ruled on.
 The briefs and the scouts' maps named above (`.work/phase-*.md` but 9b's, `.work/maps/`,
 `counter-widths.md`, `node-keys.md`, `exception-edges.md`, `populations-port.md`) are
 deleted: `git show df1f0a143:.work/<name>`.
+
+## Branches of the land-e landing (2026-11-17), tips before deletion
+
+```
+4157cd976 land-e                             the landing branch as the checks ran it, 49 commits on 92d14e2ba; the record's commit after it
+661b51a8f worktree-agent-a29e352754b8f20da   the reset's writer: C and D landed as d6e2ddad6 to 8a4fe07dc, the hang fix as 62ff8a67a, 74901a0d8, the Map finds as ad1fc6d1d to 97d520a45; its last three (the threshold after the exit test, the stress switch, a loop's first walk) were taken over by the compaction's writer
+81ebe4a1e worktree-agent-a0a76341c63c68a13   the data-form gate's writer, landed as a29ec8d31
+815b3c9e2 worktree-agent-a905fc21058d63473   the CI split's writer, landed as fde6cd535
+7d1b37b6a worktree-agent-ae6b74456898f3f46   the lift's writer, landed as 924660154 to 656168edb (the guards change set aside, not landed)
+397ccc486 worktree-agent-a951f3f2388f0c6cc   the for-in fact's writer, landed as 381e07647
+e667b22fb summary-array-n-l0                 the summary test restated for level 0, landed as 4157cd976
+9d0bf1ec2 land-c                             main as the land-c landing left it
+```
+
+At work or queued when this was written, each for the tree after this one:
+`worktree-agent-a1be0465fdf269fbe` (the compaction's writer: 529b7d23b, three fixes of
+wrong answers, the stress form, the walk's scratch by the work, the host's walk by its
+threshold, a window a site); `worktree-agent-a417d57c6f092b160` (the holders: 6f2f50491,
+on class B's tip e40ffa0ac; first the filled array's mark, a wrong answer this tree
+has); `worktree-agent-ac3852370d29a350c` (class B's second part, e40ffa0ac, five
+commits, handed back); `worktree-agent-a5f89d0c0c9d7eb2f` (the hoist's writer,
+8151718b2: constants read through a temporary to land, the identity folds and the load
+sinking held); `kinds-ada0` (cbed52d9b) and `decoders-ada0` (099c77415, the sums in
+lanes, held for the bench's parity by tolerance) and `worktree-agent-ada0cb75ccefb0bf6`
+(the relaxed floats' writer, now on comparisons); `rulings` (2df97ce3d, the tie band of
+8%). `worktree-agent-a4519a2dc39ff972e` (238aedd6e, the counter's bound tier) is still
+not landed and not ruled on.
+
+The landing check ran 13 legs in a row and took over six hours before it was cut (the
+owner: "anything above 1h is something wrong on our side"): its hosted suite was left to
+CI's split job, which this push runs for the first time. The briefs of this landing's
+writers are session scratch (`brief-lift.md`, `brief-hoist.md`, `brief-relaxed.md`,
+`brief-compact.md`, `brief-holders.md`, `brief-red.md`, and for the next tree
+`brief-tests.md`, `brief-lanes.md`).

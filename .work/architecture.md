@@ -2795,6 +2795,77 @@ current releases.
 
 The landing's battery: on e521f93b8, one leg at a time, two writers' suites beside it for most of it: `lint:imports` and `audit:files` clean; the examples 1.67× V8 by geomean against land-c's two runs (1.73× in the second run alone), jz ahead on 25 of 25, one page moved past 5% (fern, 7.6% faster); bench bytes by hash 51 of 105 moved against land-c's and no errors (two bytes in the 48 cases that declare the shift's bound, with 7b, 7c and the counted copy); the invariants leg (level 3, the facts guard on) 7,291; core 7,492; `test:bootstrap -- --full`, its five parts (the hosted suite 119 minutes; the hosted build 37,282,113 bytes by two writers' builds of this tip); level 0 7,275; level 3 7,289; wasi 7,364; generated 245; the integration suite 229 (1 skipped), 76, 76 and 79 at the default, level 0, level 3 and wasi; test262 4,120 and 0 failing; the core suite in one process 7,492. All passing. Eight hours. After the battery, on the same tree: the self-compile job's limit (the workflow file alone), this record, and the briefs' deletion, which re-points two tests' comments (those two files run again, 22 tests passing).
 
+## The land-e landing: array stores, the reset's last part, lifts over plain arrays, the late hoist (2026-11-17)
+
+49 commits on 92d14e2ba, tip `4157cd976`.
+
+### What landed
+
+- **The reset, C and D** (`d6e2ddad6`; `78d702b54`, `92efd1169`, `fd9911654`, `8a4fe07dc`), as land-d recorded them: a table made at start is saved whole before a round's first write.
+- **The hang fix** (`62ff8a67a`, `74901a0d8`). D's mask save linked a record in the running frame without lowering the escape flag; a rewind freed it and `$__survive` walked a cycle for ever. Every path that links a durable record now lowers the flag or stands behind a census site, and the mask is saved only where a store gives a deleted field back.
+- **Array stores, class A** (`cfd0d3b9f`, `10dbbbb31`, `6b0fc0598`, `443c9fd47`, `7ec5ca455`, `e85712190`, `287cd61d1`, `102c1afbd`, `c0612612a`): a store under a Number is inline inside the length and calls `__arr_set_num` past it; a counter or cursor stepped through stores is a proven element index; a counted loop splits at its arrays' ends. An index in [2^31, 2^32-2] past every length throws.
+- **Element facts, class B** (`cbec6fb3d`, `4050e8517`, `4a22bc2a8`): the summary bounds an array's Numbers and proves it free of holes from every store, so ToInt32 of an element is a truncation; counters closing from both ends and copied cursors keep their index proofs.
+- **Map finds** (`ad1fc6d1d`, `3ea262069`, `89421b585`, `97d520a45`): tables a quarter full at speed; a statement that reads then stores a key finds and inserts by the key's form.
+- **The vectorizer** (`924660154`, `08e4d9647`, `757919f19`, `9ffcc2c6c`, `e57ff2893`, `231e35dce`, `7de74b797`, `365463696`, `b10ef60cc`, `51f37a352`): reductions over plain arrays, and in the exact tier over an array holding records of 2 to 8 fields in a row; an address teed once read as its value; a Float32Array compared with a double as JavaScript does; advisories only where no copy lifted, with the cause.
+- **The late hoist** (`3b149f861`, `5a5f3d55a`): invariant arithmetic leaves every loop without vector code, outermost included, last among the loop passes, only where it saves work a round.
+- **The for-in fact** (`381e07647`): the init-order walk names the callee of a builtin call made during initialization where it took every function made so far as run. Pinned by no test: the rule that a walk of a builtin sequence runs nothing.
+- **The data-form gate** (`a29ec8d31`; listings `a47c99e0b`, `0cd788b79`): 744 cells, each form held to the best form's code, the listing only shrinking.
+- **The self-compile job split** (`fde6cd535`): `bootstrap` and four `hosted` slices. Not yet run on CI.
+- **`149a0e47a`, the integrator's**: an unsigned i32 compare is decided where a side's sign is known; a never-run arm of `L[3e9] = 5` had failed 10 invariant tests.
+- **Found on the way**: `f76d64c7c` rolls an unrolled float sum only under relaxedFloat (`656168edb`, 18,560 checks); `64a4684b8` leaves the escape log full after every compaction move; `e562a359a` and `5007613df` rewrite the last stub of a chain below the floor, a regression of `78d702b54` ([16,16] for [16,7] after a compaction and a reset).
+
+### Wrong answers fixed here that v1.0.3 has
+
+- A dot unrolled by five by hand over fractional Float64Array data, `optimize: true`: 23393190.000000015 for Node's 23393189.999999966.
+- A loop pushing a 400,000-element Float64Array into a module array, an export that allocates, one that reads: 1,2,11 for 1,2,3 at the default level and speed.
+- An object used as a dictionary across `memory.reset()`: `D.list = ['z']` in a round, then every call threw.
+
+Also wrong on main, v1.0.3 not checked: an own `push` set during initialization; a Float32Array comparison at speed; a Map's and a Set's table across a reset.
+
+### What is measured
+
+- Gates on `0cd788b79`: data-forms 653 of 744 short (666 on main and `a47c99e0b`; against it 27 closed, 356 smaller, 35 larger, 14 new); vector-coverage 417 of 840 marks; the perf ratchet's buf 30,083 to 30,475 loop-body ops by `5007613df`.
+- The integrator's probes on `0cd788b79` match Node but for the README's allowances; reset 344 of 344.
+- Time ratios on the M4: stdlib-ddot at jz-exact over rust-wasm 2.355 to 0.780; mat4 likewise 1.177 to 1.008, rust's arithmetic exactly (x64 open); bezfit 0.797 of strict C-wasm and 1.128 of c-wasm-fast (1.42 before), its checksum reading no fitted value; mapint over C-wasm 1.39 to 1.05, mapobj 1.46 to 1.26; polytri 1.91 to about 1.80 of C-wasm; fabrik 2.182.
+- Decoders on `0cd788b79` at speed, over V8 / over bun: QOA 1.255 / 0.61, TTA 0.92 to 0.94 / 1.015, ALAC 1.07 to 1.13 / 1.605.
+- Class B makes the hosted self-build 14 to 15% slower; the cut is queued.
+- The landing check, on `5007613df`: lint and the file audit clean; bench bytes of 105 cases, 96 moved against land-d, no error; invariants 7,329; default 7,531; level 0 7,312 and 1 failing (test/summary.js:779, a test outdated by `4050e8517`, restated as `4157cd976`); level 3 7,327; wasi 7,402; generated 282; integration 229, 76, 76, 79; test262 4,120 and 0 failing; one process 7,531 (2 h 38 min). On `4157cd976`: `summary` under four legs, level 0 whole 7,313, `test:self` 89, the examples 1.72× and 1.68× of V8 in two runs, 24 and 25 of 25 ahead (rfft 0.91 then 1.03, a 9 µs kernel); against land-d no example's lead moved past the noise (ulam, the largest, 1.014 by twelve alternated rounds, six each way; its speed build 13,250 to 14,116 bytes). Not run on this tip: the hosted suite, 2 h 15 min on land-d, left to CI's split job, which this push runs for the first time. The check ran 13 legs in a row and was cut after six hours on the owner's rule that nothing runs over an hour.
+
+### Known wrong on this tree, landed knowingly
+
+- **A filled array's mark** (found by the audit, brought by `4050e8517`; main and v1.0.3 are right): a holed `new Array(3)` and an array a covering loop fills, read through one function, answer 0 holes at `optimize: false` and `'size'` for Node's 300: the mark was keyed by the cell's root and cleared the hole from the joined cell. And at `optimize: false` a covering loop whose value reads the array it fills (`x[i] = x[n-1-i] === undefined ? 1 : 2`) answers 8 for 6. No test of this tree catches either. Fix `af1632b60` on the holders' branch (the mark a fact of the construction, the count a meet folded in `unify`), with pins; it does not apply here alone (four conflicts against class B's second part) and comes first in the next tree.
+- Older than the tree, wrong at the default level and speed: an object stored into a module array of constants is freed (v1.0.3, main; fix `55d314139`); an array made at start, grown, then shifted never returns (main; fix `0be6b2a38`); one that takes named properties and grows reads them empty (main; fix `3c53a2649`).
+- A function that is exported and also called inside the program with a string (`f('10')` where `f = (n) => { ... i + 1 < n ... }`) reads the string as NaN: the export rule holds the parameter as f64 and the internal call passes the value as it is. Every level, v1.0.3 and main too. Fix assigned (B2 below).
+- An exported `(a, b) => a < b` called by the host with "a", "b" answers 0 at every level, in v1.0.3 too: the README's "Numeric export parameters" contract, which names `+` and not the comparison. Ruled to stay; the README gains the clause.
+- Symbol.toPrimitive is never called by an operator. Level 0's `+` over a typed array's NaN canonicalizes it; `DataView.getFloat64` returns the canonical NaN. No README note covers these.
+
+### Queued for the next tree
+
+- **Compaction** (`worktree-agent-a1be0465fdf269fbe`, on `5007613df`): `0be6b2a38` fix 4, `55d314139` fix 1, `3c53a2649` fix 5, `3d9441213` the stress switch, `4486e611b` 1a, `d9ca06fcb` 1c (built otherwise than approved), `aaba55d1c`, `a9c46d439` the stress form, `f018467d9` rule 2, `2d03ca18c` rule 3, `3ebce5115`, `c5f050dec`. decode-wav after 1a and 1c 631 to 450 µs.
+- **Hoist writer** (on `5007613df`): `d3dbb840c` constants read through a temporary, `b95894aeb`, `a122712e5`. Held: `145ae6ac6` (identity folds) until decode-alac's 1.064 is retimed; `8151718b2` (sink-loads, off) stays on the branch, no threshold measured.
+- **Class B** (on `435bdbac7`): `edc4393d7` the compile-time cut, `64ad2a709` the split past the growth budget (fabrik 1.286 to 1.062 of C-wasm), `0be322a08`, `0bb747dc8`, `e40ffa0ac`. Held: the split on a receiver that may be missing.
+- **Relaxed floats writer** (`kinds-ada0`): `435bdbac7`, a nullable array keeps its cell (QOA 0.782 of land-e's build); `cbed52d9b`, no version on a bound no fact gives (ALAC 0.912 of V8). Held for parity: lane sums `099c77415` (`decoders-ada0`).
+- **Holders** (`worktree-agent-a417d57c6f092b160`, on `e40ffa0ac`): `6f2f50491`, a statement list ends at a statement that reads through a receiver only missing (mapint, mapobj, webaudio smaller); `af1632b60`, the filled array's mark. Next: the split on a receiver that may be missing, `this`, a field, a closure. **`rulings`**: `2df97ce3d`, the tie band.
+
+### The owner's rulings of 2026-11-17
+
+- "Let's get everything done into the best shape. [...] we need faster iterations. [...] it should be embeddable and able to live-compile. So finish your phases work and find out what other work or refactoring is needed to land brilliant v1.1.0". Turns into the audit `jz-110-audit` (`audit/plan-1.1.0.md`).
+- "Parity at speed - tolerance is allowed, but 26% is too much. Ties - ok, 5-8% can be said ties. [...]" The 26% was nbody's time saved by lane sums, read as a deviation (measured: at most 1,303 ulp, relative 1.66e-13). Turns into: nbody's ports to the near hash; `WASM_BAND_TOL` 1.05 to 1.08; per-case twists in one layer with stated conditions.
+- "We should not have tests that run 9h, anything above 1h is something wrong on our side." Turns into the battery's cut; target: the landing check under an hour.
+- "we don't have to rerun the bench for contenders if we already have it - record fixed by contender version, platform it ran with." Owed: rival timings keyed by version, flags, case source and CPU.
+- Sent to the relaxed floats' writer: A2 (the export contract stays, the README gains the comparison), B2 (no f64 parameter where an internal caller may pass a non-Number), Symbol.toPrimitive built or named.
+
+### Dropped or ruled out
+
+- Read-only parameter views: a second cell model, until a data-form row measures the class.
+- F7, a constant divisor's reciprocal: no gain (munsell 0.998), eight cases lose parity.
+- The rival's other float folds: unbounded in ulp, or wrong on inf, NaN or underflow.
+- The scout's three repeat leads: no gain on the M4.
+- stdlib-ddot's guards change: its running loop has no bounds test now.
+- polytri's count chain: 0.965 for 150 to 250 lines.
+- ALAC's design (B): the specializer already assumes integers.
+- Float32Array as a data form: no static bar for a 2-lane loop.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -2867,6 +2938,19 @@ The landing's battery: on e521f93b8, one leg at a time, two writers' suites besi
   need to work on meeting these claims when we land all phases"): phase 11.
 - Phase 4's memo is dropped (the owner, 2026-11-15: "if useless then drop"; the
   integrator's reading, in its row).
+- A case within 8% of the best rival is a tie, which passes the claims gate, is printed
+  as a target and is never called a lead (the owner, 2026-11-17: "Ties - ok, 5-8% can be
+  said ties"). Built on the branch `rulings` (`2df97ce3d`), not on a tree yet.
+- At `'speed'` the bench holds a relaxed lane to a tolerance, not to JavaScript's bits
+  (the owner, 2026-11-17: "Parity at speed - tolerance is allowed"): the single-precision
+  hash for the float cases where a relaxed lane differs in rounding only, for jz and for
+  the rivals' fast-math lanes alike. Not built yet; the sums in lanes wait on it.
+- jz leads by general means; where only a twist for one case would win, the twists live
+  in one layer with stated conditions, or the case is listed as a gap (the owner,
+  2026-11-17, quoted in the land-e record).
+- No test run takes over an hour (the owner, 2026-11-17): the landing check and each of
+  CI's jobs. The landing check of land-e did not meet it; the chain `tests-time` is the
+  work to.
 
 ## Open questions
 
@@ -2875,3 +2959,9 @@ The landing's battery: on e521f93b8, one leg at a time, two writers' suites besi
   what the emitter and the vectorizer scaffold accept.
 - A memo shipped as build-time data would help the first compile of a process (160 ms
   against 29 ms warm for the same program); the per-process memo does not.
+- `host: 'native'` as a public value (a raw host with no interop: no tail calls, a
+  uniform parameter lane) and a small frozen embedder ABI (`memory`, `__jz_heap`,
+  `__jz_alloc`, `__jz_clear`, accessors for a typed array's data address and length):
+  asked for by the audio session on 2026-11-17 as the owner's decision of that day; to
+  be confirmed by the owner with the 1.1.0 list. Today `@audio/compile-vst` reaches for
+  internal flags and writes a typed array's header itself.
