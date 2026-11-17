@@ -23,7 +23,7 @@
   "step2": {"2":"...............","speed":"..............."},
   "cursor": {"2":"VVVVVVVVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},
   "sq": {"2":"VVVVVVVVV......","speed":"VVVVVVVVV......"},
-  "fill": {"2":"VVV...VVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},
+  "fill": {"2":"VVVVVVVVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},
   "wrap": {"2":"...............","speed":"..............."},
   "tenth": {"2":"VVVVVVVVV......","speed":"VVVVVVVVV......"},
   "third": {"2":"VVVVVV.........","speed":"VVVVVV........."}

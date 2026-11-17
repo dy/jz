@@ -6,6 +6,7 @@ import { matchCanonBlock, matchCanonSelect } from './idioms.js'
 import { inlinePureCallExpr } from './inline-pure.js'
 import { CONVERT_LANES, INT_WIDEN_F32, LANE_COMPARE, LANE_INFO, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
+import { immediate } from '../rules.js'
 
 // Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
 //   v128.bitselect(splat(C), coreV, laneNe(coreV, coreV))
@@ -129,6 +130,78 @@ function laneCompare(ctx, op, a, b) {
   if (fa !== 's' && fb !== 's') return simd.replace(/_s$/, '_u')
   return fa !== 'u' && fb !== 'u' ? simd : null
 }
+// A comparison in an f32 lane. jz compares Float32Array data as doubles, the elements
+// promoted; between two singles the f32 comparison answers as the double one (a promotion is
+// exact and keeps the order, IEEE 754-2019 §5.11). Against a double d no single need equal,
+// it compares with f = RN32(d) (§4.3.1) and takes the strictness the tie needs: for a single
+// x other than f, x and d lie on one side of f, d's nearest single, and at x = f the truth is
+// f's own against d, in double:
+//   x OP d  =  x OP' f  or  (x == f and f OP d)     OP' the strict form of OP
+// so `x > 0.1` is `x >= RN32(0.1)` (0.1 rounds up), `x < 0.1` is `x < RN32(0.1)`, `x == 0.1`
+// is false; NaN on either side answers as the double comparison. A constant's tie is decided
+// here; an invariant's is a mask of its own, its splats computed ahead of the strips
+// (hoist-splats.js). No comparison is answered at the nearest single alone, at any level.
+const FLIP = { eq: 'eq', ne: 'ne', lt: 'gt', le: 'ge', gt: 'lt', ge: 'le' }
+const STRICT = { lt: 'lt', le: 'lt', gt: 'gt', ge: 'gt' }
+const TIED = { lt: 'le', le: 'le', gt: 'ge', ge: 'ge' }
+const REL = { eq: (a, b) => a === b, ne: (a, b) => a !== b, lt: (a, b) => a < b, le: (a, b) => a <= b, gt: (a, b) => a > b, ge: (a, b) => a >= b }
+// (the value an f64 constant's immediate spells, NaN's included; null for anything else)
+const constValue = (v) => typeof v === 'number' ? v : typeof v === 'string' && /^[-+]?nan/i.test(v) ? NaN : immediate('f64.const', v)
+// (a double operand of an f32-lane comparison: a constant `{ inv: false, value }`, an f64
+// invariant `{ inv: true }`, or null)
+const doubleOf = (n, ctx) => {
+  if (!isArr(n)) return null
+  if (n[0] === 'f64.const') { const v = constValue(n[1]); return v === null ? null : { inv: false, value: v } }
+  if (n[0] !== 'local.get' || typeof n[1] !== 'string') return null
+  if (ctx.constLocals?.has(n[1])) return { inv: false, value: ctx.constLocals.get(n[1]) }
+  return ctx.localKind.get(n[1]) === 'invariant' && ctx.fnLocals?.get(n[1]) === 'f64' ? { inv: true, value: 0 } : null
+}
+/** The lane test of the scalar comparison `cond`, to build once what evaluates before it has
+ *  been lifted (laneTest), or null where it is not a lane comparison. */
+function laneTestOf(ctx, cond) {
+  if (!isArr(cond) || cond.length !== 3 || typeof cond[0] !== 'string') return null
+  if (ctx.laneType === 'f32' && cond[0].startsWith('f64.')) {
+    const rel = cond[0].slice(4)
+    if (!(rel in FLIP)) return null
+    const da = doubleOf(cond[1], ctx), db = doubleOf(cond[2], ctx)
+    if (da && db) return null
+    return da ? { rel: FLIP[rel], x: cond[2], d: cond[1], k: da } : { rel, x: cond[1], d: cond[2], k: db }
+  }
+  const simd = laneCompare(ctx, cond[0], cond[1], cond[2])
+  return simd ? { simd, a: cond[1], b: cond[2] } : null
+}
+/** The lane mask of a test of laneTestOf, or null (failed). */
+function laneTest(ctx, t) {
+  if (t.simd) {
+    const a = liftExprV(t.a, ctx); if (ctx.fail) return null
+    const b = liftExprV(t.b, ctx); if (ctx.fail) return null
+    return [t.simd, a, b]
+  }
+  const x = liftExprV(t.x, ctx); if (ctx.fail) return null
+  const { rel, k } = t
+  if (!k) { const y = liftExprV(t.d, ctx); return ctx.fail ? null : [`f32x4.${rel}`, x, y] }
+  if (!k.inv) {
+    const c = k.value, f = Math.fround(c), F = ['f32x4.splat', ['f32.const', f]]
+    if (rel === 'eq' || rel === 'ne') {
+      if (f === c) return [`f32x4.${rel}`, x, F]
+      // (no single equals c: the same answer in every lane, x still evaluated)
+      const w = rel === 'eq' ? '0' : '-1'
+      return ['block', ['result', 'v128'], ['drop', x], ['v128.const', 'i32x4', w, w, w, w]]
+    }
+    return [`f32x4.${REL[rel](f, c) ? TIED[rel] : STRICT[rel]}`, x, F]
+  }
+  // an invariant v: f = demote(v), the tie `promote(f) OP v` a lane mask, both splats
+  // invariant; x read twice through a temp
+  const F = () => ['f32x4.splat', ['f32.demote_f64', cloneNode(t.d)]]
+  const tie = (r) => ['i32x4.splat', ['i32.sub', ['i32.const', 0], [`f64.${r}`, ['f64.promote_f32', ['f32.demote_f64', cloneNode(t.d)]], cloneNode(t.d)]]]
+  const tmp = isArr(x) && x[0] === 'local.get' ? null : `$__cmp${ctx.freshIdRef.next++}`
+  if (tmp) ctx.extraLocals.push(['local', tmp, 'v128'])
+  const X = () => tmp ? ['local.get', tmp] : cloneNode(x)
+  const eq = ['v128.and', ['f32x4.eq', X(), F()], tie('eq')]
+  const mask = rel === 'eq' ? eq : rel === 'ne' ? ['v128.not', eq] : ['v128.or', [`f32x4.${STRICT[rel]}`, X(), F()], ['v128.and', ['f32x4.eq', X(), F()], tie(rel)]]
+  return tmp ? ['block', ['result', 'v128'], ['local.set', tmp, x], mask] : mask
+}
+
 /** A lane local's write, for the comparisons that read it: `value` its scalar value where
  *  the write is its one plain definition, null where an arm or a mask sets it. */
 const noteLaneWrite = (ctx, name, value) => {
@@ -303,13 +376,8 @@ function invariantScalar(n, ctx) {
 // The all-ones/all-zeros lane mask of an `if` condition, or null (failed).
 function condMask(cond, ctx) {
   if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
-  const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-  const cmp = cmpOp && cond.length === 3 ? laneCompare(ctx, cmpOp, cond[1], cond[2]) : null
-  if (cmp) {
-    const a = liftExprV(cond[1], ctx); if (ctx.fail) return null
-    const b = liftExprV(cond[2], ctx); if (ctx.fail) return null
-    return [cmp, a, b]
-  }
+  const test = laneTestOf(ctx, cond)
+  if (test) return laneTest(ctx, test)
   const intMask = liftIntMask(cond, ctx)
   if (intMask) return intMask
   // the same truth in every lane: 0 - (C != 0) is all ones or none in each word
@@ -707,7 +775,9 @@ export function liftExprV(expr, ctx) {
       return [CONVERT_LANES.f32[op], v]
     }
     if (op === 'f64.const') {
-      if (!vecState.relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedFloat (f32 round of the constant)')
+      // (a constant single precision holds is itself in the lane; another rounds there)
+      const v = constValue(expr[1])
+      if (!vecState.relaxF32 && !(v !== null && Math.fround(v) === v)) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedFloat (f32 round of the constant)')
       return ['f32x4.splat', ['f32.const', expr[1]]]
     }
     if (op === 'f64.neg' || op === 'f64.abs') return ['f32x4.' + op.slice(4), liftExprV(expr[1], ctx)]
@@ -854,20 +924,18 @@ export function liftExprV(expr, ctx) {
     // ternary `COND ? X : Y` to this when both arms are cheap/pure. Lift to
     // v128.bitselect(X, Y, mask), preserving select's X → Y → COND order:
     // a value operand can tee a local the comparison reads. Unlike `if`,
-    // select evaluates both values before its condition. f32 comparisons map
-    // their promoted operands back to f32x4 under the precision relaxation.
+    // select evaluates both values before its condition. An f32 lane's comparison of
+    // promoted operands is laneTestOf's, exact at every level.
     if (expr.length === 4) {
       const cond = expr[3]
-      const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-      const cmpSimd = cmpOp && cond.length === 3 ? laneCompare(ctx, cmpOp, cond[1], cond[2]) : null
-      const intMask = cmpSimd ? null : liftIntMask(cond, ctx)
-      if (!cmpSimd && !intMask) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
+      const test = laneTestOf(ctx, cond)
+      const intMask = test ? null : liftIntMask(cond, ctx)
+      if (!test && !intMask) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
       const x = liftExprV(expr[1], ctx); if (ctx.fail) return null
       const y = liftExprV(expr[2], ctx); if (ctx.fail) return null
       if (intMask) return ['v128.bitselect', x, y, intMask]
-      const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
-      const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
-      return ['v128.bitselect', x, y, [cmpSimd, ca, cb]]
+      const mask = laneTest(ctx, test); if (ctx.fail) return null
+      return ['v128.bitselect', x, y, mask]
     }
     return liftFail(ctx, 'non-canonical select (not a NaN-canon idiom)')
   }
@@ -905,7 +973,8 @@ export function liftExprV(expr, ctx) {
     // jz lowers `cond ? X : Y` to (if (result T) COND (then X)(else Y)). In an f32
     // lane it computes in f64 (promote/demote around the store), so the `if` carries
     // `(result f64)` and COND is an `f64.*` compare — accept both, mapping to f32x4.
-    // The branch values are f32-mapped by recursion; gated by relaxedFloat via those.
+    // The branch values are f32-mapped by recursion; a constant single precision does not
+    // hold is gated on relaxedFloat there.
     const resTy = isArr(expr[1]) && expr[1][0] === 'result' ? expr[1][1] : null
     if (resTy !== ctx.laneType && !(ctx.laneType === 'f32' && resTy === 'f64')) return liftFail(ctx, 'conditional without lane-typed result')
     const thenN = expr[3], elseN = expr[4]
@@ -918,14 +987,11 @@ export function liftExprV(expr, ctx) {
     if (!isArr(elseN) || elseN[0] !== 'else' || elseN.length < 2) return liftFail(ctx, 'malformed conditional else-branch')
     let cond = expr[2]
     if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]  // strip `!= 0`
-    // f32 lane: operands were promoted, so the compare is `f64.*` — use its f32x4 form
-    // (operands are exact f32→f64 promotions, so the lane comparison is unchanged).
-    const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
-    const cmpSimd = cmpOp && cond.length === 3 ? laneCompare(ctx, cmpOp, cond[1], cond[2]) : null
-    const intMask = cmpSimd ? null : liftIntMask(cond, ctx)
-    if (!cmpSimd && !intMask) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
-    const ca = intMask ? null : liftExprV(cond[1], ctx); if (ctx.fail) return null
-    const cb = intMask ? null : liftExprV(cond[2], ctx); if (ctx.fail) return null
+    // f32 lane: operands were promoted, so the compare is `f64.*` (laneTestOf)
+    const test = laneTestOf(ctx, cond)
+    const intMask = test ? null : liftIntMask(cond, ctx)
+    if (!test && !intMask) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
+    const testMask = intMask ? null : laneTest(ctx, test); if (ctx.fail) return null
     // Lift a branch: its prelude sets, then its tail value snapshotted into `outTmp`.
     const liftArm = (arm, outTmp) => {
       const out = []
@@ -942,7 +1008,7 @@ export function liftExprV(expr, ctx) {
     ctx.extraLocals.push(['local', tv, 'v128'], ['local', ev, 'v128'], ['local', mtmp, 'v128'])
     // Mask FIRST: COND may carry an address `local.tee` the branch values read, so it must run
     // before them (matching scalar order — COND evaluates before the taken branch).
-    const maskSet = ['local.set', mtmp, intMask ?? [cmpSimd, ca, cb]]
+    const maskSet = ['local.set', mtmp, intMask ?? testMask]
     const thenSeq = liftArm(thenN, tv); if (ctx.fail) return null
     const elseSeq = liftArm(elseN, ev); if (ctx.fail) return null
     return ['block', ['result', 'v128'],
