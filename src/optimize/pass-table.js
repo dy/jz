@@ -122,7 +122,7 @@ export const PASSES = [
   P('specializeLoops', 'func', 'intNarrow +specializeLoops', {
     after: [['lowerToInt32Tails', 'the loops specialized on reads that hit, after the conversion\'s tail']],
     reads: 'checkedNumRead holeNumRead checkedTwin boundsSnapshot irange presentNumRead', makes: 'copies plan', lost: 'checkedNumRead checkedTwin boundsSnapshot irange presentNumRead' }),
-  P('narrowInts', 'func', 'intNarrow', { after: [['specializeLoops', 'integer registers over its copies']], takes: 'copies plan', reads: 'provenWord irange presentNumRead cold', drops: 'loweringLinks irange unsigned presentNumRead cold checkedTwin checkedNumRead provenWord', lost: 'provenWord irange presentNumRead cold' }),
+  P('narrowInts', 'func', 'intNarrow', { after: [['specializeLoops', 'integer registers over its copies']], takes: 'copies plan', reads: 'provenWord wordOf numHull irange presentNumRead cold', drops: 'loweringLinks irange unsigned presentNumRead cold checkedTwin checkedNumRead provenWord', lost: 'provenWord irange presentNumRead cold' }),
   P('narrowWrappedWords', 'func', 'intNarrow wrappedWords', { after: [['narrowInts', 'a wide integer read only for its low word']], makes: 'wrapped', drops: 'loweringLinks cold' }),
   P('refoldMemargs', 'func', 'intNarrow wrappedWords', { after: [['narrowWrappedWords', 'the addresses it narrowed']], takes: 'wrapped' }),
   P('combineGuards', 'func', 'intNarrow combineGuards', { after: [['narrowInts', 'over the integers: the guards of the copies']], takes: 'copies', reads: 'irange presentNumRead', lost: 'irange presentNumRead' }),

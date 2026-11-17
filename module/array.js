@@ -18,7 +18,7 @@
  * @module array
  */
 
-import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, walk, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
+import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, exactWord, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, walk, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey, idxKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
@@ -1543,13 +1543,9 @@ export default (ctx) => {
         if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
         // Every element of a dense array of words is one (summary elemNumsOfExpr):
         // an integer of one signed word, never -0, which the truncation keeps exactly.
-        // A float consumer reads the load itself (ir/numeric.js asF64, `wordOf`).
+        // A float consumer reads the load itself (ir/numeric.js exactWord, `wordOf`).
         const nums = dense ? ctx.summary?.at(ctx.func.current)?.elemNumsOfExpr(arr) : null
-        if (nums && nums.int && nums.nz && nums.lo >= -0x80000000 && nums.hi <= 0x7fffffff) {
-          const word = typed(['i32.trunc_sat_f64_s', rd], 'i32')
-          word.wordOf = rd
-          return word
-        }
+        if (nums && nums.int && nums.nz && nums.lo >= -0x80000000 && nums.hi <= 0x7fffffff) return exactWord(rd)
         numHullOf(rd, nums ?? elemHull(arr, false), nums ? null : load)
         return holeNumberRead(rd, holeNumber)
       }

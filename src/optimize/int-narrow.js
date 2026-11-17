@@ -436,22 +436,85 @@ export function narrowBoxedLocals(fn) {
   return true
 }
 
-export function narrowInts(fn, assume = null, expand = true, words = 'wide', known = null) {
-  if (!isArr(fn) || fn[0] !== 'func') return false
-  // (`known`: the plan of this function and `assume` as they stand, read by the pass before)
-  const plan = known ?? integerPlan(fn, assume)
-  if (!plan) return false
-  const { bodyStart, decls, facts, N, early, tally, held, at, whole } = plan
-  const { av } = facts
+// Within ±2^51 and no NaN, the truncation plus 1.5·2^52 holds the integer in its
+// low bits, exactly: the integer of `node`, an integer there, in its word or its 64
+// bits, with no conversion at all.
+const NEAR = 2 ** 51
+const added = (node, w) => {
+  const bits = ['i64.reinterpret_f64', ['f64.add', node, ['f64.const', 6755399441055744]]]
+  return w === 'i64' ? ['i64.sub', bits, ['i64.const', BIAS]] : ['i32.wrap_i64', bits]
+}
 
-  // Temporaries of the integer forms (the two operands of a minimum).
+// What the emitter proved of the number a truncation `t` converts, one read off
+// memory, where the intervals know nothing of a load: `wordOf` on the truncation, an
+// integer of one signed word (module/array.js, a dense array of words; module/core.js,
+// a field every write of which is one); `numHull` on the operand, a Number within the
+// hull, and where `raw` a missing element's box besides, a NaN (ir/numeric.js hullWord).
+const WORD = { lo: -(2 ** 31), hi: 2 ** 31 - 1, int: true, nan: false }
+const provenOf = (t, x) => t.wordOf != null ? WORD
+  : isArr(x) && x.numHull ? { lo: x.numHull.lo, hi: x.numHull.hi, int: x.numHull.int, nan: x.numHull.raw != null } : null
+/** `t`, a truncation of a number read off memory the emitter bounded, in the form
+ *  `words` gives it, its operand rewritten by `F`; null where `t` is none, or where
+ *  its own saturation could fire inside the bound (a position's truncation keeps it).
+ *  Under 'add', within ±2^51: the truncation plus 1.5·2^52 read as bits, no conversion
+ *  and no test; where the number may be a missing value, a NaN, that sum's exponent
+ *  tested, the NaN's arm 0, as every truncation takes it (`temp`: an i64 local).
+ *  Otherwise the truncation the level keeps: the 32-bit one under 'narrow', else the
+ *  low word of the 64-bit one (bench/lowering.mjs: on x64 V8 the 32-bit one is the
+ *  dearest where its number outlives it, on arm64 the 64-bit one is the cheaper). */
+const provenForm = (t, words, temp, F) => {
+  const op = t[0], wide = op === 'i32.wrap_i64' && isArr(t[1]) && t[1][0] === 'i64.trunc_sat_f64_s'
+  if (!wide && op !== 'i32.trunc_sat_f64_s' && op !== 'i64.trunc_sat_f64_s' || t.length !== 2) return null
+  const x = wide ? t[1][1] : t[1], v = provenOf(t, x)
+  if (!v || (op === 'i32.trunc_sat_f64_s' ? !fitsI32(truncation(v)) : !(v.lo > -(2 ** 63) && v.hi < 2 ** 63))) return null
+  const w = op === 'i64.trunc_sat_f64_s' ? 'i64' : 'i32', node = F(x)
+  if (words === 'add' && v.lo > -NEAR && v.hi < NEAR) {
+    const s = v.int ? node : ['f64.trunc', node]
+    if (!v.nan) return added(s, w)
+    const b = temp('i64'), bits = ['local.tee', b, ['i64.reinterpret_f64', ['f64.add', s, ['f64.const', 6755399441055744]]]]
+    return ['select', w === 'i64' ? ['i64.sub', bits, ['i64.const', BIAS]] : ['i32.wrap_i64', bits], [w + '.const', 0],
+      ['i64.eq', ['i64.shr_u', ['local.get', b], ['i64.const', 52]], ['i64.const', 0x433]]]
+  }
+  if (w === 'i64') return ['i64.trunc_sat_f64_s', node]
+  return words === 'narrow' && fitsI32(truncation(v)) ? ['i32.trunc_sat_f64_s', node] : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node]]
+}
+// A function's temporaries of the integer forms, `$__in<k>` past those it declares.
+const tempsOf = (fn, bodyStart) => {
   let next = 0
   for (let i = 2; i < bodyStart; i++) {
     const m = isArr(fn[i]) && typeof fn[i][1] === 'string' && /^\$__in(\d+)$/.exec(fn[i][1])
     if (m) next = Math.max(next, +m[1] + 1)
   }
   const temps = []
-  const temp = type => { const name = `$__in${next++}`; temps.push(['local', name, type]); return name }
+  return { temps, temp: type => { const name = `$__in${next++}`; temps.push(['local', name, type]); return name } }
+}
+// A function the intervals could not read (int-range.js: a `try`, a branch to a label
+// it does not know): its words read off memory take the level's form all the same.
+const provenWords = (fn, words) => {
+  const { bodyStart } = declsOf(fn), { temps, temp } = tempsOf(fn, bodyStart)
+  let did = false
+  const walk = n => {
+    if (!isArr(n)) return n
+    const p = provenForm(n, words, temp, walk)
+    if (p) { did = true; return p }
+    for (let i = 1; i < n.length; i++) n[i] = walk(n[i])
+    return n
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
+  if (temps.length) fn.splice(bodyStart, 0, ...temps)
+  return did
+}
+
+export function narrowInts(fn, assume = null, expand = true, words = 'wide', known = null) {
+  if (!isArr(fn) || fn[0] !== 'func') return false
+  // (`known`: the plan of this function and `assume` as they stand, read by the pass before)
+  const plan = known ?? integerPlan(fn, assume)
+  if (!plan) return provenWords(fn, words)
+  const { bodyStart, decls, facts, N, early, tally, held, at, whole } = plan
+  const { av } = facts
+
+  // Temporaries of the integer forms (the two operands of a minimum).
+  const { temps, temp } = tempsOf(fn, bodyStart)
   let did = false
 
   const widthOf = (...es) => es.every(e => fitsI32(at(e))) ? 'i32' : 'i64'
@@ -459,12 +522,7 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
   const konst = (c, w) => w === 'i32' ? ['i32.const', int32(c)] : ['i64.const', String(Number(c) + 0)]
   // The truncation of `node` in width `w`, `of` its value before rewriting: the
   // conversion the value's interval admits (V8 prices them by architecture,
-  // bench/lowering.mjs). Within ±2^51 and no NaN, the truncation plus 1.5·2^52
-  // holds the integer in its low bits, exactly: no conversion at all.
-  const added = (node, w) => {
-    const bits = ['i64.reinterpret_f64', ['f64.add', node, ['f64.const', 6755399441055744]]]
-    return w === 'i64' ? ['i64.sub', bits, ['i64.const', '0x4338000000000000']] : ['i32.wrap_i64', bits]
-  }
+  // bench/lowering.mjs), the add (above) within ±2^51 and no NaN.
   const truncated = (node, w, of = node) => {
     const v = at(of)
     if (words === 'add' && v && !v.nan && v.lo > -(2 ** 51) && v.hi < 2 ** 51) return added(whole(of) ? node : ['f64.trunc', node], w)
@@ -744,21 +802,29 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
     if (op === 'i32.wrap_i64') { const w = wrappedWordOp(n[1], F); if (w) { did = true; return w } }
     // (a truncation integer arithmetic does not absorb converts as the interval admits)
     const conversion = v => (did ||= v[0] !== op || v[1]?.[0] !== n[1]?.[0], v)
+    // (each truncation: a number read off memory the emitter bounded, where the
+    // intervals know no load, takes the level's form by that proof, provenForm)
     if (op === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') {
       const v = truncates(n[1][1], 'low')
       if (v) { did = true; return v }
       // (an element key the emitter proved an integer within the 32-bit address range)
       if (n.provenWord && words === 'add') { did = true; return added(F(n[1][1]), 'i32') }
+      const p = provenForm(n, words, temp, F)
+      if (p) { did = true; return p }
       return conversion(truncated(F(n[1][1]), 'i32', n[1][1]))
     }
     if (op === 'i64.trunc_sat_f64_s') {
       const v = truncates(n[1], 'i64')
       if (v) { did = true; return v }
+      const p = provenForm(n, words, temp, F)
+      if (p) { did = true; return p }
       return conversion(truncated(F(n[1]), 'i64', n[1]))
     }
     if (op === 'i32.trunc_sat_f64_s') {
       const v = truncates(n[1], 'i32')
       if (v) { did = true; return v }
+      const p = provenForm(n, words, temp, F)
+      if (p) { did = true; return p }
       if (words === 'add' && fitsI32(truncation(at(n[1])))) return conversion(truncated(F(n[1]), 'i32', n[1]))
     }
     if (op === 'i32.trunc_sat_f64_u' && fitsI32(at(n[1])) && at(n[1]).lo >= 0 && takes(n[1])) { did = true; return I(n[1], 'i32') }

@@ -444,7 +444,9 @@ export function holdWordNumbers(fn) {
   const words = new Map()
   for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'local' && fn[i][2] === 'i32') words.set(fn[i][1], false)
   if (!words.size) return
-  const exact = (v) => Array.isArray(v) && v[0] === 'i32.trunc_sat_f64_s' && v.length === 2 && v.wordOf != null && v.wordOf === v[1]
+  // (the truncation as emit writes it: the 32-bit one, or below level 2 the low word of the 64-bit one, ir/numeric.js memoryWord)
+  const exact = (v) => Array.isArray(v) && v.wordOf != null && v.length === 2 && (v[0] === 'i32.trunc_sat_f64_s' ? v.wordOf === v[1]
+    : v[0] === 'i32.wrap_i64' && Array.isArray(v[1]) && v[1][0] === 'i64.trunc_sat_f64_s' && v[1].length === 2 && v.wordOf === v[1][1])
   let flat = false
   const scan = (n, parent) => {
     if (!Array.isArray(n)) { if (n === 'local.get' || n === 'local.set' || n === 'local.tee') flat = true; return }
@@ -469,7 +471,7 @@ export function holdWordNumbers(fn) {
     if (!Array.isArray(n)) return n
     if (done.has(n)) return done.get(n)
     for (let i = 1; i < n.length; i++) n[i] = walk(n[i])
-    const r = (n[0] === 'local.set' || n[0] === 'local.tee') && held(n) ? [n[0], n[1], n[2][1]]
+    const r = (n[0] === 'local.set' || n[0] === 'local.tee') && held(n) ? [n[0], n[1], n[2][0] === 'i32.wrap_i64' ? n[2][1][1] : n[2][1]]
       : n[0] === 'f64.convert_i32_s' && held(n[1]) && (n[1][0] === 'local.get' || n[1][0] === 'local.tee') ? n[1][0] === 'local.get' ? ['local.get', n[1][1]] : n[1]
       : n
     done.set(n, r); done.set(r, r)

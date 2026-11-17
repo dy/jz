@@ -135,11 +135,14 @@ const numbered = (inst) => {
   const walk = (n) => !Array.isArray(n) ? n : n[0] === '$p' ? (params.push(n[1]), ['local.get', `$x${params.length - 1}`]) : n.map(walk)
   return { tree: walk(inst), params }
 }
-// (a copy keeps the emitter's mark a code rule reads: `wordOf`, the operand a truncation truncates)
+// (a copy keeps the emitter's marks a code rule reads: `wordOf`, the operand a truncation
+// truncates, the 32-bit one's or the 64-bit one's under its low word; `numHull`, a bound)
 const clone = (n) => {
   if (!Array.isArray(n)) return n
   const m = n.map(clone)
   if (n.wordOf !== undefined && n.wordOf === n[1]) m.wordOf = m[1]
+  else if (n.wordOf !== undefined && Array.isArray(n[1]) && n.wordOf === n[1][1]) m.wordOf = m[1][1]
+  if (n.numHull) m.numHull = n.numHull
   return m
 }
 
@@ -443,9 +446,15 @@ code('a local of loaded bits (foldLoadCasts)', EXACT, foldLoadCasts, ['addr', 'a
 // holdWordNumbers: an i32 local of exact word truncations read only converted back, the number (emit's mark `wordOf`, supplied)
 {
   const word = (x) => { const t = ['i32.trunc_sat_f64_s', x]; t.wordOf = x; return t }
+  // (below level 2 the emitter writes the low word of the 64-bit truncation, ir/numeric.js memoryWord)
+  const wide = (x) => { const t = ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]; t.wordOf = x; return t }
   code('a word held as its number (holdWordNumbers)', EXACT, holdWordNumbers, ['f64', 'f64'], 'f64', [
     ['one write', ['block', ['result', 'f64'], ['local.set', '$w', word(g(0))], ['f64.add', ['f64.convert_i32_s', ['local.get', '$w']], f(0.25)]]],
     ['two writes', ['block', ['result', 'f64'], ['local.set', '$w', word(g(0))], ['if', ['f64.lt', g(1), f(0)], ['then', ['local.set', '$w', word(g(1))]]], ['f64.convert_i32_s', ['local.get', '$w']]]],
+  ], { locals: [['local', '$w', 'i32']], only: [[0, 1, -1, 7, 2 ** 31 - 1, -(2 ** 31), 100000].map(bitsOf), [0, -1, 3, -(2 ** 31)].map(bitsOf)] })
+  code('a word of the 64-bit truncation held as its number (holdWordNumbers)', EXACT, holdWordNumbers, ['f64', 'f64'], 'f64', [
+    ['one write', ['block', ['result', 'f64'], ['local.set', '$w', wide(g(0))], ['f64.mul', ['f64.convert_i32_s', ['local.get', '$w']], f(0.5)]]],
+    ['beside the 32-bit one', ['block', ['result', 'f64'], ['local.set', '$w', wide(g(0))], ['if', ['f64.lt', g(1), f(0)], ['then', ['local.set', '$w', word(g(1))]]], ['f64.convert_i32_s', ['local.get', '$w']]]],
   ], { locals: [['local', '$w', 'i32']], only: [[0, 1, -1, 7, 2 ** 31 - 1, -(2 ** 31), 100000].map(bitsOf), [0, -1, 3, -(2 ** 31)].map(bitsOf)] })
 }
 // lowerToInt32Tails: the exact conversion inline below 2^63, the runtime's kernel past it
@@ -567,6 +576,29 @@ for (const words of ['wide', 'add']) {
   tops.forEach((top, t) => code(`integer arithmetic of Numbers, ${['a Number', 'a wide truncation', 'a word truncation', 'a test'][t]}, words ${words} (narrowInts)`, EXACT,
     (fn) => narrowInts(fn, null, true, words), ['i32', 'i32'], t ? 'i32' : 'f64', Array.from({ length: 150 }, (_, i) => [`#${i}`, top(num(3))]),
     { locals: [['local', '$a', 'f64']], only: [I32.slice(0, 30), I32.slice(0, 30)] }))
+}
+// narrowInts over a number read off memory the emitter bounded (int-narrow.js provenForm): the
+// truncation the level's words give it, by the mark it carries (supplied: `wordOf` on the
+// truncation, an integer of the word; `numHull` on the operand, a bound, and with `raw` a
+// missing value's NaN besides), over inputs inside the mark, with the intervals' plan and
+// without one (a `local.get` by index, which int-range.js does not read).
+{
+  const marked = (t, x, mark) => Object.assign(t, mark.wordOf ? { wordOf: x } : {}), hull = (x, lo, hi, int, raw) => Object.assign(x, { numHull: { lo, hi, int, raw: raw ? x : null } })
+  const narrow = (x, mark = {}) => marked(['i32.trunc_sat_f64_s', x], x, mark), low = (x) => ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
+  const NANS = [0x7ff8000000000000n, -0x0008000000000000n, 0x7ff8000100000000n, 0x7ff87fffffffffffn, 0x7ffc000000000123n]
+  const kinds = [
+    ['a word', 'i32', () => narrow(g(0), { wordOf: true }), [0, -0, 1, -1, 7, -48, 2 ** 31 - 1, -(2 ** 31), 100000].map(bitsOf)],
+    ['a bound fraction', 'i32', () => narrow(hull(g(0), -(2 ** 31) - 0.5, 2 ** 31 - 0.25, false)), [0, -0, 0.5, -0.5, 2.75, -7.25, 2 ** 31 - 0.25, -(2 ** 31) - 0.5, 1e9 + 0.5].map(bitsOf)],
+    ['a bound integer or a missing value', 'i32', () => narrow(hull(g(0), -(2 ** 31), 2 ** 31 - 1, true, true)), [...[0, -0, 3, -1, 2 ** 31 - 1, -(2 ** 31)].map(bitsOf), ...NANS]],
+    ['a bound fraction or a missing value', 'i32', () => narrow(hull(g(0), -100.5, 100.5, false, true)), [...[0, -0, 0.5, -0.5, 99.75, -100.5].map(bitsOf), ...NANS]],
+    ['the low word of a bound past the word or a missing value', 'i32', () => low(hull(g(0), -(2 ** 40), 2 ** 45, true, true)), [...[0, 2 ** 40, -(2 ** 40), 2 ** 31, 2 ** 32 + 5, -(2 ** 31) - 1, 2 ** 45].map(bitsOf), ...NANS]],
+    ['the 64 bits of a bound fraction', 'i64', () => ['i64.trunc_sat_f64_s', hull(g(0), -(2 ** 50), 2 ** 50, false)], [0, 0.5, -0.5, 2 ** 50, -(2 ** 50), 2 ** 33 + 0.75].map(bitsOf)],
+    ['the 64 bits of a bound integer or a missing value', 'i64', () => ['i64.trunc_sat_f64_s', hull(g(0), -(2 ** 50), 2 ** 50, true, true)], [...[0, -0, 2 ** 50, -(2 ** 50), 2 ** 33 + 1].map(bitsOf), ...NANS]],
+  ]
+  // (the 64-bit truncation is the wide words' own form: it rewrites only under 'add')
+  for (const words of ['wide', 'add']) for (const [label, w, tree, only] of kinds) for (const plan of [true, false])
+    if (words === 'add' || tree()[0] === 'i32.trunc_sat_f64_s') code(`a truncation of ${label} read off memory, words ${words}${plan ? '' : ', no plan'} (narrowInts)`, EXACT, (fn) => narrowInts(fn, null, true, words), ['f64'], w,
+      [[label, plan ? tree() : ['block', ['result', w], ['drop', ['local.get', 0]], tree()]]], { only: [only] })
 }
 // selectBits' running minimum: a minimum of values of no sign held as an integer, compared unsigned
 {

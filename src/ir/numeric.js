@@ -653,23 +653,32 @@ const mapCheckedRead = (n, hitOf, miss, branchOnly = false, missIs = null) => {
 const i32CheckedRead = (n, signedOnly = false) => mapCheckedRead(n, v =>
   v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u' && (!signedOnly || topBitClear(v[1]))
     ? typed(v[1], 'i32') : hullWord(v, signedOnly), 0)
+// ToInt32 of a number read off memory whose truncation is proven a word: where the
+// integer registers run (optimize/int-narrow.js narrowInts: levels 2, 3 and size)
+// the 32-bit truncation, the form the lane lifts read (vectorize/lane-tables.js),
+// which that pass then gives the level's own form (wordTruncation) by the proof left
+// on the node, `wordOf` or the operand's `numHull`; elsewhere the level's form now,
+// the low word of the 64-bit truncation. Neither saturates there, a NaN reads 0 in
+// both, and on x64 V8 the 32-bit one is the dearest of the forms where its number
+// outlives it (bench/lowering.mjs).
+const memoryWord = x => typed(ctx.transform.optimize?.intNarrow ? ['i32.trunc_sat_f64_s', x] : int32Bits(x), 'i32')
+
+/** The word of a number read off memory that is one exactly (module/array.js: an
+ *  element of a dense array of words, an integer of one signed word, never -0). A
+ *  float consumer reads the number itself (asF64, `wordOf`). */
+export const exactWord = x => Object.assign(memoryWord(x), { wordOf: x })
+
 // A load the summary bounds (module/array.js numHullOf), finite: ToInt32 of a
 // number whose truncation is a word is that truncation; of any other below
 // 2^63, the low word of its i64 truncation. A signed word's value is an integer's.
+// A Number of the hull or, where `raw`, the load as stored, which may be a missing
+// value (a hole's, undefined's or null's box, a NaN): each form takes the NaN to 0.
 const hullWord = (v, signedOnly) => {
   const h = v.numHull
   if (!h || signedOnly && !(h.int && h.lo >= I32_MIN && h.hi <= I32_MAX && !h.raw)) return null
-  // A Number of the hull or a missing value (h.raw, the load as stored: a hole's,
-  // undefined's or null's box, a NaN): a saturating truncation takes the NaN to 0.
-  if (h.raw) {
-    if (h.lo > -0x80000001 && h.hi < 0x80000000) return typed(['i32.trunc_sat_f64_s', h.raw], 'i32')
-    return h.lo > -(2 ** 63) && h.hi < 2 ** 63 ? typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', h.raw]], 'i32') : null
-  }
-  // Where the word truncation takes the sum (wordTruncation 'add', optimize/to-int32.js): within
-  // ±2^51 the truncation plus 1.5·2^52 holds the word in its low bits, no conversion and no test.
-  if (ctx.transform.optimize?.wordTruncation === 'add' && h.lo >= -(2 ** 51) && h.hi < 2 ** 51)
-    return typed(['i32.wrap_i64', ['i64.reinterpret_f64', ['f64.add', h.int ? v : ['f64.trunc', v], ['f64.const', 6755399441055744]]]], 'i32')
-  return h.lo > -(2 ** 63) && h.hi < 2 ** 63 ? typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', v]], 'i32') : null
+  const x = h.raw ?? v
+  if (h.lo > -0x80000001 && h.hi < 0x80000000) return memoryWord(x)
+  return h.lo > -(2 ** 63) && h.hi < 2 ** 63 ? typed(int32Bits(x), 'i32') : null
 }
 
 // ToInt32 of a bounds-checked element read whose hit arm the summary bounds

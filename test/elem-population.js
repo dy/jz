@@ -71,12 +71,61 @@ const node = (p) => {
   return p.schedule.map(([name, args]) => { try { return show(m[name](...args)) } catch { return 'throws' } })
 }
 
-const population = (seed, progs) => {
+// The word a level reads off memory (ir/numeric.js memoryWord, optimize/int-narrow.js
+// provenForm: the 64-bit truncation's low word, the sum with 1.5·2^52 at speed, its exponent
+// tested where an element may be missing): arrays filled by push, by index, by a literal, by
+// `Array.from` and by `map`, of integers at the word's ends, 0 and -0, fractions; a hole,
+// undefined or null among them, or stored once the reads have run as words: a NaN, a number
+// past the word, -0, a fraction, the array grown and shrunk. Read directly, through a parameter,
+// through a field, and a record's field of integers; under `| 0`, `>> k`, `>>> 0`, `& mask`,
+// `~`, an index into another array, a typed array's store and `Math.imul`. Level 1 too, whose
+// form is its own (the 64-bit truncation, no integer registers).
+const generateWords = (seed, count) => {
+  let state = seed >>> 0 || 1
+  const rnd = () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296 }
+  const pick = (a) => a[Math.floor(rnd() * a.length)]
+  const int = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1))
+  const one = () => {
+    const N = int(3, 9)
+    const value = pick(['i - 3', 'i & 1 ? -2147483648 + (i >> 1) : 2147483647 - (i >> 1)', 'i % 3 === 2 ? -2147483648 : i * 3', '-i', 'i * 0.5 - 1', '(i % 4) * 0.25 + i'])
+    const at = new Function('i', `return ${value}`), lit = Array.from({ length: N }, (_, i) => show(at(i)))
+    const make = pick([
+      `const A = []\nfor (let i = 0; i < ${N}; i++) A.push(${value})`,
+      `const A = []\nfor (let i = 0; i < ${N}; i++) A[i] = ${value}`,
+      `const A = [${lit.join(', ')}]`,
+      `const A = Array.from({ length: ${N} }, (_, i) => ${value})`,
+      `const A = Array(${N}).fill(0).map((_, i) => ${value})`,
+      `const A = [${lit.join(', ')}].map(x => x * 2)`,
+      `const A = []\nfor (let i = 0; i < ${N}; i++) A[i * 2] = ${value}`,
+      `const A = [${lit.map((v, i) => i % 4 === 1 ? '' : i % 4 === 3 ? pick(['undefined', 'null']) : v).join(', ')}]`,
+    ])
+    // what a call stores once earlier calls have read the elements as words
+    const late = rnd() < 0.6 ? `if (k > 2) ${pick(['A[k & 3] = NaN', 'A[k & 3] = 2147483648', 'A[k & 3] = -2147483649', 'A[k & 3] = 1e15', 'A[k & 3] = -0',
+      'A[k & 3] = 0.5', 'A[k & 3] = undefined', 'A[k & 3] = null', 'A.push(k)', 'A.pop()', `A.length = ${N + 2}`, 'A.length = 2'])}; ` : ''
+    const use = pick(['x | 0', 'x >> 3', 'x >>> 0', 'x & 0xffff', '~x', 'V[(x & 0x7fffffff) % 8]', 'T[0] = x, T[0]', 'Math.imul(x, 40503)'])
+    const loop = (X, past) => `let h = 0; for (let s = 0; s < ${X}.length${past}; s++) { const x = ${X}[s]; h = (Math.imul(h, 31) + (${use})) | 0 } return h`
+    const f = pick([
+      `export let f = (n, k) => { ${late}${loop('A', ' + 1')} }`,
+      `const walk = (X) => { ${loop('X', ' + 1')} }\nexport let f = (n, k) => { ${late}return walk(A) }`,
+      `const O = { a: A }\nexport let f = (n, k) => { ${late}${loop('O.a', ' + 1')} }`,
+    ])
+    // a record's field every write of which is an integer of the word, but where a call stores another
+    const rec = rnd() < 0.4 ? `if (k > 2) R[k & 1].x = ${pick(['NaN', '2147483648', '0.5', '-0', 'undefined', 'null'])}; ` : ''
+    const g = `export let g = (n, k) => { ${rec}let h = 0; for (let s = 0; s < R.length; s++) { const x = R[s].x; h = (Math.imul(h, 31) + (${use})) | 0 } return h }`
+    const text = `const V = [${Array.from({ length: 8 }, (_, i) => String(i * 11 + 1)).join(', ')}], T = new Int32Array(1)\n${make}\n` +
+      `const R = []\nfor (let i = 0; i < ${N}; i++) R.push({ x: ${value.includes('0.') ? 'i - 3' : value}, y: i })\n${f}\n${g}`
+    const schedule = Array.from({ length: int(3, 6) }, () => [pick(['f', 'g']), [0, pick([0, 1, 3, 5])]])
+    return { text, names: ['f', 'g'], schedule }
+  }
+  return Array.from({ length: count }, one)
+}
+
+const population = (seed, progs, levels = LEVELS) => {
   if (onKernel()) return
   const bad = []
   let checks = 0
   for (const p of progs) p.want = node(p)
-  for (const optimize of LEVELS) for (const [j, p] of progs.entries()) {
+  for (const optimize of levels) for (const [j, p] of progs.entries()) {
     const out = bounded({ src: p.text, optimize, runs: [p.schedule] }, LIMIT)
     checks++
     const got = out.hung ? null : out.results[0].map(r => r.startsWith('throws') ? 'throws' : r)
@@ -84,8 +133,10 @@ const population = (seed, progs) => {
     if (!got) bad.push(`program ${j} at ${JSON.stringify(optimize)}: no answer in ${LIMIT / 1000} s\n${p.text}\n  ${calls}`)
     else if (got.join(' ') !== p.want.join(' ')) bad.push(`program ${j} at ${JSON.stringify(optimize)}: ${got.join(' ')} for Node's ${p.want.join(' ')}\n${p.text}\n  ${calls}`)
   }
-  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} runs at ${LEVELS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} runs at ${levels.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
 }
 
 for (const seed of [1, 2, 3])
   test(`element population: seed ${seed}, 60 modules reading arrays through what their stores make of the elements, against Node`, () => population(seed, generate(seed, 60)))
+for (const seed of [4, 5])
+  test(`element population: seed ${seed}, 30 modules reading words off memory by each level's form, against Node`, () => population(seed, generateWords(seed, 30), [false, 1, true, 'size', 'speed']))
