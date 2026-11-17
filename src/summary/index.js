@@ -1647,7 +1647,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // name may read. Array-index spellings share the element cell; a computed string
   // can name an element too, so its stores also join that cell.
   const cellProps = new Map()   // cell root → Map(name → kind)
-  const propArrays = new Set()  // the array cells named properties are stored on (a union adds its root)
+  const propArrays = new Set()  // the array cells named properties are stored on, as they were when stored (a reader takes each member's root)
   // A closure's own properties (`fn.ops = ops` on a dispatcher, a handler's
   // metadata): per closure site, the join of what every instance stores under
   // the name. A read on a set joins its members; a name never stored reads
