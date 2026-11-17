@@ -2866,6 +2866,53 @@ Also wrong on main, v1.0.3 not checked: an own `push` set during initialization;
 - ALAC's design (B): the specializer already assumes integers.
 - Float32Array as a data form: no static bar for a 2-lane loop.
 
+## The land-g landing: the filled array's mark, three compaction fixes, the nullable array, the second part of the element facts, the tie band (2026-11-17)
+
+20 commits on d58dde69e, tip `3ca2082ab`.
+
+### What landed
+
+- **The filled array's mark** (`6ce826703`): land-e's known wrong answer. "Filled" is a fact of the construction (`filledSites`), the count alias a meet folded in `unify`; a covering loop's stored value may not read the array or the count.
+- **Three compaction fixes** (`1e40e02db`, `75ec8f92a`, `4a815d311`): a shifted array's base record is a stub and its own handle; the static data's blocks are walked for the pointers they hold; a shifted array's mark is both its words.
+- **A nullable array keeps its cell** (`20500d4b7`); **no loop version on a bound no fact gives** (`d8cf58f58`).
+- **The element facts, second part** (`62c739470`, `069c1e638`, `c22a0f9ce`, `cf40c6bd9`, `24125bd05`): the deferral of element numbers turns strict when the intervals settle (the compile-time cut); a kernel loop of a function past its growth budget splits; `x != null` proves present on its arm; a module `let` is saved for the reset ahead of a loop nothing in which rebinds it; a split loop's main counter is bounded by every length its bound is the least of.
+- **The throw rule** (`03f2ec294`): a statement list ends at a statement that reads through a receiver only missing.
+- **Constants read through a temporary** (`82d1e0216`, `56b65c9a9`).
+- **The tie band** (`2e26b7e00`): a case within 8% of the best rival passes the claims gate, printed as a target.
+- **The wild store** (`2f7a2c54c`): what computed-key stores through a lost shape put is published by reference (`wildStore`), not as first values.
+- **`93a515485`, the integrator's**: no loop is bounded by the length of an array its body rebinds. `24125bd05` had kept that filter on the alias arm only; the tree's first check caught it (test/closures.js, 0 for "TypeError:1"), and written without a closure it was wrong at every level (1 for 101). Found by bisecting the tree's 17 commits; the writer's own branch failed the same test.
+- Listings rewritten on the assembled tree (`12aec1f5c`); the hoist population's NaN payload row held to jz at level 0, not to Node (`39a68420f`: Node 24 on x64 answers the canonical NaN, Node 25 on arm64 keeps the payload; main's CI was red on it).
+
+### Wrong answers fixed here that v1.0.3 has
+
+- An object stored into a module array of constants was freed by a compaction.
+- `o.y + 1` after a computed-key store through an escaped receiver (`put(o, 'y', 'a')`): NaN for "a1" at false, true and size.
+
+On main and not checked on v1.0.3: an array made at start, grown, then shifted never returned; one that takes named properties and grows read them empty; the filled array's mark (land-e's own).
+
+### What is measured
+
+- Bench bytes against main: size total -1.00%, speed -1.10%; up base64 speed +11.8%, blur +9.3%, conv2d and fabrik +2.3% (split loops; base64's and blur's times on the split are not measured); down mapint -10.1%, mapobj -8.5%, jessie -7.0%, decode-qoa -5.4%, webaudio size -3.9%.
+- Gates on `12aec1f5c`: data-forms 653 of 744 short; the perf ratchet's entered counts 2,034 to 1,986 and 4,001 to 3,992, buf's total +116.
+- The integrator's probes: filled 0 of 36 rows differ (main 4); the compaction's findings as Node in all 11 files; hoist rows 0 of 232; lift rows 1 (a zero's sign at speed, allowed); element rows 12 of 384 (the forms past 2^31, as before); the reset probe 344 of 344; on the tip, the rebinding programs 128, 408 and 300 rows, none differing; the wild store's row as Node at four levels.
+- The check, first run on `39a68420f` (stopped at its failure): default 7,551 of 7,552. On `3ca2082ab`: lint and the file audit clean; bench bytes of 105 cases, no error, none differing from `39a68420f`; level 0 7,336; `test:self` 89; the armed level 3 7,351 of 7,352 and default 7,553 of 7,554, the one failing in both `async: bare fetch binds from the JS host`, a 5 s limit the test's compile alone uses up at load 45 to 85 (standalone at the armed level 3: compile 4,792 ms, run 132 ms, the right answer; at the default level 3,137 ms and 47 ms; main the same). The check took 129 minutes on a machine other sessions and seven workflows shared. The examples' timing ran at load 53 to 85 and says nothing (1.73 and 1.48 of V8, other examples below 1 in each run: percolation 0.69 then 1.01, rfft 1.64 then 0.13, zzfx 2.79 then 0.45). Every example's bytes move (the compaction's kernel), most by under 0.2%; dla -10.6%, nbody -17.1%, sandpile -17.5%, watercolor -5.8%. percolation, the one lower in both runs than main's, timed against main's build in alternated rounds in one process: 0.963, 5 of 12 rounds above 1. CI's examples-perf on three targets is the measure of this landing's examples.
+- On x64 (five runs of bench-probe.yml on Xeon 6975P-C, main beside 92d14e2ba): of 24 cases probed, land-e moved callback 2.24 (slower) and polytri 1.059; mapobj 0.786, mapint 0.869, fabrik 0.912 (faster); the rest within 2%.
+
+### Known wrong on this tree, landed knowingly
+
+- **callback on x64** (land-e's): an integer element's word is read as `i32.trunc_sat_f64_s` of the load, a form the level's rule (`wordTruncation`) does not choose and V8 lowers through a round, a convert, a convert back and a compare; 636 us for 286 on the Xeon, nothing on the M4. In work (`jz-words`).
+- **A NaN's bits make a box** (v1.0.3 too, every level): a Float64Array or Float32Array element whose bits are a box's, read at an index that may miss and kept in an object literal's field or through `??`, is taken for undefined, null, a boolean, an array or a string. In work (`jz-nanbox`).
+- **`optimize: false` never releases a call that returns a heap value** (v1.0.3 too): 1 page to 256 in 20,000 calls of `s => s.toUpperCase()`; the README's "Memory is freed by scope" names no level.
+- As before: a closure in a parameter default flips a loop's flag; a test of `Object.getOwnPropertyDescriptor`'s result crashes the compiler; an internal call passes a string to a parameter the export rule made a number; `Symbol.toPrimitive` is never called; a 500-case switch, a 500-arm else-if chain and a sum of 800 terms overflow the compiler's stack; the parser's time doubles with each level of nested calls.
+
+### The owner's rulings of the evening
+
+- "yes", after two questions were open: read as the answer to the later one, that the bench times every engine lane after the engine's tiers settle, sources unchanged, the first pass recorded beside it (fabrik on the Xeon: 54 us as timed, 29 with V8's baseline tier off, C's wasm 26). In work (`jz-settle`). The earlier question, pushing probe branches to time a change on x64 before it lands, stays unanswered: no branch is pushed.
+
+### Queued for the next tree
+
+- The holders' `18c52e9fe` (a receiver that may be missing joins the split), `dc8898829` (the gate's measure), `7306b6dec` (a covering loop the split rewrote); the compaction's rules; the relaxed floats' writer's comparisons and B2; wave 0 (the parameter default, the descriptor, the compile's leftovers, the limits, toPrimitive, the hosted compiler's helper dependencies, the parser); the test-time chain; W1, W2 and the harness as they hand back.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -2940,7 +2987,7 @@ Also wrong on main, v1.0.3 not checked: an own `push` set during initialization;
   integrator's reading, in its row).
 - A case within 8% of the best rival is a tie, which passes the claims gate, is printed
   as a target and is never called a lead (the owner, 2026-11-17: "Ties - ok, 5-8% can be
-  said ties"). Built on the branch `rulings` (`2df97ce3d`), not on a tree yet.
+  said ties"). On main with land-g (`2e26b7e00`).
 - At `'speed'` the bench holds a relaxed lane to a tolerance, not to JavaScript's bits
   (the owner, 2026-11-17: "Parity at speed - tolerance is allowed"): the single-precision
   hash for the float cases where a relaxed lane differs in rounding only, for jz and for
@@ -2950,7 +2997,11 @@ Also wrong on main, v1.0.3 not checked: an own `push` set during initialization;
   2026-11-17, quoted in the land-e record).
 - No test run takes over an hour (the owner, 2026-11-17): the landing check and each of
   CI's jobs. The landing check of land-e did not meet it; the chain `tests-time` is the
-  work to.
+  work to. (land-g's took 129 minutes at load 45 to 85.)
+- The bench times every engine lane after the engine's tiers settle, sources unchanged,
+  the first pass recorded beside it; the claim reads "fastest optimized wasm" (the owner,
+  2026-11-17: "yes" to that question; fabrik on a Xeon 6975P-C: 54 us as timed, 29 with
+  V8's baseline tier off, C's wasm 26). In work (`jz-settle`), not on a tree yet.
 
 ## Open questions
 
@@ -2965,3 +3016,8 @@ Also wrong on main, v1.0.3 not checked: an own `push` set during initialization;
   asked for by the audio session on 2026-11-17 as the owner's decision of that day; to
   be confirmed by the owner with the 1.1.0 list. Today `@audio/compile-vst` reaches for
   internal flags and writes a typed array's header itself.
+- Whether short-lived probe branches may be pushed to origin, so that a change is timed
+  on x64 (bench-probe.yml, which times a commit of the repository beside a base on one
+  runner) before it lands: asked of the owner on 2026-11-17, not answered. Until then a
+  change is timed on x64 after it is on main; land-e's callback (2.24 slower on a Xeon,
+  nothing on the M4) is what that order costs.

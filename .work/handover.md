@@ -431,3 +431,39 @@ CI's split job, which this push runs for the first time. The briefs of this land
 writers are session scratch (`brief-lift.md`, `brief-hoist.md`, `brief-relaxed.md`,
 `brief-compact.md`, `brief-holders.md`, `brief-red.md`, and for the next tree
 `brief-tests.md`, `brief-lanes.md`).
+
+## Branches of the land-g landing (2026-11-17), tips before deletion
+
+```
+39a68420f land-f                             the tree as its first check ran it (17 commits on d58dde69e); the check found the rebinding bug of 24125bd05
+3ca2082ab land-g                             the landing branch as the checks ran it: land-f and three commits; the record's commit after it
+4157cd976 land-e                             the earlier landing branch, kept until the audit's readers ended
+2df97ce3d rulings                            the tie band, landed as 2e26b7e00
+e40ffa0ac worktree-agent-ac3852370d29a350c   the element facts' second part, landed as 62c739470 to 24125bd05
+```
+
+At work or queued when this was written, each for the tree after this one:
+`worktree-agent-a417d57c6f092b160` (the holders, handed back at 7306b6dec: 18c52e9fe a
+receiver that may be missing joins the split, dc8898829 the gate's measure, 7306b6dec a
+covering loop the split rewrote; its tip carries the rebinding bug of its base, fixed on
+main by 93a515485); `worktree-agent-a1be0465fdf269fbe` (the compaction's rules, not
+handed back); `kinds-ada0`, `decoders-ada0` and `worktree-agent-ada0cb75ccefb0bf6` (the
+relaxed floats' writer: comparisons, B2; the sums in lanes held); the hoist's writer
+`worktree-agent-a5f89d0c0c9d7eb2f` (the identity folds and the load sinking held);
+`worktree-agent-a4519a2dc39ff972e` (238aedd6e, not ruled on); `tests-time` (the
+test-time chain's tree). Workflows running: `jz-tests-time`, `jz-wave0` (the parameter
+default, the descriptor, the compile's leftovers, the limits, toPrimitive, the hosted
+compiler's helper dependencies, the parser's nested calls in /Users/div/projects/subscript),
+`jz-words` (an integer element's word by the level's rule: land-e's callback on x64),
+`jz-nanbox` (a NaN's bits never make a box), `jz-settle` (the bench after the tiers
+settle). Done this day: `jz-110-audit` (the plan of 1.1.0), `jz-live-compile` (the
+kernels' compile cost: a design and its critic), `jz-x64-gaps` (seven cases read on x64:
+a plan and its critic). Their outputs and the briefs are session scratch.
+
+Tools found or made this day: `.github/workflows/bench-probe.yml` times a commit beside
+the tree on one x64 runner (`base`), and the same builds under V8 flags (`node_flags`);
+`bench/lowering.mjs`, printed by examples-perf on three targets a push, is the tree's one
+measurement of lowering forms; VS Code's universal binary runs as Node in x64 mode under
+Rosetta (instruction counts, not Intel's latencies). Two compilers loaded in one process
+share the parser's registrations and the second fails to parse: build each tree's output
+in its own process.
