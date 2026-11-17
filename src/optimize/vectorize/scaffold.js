@@ -304,10 +304,22 @@ const READS = { has: (name) => { const k = helperKind(name); return k === 'pure'
 // The statements a block holds ahead of its one loop, as the default envelope admits them:
 // pure `local.set`s (an invariant LICM or a peephole hoisted, `$__li*`, or any local under
 // `allowInlinedLi`), nothing after the loop. null where the block holds anything else.
+// A lift runs a clone of them ahead of its strips and the block runs them again after, so
+// each must compute the same value both times: no set of a local the loop writes, and no
+// read of one (the strips advance the counter and carry the accumulators).
 function preambleOf(desc, opts) {
   const { blockNode, loopNode } = desc
   const preamble = []
-  let past = false
+  let past = false, loopWrites = null
+  const variant = (c) => {
+    if (!loopWrites) {
+      loopWrites = new Set()
+      walkAst(loopNode, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') loopWrites.add(n[1]) } })
+    }
+    let hit = loopWrites.has(c[1])
+    walkAst(c[2], { enter: n => { if (hit) return false; if ((n[0] === 'local.get' || n[0] === 'local.tee') && loopWrites.has(n[1])) hit = true } })
+    return hit
+  }
   for (let i = 2; i < blockNode.length; i++) {
     const c = blockNode[i]
     if (c === loopNode) { past = true; continue }
@@ -321,7 +333,7 @@ function preambleOf(desc, opts) {
     // safe to clone ahead of the SIMD — covers $__inl*__li* (schrodinger) AND $_pg0-style
     // peephole-hoisted bounds (slime). The hasSideEffect guard rejects impure setups.
     const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? true : c[1].startsWith('$__li'))
-    if (!opts.allowPreamble || past || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], READS)) return null
+    if (!opts.allowPreamble || past || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], READS) || variant(c)) return null
     preamble.push(c)
   }
   return preamble

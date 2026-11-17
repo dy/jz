@@ -193,6 +193,15 @@ export const WIDEN_LOADS = {
   'i32.load16_s': { laneType: 'i16', steps: ['i32x4.extadd_pairwise_i16x8_s'] },
 }
 
+// Narrowing sums: an i32 accumulator fed by the exact conversion of an f64 (`s += a[i]` over a
+// plain array whose Numbers the compiler read as words). Two f64 lanes convert as the scalar
+// converts, into the low lanes of an i32x4, zero in the two above: the reduction's identity
+// where the op's is 0 (add, or, xor), and the wrapping sum is value-exact in any order.
+export const NARROW_LANES = {
+  'i32.trunc_sat_f64_s': 'i32x4.trunc_sat_f64x2_s_zero',
+  'i32.trunc_sat_f64_u': 'i32x4.trunc_sat_f64x2_u_zero',
+}
+
 // Widening min/max over a BARE narrow load (`m = Math.max(m, u8[i])` with an
 // i32 accumulator). Unlike the widening SUM there is no overflow concern:
 // min/max at the load's own lane width over its own sign is value-exact, so

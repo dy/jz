@@ -6,7 +6,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { onWasi } from './_matrix.js'
-import { jz, compile } from './util.js'
+import { jz, compile, oracle } from './util.js'
+import { sameBase, windowDefs } from '../src/optimize/vectorize/access.js'
 
 // The arrays stay in memory: a module array only constant indices reach would be
 // locals of the kernel (plan/scratch.js), with no store left to pack.
@@ -202,6 +203,23 @@ test('slp: field pairs through a staged receiver (a parameter that may be absent
   ok(firesInLoop(src) >= 8, 'the staged reads pair')
   bitExact('staged field pairs', src)
   if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
+})
+
+// A record's field read unboxes its pointer as the low word of its bits, its field store as the
+// low word of those bits masked to 32: one base, both spellings in one kernel (`p.x += p.vx;
+// p.y += p.vy`), the pair of stores one v128 store.
+test('slp: a record\'s field read and field store address one base in either spelling', () => {
+  const bits = ['i64.reinterpret_f64', ['local.get', '$p']], w = windowDefs([], 0, -1)
+  const read = ['i32.wrap_i64', bits], store = ['i32.wrap_i64', ['i64.and', bits, ['i64.const', 4294967295]]]
+  ok(sameBase(read, 0, store, 1, w), 'the low word, masked or not')
+  ok(sameBase(store, 0, ['i32.wrap_i64', ['i64.and', bits, ['i64.const', -1]]], 1, w), 'any mask whose low word is all ones')
+  ok(!sameBase(read, 0, ['i32.wrap_i64', ['i64.and', bits, ['i64.const', '0xFFFFFFFE']]], 1, w), 'a mask that clears a low bit is another address')
+  const src = `const N = 256
+const ps = []
+for (let i = 0; i < N; i++) ps.push({ x: i * 0.5, y: i + 1, vx: i % 7 - 3, vy: i % 5 * 0.25 })
+export let step = () => { for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x += p.vx; p.y += p.vy } return ps[0].x + ps[N - 1].y }`
+  for (const optimize of [2, 'speed']) ok((compile(src, { wat: true, optimize }).match(/v128\.store/g) || []).length >= 1, `the two field stores pack at ${optimize}`)
+  if (!onWasi()) is(jz(src, { optimize: 2 }).exports.step(), oracle(src).step(), 'jz == Node')
 })
 
 test('slp: bails when the high value loads the low store\'s slot through another name', () => {

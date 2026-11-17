@@ -2,7 +2,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { _offsetLocalStride, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
-import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
+import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, NARROW_LANES, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop, simdBound, stripOpen } from './scaffold.js'
@@ -74,8 +74,9 @@ const inlineLaneTees = (stmt, outsideReads, teed) => {
 }
 
 export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
-  // Same scaffold as tryVectorize, but no preamble: a reduction block is just the loop.
-  if (!bl || bl.preamble.length) return null
+  // Same scaffold as tryVectorize: the block's preamble runs cloned ahead of the strips
+  // (reduceWrapper), as it does ahead of a map's.
+  if (!bl) return null
   const { loopNode, incIdx, incVar } = bl
 
   // Body is either a bare single-statement reduction —
@@ -267,8 +268,15 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
   // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
   const accType = fnLocals.get(accName)
-  const widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
+  let widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
     && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null
+  // The narrowing sum (lane-tables.js NARROW_LANES): the lanes are the f64 operand's, converted
+  // into the i32 accumulator's two low lanes.
+  if (!widen && accType === 'i32' && canonC == null && !reduceEntry.minmaxSelect && constNum(reduceEntry.constNode) === 0
+      && isArr(exprNode) && exprNode.length === 2 && NARROW_LANES[exprNode[0]]) {
+    widen = { laneType: 'f64', steps: [NARROW_LANES[exprNode[0]]], fold: 2 }
+    exprNode = exprNode[1]
+  }
   // Widening float min/max: the canon over a sign-matched converted narrow load
   // (`m = Math.max(m, u8[i])`, acc f64) folds at the load's own width — exact,
   // since min/max never rounds and u8…i16 values are exact in f64. Only the one
@@ -365,7 +373,12 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
 // SIMD prefix + horizontal fold + (preserved scalar tail), shared by tryReduceReassoc and
 // tryGeneralReduce: N vector accumulators over the lifted operand, combined and folded
 // across lanes, merged into the live accumulator; the original loop runs the remainder.
-// `widen`/`sawWidenF32` are the narrow-widening sum shapes only tryReduceReassoc produces.
+// The block's preamble (scaffold.js preambleOf: pure sets the loop neither writes nor reads
+// a write of) runs cloned first, where the strips read the bases and the bound it stages: a
+// plain array's unboxed pointer and its forwarded header, a typed array's held in a field.
+// `widen`/`sawWidenF32` are the narrow-widening sum shapes only tryReduceReassoc produces:
+// `widen` takes a vector of its lane type to i32x4 partials by its `steps`, of which `fold`
+// lanes hold a value (all four where it names none).
 function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32) {
   const { incVar } = bl
   const stride = LANE_INFO[laneType].stride
@@ -449,7 +462,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   } else {
     // Horizontal fold: scalar.op(extract 0, extract 1, …, extract L-1).
     // Widening sum folds the 4 i32x4 PARTIALS, not the (narrow) data lanes.
-    const foldLanes = widen ? 4 : lanes
+    const foldLanes = widen ? widen.fold ?? 4 : lanes
     let horiz = [reduceEntry.extract, 0, ['local.get', simdAccName]]
     for (let k = 1; k < foldLanes; k++) {
       horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
@@ -482,7 +495,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
     ? [['if', stripOpen(incVar, simdBoundName, bl.dir, lanes * NACC),
         ['then', ...initAcc, simdBlock, ...combineAccs, ...mergeStmts]]]
     : [...initAcc, simdBlock, ...combineAccs, ...mergeStmts]
-  const wrapper = ['block', boundSetup, ...core, bl.blockNode]
+  const wrapper = ['block', ...bl.preamble.map(cloneNode), boundSetup, ...core, bl.blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
     ['local', simdAccName, 'v128'],
@@ -526,7 +539,7 @@ const INT_LANE_SHIFT = { 'i32.shl': 'i32x4.shl', 'i32.shr_s': 'i32x4.shr_s', 'i3
 const TWO_WIDE = new Set(['$math.sin2', '$math.cos2', '$math.pow2', '$math.pow_b_v', '$math.pow_fold_v', '$math.log_v', '$math.exp_v', '$math.exp2_v'])
 const CALL_WEIGHT = 20
 export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
-  if (!bl || bl.preamble.length) return null
+  if (!bl) return null
   const { incVar, bound, boundLocal, body, siteAccess, writes } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (!body.length) return null
@@ -663,7 +676,8 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]]], bl.dir)
   // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
   const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, 2, 0, bl.dir)]
-  const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
+  // (the preamble cloned first, as reduceWrapper's)
+  const wrapper = ['block', ...bl.preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls], reductions: accSet }
 }
 
@@ -711,7 +725,7 @@ const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relax
 // value-exact everywhere `tryReduceReassoc` already is (int add/mul/xor/and/or, min/max) — no
 // new numeric divergence, same fold order, just reached from a broader address proof.
 export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
-  if (!bl || bl.preamble.length) return null
+  if (!bl) return null
   const { incVar, bound, boundLocal, body, writes } = bl
   if (!boundLocal && !isI32Const(bound)) return null
   if (body.length !== 1 && body.length !== 2) return null

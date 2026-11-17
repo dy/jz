@@ -6,6 +6,7 @@ import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { isArr } from './node-utils.js'
 import { helperKind } from '../effects.js'
 import { memop, constOf } from '../address.js'
+import { constBits } from '../int-range.js'
 
 // An access as `base ⊕ off`: the memarg (optimize/address.js memop) plus every constant the
 // address adds. `base` is the remaining address subtree, kept as emitted (its tee included)
@@ -54,6 +55,8 @@ export const windowDefs = (stmts, from, to) => {
 // the two accesses compared.
 export const ADDR_OPS = new Set(['i32.add', 'i32.sub', 'i32.mul', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor', 'i32.wrap_i64', 'i32.const',
   'i64.and', 'i64.or', 'i64.shl', 'i64.shr_u', 'i64.const', 'i64.reinterpret_f64', 'i64.extend_i32_u', 'f64.const'])
+// An i64 constant whose low 32 bits are all ones: a mask a wrap to i32 makes idle.
+const lowWord = (c) => { const b = constBits(c); return b != null && (b & 0xFFFFFFFFn) === 0xFFFFFFFFn }
 // What an address subtree computes at statement `at` of the window, over locals the
 // window never writes: a tee dissolves into its body, a local the window defined
 // EARLIER into its definition, and a definition that is no register arithmetic (an
@@ -73,6 +76,9 @@ export const resolveAddr = (n, w, at, depth = 0) => {
     return (d.e && resolveAddr(d.e, w, d.at, depth + 1)) ?? ['local.get', `${n[1]}@${d.at}`]
   }
   if (op === 'global.get') return typeof n[1] === 'string' && !w.writes.has('global:' + n[1]) ? n : null
+  // (the low word of x masked to its low 32 bits is the low word of x: a field read unboxes a
+  // record's pointer without the mask its store spells, and both name one base)
+  if (op === 'i32.wrap_i64' && n.length === 2 && isArr(n[1]) && n[1][0] === 'i64.and' && n[1].length === 3 && lowWord(n[1][2])) return resolveAddr(['i32.wrap_i64', n[1][1]], w, at, depth)
   if (!ADDR_OPS.has(op)) return null
   const out = [op]
   for (let i = 1; i < n.length; i++) {

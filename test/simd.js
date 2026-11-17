@@ -2429,6 +2429,57 @@ test('vectorize: i32 sum reduction lifts to i32x4.add', () => {
   ok(/i32x4\.add/.test(wat(src, SIMD_OPT)), 'i32 sum reduction → i32x4.add')
 })
 
+// A plain array is read through its NaN-boxed pointer: the loop's block stages the decode of its
+// base, and at a parameter its forward and its length, ahead of the loop, as it stages a typed
+// array's held by `this` or a closure. The reductions run that preamble cloned ahead of their
+// strips, as the maps do (vectorize/reduce.js); before, they declined any loop that had one.
+test('vectorize: a reduction lifts past the bases its block stages', () => {
+  const lifted = (src, optimize, op) => (wat(src, { optimize }).match(new RegExp(op.replace('.', '\\.'), 'g')) || []).length
+  const pushed = (n, v) => `const ${n} = []; for (let i = 0; i < N; i++) ${n}.push(${v})`
+  const module = `const N = 256\n${pushed('a', 'i * 0.5')}\n${pushed('b', 'i + 1')}
+export let dot = () => { let s = 0; for (let i = 0; i < N; i++) s += a[i] * b[i]; return s }`
+  const param = `const N = 256\n${pushed('a', 'i * 0.5')}\n${pushed('b', 'i + 1')}
+const dotOf = (p, q) => { let s = 0; for (let i = 0; i < N; i++) s += p[i] * q[i]; return s }
+export let dot = () => dotOf(a, b)`
+  const held = `const N = 256
+class K { constructor() { this.a = new Float64Array(N); this.b = new Float64Array(N); for (let i = 0; i < N; i++) { this.a[i] = i * 0.5; this.b[i] = i + 1 } }
+  dot() { let s = 0; for (let i = 0; i < N; i++) s += this.a[i] * this.b[i]; return s } }
+const k = new K()
+export let dot = () => k.dot()`
+  for (const [name, src] of [['a plain array at module level', module], ['plain arrays as parameters', param], ['typed arrays held by this', held]]) {
+    for (const optimize of [2, 'speed']) ok(lifted(src, optimize, 'f64x2.mul') >= 1, `${name} at ${optimize}: the dot's products in lanes`)
+    is(jz(src, { optimize: 2 }).exports.dot(), oracle(src).dot(), `${name}: the loop's sum`)
+  }
+})
+
+// An i32 sum of a plain array's integers, each read by the exact conversion of its f64: two
+// lanes a pass converted into an i32x4's low lanes (lane-tables.js NARROW_LANES), at any level.
+test('vectorize: an integer sum of converted f64 lanes lifts', () => {
+  const src = `const c = [${Array.from({ length: 64 }, (_, i) => (i * 37 + 11) % 64).join(', ')}]
+export let isum = () => { let s = 0; for (let i = 0; i < 64; i++) s += c[i]; return s }`
+  for (const optimize of [2, 'speed']) ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, { optimize })), `at ${optimize}: two conversions a pass`)
+  is(jz(src, { optimize: 2 }).exports.isum(), oracle(src).isum(), 'the integer sum')
+})
+
+// The preamble runs twice, cloned ahead of the strips and again by the block as written: a set
+// the loop writes, or one that reads a local the loop writes, computes another value the second
+// time, and the block is no scaffold (scaffold.js preambleOf).
+test('vectorize: a preamble that sets or reads a local the loop writes is no scaffold', () => {
+  const block = (pre) => ['block', '$b',
+    pre,
+    ['loop', '$l',
+      ['br_if', '$b', ['i32.eqz', ['i32.lt_s', ['local.get', '$i'], ['local.get', '$n']]]],
+      ['local.set', '$s', ['f64.add', ['local.get', '$s'], ['f64.load', ['i32.add', ['local.get', '$p'], ['i32.shl', ['local.get', '$i'], ['i32.const', 3]]]]]],
+      ['local.set', '$i', ['i32.add', ['local.get', '$i'], ['i32.const', 1]]],
+      ['br', '$l']]]
+  const opts = { allowPreamble: true, allowInlinedLi: true }
+  ok(matchBlockLoop(block(['local.set', '$p', ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', '$x']]]]), opts), 'an invariant base: a scaffold')
+  is(matchBlockLoop(block(['local.set', '$i', ['i32.const', 0]]), opts), null, 'the counter set')
+  is(matchBlockLoop(block(['local.set', '$q', ['local.tee', '$s', ['f64.const', 0]]]), opts), null, 'the accumulator teed')
+  is(matchBlockLoop(block(['local.set', '$p', ['i32.add', ['local.get', '$i'], ['i32.const', 8]]]), opts), null, 'a base read off the counter')
+  is(matchBlockLoop(block(['local.set', '$n', ['i32.trunc_sat_f64_s', ['local.get', '$s']]]), opts), null, 'a bound read off the accumulator')
+})
+
 test('vectorize: f64 reduction unrolls to N accumulators under reduceUnroll', () => {
   // A reduction's accumulator is a latency chain (each add waits on the prior).
   // reduceUnroll lifts it to 4 INDEPENDENT f64x2 accumulators (ILP / latency hiding),
