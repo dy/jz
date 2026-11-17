@@ -250,3 +250,17 @@ export const value = (n) => sum(new Float64Array([10, 20, 30, 40]), n) + sum([5,
   const alone = { level: 2, sourceInline: false }
   is(loops(alone), loops({ ...alone, splitLoopKinds: false }), 'no copy of the loop where `a` holds the Float64Array')
 })
+
+test('param defaults: a name an equality guards keeps its reads where a closure of the frame assigns it', () => {
+  // (counted-loops.js guardConstants: inside `if (x === 3)` a name the arm never writes was the
+  // literal, though a call in the arm runs a closure that writes it: a default's closure, which
+  // the inliner never splices, and a body's where nothing inlines)
+  const cases = [
+    ['a default closure', `export const value = (x, bump = () => { x = 5 }) => { let s = 0; if (x === 3) { s += x; bump(); s += x } return s }`],
+    ['a body closure', `export const value = (x) => { const bump = () => { x = 5 }; let s = 0; if (x === 3) { s += x; bump(); s += x } return s }`],
+  ]
+  for (const [name, src] of cases) for (const optimize of levels(false, 1, true, 'size', 'speed', { level: 2, sourceInline: false })) {
+    const got = jz(src, { optimize }).exports.value, ref = oracle(src).value
+    for (const x of [3, 4]) is(got(x), ref(x), `${name}, value(${x}) at ${JSON.stringify(optimize)}`)
+  }
+})

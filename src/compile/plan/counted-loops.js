@@ -127,12 +127,16 @@ export const guardConstants = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
+    let moved = null
     walkAst(func.body, { enter: (node) => {
       if (node[0] === '=>') return false
       if (node[0] !== 'if' || node[2] == null) return
       const consts = guarded(node[1])
-      // a name the arm writes, or a closure may write, keeps its reads
-      for (const name of consts.keys()) if (writes(node[2], name) || some(node[2], n => n[0] === '=>' && mentions(n, name))) consts.delete(name)
+      if (!consts.size) return
+      // a name the arm writes, or a closure may write, keeps its reads: a closure of the
+      // arm, or one of the frame that assigns it, which a call in the arm may run
+      moved ??= closureCensus(frameNode(func)).assigned
+      for (const name of consts.keys()) if (writes(node[2], name) || moved.has(name) || some(node[2], n => n[0] === '=>' && mentions(n, name))) consts.delete(name)
       if (!consts.size) return
       const arm = substitute(node[2], consts)
       if (arm !== node[2]) { node[2] = arm; changed = true }
