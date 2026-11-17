@@ -15,10 +15,14 @@ export function normalizeCaseBody(body) {
 }
 
 const SWITCH_BREAK_BOUNDARIES = new Set(['for', 'while', 'do', 'switch', '=>', 'function', 'class'])
+// A labeled `break L` keeps its target: a block or loop inside the case, or one
+// around the switch. A label on the switch itself wraps the lowered statements,
+// so `break S` still leaves them all.
+const switchBreak = (node) => node[0] === 'break' && node[1] == null
 
 function hasOwnSwitchBreak(node) {
   if (!Array.isArray(node)) return false
-  if (node[0] === 'break') return true
+  if (switchBreak(node)) return true
   if (SWITCH_BREAK_BOUNDARIES.has(node[0])) return false
   for (let i = 1; i < node.length; i++) if (hasOwnSwitchBreak(node[i])) return true
   return false
@@ -29,7 +33,7 @@ function rewriteSwitchBreaks(node, flag) { return withLoc(rewriteSwitchBreaksNod
 function rewriteSwitchBreaksNode(node, flag) {
   if (!Array.isArray(node)) return node
   const op = node[0]
-  if (op === 'break') return ['=', flag, [null, true]]
+  if (switchBreak(node)) return ['=', flag, [null, true]]
   if (SWITCH_BREAK_BOUNDARIES.has(op)) return node
 
   if (op === ';') {

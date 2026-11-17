@@ -1588,3 +1588,19 @@ test('assignment: a module literal keeps what its element held when a binding is
     }
   }
 })
+
+// A labeled `break` in a case keeps its target: a block inside the case, a loop
+// around the switch, or the switch's own label. The lowering took every break
+// for the switch's and gated the rest of the case on it.
+test('statements: a labeled break inside a switch case keeps its target', () => {
+  const progs = [
+    `export let f = (x, y) => { let s = 0; switch (x) { case 1: L: { if (y) break L; s = 1 } s += 10; break; default: s = -1 } return s }`,
+    `export let f = (x, y) => { let s = 0; outer: for (let i = 0; i < 3; i++) { switch (x) { case 1: if (y) break outer; s += 1; break; default: s += 100 } s += 10 } return s }`,
+    `export let f = (x, y) => { let s = 0; S: switch (x) { case 1: s = 1; if (y) break S; s += 5; case 2: s += 20; break S; default: s = -1 } return s + 100 }`,
+    `export let f = (x, y) => { let s = 0; out: for (let i = 0; i < 4; i++) { switch (x) { case 1: B: { if (y === i) break B; if (y > 2) break out; s += 1 } s += 10; if (i === 2) break; s += 100; case 2: s += 1000 } } return s }`,
+  ]
+  for (const src of progs) {
+    const want = oracle(src).f, got = run(src).f
+    for (const [x, y] of [[1, 0], [1, 1], [2, 0], [1, 2], [1, 3], [3, 1]]) is(got(x, y), want(x, y), `f(${x}, ${y}): ${src.slice(25, 90)}`)
+  }
+})
