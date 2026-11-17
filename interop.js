@@ -419,7 +419,7 @@ const codec = (mem, src) => {
   // The compiled reset owns the post-init mark and durable state; a memory of
   // no module rewinds. What the host held by address (views it was handed,
   // class instances) names storage a reset frees.
-  S.reset = () => { S.hostViews = new WeakMap(); S.handles = new WeakMap(); S.instances = new Map(); S.pin = 0; S.live = 0; S.clear(); S.pinReset?.() }
+  S.reset = () => { S.hostViews = new WeakMap(); S.handles = new WeakMap(); S.instances = new Map(); S.pin = 0; S.live = 0; S.calls = 0; S.clear(); S.pinReset?.() }
 
   // A block with the module's 16-byte header (`__alloc_hdr`: properties, length,
   // capacity), at its data's offset
@@ -978,7 +978,9 @@ export const wrap = (src, state) => {
   // The module's pin (module/core/compact.js `__jz_pin`): the heap below the
   // highest block the host holds by address never moves, in a compaction the
   // host asks for or one a loop runs inside a call. Raised as values decode.
-  if (pinGlobal && mem) { mem.pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem.pinReset = () => { pinGlobal.value = 0; if (viewed) viewed.value = 0 } }
+  // the host's look at the heap (`settle`): the returns it lets go by, and the top its last look saw
+  const looked = { skip: 0, top: 0, floor: 0 }
+  if (pinGlobal && mem) { mem.pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem.pinReset = () => { pinGlobal.value = 0; if (viewed) viewed.value = 0; looked.skip = looked.top = looked.floor = 0 } }
   // A view the host holds detaches as the memory grows: once one is handed
   // out, a compaction finds its scratch in the memory as it stands or
   // declines (`__jz_viewed`, module/core/stub-log.js), as the program's own
@@ -1336,26 +1338,50 @@ export const wrap = (src, state) => {
   const POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
   const NO_MARK = -1 >>> 0
   let depth = 0
-  // As the outermost call returns, every sixteenth, the module keeps what its
-  // roots reach (`__jz_compact`, module/core/compact.js) once the memory above the
-  // floor holds twice what the last walk reached (`__jz_g_cost`) and a page, or,
-  // near the end of the address space, an eighth of that. The floor stands above
-  // what the host allocated and what it was handed by address (`_pinAt`).
-  // JZ_DEBUG_COMPACT=1: at every outermost return, past anything above the floor
-  // (module/core/stub-log.js DBG_COMPACT, which the module's loops read as it compiles).
-  const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20
+  // As the outermost call returns, the module keeps what its roots reach
+  // (`__jz_compact`, module/core/compact.js) once the memory above the floor holds
+  // twice what the last walk reached (`__jz_g_cost`) and a page, or, near the end
+  // of the address space, an eighth of that. The floor stands above what the host
+  // allocated and what it was handed by address (`_pinAt`). Asked as soon as the
+  // calls since may have passed that: the host reads the heap's top (`look`) and
+  // lets the returns go by (`looked.skip`) that the room left over what the calls
+  // since its last look kept, a call at a time, says cannot reach the threshold,
+  // sixteen at most, and as many after a look that found nothing kept. A call that
+  // allocates nothing pays a count. Asked at every sixteenth return alone, the
+  // garbage the calls between left below their loops' floors grew the heap call
+  // by call (bench/decode-wav built for a host, a main a call: 22 MB more a main,
+  // 132 MB kept after six).
+  // JZ_DEBUG_COMPACT=1: past anything above the floor, at every return that kept
+  // memory (module/core/stub-log.js DBG_COMPACT, which the module's loops read as it compiles).
+  const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20, BACKOFF = 15
   const STRESS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_COMPACT === '1'
   const settle = (returned, held) => {
     if (!compact || mem.scalar) return
     if (held) { mem.pin = Math.max(mem.pin, mem.pinAt); mem.pinAt = 0; mem.pinSet?.(mem.pin) }
-    if (!returned || asyncMod || (mem.calls = (mem.calls + 1) & (STRESS ? 0 : 15)) !== 0) return
-    const floor = Math.max(mem.base(), mem.pin), at = mem.top()
+    if (!returned || asyncMod || ++mem.calls <= looked.skip) return
+    mem.calls = 0
+    look()
+  }
+  const look = () => {
+    const at = mem.top(), calls = looked.skip + 1
+    if (at <= looked.top) { looked.skip = STRESS ? 0 : BACKOFF; return }
+    const kept = (at - looked.top) / calls
+    looked.top = at
+    const floor = Math.max(mem.base(), mem.pin)
+    // a floor risen since the last walk (the base set after init, a result pinned) covers what it kept below
+    if (floor > looked.floor) { mem.live = Math.max(0, mem.live - (floor - looked.floor)); looked.floor = floor }
     const since = at - floor, need = STRESS ? 0 : 2 * mem.live + COMPACT_MIN
-    if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem.live / 8 + COMPACT_MIN)) return
+    if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem.live / 8 + COMPACT_MIN)) {
+      // the returns the room left takes at what a call kept, less one
+      looked.skip = STRESS ? 0 : Math.min(BACKOFF, Math.floor((need - since) / kept))
+      return
+    }
+    looked.skip = 0
     // views handed out before the program's own allocation grew the memory are
     // detached: the walk's scratch may grow it again
     if (viewed && viewed.value && mem.viewBuf !== mem.buffer) viewed.value = 0
     const to = compact(floor | 0) >>> 0
+    looked.top = to
     mem.live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
   }
   // the outermost call over: what it handed the host settles the floor

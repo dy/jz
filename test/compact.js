@@ -56,6 +56,18 @@ test('compact: state replaced call after call stays bounded', () => {
   }
 })
 
+// The host reads the heap's top as soon as the calls since its last look may
+// have passed the threshold (interop.js `settle`), where it read it at every
+// sixteenth return: fifteen calls each replacing a megabyte of kept state grew
+// the memory to 17 MB before the sixteenth walked; now 4.
+test('compact: the host walks at the return that passes its threshold, not at the sixteenth', () => {
+  if (onWasi() || !counted() || stressed()) return
+  const src = `let st = null; export const step = (i) => { st = new Float64Array(131072); st[0] = i; return st[0] }`
+  const { exports, memory } = jz(src), want = oracle(src)
+  for (let i = 0; i < 15; i++) is(exports.step(i), want.step(i), `step(${i})`)
+  ok(memory.buffer.byteLength <= 8 << 20, `fifteen calls of a megabyte each keep the memory within 8 MB (${memory.buffer.byteLength >> 20} MB)`)
+})
+
 test('compact: off, the replaced state accumulates', () => {
   if (onWasi()) return
   const { memory, compactions } = drive(STATE.particles, 2000, { optimize: { compact: false } }, 'particles off')
