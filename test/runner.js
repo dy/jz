@@ -22,7 +22,7 @@ test('runner: the source oracle preserves module strictness and fresh state', as
   is(oracle('').missing, undefined, 'zero exports produce an empty namespace')
 })
 
-function fixture(sources, env = {}) {
+function fixture(sources, env = {}, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jz-runner-'))
   try {
     const files = sources.map((source, i) => {
@@ -34,7 +34,8 @@ function fixture(sources, env = {}) {
     for (const key of Object.keys(childEnv)) if (key.startsWith('TST_')) delete childEnv[key]
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
       import { runFiles } from ${JSON.stringify(new URL('./_run.js', import.meta.url).href)}
-      const result = await runFiles(${JSON.stringify(files)})
+      const result = await runFiles(${JSON.stringify(files)}, ${JSON.stringify(options)})
+      if (result.costs) console.log('costs=' + JSON.stringify(result.costs))
       process.exit(result.failed.length ? 1 : 0)
     `], { env: { ...childEnv, ...env }, encoding: 'utf8', timeout: 60000 })
     if (result.error) throw result.error
@@ -89,6 +90,22 @@ test('runner: grep and only select across the complete file list', () => {
     is(r.status, 0, r.status === 0 ? 'child suite passed' : r.output)
     ok(r.output.includes('# pass 1'), 'only the selected test runs')
   }
+})
+
+test('runner: costs charge a file its import and its own tests, a run that skips a test none', () => {
+  const spin = `{ const end = process.cpuUsage().user + 300_000; while (process.cpuUsage().user < end); }`
+  const sources = [
+    `${spin}\ntest('a1', ({ is }) => is(1, 1))\ntest('a2', ({ is }) => { is(1, 1); is(2, 2) })`,
+    '',
+    `test('c1', ({ ok }) => { ${spin}; ok(true) })`,
+  ]
+  const r = fixture(sources, {}, { costs: true }), costs = JSON.parse(r.output.match(/^costs=(.*)$/m)?.[1] ?? 'null')
+  is(r.status, 0, r.output)
+  is(costs?.map(([, tests, assertions]) => [tests, assertions]), [[2, 3], [0, 0], [1, 1]], 'tests and assertions by file, a file with none included')
+  ok(costs[0][0] >= 0.3 && costs[2][0] >= 0.3, 'the busy import and the busy test go to their own files')
+  ok(costs[1][0] < 0.1, 'a file that does nothing costs nothing')
+  const grep = fixture(sources, { TST_GREP: '^a1$' }, { costs: true })
+  ok(grep.status !== 0 && grep.output.includes('did not run'), grep.output)
 })
 
 test('runner: completed tests release unreachable Wasm memories', () => {

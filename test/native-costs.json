@@ -1,0 +1,4 @@
+{
+ "source": "CPU seconds (user plus system), tests and assertions of each test file as [seconds, tests, assertions], by run: the suite, then the leg as scripts/test-tasks.mjs legOf names it from the environment. A file's seconds are read inside the process that runs it: its import, then its tests from the end of the previous file's last test to the end of its own (test/_run.js), so a process's start-up is no file's, and a split run's files are timed in the processes it splits them over. `measured` says when, at which commit, on what machine, in how many processes and at what load each run was taken. Written only by `node test/index.js --suite=<suite> --costs` under the leg's environment, a run's whole row from a run that passed; an ordinary run never writes it. The hosted suite's seconds are another measure (wall seconds, a file to a process, on the kernel) and stay in test/hosted-costs.json.",
+ "runs": {}
+}

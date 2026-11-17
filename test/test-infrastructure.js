@@ -8,7 +8,7 @@ import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
 import { testJobs, shards, slices, measured } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
-import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv } from '../scripts/test-tasks.mjs'
+import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv, legOf } from '../scripts/test-tasks.mjs'
 
 const root = join(import.meta.dirname, '..')
 const clean = env => Object.fromEntries(Object.entries({ ...process.env, ...legEnv(env) }).filter(([, v]) => v != null))
@@ -32,8 +32,9 @@ test('test suites: every file has exactly one owner, and listing compiles nothin
 })
 
 test('test suites: explicit files and full sweeps remain available; invalid options fail', () => {
-  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined })
+  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined, costs: false })
   is(suiteArgs(['--jobs=4']).jobs, 4)
+  is(suiteArgs(['--costs']).costs, true)
   is(suiteArgs([], true).suite, 'all')
   for (const args of [['--suite=nope'], ['--suite=core', '--suite=all'], ['--unknown'], ['math', 'math.js'], ['--jobs=0'], ['--jobs='], ['--jobs=2', '--jobs=3']]) throws(() => suiteArgs(args))
   const source = `import { ownedLevels } from './test/_matrix.js'; console.log(JSON.stringify(ownedLevels(0, 2, 'speed', 'size')))`
@@ -51,6 +52,14 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
   is(matrixTasks()[2].env.JZ_DEBUG_INVARIANTS, undefined, 'release O3 remains a distinct check')
   is(invariantTask().env.JZ_DEBUG_INVARIANTS, '1', 'battery also retains the armed O3 check')
   is(extendedTasks().filter(t => t.name.startsWith('generated')).length, 2)
+  // the legs' names, the keys of test/native-costs.json
+  is([...matrixTasks(), invariantTask()].map(t => legOf(t.env)), ['default', 'opt0', 'opt3', 'wasi', 'opt3-invariants'])
+  is(legOf({ JZ_TEST_OPTIMIZE: '0', JZ_TEST_HOST: 'wasi', JZ_TEST_SWEEP: '1' }), 'opt0-wasi-sweep')
+  // --costs times whole native files: a grep or the kernel is refused before anything loads
+  for (const env of [{ TST_GREP: 'x' }, { JZ_TEST_TARGET: 'jz.wasm', JZ_KERNEL: '/no-kernel-listing-must-not-read' }]) {
+    const r = spawnSync(process.execPath, ['test/index.js', '--list', '--costs'], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
+    ok(r.status !== 0 && r.stderr.includes('--costs'), JSON.stringify(env))
+  }
 })
 
 test('test workers: automatic count is bounded by memory and CPUs, explicit values validate', () => {

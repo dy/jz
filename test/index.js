@@ -367,12 +367,14 @@ const TESTS = [
   'examples',
 ]
 
-import { statSync, readFileSync } from 'node:fs'
+import { statSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { cpus, loadavg } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { suiteArgs, suiteOf, splits } from './_suites.js'
 import { shards } from './_jobs.js'
-import { runTasks, suiteJobs } from '../scripts/test-tasks.mjs'
-const { suite, list, files: argFilters, jobs: jobsArg } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
+import { runTasks, suiteJobs, legOf } from '../scripts/test-tasks.mjs'
+const { suite, list, files: argFilters, jobs: jobsArg, costs } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
 // A whole core or generated run may be split over processes; named files and a
 // suite whose files share artifacts run in this one (test/_suites.js).
 const splittable = !argFilters.length && splits(suite)
@@ -459,8 +461,27 @@ if (argFilters.length && selected.length !== argFilters.length) {
   throw new Error(`Unknown test file(s): ${missing.join(', ')}`)
 }
 
+// test/native-costs.json: each file's [CPU seconds, tests, assertions] by suite and leg.
+// --costs times every file of this run (test/_run.js): a run of named files prints the
+// times, a whole suite writes them over its row, and an ordinary run never writes.
+const COSTS = new URL('./native-costs.json', import.meta.url), row = `${suite}-${legOf()}`, load = loadavg()[0]
+if (costs && onKernelTarget) throw new Error('--costs times the native legs; the hosted suite has test/hosted-costs.json')
+if (costs && process.env.TST_GREP) throw new Error('--costs times whole files; TST_GREP would time a part of each')
+
 // Listing is side-effect free: do not load the compiler or any test fixtures.
 if (list) { console.log(selected.join('\n')); process.exit(0) }
+
+function record(times, passed, processes) {
+  const missing = selected.filter(f => !times[f])
+  if (!passed || missing.length) return console.error(`--costs: ${row} not written: ${passed ? `no time for ${missing.join(', ')}` : 'the run failed'}`)
+  const table = JSON.parse(readFileSync(COSTS, 'utf8')), files = {}
+  for (const f of selected) files[f] = [Math.round(times[f][0] * 10) / 10, times[f][1], times[f][2]]
+  const commit = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.trim() || 'an unknown commit'
+  const measured = `${new Date().toISOString().slice(0, 10)} at ${commit} on ${cpus()[0]?.model}, ${processes === 1 ? 'one process' : `${processes} processes at a time`}, load average ${Math.round(load)} at the start and ${Math.round(loadavg()[0])} at the end`
+  table.runs = Object.fromEntries(Object.entries({ ...table.runs, [row]: { measured, files } }).sort(([a], [b]) => a < b ? -1 : 1))
+  writeFileSync(COSTS, JSON.stringify(table, null, 1).replace(/\[\n\s+([^\]]*?)\n\s+\]/g, (_, items) => `[${items.split(/,\n\s+/).join(', ')}]`) + '\n')
+  console.log(`--costs: ${row} written: ${selected.length} files, ${Math.round(Object.values(files).reduce((sum, [s]) => sum + s, 0))} CPU seconds`)
+}
 
 // A splittable run spreads over the idle cores (scripts/test-tasks.mjs), or the count
 // --jobs or JZ_TEST_JOBS names: each process takes a contiguous run of files,
@@ -472,16 +493,18 @@ if (jobs > 1) {
   const size = name => statSync(new URL(`./${name}.js`, import.meta.url)).size
   const runs = shards(selected, size, jobs * 3).map(files => ({ files, size: files.reduce((sum, f) => sum + size(f), 0) })).sort((a, b) => b.size - a.size)
   const results = await runTasks(runs.map(({ files }) => ({
-    name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...files], env: { JZ_TEST_JOBS: '1' },
+    name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...costs ? ['--costs'] : [], ...files], env: { JZ_TEST_JOBS: '1' },
   })), { jobs })
   // The totals are each run's last summary: a test may print a nested run's own.
-  const totals = {}
+  const totals = {}, times = {}
   for (const r of results) {
-    const last = {}
-    if (r.log) for (const [, key, n] of readFileSync(r.log, 'utf8').matchAll(/^# (\w+) (\d+)$/gm)) last[key] = Number(n)
+    const log = r.log ? readFileSync(r.log, 'utf8') : '', last = {}
+    for (const [, key, n] of log.matchAll(/^# (\w+) (\d+)$/gm)) last[key] = Number(n)
     for (const key in last) totals[key] = (totals[key] || 0) + last[key]
+    Object.assign(times, JSON.parse([...log.matchAll(/^# costs (.*)$/gm)].at(-1)?.[1] ?? '{}'))
   }
   console.log(Object.entries(totals).map(([key, n]) => `# ${key} ${n}`).join('\n'))
+  if (costs) record(times, results.every(r => !r.code), jobs)
   process.exit(results.some(r => r.code) ? 1 : 0)
 }
 
@@ -498,5 +521,10 @@ if (onKernelTarget) {
 // The leg's defaults (JZ_TEST_OPTIMIZE, JZ_TEST_HOST, JZ_TEST_STRICT) for every
 // in-process compile, installed before any test file compiles.
 await import('./_env.js')
-const result = await runFiles(selected.map(name => new URL(`./${name}.js`, import.meta.url).href))
+const result = await runFiles(selected.map(name => new URL(`./${name}.js`, import.meta.url).href), { costs })
+if (costs) {
+  const times = Object.fromEntries(selected.map((f, i) => [f, result.costs[i]]))
+  if (argFilters.length) console.log(`# costs ${JSON.stringify(times)}`)
+  else record(times, !result.failed.length, 1)
+}
 process.exit(result.failed.length ? 1 : 0)

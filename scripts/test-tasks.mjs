@@ -125,6 +125,12 @@ export const legEnv = (env = {}) => ({
   JZ_TEST_SWEEP: undefined, JZ_DEBUG_INVARIANTS: undefined, JZ_KERNEL: undefined,
   JZ_SELF_TEST_KERNEL: undefined, JZ_SELF_TEST_KERNEL_SHA256: undefined, ...env,
 })
+// The leg a process runs, named by the environment it compiles under: `default`,
+// `opt0`, `wasi`, `opt3-invariants` (the armed level 3).
+export const legOf = (env = process.env) => [
+  env.JZ_TEST_OPTIMIZE != null && `opt${env.JZ_TEST_OPTIMIZE}`, env.JZ_TEST_HOST,
+  env.JZ_TEST_SWEEP === '1' && 'sweep', env.JZ_DEBUG_INVARIANTS === '1' && 'invariants',
+].filter(Boolean).join('-') || 'default'
 export const matrixTasks = (suite = 'core') => [
   { name: `${suite}-default`, args: ['test/index.js', `--suite=${suite}`], env: legEnv() },
   { name: `${suite}-opt0`, args: ['test/index.js', `--suite=${suite}`], env: legEnv({ JZ_TEST_OPTIMIZE: '0' }) },
