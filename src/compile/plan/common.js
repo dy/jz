@@ -8,7 +8,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { ASSIGN_OPS, some, callArgs, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, some, callArgs, walkAst, withLoc } from '../../ast.js'
 import { constIntExpr } from '../../static.js'
 import { typedElemCtor } from '../../type.js'
 import { PASS_NAMES } from '../../optimize/index.js'
@@ -97,9 +97,10 @@ export const clonePlain = node => {
 export const forLoopBodyIndex = (stmt) =>
   Array.isArray(stmt) && stmt[0] === 'for' ? (stmt.length === 3 ? 2 : 4) : null
 
-/** Reconstruct a `for` node with its body replaced. Preserves arity. */
+/** Reconstruct a `for` node with its body replaced. Preserves arity, and the loop's position
+ *  and its body's (the advisories name a loop by its body's, plan/advise.js adviseSimdLoops). */
 export const withForLoopBody = (stmt, body) =>
-  stmt.length === 3 ? ['for', stmt[1], body] : ['for', stmt[1], stmt[2], stmt[3], body]
+  withLoc(stmt.length === 3 ? ['for', stmt[1], withLoc(body, stmt[2])] : ['for', stmt[1], stmt[2], stmt[3], withLoc(body, stmt[4])], stmt)
 
 // === Fixed-size typed-array recognition ===
 // Shared by scalarize (replaces the literal with N locals) and inline (filters

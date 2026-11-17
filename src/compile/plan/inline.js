@@ -47,7 +47,7 @@ import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { mixesNumericKinds } from '../numeric-mix.js'
 import {
   callArgs, setCallArgs, some, walkAst, blockStmts, stmtList, T, CLASS_T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
-  extractParams, isBlockBody, REFS_THROUGH_ARROWS,
+  extractParams, isBlockBody, REFS_THROUGH_ARROWS, withLoc,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
@@ -686,10 +686,11 @@ const pureFlattenExpr = (n) => {
   }
   return PURE_FLATTEN_OPS.has(op) && n.slice(1).every(pureFlattenExpr)
 }
+// (a renamed copy stands where its source does)
 const substIdents = (n, subst) => {
   if (typeof n === 'string') return subst.get(n) ?? n
   if (!Array.isArray(n)) return n
-  return n.map((c, i) => i === 0 ? c : substIdents(c, subst))
+  return withLoc(n.map((c, i) => i === 0 ? c : substIdents(c, subst)), n)
 }
 const flattenPrefix = (shape) => {
   if (!shape || shape.value === null || !shape.prefix.length) return shape
