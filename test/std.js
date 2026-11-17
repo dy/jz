@@ -190,22 +190,31 @@ test('reflection: held class prototypes share guarded property reads and evaluat
 })
 
 test('std: a descriptor tested in a program that uses no array', () => {
-  // (the lowering reads the key as `o[k]`, an operator of the array module, which the call's
-  // modules now name, src/autoload.js CALL_MODULES: `typeof d`, `d === undefined`, `d ? … : …`
-  // and `!d` compiled to "Unknown op: []")
+  // (the lowering reads the key as `o[k]`, an operator of the array module, and includes that
+  // module itself (module/object.js): `typeof d`, `d === undefined`, `d ? … : …` and `!d`
+  // compiled to "Unknown op: []", and a call through an alias of the function still did when
+  // only the direct call named the module)
   // (each program reads nothing of the descriptor but whether there is one: a read of
   // `d.value` asks for modules of its own)
   const tests = `const o = { a: 1, u: undefined }
 export let f = (k) => { const d = Object.getOwnPropertyDescriptor(o, k); return (typeof d) + '|' + (d === undefined) + '|' + (d ? 1 : 0) + '|' + (!d) }`
   const computed = `const o = { k2: 5 }
 export let f = (i) => Object.getOwnPropertyDescriptor(o, 'k' + i) ? 1 : 0`
+  const aliases = [`const o = { a: 1, b: 0 }; const gd = Object.getOwnPropertyDescriptor
+export let f = (k) => gd(o, k) ? 1 : 0`, `const o = { a: 1, b: 0 }; let gd = Object.getOwnPropertyDescriptor
+export let f = (k) => gd(o, k) === undefined ? 1 : 0`]
   for (const optimize of levels(false, true, 'size', 'speed')) {
     let got = jz(tests, { optimize }).exports, want = oracle(tests)
     for (const k of ['a', 'zz']) is(got.f(k), want.f(k), `present and absent keys, f('${k}') at ${optimize}`)
     // README "Data descriptors only": a property whose value is undefined is reported as absent
+    // (Node reports it present: 'object|false|1|false')
     is(got.f('u'), 'undefined|true|0|true', `an undefined-valued key at ${optimize}`)
     got = jz(computed, { optimize }).exports, want = oracle(computed)
     for (const i of [2, 3]) is(got.f(i), want.f(i), `a computed key, f(${i}) at ${optimize}`)
+    for (const [n, src] of aliases.entries()) {
+      got = jz(src, { optimize }).exports, want = oracle(src)
+      for (const k of ['a', 'b', 'zz']) is(got.f(k), want.f(k), `alias ${n}, f('${k}') at ${optimize}`)
+    }
   }
 })
 

@@ -833,6 +833,9 @@ export default (ctx) => {
   // or undefined when the key is absent (an undefined-valued key reads as
   // absent: a documented divergence of the descriptor-free model).
   ctx.core.emit['Object.getOwnPropertyDescriptor'] = (obj, key) => {
+    // the read `o[k]` below is the emitter's own: a call through an alias
+    // (`const gd = Object.getOwnPropertyDescriptor`) passes no prepare include
+    ctx.module.include('array')
     const o = temp('gd'), k = temp('gk')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(obj))],
