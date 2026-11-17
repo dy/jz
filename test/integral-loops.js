@@ -65,6 +65,9 @@ test('integral loops: impossible typed twins disappear without losing SIMD or Nu
     ok(text.includes('v128'),'the bounded Number copy still vectorizes')
     is((text.match(/\(loop /g)||[]).length,8,'each export keeps vector, tail, checked-word and checked-Number loops only')
     ok(text.includes('f64.lt'),'wide and non-number counts keep their original comparison')
+    // The checks below read the host compiler's session (its fact store): on the
+    // hosted leg `wat` compiles in the kernel, so an in-process compile opens it here.
+    compileInProcess(src)
     const prior=ctx.func,summary=ctx.summary
     try {
       ctx.summary=null

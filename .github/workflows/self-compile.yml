@@ -24,12 +24,27 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+env:
+  JZ_FUZZ_GATE: '0.15'
 jobs:
-  self-compile:
+  # `npm run test:bootstrap -- --full` split over machines, each building its own
+  # kernel: this job the round-trip, O0/O2/O3 parity/oracles, the checkpoint overlay
+  # and recursive compilation; the hosted job the hosted suite, a slice a machine
+  # (test/bootstrap.mjs --hosted=<i>/<n>; test/test-infrastructure.js holds that the
+  # slices are disjoint and run every file the one-process run runs). In one job the
+  # suite outgrew four hours on the slower runners (run 43869637359, cancelled).
+  #
+  # Limits: this job's build and four parts took 21 and 29 minutes (runs 43674192084,
+  # 43777296552) and about 36 on the slowest runner seen (43869637359: a 629 s build,
+  # its recursive check scaled from the others). A slice, its files packed by
+  # test/hosted-costs.json and run three at a time, comes to about 40 minutes with
+  # its build on that runner (43 if it runs two at a time), taking three processes
+  # to do two cores' work and scaling the table by CI's own one-process time of the
+  # files that run and the table share (43777296552). 90 and 120 minutes leave
+  # more than twice either.
+  bootstrap:
     runs-on: ubuntu-latest
-    # The hosted suite passed four hours on this runner (run 43869637359 was cancelled at
-    # 240 minutes): the most a hosted runner gives until the suite is split over jobs.
-    timeout-minutes: 360
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,10 +52,22 @@ jobs:
           node-version: 24
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
-      # One invocation owns one fresh ordinary kernel and a separate checkpoint
-      # overlay. Round-trip, O0/O2/O3 parity/oracles, the hosted suite and recursive
-      # compilation consume that ordinary artifact, in memory-bounded processes.
-      - name: bootstrap, parity, hosted suite and recursive jz × jz
-        run: npm run test:bootstrap -- --full
-        env:
-          JZ_FUZZ_GATE: '0.15'
+      - name: bootstrap, parity, checkpoint and recursive jz × jz
+        run: npm run test:bootstrap -- --recursive
+  hosted:
+    name: hosted suite ${{ matrix.slice }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - name: hosted suite, slice ${{ matrix.slice }} of ${{ strategy.job-total }}
+        run: npm run test:bootstrap -- --hosted=${{ matrix.slice }}/${{ strategy.job-total }}

@@ -5,7 +5,7 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { isBigIntBox } from '../src/ir.js'
 import { levels } from './_matrix.js'
-import { oracle, jz } from './util.js'
+import { oracle, jz, compileInProcess } from './util.js'
 
 const LEVELS = levels(false, 1, 2)
 
@@ -311,7 +311,7 @@ test('bigint tag: a Number whose bits spell the BigInt tag stays a Number in a t
 
 // The predicate itself: the NaN test precedes the tag test.
 test('bigint tag: isBigIntBox asks for a NaN-box before reading the tag', () => {
-  jz('export let f = () => 0')   // the predicate records an include on the live compile session
+  compileInProcess('export let f = () => 0')   // the predicate records an include on the host's live compile session
   const ir = isBigIntBox(['local.get', '$v'], 'v')
   is(ir[0], 'i32.and')
   is(ir[1][0], 'f64.ne', 'a raw Number never reaches the tag test')

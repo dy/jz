@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
-import { testJobs, shards } from './_jobs.js'
+import { testJobs, shards, slices, measured } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
 import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv } from '../scripts/test-tasks.mjs'
@@ -170,64 +170,123 @@ test('shared test kernel: one fresh fallback, validated explicit bytes, sticky f
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('bootstrap: one private artifact, isolated child environments, cleanup on success and failure', () => {
-  // Stub the expensive build and task execution, not bootstrap's orchestration
-  // or legEnv. This is transaction evidence, not self-compiler codegen evidence.
-  const dir = mkdtempSync(join(tmpdir(), 'jz-bootstrap-test-')), preload = join(dir, 'preload.mjs')
-  const tasksUrl = new URL('../scripts/test-tasks.mjs', import.meta.url).href
-  try {
-    writeFileSync(preload, `
-      import { registerHooks } from 'node:module'
-      registerHooks({ load(url, context, next) {
-        if (url === ${JSON.stringify(new URL('../scripts/private-build.mjs', import.meta.url).href)}) return {
-          format: 'module', shortCircuit: true,
-          source: "import fs from 'node:fs'; export function privateBuild() { fs.appendFileSync(process.env.RECORD + '.builds', 'build'); return {bytes: Buffer.from([0,97,115,109,1,0,0,0]), ms: 0} }"
-        }
-        if (url === ${JSON.stringify(tasksUrl)}) return {
-          format: 'module', shortCircuit: true,
-          source: ${JSON.stringify(`
-            export { legEnv } from '${tasksUrl}?actual'
-            import fs from 'node:fs'
-            export async function runTasks(tasks, options) {
-              const path = tasks[0].env.JZ_SELF_TEST_KERNEL
-              new WebAssembly.Module(fs.readFileSync(path))
-              fs.writeFileSync(process.env.RECORD, JSON.stringify({tasks, options, path}))
-              if (process.env.OUTCOME === 'throw') throw new Error('task fixture failed')
-              return tasks.map(() => ({code: process.env.OUTCOME === 'fail' ? 7 : 0}))
-            }
-          `)}
-        }
-        return next(url, context)
-      } })
-    `)
-    for (const [name, args, outcome] of [
-      ['normal', [], 'pass'], ['recursive', ['--recursive'], 'pass'], ['full', ['--full'], 'pass'],
-      ['fail', ['--full'], 'fail'], ['throw', ['--full'], 'throw'], ['invalid', ['--unknown'], 'fail'],
-    ]) {
-      const record = join(dir, name + '.json')
-      const r = spawnSync(process.execPath, ['--import', preload, 'test/bootstrap.mjs', ...args], {
-        cwd: root, encoding: 'utf8', timeout: 30000, env: clean({ RECORD: record, OUTCOME: outcome,
-          JZ_KERNEL: 'stale-kernel', JZ_SELF_TEST_KERNEL: 'stale-shared', JZ_SELF_TEST_KERNEL_SHA256: 'stale-hash' }),
-      })
-      is(r.status, outcome === 'pass' ? 0 : 1, r.stderr)
-      if (name === 'invalid') { is(existsSync(record + '.builds'), false, 'invalid arguments do not build'); continue }
-      is(readFileSync(record + '.builds', 'utf8'), 'build', 'exactly one fresh normal build')
-      const { tasks, options, path } = JSON.parse(readFileSync(record, 'utf8'))
-      is(options.jobs, 1)
-      is(tasks.map(t => t.name), ['self-roundtrip', 'kernel-parity', 'checkpoint',
-        ...(args.includes('--full') ? ['hosted-suite'] : []), ...(args.length ? ['recursive'] : [])])
-      for (const { env } of tasks.slice(0, 3)) {
-        is(env.JZ_SELF_TEST_KERNEL, path)
-        is(env.JZ_SELF_TEST_KERNEL_SHA256, kernelHash(Buffer.from([0,97,115,109,1,0,0,0])))
-        is(env.JZ_KERNEL, undefined, 'stale external kernel cannot override the fresh artifact')
+// test/bootstrap.mjs with the expensive build and task execution stubbed, not its
+// orchestration, its listing of the hosted suite or legEnv: each run returns its
+// exit status, its builds and every runTasks call it made. This is transaction
+// evidence, not self-compiler codegen evidence.
+function bootstrapFixture(dir) {
+  const preload = join(dir, 'preload.mjs'), tasksUrl = new URL('../scripts/test-tasks.mjs', import.meta.url).href
+  writeFileSync(preload, `
+    import { registerHooks } from 'node:module'
+    registerHooks({ load(url, context, next) {
+      if (url === ${JSON.stringify(new URL('../scripts/private-build.mjs', import.meta.url).href)}) return {
+        format: 'module', shortCircuit: true,
+        source: "import fs from 'node:fs'; export function privateBuild() { fs.appendFileSync(process.env.RECORD + '.builds', 'build'); return {bytes: Buffer.from([0,97,115,109,1,0,0,0]), ms: 0} }"
       }
-      for (const { name, env } of tasks.slice(3)) {
+      if (url === ${JSON.stringify(tasksUrl)}) return {
+        format: 'module', shortCircuit: true,
+        source: ${JSON.stringify(`
+          export { legEnv, suiteJobs, positiveInteger } from '${tasksUrl}?actual'
+          import fs from 'node:fs'
+          export async function runTasks(tasks, options) {
+            const path = tasks[0].env.JZ_SELF_TEST_KERNEL ?? tasks[0].env.JZ_KERNEL
+            new WebAssembly.Module(fs.readFileSync(path))
+            fs.appendFileSync(process.env.RECORD, JSON.stringify({tasks, options, path}) + '\\n')
+            if (process.env.OUTCOME === 'throw') throw new Error('task fixture failed')
+            return tasks.map(() => ({code: process.env.OUTCOME === 'fail' ? 7 : 0}))
+          }
+        `)}
+      }
+      return next(url, context)
+    } })
+  `)
+  return (name, args, outcome = 'pass') => {
+    const record = join(dir, name + '.jsonl')
+    const r = spawnSync(process.execPath, ['--import', preload, 'test/bootstrap.mjs', ...args], {
+      cwd: root, encoding: 'utf8', timeout: 30000, env: clean({ RECORD: record, OUTCOME: outcome,
+        JZ_KERNEL: 'stale-kernel', JZ_SELF_TEST_KERNEL: 'stale-shared', JZ_SELF_TEST_KERNEL_SHA256: 'stale-hash' }),
+    })
+    const read = path => existsSync(path) ? readFileSync(path, 'utf8') : ''
+    return { status: r.status, stderr: r.stderr, builds: read(record + '.builds'), calls: read(record).split('\n').filter(Boolean).map(l => JSON.parse(l)) }
+  }
+}
+
+test('bootstrap: one private artifact, isolated child environments, cleanup on success and failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-bootstrap-test-'))
+  try {
+    const run = bootstrapFixture(dir)
+    for (const [name, args, outcome] of [
+      ['normal', [], 'pass'], ['recursive', ['--recursive'], 'pass'], ['full', ['--full'], 'pass'], ['slice', ['--hosted=2/3'], 'pass'],
+      ['fail', ['--full'], 'fail'], ['throw', ['--full'], 'throw'],
+      ['invalid', ['--unknown'], 'fail'], ['slice-zero', ['--hosted=0/3'], 'fail'], ['slice-past', ['--hosted=4/3'], 'fail'],
+      ['slice-form', ['--hosted=1'], 'fail'], ['two-modes', ['--hosted=1/3', '--full'], 'fail'],
+    ]) {
+      const { status, stderr, builds, calls } = run(name, args, outcome)
+      is(status, outcome === 'pass' ? 0 : 1, stderr)
+      if (outcome === 'fail' && name !== 'fail') { is(builds, '', `${name}: invalid arguments do not build`); continue }
+      is(builds, 'build', 'exactly one fresh normal build')
+      // the parts first, one at a time; then the hosted files, unless the parts threw
+      is(calls.length, { normal: 1, recursive: 1, full: 2, slice: 1, fail: 2, throw: 1 }[name], `${name}: runTasks calls`)
+      const [parts, hosted] = name === 'slice' ? [null, calls[0]] : calls
+      if (parts) {
+        is(parts.options.jobs, 1)
+        is(parts.tasks.map(t => t.name), ['self-roundtrip', 'kernel-parity', 'checkpoint', ...(args.length ? ['recursive'] : [])])
+        for (const { env } of parts.tasks.slice(0, 3)) {
+          is(env.JZ_SELF_TEST_KERNEL, parts.path)
+          is(env.JZ_SELF_TEST_KERNEL_SHA256, kernelHash(Buffer.from([0,97,115,109,1,0,0,0])))
+          is(env.JZ_KERNEL, undefined, 'stale external kernel cannot override the fresh artifact')
+        }
+      }
+      for (const { name: task, env } of [...(parts?.tasks.slice(3) ?? []), ...(hosted?.tasks ?? [])]) {
         is(env.JZ_SELF_TEST_KERNEL, undefined, 'hosted build-failure fixtures must not inherit the shared-build override')
         is(env.JZ_SELF_TEST_KERNEL_SHA256, undefined)
-        is(env.JZ_KERNEL, name === 'hosted-suite' ? path : undefined)
+        is(env.JZ_KERNEL, task.startsWith('hosted-') ? calls[0].path : undefined)
+        if (task.startsWith('hosted-')) is(env.JZ_TEST_TARGET, 'jz.wasm')
       }
-      is(existsSync(dirname(path)), false, 'private directory removed after success, nonzero exit or task exception')
+      if (hosted) ok(hosted.tasks.length && hosted.tasks.every(t => t.name.startsWith('hosted-')), 'a file of the hosted suite to a task')
+      for (const { path } of calls) is(existsSync(dirname(path)), false, 'private directory removed after success, nonzero exit or task exception')
     }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('hosted suite: the slices CI runs are disjoint and together run what the one-process run runs', () => {
+  const one = list('all', { JZ_TEST_TARGET: 'jz.wasm' })
+  // The packing: every file in exactly one slice, at every count.
+  const weight = { a: 5, b: 1, c: 1, d: 1, e: 4 }, files = Object.keys(weight)
+  is(slices(files, f => weight[f], 2), [{ files: ['a', 'c'], weight: 6 }, { files: ['b', 'd', 'e'], weight: 6 }])
+  is(slices(['a'], f => weight[f], 3).map(s => s.files), [['a'], [], []], 'more slices asked than files')
+  is(measured(['a', 'x'], { a: 5, b: 9 })('x'), 5, 'an untimed file weighs as the dearest timed file of the list')
+  is(measured(['x'], {})('x'), 1)
+  const cost = measured(one, JSON.parse(readFileSync(join(root, 'test/hosted-costs.json'), 'utf8')).seconds)
+  for (let n = 1; n <= 12; n++) {
+    const parts = slices(one, cost, n)
+    is(parts.length, n)
+    is(parts.flatMap(s => s.files).toSorted(), one.toSorted(), `${n} slices: every file once`)
+  }
+  // CI's matrix, through test/bootstrap.mjs itself: slice i of n for every i the
+  // workflow names, against the hosted files of --full and of the one-process listing.
+  const workflow = readFileSync(join(root, '.github/workflows/self-compile.yml'), 'utf8')
+  const matrix = JSON.parse(workflow.match(/^\s+slice: (\[[\d, ]+\])$/m)?.[1] ?? '[]'), n = matrix.length
+  ok(n > 1, 'the workflow names its slices')
+  is(matrix, Array.from({ length: n }, (_, i) => i + 1), 'the matrix names slices 1 to n')
+  ok(workflow.includes('npm run test:bootstrap -- --hosted=${{ matrix.slice }}/${{ strategy.job-total }}'), 'each job runs its slice of as many as the matrix has')
+  ok(workflow.includes('npm run test:bootstrap -- --recursive'), 'a job of its own runs the round-trip, parity, checkpoint and recursive checks')
+  const dir = mkdtempSync(join(tmpdir(), 'jz-hosted-slices-test-'))
+  try {
+    const run = bootstrapFixture(dir), owner = new Map()
+    const ran = call => call.tasks.map(t => { is(t.args.slice(0, -1), ['--stack-size=1968', 'test/index.js']); return t.args.at(-1) })
+    for (const i of matrix) {
+      const { status, stderr, calls } = run(`slice-${i}`, [`--hosted=${i}/${n}`])
+      is(status, 0, stderr)
+      is(calls.length, 1, 'a slice job runs its hosted files alone')
+      for (const f of ran(calls[0])) {
+        ok(!owner.has(f), `${f} runs in slices ${owner.get(f)} and ${i}`)
+        owner.set(f, i)
+      }
+    }
+    is([...owner.keys()].toSorted(), one.toSorted(), 'the slices together run every file of the one-process run')
+    const full = run('full', ['--full'])
+    is(ran(full.calls[1]).toSorted(), one.toSorted(), '--full runs every file of the one-process run')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

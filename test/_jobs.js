@@ -25,3 +25,26 @@ export function shards(files, weight, n) {
   if (run.length) out.push(run)
   return out
 }
+
+// A file list as n slices for n machines, every file in exactly one: the dearest file
+// first goes to the slice lightest so far (bench/shards.mjs packs its cases the same
+// way), and a slice lists its files in the list's order. Same inputs, same slices.
+export function slices(files, weight, n) {
+  positiveInteger(n, 'slices')
+  const order = new Map(files.map((f, i) => [f, i]))
+  const out = Array.from({ length: n }, () => ({ files: [], weight: 0 }))
+  for (const f of files.toSorted((a, b) => weight(b) - weight(a) || order.get(a) - order.get(b))) {
+    const s = out.reduce((min, s) => s.weight < min.weight ? s : min)
+    s.files.push(f)
+    s.weight += weight(f)
+  }
+  for (const s of out) s.files.sort((a, b) => order.get(a) - order.get(b))
+  return out
+}
+
+// Measured seconds per file as a weight: a file the table has not timed weighs as
+// the dearest timed file of the list, so a new file is never planned as cheap.
+export function measured(files, seconds) {
+  const dearest = Math.max(1, ...files.map(f => seconds[f]).filter(s => s > 0))
+  return f => seconds[f] > 0 ? seconds[f] : dearest
+}

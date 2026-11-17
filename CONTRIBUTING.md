@@ -165,6 +165,7 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 | `npm run test:extended` | Integration matrix plus native/WASI generated owners |
 | `npm run test:bootstrap` | Fresh self compiler: round-trip, O0/O2/O3 parity/oracles, separate checkpoint overlay |
 | `npm run test:bootstrap -- --full` | Above, plus the full hosted suite and recursive compilation |
+| `npm run test:bootstrap -- --hosted=<i>/<n>` | Slice i of n of the hosted suite alone, on a fresh compiler of its own: CI's matrix, the files packed by their seconds in `test/hosted-costs.json` |
 | `npm run test:battery -- fast` | Core matrix plus the distinct armed O3 invariant leg |
 | `npm run test:battery` | Above, extended checks, armed integration/fuzz, fixpoint, then exclusive full bootstrap |
 | `npm run test:all` | Core + extended + conformance + benchmark + full bootstrap + self performance |
@@ -173,7 +174,7 @@ Before reporting a change, run what AGENTS.md ("Verify before claiming done") li
 
 `node test/index.js --suite=all --list` lists every registered file without compiling. `--suite=core|integration|generated|bootstrap` selects an owner; `--suite=all` explicitly requests the old single-process collection (including heavy builds). `test/_suites.js` gives each file exactly one owner; `test/test-infrastructure.js` checks that the union is complete. CI runs the core and integration on all four legs, generated checks on native/WASI, and bootstrap in its own workflow.
 
-`JZ_TEST_TIMEOUT` bounds an ordinary task in milliseconds (default one hour); bootstrap has a four-hour task budget and always runs alone in the battery. A test that must hold at several optimize levels writes `for (const optimize of levels(false, 2, 3))` (`test/_matrix.js`): each leg runs its own level; the default leg also owns O1. Do not split a pass-on/pass-off comparison that needs both results in the same assertion.
+`JZ_TEST_TIMEOUT` bounds an ordinary task in milliseconds (default one hour); bootstrap's round-trip, parity, checkpoint and recursive tasks have four hours each, a hosted file the ordinary hour, and bootstrap always runs alone in the battery. A test that must hold at several optimize levels writes `for (const optimize of levels(false, 2, 3))` (`test/_matrix.js`): each leg runs its own level; the default leg also owns O1. Do not split a pass-on/pass-off comparison that needs both results in the same assertion.
 
 Shared helpers live in `test/util.js`: `run` (exports), `wat` (text),
 `oracle(src)` (the same program evaluated by Node), `agree` (jz equals Node for

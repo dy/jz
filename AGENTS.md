@@ -79,7 +79,10 @@ What this implies for HOW we optimize:
 - `npm run test:bootstrap -- --full` — one fresh ordinary build shared across
   round-trip, O0/O2/O3 parity/oracles, checkpoint tests, the hosted suite and
   recursive compilation. The checkpoint overlay still has its own build.
-  No stale `dist/` reuse. `test:battery -- fast` excludes bootstrap; the full
+  No stale `dist/` reuse. CI runs it as `--recursive` beside a matrix of
+  `--hosted=<i>/<n>` slices, each file of the hosted suite in a process of its own;
+  a new file is planned at its dearest file's cost until `test/hosted-costs.json`
+  times it. `test:battery -- fast` excludes bootstrap; the full
   battery runs it alone after native checks. Subprocess logs are disk-backed.
 - `npm run test:self` — standalone self-compile gate: builds a fresh compiler in a temporary
   directory and round-trips real
