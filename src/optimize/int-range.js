@@ -68,6 +68,13 @@ export const fitsI32 = a => isInt(a) && a.lo >= I32.lo && a.hi <= I32.hi
 /** Whether the value is a number that is never NaN. */
 const real = a => !!a && !a.nan
 const unbounded = a => a.lo === -Infinity || a.hi === Infinity
+/** An i32 word as an unsigned comparison reads it: a negative word lies 2^32
+ *  higher, and a word whose sign is not known is any word. */
+const UWORD = Object.freeze({ lo: 0, hi: 2 ** 32 - 1, int: true, nz: false, nan: false })
+const unsignedWord = v => !v || v.of || v.nan || !v.int ? UWORD
+  : v.lo >= 0 && v.hi <= I32.hi ? v
+  : v.lo >= I32.lo && v.hi < 0 ? val(v.lo + 2 ** 32, v.hi + 2 ** 32)
+  : UWORD
 
 // The intervals of the locals at one point: a slot a local (`index`, one for
 // every point of a function's walks), null where nothing bounds it, the slots
@@ -1017,7 +1024,14 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       if (a?.of || b?.of) return BOOL
     }
     if (op in INT_CMP) return a?.of || b?.of ? BOOL : decide(INT_CMP[op], a, b)
-    if (op in UNSIGNED_CMP) return a && b && !a.of && !b.of && a.lo >= 0 && b.lo >= 0 ? decide(UNSIGNED_CMP[op], a, b) : BOOL
+    if (op in UNSIGNED_CMP) {
+      if (a?.of || b?.of) return BOOL
+      if (a && b && a.lo >= 0 && b.lo >= 0) return decide(UNSIGNED_CMP[op], a, b)
+      // A word of known sign against any word: `-1 <u n` holds for no n, the
+      // test of a key that names no element (emit-assign.js storeArrayPayload).
+      // (i32 alone: 2^64 is past the integers an interval's ends hold exactly)
+      return op.startsWith('i32.') ? decide(UNSIGNED_CMP[op], unsignedWord(a), unsignedWord(b)) : BOOL
+    }
     if (n.irange) return val(n.irange[0], n.irange[1])
     // A number is no string key, no missing value and no object; two values
     // are equal or they are not.

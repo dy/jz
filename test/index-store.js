@@ -222,3 +222,25 @@ export let wide = (i) => { const L = [1]; const o = (i >>> 0) * 2; L[o] = 5; ret
     is(wasm.wide(3), 7, `a small one grows the array at ${optimize}`)
   }
 })
+
+// A key that names no element below 2^31 is index -1 to the inline arm, whose
+// test `-1 <u length` holds for no length. The intervals decide it (optimize/
+// int-range.js: an unsigned compare of a word of known sign), so the arm is
+// gone: left in, its store is folded to the header's offset, `base - 8`, which
+// the effects solve refuses under JZ_DEBUG_INVARIANTS (optimize/address.js headerStore).
+test('index store: a constant key that names no element leaves no inline arm', () => {
+  if (belowOpt(2)) return
+  const src = `export let past = () => { const L = [1]; L[3e9] = 5; return L.length }
+export let frac = () => { const L = [1, 2]; L[1.5] = 5; return L.length }
+export let nan = () => { const L = [1, 2]; L[NaN] = 5; return L.length }`
+  for (const optimize of levels(2, 3)) {
+    const text = wat(src, { optimize })
+    for (const name of ['past', 'frac', 'nan']) {
+      const body = fnText(text, name)
+      ok(body && !/i32\.lt_u\s*\(i32\.const -1\)/.test(body), `${name}: no test of index -1 against a length at ${optimize}`)
+      ok(body && !/\(i32\.add\s*\(local\.get \$[\w$]+\)\s*\(i32\.const -8\)\)/.test(body), `${name}: no address at the header's offset at ${optimize}`)
+    }
+    const host = oracle(src), wasm = run(src, { optimize })
+    for (const name of ['frac', 'nan']) is(wasm[name](), host[name](), `${name}() at ${optimize}`)
+  }
+})
