@@ -11,6 +11,7 @@ import { levels, onWasi, onKernel, belowOpt } from './_matrix.js'
 import { execFileSync } from 'node:child_process'
 import { oracle, jz, compile } from './util.js'
 import { instantiate } from '../interop.js'
+import { bounded } from './_bounded.js'
 
 // Calls `step(i)` on both the module and the oracle, comparing each result;
 // counts the compactions (the kept memory shrinking between calls) and the peak.
@@ -742,6 +743,32 @@ test('compact: a dictionary that grew at init heals at a reset after a compactio
       memory.reset()
       is(exports.sum(), '40,780', `O${level}, round ${round}: the reset reads the init entries again`)
     }
+  }
+})
+
+// A listed stub's forward is rewritten to the handle its target leads to, not
+// its own (module/core/compact.js `__gc_update`): a shifted array's base record
+// is a stub and its own handle. An array the start grew, then shifted, left its
+// handle a stub forwarding to the base record of the block it grew into, and a
+// walk that listed the record rewrote its forward to itself: the next access
+// chased it forever, at levels 2, 3 and speed, in 1.0.3 too. In a worker the
+// test stops at a limit, so a hang fails here.
+test('compact: an array grown then shifted at init survives the compactions after it', () => {
+  if (onWasi() || !counted() || onKernel()) return
+  const src = `const oa = { k: 1, a: ['p', 12, 'r', 14, 't', 16, 'v'] }
+    oa.k = 2
+    oa.a[oa.a.length] = 'yz'
+    while (oa.a.length > 1) oa.a.shift()
+    export const g = () => { for (let i = 0; i < 5; i++) oa.a.push(2.5); oa.a.push(oa.a.shift()); return oa.a.length + oa.k }
+    export const read = () => oa.a.join()
+    let keep = []
+    export const step = (i) => { keep = [...keep, 'item ' + i + ' ' + 'x'.repeat(200)].slice(-20); return keep.length }`
+  const run = [['g', []], ...Array.from({ length: 400 }, (_, i) => ['step', [i]]), ['g', []], ['g', []], ['read', []]]
+  const want = oracle(src), expect = run.map(([name, args]) => String(want[name](...args)))
+  for (const optimize of levels(2, 3, 'speed')) {
+    const out = bounded({ src, optimize, runs: [run] }, 60000)
+    if (out.hung) { ok(false, `${optimize}: no answer in 60 s, at call ${out.hung[1]}`); continue }
+    is(out.results[0].slice(-4).join(' '), expect.slice(-4).join(' '), `${optimize}: the array after the compactions`)
   }
 })
 

@@ -663,8 +663,11 @@ export const registerCompact = () => {
     (if (i32.eq (local.get $hi) (i32.const ${KIND_CELL << 16})) (then ${fwdAt('(local.get $p)')} (return)))
     (if (i32.eq (local.get $hi) (i32.const ${KIND_STUB << 16}))
       (then
-        ;; its forward names the handle (a header, or a shifted array's base record), forwarded
-        (call $__gc_defer (i32.sub (local.get $p) (i32.const 8)) (call $__gc_fwd_raw (call $__gc_canon (local.get $p) (i32.const ${PTR.ARRAY}))))
+        ;; its forward names the handle its target leads to (a header, or a shifted array's base
+        ;; record), forwarded. The handle of the stub's target, not of the stub: a shifted array's
+        ;; base record is a stub and its own handle, and taken as the stub's it forwarded to itself
+        ;; (an array grown, then shifted, as the module started: the next chase never ended)
+        (call $__gc_defer (i32.sub (local.get $p) (i32.const 8)) (call $__gc_fwd_raw (call $__gc_canon (i32.load (i32.sub (local.get $p) (i32.const 8))) (i32.const ${PTR.ARRAY}))))
         (return)))
     (if (i32.eq (local.get $hi) (i32.const ${KIND_REC << 16}))
       (then
