@@ -796,10 +796,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const elemNums = []            // dense cell root → range | null
   const elemNumRaises = new Map() // cell root → [rounds it widened in, the last such round]
   // A store's numbers read intervals the walk settles over rounds (an argument's,
-  // a module constant's, a counter's): an unbounded one defers until a round
-  // without a change, after which the rounds run strict, an unbounded store
-  // opening its cell, until another round without a change confirms them.
-  let numsStrict = false, numsDeferred = false
+  // its integrality, a module constant's, and the counters' and constants' they
+  // bound): an unbounded one defers while they move. After a round in which none
+  // moved (`intervalsMoved`), or one without a change, the cells that round's
+  // deferred stores reach open at once and the rounds run strict, an unbounded
+  // store opening its cell, beside the rounds the kinds still take, until a round
+  // without a change confirms them: where the intervals settle before the kinds,
+  // the deferral costs the solve no round of its own.
+  let numsStrict = false, numsDeferred = false, intervalsMoved = false
+  const deferredCells = []   // the cells a round's deferred stores reach: opened where the rounds turn strict
   const NR_DEFER = Object.freeze({ deferred: true })   // a store's numbers a later round may bound (deferNums)
   // A range widens once a round at most by this count: past four rounds it opens.
   let numRound = 0
@@ -1183,7 +1188,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const entry of argumentEntries) {
       const name = entry.name
       if (entry.round !== argumentRound) {
-        if (argRanges.delete(name)) changed = true
+        if (argRanges.delete(name)) changed = intervalsMoved = true
         continue
       }
       let last = argRanges.get(name)
@@ -1195,7 +1200,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         // (an integrality that changes moves the position as a hull that changes does)
         const intsMoved = !!(r && p) && (entry.ints[i] !== false) !== (last.ints[i] !== false)
         if (!intsMoved && (r === p || (r && p && r[0] === p[0] && r[1] === p[1]))) continue
-        changed = true
+        changed = intervalsMoved = true
         let moves = moved.get(name)
         if (!moves) moved.set(name, moves = [])
         const m = (moves[i] ?? 0) + 1
@@ -1502,7 +1507,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = elemNums[id]
     if (old === null || r === NR_NONE) return
     // (a deferred store into a cell still bounded: the confirming rounds open it)
-    if (r === NR_DEFER) { numsDeferred = true; return }
+    if (r === NR_DEFER) { numsDeferred = true; deferredCells.push(id); return }
     let next = old === undefined ? r : nrJoin(old, r)
     if (old !== undefined && next !== null && !nrEqual(old, next) && widened(elemNumRaises, id)) next = null
     if (old === undefined || !nrEqual(old, next)) { elemNums[id] = next; changed = true }
@@ -4407,7 +4412,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           if (r) constRanges.set(key, r)
           else constRanges.delete(key)
           // (a module's constant holds its initializer's interval in every function: a frame's reset keeps it)
-          if (current === null && key !== null) { if (r) moduleConstRanges.set(key, r); else moduleConstRanges.delete(key) }
+          if (current === null && key !== null) {
+            const was = moduleConstRanges.get(key)
+            if (r ? !was || was[0] !== r[0] || was[1] !== r[1] : was) intervalsMoved = true
+            if (r) moduleConstRanges.set(key, r); else moduleConstRanges.delete(key)
+          }
           // (an integer one keys an element as its initializer does: spanOf)
           const sp = key === null ? null : spanOf(d[2])
           if (sp) constSpans.set(key, sp)
@@ -5975,7 +5984,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const rounds = (step) => { for (let round = 0; ; round++) { if (round === 10000) throw new Error('summary: no fixpoint'); if (!step()) return } }
   const fixpoint = () => rounds(() => {
     changed = false
-    numsDeferred = false
+    numsDeferred = false; intervalsMoved = false; deferredCells.length = 0
     numRound++
     grown.clear()   // the init pushes are counted afresh by every round's walk
     decisions.clear()   // as are the tests: the round without a change, its kinds settled, decides
@@ -6018,7 +6027,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (lostFieldsRead & 2 || canonicalNumeric(name)) escapeLostReads(prop)
     }
     settleArgs()
-    if (!changed && numsDeferred && !numsStrict) { numsStrict = true; changed = true }
+    if (numsDeferred && !numsStrict && (!changed || !intervalsMoved)) { numsStrict = true; changed = true; for (const id of deferredCells) raiseNums(cell(id), null) }
     return changed
   })
   // What the host may pass: an exported function's parameters; one the export
