@@ -230,7 +230,7 @@ export default (ctx) => {
     __durable_obj_snap: () => ['__alloc', ...(ctx.scope.globals.has('__esc') ? ['__esc_at'] : [])],
     __durable_cell_snap: ['__durable_obj_snap'],
     __durable_tbl_snap: ['__durable_words_snap'],
-    __durable_words_snap: ['__alloc'],
+    __durable_words_snap: () => ['__alloc', ...(ctx.scope.globals.has('__esc') ? ['__esc_at'] : [])],
     __durable_arr_heal: () => ctx.core.includes.has('__durable_obj_snap') ? ['__is_eph_bits'] : [],
     __is_eph_bits: [],
     __heap_mark: [],

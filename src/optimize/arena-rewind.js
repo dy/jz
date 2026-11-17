@@ -141,7 +141,7 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__jbuf', '$__jstack', '$__jscap', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
   '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch', '$__esc_held',
-  // the reset's log (module/core/durable-log.js; an object's record lowers the flag itself) and the table it saved last
+  // the reset's log (module/core/durable-log.js; who lowers the flag for each writer, CENSUS_SITED) and the table it saved last
   '$__durable_arr_seen', '$__durable_arr_log', '$__durable_tbl_last',
   // the park lane's cursors (module/core.js): scratch above the heap a phase checkpoint writes and reads back at once
   '$__park_base', '$__park_cursor', '$__park_read'])
@@ -154,19 +154,50 @@ const GC_STATE = /^\$__(g_\w+|pin|gc_tbl|stubs|stubn|stub_lost)$/
 const ENUMC = /^\$__enumc_(off|len|ep|arr)\d*$/
 const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name) || ENUMC.test(name) || GC_STATE.test(name)
 const NO_NAMES = new Set()
-// The durable-heap log (module/core/durable-log.js) allocates its buffers and
-// records entries only when a durable (pre-init) array or slot is grown,
-// mutated in place, or handed an ephemeral heap value: a store the census
-// counts (compile/analyze/frame-effects.js), whose site lowers the flag to
-// the durable receiver, older than every frame, before a value that may hold
-// a heap pointer goes in, or after the store when it allocated, as the log's
-// first touch does. No frame restores over a logging path: an in-place store
-// of a number into a durable array is no escape the census counts, and its
-// snapshot (module/collection/durable.js durableArrSnapNode) lowers the flag to
-// the array at its own site, after the record is made. An object's snapshot
-// lowers the flag itself where it allocates (module/core/durable-log.js): a
-// kernel's arm calls it for a store no site stands at.
-const CENSUS_GUARDED = /^\$__durable_(?!(obj|cell)_snap$)/
+// The durable-heap log (module/core/durable-log.js) allocates in the running
+// frame when a durable (pre-init) array, table or slot is grown, mutated in
+// place, or handed a value, and links what it made where a global names it: no
+// frame may restore over it, so the flag goes below the frame's mark where the
+// log allocates. A function added that allocates what the log names goes in
+// this table, with who lowers the flag for it:
+//
+//   function               allocates in the frame       lowers the flag
+//   __durable_arr_snap     a record, the bitmap         the store's census site: an element store's
+//                                                       own (durableArrSnapNode), a helper's call on
+//                                                       a receiver not the frame's, which lowers as
+//                                                       the store allocates (siteGrown)
+//   __durable_tbl_snap     a record, the bitmap         the census site of the table's write, as
+//                          (through words_snap)         the array's helpers; and words_snap
+//   __durable_fwd_log      the relocation buffer        the census site of the growth or the length
+//                                                       write, as the array's helpers
+//   __durable_words_snap   a record, the bitmap         itself, to the words saved: the dynamic
+//                                                       store's arm calls it for a field store of a
+//                                                       shape a delete reaches, which the census reads
+//                                                       as a fixed slot taking a number, no site
+//   __durable_obj_snap     a record, the bitmap         itself, to the field, and to zero at its
+//                                                       bitmap's store, a kernel's store outside
+//   __durable_cell_snap    through obj_snap             obj_snap (ROUND_ALLOCS)
+//   __durable_arr_heal,    nothing: the reset's undo,   none
+//   __durable_fwd_heal     run as the heap rewinds
+//   __durable_state        nothing: a checkpoint reads  none (PARK_CALLS)
+//
+// `CENSUS_SITED`: the functions every call of which stands behind a census
+// site, a caller's census counting none of them (a helper whose durable arm
+// runs on the receiver its call site hands it reads no flag for it, so a
+// frame filling a fresh array, or a loop building a fresh Map an iteration,
+// restores outright), and the heals. A path no site stands at goes under the
+// census as the functions that lower the flag themselves do (their callers
+// then read the flag): the mask save of 78d702b54 was one, its records freed by
+// a frame storing numbers, the next frame's, made at the same addresses,
+// linked to them in a cycle the walk of the log followed without end, and the
+// bits a later call set in the freed bitmap landed in a string it made. Their
+// stores into the log's own memory (the record, the bitmap) and those of the
+// sited ones need no flag at zero (`storesOutside`): each lowers it to its
+// address and the walk of a frame's escapes keeps that memory by the globals
+// (module/core/reach.js `__survive`); an object's record stays a kernel's
+// store outside, as the value a kernel's arm stores beside it has no site.
+const CENSUS_SITED = /^\$__durable_(arr_snap|tbl_snap|fwd_log|arr_heal|fwd_heal)$/
+const LOG_LOWERS = '$__durable_words_snap'
 // A captured cell's record (module/core/durable-log.js `__durable_cell_snap`)
 // lowers the flag where it allocates, and what it allocates is the round's,
 // not the frame's: a call of it reaches a lowering, as any field record's
@@ -549,7 +580,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         if (callee !== null && REACH.test(callee)) return
         // the checkpoint's helpers write the flag: reached from their caller, a reader, so their writes stay
         if (callee === PARK_SAFE || callee === ITER_RELEASE || PARK_CALLS.test(callee)) { if (callee === PARK_SAFE || callee === ITER_RELEASE) rec.reader = true; rec.calls.add(callee); return }
-        if (callee === null || callee === ASKS || callee === MADE || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
+        if (callee === null || callee === ASKS || callee === MADE || ARENA_SAFE.includes(callee) || CENSUS_SITED.test(callee)) return
         // jz's own interop imports (`$__ext_*`, interop.js) that read hand the
         // host nothing; one that calls the host or sets a property of its
         // object hands it values it may keep (a typed array is a view of the
@@ -566,7 +597,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         if (!neverReturns(callee, id) && !ROUND_ALLOCS.has(callee)) rec.allocCalls.add(callee)
       }
     })
-    if (name.startsWith('$__') && !CENSUS_GUARDED.test(name) && !LOWERS.has(name) && !LENDS.has(name) && !REACH.test(name)) for (const id of storesOutside(f)) escapeAt(rec, id, 'stores outside')
+    if (name.startsWith('$__') && !CENSUS_SITED.test(name) && name !== LOG_LOWERS && !LOWERS.has(name) && !LENDS.has(name) && !REACH.test(name)) for (const id of storesOutside(f)) escapeAt(rec, id, 'stores outside')
     info.set(name, rec)
   } })
   // A module with no heap pointer and no call of the allocator allocates
@@ -746,7 +777,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       else if (callsDirect(op)) {
         const callee = text(T.a[n])
         if (LOWERS.has(callee)) { why = 'lowers the flag'; return }
-        if (callee === null || callee === ASKS || callee === MADE || callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n' || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
+        if (callee === null || callee === ASKS || callee === MADE || callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n' || ARENA_SAFE.includes(callee) || CENSUS_SITED.test(callee)) return
         if (imports.has(callee)) { if (T.next[T.a[n]] !== NONE && !EXT_READS.has(callee) && !keepsNothing.has(callee)) why = 'calls ' + callee.slice(1) + ", the host's"; return }
         const g = info.get(callee)
         if (g === undefined) why = 'calls ' + callee + ' (undefined)'

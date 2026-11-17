@@ -228,7 +228,7 @@ export const madeByCall = (recv) => typeof recv === 'string' && ctx.func.freshOb
 // The record is the round's: the escape flag goes down to the array as it is made, since an
 // in-place store of a number is no escape the frame census counts, and a frame that restored
 // the heap over the record left the log naming freed memory (optimize/arena-rewind.js
-// CENSUS_GUARDED; the next walk of the log, module/core/reach.js `__survive`, never ended).
+// CENSUS_SITED; the next walk of the log, module/core/reach.js `__survive`, never ended).
 export const durableArrSnapNode = (base, bits = null, recv = null) => {
   if (!hasDurableReset() || madeByCall(recv)) return ['nop']
   const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']

@@ -16,11 +16,16 @@
  * `__region_*` references in this file's own body, zero `__durable_*`
  * references in region-arena.js's.
  *
- * The durable-heap logs record only mutations of containers made before the reset mark, each a
- * store the census counts: its site lowers the flag to the durable receiver, so no frame restores
- * over a logging path. A frame that restored over the record left the log naming freed memory: the
- * next walk of the log (`__survive` as an outermost frame that ran an escape returns) followed what
- * a later allocation wrote there without end, and `memory.reset()` read it back and trapped.
+ * The durable-heap logs record only mutations of containers made before the reset mark. What
+ * they allocate (a record, the bitmap, the relocation buffer) lies in the running frame's memory,
+ * named by a global, so the frame must not restore over it: the escape flag goes below its mark
+ * where the log allocates. Who lowers it for each function is the table at
+ * optimize/arena-rewind.js `CENSUS_SITED`: the store's own census site, or the function itself
+ * (`lowered`) where a kernel's arm calls it for a store no site stands at. A frame that restored
+ * over a record left the log naming freed memory: the next frame's records, made at the same
+ * addresses, linked to it in a cycle the walk of the log (`__survive`) followed without end, the
+ * bits a later call set in a freed bitmap landed in what that call made, and `memory.reset()`
+ * read the log back and trapped.
  *
  * @module core/durable-log
  */
@@ -31,6 +36,11 @@ import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, arrBaseWat } from '../../
 import { seenCellWat, noNumberWat } from '../collection/durable.js'
 
 export const registerDurableLog = () => {
+  // The flag lowered to the durable address a function logged, as it allocated in the running
+  // frame, where no census site lowers it (the module header): read as the stdlib expands,
+  // where the flag is declared or not.
+  const lowered = (a) => ctx.scope.globals.has('__esc') ? `
+    (call $__esc_at ${a})` : ''
   // Durable relocation log — see collection.js's durableFwdLogIR for the full
   // rationale (array/hash/set/map growth forwards a DURABLE header into an
   // EPHEMERAL new block; `_clear` must heal that back before rewinding the arena
@@ -192,7 +202,7 @@ export const registerDurableLog = () => {
   // `n` words from `at`, saved as they stand at their first write of the round
   // in the array's record, which the heal copies back; the bit of `at` marks
   // them saved. A table's (below) and an object's mask of deleted fields.
-  ctx.core.stdlib['__durable_words_snap'] = `(func $__durable_words_snap (param $at i32) (param $n i32)
+  ctx.core.stdlib['__durable_words_snap'] = () => `(func $__durable_words_snap (param $at i32) (param $n i32)
     (local $cell i32) (local $bit i32) (local $rec i32)
     (if (i32.eqz (global.get $__durable_arr_seen))
       (then
@@ -209,7 +219,7 @@ export const registerDurableLog = () => {
     (i32.store offset=8 (local.get $rec) (local.get $n))
     (i32.store offset=12 (local.get $rec) (i32.const 0))
     (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $at) (i32.shl (local.get $n) (i32.const 3)))
-    (global.set $__durable_arr_log (local.get $rec)))`
+    (global.set $__durable_arr_log (local.get $rec))${lowered('(local.get $at)')})`
   // A table (a Set's or a Map's, module/collection/ordered.js; a dictionary's,
   // module/collection/upsert.js), saved whole at the round's first write as an
   // array is: its header and its block of `bytes` (entries, buckets and counts),
@@ -244,8 +254,7 @@ export const registerDurableLog = () => {
     (i32.store offset=8 (local.get $rec) (i32.const 0))
     (i32.store offset=12 (local.get $rec) (i32.const 1))
     (i64.store offset=16 (local.get $rec) (i64.load (local.get $off)))
-    (global.set $__durable_arr_log (local.get $rec))${ctx.scope.globals.has('__esc') ? `
-    (call $__esc_at (local.get $off))` : ''})`
+    (global.set $__durable_arr_log (local.get $rec))${lowered('(local.get $off)')})`
   // A captured cell's record (src/ir/vars.js capturedCellSave) is the field's.
   // A call of it reaches the record's lowering of the flag, so the frame
   // around it reads the flag, but allocates nothing of the frame's: the

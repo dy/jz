@@ -292,6 +292,7 @@ const TESTS = [
   'reset-population',
   'start-population',
   'store-population',
+  'durable-join-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',

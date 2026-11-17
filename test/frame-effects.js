@@ -14,6 +14,7 @@ import { representationProgramHasBigint } from '../src/compile/representation-pl
 import { ctx } from '../src/ctx.js'
 import { levels, onKernel, onWasi, belowOpt } from './_matrix.js'
 import { oracle, compileInProcess, jz, compile } from './util.js'
+import { bounded } from './_bounded.js'
 
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
@@ -401,6 +402,49 @@ test('frame effects: what a walked call kept of a receiver made at start goes at
       memory.reset()
       is(m.read(), '0', `round ${round}: and as the module started, past the reset`)
       m.churn(60)
+    }
+  }
+})
+
+// The records the reset's log makes lie in the running frame, linked where a global names them
+// (module/core/durable-log.js): the function that makes one lowers the flag, whatever path called
+// it. A delete anywhere sends every field store of an object made at start through the dynamic
+// store, whose arm saves the object's mask of deleted fields and lowered nothing: a frame storing
+// numbers restored over its records, the next frame's records, made at the same addresses,
+// linked to them in a cycle, and the walk of the log as a frame that ran an escape returned
+// never ended. And the log's bitmap, made in the first such frame, was freed with it: the bits a
+// later call set landed in the strings it made, and a read of one trapped.
+test('frame effects: a frame that logs a receiver made at start keeps what the log names, from every path', () => {
+  if (onWasi() || onKernel()) return
+  const cycle = `const N = 2
+const ps0 = []
+for (let i = 0; i < N; i++) ps0.push({ x: i })
+export const f0 = (k) => { ps0[1] = ps0[1]; return 0 }
+const ps1 = []
+for (let i = 0; i < N; i++) ps1.push({ x: i })
+export const f1 = (k) => { for (let i = 0; i < N; i++) ps1[i].x = i; return 0 }
+const ps2 = []
+for (let i = 0; i < N; i++) ps2.push({ x: i })
+export const f2 = (k) => { for (let i = 0; i < N; i++) ps2[i].x = i; ps2[1] = ps2[1]; return 0 }
+export const f3 = (k) => { if (k > 100) delete ps2[k]['x']; return 0 }`
+  const bits = `const N = 64
+const ps = []
+for (let i = 0; i < N; i++) ps.push({ x: i * 0.5, y: i + 1 })
+export const f0 = () => { for (let i = 0; i < N; i++) { const p = ps[i]; p.x = i * 0.5; p.y = i + 1 } return 0 }
+const qs = []
+for (let i = 0; i < N; i++) qs.push({ x: i * 0.5, y: i + 1 })
+export const f1 = (k) => { qs[k].x = 'x'; let h = 0; for (let i = 0; i < N; i++) h = h + (qs[i].x === qs[i].x ? qs[i].x : 0) + qs[i].y; return h }
+export const f2 = (k, w) => { if (k > 100) delete qs[k][w]; return 0 }`
+  const cases = {
+    'a cycle the walk followed': [cycle, [['f0', [0]], ['f1', [0]], ['f2', [0]]]],
+    'a bitmap freed under the strings': [bits, [...Array(20).fill(['f0', []]), ...[0, 1, 2, 3].flatMap(() => [0, 1, 2, 5, 16].map(k => ['f1', [k]]))]],
+  }
+  for (const [name, [src, calls]] of Object.entries(cases)) {
+    const m = oracle(src), want = calls.map(([f, a]) => String(m[f](...a))).join()
+    // in a worker stopped at a limit: a walk that never ends fails here, not the suite
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+      const out = bounded({ src, optimize, runs: [calls] }, 60000)
+      is(out.hung ? `no answer in 60 s at call ${out.hung[1]}` : out.results[0].join(), want, `${name}, at ${optimize}`)
     }
   }
 })
