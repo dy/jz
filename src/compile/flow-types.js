@@ -53,15 +53,18 @@ const runsCode = (n, view) => some(n, x => x[0] === '()' || x[0] === '?.()' || x
 const HEAP_VALS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.TYPED, VAL.MAP, VAL.SET, VAL.BUFFER, VAL.CLOSURE, VAL.HASH, VAL.DATE, VAL.REGEX])
 const PRESENT = { notNullish: true }
 const isParam = (name) => { const ps = ctx.func.current?.params; if (ps) for (const p of ps) if (p.name === name) return true; return false }
+/** Whether `name` may change while `code` runs, other than by its own writes:
+ *  a captured cell, or a module binding a function assigns, where `code` calls. */
+export const assignedOver = (name, code, view = ctx.summary?.at(ctx.func.current)) =>
+  (ctx.func.boxed?.has(name) || !ctx.func.locals?.has(name) && !isParam(name) && ctx.scope.globals?.has(name) && view?.fnAssigns?.(name) === true) &&
+  runsCode(code, view)
 /** What a guard's `fact` about `name` is worth over `code`. A captured cell, and a
  *  module binding a function assigns, can change at any call `code` makes: the
  *  fact holds over code that runs none (`if (typeof X === 'number') { w(); X + 1 }`
  *  added a string as a number). That a heap value is present stays: a read through
  *  null is the program's error. Null where nothing of it holds. */
 export const heldOver = (name, fact, code, view = ctx.summary?.at(ctx.func.current)) => {
-  const open = ctx.func.boxed?.has(name) ||
-    !ctx.func.locals?.has(name) && !isParam(name) && ctx.scope.globals?.has(name) && view?.fnAssigns?.(name) === true
-  if (!open || !runsCode(code, view)) return fact
+  if (!assignedOver(name, code, view)) return fact
   const k = fact.notNullish ? view?.bindingKindOf?.(name) : null
   return k != null && HEAP_VALS.has(ctx.summary.coreValOfKind(k)) ? PRESENT : null
 }

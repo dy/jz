@@ -21,7 +21,7 @@ import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest, inBoundsArrIdx } from '../../type.js'
 import { withControlFrame, withFinallyStack, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
-import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
+import { assignedOver, extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.js'
 import { fuseProbeIf } from './fuse-probes.js'
@@ -564,7 +564,8 @@ function emitLoopFreshBoxed(body, frame) {
   return inits
 }
 // The names of fixed-length arrays a loop's body stores an element into and no
-// part of the loop reassigns, boxes or lets be missing: a module `const` or a
+// part of the loop reassigns, boxes or lets be missing: a module `const`, a
+// module `let` nothing the loop runs assigns (flow-types.js assignedOver), or a
 // binding of the frame. Their snapshot for the reset moves before the loop.
 function durableLoopArrays(init, cond, step, body) {
   const names = new Set(), stores = new Map(), touched = new Set()   // name → every index it is stored at; the names a call or a member reaches
@@ -589,7 +590,7 @@ function durableLoopArrays(init, cond, step, body) {
     if (ctx.func.boxed?.has(name) || ctx.func.flatObjects?.has(name) || containsDeclOf(body, name) || (init != null && containsDeclOf(init, name)) ||
         isReassigned(body, name) || (init != null && isReassigned(init, name)) ||
         (cond != null && isReassigned(cond, name)) || (step != null && isReassigned(step, name))) continue
-    if (isGlobal(name) && !ctx.scope.consts?.has(name)) continue
+    if (isGlobal(name) && !ctx.scope.consts?.has(name) && assignedOver(name, [';', init, cond, step, body])) continue
     if (!view || (view.fixedLenOf(name) == null && !(lookupValType(name) === VAL.ARRAY && inBounds(name))) || isNullable(view.kindOfExpr(name))) continue
     if (ctx.func.refinements?.get(name)?.saved || madeByCall(name)) continue
     out.push(name)

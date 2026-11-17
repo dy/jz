@@ -142,3 +142,30 @@ test('header hoist: a binding that may hold no array keeps its header read in th
     export const f = n => sum(forward(n), n)`
   for (const optimize of levels(0, 2, 3)) for (const n of [0, 1, 8, 0, 3]) agree(src, 'f', [n], { optimize }, `f(${n}) at ${optimize}`)
 })
+
+// A module `let` a function reassigns is saved before a loop that runs no
+// code of the program's (flow-types.js assignedOver): nothing in it can make
+// the binding name another array. A loop that calls keeps the test at each store.
+const held = `let t = [0, 0, 0, 0]
+  export const swap = () => { t = [9, 9, 9, 9]; return 0 }
+  export const fill = (v) => { for (let i = 0; i < t.length; i++) t[i] = v + i; return t[0] + t[3] }
+  const touch = (i) => { if (i === 2) t = [7, 7, 7, 7]; return 0 }
+  export const fillCalling = (v) => { for (let i = 0; i < t.length; i++) { t[i] = v + i; touch(i) } return t[0] + t[3] }
+  export const read = () => t[0] * 1000 + t[1] * 100 + t[2] * 10 + t[3]`
+
+test('header hoist: a module let the loop cannot rebind is saved before the loop, and the reset restores it', () => {
+  for (const optimize of levels(0, 2, 3)) {
+    const host = oracle(held), { exports, memory } = jz(held, { optimize })
+    is(exports.fill(3), host.fill(3), `fill(3) at ${optimize}`)
+    is(exports.read(), host.read(), `read after fill at ${optimize}`)
+    memory.reset()
+    is(exports.read(), 0, `the reset restores the array the start made at ${optimize}`)
+    is(exports.fillCalling(1), oracle(held).fillCalling(1), `fillCalling(1) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(held, { optimize: { level: 2, sourceInline: false } })
+  const fill = fnText(text, 'fill'), calling = fnText(text, 'fillCalling'), from = (fn) => fn.slice(fn.indexOf('(loop '))
+  ok(fill.includes('(loop ') && !/__durable_arr_seen/.test(from(fill)), 'the loop that runs no code stores with no snapshot test')
+  ok(/call \$__durable_arr_snap/.test(before(fill)), 'it saves the array before the loop')
+  ok(calling.includes('(loop ') && /__durable_arr_seen/.test(from(calling)), 'a loop whose call may rebind the binding tests at the store')
+})
