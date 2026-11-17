@@ -191,6 +191,12 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     // the full encode/decode kernel, then always execute the checked twin).
     L.cands = L.cands.filter(c => {
       if (!Array.isArray(c.range) || c.range.hiName != null) return true
+      // A hull no fact of the loop bounds (interval-proof.js `noFact`: a word's range,
+      // the most a kind counts) asks a receiver as long as the program could make one:
+      // its guard fails for any other, and its twin runs every pass. No candidate: the
+      // access stays checked, as it is in that twin, and a loop nothing else versions
+      // stays plain, which the passes that copy loops read as any loop.
+      if (c.range.noFact === true) return false
       const len = lengthCeiling(c.recv, locals)
       return len == null || c.range[1] < len
     })

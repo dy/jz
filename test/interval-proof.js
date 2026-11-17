@@ -1633,3 +1633,69 @@ test('interval proof: a name a test bounds and then writes is not held to the bo
     for (const k of [2147483647, 2, 7]) { is(m.word(k), host.word(k), `word(${k}) at ${optimize}`); is(m.after(k), host.after(k), `after(${k}) at ${optimize}`) }
   }
 })
+
+// A hull no fact of the loop bounds versions no loop (interval-proof.js `noFact`): a word
+// field read through a word operator (`st.p >>> 3`: [0, 2^29 - 1], a bit reader's byte
+// offset) asks a receiver of 2^29 elements, so the version's guard failed for every real one
+// and only its checked twin ran. The access stays checked in the one loop left, which answers
+// as the twin did: a read past the end is undefined (`| 0` makes it 0, arithmetic NaN), a
+// store past the end does nothing. A mask's range is a fact (`& 255`): beside it in one loop,
+// its candidate still versions the loop, the field's read checked there. An interval product
+// of values the walk knows (`base[j * stride]`, an FFT plan's twiddle read: [0, 1023 * 1024])
+// is a fact as well, which only a relation the walk keeps no record of (`j * stride < n / 2`)
+// would tighten: its guard stays as it was.
+test('interval proof: a hull no fact of the loop bounds versions no loop', () => {
+  const src = `export let read = (d, st, n) => {
+      let s = 0
+      for (let c = 0; c < n; c++) { const b = st.p >>> 3; s = (s + (d[b] | 0) + (d[b + 1] | 0) * 256) | 0; st.p += 13 }
+      return s
+    }
+    export let run = (len, n) => {
+      const d = new Uint8Array(len)
+      for (let i = 0; i < len; i++) d[i] = (i * 37 + 11) & 255
+      const st = { p: 0 }
+      return [read(d, st, n), st.p]
+    }
+    export let past = (len) => {
+      const d = new Uint8Array(len), st = { p: 0 }
+      let missing = 0, nan = 0
+      for (let c = 0; c < 8; c++) { const b = st.p >>> 3; if (d[b] === undefined) missing++; if (Number.isNaN(d[b] + 1)) nan++; d[b + 2] = 7; st.p += 64 }
+      return [missing, nan, d.length, Array.from(d)]
+    }
+    export let mix = (t, d, st, n) => {
+      let s = 0
+      for (let c = 0; c < n; c++) { s += t[(c * 7) & 255] + (d[st.p >>> 3] | 0); st.p += 5 }
+      return s
+    }
+    export let both = (n) => {
+      const t = new Float64Array(n), u = new Float64Array(2 * n), d = new Uint8Array(40)
+      for (let i = 0; i < n; i++) t[i] = i * 0.5
+      for (let i = 0; i < 2 * n; i++) u[i] = i * 0.25
+      for (let i = 0; i < 40; i++) d[i] = i * 3
+      return [mix(t, d, { p: 0 }, 100), mix(u, d, { p: 8 }, 100)]
+    }
+    export let plan = (k) => {
+      const n = 1 << ((k & 7) + 4), half = n >> 1
+      const base = new Float64Array(half)
+      for (let i = 0; i < half; i++) base[i] = i * 0.5
+      const tw = new Float64Array(n)
+      let ti = 0
+      for (let len = 2; len <= n; len <<= 1) { const h = len >> 1, stride = (n / len) | 0; for (let j = 0; j < h; j++) tw[ti++] = base[j * stride] }
+      return tw
+    }
+    export let sums = () => [2, 4, 6].map(k => { const tw = plan(k); let s = 0; for (let i = 0; i < tw.length; i++) s += tw[i] * (i + 1); return s })`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const m = jz(src, { optimize }).exports
+    // (the data shorter than the reads: those past it answer 0 through `| 0`)
+    for (const [len, n] of [[16, 30], [64, 30], [256, 40]]) is(m.run(len, n), host.run(len, n), `run(${len}, ${n}) at ${optimize}`)
+    for (const len of [8, 40, 100]) is(m.past(len), host.past(len), `past(${len}) at ${optimize}`)
+    is(m.both(256), host.both(256), `both at ${optimize}`)
+    is(m.sums(), host.sums(), `sums at ${optimize}`)
+  }
+  const wat = compile(src, { optimize: 'speed', wat: true })
+  const consts = (name) => new Set([...funcWat(wat, name).matchAll(/\(i64\.const (\d+)\)/g)].map(m => +m[1]))
+  ok(!consts('read').has(2 ** 29 - 1), 'the word operator over a field bounds no guard')
+  ok(consts('mix').has(255) && !consts('mix').has(2 ** 29 - 1), 'the mask still versions the loop, the field read checked in it')
+  ok(consts('plan').has(1023 * 1024), 'the interval product keeps its guard')
+})

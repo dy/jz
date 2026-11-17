@@ -167,6 +167,9 @@ function noteExactDivs(test, arm) {
  *    over the walk (null bounds where unknown), for a guard to test.
  *  - `written`: what each write of a name stores, by node (a declarator, an
  *    assignment, a step), as values.
+ *  - `unfounded`: its `read` set where the walk bounded a value by no fact of it:
+ *    by what its carrier holds (`carrier` below) or by a word operator's range
+ *    over a value of no known numbers. `carriers: false` takes neither bound.
  *  `present(node)` answers for element reads another prover holds in bounds;
  *  `assume(name)` gives the value of a name wherever the walk knows no more of
  *  it, a closure's writes or a call's notwithstanding: a hypothesis over every
@@ -180,12 +183,22 @@ export function scanIntervalIdx(body, lens, facts = {}) {
   ctx.func.refinements = null
   try { scanBody(body, lens, facts) } finally { ctx.func.refinements = refinements }
 }
-function scanBody(body, lens, { out = null, ranges = null, calls = null, entry = null, stores = null, misses = null, bindings = null, written = null, assume = null, present = null, own = null, values = null, slot = null }) {
+function scanBody(body, lens, { out = null, ranges = null, calls = null, entry = null, stores = null, misses = null, bindings = null, written = null, assume = null, present = null, own = null, values = null, slot = null, carriers = true, unfounded = null }) {
   // Branches retain their completed map and resume the saved entry map.
   // Values are immutable, so unchanged ones can be shared at joins.
   // Missing map entries are unknown. Keep lexical/write ownership separately:
   // discarding an unknown interval must not reveal a same-named module constant.
   let env = new Map()   // name → the numbers it holds (num-range.js)
+  // A bound that is what a value's carrier can hold, no fact of the value: the word
+  // of a word parameter, field, call result or module binding, and the most a kind
+  // counts (a length of no known receiver). Under `carriers: false` none
+  // (collectIntervalProof's second walk: the hulls no fact bounds).
+  const carrier = (v) => {
+    if (!v) return v
+    if (!carriers) return null
+    if (unfounded) unfounded.read = true
+    return v
+  }
   // Each loop's fixpoint walks its body several times, and every walk reruns
   // the fixpoints of the loops inside it: a nest costs about 5^depth walks of
   // its innermost body. Past a budget of 512 visits per node of the body
@@ -307,9 +320,9 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
   const carried = (name) => {
     if (closureWrites.has(name) || owned.has(name)) return null
     const p = params?.find(q => q.name === name)
-    if (p) return p.ptrKind != null || !numeric(name) ? null : p.type === 'i32' ? WORD_VALUE : p.intLevel ? WHOLE_VALUE : null
+    if (p) return p.ptrKind != null || !numeric(name) ? null : carrier(p.type === 'i32' ? WORD_VALUE : p.intLevel ? WHOLE_VALUE : null)
     if (ctx.scope?.globalValTypes?.get(name) !== VAL.NUMBER) return null
-    return ctx.scope.globalTypes?.get?.(name) === 'i32' ? WORD_VALUE : repOfGlobal(name)?.intCertain === true ? WHOLE_VALUE : null
+    return carrier(ctx.scope.globalTypes?.get?.(name) === 'i32' ? WORD_VALUE : repOfGlobal(name)?.intCertain === true ? WHOLE_VALUE : null)
   }
   const valueOf = (name) => env.get(name) ?? assume?.(name) ?? carried(name)
   // A parameter's entry: the range its callers prove, else what it carries.
@@ -382,6 +395,12 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     return null
   }
   const ARITH = new Set(['+', '-', '*', '/', '<<', '>>', '>>>', '&', '%', '|', '^'])
+  // A word operator's range over a value of no known numbers (`x >>> 3`: [0, 2^29 - 1])
+  // is the word's, no fact of the value: under `carriers: false` none. A mask's is the
+  // mask's (`x & 255`: [0, 255], whatever x holds).
+  const WORD_OPS = new Set(['<<', '>>', '>>>', '&', '|', '^'])
+  const word = () => { if (!carriers) return false; if (unfounded) unfounded.read = true; return true }
+  const masked = (op, A, B) => op === '&' && (A != null && A.lo >= 0 || B != null && B.lo >= 0)
   const ev = (e) => {
     if (typeof e === 'string') recordBinding(e, closureWrites.has(e) ? null : env.get(e))
     const c = constNum(e)
@@ -408,15 +427,19 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
       if (L != null) return nrPoint(L)
       // Any other array's, typed array's or string's length is a count of
       // its elements (a nullish receiver throws before it reads).
-      const most = op === '.' ? countOf(x) : null
-      if (most != null) return nrInts(0, most)
+      const n = op === '.' ? countOf(x) : null
+      const most = n == null ? null : carrier(nrInts(0, n))
+      if (most) return most
     }
     // `Math`'s functions are pure: the table's rule over the arguments' numbers.
     if (op === '()' && e.length === 3 && typeof x === 'string' && x.startsWith('math.')) return nrMath(x.slice(5), callArgs(e).map(a => ev(a)))
     // Grouping and numeric conversion keep the numbers.
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
     if (e.length === 2 && op === '()') return ev(x)
-    if (e.length === 2 && (op === 'u+' || op === 'u-' || op === '-' || op === '~')) return nrUnary(op === '-' ? 'u-' : op, ev(x))
+    if (e.length === 2 && (op === 'u+' || op === 'u-' || op === '-' || op === '~')) {
+      const v = ev(x)
+      return op === '~' && !v && !word() ? null : nrUnary(op === '-' ? 'u-' : op, v)
+    }
     // prepare's member step (`++o.k` stores `+1 o.k`): the number one past, or before, it
     if (e.length === 2 && (op === '+1' || op === '-1')) return nrBinary(op[0], ev(x), nrPoint(1))
     // Save the old value before transferring a postfix update, exactly once.
@@ -468,13 +491,15 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     }
     if (op === ',') { for (let k = 1; k < e.length - 1; k++) visit(e[k]); return ev(e[e.length - 1]) }
     // A call's and a member read's carrier (callNumbers, memberNumbers).
-    if (op === '()' && e.length === 3) { visit(e); return callNumbers(e, inBoundsCode) }
-    if (op === '.' && e.length === 3 && typeof x === 'string' && typeof e[2] === 'string') { visit(e); return memberNumbers(e, slot) }
+    // (a code unit's range is the read's own, no carrier's)
+    if (op === '()' && e.length === 3) { visit(e); const v = callNumbers(e, inBoundsCode); return Array.isArray(x) ? v : carrier(v) }
+    if (op === '.' && e.length === 3 && typeof x === 'string' && typeof e[2] === 'string') { visit(e); return carrier(memberNumbers(e, slot)) }
     // any non-arithmetic node (assignment, indexing…) routes through visit so
     // its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
     // (a shift or a field reads each operand as its word, whatever it is: the table's rule)
     const A = ev(x), B = ev(y)
+    if ((!A || !B) && WORD_OPS.has(op) && !masked(op, A, B) && !word()) return null
     const side = stepSide.get(e)
     if (side) logStep(side[0], side[1] === 2 ? B : A)
     // (an exact quotient of this flow's own names: a finite integer, the test having held)
@@ -502,7 +527,7 @@ function scanBody(body, lens, { out = null, ranges = null, calls = null, entry =
     if (exprType(name, ctx.func.locals) !== 'i32') return null
     if (ctx.func.localReps?.get(name)?.ptrKind != null) return null
     const p = ctx.func.current?.params?.find(q => q.name === name)
-    return p?.ptrKind == null ? WORD_VALUE : null
+    return p?.ptrKind == null ? carrier(WORD_VALUE) : null
   }
   // What a test leaves of the name it compares: `[name, value]`, the value empty
   // where the test cannot come out so. Each conjunct refines alone; refineAll
@@ -1859,8 +1884,19 @@ export function intervalProvenIdx(ctx) {
 }
 
 function collectIntervalProof(ctx, body, cache) {
-  const out = new Set(), ranges = new Map()
-  scanIntervalIdx(body, functionLens, { out, ranges, entry: paramEntry() })
+  const out = new Set(), ranges = new Map(), unfounded = { read: false }
+  scanIntervalIdx(body, functionLens, { out, ranges, entry: paramEntry(), unfounded })
+  // A hull no fact of the loop bounds (`d[p >>> 3]` over a word field: [0, 2^29 - 1];
+  // `out[o++]` up to the most a string counts) asks a receiver as long as the program
+  // could make one: a guard testing a length against it fails for any other. The walk
+  // again with neither a carrier's bound nor a word operator's over an unknown value
+  // finds them: where the hull opens there, it is marked `noFact`
+  // (type/loop-versioning-nest.js takes no candidate of it).
+  if (unfounded.read && [...ranges.values()].some(h => Array.isArray(h))) {
+    const bare = new Map()
+    scanIntervalIdx(body, functionLens, { ranges: bare, entry: paramEntry(), carriers: false })
+    for (const [k, h] of ranges) if (Array.isArray(h) && !Array.isArray(bare.get(k))) h.noFact = true
+  }
   cache.set(body, out)
   getFactStore().ipRanges.set(body, ranges)
   return out
