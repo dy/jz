@@ -438,6 +438,29 @@ test('summary: an element read under the least of the lengths is present', () =>
   for (const optimize of levels(0, 2, 3)) for (const n of [0, 3, 6, 9, 2.5]) is(jz(src, { optimize }).exports.go(n), host.go(n), `go(${n}) at ${optimize}`)
 })
 
+// The loop's test read the length of the array the name held then; a body that
+// rebinds the name reads another array under it, whose elements that length
+// proves nothing about (boundedBy: no bound by an array the body assigns).
+test('summary: a length bounds no read of an array the loop\'s body rebinds', () => {
+  const srcs = {
+    thrown: `export function f(k){const a=[];if(k)a.push({x:3});let b=a,reads=0;
+      try{for(let i=0;i<b.length;i++){b=[];reads++;return b[i].x}return 'none:'+reads}catch(e){return e.name+':'+reads}}`,
+    missing: `export const f = (k) => { let b = [1, 2, 3], s = 0
+      for (let i = 0; i < b.length; i++) { if (i === k) b = [9]; const v = b[i]; s += v === undefined ? 100 : v } return s }`,
+    aliased: `export const f = (k) => { let b = [1, 2, 3], s = 0; const n = b.length
+      for (let i = 0; i < n; i++) { if (i === k) b = [9]; const v = b[i]; s += v === undefined ? 100 : v } return s }`,
+    least: `export const f = (k) => { let b = [1, 2, 3], s = 0; const m = Math.min(k + 2, b.length) | 0
+      for (let i = 0; i < m; i++) { if (i === k) b = [9]; const v = b[i]; s += v === undefined ? 100 : v } return s }`,
+  }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [0, 1, 2, 5]) is(got.f(k), want.f(k), `${name} at ${optimize}, f(${k})`)
+    }
+  }
+})
+
 test('summary: a declaration copying a conditional\'s candidates mixes nothing when none is an array', () => {
   // `const o = c` where `c` left an if as one shape or another: the member read
   // through `o` reads both shapes (an empty mix once shadowed it with nothing).

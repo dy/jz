@@ -1404,8 +1404,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const c = loopCounter(n, test)
     if (!c || c.from[0] < 0 || c.test[0] !== '<') return null
     const b = wordOf(c.test[2]), body = assignedIn(n[4])
-    const arrs = Array.isArray(b) && b[0] === '.' && b[2] === 'length' && typeof b[1] === 'string' ? [b[1]]
-      : typeof b === 'string' && !body.includes(b) ? (lengthAliasOf(b) !== null ? [lengthAliasOf(b)] : leastAliasesOf(b) ?? []).filter(a => !body.includes(a)) : []
+    // (an array the body rebinds is another array at the next read: its length bounds no index into that one)
+    const arrs = (Array.isArray(b) && b[0] === '.' && b[2] === 'length' && typeof b[1] === 'string' ? [b[1]]
+      : typeof b === 'string' && !body.includes(b) ? (lengthAliasOf(b) !== null ? [lengthAliasOf(b)] : leastAliasesOf(b) ?? []) : []).filter(a => !body.includes(a))
     return arrs.length ? [c.name, arrs, c.from[0]] : null
   }
   // An array holds fewer than 2^32 elements: a counter its length bounds is an index.
