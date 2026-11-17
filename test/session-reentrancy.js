@@ -496,3 +496,28 @@ test('session-reentrancy: swap-reverted — a ctx reference held across a later 
   ok(held.funcs.names.has('f') && !held.funcs.names.has('reassignMe'),
     'the previously-held reference now reports MINIMAL\'s registry — mutated underfoot, not a coherent snapshot of PREPARE_HEAVY')
 })
+
+// What a compile leaves behind. GROWS passes an array to a function that pushes into
+// it (emit/call.js paramGrows reads the callee) and has helpers the inliner splices.
+const GROWS = `const fill = (a, n) => { for (let i = 0; i < n; i++) a.push(i); return a.length }
+const sq = (x) => x * x
+export let f = (n) => { const a = []; fill(a, n); fill(a, n); let s = 0; for (let i = 0; i < a.length; i++) s += sq(a[i]); return a.length + s }`
+// The function records of A that are still alive once B has compiled and the heap is collected.
+const recordsLeftBy = async (A, B, opts) => {
+  const { collect } = await import('./_gc.js')
+  // (A at level 2 on every leg: the level that reads its callees' growth and splices its helpers)
+  const records = (() => { compile(A, { optimize: 2 }); return ctx.funcs.list.map(f => new WeakRef(f)) })()
+  compile(B, opts)
+  // (a WeakRef holds its target to the end of the job that made it)
+  for (let i = 0; i < 2; i++) { await new Promise(r => setTimeout(r, 0)); collect(true) }
+  return records.filter(r => r.deref() !== undefined).length
+}
+
+test('session: a compile keeps no function record of the compile before it', async () => {
+  if (onKernel()) return
+  // (emit/call.js kept whether each parameter grows in a module Map keyed by record, never
+  // cleared; SPLICED has a helper to splice, so the inliner's run replaces what it holds)
+  const SPLICED = `const dbl = (x) => x * 2
+export let g = (n) => { let s = 0; for (let i = 0; i < n; i++) s += dbl(i); return s }`
+  is(await recordsLeftBy(GROWS, SPLICED, { optimize: 2 }), 0, 'none of GROWS\'s records after SPLICED compiles')
+})

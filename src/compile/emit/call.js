@@ -36,8 +36,9 @@ const isUserFunc = name => !!ctx.funcs.map.get(name)?.body
 // splice of the name, a store to its length or to an element, or the name passed where a
 // callee may grow it. A grown array moves and leaves a forward at the block it left.
 const GROWS = new Set(['push', 'unshift', 'splice'])
-const growsAt = new Map()   // function → per parameter, whether it may grow (null while it is being read)
 const paramGrows = (func, k) => {
+  // (per compile, ctx.plans.paramGrowth: a function record → per parameter, whether it may grow, null while it is being read)
+  const growsAt = ctx.plans.paramGrowth
   let row = growsAt.get(func)
   if (!row) growsAt.set(func, row = [])
   if (row[k] !== undefined) return row[k] !== false
