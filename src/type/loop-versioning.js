@@ -475,6 +475,22 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     condRest = condRest == null ? c[2] : ['&&', c[2], condRest]   // scan-only bag
     c = c[1]
   }
+  // A counter tested with an offset (`i + c < B`, `c + i <= B`, `i + c >= B` counting
+  // down) holds the values `i < B - c` would: the bound is B less c, which the guard
+  // takes once from B's value and c's (`offset`, compile/emit/control-flow.js), the
+  // test itself staying as written in both arms. c is a word: an integer literal, or a
+  // name the loop never writes whose carrier is an i32 (no conversion to run).
+  let offset = null
+  if (Array.isArray(c) && (c[0] === '<' || c[0] === '<=' || c[0] === '>' || c[0] === '>=') && Array.isArray(c[1]) && (c[1][0] === '+' || c[1][0] === '-') && c[1].length === 3) {
+    const stepped = (name) => typeof name === 'string' && Array.isArray(step) && step[1] === name
+      && (step[0] === '++' || step[0] === '--' || step[0] === '+=' || step[0] === '=')
+    const [op, x, y] = c[1], i = stepped(x) ? x : op === '+' && stepped(y) ? y : null, k = i === x ? y : x
+    const word = (e) => intLiteralValue(e) != null || op === '+' && typeof e === 'string' && e !== i && exprType(e, locals) === 'i32' && !isReassigned(body, e) && !isReassigned(step, e) && !redeclaresName(body, e)
+    if (i == null || !word(k)) return null
+    // (`i - c`: the offset -c, a literal)
+    offset = op === '-' ? 0 - intLiteralValue(k) : intLiteralValue(k) ?? k
+    c = [c[0], i, c[2]]
+  }
   // A counter stepping down by one while above a bound (`for (k = n - 1; k >= 0;
   // k--)`, a predictor adapting its taps from the last) holds values between the
   // bound and its entry, read at the loop's entry: the mirror of counting up.
@@ -564,7 +580,8 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   const bound = c[2]
   // the counter's least value, where statically known: the start counting up,
   // the bound (past it, a strict test) counting down
-  const loC = !down ? startC : intLiteralValue(bound) != null ? intLiteralValue(bound) + (incl ? 0 : 1) : null
+  const loC = !down ? startC : intLiteralValue(bound) != null && (offset == null || typeof offset === 'number')
+    ? intLiteralValue(bound) - (offset ?? 0) + (incl ? 0 : 1) : null
   // bKind drives the guard's conversion to a max-iv i64:
   //   'i32' — literal, i32-machine name, or a typed receiver's .length: exact extend;
   //   'f64' — any other stable name (an untyped param, a NaN-boxed unknown): the
@@ -740,7 +757,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // compiles to an env.globalThis import in the self-compile build; typeof folds dead
   if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K}${c.Kw ? `+${c.Km}*${c.Kw}` : ''})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
-    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands, down }
+    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands, down, offset }
     : null
 }
 

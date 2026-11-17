@@ -1096,6 +1096,10 @@ export const controlFlowOps = {
             result.push(['local.set', `$${boundEnd}`,
               adj ? ['i64.add', ext(boundIR), i64c(adj)] : ext(boundIR)])
           }
+          // (an offset test, `i + c < B`: the counter's end is B's less c, an integer the
+          // rounding above commutes with; c a word, read with no conversion)
+          if (vs.offset != null) result.push(['local.set', `$${boundEnd}`, ['i64.sub', ['local.get', `$${boundEnd}`],
+            typeof vs.offset === 'number' ? i64c(vs.offset) : ['i64.extend_i32_s', asI32(emit(vs.offset))]]])
           if (vs.down) result.push(['local.set', `$${maxIv}`, vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)])
           // The fast bound's arithmetic also needs a closed hull for each
           // free name. An affine name±constant gets the exact signed-word

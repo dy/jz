@@ -58,3 +58,54 @@ test('offset bound: the window reads its elements unchecked', () => {
   // the bound's own form; a checked twin, where one is kept, is the other arm
   ok(inner.some(l => !/f64\.add\s*\(f64\.convert_i32_s/.test(l) && !/\(select/.test(l)), 'a window loop adds no offset in floats and tests no index')
 })
+
+// The same offset test over a bound of any kind (type/loop-versioning.js `offset`): the
+// extents version reads `B - c` once at entry, its own test left as written in both arms,
+// so its guard takes B as it is (a Number within the word, else the twin: an object's
+// valueOf, a string, undefined, null, a BigInt, NaN and the infinities fail it unconverted,
+// and the loop as written converts them as the source does) and c as a word. A fraction
+// rounds toward the test (`i + 1 < 7.5`: the counter's most is ceil(6.5) - 1 = 6). A bound
+// the body writes, a field (a read that may run code), a receiver the body replaces and an
+// `!==` test take no version; a stride and a count down take their own paths.
+const offsets = `const mk = (len) => { const s = new Float64Array(len); for (let i = 0; i < len; i++) s[i] = i * i + 0.5; return s }
+export let next = (s, n) => { let t = 0; for (let i = 0; i + 1 < n; i++) t += s[i + 1] - s[i]; return t }
+export let incl = (s, n) => { let t = 0; for (let i = 0; i + 1 <= n; i++) t += s[i + 1] === undefined ? 1000 : s[i + 1]; return t }
+export let pair = (d, s, n) => { for (let i = 0; i + 1 < n; i++) d[i] = s[i + 1] + s[i]; return Array.from(d) }
+export let word = (s, n, kk) => { const k = kk | 0; let t = 0; for (let i = 0; k + i < n; i++) t += s[i + k]; return t }
+export let shrink = (s, n) => { let t = 0; for (let i = 0; i + 1 < n; i++) { t += s[i + 1]; n-- } return t }
+export let unequal = (s, n) => { let t = 0; for (let i = 0; i + 1 !== n && i < 20; i++) t += s[i + 1] ?? 7; return t }
+export let stride = (s, n) => { let t = 0; for (let i = 0; i + 1 < n; i += 2) t += s[i + 1] * s[i]; return t }
+export let down = (s, n, m) => { let t = 0; for (let i = n - 1; i - 1 >= m; i--) t += s[i - 1] + s[i]; return t }
+export let swap = (s, u, n) => { let t = 0; for (let i = 0; i + 1 < n; i++) { t += s[i + 1]; if (i === 2) s = u } return t }
+export let field = (s, o) => { let t = 0; for (let i = 0; i + 1 < o.n; i++) { t += s[i + 1]; if (i === 1) o.n = 3 } return t }
+export let shapes = () => [[8, 8], [8, 7], [7, 8], [3, 1], [0, 0], [8, 9]].map(([len, n]) => [next(mk(len), n), incl(mk(len), n), pair(new Float64Array(Math.max(len - 1, 0)), mk(len), n),
+  word(mk(len), n, 2), shrink(mk(len), n), unequal(mk(len), n), stride(mk(len), n), down(mk(len), n, 0), down(mk(len), n, -2), swap(mk(len), mk(3), n), field(mk(len), { n })])
+export let kinds = () => { const s = mk(8), r = []
+  for (const n of ['10', '7', undefined, null, NaN, -Infinity, 7.5, 6.5, 8.5, -3, 0.5]) r.push([next(s, n), incl(s, n)])
+  r.push([next(mk(7), 7.5), incl(mk(7), 6.5)])
+  return r }
+export let calls = () => { let c = 0; const o = { valueOf() { c++; return 6 } }, s = mk(8)
+  const a = next(s, o), b = incl(s, o), d = pair(new Float64Array(8), s, o)
+  let flip = 0; const p = { valueOf() { flip++; return flip > 3 ? 2 : 9 } }
+  return [a, b, d, c, next(s, p), flip] }`
+
+test('offset bound: a bound of any kind keeps the loop\'s answers and its conversions', () => {
+  const host = oracle(offsets)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const m = run(offsets, { optimize })
+    ok(Object.is(JSON.stringify(m.shapes()), JSON.stringify(host.shapes())), `shapes at ${optimize}`)
+    // (level 0, which versions nothing, compares a Number with a string or an object's
+    // valueOf otherwise than the host: `0 + 1 < '10'` false there, no valueOf run, a defect
+    // of its own, before and after this form)
+    if (optimize === 0) continue
+    ok(Object.is(JSON.stringify(m.kinds()), JSON.stringify(host.kinds())), `kinds at ${optimize}`)
+    ok(Object.is(JSON.stringify(m.calls()), JSON.stringify(host.calls())), `valueOf calls at ${optimize}`)
+  }
+  // the offset form versions on its bound, a Number the guard tests within the word
+  // (`|B| <= 2^31` on B as it is); the forms that take none test no bound
+  const text = wat(offsets, { optimize: 'speed' })
+  const tests = (name, b) => new RegExp(`f64\\.abs \\(local\\.get \\$${b}\\)`).test(funcWat(text, name))
+  for (const name of ['next', 'incl', 'pair', 'stride', 'word']) ok(tests(name, 'n'), `${name}: versioned on n less its offset`)
+  ok(tests('down', 'm'), 'down: versioned on m less its offset')
+  for (const name of ['shrink', 'unequal', 'swap']) ok(!tests(name, 'n'), `${name}: no version on n`)
+})

@@ -63,7 +63,7 @@ const lengthCeiling = (recv, locals) => {
 // proposed fast copy is unreachable. No storage or index fact is published.
 const excludedExtent = (L, locals) => {
   const range = typeof L.bound === 'string' && ctx.func.refinements?.get(L.bound)?.excludedNumberRange
-  if (!range || L.down || L.bKind !== 'f64' || L.stepBy && L.stepBy.lit !== 1 || range[0] > -2147483648) return false
+  if (!range || L.down || L.offset != null || L.bKind !== 'f64' || L.stepBy && L.stepBy.lit !== 1 || range[0] > -2147483648) return false
   for (const c of L.cands) {
     if (c.range || c.ind != null || c.cursor != null || c.presence || !(c.a > 0) || c.slots?.length ||
         !Number.isSafeInteger(c.a) || !Number.isSafeInteger(c.bConst)) continue
@@ -230,6 +230,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     const names = []
     exprNames(L.bound, names)
     if (typeof L.bound === 'string') names.push(L.bound)
+    if (typeof L.offset === 'string') names.push(L.offset)
     const stableFor = (c) => (name) => typeof name !== 'string' || stableTop(name)
       || (name === topIv && topExtent != null && c?.slots != null)
     if (!names.every(stableFor(null))) return false
