@@ -20,6 +20,7 @@ const TESTS = [
   'floatbeat',
   'imports',
   'dynamic-import',
+  'resolve',
   'statements',
   'multi-return',
   'types',

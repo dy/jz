@@ -13,27 +13,73 @@
 import { readFileSync, existsSync } from 'fs'
 import { dirname, resolve, join } from 'path'
 import { execFileSync } from 'child_process'
+import { parse } from './parse.js'
+import { lineEnd, isSpace } from './unicode.js'
 
-// Matches real module imports/exports at statement position — and ONLY those:
-//   import 'x'                         (bare side-effect import)
-//   import … from 'x'                  (default/named/namespace)
-//   export … from 'x' / export * from  (re-export)
-// The specifier MUST follow `from` (or be a bare `import`'s string). The old
-// `(?:import|export)\s+[^'"]*?['"]…` matched any post-keyword string because
-// `[^'"]` spans newlines, so `export const X = [⏎ 'lit'` was read as `export …
-// 'lit'` — bundling then rewrote the bare string literal `'lit'` to a module path.
-// (Self-compile fallout: `PASS_NAMES = ['watr', …]` had `'watr'` rewritten to
-// `…/node_modules/watr/watr.js`, corrupting every `'watr'` constant — and so the
-// kernel's whole optimize config, since `cfg.watr` then read that path.)
-const importRe = /^\s*(?:import\b[^'"]*?\bfrom\s*|import\s+|export\b[^'"]*?\bfrom\s*)['"]([^'"]+)['"]/gm
-// `await import('x')` with a literal specifier at module level is a static
-// import in all but syntax (jzify hoists it); bundle its target the same way.
-const dynImportRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+/**
+ * A module's import sites as the compiler's parser reads them: `import … from 'x'`,
+ * `import 'x'`, `export … from 'x'` and a literal `import('x')` (jzify bundles it too),
+ * each its specifier, the literal's [at, end) in the source with its quotes and the
+ * names an `import` binds (`default` for a default). A pattern over the text cannot
+ * tell code from a string, a comment or a regex holding the word, and one anchored at
+ * a line's start missed the second statement of a line (`;import x from"y"`, a
+ * minified bundle's). The parser places a `from` at its keyword, a bare `import 'x'`
+ * at `import` and `import('x')` at its parenthesis (`['()', 'import', s]` inside an
+ * expression, `['import', ['()', s]]` where the call starts one): the literal is the
+ * next token. A source the parser refuses has no sites: the compile reports it.
+ */
+export function importSites(source) {
+  let ast
+  try { ast = parse(source, 'jz', 0, false) } catch (e) { if (e instanceof SyntaxError) return []; throw e }
+  const sites = []
+  const lit = (n) => Array.isArray(n) && n[0] == null && n.length === 2 && typeof n[1] === 'string'
+  const clauseNames = (c, out) => {
+    if (typeof c === 'string') out.push('default')
+    else if (Array.isArray(c) && c[0] === '{}')
+      for (const it of Array.isArray(c[1]) && c[1][0] === ',' ? c[1].slice(1) : c[1] == null ? [] : [c[1]])
+        out.push(Array.isArray(it) && it[0] === 'as' ? (lit(it[1]) ? it[1][1] : it[1]) : it)
+    return out
+  }
+  // the literal after the token of `width` at `loc` (past spaces and comments)
+  const add = (loc, width, spec, names) => {
+    if (typeof loc !== 'number') return
+    let i = loc + width
+    for (;;) {
+      if (source.startsWith('/*', i)) { const e = source.indexOf('*/', i + 2); if (e < 0) return; i = e + 2 }
+      else if (source.startsWith('//', i)) while (i < source.length && !lineEnd(source.charCodeAt(i))) i++
+      else if (isSpace(source.charCodeAt(i))) i++
+      else break
+    }
+    const q = source[i]
+    if (q !== '"' && q !== "'") return
+    let j = i + 1
+    while (j < source.length && source[j] !== q) j += source[j] === '\\' ? 2 : 1
+    // (a literal of escapes or of joined pieces stays as written, as the compile reads it)
+    if (source.slice(i + 1, j) === spec) sites.push({ spec, at: i, end: j + 1, names })
+  }
+  const walk = (n, names) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === 'from' && lit(n[2])) return add(n.loc, 4, n[2][1], names ? clauseNames(n[1], names) : [])
+    if (op === 'import' && lit(n[1])) return add(n.loc, 6, n[1][1], [])
+    if (op === '()' && n[1] === 'import' && lit(n[2])) return add(n.loc, 1, n[2][1], [])
+    if (op === 'import' && Array.isArray(n[1]) && n[1][0] === '()' && n[1].length === 2 && lit(n[1][1])) return add(n[1].loc, 1, n[1][1][1], [])
+    // (`import D, { a } from 'x'` parses as `[',', ['import', 'D'], ['from', …]]`)
+    if (op === ',' && n.length === 3 && Array.isArray(n[1]) && n[1][0] === 'import' && typeof n[1][1] === 'string' && Array.isArray(n[2]) && n[2][0] === 'from')
+      return walk(n[2], ['default'])
+    for (let i = 1; i < n.length; i++) walk(n[i], op === 'import' ? [] : null)
+  }
+  walk(ast, null)
+  return sites.sort((a, b) => a.at - b.at)
+}
 
-// Graph resolution and build provenance must recognize the same import sites.
-export const rewriteModuleImports = (source, rewrite) => source
-  .replace(importRe, rewrite)
-  .replace(dynImportRe, rewrite)
+/** The source with each import site's literal as `rewrite(literal, spec, names)` returns
+ *  it: graph resolution and build provenance recognize the same sites. */
+export const rewriteModuleImports = (source, rewrite, sites = importSites(source)) => {
+  let out = '', at = 0
+  for (const s of sites) { out += source.slice(at, s.at) + rewrite(source.slice(s.at, s.end), s.spec, s.names); at = s.end }
+  return out + source.slice(at)
+}
 
 /**
  * @param {string} entryFile - absolute or cwd-relative path to the entry module.
@@ -124,35 +170,30 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     }
     return abs
   }
-  const rewriteOne = (match, spec, fromDir) => {
+  // A specifier's literal: an external's as written (its names recorded), another's
+  // as the canonical path, in its own quotes.
+  const rewriteOne = (literal, spec, names, fromDir) => {
     const rel = spec.startsWith('./') || spec.startsWith('../')
     if (isExternal(spec) || (rel && isExternal(spec, resolve(fromDir, spec)) || (rel && isExternal(spec, resolve(fromDir, spec) + '.js')))) {
-      const names = externals[spec] ??= new Set()
-      const m = /^import\s+(?:([\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*)\s*,?\s*)?(?:\{([^}]*)\})?/u.exec(match)
-      if (m?.[1]) names.add('default')
-      for (const part of (m?.[2] ?? '').split(',')) { const nm = part.trim().split(/\s+as\s+/)[0]; if (nm) names.add(nm) }
-      return match
+      const seen = externals[spec] ??= new Set()
+      for (const nm of names) seen.add(nm)
+      return literal
     }
     const abs = resolveAbsPath(spec, fromDir)
-    if (!abs) return match
-    const at = match.lastIndexOf(spec), q = match[at - 1]
-    return match.slice(0, at - 1) + q + abs + q + match.slice(at + spec.length + 1)
+    return abs ? literal[0] + abs + literal[0] : literal
   }
-  const rewriteImports = (src, fromDir) => rewriteModuleImports(src, (match, spec) => rewriteOne(match, spec, fromDir))
-  const specifiersIn = (src) => {
-    const out = []
-    for (const re of [importRe, dynImportRe]) { let m; re.lastIndex = 0; while ((m = re.exec(src)) !== null) out.push(m[1]) }
-    return out
-  }
+  const rewriteImports = (src, sites, fromDir) => rewriteModuleImports(src, (literal, spec, names) => rewriteOne(literal, spec, names, fromDir), sites)
   const resolveModule = (specifier, fromDir) => {
     const abs = resolveAbsPath(specifier, fromDir)
     if (!abs || seenPaths.has(abs)) return
     seenPaths.add(abs)
     let src = sourceOf(abs); if (src == null) try { src = readFileSync(abs, 'utf8') } catch { return }
-    modules[abs] = rewriteImports(src, dirname(abs))
-    for (const spec of specifiersIn(src)) resolveModule(spec, dirname(abs))
+    const sites = importSites(src)
+    modules[abs] = rewriteImports(src, sites, dirname(abs))
+    for (const s of sites) resolveModule(s.spec, dirname(abs))
   }
-  for (const spec of specifiersIn(code)) resolveModule(spec, dir)
+  const sites = importSites(code)
+  for (const s of sites) resolveModule(s.spec, dir)
 
-  return { code: rewriteImports(code, dir), modules, externals: Object.fromEntries(Object.entries(externals).map(([k, v]) => [k, [...v]])) }
+  return { code: rewriteImports(code, sites, dir), modules, externals: Object.fromEntries(Object.entries(externals).map(([k, v]) => [k, [...v]])) }
 }

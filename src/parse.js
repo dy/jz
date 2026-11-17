@@ -375,8 +375,10 @@ const stoppedAt = (message, src) => {
 }
 
 /** Source text to its AST. `base` places the source among the compile's
- *  (ctx.js addSource): 0 for the program, null for text the compiler wrote. */
-const parse = (src, sourceType = 'jz', base = 0) => {
+ *  (ctx.js addSource): 0 for the program, null for text the compiler wrote.
+ *  `early` false leaves the early errors, most of a parse's time, to the
+ *  compile: a reader of the syntax alone (src/resolve.js importSites). */
+const parse = (src, sourceType = 'jz', base = 0, early = true) => {
   // A leading `#!` line is a comment (Node, V8). Blanked, not cut, so every
   // offset still indexes the source as written. subscript's own shebang.js
   // registration went with parse.comment's entries.
@@ -393,7 +395,7 @@ const parse = (src, sourceType = 'jz', base = 0) => {
   try {
     ast = foldStringRuns(jessieParse(parseSource))
     if (parseSource.includes('using')) awaitUsingHeads(ast)
-    validateEarlyErrors(ast, src, sourceType, base)
+    if (early) validateEarlyErrors(ast, src, sourceType, base)
     if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
   } catch (e) {
     if (!(e instanceof SyntaxError)) throw e
