@@ -300,6 +300,7 @@ const TESTS = [
   'durable-join-population',
   'elem-population',
   'plain-lift-population',
+  'float-order-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
