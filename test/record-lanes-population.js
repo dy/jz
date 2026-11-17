@@ -7,7 +7,10 @@
 // the last field the loop reads (two of three: the gather, which reads nothing more); a stride-1
 // read beside every one; an inlined helper's value block; two names of one array; a plain array;
 // a Float32Array's records, a loop counting down and a store into the array read (each left as
-// written); trip counts 1, 2, 3, 17 and 48 over runtime record bases. Each row's work per element
+// written); trip counts 1, 2, 3, 17 and 48 over runtime record bases. Then the address tee of
+// `o + i` (addr-model.js addressTees): two arrays read at it, in a reduction and a map; maps from
+// a record's fields (tryGeneralMap's gathers); an index written twice in a pass, an array chosen
+// by a condition, a map storing into an array it reads or into the record array it gathers from. Each row's work per element
 // is a Bernstein basis' (`b1`, `b2` of t), enough for the cost gate to take the lanes; a row the
 // lift takes is listed with what it takes, checked at level 2.
 import test from 'tst'
@@ -21,8 +24,10 @@ const prog = ({ k, K, R = 5, len, body, hold = 'f64', head = '', alias = false, 
 ${head}
 const N = ${len ?? `R * K * ${k}`}
 const pts = ${hold === 'plain' ? '[]' : `new ${hold === 'f32' ? 'Float32Array' : 'Float64Array'}(N)`}, u = new Float64Array(K), out = new Float64Array(R * 3)
+const px = new Float64Array(R * K), py = new Float64Array(R * K), m = new Float64Array(R * K)
 export let main = () => {
   for (let i = 0; i < N; i++) ${hold === 'plain' ? 'pts.push(' : 'pts[i] = ('}((i * 37) % 23 - 11) * 0.125 + i * 1e-3)
+  for (let i = 0; i < R * K; i++) { px[i] = (i % 17) * 0.25 - 2; py[i] = (i % 13) * 0.5 - 3 }
   for (let i = 0; i < K; i++) u[i] = (i + 1) / (K + 1)
   ${alias ? 'const p2 = pts' : ''}
   for (let r = 0; r < R; r++) {
@@ -34,7 +39,7 @@ export let main = () => {
     }
     out[r * 3] = s0; out[r * 3 + 1] = s1; out[r * 3 + 2] = s2
   }
-  return [...out]
+  return [...out, ...m, ...px]
 }`
 const f = (k, j) => `pts[(o + i) * ${k} + ${j}]`
 // (two weighted fields x, y and the sums of them)
@@ -57,6 +62,15 @@ ROWS.push(['k 2, a plain array', { k: 2, K: 17, hold: 'plain', body: `const x = 
 ROWS.push(['k 2, a Float32Array', { k: 2, K: 17, hold: 'f32', body: `const x = ${f(2, 0)} * b1, y = ${f(2, 1)} * b2; ${sums}` }, null])
 ROWS.push(['k 2, counting down', { k: 2, K: 17, loop: 'for (let i = K - 1; i >= 0; i--)', body: `const x = ${f(2, 0)} * b1, y = ${f(2, 1)} * b2; ${sums}` }, null])
 ROWS.push(['k 2, a store into the array read', { k: 2, K: 17, body: `const x = ${f(2, 0)} * b1; s0 += x * x; pts[(o + i) * 2 + 1] = x * 0.5; s1 += ${f(2, 1)} * b2` }, null])
+// (the address tee of `o + i`, read by two arrays, by two fields; maps beside the reductions)
+ROWS.push(['two arrays at o + i, a reduction', { k: 2, K: 17, body: `const x = px[o + i] * b1, y = py[o + i] * b2; ${sums}` }, null])
+ROWS.push(['two arrays at o + i, a map', { k: 2, K: 17, body: 'm[o + i] = px[o + i] * b1 + py[o + i] * b2' }, null])
+ROWS.push(['a map from a record at o + i', { k: 2, K: 17, body: `m[o + i] = ${f(2, 0)} * b1 + ${f(2, 1)} * b2` }, 'gather'])
+ROWS.push(['a map from a record of three at o + i', { k: 3, K: 17, body: `m[o + i] = ${f(3, 0)} * b1 + ${f(3, 2)} * b2 - ${f(3, 1)} * w` }, 'gather'])
+ROWS.push(['a map whose index is written twice in a pass', { k: 2, K: 17, body: 'let j = o + i; const x = px[j]; j = j + 1; m[o + i] = x * b1 + py[j - 1] * b2' }, null])
+ROWS.push(['a map choosing an array by a condition', { k: 2, K: 17, body: 'm[o + i] = t > 0.5 ? px[o + i] * b1 : py[o + i] * b2' }, null])
+ROWS.push(['a map storing into an array it reads', { k: 2, K: 17, body: 'px[o + i] = px[o + i] * b1 + py[o + i] * b2' }, null])
+ROWS.push(['a map from a record into the record array', { k: 2, K: 17, body: `m[o + i] = ${f(2, 0)} * b1; pts[(o + i) * 2 + 1] = m[o + i] * 0.5` }, null])
 
 test('record lanes population: every row as Node at every level, the lifts as listed', () => {
   for (const [label, p, lifts] of ROWS) {

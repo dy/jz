@@ -221,9 +221,12 @@ export const laneStep = (step, lanes) => isI32Const(step) ? ['i32.const', Number
 function gatherLanes(load, { name, step }, info, defs) {
   const shape = info.splat.slice(0, info.splat.indexOf('.'))
   const at = (L) => {
+    // (lane L reads an index temporary or an address tee through its definition, and runs no
+    // tee of its own: lane 0's holds lane 0's value for the reads after it)
     const lane = (n) => !isArr(n) ? n
       : n[0] === 'local.get' && n[1] === name ? ['i32.add', ['local.get', name], laneStep(step, L)]
       : n[0] === 'local.get' && defs?.has(n[1]) ? lane(defs.get(n[1]))
+      : n[0] === 'local.tee' && n.length === 3 && defs?.has(n[1]) ? lane(n[2])
       : n.map(lane)
     return L ? lane(load) : cloneNode(load)
   }

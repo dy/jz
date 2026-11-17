@@ -377,12 +377,11 @@ export const affineIvCoeff = (incVar, writes, defs = null) => {
 /** An i32 address as an affine form in the counter, `{ c, k, key }`: the bytes it moves a pass
  *  (c), its constant (k) and its invariant leaves with their multipliers (key), over sums,
  *  differences, products by a constant and shifts by one, constants, globals, index temporaries
- *  (`defs`) and locals the body does not write; null for anything else (a load, a local the body
- *  writes). `a[2 * (o + i) + 1]` over a Float64Array is c 16, k 8, key `la·1 lo·16`, however the
- *  emitter spelled it: two spellings of one address have one form. `tees`, where given, takes
- *  each `(local.tee $t X)` the forms meet whose local `once($t)` holds, and a later read of $t
- *  stands for X: the caller asks in the order the pass evaluates. */
-export const affineAddr = (incVar, writes, defs = null, tees = null, once = null) => {
+ *  and address tees (`defs`: indexDefs, addressTees) and locals the body does not write; null for
+ *  anything else (a load, a local the body writes). `a[2 * (o + i) + 1]` over a Float64Array is
+ *  c 16, k 8, key `la·1 lo·16`, however the emitter spelled it: two spellings of one address
+ *  have one form. */
+export const affineAddr = (incVar, writes, defs = null) => {
   const leaf = (x) => ({ c: 0, k: 0, t: new Map([[x, 1]]) })
   const scale = (f, m) => {
     if (!f) return null
@@ -397,12 +396,12 @@ export const affineAddr = (incVar, writes, defs = null, tees = null, once = null
     return { c: a.c + s * b.c, k: a.k + s * b.k, t }
   }
   const form = (n) => {
-    if (isLocalGet(n)) return n[1] === incVar ? { c: 1, k: 0, t: new Map() } : defs?.has(n[1]) ? form(defs.get(n[1])) : tees?.has(n[1]) ? form(tees.get(n[1])) : writes.has(n[1]) ? null : leaf('l' + n[1])
+    if (isLocalGet(n)) return n[1] === incVar ? { c: 1, k: 0, t: new Map() } : defs?.has(n[1]) ? form(defs.get(n[1])) : writes.has(n[1]) ? null : leaf('l' + n[1])
     if (isI32Const(n)) return { c: 0, k: constNum(n), t: new Map() }
     if (isArr(n) && n[0] === 'global.get' && n.length === 2) return leaf('g' + n[1])
     if (!isArr(n) || n.length !== 3) return null
     const op = n[0]
-    if (op === 'local.tee') { const f = form(n[2]); if (f && tees && typeof n[1] === 'string' && once?.(n[1])) tees.set(n[1], n[2]); return f }
+    if (op === 'local.tee') return form(n[2])
     if (op === 'i32.shl') return isI32Const(n[2]) ? scale(form(n[1]), 2 ** (constNum(n[2]) & 31)) : null
     if (op === 'i32.add') return sum(form(n[1]), form(n[2]), 1)
     if (op === 'i32.sub') return sum(form(n[1]), form(n[2]), -1)
@@ -436,6 +435,34 @@ export function indexDefs(body, fnLocals, outsideReads) {
 const collectWriteCounts = (node, out) => walkAst(node, { enter: n => {
   if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') out.set(n[1], (out.get(n[1]) || 0) + 1)
 } })
+
+/** The body's address tees: an i32 local the body writes once, by a `(local.tee $t X)` the pass
+ *  runs whatever its branches (outside a conditional's arms), read nowhere ahead of it in the
+ *  order the pass evaluates (its own X included). Each read of it after the tee holds X's
+ *  value, so an address through it is X's address (`px[o + i]`, `py[o + i]`: the emitter tees
+ *  `o + i` at the first read and reads it at the second). What the loop leaves in it is the
+ *  legality's (legality.js: a local read past the loop declines a lift that does not land it).
+ *  name → X. */
+export function addressTees(body, fnLocals) {
+  const count = new Map(), tees = new Map(), early = new Set(), done = new Set()
+  for (const s of body) collectWriteCounts(s, count)
+  const visit = (n, armed) => {
+    if (!isArr(n)) return
+    const op = n[0]
+    if (op === 'local.get') { if (typeof n[1] === 'string' && !done.has(n[1])) early.add(n[1]); return }
+    if ((op === 'local.tee' || op === 'local.set') && typeof n[1] === 'string' && n.length === 3) {
+      visit(n[2], armed)
+      if (op === 'local.tee' && !armed && count.get(n[1]) === 1 && fnLocals.get(n[1]) === 'i32' && !early.has(n[1])) tees.set(n[1], n[2])
+      done.add(n[1])
+      return
+    }
+    // (an arm runs on some passes; so may whatever follows a branch inside a block)
+    const arms = armed || op === 'then' || op === 'else' || ((op === 'block' || op === 'loop') && hasBranchOrReturn(n))
+    for (let i = 1; i < n.length; i++) visit(n[i], arms)
+  }
+  for (const s of body) visit(s, false)
+  return tees
+}
 
 /** Resolve one `(IDX << K)` offset operand — tee-CSE via `offTees`, `ivCoeff(IDX)
  * === 1` proving the affine coefficient; a bare coefficient-1 affine offset with

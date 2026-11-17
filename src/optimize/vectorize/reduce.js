@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { _offsetLocalStride, affineAddr, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
+import { _offsetLocalStride, addressTees, affineAddr, constNum, hasSideEffect, indexDefs, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, NARROW_LANES, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
@@ -548,7 +548,10 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   const order = bl.dir === -1 ? [1, 0] : [0, 1]
   // An index the body defines once from the counter (`const j = i`) is computed at the lanes'
   // first pass and read by their addresses (addr-model.js indexDefs, affineIvCoeff).
-  const defs = indexDefs(body, fnLocals, bl.outsideReads), ivCoeff = affineIvCoeff(incVar, writes, defs)
+  // An address tee (`(local.tee $a (i32.add o i))` at one read of `px[o + i]`, `$a` at the next:
+  // addressTees) stands for its value in the addresses after it, as an index temporary does.
+  const defs = indexDefs(body, fnLocals, bl.outsideReads)
+  const addrDefs = new Map([...defs, ...addressTees(body, fnLocals)]), ivCoeff = affineIvCoeff(incVar, writes, addrDefs)
   const offTees = new Map(), addrTees = new Map()
 
   // Every body stmt must be `(local.set $x EXPR)`. An accumulator reads its own target
@@ -584,11 +587,7 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   // k vectors loaded once and each field a shuffle of two of them (`blocks`); any other field
   // is a gather, a load for each lane, its address computed once. Either reads only what the
   // two scalar passes read.
-  // (each load's form, taken in the order the pass evaluates: an address tee, `(local.tee $a
-  // (i32.add o i))` written once, stands for its value in the loads after it)
-  const once = new Map()
-  for (const s of body) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') once.set(n[1], (once.get(n[1]) || 0) + 1) } })
-  const affine = affineAddr(incVar, writes, defs, new Map(), (t) => once.get(t) === 1 && fnLocals.get(t) === 'i32')
+  const affine = affineAddr(incVar, writes, addrDefs)
   const offsetOf = (e) => { for (let i = 1; i < e.length - 1; i++) if (typeof e[i] === 'string' && e[i].startsWith('offset=')) return +e[i].slice(7); return 0 }
   const forms = new Map()        // load → its form
   const fieldSites = new Map()   // `c|key` → [{ e, C, s, tee }]
@@ -874,7 +873,8 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   const accType = fnLocals.get(accName)
   if (accType !== reduceEntry.laneType) return null
 
-  const ivCoeff = affineIvCoeff(incVar, writes)
+  // (an address tee stands for its value: `px[o + i]` then `py[o + i]`, addr-model.js addressTees)
+  const ivCoeff = affineIvCoeff(incVar, writes, addressTees(body, fnLocals))
   const offTees = new Map(), addrTees = new Map()
   const matchAddr = (addr, expectStride) => matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)
 

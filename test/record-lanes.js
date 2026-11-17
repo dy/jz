@@ -92,3 +92,39 @@ ${fit(2, 2, body).replace('let s0 = 0, s1 = 0, s2 = 0', 'let s0 = 0, s1 = 0, s2 
     for (const optimize of [true, 'speed']) is(shuffles(src, optimize) + gathers(src, optimize), 0, `${label}, ${name(optimize)}: no record lanes`)
   }
 })
+
+// An address tee: the emitter tees the index a pass shares at its first read and reads the local
+// at the next (`px[o + i]` then `py[o + i]`, `pts[2 * (o + i)]` then `pts[2 * (o + i) + 1]`); the
+// lifts read the local as its value (addr-model.js addressTees: an i32 local written once by a tee
+// the pass runs, read nowhere ahead of it). Maps and reductions alike, as Node at every level.
+const offsets = (body) => `const R = 6, K = 37
+const px = new Float64Array(R * K), py = new Float64Array(R * K), pts = new Float64Array(R * K * 2), u = new Float64Array(K), out = new Float64Array(R * K)
+export let main = () => {
+  for (let i = 0; i < R * K; i++) { px[i] = (i % 17) * 0.25 - 2; py[i] = (i % 13) * 0.5 - 3; pts[2 * i] = px[i] * 0.75; pts[2 * i + 1] = py[i] + 0.125 }
+  for (let i = 0; i < K; i++) u[i] = (i + 1) / (K + 1)
+  let h = 0
+  for (let r = 0; r < R; r++) {
+    const o = r * K
+    let s0 = 0, s1 = 0
+    for (let i = 0; i < K; i++) {
+      const t = u[i], w = 1 - t
+      ${body}
+    }
+    h = h * 0.5 + s0 + s1 * 0.25
+  }
+  for (let i = 0; i < out.length; i++) h = h * 0.5 + out[i]
+  return h
+}`
+const vectors = (src, optimize) => (wat(src, { optimize }).match(/f64x2\.(mul|add|sub)/g) || []).length
+test('record lanes: two arrays read at one runtime offset, and a map over records', () => {
+  const rows = [
+    ['a reduction over two arrays at o + i', `const x = px[o + i] * t, y = py[o + i] * w; s0 += x * y; s1 += x * x - y * w`, null],
+    ['a map over two arrays at o + i', `out[o + i] = px[o + i] * t * w + py[o + i] * t * t`, null],
+    ['a map from a record at o + i', `out[o + i] = pts[(o + i) * 2] * t * w + pts[(o + i) * 2 + 1] * t * t`, 'gather'],
+  ]
+  for (const [label, body, form] of rows) {
+    const src = offsets(body), want = oracle(src).main()
+    for (const optimize of LEVELS) is(run(src, { optimize }).main(), want, `${label}, ${name(optimize)}: as Node`)
+    for (const optimize of [true, 'speed']) ok((form ? gathers(src, optimize) : vectors(src, optimize)) > 0, `${label}, ${name(optimize)}: lanes`)
+  }
+})

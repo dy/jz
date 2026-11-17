@@ -1,5 +1,5 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
+import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall, indexDefs, addressTees } from './addr-model.js'
 import { clearFlowRanges, tagFlowRanges } from '../flow-range.js'
 import { f64Range } from '../../ir.js'
 import { isProfitable } from './cost-model.js'
@@ -521,8 +521,10 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
   if (body.some(hasNestedLoopOrCall)) return null
 
   // i32-domain affine proof only: no toroidal wrap, no float-derived index (stencil-specific).
-  // An index temporary (`const a = i + j`) stands for its definition.
-  const defs = indexDefs(body, fnLocals, bl.outsideReads)
+  // An index temporary (`const a = i + j`) stands for its definition, and an address tee
+  // (`o + i` teed at `px[o + i]` and read at `py[o + i]`, addr-model.js addressTees) for its value.
+  const tees = addressTees(body, fnLocals)
+  const defs = new Map([...indexDefs(body, fnLocals, bl.outsideReads), ...tees])
   const ivCoeff = affineIvCoeff(incVar, writes, defs)
   // A secondary counter (`k += step` beside `j++`) moves by its step per iteration: an
   // index affine in it GATHERS, lane L reading the element at k + L·step. Its own solver
@@ -531,8 +533,10 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
   const ivCoeffs = ivs.map(iv => [iv, affineIvCoeff(iv.name, ivWrites, defs)])
   const gathers = new Map()   // load node → the secondary counter its lanes follow
   const gatherOf = (addr) => {
+    // (a tee other than an address tee would take each lane's value: lane 0 runs an address
+    // tee, the other lanes read its value through the definition, lift.js gatherLanes)
     let tee = false
-    walkAst(addr, { enter: c => { if (c[0] === 'local.tee') tee = true } })
+    walkAst(addr, { enter: c => { if (c[0] === 'local.tee' && !tees.has(c[1])) tee = true } })
     if (tee) return null
     for (const [iv, coeff] of ivCoeffs) {
       const m = matchStrideAddr(addr, stride, writes, new Map(), new Map(), coeff)
@@ -555,6 +559,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
       if (defs.has(x[1])) return via.add(x[1]), counterIndex(defs.get(x[1]), via, moves)
       return !writes.has(x[1]) && fnLocals.get(x[1]) === 'i32'
     }
+    if (isArr(x) && x[0] === 'local.tee' && x.length === 3 && tees.has(x[1])) return via.add(x[1]), counterIndex(x[2], via, moves)
     return isArr(x) && x.length === 3 && INDEX_OPS.has(x[0]) && counterIndex(x[1], via, moves) && counterIndex(x[2], via, moves)
   }
   const counterGather = (addr) => {
@@ -654,7 +659,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
   for (const name of blReferenced) {
     if (name === incVar) continue
     const ty = fnLocals.get(name)
-    if (ivs.some(iv => iv.name === name) || movesWithCounter(name) || indexNames.has(name)) { localKind.set(name, 'addr'); continue }
+    if (ivs.some(iv => iv.name === name) || movesWithCounter(name) || indexNames.has(name) || tees.has(name)) { localKind.set(name, 'addr'); continue }
     if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || _isAddrLocalGM(name))) { localKind.set(name, 'addr'); continue }
     if (writes.has(name)) {
       const access = laneAccess(body, name, bl.outsideReads)
