@@ -338,6 +338,24 @@ console.log(JSON.stringify({
   ok(cRuns >= 100, `the carried string is still walked as it churns (${cRuns} times)`)
 })
 
+// A loop's walk empties nothing a frame around it reads: the log of what its
+// escapes wrote into names addresses the move changed, and reads full after it,
+// so the frame keeps all (module/core/compact.js `__gc_move`). Emptied, it read
+// as nothing escaped: a loop of one round pushing a block past the slack into an
+// array made at start walked as it left, after the push's escape, and the
+// frame's walk of its escapes freed the block; a later call's memory overwrote it.
+test('compact: a frame whose last escape came before a loop\'s last walk keeps what the walk kept', () => {
+  if (onWasi()) return
+  const src = `const out = []
+    export const main = (n) => { for (let r = 0; r < n; r++) { const b = new Float64Array(400000); b[7] = r + 1; out.push(b) } return out.length }
+    export const churn = () => { let s = 0; for (let i = 0; i < 40; i++) { const t = new Float64Array(100000); t.fill(9); s += t[5] } return s }
+    export const read = () => { let t = 0; for (let i = 0; i < out.length; i++) t += out[i][7]; return t }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), { exports: m } = jz(src, { optimize })
+    for (let call = 1; call <= 4; call++) is([m.main(1), m.churn(), m.read()].join(), [want.main(1), want.churn(), want.read()].join(), `O${optimize}: call ${call}`)
+  }
+})
+
 // A later loop's floor never moves: what an earlier loop of the same function
 // made after its last walk stays below it for the rest of the call.
 test('compact: a loop that drops what it makes leaves no garbage below the loop after it', () => {

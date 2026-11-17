@@ -59,9 +59,10 @@
  * as `later`, and promoteGlobals asks the function's own row of it, so the epoch is never a local
  * read as the function is entered (it was, and a release after a compaction of the loop's own
  * walked the log the move had emptied and freed what an escape before it had kept,
- * test/iteration-release.js). The escape log names addresses the move changed and is emptied; a
- * phase's compaction (`__gc_phase`) then sets it full, so the frames around the phase keep all
- * rather than read an empty log as nothing escaped and release what the move kept.
+ * test/iteration-release.js). The escape log names addresses the move changed: the move leaves it
+ * full (`__gc_move`), so the frames around the loop, and around a phase's compaction, keep all
+ * rather than read an empty log as nothing escaped and release what the move kept (an escape
+ * before the loop's last walk, the round that leaves or its end walk, logged nothing after it).
  *
  * @module optimize/loop-compact
  */

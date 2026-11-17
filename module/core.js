@@ -1336,10 +1336,9 @@ export default (ctx) => {
     // walk is of all the module holds, and that holds the walks to twice the
     // memory they examine. Past half the wasm32 address space every phase
     // compacts: there the memory left bounds the compile, not the walks.
-    // Answers the result, forwarded.
-    // The move left the log of what escapes wrote into naming addresses it
-    // changed, and the frames around the phase read it as they return
-    // (module/core/reach.js `__survive`): it reads full, and they keep all.
+    // Answers the result, forwarded. The move leaves the log of what escapes
+    // wrote into full (module/core/compact.js `__gc_move`), and the frames
+    // around the phase keep all as they return.
     ctx.core.stdlib['__gc_phase'] = () => `(func $__gc_phase (param $mark i32) (param $out f64) (param $run f64) (result f64)
       (if (i32.and
             (i32.lt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.shr_u (global.get $__g_cost) (i32.const 1)))
@@ -1353,8 +1352,7 @@ export default (ctx) => {
       (call $__gc_push (i64.reinterpret_f64 (local.get $run)))
       (call $__gc_walk)
       (local.set $out (f64.reinterpret_i64 (call $__gc_fwd (i64.reinterpret_f64 (local.get $out)))))
-      (drop (call $__gc_move))${ctx.scope.globals.has('__rootn') ? `
-      (global.set $__rootn (i32.const -1))` : ''}
+      (drop (call $__gc_move))
       (local.get $out))`
     ctx.core.stdlib['__park_rewind_to'] = `(func $__park_rewind_to (param $mark i32) (param $state i64) (result f64)
       (if (i32.or

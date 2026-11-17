@@ -76,7 +76,6 @@ import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites
 export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
 import { valKindToPtr } from '../../src/ir/pointers.js'
 import { BIGINT_REP_RAW } from '../../src/compile/representation-plan.js'
-import { ROOT_LOG_BYTES } from './reach.js'
 import { recordsOn } from '../../src/compile/array-records.js'
 import { K, bitOf, tagsOf, hasTag, NULL_BITS } from '../../src/summary/kind.js'
 
@@ -1044,8 +1043,11 @@ export const registerCompact = () => {
     if (has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const 1))`)
     if (has('__dyn_get_cache_props')) resets.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
     if (has('__enumc_epoch')) resets.push(`(global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))`)
-    if (has('__rootn') && has('__roots')) resets.push(`(if (global.get $__roots) (then (memory.fill (global.get $__roots) (i32.const 0) (i32.const ${ROOT_LOG_BYTES}))))
-    (global.set $__rootn (i32.const 0))`)
+    // The log of what escapes wrote into (module/core/reach.js) names addresses the move changed,
+    // and the frames around the compaction read it as they return: it reads full, so they keep all.
+    // Emptied, it read as nothing escaped before the move: a frame whose last escape came before a
+    // loop's last walk (the round that leaves, the end walk) released all the walk kept.
+    if (has('__rootn')) resets.push(`(global.set $__rootn (i32.const -1))`)
     if (has('__rootl')) resets.push(`(global.set $__rootl (i64.const 0))`)
     // a loop releasing its iterations walks from a mark the move left behind (module/core/reach.js `__iter_release`)
     if (has('__gc_epoch')) resets.push(`(global.set $__gc_epoch (i32.add (global.get $__gc_epoch) (i32.const 1)))`)
