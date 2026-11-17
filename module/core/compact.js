@@ -445,12 +445,14 @@ export const registerCompact = () => {
     (local.set $off (i32.wrap_i64 (local.get $w)))
     (if (i32.lt_u (local.get $off) (i32.const 8)) (then (return)))
     (local.set $p (call $__gc_canon (local.get $off) (local.get $t)))
-    ;; a stub below the floor, whose block moves: its forward is rewritten once every pointer is (KIND_STUB)${ctx.core.includes.has('__durable_fwd_log') ? `.
-    ;; In a chain, the last stub below the floor: the stubs before it forward to stubs that stay,
-    ;; and a reset's relocation heal restores the one that grew in the round, the last; rewritten,
-    ;; the first would skip it, past the heal, into the released round` : ''}
+    ;; a stub below the floor, whose block moves: its forward is rewritten once every pointer is (KIND_STUB).
+    ;; In a chain, the last stub below the floor: the stubs before it forward to stubs that stay, and
+    ;; a reset's heal (the relocation log's, or the saved words of a table or an array) restores the
+    ;; one that grew in the round, the last; rewritten, the first would skip it, past the heal, into
+    ;; the released round (a dictionary grown at start and again in a call read the call's table
+    ;; after memory.reset(), then trapped), and the last's forward would name moved memory
     (if (i32.and (i32.ne (local.get $p) (local.get $off)) (i32.lt_u (local.get $off) (global.get $__g_floor)))
-      (then${ctx.core.includes.has('__durable_fwd_log') ? `
+      (then
         (local.set $e (local.get $off))
         (block $last (loop $hop
           (local.set $k (i32.load (i32.sub (local.get $e) (i32.const 8))))
@@ -458,7 +460,7 @@ export const registerCompact = () => {
           (br_if $last (i32.ne (i32.load (i32.sub (local.get $k) (i32.const 4))) (i32.const -1)))
           (local.set $e (local.get $k))
           (br $hop)))
-        (if (i32.eqz (call $__gc_seen (local.get $e))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $e))))))` : ` (if (i32.eqz (call $__gc_seen (local.get $off))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $off))))))`}
+        (if (i32.eqz (call $__gc_seen (local.get $e))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $e))))))
     ;; past a base record to the live header it forwards to
     (if (i32.and (i32.ge_u (local.get $p) (i32.const 16)) (i32.le_u (local.get $p) (global.get $__g_top)))
       (then (if (i32.eq (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const -1))

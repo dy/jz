@@ -715,6 +715,36 @@ test('compact: a collection that grew at init heals at a reset after a compactio
   }
 })
 
+// A dictionary that grew at init is such a chain too, saved whole at its round's
+// first write (core/durable-log.js `__durable_tbl_snap`) with no relocation log
+// linked: the move rewrites the last stub's forward, which the reset heals, not
+// the first's (module/core/compact.js `__gc_mark`), or the module reads the
+// round's table after the reset.
+test('compact: a dictionary that grew at init heals at a reset after a compaction moved what the round grew', () => {
+  if (onWasi() || !counted()) return
+  const src = `const dict = {}
+    for (let k = 0; k < 40; k++) dict['n' + k] = k
+    let junk = []
+    export const step = (i) => {
+      junk.push(new Array(24).fill(i))
+      if (junk.length > 60) junk = junk.slice(30)
+      if (i % 50 === 0 && i < 1500) dict['r' + i] = i
+      return Object.keys(dict).length
+    }
+    export const sum = () => { let n = 0, s = 0; for (const k in dict) { n++; s += dict[k] } return [n, s].join() }`
+  for (const level of levels(2, 3)) {
+    const { exports, memory } = jz(src, { optimize: level })
+    for (let round = 0; round < 3; round++) {
+      let last = 0, compactions = 0
+      for (let i = 0; i < 2000; i++) { exports.step(i); if (memory.used < last) compactions++; last = memory.used }
+      ok(compactions >= 1, `O${level}, round ${round}: compacted (${compactions})`)
+      is(exports.sum(), '70,22530', `O${level}, round ${round}: the round's entries`)
+      memory.reset()
+      is(exports.sum(), '40,780', `O${level}, round ${round}: the reset reads the init entries again`)
+    }
+  }
+})
+
 // A phase checkpoint that declines (scripts/self.js checkpointPhase: the phase
 // wrote into storage older than itself) compacts the phase's memory
 // (module/core.js `__gc_phase`): what the phase filed into module state, what
