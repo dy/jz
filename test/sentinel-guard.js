@@ -115,7 +115,11 @@ test('sentinel guard: the pop, the scan and the read after the scan run unchecke
     ok(count(suffix[2], n => n[0] === 'f64.load') > 0, 'the fast suffix gathers f[v[k]]')
     is(count(suffix[2], n => n[0] === 'if'), 0, 'the fast suffix has no element checks')
     is(count(suffix[3], n => n[0] === 'i32.load' || n[0] === 'f64.load'), 0, 'the slow suffix performs neither known-missing read')
-    ok(count(suffix[3], n => n[0] === 'f64.const' && n[1] === 'nan') > 0, 'the slow suffix keeps numeric NaN')
+    // (the NaN in place, or in a local set to it that the arm reads: watr holds a constant the arm
+    // reads twice in a local and may set it ahead of the loop)
+    const nans = new Set()
+    walk(parseWat(guarded), n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[2]?.[0] === 'f64.const' && n[2][1] === 'nan') nans.add(n[1]) })
+    ok(count(suffix[3], n => n[0] === 'f64.const' && n[1] === 'nan' || n[0] === 'local.get' && nans.has(n[1])) > 0, 'the slow suffix keeps numeric NaN')
   }
   ok(missArms(guarded) < missArms(plain), 'known misses fold while other slow reads keep their checks')
   ok(missArms(plain) > 0, 'the unguarded kernel checks its cursor reads')
