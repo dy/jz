@@ -27,7 +27,7 @@
   "fgather/2/subNeg/speed": {"ops":15},
   "fgather/2/flipped/2": {"ops":15},
   "fgather/2/flipped/speed": {"ops":15},
-  "kernel/map/offset idx i-1/2": {"ops":4},
+  "kernel/map/offset idx i-1/2": {"ops":2},
   "kernel/map/offset idx i-1/speed": {"ops":2},
   "kernel/ring/p=(p+1)%M (canonical)/2": {"ops":2},
   "kernel/ring/p=(p+1)%M (canonical)/speed": {"ops":27},

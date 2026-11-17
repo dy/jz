@@ -44,6 +44,9 @@ export const runEntered = (tree, calls, keep = false) => {
       const id = loops.length
       let body = typeof n[1] === 'string' ? 2 : 1
       while (Array.isArray(n[body]) && ['type', 'param', 'result'].includes(n[body][0])) body++
+      // (past the loop's leading exits: a loop its first test leaves at once
+      // runs no step and is not entered; a `br_if` to the loop itself is no exit)
+      while (Array.isArray(n[body]) && n[body][0] === 'br_if' && n[body][1] !== n[1] && String(n[body][1]) !== '0') body++
       loops.push([n, body])
       n.splice(body, 0, ['call', '$__ratchet_enter', ['i32.const', id]])
     }
