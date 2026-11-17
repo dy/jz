@@ -517,6 +517,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const NO_MIX = new Map(), NO_ARRAYS = []   // (read-only: a miss iterates these, never allocates)
   const PRIMITIVE_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
   const primitiveOnly = (k) => (k & TAGS) !== 0 && (k & TAGS & ~PRIMITIVE_BITS) === 0
+  const mixPrimitive = (k) => primitiveOnly(k) && (k & TAGS & ~NULL_BITS) !== 0
   const mixedArray = (k) => tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN && !hasTag(k, K.HASH)
   // the join of primitives with an array whose cell a record names (a mixed binding's own kind)
   const primArrayJoin = (k) => hasTag(k, K.ARRAY) && paramOf(k) === UNKNOWN && (k & TAGS & ~(PRIMITIVE_BITS | bitOf(K.ARRAY))) === 0
@@ -533,7 +534,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       for (const a of arrays) losingAs('joined with a value of another kind', escape, a)
       return false
     }
-    if (!(mixedArray(old) && (primitiveOnly(k) || primArrayJoin(k)) || mixedArray(k) && (primitiveOnly(old) || primArrayJoin(old)))) return false
+    // (an array beside undefined or null alone is no mix: the join keeps its cell, as a nullable array)
+    if (!(mixedArray(old) && (mixPrimitive(k) || primArrayJoin(k)) || mixedArray(k) && (mixPrimitive(old) || primArrayJoin(old)))) return false
     if (table === NO_MIX) outer.set(sid, table = new Map())
     table.set(key, [mixedArray(old) ? old : k]); changed = true
     return true

@@ -131,6 +131,7 @@ const TESTS = [
   'reciprocal-loops',
   'single-compare',
   'record-lanes',
+  'nullable-arrays',
   'chosen-calls',
   'loop-fields',
   'absent-member',
