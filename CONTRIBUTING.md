@@ -312,7 +312,10 @@ forged pointers bypass these checks.
 ### Experimental ABI
 
 Every export the program does not declare is the module's ABI: `memory`,
-`_initialize` (the init of a module that reaches the host from it) and the names
+`_initialize` (the init of a module that reaches the host from it or can throw
+to it: `instantiate()` runs it and throws what it throws, as an export's throw;
+an embedder calling it gets the transport, the value's bits in
+`__jz_last_err_bits`) and the names
 under `__jz_`: the allocator (`__jz_alloc`, `__jz_clear`, `__jz_heap`), the
 closure table (`__jz_table`), the release and compaction handles, the async
 boundary, a class's members, a kernel's kind variants. A program export never

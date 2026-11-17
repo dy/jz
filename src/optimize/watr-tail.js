@@ -49,6 +49,7 @@ import { splitFuncs, loopPasses } from './split-funcs.js'
 import { inlineTiny } from './inline-tiny.js'
 import { forwardCheckedElements } from './forward-checked.js'
 import { stage, on } from './pass-table.js'
+import { ERR, errorCodeLiteral } from '../../err-codes.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
 // (module/core.js `__rem`, its long division `__rem_div`; the element heads,
@@ -374,13 +375,61 @@ function legalizeInit(module, wasi) {
  * build is a command or, with the program's own `_initialize`, a reactor
  * (`commandEntry`); a JS-host module whose init reaches the host (a host global
  * it names, a member read or call on a host value, `__ext_*`, a host function's
- * throw) ships its init as `_initialize`, the program's own `_initialize` after
- * it; a pure module keeps its `start` section and instantiates bare.
+ * throw, a value it throws) ships its init as `_initialize`, the program's own
+ * `_initialize` after it; a pure module keeps its `start` section and
+ * instantiates bare.
  */
 const HOST_ENV_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
 const initTouchesHost = (module) => module.some(n => Array.isArray(n) && n[0] === 'import' && n[1] === '"env"' &&
   typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_'))) ||
-  !!findFuncByName(module, '$__jz_throw_host')
+  !!findFuncByName(module, '$__jz_throw_host') || initThrows(module)
+
+/**
+ * Whether the init can throw a value the host reads: a function it reaches
+ * through calls (any the table or a `ref.func` holds, past an indirect one)
+ * throws, or stores the thrown value's bits a trap follows where nothing
+ * catches (link/throw-runtime.js), in a module that exports those bits. The
+ * host reads the value through them and the memory, both the instance's: a
+ * start section's throw leaves the instance unmade (`new WebAssembly.Instance`
+ * throws), and the host with a bare `WebAssembly.Exception` or trap; thrown
+ * from `_initialize`, it is decoded as an export's throw is (interop.js
+ * decodeThrown). The heap's exhaustion (module/core.js HEAP_EXHAUSTED_THROW),
+ * which every allocation can raise, is a limit of the machine as a stack
+ * overflow is, and no reason: at start it stays the engine's throw.
+ */
+const EXHAUSTED = errorCodeLiteral(ERR.HEAP_EXHAUSTED)
+const exhausted = (n) => Array.isArray(n) && (n[0] === 'f64.const' ? n[1] === EXHAUSTED : n[0] === 'i64.reinterpret_f64' && exhausted(n[1]))
+function initThrows(module) {
+  const start = findFuncByName(module, '$__start')
+  if (!start || !module.some(n => Array.isArray(n) && n[0] === 'export' && n[1] === '"__jz_last_err_bits"')) return false
+  const funcs = new Map(), held = []
+  const heldIn = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'ref.func') held.push(n[1])
+    else if (n[0] === 'elem') for (const x of n) if (typeof x === 'string' && x[0] === '$') held.push(x)
+    for (const x of n) heldIn(x)
+  }
+  for (const n of module) if (Array.isArray(n) && n[0] === 'func') funcs.set(n[1], n); else heldIn(n)
+  for (const f of funcs.values()) heldIn(f)
+  const seen = new Set([start]), todo = [start]
+  let indirect = false
+  const reach = (name) => { const f = funcs.get(name); if (f && !seen.has(f)) { seen.add(f); todo.push(f) } }
+  const throws = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === 'throw' && !exhausted(n[2]) || op === 'rethrow' || op === 'throw_ref') return true
+    if (op === 'global.set' && n[1] === '$__jz_last_err_bits' && !exhausted(n[2]) && !(Array.isArray(n[2]) && n[2][0] === 'i64.const' && Number(n[2][1]) === 0)) return true
+    if (op === 'call' || op === 'return_call') reach(n[1])
+    else if (op === 'call_indirect' || op === 'return_call_indirect' || op === 'call_ref' || op === 'return_call_ref') indirect = true
+    for (let i = 1; i < n.length; i++) if (throws(n[i])) return true
+    return false
+  }
+  while (todo.length) {
+    if (throws(todo.pop())) return true
+    if (indirect) { indirect = false; for (const name of held) reach(name) }
+  }
+  return false
+}
 
 export function legalizeForTarget(module, targetProfile) {
   if (targetProfile?.commandEntry) legalizeInit(module, true)

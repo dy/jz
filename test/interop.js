@@ -1420,3 +1420,51 @@ test('interop: a pending result settles when a later call settles it', async () 
   is(r.go(), 1)
   is(await Promise.race([p, new Promise(res => setTimeout(() => res('pending'), 200))]), 5)
 })
+
+// A throw while the module starts reaches the host as an export's throw does: an init
+// that can throw ships as `_initialize` (src/optimize/watr-tail.js initThrows), which
+// instantiate() runs once the exports are wrapped, where a start section's throw left
+// the host a bare WebAssembly.Exception from `new WebAssembly.Instance`. A value of the
+// program is what Node's import of the module rejects with; an error the runtime raises
+// is of Node's class, its message the one an export's throw of it gives. (An Error of a
+// class the program derives is the host's Error of the class it derives from, with the
+// name and properties it set, CONTRIBUTING.md "Semantics contract".)
+test('interop: a throw while the module starts', async () => {
+  const builtin = (e) => { let c = e.constructor; while (c && globalThis[c.name] !== c) c = Object.getPrototypeOf(c); return c?.name }
+  const shown = (e) => e instanceof Error ? [builtin(e), e.name, e.message, JSON.stringify({ ...e })].join('|') : `${typeof e} ${JSON.stringify(e)}`
+  const thrown = (f) => { try { f() } catch (e) { return e } return 'no throw' }
+  const imported = async (src) => { try { await import('data:text/javascript,' + encodeURIComponent(src)) } catch (e) { return e } return 'no throw' }
+  const own = [
+    ['an Error', `throw new Error('boom')\nexport const f = () => 1`],
+    ['a string', `throw 'boom'\nexport const f = () => 1`],
+    ['a number', `throw 42\nexport const f = () => 1`],
+    ['an object', `throw { code: 7, why: 'x' }\nexport const f = () => 1`],
+    ['an Error of a class naming itself', `class E extends RangeError { constructor(m) { super(m); this.name = 'E'; this.at = 3 } }\nthrow new E('far')\nexport const f = () => 1`],
+    ['after a host read', `const g = globalThis.missingThing\nthrow new Error('host ' + typeof g)\nexport const f = () => 1`],
+  ]
+  // [label, the read at start, the same read in an export]
+  const runtime = [
+    ['a read of undefined', `const o = undefined\nconst k = o.x\nexport const f = () => k`, `const o = undefined\nexport const f = () => o.x`],
+    ['a read in a binding\'s init', `const cfg = {}\nconst rate = cfg.audio.rate\nexport const f = () => rate`, `const cfg = {}\nexport const f = () => cfg.audio.rate`],
+  ]
+  for (const optimize of levels(false, 1, true, 'size', 'speed')) {
+    for (const [label, src] of own) {
+      const want = shown(await imported(src))
+      is(shown(thrown(() => jz(src, { optimize }))), want, `${label}: jz(), optimize ${optimize}`)
+      is(shown(thrown(() => interop.instantiate(compile(src, { optimize })))), want, `${label}: instantiate(), optimize ${optimize}`)
+    }
+    for (const [label, src, inExport] of runtime) {
+      const node = await imported(src), got = thrown(() => interop.instantiate(compile(src, { optimize })))
+      is([builtin(got), got.name].join(), [builtin(node), node.name].join(), `${label}: the class, optimize ${optimize}`)
+      is(shown(got), shown(thrown(() => jz(inExport, { optimize }).exports.f())), `${label}: as an export throws it, optimize ${optimize}`)
+    }
+  }
+  // An embedder instantiating the module itself gets an instance; its `_initialize` throws
+  // the transport (the value's bits in `__jz_last_err_bits`), which interop decodes.
+  if (onWasi()) return
+  const mod = new WebAssembly.Module(compile(own[0][1]))
+  const inst = new WebAssembly.Instance(mod)
+  const e = thrown(() => inst.exports._initialize())
+  ok(e instanceof WebAssembly.Exception || e instanceof WebAssembly.RuntimeError, 'the raw `_initialize` throws the transport')
+  ok(inst.exports.__jz_last_err_bits.value !== 0n, 'the thrown value\'s bits')
+})
