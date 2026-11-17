@@ -149,6 +149,12 @@ export const withBigintStrict = (fn) => {
  *  runtime facilities need their own onKernel guard. */
 export const onKernel = () => process.env.JZ_TEST_TARGET === 'jz.wasm'
 
+/** True under the compaction's stress form (JZ_DEBUG_COMPACT=1, module/core/stub-log.js
+ *  DBG_COMPACT, which test/compact-stress.js runs the memory files under): every chance to
+ *  compact takes it. An assertion of the policy (how often a walk comes, how much memory a call
+ *  keeps or the memory grows) does not hold there and is skipped; an assertion of an answer never is. */
+export const stressed = () => process.env.JZ_DEBUG_COMPACT === '1'
+
 const SWEEP = process.env.JZ_TEST_SWEEP === '1'
 
 /** The level an `optimize` value resolves to (src/optimize/config.js LEVEL_PRESETS). */

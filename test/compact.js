@@ -7,7 +7,7 @@
 // `memory.reset()` still returns the module to its start.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { levels, onWasi, onKernel, belowOpt } from './_matrix.js'
+import { levels, onWasi, onKernel, belowOpt, stressed } from './_matrix.js'
 import { execFileSync } from 'node:child_process'
 import { oracle, jz, compile } from './util.js'
 import { instantiate } from '../interop.js'
@@ -48,7 +48,9 @@ test('compact: state replaced call after call stays bounded', () => {
   for (const [name, src] of Object.entries(STATE)) {
     const { memory, compactions, peak } = drive(src, 4000, undefined, name)
     if (!counted()) continue
-    ok(compactions >= 1, `${name}: compacted (${compactions})`)
+    // (a count of compactions is the policy's: under the stress form the host walks at every
+    // return, and the memory a call uses never falls by a walk's worth between two calls)
+    if (!stressed()) ok(compactions >= 1, `${name}: compacted (${compactions})`)
     ok(peak < 300 * 1024, `${name}: peak ${peak} bytes stays under 300 KB`)
     ok(memory.used < 120 * 1024, `${name}: ${memory.used} bytes kept after 4000 calls`)
   }
@@ -97,7 +99,7 @@ test('compact: every kind of value survives the move', () => {
   if (onWasi()) return
   for (const [name, src] of Object.entries(KINDS)) {
     const { compactions } = drive(src, 3000, undefined, name)
-    if (!IN_PLACE.has(name) && counted()) ok(compactions >= 1, `${name}: compacted (${compactions})`)
+    if (!IN_PLACE.has(name) && counted() && !stressed()) ok(compactions >= 1, `${name}: compacted (${compactions})`)
   }
 })
 
@@ -119,7 +121,7 @@ test('compact: what the host holds does not move', () => {
   const buf = memory.Float64Array(data)
   let last = 0, compactions = 0
   for (let i = 0; i < 3000; i++) { exports.churn(i); if (memory.used < last) compactions++; last = memory.used }
-  if (counted()) ok(compactions >= 1, `compacted (${compactions})`)
+  if (counted() && !stressed()) ok(compactions >= 1, `compacted (${compactions})`)
   is(exports.sum(buf), data.reduce((a, b) => a + b, 0), 'the host\'s buffer reads as made')
   // a view the host received pins the heap below it (without compaction the
   // heap grows past the buffer and the view detaches, as documented)
@@ -170,7 +172,7 @@ test('compact: once the program grew the memory past its views, a compaction gro
   } catch (e) { threw = e.message }
   is(threw, null, 'no out-of-memory')
   is(wrong, 0, 'every step answers')
-  ok(compactions >= 2, `compacted past the first grow (${compactions})`)
+  if (!stressed()) ok(compactions >= 2, `compacted past the first grow (${compactions})`)
 })
 
 // A compaction that may not grow claims, before it rewrites a pointer, the
@@ -199,8 +201,12 @@ test('compact: a compaction that may not grow claims the room the props table re
       buf = memory.buffer
       exports.view()
     }
-    ok(held >= 1, `O${level}: compacted within the memory a view showed (${held})`)
-    is(grew, 0, `O${level}: no call that compacted grew the memory the view showed`)
+    // (under the stress form every call compacts, one whose own allocation grew the memory
+    // past the view among them, which detaches it first and lets the walk grow it: interop.js `settle`)
+    if (!stressed()) {
+      ok(held >= 1, `O${level}: compacted within the memory a view showed (${held})`)
+      is(grew, 0, `O${level}: no call that compacted grew the memory the view showed`)
+    }
     is(bad, 0, `O${level}: every closure keeps its property`)
   }
 })
@@ -316,7 +322,7 @@ test('compact: compactions amortize what they walk, not only what they keep abov
   const want = oracle(src), { exports, memory } = jz(src)
   let last = 0, compactions = 0
   for (let i = 0; i < 4000; i++) { is(exports.step(i), want.step(i), `step(${i})`); if (memory.used < last) compactions++; last = memory.used }
-  ok(compactions >= 1 && compactions <= 3, `4000 small steps beside 20000 kept objects compact a few times, not every page (${compactions})`)
+  if (!stressed()) ok(compactions >= 1 && compactions <= 3, `4000 small steps beside 20000 kept objects compact a few times, not every page (${compactions})`)
 })
 
 // A loop's next walk waits on what its last one freed (module/core/compact.js
@@ -326,7 +332,8 @@ test('compact: compactions amortize what they walk, not only what they keep abov
 // churns. The counts are the debug build's (`JZ_DEBUG_GC=1` exports
 // `__g_runs`), which reads the flag as the compiler loads: a process of its own.
 test('compact: a loop that keeps what it makes walks less often than one that drops it', () => {
-  if (onWasi() || onKernel() || !counted()) return
+  // (not under the stress form: every round of the builder would walk all it holds, and it never ends)
+  if (onWasi() || onKernel() || !counted() || stressed()) return
   const script = `import jz from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
 const run = (src, n) => { const { exports, instance } = jz(src); const r = exports.f(n); return [r, instance.exports.__g_runs.value, instance.exports.__g_walked.value >>> 0] }
 console.log(JSON.stringify({
@@ -384,7 +391,7 @@ console.log(JSON.stringify([got, runs]))`
   const want = oracle(src)
   is(got.join(), [want.f(400000, 1, 24), ...[1, 2, 3].map(reps => want.f(400000, reps, 9))].join(), 'every call answers')
   // the outer loop's walks of the dropped outputs, about one in two rounds, not one at every outer round
-  ok(runs < 24, `24 rounds of a one-round inner loop walk ${runs} times`)
+  if (!stressed()) ok(runs < 24, `24 rounds of a one-round inner loop walk ${runs} times`)
 })
 
 // A walk that sees less above its floor than twice what it reached is no measure
@@ -590,7 +597,8 @@ test('compact: a stub whose chain ends below the floor stays logged, reached or 
 })
 
 test('compact: a loop compacts before the memory\'s cap, not only at its amortized trigger', () => {
-  if (onWasi() || !counted()) return
+  // (not under the stress form: 500,000 rounds keeping an array each would each walk all the rounds before, and never end)
+  if (onWasi() || !counted() || stressed()) return
   // 20 MB kept beside the loop: the amortizing trigger (twice the walk plus
   // the slack above the mark) would land at a 64 MB cap; under pressure the
   // loop compacts once an eighth of the walk and the slack have gone by
@@ -658,7 +666,7 @@ test('compact: a reset after compactions returns the module to its start', () =>
   const want = oracle(src), { exports, memory } = jz(src)
   let last = 0, compactions = 0
   for (let i = 0; i < 2500; i++) { is(exports.step(i), want.step(i), `step(${i})`); if (memory.used < last) compactions++; last = memory.used }
-  if (counted()) ok(compactions >= 1, `compacted (${compactions})`)
+  if (counted() && !stressed()) ok(compactions >= 1, `compacted (${compactions})`)
   memory.reset()
   is(memory.used, 0, 'nothing kept after a reset')
   const fresh = oracle(src)

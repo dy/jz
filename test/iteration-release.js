@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { instantiate } from '../index.js'
-import { levels, onKernel } from './_matrix.js'
+import { levels, onKernel, stressed } from './_matrix.js'
 import { oracle, run, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
 
@@ -38,7 +38,8 @@ test('iteration release: a parser loop runs in the memory of one parse', () => {
   agree(src, [0, 1, 7, 40])
   ok(releases(src) > 0, 'the loop releases its iterations')
   const grown = (n) => { const inst = jz(src, { optimize: 'speed' }), s = inst.exports.make(), at = inst.memory.buffer.byteLength; inst.exports.f(n, s); return inst.memory.buffer.byteLength - at }
-  is(grown(1000), grown(1), 'a thousand parses grow what one does')
+  // (under the stress form every round walks, and the walk's scratch above the heap grows the memory)
+  if (!stressed()) is(grown(1000), grown(1), 'a thousand parses grow what one does')
 })
 
 // The memory a call of `f` grows, on a fresh instance; `host` the functions a declared import takes.
@@ -56,7 +57,8 @@ test('iteration release: a binding the next iteration replaces before reading ca
   agree(src, [1, 7, 40])
   ok(releases(src) > 0, 'the loop releases its iterations')
   const grown = (n) => { const inst = jz(src, { optimize: 'speed' }), s = inst.exports.make(), at = inst.memory.buffer.byteLength; inst.exports.f(n, s); return inst.memory.buffer.byteLength - at }
-  for (const n of [50, 1000]) is(grown(n), grown(1), `${n} parses grow what one does, where a compaction lets twice its slack pile up`)
+  // (the memory's growth is the policy's: under the stress form every round walks, a thousand parses five minutes)
+  if (!stressed()) for (const n of [50, 1000]) is(grown(n), grown(1), `${n} parses grow what one does, where a compaction lets twice its slack pile up`)
   // each a binding an iteration may read, or leave holding the one before, so its loop keeps all
   const keeps = [
     `let prev = null, ast = null; for (let r = 0; r < n; r++) { prev = ast; ast = parse(s) } ${CHURN}; return hash(ast) + (prev ? hash(prev) : 0)`,

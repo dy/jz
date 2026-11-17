@@ -306,6 +306,7 @@ const TESTS = [
   'float-order-population',
   'licm-population',
   'constant-reads-population',
+  'compact-stress',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',

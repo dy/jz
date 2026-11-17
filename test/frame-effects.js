@@ -12,7 +12,7 @@ import { listedBuiltin, transitiveFrameEffects } from '../src/compile/analyze/fr
 import { includeAllMods } from '../src/autoload.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { ctx } from '../src/ctx.js'
-import { levels, onKernel, onWasi, belowOpt } from './_matrix.js'
+import { levels, onKernel, onWasi, belowOpt, stressed } from './_matrix.js'
 import { oracle, compileInProcess, jz, compile } from './util.js'
 import { bounded } from './_bounded.js'
 
@@ -314,7 +314,8 @@ test('frame effects: a call that ran an escape keeps what the escape reaches', (
     for (let i = 1; i <= 3; i++) {
       const used = memory.used
       m.f(i); js.f(i)
-      ok(memory.used - used > 40000, `${what}: call ${i} keeps all at ${optimize}`)
+      // (the host walks at every return under the stress form: what a call keeps is the walk's)
+      if (!stressed()) ok(memory.used - used > 40000, `${what}: call ${i} keeps all at ${optimize}`)
       m.churn(40); js.churn(40)
       is(m.read(), js.read(), `${what}: what call ${i} kept reads back at ${optimize}`)
     }
@@ -352,6 +353,7 @@ test('frame effects: the log of what the escapes wrote into is made as the modul
     const { exports: m, memory } = jz(src, { optimize }), held = []
     for (let i = 0; i < 4; i++) { const used = memory.used; is(m.f(i), js.f(i)); held.push(memory.used - used) }
     is(m.read(), js.read())
+    if (stressed()) continue
     is(held[0], held[3], `O${optimize}: the first call keeps what the last does: ${held}`)
     ok(held[0] > 0 && held[0] < 64, 'the pair it stored, none of its temporary')
   }
