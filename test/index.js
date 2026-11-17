@@ -299,6 +299,7 @@ const TESTS = [
   'store-population',
   'durable-join-population',
   'elem-population',
+  'plain-lift-population',
   'unswitch-typed-param',
   'wide-accumulator',
   'runtime-inspect',
