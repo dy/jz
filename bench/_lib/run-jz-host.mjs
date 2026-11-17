@@ -4,6 +4,7 @@
 import fs from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { instantiate } from '../../interop.js'
+import { passes } from './passes.js'
 
 const file = process.argv[2]
 if (!file) { console.error('usage: run-jz-host.mjs <case.wasm>'); process.exit(2) }
@@ -25,9 +26,12 @@ for (const { module: m, name, kind } of WebAssembly.Module.imports(module)) {
       m === 'env' && /^(?:__ext_|parseInt$|parseFloat$|print$)/.test(name)) continue
   ;(imports[m] ??= {})[name] = () => undefined
 }
-const { exports } = instantiate(module, { imports })
-if (typeof exports.main !== 'function') {
-  console.error('wasm has no exported main()')
-  process.exit(2)
-}
-exports.main()
+// a pass is a fresh instance of the one compiled module: its code stays, its memory starts over
+await passes(() => {
+  const { exports } = instantiate(module, { imports })
+  if (typeof exports.main !== 'function') {
+    console.error('wasm has no exported main()')
+    process.exit(2)
+  }
+  return exports.main()
+})

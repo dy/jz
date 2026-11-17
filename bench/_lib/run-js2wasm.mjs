@@ -4,10 +4,15 @@
 // specifier, resolved here to the runtime beside the compiler that built it.
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { passes } from './passes.js'
 
 const [wasm, runtime] = process.argv.slice(2)
 if (!wasm || !runtime) { console.error('usage: run-js2wasm.mjs <case.wasm> <js2wasm dist/runtime.js>'); process.exit(2) }
 const helper = readFileSync(wasm.replace(/\.wasm$/, '.imports.js'), 'utf8')
   .replace(/from\s+["']js2wasm["']/, `from ${JSON.stringify(pathToFileURL(runtime).href)}`)
 const { instantiateBytes } = await import('data:text/javascript,' + encodeURIComponent(helper))
-await instantiateBytes(readFileSync(wasm))
+const bytes = readFileSync(wasm)
+// a pass instantiates the same bytes again, which V8 compiles once while a module of
+// them lives (its native module cache): the first pass's result is kept alive for that
+let kept
+await passes(async () => { const r = await instantiateBytes(bytes); kept ??= r })

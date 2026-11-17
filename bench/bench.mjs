@@ -18,6 +18,7 @@ import { classifyBenchmarkChecksum, NO_WEB, timedBenchmarkRow, WEB_BUNDLED } fro
 import { contenders, LANE_CMDS, LANE_FLAGS } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 import { releaseBytes } from './_lib/release-bytes.js'
+import { FIRST_MS, SETTLE_MS, settleSource } from './_lib/passes.js'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -461,10 +462,14 @@ const discoverCases = () => readdirSync(CASES_DIR, { withFileTypes: true })
   })
   .sort((a, b) => Object.keys(CASE_NAMES).indexOf(a.id) - Object.keys(CASE_NAMES).indexOf(b.id))
 
+// One line a pass (_lib/passes.js): the last pass is the one counted, the first is kept
+// beside it as `firstUs`, and every pass's checksum is returned for the caller to hold.
 const parseLine = stdout => {
-  const m = stdout.match(/median_us=(\d+)\s+checksum=(-?\d+)\s+samples=(\d+)\s+stages=(\d+)\s+runs=(\d+)/)
-  if (!m) return null
-  return { medianUs: +m[1], checksum: (+m[2]) >>> 0, samples: +m[3], stages: +m[4], runs: +m[5] }
+  const lines = [...stdout.matchAll(/median_us=(\d+)\s+checksum=(-?\d+)\s+samples=(\d+)\s+stages=(\d+)\s+runs=(\d+)/g)]
+  if (!lines.length) return null
+  const m = lines.at(-1)
+  return { medianUs: +m[1], checksum: (+m[2]) >>> 0, samples: +m[3], stages: +m[4], runs: +m[5],
+    firstUs: +lines[0][1], passes: lines.length, checksums: lines.map(l => (+l[2]) >>> 0) }
 }
 
 // Peak memory per run: unbounded invocations are wrapped in /usr/bin/time
@@ -509,6 +514,9 @@ const runProc = (argv, opts = {}) => {
     cwd: BENCH_DIR,
     encoding: 'utf8',
     timeout, killSignal: 'SIGKILL',
+    // a short pass repeats hundreds of times, one line each
+    maxBuffer: 1 << 26,
+    ...(opts.env && { env: opts.env }),
   })
   if (r.error?.code === 'ETIMEDOUT') return { error: `timeout after ${timeout}ms`, timedOut: true }
   // timeout(1) kills with SIGKILL: the program's status reads 137 through time(1).
@@ -598,10 +606,21 @@ const maxSrcMtime = (c) => {
   }
   return m
 }
+// Peak RSS stays what one pass of the case costs: time(1) reads a whole process, so a
+// run of more than one pass takes it from a process of the first pass alone
+// (JZ_BENCH_PASSES=first, or the lane's `firstArgv`), once per lane and case.
+const firstPassMem = new Map()
+const firstPassOpts = o => ({ ...o, env: { ...process.env, JZ_BENCH_PASSES: 'first' } })
+// The lanes whose pass is another call of the module's main, where a wasm lane's is a
+// fresh instance. A case whose main advances module state (fabrik's target and pose)
+// answers another checksum on its next call, another workload: there such a lane runs
+// its first pass alone, the row marked `settled: false`. Lane:case pairs found so.
+const CALL_PASSES = new Set(['v8', 'deno', 'bun', 'jsc', 'spidermonkey', 'graaljs'])
+const carriesState = new Set()
 const tryRun = (id, c, prep, argv, opts = {}) => {
   try {
     mkdirSync(caseBuild(c), { recursive: true })
-    const { cacheInputMtime = 0, ...runOpts } = opts
+    const { cacheInputMtime = 0, firstArgv = argv, ...runOpts } = opts
     const key = `${id}:${c.id}`
     if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
       const stamp = join(caseBuild(c), `.prep-${id}`)
@@ -630,8 +649,29 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       }
       pairedBuilt.add(key)
     }
-    const parsed = runProc(argv, runOpts)
-    return parsed.error ? { id, error: parsed.error, ...(parsed.timedOut && { timedOut: true }) } : { id, ...parsed }
+    const failed = r => ({ id, error: r.error, ...(r.timedOut && { timedOut: true }) })
+    let parsed = carriesState.has(key) ? runProc(firstArgv, firstPassOpts(runOpts)) : runProc(argv, runOpts)
+    if (parsed.error) return failed(parsed)
+    // every pass answers what the first answered: a fresh instance must
+    if (parsed.checksums.some(cs => cs !== parsed.checksums[0])) {
+      const seen = [...new Set(parsed.checksums)].join(', ')
+      if (!CALL_PASSES.has(id)) return { id, error: `pass checksums differ: ${seen}` }
+      // (stderr: a `[run]` line is open on stdout)
+      console.warn(`[passes] ${key}: main answers ${seen} on successive calls, carrying state between them; the lane runs its first pass alone`)
+      carriesState.add(key)
+      parsed = runProc(firstArgv, firstPassOpts(runOpts))
+      if (parsed.error) return failed(parsed)
+    }
+    if (parsed.passes > 1 && parsed.memKb != null) {
+      if (!firstPassMem.has(key)) {
+        const once = runProc(firstArgv, firstPassOpts(runOpts))
+        const mem = !once.error && once.passes === 1 && once.checksum === parsed.checksum ? once.memKb : null
+        if (mem == null) console.warn(`[bench] ${key} memory unmeasured: the first pass alone ${once.error ?? `ran ${once.passes} passes, cs=${once.checksum}`}`)
+        firstPassMem.set(key, mem)
+      }
+      parsed.memKb = firstPassMem.get(key)
+    }
+    return { id, ...parsed, ...(carriesState.has(key) && { settled: false }) }
   } catch (e) {
     return { id, error: e.message }
   }
@@ -649,6 +689,7 @@ const jzExactWasmPath = c => join(caseBuild(c), `${c.id}-exact.wasm`)
 const jzBaseWasmPath = c => join(caseBuild(c), `${c.id}-base-host.wasm`)
 const jzBaseSizeWasmPath = c => join(caseBuild(c), `${c.id}-base-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
+const settleFlatPath = c => join(caseBuild(c), `${c.id}-settle-flat.js`)
 const porfFlatPath = c => join(caseBuild(c), `${c.id}-porf-flat.js`)
 const nativeFlatPath = c => join(caseBuild(c), `${c.id}-native-flat.js`)
 const componentFlatPath = c => join(caseBuild(c), `${c.id}-component-flat.js`)
@@ -751,9 +792,12 @@ const compileJzSelfIsolated = c => compileJzSelf(jzHostWasmPath(c), jzSizeWasmPa
 const flatInputs = new Set()
 // deferMain: the entry is stored as __benchGlobal.__jzMain, not called, for the
 // component builders, which run top-level code at build time (Wizer snapshots).
-const writeFlat = (c, { nativePerformance = false, nativeGlobals = false, deferMain = false } = {}) => {
-  const path = deferMain ? componentFlatPath(c) : nativeGlobals ? nativeFlatPath(c) : nativePerformance ? porfFlatPath(c) : flatPath(c)
-  const call = entry => deferMain ? `__benchGlobal.__jzMain = ${entry}` : `${entry}()`
+// settle: the entry runs by the pass rule (_lib/passes.js), for a JS engine's shell.
+const writeFlat = (c, { nativePerformance = false, nativeGlobals = false, deferMain = false, settle = false } = {}) => {
+  const path = deferMain ? componentFlatPath(c) : nativeGlobals ? nativeFlatPath(c) : nativePerformance ? porfFlatPath(c)
+    : settle ? settleFlatPath(c) : flatPath(c)
+  // (the `;`: the rule's expression opens with `(`, which a case's last line would call)
+  const call = entry => deferMain ? `__benchGlobal.__jzMain = ${entry}` : settle ? `;${settleSource(entry)}` : `${entry}()`
   if (flatInputs.has(path)) return path
   mkdirSync(caseBuild(c), { recursive: true })
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
@@ -866,10 +910,13 @@ if (typeof EventTarget === 'undefined') ({ Event, CustomEvent, EventTarget } = (
   flatInputs.add(path)
   return path
 }
-const runFlat = (id, c, argv, prep = null, { timeout, ...options } = {}) => {
+// settle: a JS engine's shell runs the script that repeats main by the pass rule, and
+// the plain script for its first pass alone (the old protocol, the memory reading).
+const runFlat = (id, c, argv, prep = null, { timeout, settle = false, ...options } = {}) => {
   const src = writeFlat(c, options)
-  return tryRun(id, c, prep ? () => prep(src) : null, argv(src),
-    { ...(prep ? { cacheInputMtime: statSync(src).mtimeMs } : {}), ...(timeout && { timeout }) })
+  const run = settle && !FIRST_PASS_ONLY ? writeFlat(c, { ...options, settle }) : src
+  return tryRun(id, c, prep ? () => prep(src) : null, argv(run),
+    { ...(prep ? { cacheInputMtime: statSync(src).mtimeMs } : {}), ...(timeout && { timeout }), firstArgv: argv(src) })
 }
 // esbuild is a devDependency used only by the flat-file writer for module-graph
 // cases — loaded lazily so plain corpus runs never touch it.
@@ -1070,13 +1117,13 @@ const targets = {
     name: 'JavaScriptCore (jsc)',
     available: () => !!jscBin(),
     bin: flatPath,
-    run: c => runFlat('jsc', c, src => [jscBin(), src]),
+    run: c => runFlat('jsc', c, src => [jscBin(), src], null, { settle: true }),
   },
   spidermonkey: {
     name: 'SpiderMonkey shell',
     available: () => !!spiderMonkeyBin(),
     bin: flatPath,
-    run: c => runFlat('spidermonkey', c, src => [spiderMonkeyBin(), src]),
+    run: c => runFlat('spidermonkey', c, src => [spiderMonkeyBin(), src], null, { settle: true }),
   },
   // Static Hermes: AOT JS → native via C, linked with the Hermes VM and GC.
   // scripts/install-shermes.mjs builds it from facebook/hermes; point
@@ -1193,7 +1240,7 @@ const targets = {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
     bin: flatPath,
-    run: c => runFlat('graaljs', c, src => [graalJsBin(), src]),
+    run: c => runFlat('graaljs', c, src => [graalJsBin(), src], null, { settle: true }),
   },
   jz: {
     name: 'jz → V8 wasm',
@@ -1560,8 +1607,13 @@ let CONTENDERS = 0
 let PAIRED_TARGETS = null
 // --list: print the selected cases in corpus order and exit (bench/shards.mjs plans from it).
 let LIST = false
+// --passes=first (or JZ_BENCH_PASSES=first): every lane times its first pass alone, the
+// protocol before the pass rule (_lib/passes.js), for comparing the two. The runners
+// read the variable; the shells run the plain script (runFlat).
+let FIRST_PASS_ONLY = process.env.JZ_BENCH_PASSES === 'first'
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
+  else if (arg === '--passes=first') { FIRST_PASS_ONLY = true; process.env.JZ_BENCH_PASSES = 'first' }
   else if (arg === '--paired') PAIRED = 4
   else if (arg.startsWith('--paired=')) PAIRED = Math.max(2, +arg.slice(9) || 4)
   else if (arg.startsWith('--paired-targets=')) PAIRED_TARGETS = arg.slice(17).split(',').filter(Boolean)
@@ -1637,6 +1689,16 @@ if (MERGE && !PREV && !MERGE_ALLOW_SHRINK) {
   process.exit(1)
 }
 
+// The pass protocol a run times by (meta.passes): the rule's constants, or 'first'. A
+// dataset that names none predates the rule and timed each lane's first pass. Rows of
+// two protocols are never merged, and stored rows of another are no anchor.
+const PASSES = FIRST_PASS_ONLY ? 'first' : { settleMs: SETTLE_MS, firstMs: FIRST_MS }
+const passesText = data => JSON.stringify(data?.meta ? data.meta.passes ?? 'first' : PASSES)
+if (MERGE && PREV && passesText(PREV) !== JSON.stringify(PASSES)) {
+  console.error(`--merge: ${JSON_PATH} was timed by the pass protocol ${passesText(PREV)}, this run by ${JSON.stringify(PASSES)} — refusing to mix them. A full --json run times every row by one, or --passes=first matches a dataset from before the pass rule.`)
+  process.exit(1)
+}
+
 // --emit-web: compile just the page's playable cases to bench/web/ and stop — no
 // measurement, no native/JS-engine toolchains. The cheap step pages.yml runs to
 // (re)build the live in-page runner's artifacts at deploy. The self-compile (NO_WEB)
@@ -1709,7 +1771,7 @@ const ALL_SOURCE_ORACLE = process.env.JZ_BENCH_ORACLE === 'source'
 // earlier dataset stored under the old hash, until a reference run stores the new one.
 const REPINNED = new Set(['deltae', 'colorconv', 'colorlch', 'colorlog', 'colorpq'])
 const sourceOracle = c => {
-  const r = runProc([process.execPath, join(LIB, 'run-v8.mjs'), c.js])
+  const r = runProc([process.execPath, join(LIB, 'run-v8.mjs'), c.js], { env: { ...process.env, JZ_BENCH_PASSES: 'first' } })
   if (r.error) console.log(`[oracle] ${c.id} FAIL: ${r.error}`)
   else console.log(`[oracle] ${c.id} source under node → cs=${r.checksum}`)
   return r.error ? null : r.checksum
@@ -1786,6 +1848,7 @@ for (const cid of selectedCases) {
         }
         m.set(tid, { ...rs[0],
           medianUs: Math.round(rs.reduce((s, r) => s + r.medianUs, 0) / rs.length),
+          firstUs: Math.round(rs.reduce((s, r) => s + r.firstUs, 0) / rs.length),
           // RSS uses both positions too; a missing measurement stays missing.
           memKb: rs.every(r => Number.isFinite(r.memKb) && r.memKb > 0)
             ? rs.reduce((s, r) => s + r.memKb, 0) / rs.length : null,
@@ -1807,7 +1870,9 @@ for (const cid of selectedCases) {
       // memory: cross-round median (peak RSS is stable run-to-run; median kills a stray outlier)
       const mems = rs.map(r => r.memKb)
       med.memKb = mems.every(x => x != null) ? mems.sort((a, b) => a - b)[mems.length >> 1] : null
-      console.log(`[paired] ${tid.padEnd(targetIdWidth)} rounds ${rs.map(r => r.medianUs).join(' ')} µs → median ${med.medianUs} µs  cs=${med.checksum}`)
+      // the first pass's cross-round median, beside the counted one's
+      med.firstUs = rs.map(r => r.firstUs).sort((a, b) => a - b)[rs.length >> 1]
+      console.log(`[paired] ${tid.padEnd(targetIdWidth)} rounds ${rs.map(r => r.medianUs).join(' ')} µs → median ${med.medianUs} µs (first pass ${med.firstUs} µs)  cs=${med.checksum}`)
       results.push(med)
     }
     // Against the first lane, and the exact lane against every lane past it: the base of
@@ -1836,7 +1901,8 @@ for (const cid of selectedCases) {
     process.stdout.write(`[run]  ${tid.padEnd(targetIdWidth)} ${t.name} … `)
     const r = t.run(c)
     if (r.error) { console.log(`FAIL: ${r.error}`); recordFailure(tid, r.error, r); continue }
-    console.log(`${r.medianUs} µs  cs=${r.checksum}`)
+    // (test/bench.js reads `<n> µs  cs=<n>` off this line)
+    console.log(`${r.medianUs} µs  cs=${r.checksum}  (${r.passes} pass${r.passes === 1 ? '' : 'es'}, the first ${r.firstUs} µs)`)
     results.push(r)
   }
 
@@ -1906,6 +1972,10 @@ for (const cid of selectedCases) {
       targets: Object.fromEntries([
         ...results.map(r => [r.id, {
           medianUs: r.medianUs,
+          // the first pass's median: what a cold run costs (the counted one where it ran alone)
+          firstUs: r.firstUs,
+          // a JS lane on a case whose main carries state between calls: its first pass counted
+          ...(r.settled === false && { settled: false }),
           bytes: r.bytes ?? null,
           memKb: r.memKb ?? null,
           parity: parityOf(r.checksum),
@@ -1924,15 +1994,15 @@ for (const cid of selectedCases) {
   console.log()
   console.log(`samples=${results[0].samples} stages=${results[0].stages} runs=${results[0].runs} reference_checksum=${refCs}`)
   const fmtMem = kb => kb == null ? '—' : kb < 1024 ? `${kb} kB` : `${(kb / 1024).toFixed(1)} MB`
-  console.log(`  ${'target'.padEnd(28)}  ${'median'.padStart(10)}  ${'×base'.padStart(8)}  ${'throughput'.padStart(10)}  ${'size'.padStart(10)}  ${'mem'.padStart(9)}  ${'parity'.padStart(8)}`)
-  console.log(`  ${'-'.repeat(28)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}  ${'-'.repeat(10)}  ${'-'.repeat(10)}  ${'-'.repeat(9)}  ${'-'.repeat(8)}`)
+  console.log(`  ${'target'.padEnd(28)}  ${'median'.padStart(10)}  ${'first pass'.padStart(10)}  ${'×base'.padStart(8)}  ${'throughput'.padStart(10)}  ${'size'.padStart(10)}  ${'mem'.padStart(9)}  ${'parity'.padStart(8)}`)
+  console.log(`  ${'-'.repeat(28)}  ${'-'.repeat(10)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}  ${'-'.repeat(10)}  ${'-'.repeat(10)}  ${'-'.repeat(9)}  ${'-'.repeat(8)}`)
   for (const r of [...results].sort((a, b) => a.medianUs - b.medianUs)) {
-    const ms = (r.medianUs / 1000).toFixed(2) + ' ms'
+    const ms = (r.medianUs / 1000).toFixed(2) + ' ms', first = (r.firstUs / 1000).toFixed(2) + ' ms'
     const ratio = baseline && positiveTiming(r) ? (r.medianUs / baseline.medianUs).toFixed(2) + '×' : '–'
     const throughput = positiveTiming(r) ? (r.samples / r.medianUs).toFixed(2) : '–'
     const size = fmtSize(r.bytes)
     const parity = parityOf(r.checksum)
-    console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${fmtMem(r.memKb).padStart(9)}  ${parity.padStart(8)}`)
+    console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${first.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${fmtMem(r.memKb).padStart(9)}  ${parity.padStart(8)}`)
   }
 }
 
@@ -1973,6 +2043,11 @@ if (VERIFY_ANCHORS) {
     if (!c || !t) {
       driftLines.push(`${key}: unknown case/target`)
       pairs.push({ case: cid, target: tid, storedUs: null, freshUs: null, ratio: null, pass: false })
+      continue
+    }
+    if (passesText(ANCHOR_BASE) !== JSON.stringify(PASSES)) {
+      driftLines.push(`${key}: the stored evidence was timed by the pass protocol ${passesText(ANCHOR_BASE)}, this run by ${JSON.stringify(PASSES)}`)
+      pairs.push({ case: cid, target: tid, storedUs: storedRow?.medianUs ?? null, freshUs: null, ratio: null, pass: false })
       continue
     }
     if (!timedBenchmarkRow(storedRow)) {
@@ -2141,9 +2216,11 @@ if (JSON_PATH) {
       clang: has('clang') && ver('clang'),
     }).filter(([, v]) => v)),
     invocations: Object.fromEntries([...usedTargets].filter(tid => TARGET_CMDS[tid]).map(tid => [tid, TARGET_CMDS[tid]])),
-    // memKb methodology: peak RSS of the whole per-case process (engine + module),
-    // read from the child's rusage via time(1); bounded runs leave memKb null.
-    ...(TIME_BIN && { memory: `peak RSS per process run (${TIME_BIN} ${TIME_ARGS[0]})` }),
+    // memKb methodology: peak RSS of the whole per-case process (engine + module) of one
+    // pass, read from the child's rusage via time(1); bounded runs leave memKb null.
+    ...(TIME_BIN && { memory: `peak RSS of a process of one pass (${TIME_BIN} ${TIME_ARGS[0]})` }),
+    // how each engine lane was timed (_lib/passes.js): after its tiers settle, or 'first'
+    passes: PASSES,
     // machineState (audit-#13 hygiene item 2b): captured on every timing write,
     // not gated on --merge/--verify-anchors — swap/uptime/load/powermode are
     // the validity CONTEXT test/bench-claims.js's VALIDITY row checks against a

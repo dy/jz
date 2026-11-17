@@ -5,6 +5,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { FIRST_MS, SETTLE_MS } from '../bench/_lib/passes.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH = join(ROOT, 'bench/bench.mjs')
@@ -176,8 +177,9 @@ console.log(${JSON.stringify(METRIC)})
 
     const json = join(scratch, 'results.json')
     const sibling = { medianUs: 20, bytes: 30, parity: 'ok', measuredAt: 'older' }
+    // timed by the harness's pass protocol, which a merge requires of the file it reads
     const writeBaseline = () => writeFileSync(json, JSON.stringify({
-      meta: { invocations: { v8: 'node alpha.js' } },
+      meta: { invocations: { v8: 'node alpha.js' }, passes: { settleMs: SETTLE_MS, firstMs: FIRST_MS } },
       cases: {
         alpha: {
           name: 'alpha', samples: 1, stages: 1, runs: 1, ref: 633180752,

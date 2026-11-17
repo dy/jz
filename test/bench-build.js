@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile } from '../index.js'
@@ -9,11 +9,13 @@ import { instantiate } from '../interop.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
 import { mix } from '../bench/_lib/benchlib.js'
 import { releaseBytes, wasmStrippedBytes } from '../bench/_lib/release-bytes.js'
+import { FIRST_MS, SETTLE_MS, settle } from '../bench/_lib/passes.js'
 import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audiojs/compare.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
 
-const runHost = source => {
+// The host ABI's tests run one pass (JZ_BENCH_PASSES=first); the pass rule has its own below.
+const runHost = (source, passes = 'first') => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-bench-host-'))
   try {
     const file = join(dir, 'case.wasm')
@@ -23,7 +25,7 @@ const runHost = source => {
       'optional-device': { absent: { params: 0 } },
     } }))
     const result = spawnSync(process.execPath, [join(ROOT, 'bench/_lib/run-jz-host.mjs'), file], {
-      encoding: 'utf8', timeout: 30000,
+      encoding: 'utf8', timeout: 30000, maxBuffer: 1 << 26, env: { ...process.env, JZ_BENCH_PASSES: passes },
     })
     if (result.error) throw result.error
     return result
@@ -79,6 +81,54 @@ test('bench host: missing entry points and unsupported host calls fail visibly',
   is(unsupported.status, 1)
   ok(unsupported.stderr.includes('__jzMissingBenchMethod'), 'the missing method names the failure')
   is(unsupported.stdout, '', 'a failure cannot report benchmark results')
+})
+
+// The pass rule (bench/_lib/passes.js) on a fake clock: a pass of `ms` each.
+const settled = async (ms, first) => {
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let now = 0
+  const starts = []
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => now }, configurable: true, writable: true })
+  try { await settle(() => { starts.push(now); now += ms }, first) }
+  finally { Object.defineProperty(globalThis, 'performance', real) }
+  return starts
+}
+
+test('bench passes: the pass after the settling time is counted, a long first pass alone', async () => {
+  is(await settled(100), [0, 100, 200, 300], 'a short pass repeats until SETTLE_MS, then once more')
+  is(await settled(SETTLE_MS), [0, SETTLE_MS], 'a pass of the settling time runs twice')
+  is(await settled(FIRST_MS - 1), [0, FIRST_MS - 1], 'a first pass short of FIRST_MS runs twice')
+  is(await settled(FIRST_MS), [0], 'a first pass of FIRST_MS counts as it is')
+  is(await settled(1, true), [0], 'the old protocol runs the first pass alone')
+  ok((await settled(7)).at(-1) >= SETTLE_MS, 'the counted pass begins after the settling time')
+})
+
+// FIRST_MS proves a long first pass's timed runs began after SETTLE_MS only while its
+// warm-ups are at least SETTLE_MS / FIRST_MS of its runs, in every case and held-out driver.
+test('bench passes: every program warms up the share of its runs FIRST_MS takes', () => {
+  const programs = readdirSync(join(ROOT, 'bench'), { withFileTypes: true })
+    .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(ROOT, 'bench', d.name, `${d.name}.js`)))
+    .map(d => join('bench', d.name, `${d.name}.js`)).concat('scripts/heldout.mjs')
+  const short = programs.filter(file => {
+    const src = readFileSync(join(ROOT, file), 'utf8')
+    const w = +/\bN_WARMUP = (\d+)/.exec(src)?.[1], r = +/\bN_RUNS = (\d+)/.exec(src)?.[1]
+    return !(w / (w + r) >= SETTLE_MS / FIRST_MS)
+  })
+  ok(programs.length > 100, `${programs.length} programs read`)
+  is(short, [], 'warm-ups under the share, or no N_WARMUP and N_RUNS to read')
+})
+
+test('bench host: a pass is a fresh instance, repeated until the engine has run it the settling time', () => {
+  const source = `
+    let calls = 0
+    export function main() { calls++; env.logResult(calls, 7 + calls, 1, 1, 1) }
+  `
+  const rule = runHost(source, '')
+  is(rule.status, 0, rule.stderr)
+  const lines = rule.stdout.trim().split('\n')
+  ok(lines.length > 2, `${lines.length} passes`)
+  is([...new Set(lines)], ['median_us=1 checksum=8 samples=1 stages=1 runs=1'], 'every pass starts its module state over')
+  is(runHost(source).stdout.trim(), lines[0], 'JZ_BENCH_PASSES=first runs the first pass alone')
 })
 
 test('bench build: every committed workload is a valid JavaScript module', () => {

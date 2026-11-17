@@ -86,7 +86,8 @@ jobs:
           import { join } from 'node:path'
           const [cases, rounds, sets] = [process.env.CASES.split(','), +process.env.REPEATS * 2, process.env.FLAGS.split(';')]
           const med = a => [...a].sort((x, y) => x - y)[a.length >> 1]
-          const time = (flags, args) => +execFileSync('node', [...flags, ...args], { encoding: 'utf8', maxBuffer: 1 << 26 }).match(/median_us=([\d.]+)/)[1]
+          // a runner prints one line a pass (bench/_lib/passes.js): the last is the counted one
+          const time = (flags, args) => +[...execFileSync('node', [...flags, ...args], { encoding: 'utf8', maxBuffer: 1 << 26 }).matchAll(/median_us=([\d.]+)/g)].at(-1)[1]
           for (const id of cases) {
             const lanes = { jz: ['bench/_lib/run-jz-host.mjs', join(process.env.JZ_BENCH_BUILD_DIR, id, `${id}-host.wasm`)], v8: ['bench/_lib/run-v8.mjs', `bench/${id}/${id}.js`] }
             const runs = sets.map(set => ({ set: set || '(default)', flags: set.split(' ').filter(Boolean), jz: [], v8: [] }))

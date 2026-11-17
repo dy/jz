@@ -38,21 +38,24 @@ const spawn = cp.spawnSync
 cp.spawnSync = (cmd, args, opts) => {
   const result = spawn(cmd, args, opts)
   if (result.status === 0 && args.some(a => /\/(?:mat4\.c|fft\.c|synth\.as)\.wasm$/.test(a)))
-    result.stdout = result.stdout.replace(/median_us=\d+/, 'median_us=' + process.env.JZ_TEST_ANCHOR_US)
+    result.stdout = result.stdout.replace(/median_us=\d+/g, 'median_us=' + process.env.JZ_TEST_ANCHOR_US)
   return result
 }
 syncBuiltinESMExports()
 `)
+// A merge takes the pass protocol of the evidence it merges into (bench.mjs refuses to
+// mix two): the committed file's, `'first'` where it names none (bench/_lib/passes.js).
+const reference = JSON.parse(readFileSync(REFERENCE, 'utf8'))
+const PASSES = (reference.meta.passes ?? 'first') === 'first' ? 'first' : ''
 const run = (args, medianUs = 1000) => execFileSync(process.execPath, ['--import', timingHook, BENCH, ...args], {
   cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
-  env: { ...process.env, JZ_TEST_ANCHOR_US: String(medianUs) },
+  env: { ...process.env, JZ_TEST_ANCHOR_US: String(medianUs), JZ_BENCH_PASSES: PASSES },
 })
 const runExpectFail = (args, medianUs) => {
   try { return { status: 0, out: run(args, medianUs) } }
   catch (e) { return { status: e.status, out: `${e.stdout || ''}${e.stderr || ''}` } }
 }
 
-const reference = JSON.parse(readFileSync(REFERENCE, 'utf8'))
 const freshAnchoredCopy = () => {
   const scratch = freshCopy(), seed = JSON.parse(readFileSync(scratch, 'utf8'))
   seed.meta.anchors = { pass: true,

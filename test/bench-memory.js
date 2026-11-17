@@ -1,5 +1,5 @@
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
 import { linuxSwapUsedMB } from '../bench/machine-state.mjs'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -84,6 +84,59 @@ syncBuiltinESMExports()
       })
       is(JSON.parse(readFileSync(json, 'utf8')).cases.alpha.targets.v8.memKb, want)
     }
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+})
+
+// The pass rule (bench/_lib/passes.js) as the harness reads it: one line a pass, the last
+// counted and the first kept, memory from a process of the first pass alone, every pass's
+// checksum the first's, and the old protocol by its switch, never merged with the new.
+test('pass rule: the last pass is counted, the first kept beside it, memory of one pass', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'jz bench passes '))
+  try {
+    const hook = join(scratch, 'passes.mjs'), json = join(scratch, 'results.json')
+    writeFileSync(hook, `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const spawn = cp.spawnSync, ref = 633180752
+const line = (us, cs = ref) => 'median_us=' + us + ' checksum=' + cs + ' samples=1 stages=1 runs=1\\n'
+cp.spawnSync = (cmd, args, opts) => {
+  const lane = args.find(a => /\\/run-(v8|jz-host)\\.mjs$/.test(a))
+  if (lane) {
+    const first = (opts.env ?? process.env).JZ_BENCH_PASSES === 'first', state = process.env.JZ_TEST_STATE
+    return { status: 0, stdout: first ? line(30) : line(30) + line(12, state ? 1 : ref) + line(10, state ? 2 : ref),
+      stderr: 'Maximum resident set size (kbytes): ' + (first ? 50 : 99) }
+  }
+  if (cmd === '/usr/bin/time') return { status: 0 }
+  return spawn(cmd, args, opts)
+}
+syncBuiltinESMExports()
+`)
+    const bench = (args, env = {}) => spawnSync(process.execPath, ['--import', hook, fileURLToPath(new URL('../bench/bench.mjs', import.meta.url)),
+      '--cases=alpha', '--no-web', `--json=${json}`, ...args], {
+      encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, ...env, JZ_BENCH_BUILD_DIR: join(scratch, 'build'), JZ_BENCH_WEB_DIR: join(scratch, 'web') },
+    })
+    const read = () => JSON.parse(readFileSync(json, 'utf8'))
+    let r = bench(['--targets=v8'])
+    is(r.status, 0, r.stderr)
+    const { v8 } = read().cases.alpha.targets
+    is([v8.medianUs, v8.firstUs, v8.memKb, v8.parity, v8.settled], [10, 30, 50, 'ok', undefined], 'the last pass, the first beside it, the memory of the first alone')
+    is(read().meta.passes, { settleMs: 300, firstMs: 2400 }, 'the dataset names its protocol')
+
+    r = bench(['--targets=v8'], { JZ_TEST_STATE: '1' })
+    is(r.status, 0, r.stderr)
+    is(read().cases.alpha.targets.v8, { medianUs: 30, firstUs: 30, settled: false, bytes: read().cases.alpha.targets.v8.bytes, memKb: 50, parity: 'ok' },
+      'a main that answers otherwise on its next call is timed on its first pass, marked')
+    r = bench(['--targets=jz'], { JZ_TEST_STATE: '1' })
+    is(r.status, 0, r.stderr)
+    const { jz } = read().cases.alpha.targets
+    is([jz.status, /pass checksums differ: 633180752, 1, 2/.test(jz.reason)], ['fail', true], 'a fresh instance that answers otherwise fails')
+
+    r = bench(['--targets=v8', '--passes=first'])
+    is(r.status, 0, r.stderr)
+    is([read().cases.alpha.targets.v8.medianUs, read().cases.alpha.targets.v8.firstUs, read().meta.passes], [30, 30, 'first'], 'the switch gives the first pass alone back')
+    r = bench(['--targets=v8', '--merge', '--allow-unanchored'])
+    is(r.status, 1, 'two protocols never merge')
+    ok(r.stderr.includes('pass protocol'), r.stderr)
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 

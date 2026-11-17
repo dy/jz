@@ -5,11 +5,14 @@
 // self-timing program that prints `median_us=… checksum=…` to stdout, parsed by bench.mjs.
 import { WASI } from 'node:wasi'
 import { readFileSync } from 'node:fs'
+import { passes } from './passes.js'
 
 const file = process.argv[2]
 if (!file) { console.error('usage: run-wasi.mjs <kernel.wasm>'); process.exit(2) }
 
-const wasi = new WASI({ version: 'preview1', returnOnExit: true })
 const mod = await WebAssembly.compile(readFileSync(file))
-const inst = await WebAssembly.instantiate(mod, wasi.getImportObject())
-wasi.start(inst)
+// a pass is a fresh instance of the one compiled module (a WASI instance starts once)
+await passes(() => {
+  const wasi = new WASI({ version: 'preview1', returnOnExit: true })
+  wasi.start(new WebAssembly.Instance(mod, wasi.getImportObject()))
+})

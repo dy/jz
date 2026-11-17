@@ -4,11 +4,12 @@
 //   env.logLine(medianUs, checksum, samples, stages, runs)  → prints bench line
 import fs from 'node:fs'
 import { performance } from 'node:perf_hooks'
+import { passes } from './passes.js'
 
 const file = process.argv[2]
 if (!file) { console.error('usage: run-as.mjs <case.wasm>'); process.exit(2) }
 
-const bytes = fs.readFileSync(file)
+const mod = await WebAssembly.compile(fs.readFileSync(file))
 const imports = {
   env: {
     perfNow: () => performance.now(),
@@ -20,9 +21,12 @@ const imports = {
     seed: () => Date.now() * Math.random(),
   },
 }
-const { instance } = await WebAssembly.instantiate(bytes, imports)
-if (typeof instance.exports.main !== 'function') {
-  console.error('wasm has no exported main()')
-  process.exit(2)
-}
-instance.exports.main()
+// a pass is a fresh instance of the one compiled module
+await passes(() => {
+  const { exports } = new WebAssembly.Instance(mod, imports)
+  if (typeof exports.main !== 'function') {
+    console.error('wasm has no exported main()')
+    process.exit(2)
+  }
+  exports.main()
+})

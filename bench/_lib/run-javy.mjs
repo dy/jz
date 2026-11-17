@@ -5,11 +5,15 @@
 // `median_us=… checksum=…` line off stdout regardless of which fd Javy picks.
 import { WASI } from 'node:wasi'
 import { readFileSync } from 'node:fs'
+import { passes } from './passes.js'
 
 const file = process.argv[2]
 if (!file) { console.error('usage: run-javy.mjs <kernel.wasm>'); process.exit(2) }
 
-const wasi = new WASI({ version: 'preview1', returnOnExit: true, stdout: 1, stderr: 1 })
 const mod = await WebAssembly.compile(readFileSync(file))
-const inst = await WebAssembly.instantiate(mod, wasi.getImportObject())
-wasi.start(inst)
+// a pass is a fresh instance of the one compiled module: the interpreter's wasm keeps
+// what V8 compiled, the script starts over
+await passes(() => {
+  const wasi = new WASI({ version: 'preview1', returnOnExit: true, stdout: 1, stderr: 1 })
+  wasi.start(new WebAssembly.Instance(mod, wasi.getImportObject()))
+})
