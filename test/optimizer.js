@@ -9248,6 +9248,30 @@ test('an unrolled strided kernel spliced through a closure takes its canonical c
   is(jz(src, { optimize: { level: 'speed' } }).exports.main(1000), oracle(src).main(1000))
 })
 
+test('an unrolled float sum keeps its grouping where floats are JavaScript\'s', () => {
+  // `s += t0 + t1 + t2 + t3 + t4` rolled to `s += t` adds `(s + t0) + t1`… where the source
+  // added `s + ((((t0 + t1) + t2) + t3) + t4)`: another rounding, the lanes' reordering alone
+  // (relaxedFloat). Rolled at level 2, stdlib's ddot answered other than JavaScript.
+  if (onKernel()) return
+  const src = `var M = 5
+    function dot(N, x, y) {
+      var s = 0, ix = 0, iy = 0, m = N % M, i
+      for (i = 0; i < m; i++) { s += x[ix] * y[iy]; ix += 1; iy += 1 }
+      for (i = m; i < N; i += M) { s += x[ix] * y[iy] + x[ix + 1] * y[iy + 1] + x[ix + 2] * y[iy + 2] + x[ix + 3] * y[iy + 3] + x[ix + 4] * y[iy + 4]; ix += M; iy += M }
+      return s
+    }
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = (i * 0.37) % 7.3 - 3.1; y[i] = 1 / (i + 1.5) - (i % 11) * 0.013 }
+      return dot(n, x, y)
+    }`
+  const host = oracle(src)
+  for (const optimize of [2, { level: 'speed', relaxedFloat: false }]) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [7, 20, 1000, 1023]) is(m.main(n), host.main(n), `${JSON.stringify(optimize)}: main(${n}) bit for bit`)
+  }
+})
+
 test('a neighborhood walk over literals unrolls like a count from zero', () => {
   // `for (g = -1; g <= 1; g++)` (a 3×3 stencil, a cell's neighbors) counts
   // three trips: each copy reads its literal, negative or not, and the loop

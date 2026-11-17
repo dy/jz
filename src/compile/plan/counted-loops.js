@@ -327,7 +327,8 @@ const isIndexOf = (n, q) => Array.isArray(n) && n[0] === '[]' && n.length === 3 
  * a loop that advances every index by M a trip. The copies run in element
  * order, so the unit loop over M·T elements runs the same operations in the
  * same order; a reduction adds its terms one by one where the source added
- * their sum, the reordering every lane reduction makes.
+ * their sum, a reordering of the sum, made only where a float sum may be
+ * reordered (`sums`, canonicalizeCountedLoops).
  * Returns { M, stmts } over the counter `q`, or null.
  */
 function reroll(stmts, k, q) {
@@ -621,8 +622,11 @@ export const adoptLoopCounters = (ast) => {
 export const canonicalizeCountedLoops = () => {
   const cfg = ctx.transform.optimize
   if (!cfg || !cfg.countedLoops) return false
-  // a rolled reduction adds term by term: the order the lane reductions take, allowed where they are
-  sums = !!cfg.vectorizeLaneLocal && !cfg.noSimd
+  // A rolled reduction adds term by term where the source added their sum: `s + (t0 + t1)` becomes
+  // `(s + t0) + t1`, another rounding, which a float sum may take only where its lanes may
+  // (relaxedFloat, README "Float sums in lanes"). Rolled at level 2, stdlib's ddot answered other
+  // than JavaScript on any input but integers.
+  sums = !!cfg.relaxedFloat && !!cfg.vectorizeLaneLocal && !cfg.noSimd
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
