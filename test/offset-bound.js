@@ -24,11 +24,22 @@ test('offset bound: every window agrees with the host', () => {
   const host = oracle(src)
   for (const optimize of levels(0, 2, 3)) {
     const m = run(src, { optimize })
-    for (const [p, from] of [[0, 0], [1, 0], [5, 7], [31, 3], [34, 0], [40, 2]]) ok(Object.is(m.lag(p, from), host.lag(p, from)), `lag(${p}, ${from}) at ${optimize}`)
-    for (const k of [0, 3, 47, 48, 60]) ok(Object.is(m.incl(k), host.incl(k)), `incl(${k}) at ${optimize}`)
-    ok(Object.is(m.lit(), host.lit()), `lit at ${optimize}`)
+    // A float sum at level 3 may add in lanes, in another order (README, "Float results
+    // at 'speed'": within n·2⁻⁵² of the terms' total magnitude): `lag`'s two reads at one
+    // offset lift there since the address tees, so its sums are held to that bound and
+    // to JavaScript's bits with relaxedFloat off; the other levels to the bits.
+    const same = optimize === 3 ? (a, b) => Object.is(a, b) || Math.abs(a - b) <= 1e-12 * Math.max(1, Math.abs(b)) : Object.is
+    for (const [p, from] of [[0, 0], [1, 0], [5, 7], [31, 3], [34, 0], [40, 2]]) ok(same(m.lag(p, from), host.lag(p, from)), `lag(${p}, ${from}) at ${optimize}`)
+    for (const k of [0, 3, 47, 48, 60]) ok(same(m.incl(k), host.incl(k)), `incl(${k}) at ${optimize}`)
+    ok(same(m.lit(), host.lit()), `lit at ${optimize}`)
     for (const k of [0.5, -2.25, 10.75, 1e20, NaN]) ok(Object.is(m.frac(k), host.frac(k)), `frac(${k}) at ${optimize}`)
     ok(Object.is(m.grow(), host.grow()), `grow at ${optimize}`)
+  }
+  if (!belowOpt(3)) {
+    const m = run(src, { optimize: { level: 3, relaxedFloat: false } })
+    for (const [p, from] of [[0, 0], [1, 0], [5, 7], [31, 3], [34, 0], [40, 2]]) ok(Object.is(m.lag(p, from), host.lag(p, from)), `lag(${p}, ${from}) at 3 with relaxedFloat off`)
+    for (const k of [0, 3, 47, 48, 60]) ok(Object.is(m.incl(k), host.incl(k)), `incl(${k}) at 3 with relaxedFloat off`)
+    ok(Object.is(m.lit(), host.lit()), 'lit at 3 with relaxedFloat off')
   }
 })
 

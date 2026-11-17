@@ -397,9 +397,11 @@ test('allocation: seeded collections apply their capacity floor without adding a
     const ex = jz(src, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 0, 4, 4]) {
       // the smallest table that holds n (module/collection/ordered.js genOrdCap): half
-      // its buckets less one, or three in four less one in compact collections
-      const load = compact ? 6 : 4
-      const cap = Math.max(floor, load === 4 ? 2 ** Math.ceil(Math.log2(2 * (n + 1))) : n <= 1 ? 2 : 2 ** Math.ceil(Math.log2(Math.ceil(4 * (n + 1) / 3))))
+      // its buckets less one, a quarter less one at the speed tier (the preset's
+      // tableLoad), or three in four less one in compact collections
+      const load = compact ? 6 : level === 3 ? 2 : 4
+      // (the floor is the entries a half-full table holds: twice the buckets at a quarter, ordInitCap)
+      const cap = Math.max(load === 2 ? floor * 2 : floor, load === 6 ? (n <= 1 ? 2 : 2 ** Math.ceil(Math.log2(Math.ceil(4 * (n + 1) / 3)))) : 2 ** Math.ceil(Math.log2((8 / load) * (n + 1))))
       // a block's bucket is that share of the entry's stride and its word (layout.js ordStride)
       const stride = (es) => es * load / 8 + 4
       // (the allocator rounds a block to 8 bytes)
