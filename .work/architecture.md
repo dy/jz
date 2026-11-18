@@ -2968,6 +2968,58 @@ On main, not checked on v1.0.3:
 
 - **The bench after the tiers settle** (`worktree-wf_4473d3a7-3a9-1`, nine commits on 3ca2082ab, tip `9fccec9ad`): a program's pass repeats in one process until 300 ms have passed, the pass after is counted, the first recorded beside it. Six cases' `main` carries state between calls (fabrik, jsontransform, setops, stringify, threegeom, threescene): their JS lanes run once and jz meets them first pass to first pass, so fabrik against C's wasm settles and fabrik against V8 does not. MoonBit's lane moves from moonrun to Node's V8. The README's method sentence waits for the first dataset measured by the rule. No CI run of it yet.
 
+## The land-j landing: the bench timed after the tiers settle, a word read off memory by the level's rule, two wrong answers of v1.0.3 (2026-11-18)
+
+18 commits on 7125c4739, tip `97fa559ee`.
+
+### What landed
+
+- **The bench after the tiers settle** (`c3ac25e71` to `d4b1ca84c`, nine commits; the owner's ruling of 2026-11-17). A program's pass repeats in one process until 300 ms have passed since the first began; the pass after is counted, the first recorded beside it (`firstUs`); a first pass of 2.4 s or more counts as it is (bench/_lib/passes.js, one helper for every engine lane, stringified into the shells). A time and not "twice": fabrik's module settles at pass 6 or 7, 14 to 17 ms in. A wasm lane's pass is a fresh instance of one compiled module, a JS lane's another call of `main`. bench.mjs holds the lines to the count the rule prints, and every pass to the first's checksum.
+  - **Six cases' `main` carries state between calls** (fabrik a step; jsontransform, setops, stringify, threegeom, threescene a seed), read off the source by two calls under `node --jitless`. Their JS lanes run once (`settled: false`) and jz meets them first pass to first pass (`pairedUs`: the gate, the paired verdict, the page, the README table, the chart and the ledger). So fabrik against C's wasm settles (1.96 to 2.81 down to 1.07 to 1.37 on the M4 at load) and fabrik against V8 stays a cold comparison. The other way, a `main` that starts from the same state in every port, changes bench sources: the owner's.
+  - **MoonBit's lane runs in Node's V8**, with moonrun's three imports: moonrun runs a module once. On callback 479 to 504 us for 627 to 685, its memory 51.9 MB for 14.2. The writer's choice, the owner's to keep.
+  - Memory is a first-pass process beside every counted run. `--passes=first` is the protocol before; `meta.passes` names a dataset's, and `--merge` refuses to mix two.
+  - README.md's method paragraph is unchanged: its figures are first-pass figures (bench/results.json, 2026-09-30) until a reference run by the rule is committed, and the sentence goes in with that data.
+  - Not verified: no CI run of the rule; the cost is a model the reviewer measured 1.7 times low per case (the reference run 17.5 h of compute to about 20.6, the push gate's 155 minutes about +9).
+- **A word read off memory by the level's rule** (`71f2f063b` to `395b88e48`, six commits): land-e's callback on x64. A conversion to a word fed by a load is the 64-bit truncation's low word at levels 0, 1, 2 and size; at speed the bare sum for an integer (one add of 1.5 * 2^52 and a move, no conversion), the sum over a rounding for a bound fraction, and the 64-bit truncation kept for an element that may be missing and is no integer. A gate over a population holds it (test/elem-population.js: 32 programs at five levels, by forbidden forms and by Node; 207 forbidden forms on land-g). bench/lowering.mjs has a third column, `loaded`.
+- **`f4cc6b664`, the integrator's**: a module literal's element is folded into a read only where its names hold from the literal on. `let A = [1, 2, 3]; const O = { a: A }` then `A = [7, 8]` read `O.a` as the second array, at every level (plan/literals.js foldStaticConstAggregates copies each element's expression into each read; nothing asked whether its names are written).
+- **`817fcbbd4`, the integrator's**: a shared in-bounds read's temp is present only where the element is. `A[s] | 0` then `A[s] ?? 1` over an array with holes summed NaN at level 2 and above (compile/cse-load.js shares the load; analyze-for-emit.js marked the temp of a read proven inside the length as never undefined or null, a rule of 2026-09-25 meant for typed arrays).
+- The data-form listing rewritten on the assembled tree (`97fa559ee`): 640 short of 744 as before, 102 cells smaller and 38 larger (the `mask` kernel at speed, +11 operators each: the word's form), no vector loop lost.
+
+### Wrong answers fixed here that v1.0.3 has
+
+- A module-level object or array literal whose element names a binding the program writes later: every read through the literal took the binding's new value. A number, a string, an object, an array, a typed array, a function; `{ a: A }`, `[A]`, `{ a: A + 1 }`; a const or a let holder; every form of the write. 60 of 108 rows of the first probe differ on main and on v1.0.3 alike; 102 of 168 of the second on main.
+- An element read twice in one statement list, the index proven inside the length, where the element may be a hole, deleted, or a stored undefined or null: the second reader skipped its test (NaN for 250537409; `R[s] == null` false for a null row). 56 of 168 rows differ on main at levels 2, 3, size and speed; the reviewer's program differs on v1.0.3.
+
+Both found by the review of the word's branch, in its base.
+
+### What is measured
+
+- Bench bytes against main: 13 of 105 cases, +39 at size and +243 at speed in all (async +72, polytri +41, decode-qoa +33 at speed): the word's forms. The fold refuses no literal it took before over the 105 cases and the 69 gallery examples that compile (its first form refused `{ HIGH, LOW }` in six stdlib cases, where the index would have stopped being a known 0 or 1: the rule now lets a name written only before the literal, in its module, by no function). The hole fix un-marks one read in one case (fabrik `start[0]`, 8 bytes fewer).
+- The word on the M4: callback 1.007 of its base (noise's edge), polytri 0.936 (20 rounds, none slower). On x64 nothing is timed: callback is expected at or under 286 us on the Xeon 6975P-C for main's 636; **polytri keeps 41 64-bit truncations of a load at speed, which bench/lowering.mjs's x64 column predicts slower** (4.13 ns for the 32-bit form's 1.56). The probe after this landing decides; the revert is one condition in int-narrow.js provenForm and one line in to-int32.js.
+- The integrator's probes on the tip: the two fixes' three probes 108, 168 and 168 rows, none differing; the number-named properties 912; the rebinding programs 128, 408, 300; the export and BigInt rows 24; plasma 585 f64x2 and 61 sin2; the review script as on land-i.
+- The check on `97fa559ee` (87 minutes at load 23 to 58): lint and the file audit clean; bench bytes of 105 cases, no error; `test:self` 89; default 7,589 of 7,589; the armed level 3 7,387 of 7,387; level 0 7,371 of 7,371; integration 238 of 239, one skipped; the examples 1.70 and 1.71 of V8, the second run naming cloth at 0.57 (its build is byte for byte main's, as swarm's, percolation's and blackhole's are: the load's).
+
+### What land-i moved on x64
+
+bench-probe 44268543353, Xeon Platinum 8573C, 7125c4739 beside 7ec77254c, five paired rounds:
+
+- **decode-wav 0.292 of its time before** (775 us for 2,651), 0.306 of V8: the compaction's rules. It is named unmet against V8 (`CLAIM_UNMET`); on this runner it leads by 3.3. The name comes off when a reference run shows it on every CPU.
+- jessie 0.981, tokenizer 0.924 (110 us); the other eleven within 1%.
+- Against C's wasm there: mapint 1.119, mapobj 1.058, sosfilter 1.051.
+
+CI on 7125c4739: examples-perf, test262, pages, self-compile (bootstrap and four slices), fuzz, test (opt0, opt3, wasi) green; the default test job running past three hours (on 7ec77254c it passed after 4 h 19); claims red as before.
+
+### Known wrong on this tree, landed knowingly
+
+- module/core.js reads a record's field of words by the 32-bit truncation at levels 0 and 1 (the gate lists it, `KNOWN_NARROW`, with a tripwire).
+- polytri's elements are integers and the summary's hull does not say so (with it the tested sum has no rounding and runs at parity on the M4).
+- From the embedding lane's review, on main too: `new Float64Array(aBigInt64Array)` copies bits where JavaScript throws; `Float64Array.from(BigInt64Array.from([1n]))` is NaN at three levels; a typed constructor held in a variable has no statics; `'a'.repeat(-1)` returns a string the host cannot read; an Error's `cause` is dropped.
+- As on land-i: a NaN's bits read as a box; `optimize: false` never releases a call that returns a heap value; a closure in a parameter default; `Object.getOwnPropertyDescriptor`'s result tested; `Symbol.toPrimitive`; the three stack overflows of the compiler; the parser's nested calls; CI's default test job at 3.5 to 4.3 hours.
+
+### Handed back and waiting for the next tree
+
+- **The embedding lane's small ones** (`worktree-wf_757e86d3-74a-1`, seven commits on 85e229c76, tip `26ea299f6`): `%TypedArray%.of` as `from` of the list of its arguments (jzify); a literal's elements converted after the last is evaluated; a BigInt view's elements through ToBigInt; a throw while a module starts given to the host as an export's is (an init that can throw is `_initialize`); the fixed-memory proof without the init guard; import sites read off the parser (an import in the middle of a line). Its last commit the integrator's: a class's own name bound in its body, `new T.of()` left as written.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
@@ -3076,3 +3128,18 @@ On main, not checked on v1.0.3:
   runner) before it lands: asked of the owner on 2026-11-17, not answered. Until then a
   change is timed on x64 after it is on main; land-e's callback (2.24 slower on a Xeon,
   nothing on the M4) is what that order costs.
+  (Asked again on 2026-11-18: the word's rule keeps a form at speed in polytri that the
+  repo's x64 table predicts slower, and it lands untimed there.)
+- The six bench cases whose `main` carries state between calls (fabrik, jsontransform,
+  setops, stringify, threegeom, threescene): their JS lanes cannot be timed after the
+  tiers settle without a `main` that starts from the same state, a change of the source
+  in every port. Until the owner rules, jz meets those lanes first pass to first pass.
+- MoonBit's lane in Node's V8 instead of moonrun (the pass rule needs a second
+  instance, which moonrun does not give): faster for MoonBit, its memory figure larger.
+  The writer's choice, the owner's to keep or to turn back.
+- A literal `import('./x.js')` in a branch never taken that names a missing module, or
+  one jz cannot compile, fails the whole compile, where JavaScript runs; and the
+  target's code is in the binary whether or not it is loaded. Read and reported
+  (2026-11-18), not changed.
+- WASI: a throw while a module starts traps under wasmtime with no message. Printing
+  it needs an ABI the owner has not decided.

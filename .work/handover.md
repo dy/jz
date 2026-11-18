@@ -508,3 +508,28 @@ file audit, bench bytes by hash against a base, `test:self`, the integration sui
 examples twice). It reads no kernel's loop shape under a set level: test/minimal-output.js
 skips there, and the default leg alone runs it. A writer whose change takes a fact away in
 the summary runs that file at the default level before it hands back.
+
+## Branches of the land-j landing (2026-11-18), tips before deletion
+
+```
+97fa559ee land-j                        the landing branch as its check ran it: main (7125c4739) and 18 commits; the record's commit after it
+9fccec9ad worktree-wf_4473d3a7-3a9-1    the bench after the tiers settle: landed as c3ac25e71 to d4b1ca84c
+699464d78 worktree-wf_14e8e92f-2ea-2    the word read off memory: landed as 71f2f063b to 395b88e48
+```
+
+Handed back and waiting for the next tree: `worktree-wf_757e86d3-74a-1` (the embedding
+lane's small ones, seven commits on 85e229c76, tip 26ea299f6; then its hash to the audio
+session). Held as before: `decoders-ada0` 099c77415, `worktree-agent-a5f89d0c0c9d7eb2f`
+8151718b2, `worktree-agent-a4519a2dc39ff972e` 238aedd6e. Workflows running when this was
+written: `jz-nanbox`, `jz-wave0`, `jz-tests-time`. The workflows' whole results are
+session scratch (`settle-result.json`, `words-result.json`, `audio-a-result.json`).
+
+Probes of this day, session scratch under `own/`: `rebind4.mjs`, `rebind5.mjs` (a module
+literal over a binding the program writes), `holemix.mjs` (a hole read twice), `numprops.mjs`
+(arrays that hold number-named properties), `afill2.mjs` (a kernel's loops by the forms a
+test asks for), `foldkept.mjs` (which module literals still fold away).
+
+To do after this landing: the x64 probe of callback, polytri and the word's other moved
+cases against 7125c4739, and the revert of polytri's form if it loses there; the gate
+`test/bench-claims.js` does not ask a dataset for `meta.passes`; the first reference run
+by the pass rule, with the README's method sentence in the commit that brings its data.
