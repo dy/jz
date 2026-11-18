@@ -528,7 +528,7 @@ test('interval walk: downward for-loop proves its reads', () => {
   const wat = compile(src, { optimize: { level: 'size' }, wat: true })
   // -Os with static len: a proven read is a bare f64.load — no checked-read
   // else-arm (undef NaN const/global) may survive in go.
-  const go = wat.slice(wat.indexOf('(func $go'))
+  const go = funcWat(wat, 'go')
   is((go.match(/nan:0x/g) || []).length, 0, 'downward-loop read proven — no undef arm')
   const { exports } = jz(src, { memory: 64 })
   is(exports.go(), 63 * 64 / 2, 'reverse scan sums exact')
@@ -597,7 +597,7 @@ test('versioning: bound-not-first &&-cond stays checked (fail-closed)', () => {
       return len * 10 + (a[len] | 0)
     }`
   const wat = compile(src, { optimize: 'speed', wat: true })
-  const go = wat.slice(wat.indexOf('(func $go'))
+  const go = funcWat(wat, 'go')
   ok(/i32\.(lt_u|ge_u)/.test(go), 'checked integer comparison retains its bounds guard')
   const { exports } = jz(src, { optimize: 'speed' })
   is(exports.go(100), 80, 'missing element stops the comparison instead of becoming zero')
@@ -617,7 +617,7 @@ test('versioning: ||-cond never versions (accesses run past the bound)', () => {
       return len
     }`
   const wat = compile(src, { optimize: 'speed', wat: true })
-  const go = wat.slice(wat.indexOf('(func $go'))
+  const go = funcWat(wat, 'go')
   ok(/i32\.(lt_u|ge_u)/.test(go), '||-cond retains the integer read bounds guard')
   const { exports } = jz(src, { optimize: 'speed' })
   is(exports.go(1), 3, 'runs past the bound conjunct until a[len] ≥ 3 (checked semantics)')

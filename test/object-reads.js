@@ -32,7 +32,7 @@ test('object reads: a spread record a loop reads is hashed once a key', () => {
     export let f = (k, n) => { let p = { ...P[k], amp: 0.5 }; let s = 0; for (let i = 0; i < n; i++) s += (p.freq ?? 440) * p.amp + (p.t ?? 0); return s }`
   agrees(src, [['f', 'a', 5], ['f', 'b', 3], ['f', 'c', 2], ['f', 'a', 0]])
   if (belowOpt(2)) return
-  const text = wat(src, { optimize: 2 }), last = loopsOf(funcWat(text, 'f$exp') || funcWat(text, 'f')).at(-1)
+  const text = wat(src, { optimize: 2 }), last = loopsOf(funcWat(text, 'f$exp', 'f')).at(-1)
   ok(last && !/call \$__(hash|dyn)/.test(last), 'the loop looks nothing up')
 })
 

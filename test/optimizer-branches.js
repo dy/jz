@@ -28,7 +28,7 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
       return (reduce(xs, 64) + reduce(xs, 63)) | 0
     }
   `
-  const grab = (wat) => wat.slice(wat.indexOf('(func $reduce'), wat.indexOf('\n  (func ', wat.indexOf('(func $reduce') + 10) + 1 || undefined)
+  const grab = (wat) => funcWat(wat, 'reduce')
   // Root F versioning wraps the loop in a guard `if` with a cold checked twin —
   // the if-conversion contract holds within the FAST arm.
   const fastArm = (fn) => fn.includes('(else') ? fn.slice(0, fn.indexOf('(else')) : fn
@@ -63,7 +63,7 @@ test('if→select: load-bearing condition + postfix x++ → branchless select (h
       return (pick(a, 64) + pick(a, 63)) | 0
     }
   `
-  const grab = (wat) => wat.slice(wat.indexOf('(func $pick'), wat.indexOf('\n  (func ', wat.indexOf('(func $pick') + 10) + 1 || undefined)
+  const grab = (wat) => funcWat(wat, 'pick')
   const fn = grab(compile(SRC, { wat: true, optimize: { level: 'speed' } }))
   ok(/\bselect\b/.test(fn), 'load-bearing child-pick lowered to select at speed tier')
   const fnD = grab(compile(SRC, { wat: true, optimize: 2 }))
@@ -90,7 +90,8 @@ test('if→select: a condition that MUTATES a var the value arm reads is NOT con
       return (f(a, 32) + f(a, 32)) | 0
     }
   `
-  const grab = (wat) => wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 4) + 1 || undefined)
+  // (at the speed tier watr splices f into main all the same: its loop is there)
+  const grab = (wat) => funcWat(wat, 'f', 'main')
   // fast arm only: the versioned checked twin reads via branchless selects — the
   // reorder-safety contract is about the guarded UPDATE in the hot loop
   let fn = grab(compile(SRC, { wat: true, optimize: { level: 'speed' } }))
@@ -115,7 +116,7 @@ test('if→select: f64 ternary with pure arms+cond → branchless select (sign/c
     }
   `
   const wat = compile(SRC, { wat: true, optimize: { level: 'speed' } })   // grad (small leaf) inlines into main
-  const m = wat.slice(wat.indexOf('(func $main'), wat.indexOf('\n  (func ', wat.indexOf('(func $main') + 10) + 1 || undefined)
+  const m = funcWat(wat, 'main')
   ok(/\bselect\b/.test(m), 'gradient sign-select lowered to branchless select')
   is(/\(if \(result f64\)/.test(m), false, 'no f64 conditional branch left')
   const ref = (() => { const g = (h, x, y) => { const u = (h & 1) === 0 ? x : -x; const v = (h & 2) === 0 ? y : -y; return u + v }
@@ -483,7 +484,7 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
     return r * 100000 + i * 1000 + (log % 1000)
   }`
   const w = compile(src, { wat: true, optimize: { level: 3, watr: false, sourceInline: false } })
-  const body = w.slice(w.indexOf('(func $f'))
+  const body = funcWat(w, 'f')
   ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the function')
   // A condition's operands are boolean questions asked in place (toBool):
   // each one branches to the next, no operand is boxed, none is tested

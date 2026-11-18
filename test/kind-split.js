@@ -5,7 +5,7 @@
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat, jz } from './util.js'
+import { oracle, wat, jz, funcWat } from './util.js'
 
 const res = (f) => { try { return f() } catch (e) { return 'throws ' + e.constructor.name } }
 const agrees = (src, calls) => {
@@ -76,7 +76,7 @@ export let peek = () => [...mono, ...left, ...right].join()`
   // channels of another kind: the test fails for them, the loop reads them as before
   agrees(src + `\nexport let odd = (g) => mix([new Float64Array([1, 2]), 'ab'], g) + mix([new Float32Array(2), new Float64Array(2)], g)`, [['odd', 0.5], ['run', 1, 0.5]])
   if (belowOpt(2)) return
-  const f = wat(src, { optimize: 2 }), mix = f.slice(f.indexOf('(func $mix'), f.indexOf('(func', f.indexOf('(func $mix') + 5))
+  const mix = funcWat(wat(src, { optimize: 2 }), 'mix')
   ok(loopsOf(mix).some(l => /f32\.load/.test(l) && !/call \$__(add_slow|typed_idx|dyn_get)/.test(l)), 'a loop reads the channels as Float32 and adds numbers')
 })
 
@@ -90,7 +90,7 @@ export let b = (n) => { const m = new Float64Array(n).map((_, i) => i * 0.1); co
 export let c = (n) => { const m = new Int16Array(n).fill(3); const at = mk(m, 8); return at(2) }`
   agrees(src, [['a', 16], ['b', 16], ['a', 6], ['b', 5], ['c', 12]])
   if (belowOpt(2)) return
-  const text = wat(src, { optimize: 2 }), g = text.slice(text.indexOf('(func $g'), text.indexOf('\n  (func ', text.indexOf('(func $g') + 5))
+  const g = funcWat(wat(src, { optimize: 2 }), 'g')
   const loops = loopsOf(g)
   ok(loops.some(l => /f32\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads Float32 loads')
   ok(loops.some(l => !/f32\.load/.test(l) && /f64\.load[\s\S]*f64\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads Float64 loads')

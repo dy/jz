@@ -6,7 +6,7 @@ import { ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
 import { agree, funcWat, wat } from './util.js'
 
-const body = src => { const text = wat(src, { optimize: 3 }); return funcWat(text, 'f') || funcWat(text, 'f$exp') }
+const body = src => { const text = wat(src, { optimize: 3 }); return funcWat(text, 'f', 'f$exp') }
 const check = (src, args, name) => {
   for (const optimize of levels(0, 2, 3, 'size')) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
 }

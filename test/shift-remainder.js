@@ -78,7 +78,7 @@ test('shift remainder: a fixed-point split', () => {
 test('shift remainder: the split masks', () => {
   if (belowOpt(2)) return
   const text = wat(split, { optimize: 2 })
-  const body = (funcWat(text, 'f$exp') || funcWat(text, 'f') || text).replace(/\s+/g, ' ')
+  const body = funcWat(text, 'f$exp', 'f').replace(/\s+/g, ' ')
   ok(/\(i32\.and \(local\.get [^)]+\) \(i32\.const 65535\)\)/.test(body), 'the remainder is a mask')
   ok(!/\(i32\.(?:shl|mul) \(local\.get [^)]+\) \(i32\.const (?:16|65536)\)\)/.test(body), 'the quotient is not scaled back')
 })

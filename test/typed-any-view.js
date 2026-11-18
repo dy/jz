@@ -37,7 +37,7 @@ test('typed any view: the joined receiver reads its elements directly', () => {
   if (belowOpt(2)) return
   const text = wat(src, { optimize: 2 })
   for (const name of ['rw', 'spectrum']) {
-    const body = funcWat(text, `${name}$exp`) || funcWat(text, name)
+    const body = funcWat(text, `${name}$exp`, name)
     ok(/f64\.load/.test(body), `${name}: an f64 load`)
     ok(!/__typed_idx|__typed_set_idx/.test(body), `${name}: no run-time element dispatch`)
   }

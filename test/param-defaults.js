@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, belowOpt } from './_matrix.js'
-import { oracle, wat, jz, compile } from './util.js'
+import { oracle, wat, jz, compile, funcWat } from './util.js'
 
 const agree = (cases) => {
   for (const [name, src, args] of cases) for (const optimize of levels(0, 2, 3)) {
@@ -185,7 +185,7 @@ test('param defaults: a call that leaves an argument out splices with the defaul
     ['more arguments than parameters keep the call', `const f = (a, b = 1) => a + b\nexport const value = () => f(1, 2, 3)`, []]])
   if (belowOpt(2)) return
   const w = compile(src, { wat: true, optimize: 2 })
-  const run = w.slice(w.indexOf('(func $value'), w.indexOf('\n  (func $', w.indexOf('(func $value') + 10))
+  const run = funcWat(w, 'value')
   is((run.match(/f64\.store/g) || []).length, 0, 'a and b are locals: their factories spliced with x, y, z bound to 0, and nothing of them escapes')
   is(/call \$[^\s)]*V[^\s)]*\s/.test(run), false, 'the site passing a value that may be undefined for a defaulted parameter splices too, its default a test at the site')
 })

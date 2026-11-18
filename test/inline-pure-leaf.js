@@ -6,10 +6,9 @@
 // and Math.random, whose duplicate is another draw.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, jzWat, run, wat, funcWat as funcWatOf } from './util.js'
+import { agree, jzWat, run, wat, funcWat } from './util.js'
 import { belowOpt } from './_matrix.js'
 
-const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 const calls = (src, callee, fn = 'f') => (funcWat(wat(src), fn).match(new RegExp(`call \\$${callee}\\b`, 'g')) || []).length
 // The inlining holds once the optimizer ran; every leg runs the differentials.
 const inlined = (src, callee, label = `${callee} is inlined`) => { if (!belowOpt(2)) is(calls(src, callee), 0, label) }

@@ -487,9 +487,7 @@ test('template literal: fused concat returns string and skips concat helper', ()
   const result = jz(src)
   is(result.memory.read(result.exports.f(1, 2, 3)), 'a1b2c3d')
   const wat = compile(src, { wat: true })
-  const start = wat.indexOf('(func $f')
-  const end = wat.indexOf('\n  (func ', start + 1)
-  ok(!wat.slice(start, end).includes('call $__str_concat'))
+  ok(!funcWat(wat, 'f').includes('call $__str_concat'))
 })
 
 test('fused concat: long literal fragments use bounded code and preserve evaluation order', () => {
@@ -523,12 +521,12 @@ test('fused concat: literal ASCII parts store inline — no per-separator copy o
   const r = jz(src, { optimize: { level: 2, watr: false } })
   is(r.memory.read(r.exports.f(7, -3)), '7, -3!\n')
   const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
-  const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
+  const fn = funcWat(wat, 'f')
   is((fn.match(/call \$__str_copy/g) || []).length, 2, 'copies only for the 2 dynamic parts')
   is((fn.match(/call \$__str_length/g) || []).length, 2, 'lengths only for the 2 dynamic parts')
   // template path shares the machinery
   const twat = compile('export let f = (x) => `[${x}]`', { wat: true, optimize: { level: 2, watr: false } })
-  const tfn = twat.slice(twat.indexOf('(func $f'), twat.indexOf('\n  (func ', twat.indexOf('(func $f') + 1))
+  const tfn = funcWat(twat, 'f')
   is((tfn.match(/call \$__str_copy/g) || []).length, 1, 'template: one copy for the one dynamic part')
 })
 
@@ -548,7 +546,7 @@ test('fused concat: i32-proven parts render digits at the cursor — no temp str
       is(r.memory.read(r.exports.f(a, b)), 'x' + (a | 0) + ',' + (b | 0) + '!', `O${optimize}`)
   }
   const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
-  const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
+  const fn = funcWat(wat, 'f')
   is((fn.match(/call \$__itoa_sn/g) || []).length, 2, 'both int parts render at the cursor')
   is((fn.match(/call \$__str_copy/g) || []).length, 0, 'no copies — no dynamic string parts')
   is((fn.match(/call \$__i32_to_str/g) || []).length, 0, 'no temp-string ToString')

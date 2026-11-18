@@ -7,7 +7,7 @@
 // The pass's own unit cases live with it, in watr's test/value-number.js.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { funcWat as funcWatOf, run, wat } from './util.js'
+import { funcWat, run, wat } from './util.js'
 import { buildPureFuncMap } from '../src/optimize/pure-funcs.js'
 import { solveEffects } from '../src/optimize/effects.js'
 import parseWat from 'watr/parse'
@@ -17,7 +17,6 @@ const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', valueNumber: false } }
 const calls = (text, name) => (text.match(new RegExp(`\\(call \\$${name.replace(/\./g, '\\.')}\\b`, 'g')) || []).length
 /** The function's WAT, under its own name or its export wrapper's. */
-const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 // A function may keep mutually exclusive integer and full-Number loop copies.
 // Every executing copy must deduplicate its own calls.
 const callsPerLoop = (text, name) => {

@@ -85,14 +85,14 @@ test('typed copy: .set throws the RangeError of an offset outside the receiver',
 
 test('typed copy: from of a typed array is the constructor\'s copy, no list between', () => {
   const text = wat(`export let f = (v) => { const a = new Float32Array(64); a[3] = v; const b = Float64Array.from(a), c = Float32Array.from(a), d = Int16Array.from(b); return b[3] + c[3] + d[3] }`)
-  const f = funcWat(text, 'f$exp') || funcWat(text, 'f')
+  const f = funcWat(text, 'f$exp', 'f')
   is((f.match(/memory\.copy/g) || []).length, 1, 'the same-bytes copy is a byte copy')
   ok(!/call \$__(arr_from|typed_idx)/.test(f), 'no list and no element helper')
 })
 
 test('typed copy: a same-bytes copy is one memory.copy, no element loop', () => {
   const text = wat(`export let f = (v) => { const a = new Float32Array(64), b = new Float32Array(64); b[1] = v; a.set(b, 1); const c = new Float32Array(a), d = new Uint32Array(new Int32Array(64)); return c[2] + d.length }`)
-  const f = funcWat(text, 'f$exp') || funcWat(text, 'f')
+  const f = funcWat(text, 'f$exp', 'f')
   is((f.match(/memory\.copy/g) || []).length, 3, 'set and both constructor copies are byte copies')
   ok(!/\(loop /.test(f), 'no element loop')
   // The kernels inline into their caller at the default level: probe the module.

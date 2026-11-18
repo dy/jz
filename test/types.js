@@ -15,7 +15,7 @@ import { T } from '../src/ast.js'
 import { summarize, K, kind } from '../src/summary/index.js'
 import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode } from '../src/kind.js'
 import { PRESENCE, contractVal } from '../src/summary/index.js'
-import { cases, run, jz, compile } from './util.js'
+import { cases, run, jz, compile, funcWat } from './util.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -28,11 +28,6 @@ const runHost = (code) => jz(code).exports
 // `(func $mk …)` regex no longer matches. Compile without watr's post-pass to
 // inspect what jz actually emits.
 const wat = (src) => compile(src, { wat: true, optimize: { watr: false } })
-const fnBody = (w, name) => {
-  const re = new RegExp(`\\(func \\$${name}(?:\\s|$)`)
-  const m = w.match(re)
-  return m ? w.slice(m.index, m.index + 4000) : null
-}
 const countCalls = (text, fn) =>
   (text.match(new RegExp(`call \\$${fn}\\b`, 'g')) || []).length
 
@@ -571,7 +566,7 @@ test('slot-types: codegen — __is_str_key elided on monomorphic NUMBER slot +',
     let make = (n) => ({ a: n + 1, b: n * 2 })
     export let f = (n) => { let o = make(n); return o.a + o.b }
   `
-  const body = fnBody(wat(src), 'f')
+  const body = funcWat(wat(src), 'f')
   ok(body, 'export $f present in WAT')
   is(countCalls(body, '__is_str_key'), 0, 'no __is_str_key in $f body')
 })
@@ -584,7 +579,7 @@ test('slot-types: codegen — unrelated allocations sharing a layout keep precis
     export let addS = () => { let o = mkS(); return o.x + "c" }
     export let addN = () => { let o = mkN(); return o.x + 5 }
   `
-  const sBody = fnBody(wat(src), 'addS')
+  const sBody = funcWat(wat(src), 'addS')
   ok(sBody, 'export $addS present in WAT')
   is(countCalls(sBody, '__is_str_key'), 0, 'known string allocation needs no runtime type check')
   const { addS, addN } = jz(src).exports
@@ -792,7 +787,7 @@ test('typed-narrow: codegen — narrowed helper return type is i32', () => {
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => { let a = mk(); return a[i] }
   `)
-  const body = fnBody(w, 'mk')
+  const body = funcWat(w, 'mk')
   ok(body, '$mk present in WAT')
   ok(/\(result i32\)/.test(body), '$mk returns i32 (narrowed)')
 })
@@ -801,7 +796,7 @@ test('typed-narrow: Uint32Array integer reads are i32, not round-tripped through
   // Deopt fix: a packed-pixel fade `p = px[i]; … p & 0xff …` over a Uint32Array must read
   // i32.load directly — NOT i32.load → f64.convert_i32_u → trunc_sat back (with a dead ToInt32
   // Infinity guard).
-  const body = fnBody(wat(`
+  const body = funcWat(wat(`
     let px = new Uint32Array(64)
     export let fade = () => { let i = 0; while (i < 64) { let p = px[i]; px[i] = ((p & 0xff) * 249) >> 8; i++ } }
   `), 'fade')
@@ -815,7 +810,7 @@ test('typed-narrow: codegen — receiver uses static elem load (no __is_str_key 
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => { let a = mk(); return a[i] }
   `)
-  const body = fnBody(w, 'f')
+  const body = funcWat(w, 'f')
   ok(body, '$f present in WAT')
   ok(!/__is_str_key/.test(body), '$f has no __is_str_key dispatch')
 })
@@ -887,7 +882,7 @@ test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
       return b[i] + b[0]
     }
   `, { wat: true, optimize: { watr: false, coalesceLocals: false } })
-  const body = fnBody(w, 'f')
+  const body = funcWat(w, 'f')
   ok(body, '$f present')
   // multi-use receiver so the local survives propagateLocals — exercises the unbox decision on the surviving slot
   ok(/\(local \$b i32\)/.test(body), '$b unboxed to i32 (.map receiver)')

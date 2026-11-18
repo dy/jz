@@ -10,7 +10,7 @@ import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import { count, walk } from '../scripts/wat-probe.mjs'
 import { onKernel, levels } from './_matrix.js'
-import { funcWat, oracle, jz, compile } from './util.js'
+import { funcWat, oracle, jz, compile, hasFunc } from './util.js'
 
 const N = 48
 const ENVELOPE = `
@@ -61,7 +61,7 @@ const GUARDS_OFF = { ...LITERALS, sentinelGuards: false }
 const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
 // edt1d is inlined into run's export, whose passes over a few constant rows run as calls of their own
 // (split-funcs.js loopPasses): the kernel is that body and the pieces moved out of it
-const kernelOf = (wat) => funcWat(wat, 'edt1d') ||
+const kernelOf = (wat) => hasFunc(wat, 'edt1d') ? funcWat(wat, 'edt1d') :
   `(module ${[funcWat(wat, 'run'), ...[...wat.matchAll(/\(func \$(run(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(wat, m[1]))].join('\n')})`
 
 test('sentinel guard: a cached missing integer becomes numeric NaN before a floating store', () => {

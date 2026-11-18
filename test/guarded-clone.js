@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { levels, onKernel } from './_matrix.js'
-import { agree, wat, funcWat } from './util.js'
+import { agree, wat, funcWat, hasFunc } from './util.js'
 
 const src = `let windows = {}
 let hann = (n) => { if (windows[n]) return windows[n]; let w = new Float32Array(n); for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n); return (windows[n] = w) }
@@ -21,6 +21,6 @@ for (const optimize of levels(2, 3))
   test(`guarded clone: the clone's body keeps its origin's kinds at ${optimize}`, () => {
     agree(src, 'go', [], { optimize }, `go() at ${optimize}`)
     if (onKernel()) return
-    const body = funcWat(wat(src, { optimize }), 'energy$spec')
+    const text = wat(src, { optimize }), body = hasFunc(text, 'energy$spec') ? funcWat(text, 'energy$spec') : ''
     is(body ? (body.match(/call \$(__dyn_get\w*|__typed_idx\w*|__arr_typed\w*)/g) || []).length : 0, 0, `no runtime element dispatch in the clone at ${optimize}`)
   })

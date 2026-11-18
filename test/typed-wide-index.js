@@ -84,7 +84,7 @@ test('typed wide index: scaled gathers compare the full integer before addressin
     }
     return s
   }`)
-  const body = funcWat(text, 'f') || funcWat(text, 'f$exp')
+  const body = funcWat(text, 'f', 'f$exp')
   ok(body.includes('i64.lt_u'), 'bounds compare the wide key against the unsigned length')
   ok(!body.includes('i64.gt_s') && !body.includes('i64.lt_s'), 'scaled keys need no signed clamps')
 })

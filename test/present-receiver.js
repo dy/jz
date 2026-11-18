@@ -12,7 +12,7 @@ import { funcWat, oracle, run, wat } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 
-const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
+const fnText = (text, name) => funcWat(text, name + '$exp', name)
 
 const src = `const pts = [[1, 2], [3, 4]], objs = [{ v: [5, 6] }, { v: [7, 8] }], mixed = [[1], null, [3]]
   export const x = (n) => { let s = 0; for (let i = 0; i < n; i++) s += pts[i][0] + objs[i].v[1]; return s }

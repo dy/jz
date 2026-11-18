@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, levels, ownedLevels } from './_matrix.js'
 import { ctx } from '../src/ctx.js'
-import { funcWat, oracle, run, wat, jz, jzWat, compile, compileInProcess } from './util.js'
+import { funcWat, hasFunc, oracle, run, wat, jz, jzWat, compile, compileInProcess } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { T, walkAst } from '../src/ast.js'
 import { K, tagOf } from '../src/summary/kind.js'
@@ -175,12 +175,6 @@ test('closed closure calls retain proven parameter representations', () => {
     let fn = make(); export function f() { return fn({gain:3}) + fn(null) + fn() }`)
   is(mixed.f(), 13, 'null and missing arguments remain boxed')
 })
-
-const fnBody = (w, name) => {
-  const re = new RegExp(`\\(func \\$${name}(?:\\$exp)?(?:\\s|$)`)
-  const m = w.match(re)
-  return m ? w.slice(m.index, m.index + 4000) : null
-}
 
 test('function length uses source parameters, including runtime keys and deduplicated bodies', () => {
   const src = `function named(a,b,c){return 1}
@@ -963,8 +957,7 @@ test('rest view: no array is packed at entry', () => {
   const w = wat(`const mk = () => { const b = { n: 0 }; b.push = (...xs) => { for (let i = 0; i < xs.length; i++) b.n += xs[i]; return xs.length }; return b }
 const out = mk()
 export let f = (o, i) => o.push(i) + o.push(1, 2, 3) + out.n`)
-  const start = w.indexOf(`(func $${T}closure0`)
-  const body = w.slice(start, w.indexOf('\n  (func ', start))
+  const body = funcWat(w, `${T}closure0`)
   ok(!/\$__alloc_hdr/.test(body), 'the view allocates nothing')
   ok(/local\.get \$__a0/.test(body), 'the view reads the argument slots')
 })
@@ -1101,7 +1094,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
   // Value numbering off: it computes the boxed closure once for both calls, which leaves
   // `$g` one use and lets propagation dissolve the slot this pin reads.
   const w = compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false, valueNumber: false } })
-  const body = fnBody(w, 'f')
+  const body = funcWat(w, 'f')
   ok(body, '$f present')
   // The unboxed closure is an i32 local the calls box on the way in: `$g`, or its
   // environment temp once the vectorizer's normalizer has lowered the closure's value
@@ -1185,7 +1178,7 @@ test('closure-unbox: no reinterpret/wrap_i64 roundtrip in inlined closure call',
     let g = (x) => x + 1
     export let f = () => g(41)
   `)
-  const body = fnBody(w, 'f')
+  const body = funcWat(w, 'f')
   ok(body, '$f present')
   ok(!/i32\.wrap_i64\s*\(\s*i64\.reinterpret_f64/.test(body),
     '$f contains wrap_i64(reinterpret_f64 …) — rebox roundtrip survived')
@@ -1408,8 +1401,7 @@ test('devirtGlobalCalls: raw arrow literal lifted through a bare ??=; value-use 
   const w = wat(src).replace(/\(func \$__call_closure[\s\S]*?\n  \)/, '')
   // Exactly one call_indirect survives — keep()'s generic `h(9)` dispatch (h's
   // identity is a runtime parameter, genuinely unknowable). None come from
-  // run()'s g(i): fnBody's fixed-window slice would bleed into keep()'s body
-  // here (run()'s is short), so the count is asserted over the whole module.
+  // run()'s g(i), and the count is asserted over the whole module.
   is((w.match(/call_indirect/g) || []).length, 1, 'only keep() generic dispatch remains indirect')
 })
 
@@ -1679,8 +1671,9 @@ export let f = (bad) => {
   if (belowOpt(2)) return
   // The dispatch reads no closure box and makes no indirect call: the only
   // call_indirect left is the host's closure entry.
-  const w = wat(src)
-  is(w.split('call_indirect').length - 1, (funcWat(w, '__call_closure').match(/call_indirect/g) || []).length,
+  // (a module the host hands no closure has no entry)
+  const w = wat(src), entry = hasFunc(w, '__call_closure') ? funcWat(w, '__call_closure') : ''
+  is(w.split('call_indirect').length - 1, (entry.match(/call_indirect/g) || []).length,
     'no indirect call outside the host closure entry')
 })
 
@@ -1755,7 +1748,7 @@ export let f = (n) => {
   // pulling in for its own sake never gets included at all. (Matched over the
   // whole module, not one named function: closure body names are minted with
   // the compiler's reserved-prefix sentinel (ast.js T = U+E000), not a plain
-  // "closure0" identifier, so fnBody's `$name` lookup doesn't apply here —
+  // "closure0" identifier, so funcWat's lookup by `$name` doesn't apply here —
   // only closure0's own arm has this exact `(f64.add $__a0 $__a1)` shape.)
   const w = wat(src)
   ok(/\(f64\.add\s*\(local\.get \$__a0\)\s*\(local\.get \$__a1\)\)/.test(w),
@@ -2573,8 +2566,7 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
       for (const x of [1.3, -2.75, 1e20, 0]) is(f(x), host(x), `${name} at ${optimize}: f(${x})`)
     }
     const text = compile(src, { modules, jzify: true, optimize: 0, wat: true })
-    const f = text.slice(text.indexOf('(func $f'))
-    ok(/f32\.demote_f64/.test(f.slice(0, f.indexOf('\n  (func ', 1) >>> 0)) , `${name}: the site converts inline`)
+    ok(/f32\.demote_f64/.test(funcWat(text, 'f')), `${name}: the site converts inline`)
     // a value handed on is the wrapper, and a call of that value is the wrapper's
     if (!dropped) continue
     is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), '[]', `${name}: no global holds the wrapper`)

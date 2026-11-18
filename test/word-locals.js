@@ -9,11 +9,10 @@
 // keeps the f64.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, jzWat, oracle, run, wat, funcWat as funcWatOf } from './util.js'
+import { agree, jzWat, oracle, run, wat, funcWat } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
 import { T } from '../src/ast.js'
 
-const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** The storage of the local `name` in `fn` — with its integral copies (`name·int3`,
  *  plan/integral-loops.js) and the fresh locals a fast arm gives them (`·us7_name`,
  *  emit/control-flow.js; `·` the separator T), through any inlining prefix: 'i32'

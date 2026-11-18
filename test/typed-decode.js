@@ -112,7 +112,7 @@ test('typed decode: the loop holds a direct access beside each helper call', () 
   if (belowOpt(3)) return
   // `run` is inlined into its caller: the loop is wherever the decode locals are.
   const text = wat(pan, { optimize: 3 })
-  const body = funcWat(text, 'f$exp') || funcWat(text, 'f')
+  const body = funcWat(text, 'f$exp', 'f')
   ok(/\$__utd\d+/.test(body), 'receivers decoded into locals')
   ok(/f32\.store/.test(body) && /f64\.store/.test(body), 'a store of each float width')
 })

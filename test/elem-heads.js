@@ -8,7 +8,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, run, wat, compile } from './util.js'
+import { funcWat, oracle, run, wat, compile, hasFunc } from './util.js'
 
 const src = `
 const typedOf = (k) => k === 0 ? new Float64Array(8) : k === 1 ? new Float32Array(8) : k === 2 ? new Uint8Array(8)
@@ -82,8 +82,8 @@ test('element heads: loop-free, under the inliner limit, the rest in the tail', 
     '__typed_set_idx_tagged', '__length.value', '__str_eq']
   let seen = 0
   for (const name of heads) {
+    if (!hasFunc(text, name)) continue
     const body = funcWat(text, name)
-    if (!body) continue
     seen++
     ok(!/\(loop/.test(body), `${name} has no loop`)
     ok(body.includes(`call $${name}_tail`), `${name} leaves the rest to ${name}_tail`)

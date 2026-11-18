@@ -177,7 +177,7 @@ test('const-exponent pow fold — SIMD twin (pow_fold_v) matches the scalar fold
 })
 
 // the exported function's own body: the fold's helper calls $math.pow past its range
-const fnOf = (text) => funcWat(text, 'f') || funcWat(text, 'f$exp')
+const fnOf = (text) => funcWat(text, 'f', 'f$exp')
 test('fifthroot-backed pow fold reaches WAT via $math.pow_fifths by default (not $math.pow/$math.pow_fold)', () => {
   const fn = fnOf(wat('export let f = (x) => x ** 2.4'))
   ok(fn.includes('call $math.pow_fifths'), 'x ** 2.4 must fold through $math.pow_fifths by default')

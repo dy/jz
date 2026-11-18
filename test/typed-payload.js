@@ -33,7 +33,7 @@ test('typed payload: stores agree with the host', () => {
 test('typed payload: the store is direct', () => {
   if (belowOpt(2)) return
   const text = wat(src, { optimize: 2 })
-  const body = funcWat(text, 'copy$exp') || funcWat(text, 'copy')
+  const body = funcWat(text, 'copy$exp', 'copy')
   ok(/f32\.store/.test(body), 'an f32 store')
   ok(!/call \$__typed_set_idx_tagged/.test(body), 'no runtime writer')
 })
@@ -56,7 +56,7 @@ test('typed payload: a channel read at a loop index agrees with the host', () =>
 test('typed payload: a versioned loop reads a present channel directly', () => {
   if (belowOpt(2)) return
   const text = wat(pairs, { optimize: 'speed' })
-  const body = funcWat(text, 'run$exp') || funcWat(text, 'run')
+  const body = funcWat(text, 'run$exp', 'run')
   ok(/f32\.load/.test(body), 'an f32 load')
   ok(!/__typed_idx|__utd/.test(body), 'no run-time element dispatch')
 })
@@ -79,6 +79,6 @@ test('typed payload: a store through a field set on first use is typed', () => {
   }
   if (belowOpt(2)) return
   const text = wat(lazy, { optimize: 2 })
-  const body = funcWat(text, 'k') || funcWat(text, 'run')
+  const body = funcWat(text, 'k', 'run')
   ok(body && /f64\.store/.test(body) && !/__dyn_set|__typed_set_idx|__arr_typed_obj_set_idx/.test(body), 'a typed store, no runtime writer')
 })

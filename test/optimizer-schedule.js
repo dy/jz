@@ -40,7 +40,7 @@ test('poolFloats: nonzero float literals read immutable globals at speed, bit fo
   for (const optimize of ownedLevels('speed', 2, 'size')) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 100]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const wat = compile(src, { wat: true, optimize: 'speed' })
-  const body = wat.slice(wat.indexOf('(func $f'))
+  const body = funcWat(wat, 'f')
   ok(/\(global \$__ff\d+ f64\s+\(f64\.const 28\)/.test(wat), 'a literal the loop reads is an immutable global')
   is((body.match(/f64\.const (?!0\b|0\))/g) ?? []).length, 0, 'no nonzero float literal left in the function')
   ok(/f64\.const 0\b/.test(body) || !/f64\.const/.test(body), 'zero stays inline')
@@ -150,7 +150,7 @@ test('selectBits: a choice between its test\'s operands is their pseudo-minimum 
   }
   if (onKernel()) return
   const count = (wat, re) => (wat.match(re) ?? []).length
-  const fast = compile(src, { wat: true, optimize: 'speed' }), body = fast.slice(fast.indexOf('(func $f'))
+  const body = funcWat(compile(src, { wat: true, optimize: 'speed' }), 'f')
   ok(count(body, /f64x2\.pmin/g) >= 2 && count(body, /f64x2\.pmax/g) >= 2, 'the running extremes are pseudo-extremes')
   ok(!/f64\.reinterpret_i64 \(select|reinterpret_i64\s*\(select/.test(body), 'none of them takes the bits')
   const scalar = compile(src, { wat: true, optimize: { level: 'speed', simd: false } })

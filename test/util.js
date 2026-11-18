@@ -208,20 +208,35 @@ export const foldWords = wat => {
   return typeof wat === 'string' ? printWat(out) : out
 }
 
-/** One function's text out of a WAT module, by paren matching — slicing to the next
- *  `(func` would overrun into lifted closures and give false positives. */
-export function funcWat(text, name) {
+// Where `$name` begins in a WAT module, or its ABI entry `$name$exp` (a function used only
+// by an export can keep its body there); -1 when the module defines neither.
+const funcAt = (text, name) => {
   const escaped = name.replace(/[$]/g, '\\$')
-  // A function used only by an export can keep its body on the ABI entry.
   const m = new RegExp(`\\(func \\$${escaped}(?=[\\s)])`).exec(text) ||
     new RegExp(`\\(func \\$${escaped}\\$exp(?=[\\s)])`).exec(text)
-  if (!m) return ''
-  let depth = 0
-  for (let i = m.index; i < text.length; i++) {
-    if (text[i] === '(') depth++
-    else if (text[i] === ')' && --depth === 0) return text.slice(m.index, i + 1)
+  return m ? m.index : -1
+}
+
+/** Whether the module defines any of `names` (or its `$exp` entry). */
+export const hasFunc = (text, ...names) => names.some(name => funcAt(text, name) >= 0)
+
+/** One function's text out of a WAT module: the first of `names` the module defines, by
+ *  paren matching, its own body and no more (a slice to the next `(func`, or to the end,
+ *  reads the functions after it as its body). A module that defines none of them throws,
+ *  so a pin cannot pass on a function that is not there; a pin that also holds where the
+ *  function is gone (inlined, never emitted) asks hasFunc first. */
+export function funcWat(text, ...names) {
+  for (const name of names) {
+    const at = funcAt(text, name)
+    if (at < 0) continue
+    let depth = 0
+    for (let i = at; i < text.length; i++) {
+      if (text[i] === '(') depth++
+      else if (text[i] === ')' && --depth === 0) return text.slice(at, i + 1)
+    }
+    return text.slice(at)
   }
-  return text.slice(m.index)
+  throw new Error(`funcWat: the module defines no ${names.map(n => '$' + n).join(' or ')}`)
 }
 
 /** The saturating lane truncations of a WAT text that no word test guards. A

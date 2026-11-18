@@ -7,7 +7,7 @@ import { levels } from './_matrix.js'
 import { agree, jzWat, funcWat, wat } from './util.js'
 
 const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}(?=[\\s)])`, 'g')) || []).length
-const body = src => { const text = wat(src, { optimize: 3 }); return funcWat(text, 'f') || funcWat(text, 'f$exp') }
+const body = src => { const text = wat(src, { optimize: 3 }); return funcWat(text, 'f', 'f$exp') }
 const stores = (text, ...ops) => ops.reduce((n, op) => n + count(text, op), 0)
 
 const WORDS = [0, 1, 255, 256, 0x1234, 0xabcd, 0xffff, 0x10000, 0x7fffffff, -1, -2, -32768, 0xdeadbeef | 0, 2 ** 31, 1e10, -1e10, 3.7, NaN]

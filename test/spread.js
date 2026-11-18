@@ -633,9 +633,7 @@ test('spread: short local array literals scalarize through spread and reads', ()
     }
     return s
   }`, { wat: true })
-  const start = wat.indexOf('(func $run')
-  const end = wat.indexOf('\n  (func', start + 1)
-  const body = wat.slice(start, end)
+  const body = funcWat(wat, 'run')
   ok(!/__arr|__alloc_hdr|__mkptr|__len|__typed_idx/.test(body), 'hot spread concat should not materialize arrays')
 })
 

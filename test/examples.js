@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
 import { OPT, buildExample, buildKernel } from '../examples/build.mjs';
 import { onWasi } from './_matrix.js';
-import { funcWat, jz, compile } from './util.js'
+import { funcWat, hasFunc, jz, compile } from './util.js'
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 
@@ -338,18 +338,20 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     // RECOVERED (audit-#8 P1-2 residual A, 2026-08-03): the loop-bound magnitude gap the
     // watercolor/waves/schrodinger tests above name was already fixed (Root-F per-name guard
     // conjunct, emit.js) — `x < w` itself lowers native i32 here too.
+    // the text of those of the functions the module keeps (a step may inline into frame)
+    const landed = (w, ...names) => names.filter(n => hasFunc(w, n)).map(n => funcWat(w, n)).join('')
     const cases = [
         // RECOVERED (2026-10-04): the row bases `rowC = y * w` and the index `c = rowC + x`
         // are words of the source versioning's copy (plan/integral-loops.js: derived
         // integers), so the 5-point stencil lifts in both step functions; pinned by
         // their neighbour loads, not an operation count, wherever the steps land
         // (their own functions, or inlined into frame).
-        { name: 'diffusion', want: (w) => ((funcWat(w, 'stepAtoB') + funcWat(w, 'stepBtoA') + funcWat(w, 'frame')).match(/v128\.load/g) || []).length >= 16, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
+        { name: 'diffusion', want: (w) => (landed(w, 'stepAtoB', 'stepBtoA', 'frame').match(/v128\.load/g) || []).length >= 16, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
         // The 3×3 blur lifts in its present-grid arm (the loop as written is the
         // version's cold arm now: plan/integral-loops.js leaves it scalar); pinned by
         // the lanes' nine neighbour loads wherever the blur lands (its own function,
         // or inlined into frame).
-        { name: 'slime', want: (w) => ((funcWat(w, 'blurDecay') + funcWat(w, 'frame')).match(/v128\.load/g) || []).length >= 9, drive: (e) => {
+        { name: 'slime', want: (w) => (landed(w, 'blurDecay', 'frame').match(/v128\.load/g) || []).length >= 9, drive: (e) => {
             const frames = [];
             for (const [w, h] of [[0, 0], [1, 1], [2, 2], [3, 3], [64, 48], [64, 48], [65, 49], [64, 48]]) {
                 const p = e.resize(w, h); e.seed();

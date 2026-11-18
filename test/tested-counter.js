@@ -3,11 +3,10 @@
 // fallback keeps its full Number; values are differentials against the host.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { agree, jzWat, wat, funcWat as funcWatOf } from './util.js'
+import { agree, jzWat, wat, funcWat } from './util.js'
 import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
 
-const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 // The storage holds once the optimizer ran; every leg runs the differentials.
 const storage = (src, name) => {
   if (belowOpt(2)) return null

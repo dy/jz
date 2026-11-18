@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import watrCompile from 'watr/compile'
 import { compileJzAt } from '../bench/_lib/compile.js'
 import { levels, ownedLevels } from './_matrix.js'
-import { agree, compile, jzWat } from './util.js'
+import { agree, compile, jzWat, funcWat, hasFunc } from './util.js'
 
 const LEVELS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -69,4 +69,16 @@ test('wat bytes: jzWat gives the text and instances of its bytes', () => {
   for (const [name, opts] of [['imports', { imports: {} }], ['names', { names: true }], ['inspect', { inspect: true }],
     ['warnings', { warnings: () => {} }], ['snapshotInit', { optimize: { level: 2, snapshotInit: true } }]])
     throws(() => jzWat(src, opts), new RegExp(`'${name}' takes wat\\(\\) and jz\\(\\)`), `refuses ${name}`)
+})
+
+// A pin reads the function it names, or fails: funcWat matches the whole name (the ABI
+// entry `$name$exp` standing for a function that kept its body there), takes the first of
+// several names the module defines, and throws where it defines none of them.
+test('wat bytes: funcWat reads one function by its name, or throws', () => {
+  const w = '(module\n  (func $f$exp (result f64)\n    (f64.const 1))\n  (func $fo\n    (call $f$exp))\n  (func $g (param $x f64)\n    (nop)))'
+  is(funcWat(w, 'g'), '(func $g (param $x f64)\n    (nop))', 'its body and no more')
+  is(funcWat(w, 'f'), '(func $f$exp (result f64)\n    (f64.const 1))', 'the ABI entry, not $fo')
+  is(funcWat(w, 'h', 'fo'), '(func $fo\n    (call $f$exp))', 'the first name the module defines')
+  throws(() => funcWat(w, 'h', 'go'), /defines no \$h or \$go/, 'none defined throws')
+  is([hasFunc(w, 'h'), hasFunc(w, 'h', 'fo')], [false, true])
 })

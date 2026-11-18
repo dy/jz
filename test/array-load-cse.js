@@ -27,7 +27,7 @@ test('array load cse: plain numeric elements survive writes to typed storage', (
     // element a loop stores numbers into, which leaves the plain reads to any CSE).
     const text = wat(kernel, { optimize: { level: 2, loadCSE, forwardStores: false, staticScratch: false, vectorizeLaneLocal: false, promoteLoopFields: false } })
     const counts=[]
-    walk(parseWat(funcWat(text, 'f$exp') || funcWat(text, 'f')),n=>{
+    walk(parseWat(funcWat(text, 'f$exp', 'f')),n=>{
       if(n[0]==='loop')counts.push((JSON.stringify(n).match(/f64\.load/g)||[]).length)
     })
     return counts
@@ -80,7 +80,7 @@ test('array load cse: nested receivers survive distinct scratch stores and scala
   const loads = loadCSE => {
     const text = wat(src, { optimize: { level: 2, loadCSE, forwardStores: false } })
     // (an element's box held as its bits loads as i64: int-narrow.js narrowBoxedLocals)
-    return (funcWat(text, 'f$exp') || funcWat(text, 'f')).match(/(?:f64|i64)\.load/g)?.length || 0
+    return (funcWat(text, 'f$exp', 'f')).match(/(?:f64|i64)\.load/g)?.length || 0
   }
   const cached = loads(true)
   ok(cached <= 6, `${cached} loads: the containing slot and its element stay shared`)

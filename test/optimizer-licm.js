@@ -15,7 +15,7 @@ import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
 import { numberValues, SUBSCRIPT, TAG } from '../src/optimize/numbering.js'
-import { run, oracle, jz, compile } from './util.js'
+import { run, oracle, jz, compile, funcWat } from './util.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 import { findFunc, preWatr, callsInLoop } from './_optimizer.js'
 
@@ -580,7 +580,7 @@ test('param-distinctness LICM: invariant load from a proven-distinct param hoist
     }
   `
   const wat = compile(SRC, { wat: true, optimize: { level: 'speed' } })
-  let fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
+  let fn = funcWat(wat, 'proc')
   // fast arm only: the versioned checked twin keeps in-loop checked loads by design
   if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
   const li = fn.indexOf('(loop')   // the dst-store loop
@@ -620,7 +620,7 @@ test('param-distinctness: a function returning what it allocates hands each call
     }`
   const hoisted = (src) => {
     const wat = compile(src, { wat: true, optimize: 'speed' })
-    let fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
+    let fn = funcWat(wat, 'proc')
     if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
     return !/f64\.load/.test(fn.slice(fn.indexOf('(loop')))
   }
@@ -676,8 +676,7 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
     return h >>> 0
   }`
   const wat = compile(src, { wat: true, optimize: { jsstring: false } })
-  const fa = wat.indexOf('func $main')
-  const fn = wat.slice(fa, wat.indexOf('(func', fa + 1))
+  const fn = funcWat(wat, 'main')
   const loop = fn.slice(fn.indexOf('loop'))
   ok(loop.length > 0, 'main has a loop')
   ok(!loop.includes('16383'), 'length decode (SSO mask 16383) must be hoisted out of the loop')

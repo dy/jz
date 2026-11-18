@@ -6,7 +6,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, belowOpt, levels, ownedLevels } from './_matrix.js'
-import { run, oracle, cases, jz, jzWat, compile } from './util.js'
+import { run, oracle, cases, jz, jzWat, compile, funcWat } from './util.js'
 import { parse } from '../src/parse.js'
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 
@@ -2578,9 +2578,7 @@ test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
   // $__ptr_offset call is gone from every collection probe/upsert (wordcount
   // −8%). The fwd helper itself must stay linked for the growth hop.
   const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
-  const slotAt = wat.indexOf('(func $__hash_slot')
-  ok(slotAt >= 0, 'fused RMW probe present')
-  const slotWat = wat.slice(slotAt, wat.indexOf('(func $', slotAt + 1))
+  const slotWat = funcWat(wat, '__hash_slot_eph')
   ok(!slotWat.includes('call $__ptr_offset ') && !slotWat.includes('call $__ptr_offset\n'),
     'probe opening pays no $__ptr_offset call')
   ok(slotWat.includes('call $__ptr_offset_fwd'), 'forward hop stays behind the -1 sentinel')

@@ -13,7 +13,7 @@ import { is } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
 import { CLASS_T, ACCESSOR_SET } from '../src/ast.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, wat, compileInProcess as compile } from './util.js'
+import { agree, funcWat, hasFunc, wat, compileInProcess as compile } from './util.js'
 
 const ranges = (src, name) => {
   compile(src, { optimize: 0 })
@@ -269,6 +269,7 @@ test('parameter hull: a bounded sampler index converts without the infinity guar
   for (const optimize of levels(0, 2, 3)) agree(sampler, 'f', [], { optimize }, `the sum at ${optimize}`)
   if (belowOpt(2)) return
   const text = wat(sampler, { optimize: 2 })
-  const body = funcWat(text, 'sample') + (funcWat(text, 'f$exp') || funcWat(text, 'f'))
+  // (sample may inline into f)
+  const body = (hasFunc(text, 'sample') ? funcWat(text, 'sample') : '') + funcWat(text, 'f$exp', 'f')
   is((body.match(/\(select/g) || []).length, 0, 'floor(y) + gy is finite: no guard')
 })

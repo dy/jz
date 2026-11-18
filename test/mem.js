@@ -1434,7 +1434,7 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
   }`
   for (const src of [render + '\n' + keep, keep + '\n' + render]) {
     const wat = compile(src, { optimize: REWOUND, wat: true })
-    const fn = name => funcWat(wat, name) || funcWat(wat, name + '$exp')
+    const fn = name => funcWat(wat, name, name + '$exp')
     // Both Number bounds gain guarded counter versions; pin a collision
     // with an actually rewound loop, including complete labels.
     const keptLabels = [...fn('keep').matchAll(/\(loop (\$[^\s()]+)/g)].map(m => m[1])

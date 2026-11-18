@@ -7,7 +7,7 @@
 import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
 import { onWasi, onKernel } from './_matrix.js'
-import { compile } from './util.js'
+import { compile, funcWat } from './util.js'
 
 // Feature gating asks: did jz pull this stdlib in? watr's `inlineOnce` +
 // `treeshake` then folds + erases helpers whose only caller has been inlined,
@@ -243,8 +243,7 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
 test('collection: proven runtime string keys bypass generic hash dispatch', () => {
   const w=wat(`function probe(m,s,k){const key='field'+k;return m.get(key)+m.has(key)+s.has(key)}
     export function f(k){return probe(new Map(),new Set(),k)}`,{optimize:{sourceInline:false}})
-  const at=w.indexOf('(func $probe'),body=w.slice(at,w.indexOf('(func',at+1))
-  ok(at>=0,'inspect the separate probe body')
+  const body=funcWat(w,'probe')
   // (a present table's probe of a string takes the string form, which hashes the content itself: module/collection/forms.js)
   for(const name of ['__map_get','__map_has','__set_has'])ok(hasCall(body,name+'_h')||hasCall(body,name+'_os'),name)
   ok(hasCall(body,'__str_hash')||hasDef(w,'__ord_probe_s')||/\(func \$__map_get_os\b[^]*?call \$__str_hash\b/.test(w),'__str_hash')

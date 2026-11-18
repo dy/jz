@@ -177,7 +177,7 @@ test('typed-array assignment statement does not materialize assigned value', () 
       return 1
     }
   `, { wat: true, optimize: { watr: false } })
-  const mainBody = wat.slice(wat.indexOf('(func $main'), wat.indexOf('(func $main$exp'))
+  const mainBody = funcWat(wat, 'main')
   ok(/\(i32\.store/.test(mainBody), 'expected typed-array store')
   is(/f64\.convert_i32_[su]/.test(mainBody), false)
   const storeAt = mainBody.indexOf('(i32.store')
@@ -203,8 +203,7 @@ test('byte transform `out[i] = table[in[j]]` stores i32 directly — no f64 roun
   `
   const wat = compile(SRC, { wat: true })
   // xform inlines into main$exp; the whole user function (transform + fills) is integer-only.
-  const start = wat.indexOf('(func $main')
-  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
+  const body = funcWat(wat, 'main')
   ok(/i32\.store8/.test(body), 'stores the byte directly via i32.store8')
   is(/i64\.trunc_sat|f64\.lt/.test(body), false, 'no f64→i32 trunc / sign-branch in the byte transform')
   is(jz(SRC).exports.main(), ((((3 * 31) & 0xff) * 7) & 0xff), 'byte transform result correct (table[src[3]])')
@@ -231,8 +230,7 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   // computes one call for two identical ones, and watr inlines a function with one caller).
   // (words folded: the guarded ToInt32 of the counter has an `else` of its own)
   const wat = foldWords(compile(SRC, { wat: true }))
-  const start = wat.indexOf('(func $eqcount')
-  let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
+  const body = funcWat(wat, 'eqcount')
   // Root F versions the param-bound loops: the cold checked twin legitimately
   // compares f64 (a checked read is number|undefined), and a guard between the
   // loops tests a Number — the pin measures the fast arms: the first loop of
@@ -448,8 +446,7 @@ test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
       return s
     }`
     const wat = compile(src, { wat: true, optimize: 3 })
-    const fi = wat.indexOf('(func $f')
-    let body = wat.slice(fi, wat.indexOf('\n  (func', fi + 5))
+    let body = funcWat(wat, 'f')
     // Root F versioning: the cold checked twin (else arm) legitimately round-trips
     // f64 (checked reads are number|undefined) — measure the FAST arm's loop.
     if (body.includes('(else')) body = body.slice(0, body.indexOf('(else'))
@@ -564,7 +561,7 @@ test('unsignedDivision: a non-negative dividend divides unsigned', () => {
   for (const optimize of ownedLevels('speed', 2, 1)) { const f = run(src, { optimize }).f; for (const n of [0, 1, 5, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   for (const o of ownedLevels('speed', 2)) {
-    const wat = compile(src, { wat: true, optimize: o }), body = wat.slice(wat.indexOf('(func $f'))
+    const body = funcWat(compile(src, { wat: true, optimize: o }), 'f')
     ok(/\(i32\.div_u/.test(body) && /\(i32\.rem_u/.test(body), `O${o}: the byte sum's quotient and the byte's remainder are unsigned`)
     ok(/\(i32\.div_s/.test(body) && /\(i32\.rem_s/.test(body), `O${o}: a dividend that may be negative stays signed`)
   }

@@ -12,7 +12,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, jzWat, funcWat, oracle, run, wat, jz } from './util.js'
 
-const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
+const fnText = (text, name) => funcWat(text, name + '$exp', name)
 
 const src = `const a = [], b = [], out = [0, 0, 0, 0], grown = []
   for (let i = 0; i < 64; i++) { a.push([i, i + 1, i + 2, i + 3]); b.push([i * 2, 1, 2, 3]) }

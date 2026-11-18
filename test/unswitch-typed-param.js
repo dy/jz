@@ -13,11 +13,7 @@ import { onWasi, levels, ownedLevels } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 
 const speed = { level: 'speed' }
-const fProcess = (src, opt = speed) => {
-  const wat = compile(src, { wat: true, optimize: opt })
-  const fi = wat.indexOf('(func $process')
-  return wat.slice(fi, wat.indexOf('\n  (func ', fi + 10))
-}
+const fProcess = (src, opt = speed) => funcWat(compile(src, { wat: true, optimize: opt }), 'process')
 
 // Self-map Float64Array param: the flagship shape. The standalone (exported) $process is
 // polymorphic; with the pass it grows a base-hoisted fast loop that vectorizes to f64x2.

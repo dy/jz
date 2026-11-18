@@ -66,7 +66,7 @@ test('block present: the loop tests its receiver once, before it', () => {
 test('block present: a length read past the receiver\'s check reads the header', () => {
   if (belowOpt(2)) return
   const text = wat(loop, { optimize: 2 })
-  const g = funcWat(text, 'g$exp') || funcWat(text, 'g')
+  const g = funcWat(text, 'g$exp', 'g')
   ok(g.length > 0 && !/call \$__(length|str_eq|str_length|ptr_offset_fwd)/.test(g), 'no length dispatch')
 })
 

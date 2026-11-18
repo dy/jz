@@ -43,7 +43,7 @@ test('index key: a key of unknown integrality tests its int32 through the i64 tr
   if (belowOpt(2)) return
   const text = wat(`const t = new Float64Array(8); export let get = (i) => t[i]; export let put = (i, v) => { t[i] = v }`, { optimize: 2 })
   for (const name of ['get', 'put']) {
-    const f = funcWat(text, name + '$exp') || funcWat(text, name)
+    const f = funcWat(text, name + '$exp', name)
     ok(/i64\.trunc_sat_f64_s/.test(f) && !/i32\.trunc_sat_f64_s/.test(f), `${name}: the i64 truncation, no saturating i32 one`)
   }
 })
@@ -63,7 +63,7 @@ test('index key: signed integer offsets keep word arithmetic without wrapping in
       is(actual.put(n, n & 255), host.put(n, n & 255), `put(${n}), ${optimize}`)
     }
     if (optimize >= 2 && !belowOpt(2)) {
-      const text = foldWords(wat(src, { optimize })), f = funcWat(text, 'plus$exp') || funcWat(text, 'plus')
+      const text = foldWords(wat(src, { optimize })), f = funcWat(text, 'plus$exp', 'plus')
       ok(!/i64\.add|f64\.add|i32\.trunc_sat/.test(f), `plus: the input and offset stay in word arithmetic, ${optimize}`)
     }
   }

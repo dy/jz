@@ -38,7 +38,7 @@ test('store forwarding: a chain through an out parameter reloads nothing and kee
   if (belowOpt(2)) return
   // (without sinkStores, which moves the round's last stores past the loop)
   const text = wat(chain, { optimize: { level: 3, sinkStores: false } })
-  const body = funcWat(text, 'f$exp') || funcWat(text, 'f')
+  const body = funcWat(text, 'f$exp', 'f')
   let loops=0
   walk(parseWat(body),n=>{
     if(n[0]!=='loop')return

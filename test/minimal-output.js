@@ -8,7 +8,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { oracle, compile, jz, jzWat, funcWat } from './util.js'
+import { oracle, compile, jz, jzWat, funcWat, hasFunc } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dropSettledTests } from '../src/optimize/settled-tests.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
@@ -958,7 +958,7 @@ test('minimal: the size tier links the plain string walks', () => {
   const pre = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   ok(!pre.includes('$__str_eq_cold'), 'no hot/cold split')
   const post = compile(src, { wat: true, optimize: 'size' })
-  const eqBody = post.slice(post.indexOf('(func $__str_eq'), post.indexOf('(func', post.indexOf('(func $__str_eq') + 10))
+  const eqBody = funcWat(post, '__str_eq')
   ok(eqBody.includes('call $__char_at') && !eqBody.includes('i32.load offset'), 'the byte walk through __char_at')
   for (const n of [0, 3, 50]) {
     is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `size n=${n}`)
@@ -992,7 +992,7 @@ test('minimal: select and post-increment indices narrow to the i32 ring', () => 
     return decode(stream, flags, 64)
   }`
   const w = compile(src, { wat: true, optimize: { level: 3, watr: false, sourceInline: false } })
-  const body = w.slice(w.indexOf('(func $decode'), w.indexOf('(func $f'))
+  const body = funcWat(w, 'decode')
   ok(!body.includes('f64.add') && !body.includes('f64.sub'), 'no f64 arithmetic on the accumulator')
   ok(!body.includes('trunc_sat'), 'no conversion on the index')
   for (const seed of [7, 12345]) {
@@ -1017,7 +1017,7 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
     return s * 1000 + a.length * 10 + (a[1] | 0)
   }`
   const pre = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
-  const body = pre.slice(pre.indexOf('(func $f'), pre.indexOf('(func', pre.indexOf('(func $f') + 10))
+  const body = funcWat(pre, 'f')
   ok(!body.includes('call $__ptr_offset '), 'no forwarding follow in the function')
   for (const O of levels(0, 'size', 3)) { const m = jzWat(src, { optimize: O }); for (const n of [0, 1, 5, 40]) is(m.fresh().exports.f(n), jsFn(src, 'f')(n), `O${O} n=${n}`) }
   // an alias can grow the array behind the binding's back: the follow stays
@@ -1038,7 +1038,7 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
   }`
   const pre3 = compile(captured, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
   // (the follow is f's own: a helper the module links, `__len`, calls it too)
-  const body3 = pre3.slice(pre3.indexOf('(func $f'), pre3.indexOf('(func', pre3.indexOf('(func $f') + 10))
+  const body3 = funcWat(pre3, 'f')
   ok(/call \$__ptr_offset\s/.test(body3), 'a captured array keeps the follow')
   for (const n of [0, 5, 40]) for (const O of levels(0, 'size', 3)) is(jz(captured, { optimize: O }).exports.f(n), jsFn(captured, 'f')(n), `captured O${O} n=${n}`)
 })
@@ -1369,7 +1369,7 @@ test('minimal: the size tier prints an integer by one walk', () => {
   const src = `export let f = (n) => { const m = new Map(); for (let i = -2; i < n; i++) m.set('k' + i, i); const s = String(n | 0); return (m.get('k-1') | 0) + (m.get('k' + 12) | 0) * 100 + (s === '40' ? 10000 : 0) + m.size * 100000 + ('' + (1234567 + n)).length * 1000000000 }`
   for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 13, 40]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`) }
   const w = compile(src, { optimize: { level: 'size', watr: false }, wat: true })
-  ok(!funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
+  ok(!hasFunc(w, '__i32_to_str') || !funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
 })
 
 // The size tier's remainder is one call, its long division alone (module/core.js

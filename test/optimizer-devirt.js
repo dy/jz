@@ -67,8 +67,8 @@ test('devirtSchemaReads: sparse fields remain specialized past 24 module schemas
     function get(o){return o.wanted}
     export function f(k){return get(rows[k])}`
   const w = compile(src, { wat: true, optimize: { level: 1, watr: false } })
-  const start = w.indexOf('(func $get\n'), body = w.slice(start, w.indexOf('(func', start + 1))
-  ok(start >= 0 && (body.match(/i64\.load/g) || []).length === 2, 'unrelated schemas do not disable specialization')
+  const body = funcWat(w, 'get')
+  ok((body.match(/i64\.load/g) || []).length === 2, 'unrelated schemas do not disable specialization')
   ok(!body.includes('br_table'), 'sparse schema ids do not allocate a wide jump table')
   const { f } = run(src, { optimize: { level: 1, snapshotInit: true } })
   for (const k of [0, 0, 31, 1, 0]) is(f(k), k === 0 ? 7 : k === 31 ? 9 : undefined)
@@ -142,9 +142,7 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   // `geo` is a hot leaf the speed tier would splice into f's loop; the pass
   // under test needs it as its own function, so keep it out of the inliner.
   const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
-  const gAt = w.indexOf('(func $geo')
-  ok(gAt >= 0, 'geo compiles as its own function pre-watr')
-  const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
+  const geoWat = funcWat(w, 'geo')
   ok(/\$__dsrs\d+/.test(geoWat), 'multi-read receiver gets an entry-hoisted sid local')
   // a proven-OBJECT receiver needs no tag test: the sid is a bare aux extract; an unproven one selects over the tag test
   ok(/local\.set \$__dsrs\d+\s*\((?:i32\.wrap_i64|select)/.test(geoWat), 'sid computed branch-free (bare aux extract, or select over tag test)')
@@ -188,8 +186,7 @@ test('schema discriminant hint narrows one guard but preserves alien-schema fall
     export const f = (useAlien) => visit(useAlien ? alien(0) : expected(0))
   `
   const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
-  const at = w.indexOf('(func $visit')
-  const visitWat = w.slice(at, w.indexOf('(func', at + 1))
+  const visitWat = funcWat(w, 'visit')
   ok((visitWat.match(/i64\.eq/g) || []).length >= 3, 'each predicted branch keeps an exact runtime SID guard')
   ok(/call \$__dyn_get/.test(visitWat), 'guard miss retains dynamic property semantics')
   const { f } = run(src, { optimize: 'speed' })
@@ -215,8 +212,7 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
   const src = mkSrc('o.r * (o.r + 3)')
   const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
-  const gAt = w.indexOf('(func $geo')
-  const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
+  const geoWat = funcWat(w, 'geo')
   // (the memo local may share a slot with another i64 temp once locals coalesce:
   // count the dispatches, one a read of `t`, `x`-or-`r`, `w`… each)
   const dispatches = (geoWat.match(/call \$__dyn_get/g) || []).length
@@ -234,7 +230,7 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   const { f } = run(src, { optimize: 'speed' })
   is(f(), ref, 'memoized read bit-matches the generic path')
   const size = compile(src, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
-  const at = size.indexOf('(func $geo'), geoSize = size.slice(at, size.indexOf('(func', at + 1))
+  const geoSize = funcWat(size, 'geo')
   ok(/\$__dsrm\d+/.test(geoSize), 'size mode retains duplicate-read reuse')
   ok(!/\$__dsr[os]\d+/.test(geoSize), 'size mode adds no schema dispatch arms or receiver cache')
   is(run(src, { optimize: 'size' }).f(), ref, 'shared size-mode lookup agrees with the specialized speed mode')
@@ -526,10 +522,10 @@ test('monomorphic schema-slot devirtualization: singleton-schema dot-read compil
   ok(/0xFFFFFFFF00000000/.test(wat), 'expected the tag+aux guard mask constant')
   // The arm the guard enters: the slot's load (a Number field drops a NaN
   // payload on the way out, module/schema.js schemaValueIR), and no call.
-  const getA = wat.indexOf('(func $getA'), at = getA < 0 ? -1 : wat.indexOf('(then', wat.indexOf('0xFFFFFFFF00000000', getA))
+  const getA = funcWat(wat, 'getA'), at = getA.indexOf('(then', getA.indexOf('0xFFFFFFFF00000000'))
   let end = at, depth = 0
-  do { depth += wat[end] === '(' ? 1 : wat[end] === ')' ? -1 : 0; end++ } while (depth > 0 && end < wat.length)
-  const thenArm = at < 0 ? '' : wat.slice(at, end)
+  do { depth += getA[end] === '(' ? 1 : getA[end] === ')' ? -1 : 0; end++ } while (depth > 0 && end < getA.length)
+  const thenArm = at < 0 ? '' : getA.slice(at, end)
   ok(/^\(then\s*(?:\(block\s*\(result f64\)\s*\(local\.set \$\S+\s*)?\(f64\.load\b/.test(thenArm), 'expected a direct f64.load in the guarded (then) arm')
   ok(thenArm && !/call/.test(thenArm), 'the guarded fast path must not call any helper')
   // The generic dispatch remains reachable as the polymorphic fallback, never removed.
@@ -715,7 +711,7 @@ test('devirtSchemaReads: past the dispatch budget a read site keeps an inline ca
     export const h = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = i % 5 ? mk(4) : 12; t += o.x === undefined ? 100 : o.x } return t }`
   const w = compile(src, { wat: true, optimize: { level: 1, watr: false } })
   ok((w.match(/global\.get \$__ic_hi\d+/g) || []).length >= 3, 'each over-budget read site owns an inline cache')
-  ok(!w.slice(w.indexOf('(func $f')).includes('br_table'), 'no jump table past the budget')
+  ok(!funcWat(w, 'f').includes('br_table'), 'no jump table past the budget')
   const { f, g, h } = run(src, { optimize: { level: 1, snapshotInit: true } })
   const js = (n) => { let t = 0; for (let i = 0; i < n; i++) t += i % 30; return t }
   is(f(1000), js(1000), 'polymorphic receivers match the generic read')

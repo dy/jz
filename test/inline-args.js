@@ -24,7 +24,7 @@ test('inline args: a body that writes two of its parameters', () => {
   }`
   each(src, [[0], [1], [4], [9]])
   if (belowOpt(2)) return
-  const f = funcWat(wat(src), 'f$exp') || funcWat(wat(src), 'f')
+  const f = funcWat(wat(src), 'f$exp', 'f')
   ok(!/call \$put/.test(f), 'the call is spliced')
   const loop = f.slice(f.indexOf('(loop '), f.indexOf('(br $loop'))
   ok(loop.includes('f32.store') && !/i64\.reinterpret_f64/.test(loop), 'the receiver is no box to take apart at each store')

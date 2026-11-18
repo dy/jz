@@ -39,7 +39,7 @@ export function run(length){const a=new Int16Array(length)
 }`
 
 const TWINS_OFF = { level: 'speed', twinLocals: false }
-const kernelOf = (wat) => funcWat(wat, 'decode') || funcWat(wat, 'run') || funcWat(wat, 'run$exp')
+const kernelOf = (wat) => funcWat(wat, 'decode', 'run', 'run$exp')
 const loops = (w) => (w.match(/\(loop /g) || []).length
 
 test('twin locals: the glyph decode matches the host in both copies', () => {

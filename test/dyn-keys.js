@@ -2129,9 +2129,8 @@ test('dyn-reach: host-visible literals allocate regardless of dynamic-key reach'
   for (const [name, fn, mkAllocs, mk1Allocs] of cases) {
     const src = lits + fn
     const wat = compile(src, { optimize: 0, wat: true })
-    const body = (f) => { const i = wat.indexOf(`(func $${f}\n`); return wat.slice(i, wat.indexOf('\n  (func ', i + 1)) }
-    is(/__alloc_hdr/.test(body('mk')), mkAllocs, `${name}: {x, y} ${mkAllocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
-    is(/__alloc_hdr/.test(body('mk1')), mk1Allocs, `${name}: {1, 2} ${mk1Allocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
+    is(/__alloc_hdr/.test(funcWat(wat, 'mk')), mkAllocs, `${name}: {x, y} ${mkAllocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
+    is(/__alloc_hdr/.test(funcWat(wat, 'mk1')), mk1Allocs, `${name}: {1, 2} ${mk1Allocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
     const ex = jz(src, { optimize: 0 }).exports
     is(ex.mk().x + ex.mk().y, 3, `${name}: {x, y} reads`)
     is(ex.mk1()[1] + ex.mk1()[2], 30, `${name}: {1, 2} reads`)

@@ -589,7 +589,7 @@ test('codegen: numeric export parameters need no in-loop coercion', () => {
   `
   const wat = compile(src, { wat: true })
   // Isolate calc's body; the hot loop must hold no per-iter __to_num.
-  const calcBody = wat.slice(wat.indexOf('(func $calc'))
+  const calcBody = funcWat(wat, 'calc')
   const loopMatch = calcBody.match(/\(loop[\s\S]*?\(br /)
   ok(loopMatch && !/call \$__to_num/.test(loopMatch[0]), 'param coercion must not remain inside the loop')
   // Correctness: identical to the same source as plain JS, across edge values.
@@ -1687,7 +1687,7 @@ test('codegen: runtime .length does not eagerly decode pointer offset', () => {
   if (onKernel()) return  // kernel WAT shape differs; in-process leg owns shape checks
   const wat = compile('export let f = (x) => x.length', { wat: true, optimize: false })
   // (the head answers an array and a string in line; its tail is the whole dispatch)
-  const helperBody = ['__length', '__length.value'].map(n => funcWat(wat, n) + funcWat(wat, `${n}_tail`)).join('')
+  const helperBody = funcWat(wat, '__length', '__length.value') + funcWat(wat, '__length_tail', '__length.value_tail')
   ok(helperBody, 'expected $__length helper in WAT')
   ok(/\$__len\b/.test(helperBody), '$__length should still delegate non-string length to $__len')
   is((helperBody.match(/\$__ptr_offset\b/g) || []).length, 0,
@@ -1703,15 +1703,11 @@ test('codegen: statement array push skips dropped return length reload', () => {
   is((stmtBody.match(/\$__ptr_offset\b/g) || []).length, 0, 'statement push should not reload length for a dropped result')
 
   const exprWat = compile('export let f = () => { let xs = []; return xs.push(1) }', { wat: true, optimize: false })
-  const exprBody = exprWat.match(/\(func \$f[\s\S]*?^  \)/m)?.[0] || ''
-  ok(exprBody, 'expected expression $f function in WAT')
+  const exprBody = funcWat(exprWat, 'f')
   is((exprBody.match(/\$__arr_push1\b/g) || []).length, 1, 'expression push should use the same known-array helper')
   is((exprBody.match(/\$__ptr_offset\b/g) || []).length, 1, 'expression push still reloads length for the JS return value')
 
-  const h0 = exprWat.indexOf('(func $__arr_push1')
-  const h1 = exprWat.indexOf('\n  (func ', h0 + 1)
-  const helperBody = h0 >= 0 ? exprWat.slice(h0, h1 >= 0 ? h1 : undefined) : ''
-  ok(helperBody, 'expected $__arr_push1 helper in WAT')
+  const helperBody = funcWat(exprWat, '__arr_push1')
   is((helperBody.match(/\$__ptr_offset\b/g) || []).length, 0,
     '__arr_push1 should inline its hot forwarding-aware offset decode')
   ok(helperBody.includes('$__ptr_offset_fwd'),

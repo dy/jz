@@ -13,7 +13,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
-import { run, oracle, compile, compileInProcess } from './util.js'
+import { run, oracle, compile, compileInProcess, funcWat } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 
 
@@ -390,7 +390,7 @@ test('union inline: packed carrier is JS-exact and fully devirtualized', () => {
   is(run(SRC, { optimize: 'speed' }).main(), host)
   const wat = compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true })
   const seg = String(wat)
-  const mainSeg = seg.slice(seg.indexOf('(func $main'), seg.indexOf('\n  (func ', seg.indexOf('(func $main') + 10))
+  const mainSeg = funcWat(seg, 'main')
   is((mainSeg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in the kernel')
   ok(/i32\.load offset=/.test(mainSeg), 'raw packed-cell field reads')
 })
@@ -444,9 +444,7 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
   const wat = String(compile(SRC, { optimize: { level: 'speed', watr: false, sourceInline: false }, wat: true }))
   // The carrier-specialized CLONE (audit decision 2): raw-i32 cell-address
   // param, packed loads, no NaN-box anywhere in the callee.
-  const m0 = wat.indexOf('(func $measure$union')
-  ok(m0 >= 0, 'carrier-specialized clone emitted')
-  const seg = wat.slice(m0, wat.indexOf('\n  (func ', m0 + 10))
+  const seg = funcWat(wat, 'measure$union')
   ok(/\(param \$o i32\)/.test(seg), 'cursor param is a raw i32 cell address')
   is((seg.match(/__dyn_get/g) || []).length, 0, 'zero dynamic reads in measure$union')
   is((seg.match(/f64\.(eq|convert|load)/g) || []).length, 0, 'all-i32 dispatch (no f64 ladder)')

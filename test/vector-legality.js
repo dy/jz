@@ -7,7 +7,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { compile, jz, oracle } from './util.js'
+import { compile, jz, oracle, funcWat } from './util.js'
 
 const agree = (name, src, args = []) => {
   const want = oracle(src).f(...args)
@@ -1046,9 +1046,8 @@ export let f = () => { for (let i = 0; i < 64; i++) b[i] = a[i] << 3; return 0 }
 ]
 test('vector legality: what it keeps lifted', () => {
   if (belowOpt(2)) return
-  const fnOf = (w) => { const i = w.indexOf('(func $f'), j = w.indexOf('\n  (func ', i + 8); return w.slice(i, j < 0 ? undefined : j) }
   for (const [name, src, args = []] of KEPT) for (const optimize of levels(2, 3)) {
-    ok(/v128|[if](?:8x16|16x8|32x4|64x2)\./.test(fnOf(compile(src, { optimize, wat: true }))), `${name}: lifted at ${optimize}`)
+    ok(/v128|[if](?:8x16|16x8|32x4|64x2)\./.test(funcWat(compile(src, { optimize, wat: true }), 'f')), `${name}: lifted at ${optimize}`)
     const want = oracle(src), got = jz(src, { optimize }).exports
     want.init(); got.init()
     is(got.f(...args), want.f(...args), `${name}: f at ${optimize}`)

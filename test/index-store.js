@@ -8,7 +8,7 @@ import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'
 
-const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
+const fnText = (text, name) => funcWat(text, name + '$exp', name)
 
 const src = `const out = []
   export const fill = (n) => { for (let i = 0; i < n; i++) out[i] = i * 2; return out.length }

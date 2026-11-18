@@ -18,7 +18,7 @@ const agree = (src, calls) => {
     }
   }
 }
-const dynCalls = (text, fn) => { const body = funcWat(text, `${fn}$exp`) || funcWat(text, fn); ok(body, `${fn} is in the module`); return body.match(/call \$__(dyn_get|dyn_set|hash_get|hash_set|ihash)\w*/g) ?? [] }
+const dynCalls = (text, fn) => { const body = funcWat(text, `${fn}$exp`, fn); ok(body, `${fn} is in the module`); return body.match(/call \$__(dyn_get|dyn_set|hash_get|hash_set|ihash)\w*/g) ?? [] }
 
 // the atom shape: a state record per channel in a list, state added on first use, a default `{}` beside it
 const state = `function svf (s, x, f, q) { s.l += f * s.b; let h = x - s.l - q * s.b; s.b += f * h; return h }

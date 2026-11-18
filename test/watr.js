@@ -4,7 +4,7 @@ import { onWasi, levels } from './_matrix.js'
 import { compile as nativeCompile } from 'watr'
 import { readFileSync, readdirSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { jz, compile } from './util.js'
+import { jz, compile, funcWat } from './util.js'
 
 const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
@@ -334,13 +334,8 @@ test('jz: bigint param loop-reassigned through a sink keeps one representation',
   // reassignment (n >> 7n) and its ToNumber (Number(n) reads the plan's
   // carrier): no box is allocated in either function.
   const wat = compile(src, { jzify: true, optimize: false, wat: true })
-  const bodyOf = name => {
-    const start = wat.indexOf(`(func $${name}`)
-    const end = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, end < 0 ? wat.length : end)
-  }
-  is((bodyOf('limits').match(/call \$__alloc\b/g) || []).length, 0, 'BigInt(s) crosses raw: no box at the call edge')
-  is((bodyOf('uleb').match(/call \$__alloc\b/g) || []).length, 0, 'n >> 7n stays raw: no box at the binding-write edge')
+  is((funcWat(wat, 'limits').match(/call \$__alloc\b/g) || []).length, 0, 'BigInt(s) crosses raw: no box at the call edge')
+  is((funcWat(wat, 'uleb').match(/call \$__alloc\b/g) || []).length, 0, 'n >> 7n stays raw: no box at the binding-write edge')
 })
 
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {

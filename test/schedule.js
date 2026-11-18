@@ -6,13 +6,12 @@
 // watr's test/schedule.js.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { funcWat as funcWatOf, run, wat } from './util.js'
+import { funcWat, run, wat } from './util.js'
 import { ownedLevels } from './_matrix.js'
 
 const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', scheduleStatements: false } }
 /** The function's WAT, under its own name or its export wrapper's. */
-const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** Kernel calls whose argument is itself a kernel call: a dependent pair issued back to back. */
 const nested = (text) => (text.match(/\$math\.sin\s*\(call \$math\.sin\b/g) || []).length
 

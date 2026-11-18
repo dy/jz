@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, levels } from './_matrix.js'
-import { oracle, jz, compile } from './util.js'
+import { oracle, jz, compile, funcWat } from './util.js'
 import { codecOf } from '../interop.js'
 
 // Helper: compile and run
@@ -82,9 +82,7 @@ test('Nested external dispatch follows imported results and remains ingress-gate
     let internal = value => value.a.b
     export let f = value => internal(value)
   `, { wat: true, optimize: 0 })
-  const start = ingressWat.indexOf('(func $internal')
-  const end = ingressWat.indexOf('\n  (func $', start + 1)
-  const body = ingressWat.slice(start, end < 0 ? ingressWat.length : end)
+  const body = funcWat(ingressWat, 'internal')
   is((body.match(/\$__dyn_get_any/g) || []).length, 2,
     'both reads in an unknown helper chain retain runtime tag dispatch')
   ok(!body.includes('$__dyn_get_expr'),

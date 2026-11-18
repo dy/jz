@@ -42,7 +42,7 @@ for (const ctor of ['Int32Array', 'Uint8Array', 'Int16Array', 'Uint32Array'])
 test('guarded read: the load runs under the guard, the bound a constant', () => {
   if (belowOpt(3)) return
   const text = wat(machine('Int32Array', 'reg[a] !== 0'), { optimize: 3 })
-  const body = (funcWat(text, 'f$exp') || funcWat(text, 'f')).replace(/\s+/g, ' ')
+  const body = (funcWat(text, 'f$exp', 'f')).replace(/\s+/g, ' ')
   ok(body.includes('i32.lt_u'), 'the guard is there')
   ok(!/\(select \(local\.get [^)]+\) \(i32\.const 0\) \(local\.get [^)]+\)\)/.test(body), 'no address clamp')
   ok(!/i32\.shr_u \(i32\.load \(i32\.sub/.test(body), 'no length read from the header')

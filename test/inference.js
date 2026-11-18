@@ -12,7 +12,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi, withBigintStrict, levels, ownedLevels } from './_matrix.js'
-import { foldWords, run, oracle, jz, compile } from './util.js'
+import { foldWords, run, oracle, jz, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import { parse as watTree, callsOutside, walk } from '../scripts/wat-probe.mjs'
 import { dictValueKindOf, mapValueKindOf } from '../src/kind.js'
@@ -1068,7 +1068,7 @@ test('typed-array index with bounded literal terms stays pure i32', () => {
   const wat=compile(`let arr=new Float64Array(64),W=8
     export const gather=(fx,fy)=>{let i=fx&7,j=fy&7;
       return arr[j*W+i]+arr[j*W+i+1]+arr[(j+1)*W+i]+arr[(j+1)*W+i+1]}`,{wat:true})
-  const at=wat.indexOf('(func $gather'),fn=wat.slice(at,wat.indexOf('(func',at+6))
+  const fn=funcWat(wat,'gather')
   is(count(fn,/i32\.trunc_sat_f64_s|f64\.convert_i32_s|f64\.mul\b/g),0,'proven index arithmetic has no float round trip')
   is(count(fn,/global\.get \$W\b/g),0,'constant width is not read')
   if(!belowOpt(2)) is(count(fn,/i32\.mul\b/g),0,'power-of-two width uses shifts')
@@ -1097,7 +1097,7 @@ test('a cursor stepped from a typed read indexes without the float round trip', 
 test('plain-array index with bounded literal terms stays pure i32', () => {
   const wat=compile(`export const f=(arr,jj,xx)=>{let j=jj&65535,x=xx&65535,W=4;
     return arr[j*W+x]+arr[j*W+x+1]+arr[(j+1)*W+x]}`,{wat:true})
-  const at=wat.indexOf('(func $f'),fn=wat.slice(at,wat.indexOf('(func',at+6))
+  const fn=funcWat(wat,'f')
   is(count(fn,/i32\.trunc_sat_f64_s|f64\.mul\b/g),0,'bounded indices need no float multiply or index conversion')
   // The unknown receiver can be an object: its property key still crosses boxed.
   const dynGetCalls=count(fn,/call \$__dyn_get_(?:expr|any)\b/g)
@@ -1117,8 +1117,7 @@ test('masked multiply narrows to i32 — bytebeat t*(m&63) deopt', () => {
   const wat = compile(
     'export let fill = (out, n) => { for (let t = 0; t < n; t++) out[t] = (t * (((t>>12)|(t>>8)) & (63 & (t>>4)))) & 255 }',
     { wat: true })
-  const at = wat.indexOf('(func $fill')
-  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  const fn = funcWat(wat, 'fill')
   const integerLoops = []
   walk(parseWat(fn), node => {
     if (node[0] !== 'loop') return
@@ -1174,8 +1173,7 @@ test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range
   const wat = compile(
     'export let f = (x, y) => { let a = x | 0, b = y | 0; return ((a & 0x7fff) * (b & 0x7fff)) | 0 }',
     { wat: true })
-  const at = wat.indexOf('(func $f')
-  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  const fn = funcWat(wat, 'f')
   is(count(fn, /f64\.mul/g), 0, 'both-≤2^15-bounded product uses i32.mul, not f64.mul')
   ok(count(fn, /i32\.mul\b/g) >= 1, 'the range-proven product is an i32.mul')
   // Functional check: the masked values are always non-negative and their
@@ -1209,8 +1207,7 @@ test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely r
   const wat = foldWords(compile(
     'export let f = (x, y) => { let a = x | 0, b = y | 0; return ((a & 0x7fff) + (b & 0x7fff)) | 0 }',
     { wat: true }))
-  const at = wat.indexOf('(func $f')
-  const fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  const fn = funcWat(wat, 'f')
   is(count(fn, /f64\.add/g), 0, 'both-mask-bounded sum uses i32.add, not f64.add')
   ok(count(fn, /i32\.add\b/g) >= 1, 'the range-proven sum is an i32.add')
 
@@ -1221,8 +1218,7 @@ test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely r
   const watWrap = foldWords(compile(
     'export let f = (a, b) => { let x = a | 0, y = b | 0; return (x + y) | 0 }',
     { wat: true }))
-  const atW = watWrap.indexOf('(func $f')
-  const fnW = watWrap.slice(atW, watWrap.indexOf('(func', atW + 6))
+  const fnW = funcWat(watWrap, 'f')
   is(count(fnW, /f64\.add/g), 0, '(a+b)|0 stays i32.add — ToInt32 root recovers the fast path via narrowI32')
   ok(count(fnW, /i32\.add\b/g) >= 1)
   const fWrap = run('export let f = (a, b) => { let x = a | 0, y = b | 0; return (x + y) | 0 }').f
@@ -1232,8 +1228,7 @@ test('addFitsI32 keeps the i32.add/i32.sub fast path when the sum is genuinely r
   const watLoop = compile(
     'export let f = (n) => { let i = 0, s = 0; while (i < n) { s = s + i; i = i + 1 } return s | 0 }',
     { wat: true, optimize: 2 })
-  const atL = watLoop.indexOf('(func $f')
-  const fnL = watLoop.slice(atL, watLoop.indexOf('(func', atL + 6))
+  const fnL = funcWat(watLoop, 'f')
   let fastLoop
   walk(parseWat(watLoop), n => { if (!fastLoop && n[0] === 'loop') fastLoop = JSON.stringify(n) })
   ok(fastLoop?.includes('i32.add') && fastLoop.includes('i64.add'), 'the guarded counter and accumulator use integer adds')
@@ -1335,7 +1330,7 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
       return s
     }
   `, { wat: true, optimize: 2 })
-  const fnIdx = watIdx.slice(watIdx.indexOf('(func $f'), watIdx.indexOf('(func', watIdx.indexOf('(func $f') + 6))
+  const fnIdx = funcWat(watIdx, 'f')
   ok(/\(local \$[^ ]*i[^ ]*int[^ ]* i32\)/.test(fnIdx), 'the range-guarded counter copy keeps i32 storage')
   ok(/\(local \$i f64\)/.test(fnIdx), 'the full Number fallback preserves wide counters')
 
@@ -1346,7 +1341,7 @@ test('safe control: index-use counters with no unresolved bare escape keep i32 s
       return s
     }
   `, { wat: true, optimize: { level: 'speed', sourceInline: false } })
-  const fnAcc = watAcc.slice(watAcc.indexOf('(func $f'), watAcc.indexOf('(func', watAcc.indexOf('(func $f') + 6))
+  const fnAcc = funcWat(watAcc, 'f')
   // `f` is export-wrapper-inlined ($__inlNN_s), same mangling as the other
   // inlined-name tests in this file — match either the plain or mangled form.
   ok(fnAcc.includes('$s i32)') || fnAcc.includes('_s i32)'), 'ToInt32-rooted accumulator `s` stays i32 storage despite a bare, uncompared return')
@@ -1370,7 +1365,7 @@ test('safe control: a counter a loop tests keeps i32 storage', () => {
       let mag = (a, o) => { const N = a.length; ${k === 'do' ? `${head} ${body} while (--i)` : `${head} ${body}`}; return o }
       export let f = () => mag(x, out).join()`
     const wat = compile(src, { wat: true, optimize: 2 })
-    const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('(func', wat.indexOf('(func $f') + 6))
+    const fn = funcWat(wat, 'f')
     ok(/[$_]i i32\)/.test(fn) && !/[$_]i f64\)/.test(fn), `${k}: the counter is an i32 local`)
     for (const optimize of levels(0, 2)) is(run(src, { optimize }).f(), oracle(src).f(), `${k}: agrees with JavaScript at ${optimize}`)
   }
@@ -2167,7 +2162,7 @@ test('typedLen: disagreeing call sites poison the fact', () => {
       return k ? tally(b) : tally(c)
     }
   `, { wat: true })
-  const tallySeg = wat.slice(wat.indexOf('(func $tally'), wat.indexOf('(func $go'))
+  const tallySeg = funcWat(wat, 'tally')
   is(count(tallySeg, /4242|(?<!\d)17(?!\d)/g), 0, 'neither site length folds into tally')
   ok(count(tallySeg, /i32\.load\b/g) >= 1, 'runtime header length read survives')
   const { exports } = jz(`
@@ -2392,7 +2387,7 @@ test('a parameter the body writes: every write must preserve signed width', () =
       }
     `
     const wat = compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
-    const bumpSeg = wat.slice(wat.indexOf('(func $bump'), wat.indexOf('(func $cursor'))
+    const bumpSeg = funcWat(wat, 'bump')
     ok(new RegExp(`\\(param \\$i ${bounded ? 'i32' : 'f64'}\\)`).test(bumpSeg), 'parameter storage covers every possible update')
     ok(new RegExp(`\\(result ${bounded ? 'i32' : 'f64'}\\)`).test(bumpSeg), 'result keeps the same proven width')
     if (bounded) {
@@ -2482,7 +2477,7 @@ test('a parameter the body writes: float-mutated param stays f64', () => {
     }
   `
   const wat = compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
-  const driftSeg = wat.slice(wat.indexOf('(func $drift'), wat.indexOf('(func $run'))
+  const driftSeg = funcWat(wat, 'drift')
   ok(/\(param \$i f64\)/.test(driftSeg), 'non-int-preserving mutation (i = i + 0.5) keeps the param f64')
   const { exports } = jz(src, { memory: 4 })
   is(exports.run(3), 1.5, 'functional result unchanged')

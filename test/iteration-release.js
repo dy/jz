@@ -10,7 +10,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { instantiate } from '../index.js'
 import { levels, onKernel, onWasi, stressed } from './_matrix.js'
-import { oracle, run, jz, compile } from './util.js'
+import { oracle, run, jz, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 
 const agree = (src, ns = [1, 7, 200]) => {
@@ -147,7 +147,7 @@ test('iteration release: a store through a receiver the site keeps names the rec
       return cs }`
   agree(src, [1, 7, 30])
   const wat = compile(src, { optimize: 'speed', wat: true })
-  const f = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 10))
+  const f = funcWat(wat, 'f')
   ok(/call \$__esc_(val|elem)/.test(f) && !/global\.set \$__esc\s*\(i32\.const 0\)/.test(f), 'the store lowers the flag to its receiver, not to zero')
   const grown = grownBy(src)
   is(grown(300), grown(1), 'three hundred iterations grow what one does')

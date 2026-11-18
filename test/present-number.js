@@ -75,7 +75,7 @@ test('present-number: a subarray sorted in place reads its bounds from the heade
   shapes(src, w => {
     // Generic ToNumber support for k includes array/string conversion helpers,
     // whose unrelated reads need runtime lengths. Inspect the typed operation.
-    const f = funcWat(w, 'f$exp') || funcWat(w, 'f')
+    const f = funcWat(w, 'f$exp', 'f')
     ok(f.length > 0, 'inspect the function containing the typed sort')
     is(calls(f, '__len'), 0, 'the typed sort reads length from its header')
     is(calls(f, '__length.value'), 0, 'the typed sort has no runtime length dispatch')

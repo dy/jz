@@ -182,7 +182,10 @@ Shared helpers live in `test/util.js`: `run` (exports), `wat` (text),
 `jzWat` (the text and the instance from one compile, and `fresh()` for an
 instance an input), `oracle(src)` (the same program evaluated by Node), `agree`
 (jz equals Node for one call; given a `jzWat` build it compiles nothing),
-`funcWat` (one function's WAT), and `cases(rows)`, which compiles a
+`funcWat(text, ...names)` (one function's WAT, the first of the names the module
+defines; it throws when the module defines none, so a pin cannot pass on an absent
+function, and a pin that also holds where the function is gone asks `hasFunc` first),
+and `cases(rows)`, which compiles a
 table of `[label, arrowSource, want, ...args]` rows as one module. A compile is
 almost all of a test's cost, so a family of one-assertion programs belongs in one
 `cases` table, not one compile per assertion, and a source whose text a test reads

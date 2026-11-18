@@ -465,7 +465,7 @@ test('audit: integer products preserve zero sign through every numeric carrier',
     const wat = compile(`export function positive(x,y){return (x&255)*(y&255)}
       export function square(x){const v=x>>24;return v*v}`, {optimize:2,wat:true})
     for (const name of ['positive','square']) {
-      const body = funcWat(wat, name) || funcWat(wat, `${name}$exp`)
+      const body = funcWat(wat, name, `${name}$exp`)
       ok(body.includes('i32.mul') && !body.includes('f64.mul'), `${name}: faithful products retain integer multiplication`)
     }
   }
@@ -854,7 +854,7 @@ export function result(){const a=make();return a.length+count(a)}`
   is(jz(src,{optimize}).exports.result(),528)
   if (!onKernel()) {
     const w=compile(src,{optimize:{...optimize,watr:false},wat:true})
-    const body=w.slice(w.indexOf('(func $count'),w.indexOf('(func $result'))
+    const body=funcWat(w,'count')
     ok(body.includes('(i32.const 32)') || body.includes('(f64.const 32)'), 'constant length reaches count')
     ok(!body.includes('i32.div_s'), 'no record-stride division for known length')
   }
@@ -1189,7 +1189,7 @@ test('audit: a caught runtime error decodes from an arm for each code the progra
   }
   if (onKernel()) return
   const wat = compile(src, { optimize: 0, wat: true })
-  const at = wat.indexOf('(func $__catch_error'), decoder = wat.slice(at, wat.indexOf('\n  (func', at))
+  const decoder = funcWat(wat, '__catch_error')
   const arms = new Set([...decoder.matchAll(/\(local\.get \$code\) \(i32\.const (\d+)\)/g)].map(m => +m[1]))
   for (const code of [ERR.NUMBER_RADIX, ERR.BIGINT_PARSE_DIGIT, ERR.BIGINT_PARSE_EMPTY]) ok(arms.has(code), `an arm for ${code}`)
   for (const code of [ERR.JSON_CIRCULAR, ERR.URI_BAD_HEX, ERR.CRYPTO_QUOTA]) ok(!arms.has(code), `no arm for ${code}`)
@@ -1506,7 +1506,7 @@ test('audit: checked integer locals keep words where a miss meets only tests zer
       is(wasm[name](i),js[name](i),`${optimize}: ${name}(${i})`)
   }
   if(!onKernel()){
-    const wat=compile(src,{optimize:'speed',wat:true}),body=funcWat(wat,'run')||funcWat(wat,'f')
+    const wat=compile(src,{optimize:'speed',wat:true}),body=funcWat(wat,'run','f')
     ok(/\(local \$[^\s)]*rep i32\)/.test(body),'the repeat count stays a word')
   }
 })
@@ -1993,7 +1993,7 @@ test('audit: a literal\'s slot that is written is read as what it holds', () => 
   if (onKernel()) return
   // (a slot nothing writes is still its initializer: the read beside the written one is the constant's)
   const wat = compile(top + `export let f = (x) => { const a = [1, 2]; a[0] = Math.floor(x); return A[a[1]] + a[0] }`, { optimize: 'size', wat: true })
-  ok(!/\$f[\s\S]*?i32\.lt_u[\s\S]*?\(func /.test(wat.slice(wat.indexOf('(func $f'))), 'an unwritten slot indexes with no bounds test')
+  ok(!/i32\.lt_u/.test(funcWat(wat, 'f')), 'an unwritten slot indexes with no bounds test')
 })
 
 // A literal nothing writes is one shared static instance.

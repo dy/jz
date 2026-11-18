@@ -7,7 +7,7 @@ import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'
 
-const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
+const fnText = (text, name) => funcWat(text, name + '$exp', name)
 
 const src = `const A = [1, 2, NaN, -0, 5], B = [1, 3, NaN, 0]
   const same = (a, b, i, j) => a[i] === b[j]

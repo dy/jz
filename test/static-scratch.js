@@ -8,7 +8,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { funcWat, oracle, run, wat } from './util.js'
+import { funcWat, hasFunc, oracle, run, wat } from './util.js'
 
 const V = 'const F = new Float64Array(1)\nconst U = new Uint32Array(F.buffer)\n'
 const FLOATS = [1.5, -0, 3.141592653589793, 1e308, -2.5e-310, NaN, -Infinity, 4503599627370497]
@@ -52,7 +52,7 @@ test('static scratch: an array nothing else reaches leaves no access', () => {
   for (const [name, [src]] of Object.entries(registers)) {
     if (name.includes('between the reads')) continue
     const text = wat(src, { optimize: 3 })
-    for (const fn of ['f', 'deep']) ok(!/\b[if](32|64)\.(load|store)/.test(funcWat(text, fn)), `${name}: no load and no store in ${fn}`)
+    for (const fn of ['f', 'deep'].filter(fn => hasFunc(text, fn))) ok(!/\b[if](32|64)\.(load|store)/.test(funcWat(text, fn)), `${name}: no load and no store in ${fn}`)
     ok(!/\(global \$[FUSBWIC]\b/.test(text), `${name}: no binding left`)
   }
 })

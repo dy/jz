@@ -14,7 +14,7 @@ import { belowOpt } from './_matrix.js'
 const shapes = (built, check) => {
   if (belowOpt(2)) return
   const w = built.wat, passes = [...w.matchAll(/\(func \$(f(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(w, m[1]))
-  check([funcWat(w, 'f$exp') || funcWat(w, 'f'), ...passes].join('\n'))
+  check([funcWat(w, 'f$exp', 'f'), ...passes].join('\n'))
 }
 // The loops that hold no other loop, as text.
 const innermost = (fn) => {

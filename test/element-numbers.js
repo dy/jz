@@ -204,7 +204,7 @@ test('element numbers: pushes, indexed stores, copies and compound stores state 
   is(nums(`const g = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(n - i); return a }\nconst a = g(3), b = g(5)\n${use}a[i & 1] + b[i & 1]`, 'a'), [-1, 5, true, true], 'a parameter its calls bound')
 })
 
-const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
+const fnText = (text, name) => funcWat(text, name + '$exp', name)
 // the exponent test of a truncation whose magnitude is unknown (optimize/to-int32.js)
 const MAGNITUDE = '(i64.const 1075)'
 const HOLE = /0x7FF87FFFFFFFFFFF/i

@@ -13,14 +13,13 @@ import { includeAllMods } from '../src/autoload.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { ctx } from '../src/ctx.js'
 import { levels, onKernel, onWasi, belowOpt, stressed } from './_matrix.js'
-import { oracle, compileInProcess, jz, compile } from './util.js'
+import { oracle, compileInProcess, jz, compile, funcWat } from './util.js'
 import { bounded } from './_bounded.js'
 
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
-const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
-const rewinds = (src, opts = {}) => /heap_save/.test(bodyOf(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
+const rewinds = (src, opts = {}) => /heap_save/.test(funcWat(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
 // A frame that restores the heap only on a call no escape site ran in.
-const flagged = (src, opts = {}) => /esc_save/.test(bodyOf(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
+const flagged = (src, opts = {}) => /esc_save/.test(funcWat(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
 const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...opts, whyNotRewind: (n, r) => why.push([n, r]) }); return why.find(([n]) => n === '$f')?.[1] ?? null }
 // Heap growth over `calls` calls of `call`, after `settle` calls that make first-call state.
 const growth = (memory, call, calls = 200, settle = 1) => { for (let i = 0; i < settle; i++) call(); const used = memory.used; for (let i = 0; i < calls; i++) call(); return memory.used - used }
@@ -167,7 +166,7 @@ test('frame effects: array length coercion does not retain local storage', () =>
 
 test('frame effects: SIMD registers do not escape, but their argument calls do', () => {
   const plain = `export function f(x) { const v=f32x4.splat(x); return f32x4.lane(f32x4.add(v,v),0) }`
-  if (!onKernel()) ok(!bodyOf(compile(plain, { wat: true, ...TAPE }), 'f').includes('global.set $__esc'),
+  if (!onKernel()) ok(!funcWat(compile(plain, { wat: true, ...TAPE }), 'f').includes('global.set $__esc'),
     'register operations need no heap escape flag')
   const src = `let saved;
     function keep(x) { saved=new Float64Array([x,x+1]); return x }
@@ -246,7 +245,7 @@ test('frame effects: a value the call surely made, stored into storage older tha
   const param = 'export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'
   ok(whyNot(param).startsWith(kept + 'heap value into o'), 'through a parameter (the prepared name of `o`)')
   const walks = compile(param, { wat: true, ...TAPE })
-  ok(flagged(param) && /\$__frame_give/.test(bodyOf(walks, 'f')) && /\$__survive/.test(bodyOf(walks, '__frame_give')), 'its frame walks from what it wrote into (its release out of line)')
+  ok(flagged(param) && /\$__frame_give/.test(funcWat(walks, 'f')) && /\$__survive/.test(funcWat(walks, '__frame_give')), 'its frame walks from what it wrote into (its release out of line)')
   is(whyNot('const reg = []; function keep(o) { reg.push(o) } export function f(n) { const o = { x: n }; keep(o); return 1 }'), kept + 'heap value into reg', 'through a callee that pushes it into module state')
   is(whyNot('let last = null; export function f(n) { last = [n, n]; return last.length }'), kept + 'outer binding last', 'into a module binding')
   // A function of the module's own keeps whole: the frame around it decides for both.
@@ -358,7 +357,7 @@ test('frame effects: the log of what the escapes wrote into is made as the modul
     ok(held[0] > 0 && held[0] < 64, 'the pair it stored, none of its temporary')
   }
   if (belowOpt(2)) return
-  ok(!/call \$__alloc/.test(bodyOf(compile(src, { wat: true, ...TAPE }), '__root')), 'no store allocates the log')
+  ok(!/call \$__alloc/.test(funcWat(compile(src, { wat: true, ...TAPE }), '__root')), 'no store allocates the log')
 })
 
 test('frame effects: the host keeps the mark of a frame that runs around its call', () => {
@@ -623,18 +622,18 @@ test('frame effects: a key a store inserts is the receiver\'s, and a frame that 
 test('frame effects: a growth\'s check stands around the loop that holds its receiver and allocates nothing else', () => {
   // `t` may be an array the store grows: one check per call, outside the loop
   const once = 'export function f(a, b, k, n) { const s = new Array(4).fill(0); const t = k === 1 ? a : b; for (let i = 0; i < n; i = i + 1) t[i] = i + s[0]; return s.length }'
-  const body = bodyOf(compile(once, { wat: true, ...TAPE }), 'f')
+  const body = funcWat(compile(once, { wat: true, ...TAPE }), 'f')
   ok(flagged(once) && /\$__esc/.test(body) && loopSpans(body).length && !loopSpans(body).some(l => ESC_CHECK.test(l)), 'the check is outside every loop')
   const want = oracle(once), m = jz(once).exports
   for (const [a, b] of [[[1, 2], [3]], [new Float64Array(4), [0]]]) is(m.f(a, b, 1, 6), want.f([...a], [...b], 1, 6), 'a growing array and a typed one')
   // a row the outer loop binds anew is the same through the inner loop: its check runs once per row
   const rows = 'export function f(rows, n) { const s = new Array(4).fill(0); for (let i = 0; i < n; i++) { const row = rows[i]; for (let j = 0; j < n; j++) row[j] = j + s[0] } return s.length }'
-  const loops = loopSpans(bodyOf(compile(rows, { wat: true, ...TAPE }), 'f')), innermost = loops.filter(l => l.indexOf('(loop', 5) < 0)
+  const loops = loopSpans(funcWat(compile(rows, { wat: true, ...TAPE }), 'f')), innermost = loops.filter(l => l.indexOf('(loop', 5) < 0)
   ok(flagged(rows) && loops.some(l => /\$__esc/.test(l)) && !innermost.some(l => ESC_CHECK.test(l)), 'the check runs per row, outside the inner loop')
   // a loop that allocates besides its stores checks each store: what the loop made is no growth of the receiver
   const noisy = `const out = [0, 0, 0, 0]
     export function f(n, k) { for (let i = 0; i < k; i++) { const c = 'k' + n + i; out[i] = c.length } return out[3] }`
-  ok(loopSpans(bodyOf(compile(noisy, { wat: true, ...TAPE }), 'f')).some(l => /\$__esc/.test(l)), 'the check stands at the store')
+  ok(loopSpans(funcWat(compile(noisy, { wat: true, ...TAPE }), 'f')).some(l => /\$__esc/.test(l)), 'the check stands at the store')
   for (const optimize of levels(2, 3, 'size')) {
     const { exports: x, memory } = jz(noisy, { optimize })
     is(x.f(5, 4), oracle(noisy).f(5, 4)); is(growth(memory, () => x.f(5, 4)), 0, `the temporaries of the loop go with the call at ${optimize}`)
@@ -893,7 +892,7 @@ test('frame effects: a receiver the emitter cannot read again is kept as it is e
     }
   }
   const wat = compile(src, { wat: true, ...TAPE })
-  for (const name of calls) ok(!/\(global\.set \$__esc \(i32\.const 0\)\)/.test(bodyOf(wat, name)), `${name}: no store lowers the flag to zero`)
+  for (const name of calls) ok(!/\(global\.set \$__esc \(i32\.const 0\)\)/.test(funcWat(wat, name)), `${name}: no store lowers the flag to zero`)
 })
 
 test('frame effects: a builtin called by name is listed by what it keeps', () => {
@@ -1011,7 +1010,7 @@ test('frame effects: what a store\'s operand allocates is no growth of its recei
 
 test('frame effects: a value read off the receiver it is stored into is no escape', () => {
   // The receiver held the value already: the store hands it nothing, and asks nothing.
-  const asks = (src) => (bodyOf(compile(src, { wat: true, ...TAPE }), 'f').match(/__esc_new/g) ?? []).length
+  const asks = (src) => (funcWat(compile(src, { wat: true, ...TAPE }), 'f').match(/__esc_new/g) ?? []).length
   const copy = 'export function f(a, n) { for (let i = 0; i < n; i++) a[i] = a[i + 1] }'
   const swap = 'export function f(a, n) { for (let i = 0, j = n - 1; i < j; i++, j--) { const t = a[i]; a[i] = a[j]; a[j] = t } }'
   const path = 'export function f(o, n) { for (let i = 0; i < n; i++) o.list[i] = o.list[n - i] }'
@@ -1071,7 +1070,7 @@ test('frame effects: a result the summary saw no value of proves no scalar', () 
   const wat = compile(`import { twice } from './util.js'
     export let f = (x) => { const t = [x, x]; return twice(t[0] + t[1]) }`, { ...TAPE, wat: true, modules: {
     './util.js': 'export const clone = (node) => Array.isArray(node) ? node.map(clone) : node; export const twice = (x) => x * 2' } })
-  const clone = bodyOf(wat, '__util_js$clone')
+  const clone = funcWat(wat, '__util_js$clone')
   ok(/heap_save/.test(clone) && /call \$__made/.test(clone), 'the frame restores unless the result is of its making')
 })
 
@@ -1139,8 +1138,8 @@ test('frame effects: a loop building a temporary per iteration runs in constant 
     const before = heap(); m.exports.temps(200); if (optimize >= 2) is(heap(), before, `O${optimize}: the Map temporaries never accumulate`)
   }
   const wat = compile(src, { wat: true, optimize: 2 })
-  ok(/lrw\d/.test(bodyOf(wat, 'temps')), 'the temporary loop carries the rewind marker')
-  for (const name of ['carried', 'pushed', 'returned', 'joined', 'kept']) ok(!/lrw\d/.test(bodyOf(wat, name)), `${name}: an iteration whose allocation escapes is not rewound`)
+  ok(/lrw\d/.test(funcWat(wat, 'temps')), 'the temporary loop carries the rewind marker')
+  for (const name of ['carried', 'pushed', 'returned', 'joined', 'kept']) ok(!/lrw\d/.test(funcWat(wat, name)), `${name}: an iteration whose allocation escapes is not rewound`)
 })
 
 test('frame effects: whyNotRewind reports no allocation and the vetoing callee', () => {
@@ -1469,7 +1468,7 @@ test('frame effects: a cached typed-array load survives a call to a read-only ca
     function g(k) { return k <= 0 ? 0 : a[k & 7] + g(k - 1) }
     function h(k) { buf[0] = a[1]; a[0] = k + 1; return k <= 0 ? 0 : h(k - 1) }
     export function f(i, k) { const x = a[i]; const y = ${callee}(k); const z = a[i]; return x + y + z }`
-  const loads = (callee) => (bodyOf(compile(mk(callee), { wat: true, ...TAPE }), 'f').match(/f64\.load/g) || []).length
+  const loads = (callee) => (funcWat(compile(mk(callee), { wat: true, ...TAPE }), 'f').match(/f64\.load/g) || []).length
   is(loads('g'), 1, 'the second a[i] reuses the first across the read-only call')
   is(loads('h'), 2, 'a callee that writes a typed array forces a reload')
   const m = jz(mk('h'))
@@ -1482,7 +1481,7 @@ test('frame effects: a cached load survives a callback that stores nothing and n
     const cbs = [(v) => { a[0] = v + 1; return v }]
     function h(k) { ${body}; return k <= 0 ? 0 : h(k - 1) }
     export function f(i, k) { const x = a[i]; const y = h(k); const z = a[i]; return x + y + z }`
-  const loads = (src) => (bodyOf(compile(src, { wat: true, ...TAPE }), 'f').match(/f64\.load/g) || []).length
+  const loads = (src) => (funcWat(compile(src, { wat: true, ...TAPE }), 'f').match(/f64\.load/g) || []).length
   const swap = 'let cb = (v) => v; const swap = () => { cb = (v) => { a[0] = v + 1; return v } }; swap()'
   is(loads(mk('Array.from([k], (v) => v + 1)')), 1, 'a map function that stores nothing keeps the load')
   for (const [what, body] of [
@@ -1654,7 +1653,7 @@ test('frame effects: a host method call with primitive arguments is no escape', 
   const src = `let cur
     export function f(i) { const t = [i, i + 1]; return cur.charCodeAt(i | 0) + t[1] }
     export function g(s) { cur = s; return f(0) }`
-  const body = bodyOf(compile(src, { wat: true, ...TAPE }), 'f')
+  const body = funcWat(compile(src, { wat: true, ...TAPE }), 'f')
   ok(/__ext_invoke_inline/.test(body), 'the host call passes its argument inline')
   ok(!/\(global\.set \$__esc \(i32\.const 0\)\)/.test(body), 'no store lowers the flag to zero')
   const m = jz(src).exports
@@ -1669,12 +1668,12 @@ test('frame effects: a host method call with primitive arguments is no escape', 
 test('frame effects: a type test makes a method on the name its builtin; a predicate allocates nothing', () => {
   if (onKernel()) return
   const guard = `export function f(x) { if (typeof x === 'string') { let h = 0; for (let i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) | 0; return h } return Array.isArray(x) ? x.length : 0 }`
-  const body = bodyOf(compile(guard, { wat: true, ...TAPE }), 'f')
+  const body = funcWat(compile(guard, { wat: true, ...TAPE }), 'f')
   ok(body && !/__gc_begin|__ibase/.test(body), 'the string loop keeps no compaction or release site')
   const host = oracle(guard), m = jz(guard).exports
   for (const x of ['abc', 'aéz', [1, 2], 5]) is(m.f(x), host.f(x), `f(${JSON.stringify(x)})`)
   const predicate = `export function f(xs) { let n = 0; for (let i = 0; i < xs.length; i++) if (Array.isArray(xs[i])) n += xs[i].length; return n }`
-  ok(!/__gc_begin|__ibase/.test(bodyOf(compile(predicate, { wat: true, ...TAPE }), 'f')), 'a loop of predicates allocates nothing')
+  ok(!/__gc_begin|__ibase/.test(funcWat(compile(predicate, { wat: true, ...TAPE }), 'f')), 'a loop of predicates allocates nothing')
   is(jz(predicate).exports.f([[1, 2], 3, [4]]), 3)
 })
 
@@ -1690,7 +1689,7 @@ test('frame effects: a frame that only grows storage older than itself pays no p
   const why = []
   const text = compile(src, { ...opts, wat: true, whyNotRewind: (n, r) => why.push([n, r]) })
   is(why.find(([n]) => n === '$loc')?.[1], 'escape: grows only storage older than the frame')
-  ok(!/heap_save|esc_save/.test(bodyOf(text, 'loc')), 'no save at entry, no restore at return')
+  ok(!/heap_save|esc_save/.test(funcWat(text, 'loc')), 'no save at entry, no restore at return')
   const host = oracle(src)
   for (const optimize of levels(2, 3, 'size')) {
     const { exports: m, memory } = jz(src, { optimize })
@@ -1733,7 +1732,7 @@ test('frame effects: a union of numbers, booleans and nullish stores no heap val
   const src = `let idx = 0
     const step = (c) => c > 64 ? 1 : c === 0 ? null : false
     export function f(s) { idx = 0; let l; while (l = step(s.charCodeAt(idx))) idx += l; return idx }`
-  ok(!/__esc_root/.test(bodyOf(compile(src, { wat: true, ...TAPE }), 'f')), 'the step logs no root')
+  ok(!/__esc_root/.test(funcWat(compile(src, { wat: true, ...TAPE }), 'f')), 'the step logs no root')
   is(jz(src).exports.f('ABC!'), oracle(src).f('ABC!'))
 })
 

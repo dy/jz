@@ -4,10 +4,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, onWasi } from './_matrix.js'
-import { jz, compile, oracle } from './util.js'
+import { jz, compile, oracle, funcWat } from './util.js'
 
 const NO_INLINE = { optimize: { sourceInline: false } }   // keep the callee a call, so the ABI shows
-const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
 const wat = (src) => compile(src, { wat: true, ...NO_INLINE })
 
 test('lanes: a literal record passed to a field-reading callee becomes scalar parameters', () => {
@@ -16,7 +15,7 @@ test('lanes: a literal record passed to a field-reading callee becomes scalar pa
   const w = wat(src)
   ok(/\(func \$len\$lanes/.test(w), 'the lane sibling exists')
   ok(/\(param \$v\$x f64\)\s+\(param \$v\$y f64\)/.test(w), 'one f64 parameter per field read')
-  ok(!/alloc/.test(bodyOf(w, 'dist')), 'the caller allocates nothing')
+  ok(!/alloc/.test(funcWat(w, 'dist')), 'the caller allocates nothing')
   ok(!/\(func \$len\b[^$]/.test(w), 'the record form is dead and shaken')
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.dist(0, 0, 3, 4), 5, `O${optimize}`)
 })
@@ -27,9 +26,9 @@ test('lanes: a literal held in a binding is read only through the lanes and diss
   const w = wat(src)
   // Value numbering computes `len(v)` once for `len(v) + len(v)`, which leaves the lane
   // sibling one caller, and watr then inlines it; either way the record form is gone.
-  ok(/\(func \$len\$lanes/.test(w) || !/call \$len\b/.test(bodyOf(w, 'f')), 'the lane sibling exists, or inlined into its one call')
+  ok(/\(func \$len\$lanes/.test(w) || !/call \$len\b/.test(funcWat(w, 'f')), 'the lane sibling exists, or inlined into its one call')
   ok(!/\(func \$len\b(?!\$lanes)/.test(w), 'the record form is gone')
-  ok(!/alloc/.test(bodyOf(w, 'f')), 'the binding scalarizes')
+  ok(!/alloc/.test(funcWat(w, 'f')), 'the binding scalarizes')
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(3, 4), 10, `O${optimize}`)
 })
 

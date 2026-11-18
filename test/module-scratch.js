@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels, ownedLevels } from './_matrix.js'
-import { oracle, run, wat, compile, funcWat } from './util.js'
+import { oracle, run, wat, compile, funcWat, hasFunc } from './util.js'
 
 // A helper that writes two results at a stride: over its second copy's budget, so two sites keep the call.
 const ASSIGN = `const SMALLEST = 2.2250738585072014e-308, SCALE = 4503599627370496
@@ -138,12 +138,12 @@ test('module scratch: a call that writes the array between, the stores after it 
     const text = wat(src, { optimize: 3 })
     ok(!/\(global \$[WS]\b/.test(text), `${name}: no binding left`)
     // (the program's own functions: a value the host passes may be a string, whose runtime loads)
-    for (const fn of ['f', 'pw', 'deep']) ok(!/\bf64\.(load|store)/.test(funcWat(text, fn)), `${name}: no load and no store in ${fn}`)
+    for (const fn of ['f', 'pw', 'deep'].filter(fn => hasFunc(text, fn))) ok(!/\bf64\.(load|store)/.test(funcWat(text, fn)), `${name}: no load and no store in ${fn}`)
   }
   // (in memory: a store of the element a callee reads back, whether a global or static data holds the array)
   for (const [name, [src]] of Object.entries(calledOver)) {
     const text = wat(src, { optimize: 3 })
-    ok(['rec', 'deep'].some(fn => /\bf64\.store/.test(funcWat(text, fn))), `${name}: the array stays`)
+    ok(['rec', 'deep'].some(fn => hasFunc(text, fn) && /\bf64\.store/.test(funcWat(text, fn))), `${name}: the array stays`)
   }
 })
 

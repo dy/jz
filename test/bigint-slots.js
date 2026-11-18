@@ -92,7 +92,7 @@ export let elements = (n) => { const a = [1n, 2n]; for (let i = 0; i < n; i++) a
   if (belowOpt(2)) return
   const w = wat(src, { optimize: 'speed' })
   for (const name of ['fields', 'elements'])
-    ok(loopsOf(funcWat(w, name) || funcWat(w, name + '$exp')).every(l => !/call \$__(alloc|mkptr|ptr_type)\b/.test(l)), `${name}: no box in its loop`)
+    ok(loopsOf(funcWat(w, name, name + '$exp')).every(l => !/call \$__(alloc|mkptr|ptr_type)\b/.test(l)), `${name}: no box in its loop`)
 })
 
 // A side a guard proves a BigInt (`typeof n === 'bigint' && n > …`, watr's

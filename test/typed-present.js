@@ -24,7 +24,8 @@ const paramKind = (src, fn = 'g', param = 'v') => {
 // A callee too large to inline, with an early return that reads the parameter by identity.
 const G = 'function g(v) { if (v === undefined) { return -1 } let s = 1; ' + Array.from({ length: 40 }, (_, k) => `s = s * v + ${(k + 1) * 0.37}; if (s > 1e300) { s = ${k} }`).join(' ') + ' return v * 2 + s }\n'
 const MK = 'const mk = (n) => { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = i * 0.5; return o }\n'
-const conversions = (src) => (funcWat(wat(src, { optimize: 3 }), 'g') || '').match(/__to_num/g)?.length ?? 0
+// (at level 3 g inlines into probe all the same: its body is there)
+const conversions = (src) => funcWat(wat(src, { optimize: 3 }), 'g', 'probe').match(/__to_num/g)?.length ?? 0
 
 test('typed presence: a read inside a known count binds a number', () => {
   const present = {
@@ -71,7 +72,7 @@ const WORD = 'function hw(x) { F[0] = x; return U[HIGH2] }\nexport let f = (x) =
 // The load as the emitter leaves it: the views stay in memory here (a static array only
 // constants index is registers, test/static-scratch.js, and then no word is loaded at all).
 const IN_MEMORY = { optimize: { level: 3, staticScratch: false } }
-const loadsUnchecked = (src) => { const body = funcWat(wat(src, IN_MEMORY), 'hw') || funcWat(wat(src, IN_MEMORY), 'f$exp') || funcWat(wat(src, IN_MEMORY), 'f') || ''; return /i32\.load/.test(body) && !/i32\.lt_u|nan:0x7FF8000200000000/.test(body) }
+const loadsUnchecked = (src) => { const body = funcWat(wat(src, IN_MEMORY), 'hw', 'f$exp', 'f'); return /i32\.load/.test(body) && !/i32\.lt_u|nan:0x7FF8000200000000/.test(body) }
 
 test('typed presence: a word of a float through a view of its buffer', () => {
   const present = {

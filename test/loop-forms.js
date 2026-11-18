@@ -9,10 +9,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { compile, jz, jzWat, oracle } from './util.js'
+import { compile, jz, jzWat, oracle, funcWat } from './util.js'
 import { sample, sampled } from './_population.js'
 
-const fnOf = (w, name) => { const i = w.indexOf(`(func $${name}`), j = w.indexOf('\n  (func ', i + 8); return w.slice(i, j < 0 ? undefined : j) }
 const SIMD = /v128|[if](?:8x16|16x8|32x4|64x2)\./
 // One program over three arrays of a type, its kernel `k` taking the bound from the array (the
 // census's setting B: an integer the emitter knows, so the counter is a word).
@@ -24,7 +23,7 @@ const lifts = (name, src, at = levels(2, 3)) => {
   for (const optimize of at) {
     const at = typeof optimize === 'object' ? JSON.stringify(optimize) : optimize
     const m = jzWat(src, { optimize })
-    ok(SIMD.test(fnOf(m.wat, 'k')), `${name}: lifted at ${at}`)
+    ok(SIMD.test(funcWat(m.wat, 'k')), `${name}: lifted at ${at}`)
     const want = oracle(src), got = m.exports
     want.init(); got.init()
     is(got.k(), want.k(), `${name}: k at ${at}`)
@@ -34,7 +33,7 @@ const lifts = (name, src, at = levels(2, 3)) => {
 const stays = (name, src) => {
   for (const optimize of levels(2, 3)) {
     const m = jzWat(src, { optimize })
-    ok(!SIMD.test(fnOf(m.wat, 'k')), `${name}: scalar at ${optimize}`)
+    ok(!SIMD.test(funcWat(m.wat, 'k')), `${name}: scalar at ${optimize}`)
     const want = oracle(src), got = m.exports
     want.init(); got.init()
     is(got.k(), want.k(), `${name}: k at ${optimize}`)
@@ -82,7 +81,7 @@ test(sampled('loop forms: the strips of a loop counting down stop at its low end
   // A strip runs while its lane base, the lowest iteration it holds, is at the low end or above
   // it: to a constant end the test is against a constant, the base's interval known in the strip.
   for (const optimize of levels(2, 3)) {
-    const w = fnOf(compile(prog('Float64Array', 'for (let i = n - 1; i >= 0; i--) b[i] = a[i] + 1; return 0'), { optimize, wat: true }), 'k')
+    const w = funcWat(compile(prog('Float64Array', 'for (let i = n - 1; i >= 0; i--) b[i] = a[i] + 1; return 0'), { optimize, wat: true }), 'k')
     ok(/\(br_if \$__simd_brk\d+\s+\(i32\.le_s \(local\.get \$[^\s)]+\) \(i32\.const -1\)\)/.test(w), `the lane base against the end, at ${optimize}`)
   }
   // One lane base per strip W below the last: a low end within W of -2^31 would wrap the next
@@ -106,7 +105,7 @@ export let f = (hiIn, loIn) => {
     const p = src(T, body), want = oracle(p)
     for (const optimize of levels(2, 3)) {
       const m = jzWat(p, { optimize })
-      ok(SIMD.test(fnOf(m.wat, 'f')), `${T} ${body}: lifted at ${optimize}`)
+      ok(SIMD.test(funcWat(m.wat, 'f')), `${T} ${body}: lifted at ${optimize}`)
       const got = m.exports
       for (const lo of [MIN, MIN + 1, MIN + 3, -2, 0]) for (const d of [-1, 0, 1, 2, 3, 4, 5, 15, 16, 17, 33])
         is(got.f(lo + d, lo), want.f(lo + d, lo), `${T} ${body}: ${lo + d} down to ${lo} at ${optimize}`)
@@ -145,7 +144,7 @@ test('loop forms: a reduction carried in its order, the work of each element in 
     for (const optimize of exact) {
       const at = JSON.stringify(optimize)
       const m = jzWat(src, { optimize })
-      ok(SIMD.test(fnOf(m.wat, 'k')), `${name}: lifted at ${at}`)
+      ok(SIMD.test(funcWat(m.wat, 'k')), `${name}: lifted at ${at}`)
       const got = m.exports
       got.init()
       is(got.k(), want.k(), `${name}: k at ${at}`)
@@ -154,7 +153,7 @@ test('loop forms: a reduction carried in its order, the work of each element in 
   // a plain sum has no work of an element to lift: the lanes would add a read of them and of the sum a pass to save a load
   for (const optimize of exact) {
     const src = F('let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s')
-    ok(!SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `a plain sum stays scalar at ${JSON.stringify(optimize)}`)
+    ok(!SIMD.test(funcWat(compile(src, { optimize, wat: true }), 'k')), `a plain sum stays scalar at ${JSON.stringify(optimize)}`)
   }
 })
 
@@ -171,7 +170,7 @@ test('loop forms: a copy or a fill counting down moves its bytes at once', () =>
     const src = prog(T, body), want = oracle(src)
     for (const optimize of levels(2, 3)) {
       const m = jzWat(src, { optimize })
-      ok(/memory\.(copy|fill)/.test(fnOf(m.wat, 'k')), `${T} ${name}: a bulk move at ${optimize}`)
+      ok(/memory\.(copy|fill)/.test(funcWat(m.wat, 'k')), `${T} ${name}: a bulk move at ${optimize}`)
       const got = m.exports
       want.init(); got.init()
       is(got.k(), want.k(), `${T} ${name}: k at ${optimize}`)

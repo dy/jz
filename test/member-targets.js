@@ -4,7 +4,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, onWasi, ownedLevels } from './_matrix.js'
-import { oracle, jz, compile } from './util.js'
+import { oracle, jz, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import { runEntered } from './_loop-ops.js'
 
@@ -288,7 +288,7 @@ export const f = () => { const a = set(rec, 5); const m = new Map(); const b = s
   }
   // the guard, its slot store, the dynamic store behind it (unoptimized: nothing folded)
   const wat = compile(src, { wat: true, optimize: false })
-  const at = wat.indexOf('(func $set\n'), set = wat.slice(at, wat.indexOf('\n  (func ', at + 1))
+  const set = funcWat(wat, 'set')
   ok(/\(i64\.const 0x7FFB0+\)\s*\)\s*\(then[\s\S]*?\(f64\.store[\s\S]*?\(else\s*\(drop\s*\(call \$__(rec|dyn)_set/.test(set), 'guarded slot store')
 })
 

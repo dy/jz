@@ -7,12 +7,11 @@
 // the same source; sums are integer so no lane order shows in them.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { oracle, run, funcWat as funcWatOf, jz, jzWat } from './util.js'
+import { oracle, run, funcWat, jz, jzWat } from './util.js'
 import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { loopCount } from '../scripts/wat-probe.mjs'
 
-const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** Element reads and stores that decide the receiver's kind or the element's width at run time. */
 const dispatches = (built, name = 'f') => loopCount(parseWat(funcWat(built.wat, name)),
   n => n[0] === 'call' && /^\$__(typed_idx|typed_get_idx|typed_set_idx|str_idx|dyn_get\w*|dyn_set)$/.test(n[1]))

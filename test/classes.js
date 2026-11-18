@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, onKernel, OPT_LEVEL, levels, ownedLevels } from './_matrix.js'
-import { oracle, jz, compile as compileWat } from './util.js'
+import { oracle, jz, compile as compileWat, funcWat } from './util.js'
 import { instantiate } from '../interop.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
@@ -1115,7 +1115,7 @@ export let other = () => new Node().type.length
 const mk = (v) => ({ type: 'a', value: v })
 export let main = (n) => { const evs = [mk(1), mk(2), mk(3)]; let s = 0; for (let i = 0; i < evs.length; i++) { const e = evs[i]; if (e.type === 'a') s += e.value } return s }`
   const w = compileWat(src, { wat: true, optimize: 'speed' })
-  const main = w.slice(w.indexOf('(func $main'), w.indexOf('\n  (func $', w.indexOf('(func $main') + 5))
+  const main = funcWat(w, 'main')
   ok(!/__dyn_get|dispatch|type__get/.test(main), 'literal-shaped reads stay slot reads')
   is(jz(src).exports.main(3), 6)
   is(jz(src).exports.other(), 4)

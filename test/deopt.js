@@ -132,20 +132,20 @@ test('deopt D2: inner j-loop contains no outer-counter $i reference', () => {
   // reference the outer counter $i at all (grid[i] was hoisted to a snap local).
   if (belowOpt(2)) return  // hoistInvariantLoop (LICM) is a level-2 pass; level 1 doesn't hoist
   const wat = compile(D2_SRC(false), { wat: true })
-  const fi = wat.indexOf('(func $read')
-  const seg = wat.slice(fi)
+  // read and the loops moved out of it into functions of their own (split-funcs.js loopPasses)
+  const seg = [funcWat(wat, 'read'), ...[...wat.matchAll(/\(func \$(read(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(wat, m[1]))].join('\n')
   const loopIdxs = []
   const re = /\(loop/g
   let m
-  while ((m = re.exec(seg))) loopIdxs.push(fi + m.index)
+  while ((m = re.exec(seg))) loopIdxs.push(m.index)
   ok(loopIdxs.length >= 2, 'expected nested i/j loops')
   const innerStart = loopIdxs[loopIdxs.length - 1]
   let depth = 0, innerEnd = innerStart
-  for (let j = innerStart; j < wat.length; j++) {
-    if (wat[j] === '(') depth++
-    else if (wat[j] === ')' && --depth === 0) { innerEnd = j; break }
+  for (let j = innerStart; j < seg.length; j++) {
+    if (seg[j] === '(') depth++
+    else if (seg[j] === ')' && --depth === 0) { innerEnd = j; break }
   }
-  const inner = wat.slice(innerStart, innerEnd + 1)
+  const inner = seg.slice(innerStart, innerEnd + 1)
   is(count(inner, /local\.get \$i\b/g), 0, 'inner j-loop has no $i reference — grid[i] hoisted')
 })
 

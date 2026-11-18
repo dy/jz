@@ -2018,11 +2018,10 @@ test('self-compile compact collections: entry hash replaces the redundant probe 
   }`
   const fast = String(compile(src, { wat: true, optimize: false }))
   const compact = String(compile(src, { wat: true, optimize: false, _compactCollections: true }))
-  const fn = (wat, name) => wat.slice(wat.indexOf(`(func $${name}`), wat.indexOf(`(func $${name}`) + 5000)
   // a dictionary (HASH) keeps the lane; a Set's and a Map's table has its buckets (module/collection/ordered.js)
-  ok(fn(fast, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'normal output probes its cache-dense side lane')
-  ok(fn(compact, '__hash_get_local').includes('(i32.load (local.get $slot))'), 'compact artifact probes the hash already stored in each entry')
-  ok(!fn(compact, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'compact probe has no side-lane load')
+  ok(funcWat(fast, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'normal output probes its cache-dense side lane')
+  ok(funcWat(compact, '__hash_get_local').includes('(i32.load (local.get $slot))'), 'compact artifact probes the hash already stored in each entry')
+  ok(!funcWat(compact, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'compact probe has no side-lane load')
 
   // Two consecutive empty allocations expose the exact block stride: 16-byte
   // header + 8 initial buckets of half the entry's width and a bucket word, or of
@@ -3724,10 +3723,7 @@ test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i
   // own primitive) and no box inserted on the argument edge, which never
   // needed either.
   const wat = String(compile(src, { optimize: false, wat: true }))
-  const start = wat.indexOf('(func $f')
-  ok(start >= 0, '$f found in WAT')
-  const next = wat.indexOf('\n  (func ', start + 1)
-  const fBody = next >= 0 ? wat.slice(start, next) : wat.slice(start)
+  const fBody = funcWat(wat, 'f')
   ok(!/call \$__ptr_type/.test(fBody), 'O0: no unbox tag-check inserted for an already-RAW call argument')
   ok(/\(call \$leb\s+\(f64\.reinterpret_i64 \(i64\.const 900\)\)\s*\)/.test(fBody), 'O0: the RAW literal argument crosses unchanged')
   is((fBody.match(/call \$__alloc\b/g) || []).length, 1, 'O0: the one box is the export result\'s, at the return edge')
@@ -3876,10 +3872,7 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
 
   const bodyOf = (src, name) => {
     const wat = String(compile(src, { optimize: false, wat: true }))
-    const start = wat.indexOf(`(func $${name}\n`)
-    ok(start >= 0, `$${name} found in O0 WAT`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return next < 0 ? wat.slice(start) : wat.slice(start, next)
+    return funcWat(wat, name)
   }
   ok(/call \$__to_bigint_strict/.test(bodyOf(BIGINT_TYPED_STORE_SOURCE, 'boxedI64')),
     'materialized union uses ToBigInt before storing')
@@ -3994,10 +3987,7 @@ test('bigint: unary "-"/"~" and joint-binary census results materialize through 
   // plan-owned tagged decode, including the formerly residual bare read.
   const wrapperBody = (src, fname) => {
     const wat = compile(src, { optimize: false, wat: true })
-    const start = wat.indexOf(`(func $${fname}$exp`)
-    ok(start >= 0, `$${fname}$exp wrapper found in WAT`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return next >= 0 ? wat.slice(start, next) : wat.slice(start)
+    return funcWat(wat, `${fname}$exp`)
   }
   const bareBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') }`, 'f')
   ok(!/call \$__ptr_type/.test(bareBody), 'O0: BARE export no longer takes the sentinel lane')
@@ -4111,10 +4101,7 @@ test('RepresentationPlan: a forwarded, genuinely monomorphic array param is trus
     }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  const extractBody = (fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    return wat.slice(start, wat.indexOf('\n  (func ', start + 1))
-  }
+  const extractBody = (fname) => funcWat(wat, fname)
   ok(!/__dyn_get_(?:expr|any)/.test(extractBody('uleb')), "O0: uleb's forwarded, genuinely-monomorphic array param keeps direct array codegen — no shadow probe")
   ok(/__dyn_get_(?:expr|any)/.test(extractBody('pushInto')), 'O0: pushInto (exported, genuinely unprovable) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the uleb result above is not vacuous')
   is(jz(src, { optimize: false }).exports.useIt(), 9, 'O0: uleb(300) ULEB128-encodes to 2 bytes (0xAC,0x02) — .length=2, plus useClosure()=7')
@@ -4148,8 +4135,7 @@ test('RepresentationPlan: a forwarded param stays untrusted when its OWN source 
     }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  const start = wat.indexOf('(func $sink')
-  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 1))
+  const body = funcWat(wat, 'sink')
   ok(/__dyn_get_(?:expr|any)/.test(body), "O0: sink's buf param stays runtime-dispatched — the wider census still catches the genuine polymorphism reaching it through forward, not just the ordering artifact the positive pin above fixes")
   for (const optimize of levels(false, 2, 3)) {
     // makeHijack's object has no .length — buf.length legitimately reads
@@ -4495,9 +4481,7 @@ test('object passed as a parameter: a param that is only READ keeps its direct (
   `
   is(jz(src, { optimize: false }).exports.main(), 15, 'O0: sum of a literal-array argument through a read-only parameter')
   const wat = String(compile(src, { optimize: false, wat: true }))
-  const start = wat.indexOf('(func $sumArr')
-  const next = wat.indexOf('\n  (func ', start + 1)
-  const body = wat.slice(start, next)
+  const body = funcWat(wat, 'sumArr')
   ok(!/__dyn_get_(?:expr|any)/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
   ok(/(?:i32|f64)\.const 5/.test(body), 'O0: unanimous caller length lowers directly to a constant')
 })
@@ -4595,11 +4579,7 @@ test('object read via a parameter: the STRING-guess WAT-dispatch shape — unpro
       return useCallback((y) => y + 1) + firstCode(x)
     }
   `
-  const extractBody = (wat) => {
-    const start = wat.indexOf('(func $firstCode')
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
+  const extractBody = (wat) => funcWat(wat, 'firstCode')
   const provenBody = extractBody(String(compile(provenSrc, { optimize: false, wat: true })))
   const unprovenBody = extractBody(String(compile(unprovenSrc, { optimize: false, wat: true })))
   ok(!/__dyn_get_(?:expr|any)/.test(provenBody), 'O0: a call-site-proven (paramReps) string param keeps direct STRING dispatch — no shadow probe inserted')
@@ -4646,15 +4626,10 @@ test('closed computed-dispatch table: a member forwarded into a named function g
       return out.length
     }
   `
-  const extractBody = (wat, fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
   const closedWat = String(compile(closedSrc, { optimize: false, wat: true }))
   const escapedWat = String(compile(escapedSrc, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_(?:expr|any)/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also reaches the host — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_(?:expr|any)/.test(funcWat(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also reaches the host — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
   for (const optimize of levels(false, 2, 3)) {
     is(jz(closedSrc, { optimize }).exports.main(), 2, `O${optimize || 0}: closed-table computed dispatch still computes the correct value (push2 pushes 5 then 6)`)
   }
@@ -4706,13 +4681,8 @@ test('closed computed-dispatch table: an unresolvable SIBLING argument no longer
       return out.length
     }
   `
-  const extractBody = (wat, fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 1, `O${optimize || 0}: list.shift() empties the array (idx=7, list=[]), lookup(7,[]) is undefined, grab pushes it once — computes the JS-correct length regardless of which positions the census could prove`)
 })
@@ -4740,13 +4710,8 @@ test('closed computed-dispatch table: a member reached by a SHORT outer call dec
       return scratch.length + out.length
     }
   `
-  const extractBody = (wat, fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
 })
@@ -4795,13 +4760,8 @@ test('RepresentationPlan: a `.`-property read chained off a proven array-element
       return visit(1, rows)
     }
   `
-  const extractBody = (wat, fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.useArrElem(), 40, `O${optimize || 0}: rows[1].items[0] === 40, JS-correct`)
 })
@@ -4817,13 +4777,8 @@ test('RepresentationPlan: unrelated records share storage without poisoning call
     export function useA() { return dispatch(1, A) }
     export function pick(flag) { return (flag ? B : A).items }
   `
-  const extractBody = (wat, fname) => {
-    const start = wat.indexOf(`(func $${fname}`)
-    const next = wat.indexOf('\n  (func ', start + 1)
-    return wat.slice(start, next)
-  }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), 'grab receives only A.items, a proven array')
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'grab')), 'grab receives only A.items, a proven array')
   const { useA, pick } = jz(src, { optimize: false }).exports
   is(useA(), 20)
   is(pick(1), 'oops')
@@ -4910,12 +4865,6 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
 // (k in OBJ) T[k] = VALUE` unroll over a constant object literal — the FOURTH
 // limitation diagnosed (`T` is never schema-registered: that mechanism only fires
 // on a `{}`-literal AST node, never `[]`).
-const extractFnBody = (wat, fname) => {
-  const start = wat.indexOf(`(func $${fname}`)
-  if (start < 0) return null
-  const next = wat.indexOf('\n  (func ', start + 1)
-  return next >= 0 ? wat.slice(start, next) : wat.slice(start)
-}
 
 test('DictKindIndex: a for-in-unrolled array-as-dictionary proves a direct `.`-property-read argument (positive)', () => {
   const src = `
@@ -5033,7 +4982,7 @@ test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` wr
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 9, `O${optimize || 0}: JS-correct through the ??= write`)
 })
@@ -5055,7 +5004,7 @@ test('DictKindIndex: an alias through a function that returns its argument is th
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: leak() returns its argument, so `alias` and `ctx` are one array in the summary: `alias.type = [5]` reaches ctx.type, an array still, direct codegen")
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'id')), "O0: leak() returns its argument, so `alias` and `ctx` are one array in the summary: `alias.type = [5]` reaches ctx.type, an array still, direct codegen")
   is(jz(src, { optimize: false }).exports.main(), 5, 'O0: JS-correct')
 })
 
@@ -5077,8 +5026,8 @@ test('DictKindIndex negative: a same-key kind disagreement declines only that ke
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'idA')), "O0: idA reads ctx.type, the KEY a conditional write disagrees with — must decline (precise, per-key poison, never guess)")
-  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
+  ok(/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'idA')), "O0: idA reads ctx.type, the KEY a conditional write disagrees with — must decline (precise, per-key poison, never guess)")
+  ok(!/__dyn_get_(?:expr|any)/.test(funcWat(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
 })
 
 test('DictKindIndex: a non-constant (reassignable) source object: the read of a never-written key is absent', () => {
@@ -5121,8 +5070,9 @@ test('DictKindIndex: pass-order-independent — swapping the target/reader decla
     assembleSrc + idSrc + constSrc + tailSrc,
     constSrc + idSrc + assembleSrc + tailSrc,
   ]
-  const bodies = perms.map(src => extractFnBody(String(compile(src, { optimize: 3, wat: true })), 'id'))
-  ok(bodies.every(b => b === bodies[0]), "O3: id()'s own compiled body is byte-identical across every declaration-order permutation of SECTION/ctx/id/assemble")
+  // (at level 3 id() inlines into main's export entry: the read is there)
+  const bodies = perms.map(src => funcWat(String(compile(src, { optimize: 3, wat: true })), 'id', 'main'))
+  ok(bodies.every(b => b === bodies[0]), "O3: id()'s compiled body is byte-identical across every declaration-order permutation of SECTION/ctx/id/assemble")
   ok(!/__dyn_get_(?:expr|any)/.test(bodies[0]), 'O3: and the census genuinely resolved (no shadow probe), not vacuously identical because every permutation declined equally')
 })
 

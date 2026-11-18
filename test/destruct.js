@@ -1,7 +1,7 @@
 // Destructuring, optional chaining, typeof
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { oracle, run, jz, compile } from './util.js'
+import { oracle, run, jz, compile, funcWat } from './util.js'
 import { belowOpt, levels, onWasi, ownedLevels } from './_matrix.js'
 
 test('destruct: object rest copies dynamic own properties after defaults', () => {
@@ -210,7 +210,7 @@ test('destruct: an array pattern over a value of several kinds reads an array by
   const want = oracle(src).main()
   for (const optimize of levels(0, 1, 2, 3, 'size')) is(run(src, { optimize }).main(), want, `O${optimize}`)
   const wat = compile(src, { wat: true, optimize: { level: 2, sourceInline: false, watr: false } })
-  const i = wat.indexOf('(func $head'), body = wat.slice(i, wat.indexOf('\n  (func', i + 5))
+  const body = funcWat(wat, 'head')
   ok(/memory\.copy/.test(body) && /call \$jz_iter\$__it_rest\b/.test(body), 'an array rest is a copy; the protocol keeps every other kind')
 })
 
