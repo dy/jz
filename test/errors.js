@@ -1438,3 +1438,29 @@ test('errors: a nesting too deep names its construct and place', () => {
   is(run(forms.call(200)).f(3), 203, 'a nesting the walks hold compiles')
 })
 
+
+// Past the reader's depth the error names the operator that repeats most in the
+// text it read on its way in, where it named only the token it stood at (`y`,
+// `0`, `1`, or nothing for `!`). A chain the list form leaves nested (a class
+// field, a parameter's default: no body to hold its temps) deep enough for the
+// early errors but not the reader overflowed there, and nestingOf, parsing again
+// to measure it, overflowed too: an internal error. The tree read is measured.
+test('errors: a nesting too deep to parse names what nests', () => {
+  const R = (n, f) => Array.from({ length: n }, (_, i) => f(i))
+  const named = (src) => { try { compile(src) } catch (e) { return e } return null }
+  const forms = [
+    ['arrow', `export let f = (x) => { const h = ${'(y) => '.repeat(5000)}x; return x }`, /function the most on the way in/],
+    ['?: in the consequent', `export let f = (x) => ${'x ? '.repeat(5000)}0${' : 1'.repeat(5000)}`, /conditional \?: the most on the way in/],
+    ['**', `export let f = (x) => ${'1 ** '.repeat(5000)}1`, /`\*\*` the most on the way in/],
+    ['!', `export let f = (x) => ${'!'.repeat(5000)}x`, /unary ! the most on the way in/],
+    ['typeof', `export let f = (x) => ${'typeof '.repeat(5000)}x`, /unary typeof the most on the way in/],
+    ['a sum in a class field', `class A { v = ${R(1500, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
+    ['a sum in a default', `export let f = (x, y = ${R(2000, i => `x * ${i}`).join(' + ')}) => y`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
+  ]
+  for (const [form, src, want] of forms) {
+    const e = named(src)
+    ok(e instanceof SyntaxError && want.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form}: ${e?.name} ${String(e?.message).split('\n')[0]}`)
+  }
+  is(run(`class A { v = ${R(400, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`).f(3), 203, 'a field of 400 terms compiles')
+})
+

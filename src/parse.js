@@ -487,13 +487,26 @@ export const overflowed = (e) => (e?.name === 'RangeError' || e?.name === 'Inter
   e?.name === 'SyntaxError' && /: Stack overflow$/.test(e.message)
 // subscript's reader recurses a few frames a level of the source's nesting: a
 // nesting past what the stack holds is named where the reader stood, by the
-// brackets left open (the enter hook's groups) or the token there.
+// brackets left open (the enter hook's groups), or by the operator that repeats
+// most in the text it read on its way there.
 const OPENER = { 41: '(', 93: '[', 125: '{' }
+const OPERATOR = /=>|\*\*|\?\?|\?\.|\.\.\.|[!~?]|\b(?:typeof|void|delete|await|yield|new)\b|[-+*\/%<>&|^=]+/g
+const repeated = (text) => {
+  const count = new Map()
+  let best = null, most = 0
+  for (const m of text.matchAll(OPERATOR)) {
+    const k = (count.get(m[0]) ?? 0) + 1
+    count.set(m[0], k)
+    if (k > most) { most = k; best = m[0] }
+  }
+  return best
+}
+const OPERATOR_IS = { '=>': 'function', '?': 'conditional ?:', '!': 'unary !', '~': 'unary ~', typeof: 'unary typeof', void: 'unary void', delete: 'unary delete', await: 'unary await', yield: 'yield', new: 'new' }
 const readTree = (src) => {
   try { return jessieParse(src) } catch (e) {
     if (!overflowed(e)) throw e
-    const tok = /^\s*(=>|\.\.\.|[A-Za-z_$][\w$]*|\S)/.exec(cur.slice(idx, idx + 40))
-    const open = groups.length, what = open > 64 ? `: ${open} brackets open, the innermost \`${OPENER[groups[open - 1]]}\`` : tok ? ` at \`${tok[1]}\`` : ''
+    const open = groups.length, op = repeated(cur.slice(Math.max(0, idx - 400), idx))
+    const what = open > 64 ? `: ${open} brackets open, the innermost \`${OPENER[groups[open - 1]]}\`` : op ? `: ${OPERATOR_IS[op] ?? `\`${op}\``} the most on the way in` : ''
     err(`nesting too deep to parse${what}`, idx)
   }
 }
@@ -513,10 +526,14 @@ const constructOf = (n) => {
 }
 /** The deepest point of a source's tree: its depth, the construct that repeats
  *  most on the way to it and the position of its outermost one. Null when the
- *  source does not parse. The walk keeps its own stack. */
+ *  source does not parse. */
 export function nestingOf(src, sourceType, base) {
   let ast
   try { ast = parse(src, sourceType, base) } catch { return null }
+  return deepest(ast)
+}
+// (the walk keeps its own stack)
+const deepest = (ast) => {
   const nodes = [], parents = [], depths = []
   const st = [ast, -1, 1]
   let best = -1
@@ -556,22 +573,27 @@ const parse = (src, sourceType = 'jz', base = 0, early = true) => {
   // Same length, so AST offsets stand. The original spelling still goes to
   // lexical validation below.
   const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
-  let ast
+  let ast, read = null
   joinedAt = gapFrom = gapEnd = closedOpen = closedAt = -1
   opens.length = 0
   try {
     // a long chain as a list (src/list-form.js), before any walk recurses down it
-    ast = listForm(foldStringRuns(readTree(parseSource)))
+    ast = listForm(foldStringRuns(read = readTree(parseSource)))
     if (parseSource.includes('using')) awaitUsingHeads(ast)
     if (early) validateEarlyErrors(ast, src, sourceType, base)
     if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
+    decodeNames(ast)
+    if (base !== 0) place(ast, base)
   } catch (e) {
+    // a walk of the tree read ran out of stack: the nesting, named where it starts
+    if (read != null && overflowed(e)) {
+      const n = deepest(read)
+      if (n) { const at = where(base == null ? here() : base + (n.loc ?? 0)); throw SyntaxError(`nesting too deep to parse: ${n.depth} levels, ${n.construct} the most of them${at}`, { cause: e }) }
+    }
     if (!(e instanceof SyntaxError)) throw e
     const stop = stoppedAt(e.message, parseSource), at = where(base == null ? here() : base + stop.at)
     throw SyntaxError(at ? stop.message + at : e.message)
   }
-  decodeNames(ast)
-  if (base !== 0) place(ast, base)
   return ast
 }
 
