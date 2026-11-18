@@ -190,8 +190,8 @@ export default (ctx) => {
     // array.js's arrayGrowDeps comment): __set_len's body calls durableLenLogIR
     // (TYPED/HASH/SET/MAP branch — in-place, non-relocating length-write heal)
     // and durableArrSnapIR (ARRAY branch — pop()'s len-1 write, header+data heal)
-    // directly — self-compile's auto-dep scan can't be relied on to discover a name
-    // reachable only through template interpolation, not a literal deps-table entry.
+    // directly. resolveIncludes' scan finds both calls in the hosted compiler as in the
+    // native one; test/self-compile-includes.js requires the '__durable_fwd_log' edge besides.
     __set_len: () => ['__ptr_offset_fwd', ...(hasDurableReset() ? ['__durable_fwd_log', '__durable_arr_snap'] : [])],
     // Property-fallback arm (`.length` as an ordinary own key on OBJECT/HASH
     // receivers) needs the dyn dispatcher — but only when the program can even
