@@ -551,3 +551,25 @@ which land-l's split deletes: move it to the split file when both meet);
 `nested-call-parse` ce53752 in /Users/div/projects/subscript (a writer repairing a tree).
 Workflows running: `jz-nanbox`, `jz-tests-time`. Briefs of the two repairs: session
 scratch `w0-fix/`.
+
+## Branches of the land-l landing (2026-11-18), tips before deletion
+
+```
+8f1cec4f8 land-l                         the landing branch as its check ran it: main (a27648bc1) and 27 commits; the record's commit after it
+4b907722a tests-time (first eight)       landed as 182eb94ae to d22ffe40f; the branch goes on (step five being written)
+782b0c991 worktree-wf_00b2d799-cc8-10    the hosted helper dependencies: landed as 445f0af99, 3d8b5caa0
+b39e6aa36 worktree-wf_00b2d799-cc8-17    Symbol.toPrimitive: landed as ce9a6ed0f to 1b53404e4
+8837fce12 wave0-loops                    wf_00b2d799-cc8-1's twelve and the integrator's fix: landed as b9c9bbbdd to 8f1cec4f8
+```
+
+`tests-time` from here: its later steps are picked from 4b907722a on (the branch's own
+base is 4157cd976; its first commit's split of test/optimizer.js met six lines main had
+added, now in test/optimizer-unroll.js, and d3372be72's unit test is in
+test/optimizer-induction.js: a later pick that touches those two files is checked by hand).
+Comments that still say the scan drops helpers in the hosted compiler: module/array.js
+131-135 and 306, module/collection.js 334-340 and 357-358, module/json.js 241-243,
+module/typedarray.js about 3096, module/string.js about 225, src/wat/assemble/stdlib-pull.js
+601-605, test/self-compile-includes.js (header, test name, message).
+Writers at work (Agent tool, briefs in session scratch): `w0-fix/brief-limits.md` on
+`worktree-wf_00b2d799-cc8-12`; `audio-b/brief-audio-b.md` in a worktree of its own.
+Workflows running: `jz-nanbox` (repair), `jz-tests-time` (step five).

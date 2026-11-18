@@ -3063,6 +3063,55 @@ A module whose top level can throw has no start section: it exports `_initialize
 - **The test-time chain's first four steps** (`tests-time`, eight commits, picked onto this tree as `land-l`): test/optimizer.js cut into 17 files; a file's CPU seconds a leg (`--costs`), a split run weighed by them; the landing battery's armed level 3 in place of plain; the one-process core run moved to a weekly workflow and the per-push default leg split; each leg its own levels.
 - **Wave 0** (the audit's soundness tasks): `wave0-loops` (13 commits on e46e3705c: loop passes and a default's closures, the descriptor through an alias, a function's prototype, three compile-state leaks, the default's write above), the hosted compiler's helper dependencies (sound, comments), Symbol.toPrimitive (four commits, no blocker). Two with a blocker and a writer on each: the input limits' gate (watr's encoder quadratic in locals) and subscript's nested-call parse (`new get[k](x).z`).
 
+## The land-l landing: the test-time chain's first four steps, Symbol.toPrimitive, a default's closures and writes, three compile-state leaks (2026-11-18)
+
+27 commits on a27648bc1, tip `8f1cec4f8`. No listing moves; no bench case's bytes move.
+
+### What landed
+
+- **Test time, four steps of nine** (`182eb94ae` to `d22ffe40f`, eight commits):
+  - test/optimizer.js cut into 17 files by the pass each group pins, so a split run can balance it.
+  - `node test/index.js --costs` times each file on a leg (test/native-costs.json); a split run's processes are weighed by those CPU seconds, not by bytes.
+  - The landing battery runs level 3 armed in place of plain: the two compile the same bytes (3,395 compile keys over 15 core files, none changed), the checks cost 4.7% of the CPU.
+  - **CI: the per-push default leg is split** (it ran the core suite in one process, 3.5 to 4.3 hours a commit), **and the one-process run moves to a weekly workflow** (`one-process.yml`, a 300-minute limit). In the 23 CI runs since the split landed the one-process run never failed. By CI's own logs the split default job will still take 68 to 78 minutes, over the owner's hour; the weekly job is the owner's to accept or drop (told, not answered).
+  - Each leg its own levels: 205 literal level lists in 68 core files go through `ownedLevels`; the three JS legs divide the listed levels, WASI and hosted keep the whole list. The trade: `npm test` alone no longer catches a defect that shows only at level 0, 3 or speed at those sites; the landing's three legs together do.
+  - This check: default 1,673 s, level 0 291 s, armed level 3 1,641 s; 64 minutes in all (land-k's, at about the same load: 3,149, 794, 2,391; 108 minutes).
+- **`Symbol.toPrimitive`** (`ce9a6ed0f` to `1b53404e4`): called before `valueOf` and `toString` with the hint its operator gives (ECMA-262 7.1.1); a non-callable value and an object result are TypeErrors; class methods, inherited ones, getters, literal methods, arrows and methods stored later; `parseInt`, `parseFloat` and an Error's message convert an object argument. Only a program that defines or stores the key links the prelude.
+- **A parameter default's closures** (`b9c9bbbdd`, `96b7cb720`, `95679867b`): the loop passes (unswitch, kind-split, counted loops, integral loops), guardConstants and both scan splits count the closures a default makes (compile/loop-model.js closureCensus).
+- **`8f1cec4f8`, the integrator's**: a module `let` written a fraction in a parameter default was narrowed to an i32 global (`let g = 1; export const f = (x, y = (g = 2.5)) => g + y + x`: 5 for 6, every level). inferModuleIntGlobals takes a function's defaults with its body; bindingFlows holds a closure default's write unvalued. The branch's recheck named the pass.
+- **Lowerings that include the module they build for** (`9bb5ae8d2`, `419628c8b`, `f950cecf5`): `Object.getOwnPropertyDescriptor` through an alias crashed "Unknown op: []"; `g.prototype` of a function in a program with no other object crashed "Unknown op: {}"; the six error classes besides Error name the string module.
+- **Three compile-state leaks** (`b28c92714`, `2aef18ada`, `c0de57db2`): whether a parameter grows is kept in ctx.plans, rebuilt each compile; the inliner drops its records, its summary view and its closure flag as each run starts and ends.
+- A NaN literal is no change in rewriteBlocks (`e1c119c88`): a body holding one was copied each pass and the summary ran again.
+- The hosted compiler's helper dependencies (`445f0af99`, `3d8b5caa0`): measured the same as the native one's (706 templates, 345,956 scans, 822,595 edges over 196 compiles, none differing); the comments that said the scan drops helpers there are corrected in five places (others still say so, listed in the handover).
+
+### Wrong answers fixed here that v1.0.3 has
+
+- A module binding written a fraction, NaN or a value past a word in a parameter default: 48 of the probe's 72 rows differ on v1.0.3 (54 on a27648bc1).
+- `[Symbol.toPrimitive]` was never called.
+
+### What is measured
+
+- Bench bytes: 0 of 105 cases move. The four listings as on main.
+- The integrator's probes on the tip: the default's writes 72 rows, the earlier ones 912, 108, 168, 168 and 24, none differing; plasma 585 f64x2; 8 nearest files 171 pass.
+- The check on `8f1cec4f8` (64 minutes): lint and the file audit clean; bench bytes of 105 cases, no error; `test:self` 89; default 7,613 of 7,613; level 0 7,373; integration 238 of 239, one skipped; the examples 1.73 and 1.72 of V8, 25 of 25 in both runs; the armed level 3 7,394 of 7,395, the one the fetch test's 5 s limit while the load rose past 100 (alone at that level it passes, its compile 1.6 s).
+- land-j on x64, a third probe (44322773983, EPYC 9V74 again): callback 0.961, polytri 0.976, decode-tta 0.996. No Intel runner in three probes.
+
+### The audio corpus on a27648bc1 (the audio session's run)
+
+99 processors compile; **89 pass its real-time gate** (52 on 85e229c76). The ten: allocation in `process` 8 (jz's: the four complex-STFT denoisers and the moog filter, allocation-free in V8; theirs: three that allocate in V8 too), the closure arity cap 1, a dynamic import of node:fs 1 (theirs). `memory: { fixed: ['process'] }` holds for none: 96 stop at "host or unresolved call" (the proof does not follow the closure table). A writer is on the three (session scratch `audio-b/brief-audio-b.md`).
+
+### Known wrong on this tree, landed knowingly
+
+- From wave 0's rechecks: a typed-array parameter a default closure rebinds to an Array reads wrong in a loop from level 1 (not located); a typed parameter any closure rebinds to a typed array of another kind too; `new Date(o)` and `Date.parse(o)` skip ToPrimitive's hint; a class field under `[Symbol.toPrimitive]` is stored under 'undefined' (a `[Symbol.iterator]` field too); a method with a parameter, made by a factory whose captured value is a string at one call and a number at another, is compiled as a number at levels 2 and 3; an arrow's or a method's `prototype` is an empty object; `o == 'default'` false at levels 2 and 3 where `o.valueOf()` returns that string (the peephole's literal inline of `__eq`); `x += v` takes ToNumber for an object local.
+- Chained assignment `a0 = a1 = … = x` doubles its compile time a level (40 levels past a minute); 200 nested index reads end in an internal error: with the limits' writer.
+- As on land-k.
+
+### Waiting
+
+- The input limits (`worktree-wf_00b2d799-cc8-12`, 18 commits): its gate passes or fails on noise at the level off; a writer repairs it and fixes watr's encoder (quadratic in a function's locals) on a branch of watr.
+- subscript's nested-call parse (`nested-call-parse`, 12 commits, not pushed): repaired (`65ce463`: `new get[k](x).z`); the owner's to push and publish; bench/jessie grows 8.5% in bytes with it.
+- The test-time chain's steps five to nine; the NaN box; the embedding lane's three.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
