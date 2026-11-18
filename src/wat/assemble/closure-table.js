@@ -220,6 +220,12 @@ export function dedupClosureBodies(closureFuncs, sec) {
     const target = redirect.get(`$${n}`)
     return target ? target.slice(1) : n
   })
+  // So do the arrows of a table called by index (ctx.scope.constFnArrays), whose
+  // dispatch calls each by name after this (optimize/devirt.js devirtConstFnArrayCalls).
+  for (const arrows of ctx.scope.constFnArrays?.values() ?? []) for (const a of arrows) {
+    const target = redirect.get(`$${a.name}`)
+    if (target) a.name = target.slice(1)
+  }
   sec.funcs.length = 0
   sec.funcs.push(...kept)
 }

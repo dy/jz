@@ -2950,3 +2950,27 @@ export const g = () => out`
   const want = oracle(src).g()
   for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.g(), want, `at ${optimize}`)
 })
+
+// A table of arrows called by index, two of them with one body: the dispatch calls each
+// arrow by its name (optimize/devirt.js devirtConstFnArrayCalls), and the dedup, which
+// runs before it, renames the table's arrows with the bodies it merges. It left them, so
+// the dispatch named a body no longer in the module and the program did not compile at
+// level 2 and above ("'closure1' is not a known function", v1.0.3 too).
+test('closures: a table of arrows called by index, two of them with one body', () => {
+  const programs = {
+    'two of three': `const fs = [(x) => x * 2, (x) => x * 2, (x) => x - 1]\nexport const f = (x, i) => fs[i % 3](x)`,
+    'two of two': `const fs = [(x) => x + 1, (x) => x + 1]\nexport const f = (x, i) => fs[i & 1](x)`,
+    'all three': `const fs = [(x) => x + 1, (x) => x + 1, (x) => x + 1]\nexport const f = (x, i) => fs[i % 3](x)`,
+    'reading a module binding': `let b = 1\nconst fs = [(x) => x * 2 + b, (x) => x * 2 + b, (x) => x - b]\nexport const f = (x, i) => fs[i % 3](x)`,
+    'of two parameters, the first and the last': `const fs = [(x, y) => x + y, (x, y) => x * y, (x, y) => x + y]\nexport const f = (x, i) => fs[i % 3](x, i)`,
+    'in a loop over the table': `const fs = [(x) => x + 1, (x) => x + 1, (x) => x * 3]\nexport const f = (x, i) => { let s = 0; for (let k = 0; k < fs.length; k++) s += fs[k](x); return s + i }`,
+  }
+  const args = [[0.5, 0], [1.5, 1], [2.5, 2], [3, 3], [4, 4], [5, 5]]
+  for (const [name, src] of Object.entries(programs)) {
+    const node = oracle(src), want = args.map(a => node.f(...a)).join()
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const e = jz(src, { optimize }).exports
+      is(args.map(a => e.f(...a)).join(), want, `${name}, at ${optimize}`)
+    }
+  }
+})
