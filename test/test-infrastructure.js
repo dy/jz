@@ -49,9 +49,20 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
   for (const env of [{ JZ_TEST_HOST: 'wasi' }, { JZ_TEST_TARGET: 'jz.wasm' }, { JZ_TEST_SWEEP: '1' }])
     is(values(env), [0, 2, 'speed', 'size'], 'explicit sweeps retain all host/profile combinations')
   is(matrixTasks().length, 4)
-  is(matrixTasks()[2].env.JZ_DEBUG_INVARIANTS, undefined, 'release O3 remains a distinct check')
-  is(invariantTask().env.JZ_DEBUG_INVARIANTS, '1', 'battery also retains the armed O3 check')
+  is(matrixTasks()[2].env.JZ_DEBUG_INVARIANTS, undefined, 'test:matrix runs level 3 plain, as CI does')
+  is(matrixTasks('core', { armed: true })[2], invariantTask(), 'armed, the matrix runs the invariant leg in its place')
   is(extendedTasks().filter(t => t.name.startsWith('generated')).length, 2)
+  // The landing battery runs level 3 armed and never plain: the two compile the same bytes.
+  const battery = args => {
+    const r = spawnSync(process.execPath, ['scripts/battery.mjs', ...args, '--list'], { cwd: root, env: clean(), encoding: 'utf8', timeout: 30000 })
+    if (r.status !== 0) throw Error(r.stderr)
+    return r.stdout.trim().split('\n').map(line => line.split(':')[0])
+  }
+  for (const args of [['fast'], []]) {
+    const names = battery(args)
+    ok(names.includes('core-invariants') && !names.includes('core-opt3'), `battery ${args.join(' ')}: ${names.join(', ')}`)
+  }
+  ok(battery([]).includes('integration-invariants') && !battery([]).includes('integration-opt3'), 'the full battery runs integration at level 3 armed only')
   // the legs' names, the keys of test/native-costs.json
   is([...matrixTasks(), invariantTask()].map(t => legOf(t.env)), ['default', 'opt0', 'opt3', 'wasi', 'opt3-invariants'])
   is(legOf({ JZ_TEST_OPTIMIZE: '0', JZ_TEST_HOST: 'wasi', JZ_TEST_SWEEP: '1' }), 'opt0-wasi-sweep')

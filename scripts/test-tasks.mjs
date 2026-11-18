@@ -131,15 +131,19 @@ export const legOf = (env = process.env) => [
   env.JZ_TEST_OPTIMIZE != null && `opt${env.JZ_TEST_OPTIMIZE}`, env.JZ_TEST_HOST,
   env.JZ_TEST_SWEEP === '1' && 'sweep', env.JZ_DEBUG_INVARIANTS === '1' && 'invariants',
 ].filter(Boolean).join('-') || 'default'
-export const matrixTasks = (suite = 'core') => [
+// Level 3 runs plain, the path users ship (CI's matrix, test:matrix), or `armed` with the
+// invariant checks (the landing battery). The two compile the same bytes; the armed one
+// also fails a pass that breaks a contract the bytes do not show, as in 16 tests the
+// plain leg passed (650e3f5b9).
+export const matrixTasks = (suite = 'core', { armed = false } = {}) => [
   { name: `${suite}-default`, args: ['test/index.js', `--suite=${suite}`], env: legEnv() },
   { name: `${suite}-opt0`, args: ['test/index.js', `--suite=${suite}`], env: legEnv({ JZ_TEST_OPTIMIZE: '0' }) },
-  { name: `${suite}-opt3`, args: ['test/index.js', `--suite=${suite}`], env: legEnv({ JZ_TEST_OPTIMIZE: '3' }) },
+  armed ? invariantTask(suite) : { name: `${suite}-opt3`, args: ['test/index.js', `--suite=${suite}`], env: legEnv({ JZ_TEST_OPTIMIZE: '3' }) },
   { name: `${suite}-wasi`, args: ['test/index.js', `--suite=${suite}`], env: legEnv({ JZ_TEST_HOST: 'wasi' }) },
 ]
 export const invariantTask = (suite = 'core') => ({ name: `${suite}-invariants`, args: ['test/index.js', `--suite=${suite}`], env: legEnv({ JZ_TEST_OPTIMIZE: '3', JZ_DEBUG_INVARIANTS: '1' }) })
-export const extendedTasks = () => [
-  ...matrixTasks('integration'),
+export const extendedTasks = ({ armed = false } = {}) => [
+  ...matrixTasks('integration', { armed }),
   { name: 'generated-default', args: ['test/index.js', '--suite=generated'], env: legEnv() },
   { name: 'generated-wasi', args: ['test/index.js', '--suite=generated'], env: legEnv({ JZ_TEST_HOST: 'wasi' }) },
 ]

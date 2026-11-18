@@ -2,7 +2,7 @@
 // Bounded landing battery. `fast` means only the semantic matrix: no hidden
 // bootstrap, generated population sweep, or timing run. Full retains those
 // checks, with the memory-heavy bootstrap run alone after the native work.
-import { runTasks, matrixTasks, invariantTask, extendedTasks, legEnv, positiveInteger } from './test-tasks.mjs'
+import { runTasks, matrixTasks, extendedTasks, legEnv, positiveInteger } from './test-tasks.mjs'
 
 const args = process.argv.slice(2)
 let fast = false, list = false
@@ -13,8 +13,9 @@ for (const arg of args) {
   else if (arg.startsWith('--jobs=')) process.env.JZ_TEST_JOBS = String(positiveInteger(arg.slice(7), 'jobs'))
   else throw new Error(`Unknown battery argument '${arg}'; use [fast] [--jobs=N] [--list]`)
 }
-const tasks = [...matrixTasks(), invariantTask()]
-if (!fast) tasks.push(...extendedTasks(), invariantTask('integration'),
+// Level 3 armed in place of plain (scripts/test-tasks.mjs matrixTasks): CI runs the plain.
+const tasks = matrixTasks('core', { armed: true })
+if (!fast) tasks.push(...extendedTasks({ armed: true }),
   { name: 'fuzz-extended', args: ['test/fuzz.js'], env: legEnv({ JZ_DEBUG_INVARIANTS: '1' }) },
   { name: 'fixpoint', args: ['scripts/audit-fixpoint.mjs'], env: legEnv() },
 )

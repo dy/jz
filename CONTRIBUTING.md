@@ -167,8 +167,8 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 | `npm run test:bootstrap` | Fresh self compiler: round-trip, O0/O2/O3 parity/oracles, separate checkpoint overlay |
 | `npm run test:bootstrap -- --full` | Above, plus the full hosted suite and recursive compilation |
 | `npm run test:bootstrap -- --hosted=<i>/<n>` | Slice i of n of the hosted suite alone, on a fresh compiler of its own: CI's matrix, the files packed by their seconds in `test/hosted-costs.json` |
-| `npm run test:battery -- fast` | Core matrix plus the distinct armed O3 invariant leg |
-| `npm run test:battery` | Above, extended checks, armed integration/fuzz, fixpoint, then exclusive full bootstrap |
+| `npm run test:battery -- fast` | Core matrix with O3 armed (`JZ_DEBUG_INVARIANTS=1`) in place of plain O3: the same bytes, and the checks besides |
+| `npm run test:battery` | Above, extended checks with integration's O3 armed too, armed fuzz, fixpoint, then exclusive full bootstrap |
 | `npm run test:all` | Core + extended + conformance + benchmark + full bootstrap + self performance |
 
 Before reporting a change, run what AGENTS.md ("Verify before claiming done") lists.

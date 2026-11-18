@@ -75,7 +75,8 @@ What this implies for HOW we optimize:
   later file. Focus with `npm test -- dyn-keys strings` (named files run in one
   process); inspect ownership with `node test/index.js --suite=all --list`.
 - `npm run test:matrix` — core opt0/opt2/opt3/wasi matrix, a leg at a time, each
-  split the same way. Do not launch overlapping batteries.
+  split the same way, level 3 plain as CI runs it; the battery runs level 3 armed
+  (`JZ_DEBUG_INVARIANTS=1`) in its place. Do not launch overlapping batteries.
 - `npm run test:extended` — integration matrix plus generated correctness/WAT/
   codegen populations on native and WASI. These checks moved out of core, not out
   of CI. `test:integration` / `test:generated` run just the current leg.
