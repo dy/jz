@@ -319,6 +319,10 @@ let more = false
 const asi = (a, p, expr) => {
   if (p >= LVL) return
   if (p === ONE) { more = true; return }
+  // a statement of a `;` list (seqRule below) ends where its line does: the list
+  // goes back to the loop that reads the next line, which would otherwise be
+  // read inside this statement, a line a level deeper
+  if (p === SEQ && seqDepth === groupDepth) return
   let list = Array.isArray(a) && a[0] === ';' ? a : null
   const was = list ? list.length : 0
   do {

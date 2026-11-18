@@ -319,3 +319,15 @@ test('parse list: a declaration arm is an early error at any length', () => {
   for (const n of [3, LEN + 1]) for (const decl of ['let y = 1', 'const y = 1', 'class C {}', 'function g() {}'])
     throws(() => jz(`export let f = (x) => { ${R(n, j => j === 1 ? `if (x === 1) ${decl}` : `if (x === ${j}) x = ${j}`).join('; else ')}; return x }`), /requires a block in statement position/, `${decl} at ${n} links`)
 })
+
+// A line of `;`-joined statements, the lines apart by line breaks: each line's
+// list went back to the loop over lines only at the file's end, so each line was
+// read inside the one before, and 600 lines ran out of stack ("nesting too deep").
+test('parse list: 10,000 lines of two statements each', () => {
+  const tree = parse(`let s = 0, t = 0\n${R(10000, i => `s += ${i}; t += 1`).join('\n')}\ns + t`)
+  is(tree.length, 20003, 'a list of the declaration, 20,000 statements and the last')
+  is(JSON.stringify(tree[20000]), '["+=","s",[null,9999]]')
+  is(JSON.stringify(tree[20001]), '["+=","t",[null,1]]')
+  const src = `export let f = (x) => { let s = 0, t = 0\n${R(700, i => `s += x * ${i}; t += 1`).join('\n')}\nreturn s + t }`
+  is(run(src).f(3), oracle(src).f(3), '700 lines in a function body answer as Node')
+})
