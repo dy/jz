@@ -44,6 +44,21 @@ test('runtime inspection: bounded counters, recursion and unknown work', () => {
   is(get([['loop', '$loop', ['br', '$loop']]]).boundedWork, null, 'infinite loop')
 })
 
+test('runtime inspection: the init guard an export opens with is initialization', () => {
+  // Where init is an entry (optimize/watr-tail.js legalizeInit), an export runs it first
+  // where the host has not; its arm, a call of init or init inlined, is not the export's work.
+  const grow = ['drop', ['memory.grow', ['i32.const', 1]]]
+  const mod = (arm, ...body) => ['module', ['global', '$__init_done', ['mut', 'i32'], ['i32.const', 0]],
+    ['func', '$__start', ['export', '"_initialize"'], grow],
+    ['func', '$f', ['export', '"f"'], ['if', ['i32.eqz', ['global.get', '$__init_done']], ['then', arm]], ...body, ['f64.const', 1]]]
+  // func 1 + if 1 + i32.eqz 1 + global.get 1 + f64.const 1
+  const r = captureRuntimeInspect(mod(['call', '$__start']))
+  is(r.f, { noAllocation: true, noHostCalls: true, boundedWork: true, maxInstructions: 5 })
+  is(r._initialize.noAllocation, null, 'init itself still allocates')
+  is(captureRuntimeInspect(mod(grow)).f.noAllocation, true, 'init inlined into the arm')
+  is(captureRuntimeInspect(mod(['call', '$__start'], ['call', '$__start'])).f.noAllocation, null, 'a call of init past the guard is the export\'s')
+})
+
 test('runtime inspection: nondecimal counter immediates cannot forge a work proof', () => {
   const inspectLoop = (step, bound) => captureRuntimeInspect(['module',
     ['func', '$f', ['export', '"f"'], ['local', '$i', 'i32'],

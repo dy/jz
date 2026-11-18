@@ -200,6 +200,35 @@ test('fixed memory: host reentry and non-tail recursive scratch are refused', ()
   throws(() => compile(helper, { ...options({ level: 2, sourceInline: false }) }), /recursive call/)
 })
 
+test('fixed memory: an init that runs as an entry stays outside the certified graph', () => {
+  // Where init is an entry and not a start section (it can throw, it reads the host, or
+  // the build is a WASI command), every export opens with a guard that runs it where the
+  // host has not (optimize/watr-tail.js legalizeInit). Init may allocate persistent state,
+  // as a start section's may: the proof leaves the guard out, and only the guard.
+  const init = `const check = (n) => { if (n <= 0) throw new RangeError('n'); return n }
+    let k = 64
+    export const setK = (v) => { k = v }
+    const table = new Float32Array(check(k))
+    for (let i = 0; i < 64; i++) table[i] = i * 0.5
+    `
+  const src = init + 'export function process(x, i) { return x * table[i & 63] }'
+  const own = init + 'const saved = []\nexport function process(x, i) { saved.push(x); return x * table[i & 63] }'
+  const host = src.replace('check(k)', 'globalThis.N ?? 64')
+  const cases = [[src, {}, '_initialize'], [src, { host: 'wasi' }, '__jz_init'], [host, {}, '_initialize']]
+  for (const optimize of tiers) for (const [code, extra, entry] of cases) {
+    const opts = { ...options(optimize), ...extra }, label = `${optimize}, ${extra.host ?? 'js'}${code === host ? ', host init' : ''}`
+    ok(WebAssembly.Module.exports(new WebAssembly.Module(compile(code, opts))).some(e => e.name === entry), `${label}: init is ${entry}`)
+    const p = jz(code, opts), ref = oracle(code), used = p.memory.used
+    for (const [x, i] of [[2, 3], [-1, 63], [0.5, 64]]) is(p.exports.process(x, i), ref(x, i), `${label}: process(${x}, ${i})`)
+    is(p.memory.used, used, `${label}: no retained allocation`)
+    if (!onKernel()) is(compile(code, { ...opts, inspect: true }).inspect.runtime.process.noAllocation, true, `${label}: init is not the export's work`)
+    if (code === host) continue
+    let refused = ''
+    try { compile(own, opts) } catch (e) { refused = e.message }
+    ok(/memory\.fixed cannot certify process/.test(refused) && !refused.includes('$__start'), `${label}: the export's own allocation is refused: ${refused}`)
+  }
+})
+
 test('fixed memory: export aliases, configuration errors and compile-state isolation', () => {
   const src = 'function f(n){const a=new Float64Array(128);a[n & 127]=n;return a[n & 127]} export { f as process }'
   is(jz(src, options(2)).exports.process(7), 7)

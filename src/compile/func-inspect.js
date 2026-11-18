@@ -62,6 +62,16 @@ export function captureFuncInspect(func, facts, programFacts) {
   }
 }
 
+/** The arm of the guard an export opens with where init is an entry, not a
+ *  start section (optimize/watr-tail.js legalizeInit):
+ *  `(if (i32.eqz (global.get $__init_done)) (then …))`. It runs init where the
+ *  host has not, once, before the export's own work, so the census leaves it
+ *  out as it leaves out the start section: initialization may allocate
+ *  persistent state (README, `memory.fixed`). */
+const initArm = (n, parent) => n[0] === 'then' && Array.isArray(parent) && parent[0] === 'if' &&
+  parent.some(c => Array.isArray(c) && c[0] === 'i32.eqz' && Array.isArray(c[1]) &&
+    c[1][0] === 'global.get' && c[1][1] === '$__init_done')
+
 /** Shared call/effect census of emitted code, including runtime helpers. */
 export function runtimeGraph(module, sharedMemory = false) {
   const funcs = new Map(), exports = [], records = new Map()
@@ -94,7 +104,8 @@ export function runtimeGraph(module, sharedMemory = false) {
   }
   for (const [name, fn] of funcs) {
     const rec = { calls: new Set(), allocation: false, unknown: false, indirect: false }
-    walkAst(fn, { enter: n => {
+    walkAst(fn, { enter: (n, parent) => {
+      if (initArm(n, parent)) return false
       const op = n[0]
       if (op === 'call' || op === 'return_call') rec.calls.add(n[1])
       if (op === 'import' || /^(return_)?call_ref$/.test(op)) rec.unknown = true
@@ -133,6 +144,7 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
       if (indirect && (!closed || !entries.size)) return null
       let total = 1
       for (let i = 1; i < n.length; i++) {
+        if (Array.isArray(n[i]) && initArm(n[i], n)) continue
         const c = count(n[i])
         if (c == null) return null
         total += c
