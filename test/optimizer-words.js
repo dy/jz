@@ -13,6 +13,7 @@ import { wordRanges, loopTrips } from '../src/optimize/word-ranges.js'
 import { foldWords, funcWat, run, oracle, jz, compile } from './util.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 import { findFunc, exactToInt32 } from './_optimizer.js'
+import { narrowFlagLocals } from '../src/optimize/int-narrow.js'
 
 test('SIMD store conversion peeling requires matching guards and both value arms', () => {
   const get = name => ['local.get', name], x = get('$x'), y = get('$y')
@@ -1083,4 +1084,21 @@ test('wordRanges: a write costs a run of locals, not every local of the function
   // (the parameter each test bounds on either side: the two arms joined, any word again)
   is(r.get(unset), { lo: -2147483648, hi: 2147483647 }, 'a parameter the arms bound apart holds any word after them')
   ok(ms < 2000, `${N} locals written under ${N} tests: ${ms.toFixed(0)} ms`)
+})
+
+// A flag local is narrowed where every read follows a write on its path: the
+// writes of each local were a list that each later write and read walked, so a
+// local written in each of 20,000 arms (a guard list of assignments) took the
+// square of the arms. The writes are a set each read's chain walks up through.
+test('flag locals: a local written in 20,000 arms is narrowed in a time in the arms', () => {
+  const n = 20000, g = (l) => ['local.get', l]
+  // (each arm writes the flag and tests it: no write dominates another)
+  const arms = Array.from({ length: n }, (_, i) => ['if', ['f64.eq', g('$x'), ['f64.const', String(i)]],
+    ['then', ['local.set', '$r', ['f64.const', String(i % 3)]], ['br_if', '$L', ['f64.eq', g('$r'), ['f64.const', '1']]], ['br', '$L']]])
+  const fn = ['func', '$f', ['param', '$x', 'f64'], ['local', '$r', 'f64'], ['block', '$L', ...arms]]
+  const t0 = performance.now(), changed = narrowFlagLocals(fn), ms = performance.now() - t0
+  ok(changed, 'the flag is narrowed')
+  ok(ms < 1500, `${n} arms in ${ms.toFixed(0)} ms`)
+  is(JSON.stringify(fn[3]), '["local","$r","i32"]')
+  is(fn[4][2][2][2][2][0], 'i32.eq', 'its test an integer comparison')
 })

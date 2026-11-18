@@ -301,9 +301,16 @@ const FLAG_CMP = { 'f64.eq': 'i32.eq', 'f64.ne': 'i32.ne', 'f64.lt': 'i32.lt_s',
 // A write's arms are a prefix of a read's when the write's link is on the read's chain.
 const ARMS = new Set(['then', 'else', 'loop', 'block'])
 const armsOf = (n, arms) => Array.isArray(n) && ARMS.has(n[0]) ? { up: arms } : arms
-const under = (w, arms) => { for (let a = arms; a; a = a.up) if (a === w) return true; return !w }
-const note = (written, l, arms) => { const ws = written.get(l); if (!ws) written.set(l, [arms]); else if (!ws.some(w => under(w, arms))) ws.push(arms) }
-const writtenBefore = (written, l, arms) => { const ws = written.get(l); return !!ws && ws.some(w => under(w, arms)) }
+// The links a local is written at are a set, and a read walks its own chain up
+// through it: the writes of a local in each of thousands of arms (a guard list)
+// were a list each later write and read walked, quadratic in the arms.
+const note = (written, l, arms) => { let ws = written.get(l); if (!ws) written.set(l, ws = new Set()); if (!writtenBefore(written, l, arms)) ws.add(arms) }
+const writtenBefore = (written, l, arms) => {
+  const ws = written.get(l)
+  if (!ws) return false
+  for (let a = arms; a; a = a.up) if (ws.has(a)) return true
+  return ws.has(null)
+}
 const f64Decls = (fn, decls, params) => {
   let any = false
   for (const d of fn) if (Array.isArray(d) && (d[0] === 'local' || d[0] === 'param') && typeof d[1] === 'string') { decls.set(d[1], d); if (d[0] === 'param') params.add(d[1]); if (d[2] === 'f64') any = true }
