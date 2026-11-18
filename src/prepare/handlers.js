@@ -1078,9 +1078,13 @@ const handlers = {
     if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeForStringOnly(); return ['str', 'boolean'] }
     // the host's global, or 'undefined' where it has none: no ReferenceError
     if (hostFree(a)) { includeForStringOnly(); return ['()', '__host_typeof', hostGlobalNode(a)[2]] }
-    const known = staticTypeofString(a)
+    // (the operand prepared once: its own typeof prepared it again, a level of
+    // `typeof typeof … x` twice the time of the one inside it)
+    const known = staticTypeofNamed(a)
     if (known != null) { includeForStringOnly(); return ['str', known] }
-    return ['typeof', prep(a)]
+    const pa = prep(a), fn = preparedTypeof(a, pa)
+    if (fn != null) { includeForStringOnly(); return ['str', fn] }
+    return ['typeof', pa]
   },
 
   // Unary +/- disambiguation
@@ -1870,7 +1874,9 @@ function builtinGlobalNamed(x) {
   return typeof key === 'string' && key !== x && hasModule(key) ? builtinGlobalOf(key) : null
 }
 // Constant fold typeof for builtin globals and their members (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
-function staticTypeofString(x) {
+const staticTypeofString = (x) => staticTypeofNamed(x) ?? preparedTypeof(x, prep(x))
+// What the operand's spelling decides, before it is prepared.
+function staticTypeofNamed(x) {
   const builtin = builtinGlobalNamed(x)
   if (builtin) return GLOBAL_TYPEOF[builtin]
   // The globals every host has (`globalThis`, `WebAssembly`): objects, imported where a program
@@ -1897,7 +1903,10 @@ function staticTypeofString(x) {
     if (GLOBALS[x] && hasModule(GLOBALS[x])) includeModule(GLOBALS[x])
     if (GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
   }
-  const px = prep(x)
+  return null
+}
+// What the prepared operand `px` of `x` decides: a function of the target.
+function preparedTypeof(x, px) {
   if (!shadowsBuiltin(x) && namesTargetFn(px)) return 'function'
   if (typeof px === 'string' && px.includes('.') &&
       (INTRINSIC_ARITY[px] != null || emitArity(ctx.core.emit?.[px], px) > 0)) return 'function'

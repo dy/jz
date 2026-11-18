@@ -1485,3 +1485,15 @@ test('errors: a long line shows the stretch around its column', () => {
   const sc = sl[sat + 2].indexOf('^')
   is(shown.slice(caret - 2, caret + 4), sl[sat + 1].slice(sc - 2, sc + 4), 'the caret stands where it stands on the short line')
 })
+
+// The prepare's typeof asked what its operand's spelling and its prepared form
+// decide, preparing the operand, then prepared it again to emit it: each level
+// of `typeof typeof … x` took twice the time of the one inside it (20 levels
+// 2.2 s, 40 past 90 s; 40 take 0.25 s).
+test('errors: a typeof of a typeof prepares its operand once', () => {
+  const src = `export let f = (x) => (${'typeof '.repeat(26)}x).length`
+  const t0 = performance.now(), f = run(src).f, ms = performance.now() - t0
+  ok(ms < 5000, `26 levels compiled in ${ms.toFixed(0)} ms`)
+  is(f(3), 6)
+  is(run('export let f = (x) => typeof typeof Math.sin + typeof Math.sin + typeof x').f(1), 'stringfunctionnumber')
+})
