@@ -291,6 +291,7 @@ const TESTS = [
   'bound-tier-population',
   'float-reduction-population',
   'single-compare-population',
+  'compare-population',
   'record-lanes-population',
   'lane-convert-population',
   'view-order-population',

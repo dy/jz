@@ -157,8 +157,8 @@ export default (ctx) => {
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__ptr_aux', '__to_str'],
     __to_prim_num: ['__ptr_type', '__ptr_aux', '__to_str'],
-    __cmp: () => ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_num', '__is_str_key', '__str_cmp', '__to_num', ...(representationProgramHasBigint(ctx) ? ['__is_bigint_box', '__cmp_i64', '__cmp_i64_num', '__bigint_side', '__ptr_offset'] : [])],
-    __bigint_side: ['__to_num', '__is_str_key'],
+    __cmp: () => ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_num', '__is_str_key', '__str_cmp', '__to_num', ...(representationProgramHasBigint(ctx) ? ['__is_bigint_box', '__cmp_i64', '__cmp_bigint_with', '__ptr_offset'] : [])],
+    __cmp_bigint_with: ['__to_num', '__is_str_key', '__str_to_bigint', '__cmp_i64', '__cmp_i64_num'],
     __is_bigint_box: ['__ptr_type'],
     __cmp_i64_num: ['__cmp_i64'],
     __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat_fresh',
@@ -825,9 +825,9 @@ export default (ctx) => {
     ${representationProgramHasBigint(ctx) ? `(if (call $__is_bigint_box (local.get $a))
       (then (return (if (result f64) (call $__is_bigint_box (local.get $b))
         (then (call $__cmp_i64 (i64.load (call $__ptr_offset (local.get $a))) (i64.load (call $__ptr_offset (local.get $b)))))
-        (else (call $__cmp_i64_num (i64.load (call $__ptr_offset (local.get $a))) (call $__bigint_side (local.get $b))))))))
+        (else (call $__cmp_bigint_with (i64.load (call $__ptr_offset (local.get $a))) (local.get $b)))))))
     (if (call $__is_bigint_box (local.get $b))
-      (then (return (f64.neg (call $__cmp_i64_num (i64.load (call $__ptr_offset (local.get $b))) (call $__bigint_side (local.get $a)))))))` : ''}
+      (then (return (f64.neg (call $__cmp_bigint_with (i64.load (call $__ptr_offset (local.get $b))) (local.get $a))))))` : ''}
     (local.set $x (call $__to_num (local.get $a)))
     (local.set $y (call $__to_num (local.get $b)))
     (if (f64.eq (local.get $x) (local.get $y)) (then (return (f64.const 0))))
@@ -842,13 +842,19 @@ export default (ctx) => {
   ctx.core.stdlib['__cmp_i64'] = `(func $__cmp_i64 (param $x i64) (param $y i64) (result f64)
     (if (result f64) (i64.lt_s (local.get $x) (local.get $y)) (then (f64.const -1))
       (else (f64.convert_i32_u (i64.gt_s (local.get $x) (local.get $y))))))`
-  // The other side of a comparison with a BigInt as a number: a string reads as a
-  // BigInt literal, so one naming no integer is unordered (NaN).
-  ctx.core.stdlib['__bigint_side'] = `(func $__bigint_side (param $v i64) (result f64)
-    (local $n f64)
-    (local.set $n (call $__to_num (local.get $v)))
-    (if (result f64) (i32.and (call $__is_str_key (local.get $v)) (f64.ne (local.get $n) (f64.trunc (local.get $n))))
-      (then (f64.const nan)) (else (local.get $n))))`
+  // A BigInt's payload `x` against a primitive that is no BigInt (ES2024 7.2.13
+  // steps 3-4): a string through StringToBigInt, exactly, one it does not parse
+  // unordered (`10n < '1e1'`, `'Infinity'`, `'1.0'` are false both ways); any other
+  // primitive as its number, null 0 and undefined NaN.
+  ctx.core.stdlib['__cmp_bigint_with'] = `(func $__cmp_bigint_with (param $x i64) (param $v i64) (result f64)
+    (local $p i64) (local $st i32)
+    (if (call $__is_str_key (local.get $v))
+      (then
+        (call $__str_to_bigint (local.get $v))
+        (local.set $st)
+        (local.set $p)
+        (return (if (result f64) (local.get $st) (then (f64.const nan)) (else (call $__cmp_i64 (local.get $x) (local.get $p)))))))
+    (call $__cmp_i64_num (local.get $x) (call $__to_num (local.get $v))))`
   // A BigInt against a number, exactly (ES2024 7.2.13 step 4): NaN is unordered, a
   // number past the i64 range is beyond every BigInt jz holds, else the integer
   // parts compare and then the number's fraction.

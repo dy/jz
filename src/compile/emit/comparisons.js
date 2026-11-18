@@ -917,9 +917,13 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // A BigInt beside a side that may be null or undefined compares as
   // JavaScript does in the shared helper (ES2024 7.2.13): null is 0, undefined
   // NaN. Read as an i64, the sentinel's bits would order as a payload.
+  // So does a BigInt beside a string or a boolean the compiler knows: they share no
+  // representation, and a string goes through StringToBigInt (`10n < '1e1'` is false).
+  const bigBeside = vta === VAL.BIGINT ? resolveValType(b, valTypeOf, lookupValType) : vtb === VAL.BIGINT ? resolveValType(a, valTypeOf, lookupValType) : null
   if ((vta === VAL.DATE || vtb === VAL.DATE) &&
       (ctx.funcs.runtimeRoots.has('__jz_tp_num') || vta === VAL.BIGINT || vtb === VAL.BIGINT) ||
-      (vta === VAL.BIGINT || vtb === VAL.BIGINT) && (nullableSide(a) || nullableSide(b))) {
+      (vta === VAL.BIGINT || vtb === VAL.BIGINT) && (nullableSide(a) || nullableSide(b)) ||
+      bigBeside === VAL.STRING || bigBeside === VAL.BOOL) {
     ctx.module.include('string')
     ctx.module.include('number')
     inc('__cmp')
@@ -937,6 +941,23 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
         ? typed([bigintUnsignedBound(node) ? 'f64.convert_i64_u' : 'f64.convert_i64_s', readI64(node, v)], 'f64')
         : toNumF64(node, asF64(v))
       return typed([`f64.${f64op}`, conv(a, va, vta === VAL.BIGINT), conv(b, vb, vtb === VAL.BIGINT)], 'i32')
+    }
+    // A partner the summary proves a Number (no kind default, which may be a BigInt's
+    // carrier): the two compare exactly (step 4), the operands evaluated in source order.
+    const numSide = vta === VAL.BIGINT ? b : a
+    const numKind = (vta === VAL.BIGINT) !== (vtb === VAL.BIGINT) ? ctx.summary?.at(ctx.func.current)?.kindOfExpr(numSide) : null
+    if (numKind != null && tagOf(core(numKind)) === K.NUMBER && !isNullable(numKind)) {
+      ctx.module.include('number')
+      inc('__cmp_i64_num')
+      const ta = temp('cmp'), tb = temp('cmp')
+      const bigLeft = vta === VAL.BIGINT
+      const call = ['call', '$__cmp_i64_num',
+        bigLeft ? ['i64.reinterpret_f64', ['local.get', `$${ta}`]] : ['i64.reinterpret_f64', ['local.get', `$${tb}`]],
+        bigLeft ? ['local.get', `$${tb}`] : ['local.get', `$${ta}`]]
+      return typed(['block', ['result', 'i32'],
+        ['local.set', `$${ta}`, bigLeft ? ['f64.reinterpret_i64', readI64(a, va)] : asF64(va)],
+        ['local.set', `$${tb}`, bigLeft ? asF64(vb) : ['f64.reinterpret_i64', readI64(b, vb)]],
+        [`f64.${f64op}`, bigLeft ? call : ['f64.neg', call], ['f64.const', 0]]], 'i32')
     }
     const op = bigintUnsignedBound(a) || bigintUnsignedBound(b) ? i32op.replace('_s', '_u') : i32op
     return typed([`i64.${op}`, readI64(a, va), readI64(b, vb)], 'i32')
