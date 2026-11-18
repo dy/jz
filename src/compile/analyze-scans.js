@@ -102,13 +102,14 @@ export function findFreeVars(node, bound, free, scope) {
  * ask the same question with different candidate sets. */
 export function findMutations(node, names, mutated) {
   if (!Array.isArray(node)) return
+  for (const name of assignedNames(node)) if (names.has(name)) mutated.add(name)
+}
+// (a rewrite in place drops the memo with the census: body-facts.js invalidateRewrittenBody)
+const assignedNames = (node) => {
   const cache = getFactStore().mutationNames
   let all = cache.get(node)
-  if (!all) {
-    all = collectAssignedNames(node, new Set())
-    cache.set(node, all)
-  }
-  for (const name of all) if (names.has(name)) mutated.add(name)
+  if (!all) cache.set(node, all = collectAssignedNames(node, new Set()))
+  return all
 }
 
 const NO_NAMES = []
@@ -322,9 +323,11 @@ export const BINDING_USE_DECLS = 0
 export const BINDING_USE_INIT = 1
 export const BINDING_USE_USES = 2
 /** A binding's initializer can describe its whole lifetime only when it has
- * one declaration and no later write, including writes through closures. */
+ * one declaration and no later write, including writes through closures. The
+ * writes are the body's memo, as the census is: a body of n declarations asks
+ * n times, and a walk of the body each time was quadratic. */
 export const hasSingleInitializer = (body, name) =>
-  scanBindingUses(body).get(name)?.[BINDING_USE_DECLS] === 1 && !isReassigned(body, name)
+  scanBindingUses(body).get(name)?.[BINDING_USE_DECLS] === 1 && !(Array.isArray(body) && assignedNames(body).has(name))
 
 // Self-compile-only: see resetProgramFactsCache (program-facts.js) — a fresh
 // factStore (src/session.js) swaps in a fresh WeakMap each session so a

@@ -455,3 +455,15 @@ test('split bindings: thousands of assignments split in a time in the body', () 
   is(JSON.stringify(small), JSON.stringify(['{}', [';', ['let', ['=', 's', [null, 0]]], ['let', ['=', s0, ['+', 's', 'x']]], ['let', ['=', s1, ['*', s0, [null, 2]]]], ['if', 'x', [';', ['=', s1, [null, 7]], ['return', s1]]], ['return', s1]]]))
 })
 
+
+// Each binding the split makes asks whether its initializer holds for its whole
+// life (compile/analyze-scans.js hasSingleInitializer): one declaration and no
+// write after it. The writes were a walk of the whole body each time, so a body
+// of 10,000 lines of two writes took 18 s at the level off (2,500 took 1.9 s);
+// they are the body's memo, as its census is, and take 3.2 s.
+test('split bindings: a body of 8,000 lines of two writes compiles in a time in its size', () => {
+  const src = `export let f = (x) => { let s = 0, t = 0\n${Array.from({ length: 8000 }, (_, i) => `s += x * ${i}; t += 1`).join('\n')}\nreturn s + t }`
+  const t0 = performance.now(), f = run(src, { optimize: false }).f, ms = performance.now() - t0
+  ok(ms < 8000, `8,000 lines compiled in ${ms.toFixed(0)} ms`)
+  is(f(3), 3 * 8000 * 7999 / 2 + 8000)
+})
