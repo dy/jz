@@ -154,3 +154,50 @@ test('parse list: nested calls parse once a level; a call then a block is two st
   is(JSON.stringify(parse('x = { f(a) { return 1 } }')), '["=","x",["{}",[":","f",["function",null,"a",["return",[null,1]]]]]]')
   is(JSON.stringify(parse('class C { f(a) { return 1 } }')), '["class","C",null,[":","f",["function",null,"a",["return",[null,1]]]]]')
 })
+
+// An else-if chain, a `?:` chain down its alternates and the statements of a
+// `;` list are read in a loop, a link a pass (src/parse.js), to the trees the
+// recursion built: PINS holds each tree with every node's position as the
+// recursive reader gave it ([position, op, ...operands]). The `;` reader took a
+// call a statement, so a one-line list of 1,500 overflowed it.
+const shown = n => Array.isArray(n) ? [n.loc ?? null, ...Array.from(n, x => x === undefined ? '<u>' : shown(x))] : n
+const PINS = [
+  ["if (a) b; else if (c) d; else e","[0,\"if\",\"a\",\"b\",[15,\"if\",\"c\",\"d\",\"e\"]]"],
+  ["if (a) { b } else if (c) { d } else { e }","[0,\"if\",\"a\",\"b\",[18,\"if\",\"c\",\"d\",\"e\"]]"],
+  ["if (a) b\nelse if (c) d\nelse if (e) f","[0,\"if\",\"a\",\"b\",[14,\"if\",\"c\",\"d\",[28,\"if\",\"e\",\"f\"]]]"],
+  ["if (a) b; else if (c) d; else if (e) f; else g; h; i","[46,\";\",[0,\"if\",\"a\",\"b\",[15,\"if\",\"c\",\"d\",[30,\"if\",\"e\",\"f\",\"g\"]]],\"h\",\"i\"]"],
+  ["L: if (a) b; else if (c) d","[1,\":\",\"L\",[3,\"if\",\"a\",\"b\",[18,\"if\",\"c\",\"d\"]]]"],
+  ["if (a) if (b) c; else d; else e","[0,\"if\",\"a\",[7,\"if\",\"b\",\"c\",\"d\"],\"e\"]"],
+  ["if (a) {} else if (b) {}\nx()","[null,\";\",[0,\"if\",\"a\",null,[15,\"if\",\"b\",null]],[26,\"()\",\"x\",null]]"],
+  ["x = a ? b : c ? d : e","[2,\"=\",\"x\",[6,\"?\",\"a\",\"b\",[14,\"?\",\"c\",\"d\",\"e\"]]]"],
+  ["x = a ? b : c ? d : e = f","[2,\"=\",\"x\",[6,\"?\",\"a\",\"b\",[14,\"?\",\"c\",\"d\",[22,\"=\",\"e\",\"f\"]]]]"],
+  ["x = a ? b : c ?? d ? e : f","[2,\"=\",\"x\",[6,\"?\",\"a\",\"b\",[19,\"?\",[14,\"??\",\"c\",\"d\"],\"e\",\"f\"]]]"],
+  ["f(a ? b : c ? d : e, g)","[1,\"()\",\"f\",[19,\",\",[4,\"?\",\"a\",\"b\",[12,\"?\",\"c\",\"d\",\"e\"]],\"g\"]]"],
+  ["x = a ? b : c\n? d : e","[2,\"=\",\"x\",[6,\"?\",\"a\",\"b\",[14,\"?\",\"c\",\"d\",\"e\"]]]"],
+  ["a ? b : c ? d : e ? f : g","[2,\"?\",\"a\",\"b\",[10,\"?\",\"c\",\"d\",[18,\"?\",\"e\",\"f\",\"g\"]]]"],
+  ["x = a ? (b, c) : d ? e : f","[2,\"=\",\"x\",[6,\"?\",\"a\",[8,\"()\",[10,\",\",\"b\",\"c\"]],[19,\"?\",\"d\",\"e\",\"f\"]]]"],
+  ["x = a ? b : c ? d : e, y = 1","[21,\",\",[2,\"=\",\"x\",[6,\"?\",\"a\",\"b\",[14,\"?\",\"c\",\"d\",\"e\"]]],[25,\"=\",\"y\",[null,\"<u>\",1]]]"],
+  ["x = a ? b : c ? d : e ? f : g || h","[2,\"=\",\"x\",[6,\"?\",\"a\",\"b\",[14,\"?\",\"c\",\"d\",[22,\"?\",\"e\",\"f\",[30,\"||\",\"g\",\"h\"]]]]]"],
+  ["a; b; c","[1,\";\",\"a\",\"b\",\"c\"]"],
+  ["a;; b","[1,\";\",\"a\",null,\"b\"]"],
+  ["a; b;","[1,\";\",\"a\",\"b\",null]"],
+  ["for (;;) {}","[0,\"for\",[5,\";\",null,null,null],null]"],
+  ["for (a; b; c) d","[0,\"for\",[6,\";\",\"a\",\"b\",\"c\"],\"d\"]"],
+  ["{ a; b } c; d","[null,\";\",[0,\"{}\",[3,\";\",\"a\",\"b\"]],\"c\",\"d\"]"],
+  ["switch (x) { case 1: a; b; case 2: c }","[0,\"switch\",\"x\",[null,\"case\",[null,\"<u>\",1],[null,\";\",\"a\",\"b\"]],[null,\"case\",[null,\"<u>\",2],\"c\"]]"],
+  ["class C { x = 1; y = 2; m() { a; b } }","[0,\"class\",\"C\",null,[15,\";\",[12,\"=\",\"x\",[null,\"<u>\",1]],[19,\"=\",\"y\",[null,\"<u>\",2]],[25,\":\",\"m\",[null,\"function\",null,null,[31,\";\",\"a\",\"b\"]]]]]"],
+  ["var a = 1; let b = 2; const c = 3","[9,\";\",[0,\"var\",[6,\"=\",\"a\",[null,\"<u>\",1]]],[11,\"let\",[17,\"=\",\"b\",[null,\"<u>\",2]]],[22,\"const\",[30,\"=\",\"c\",[null,\"<u>\",3]]]]"],
+  ["do a; while (b); c","[15,\";\",[0,\"do\",\"a\",\"b\"],\"c\"]"],
+  ["function f() { a; b; return c }; g()","[31,\";\",[0,\"function\",\"f\",null,[16,\";\",\"a\",\"b\",[21,\"return\",\"c\"]]],[34,\"()\",\"g\",null]]"],
+  ["x = () => { a; b }; y","[18,\";\",[2,\"=\",\"x\",[7,\"=>\",[4,\"()\",null],[10,\"{}\",[13,\";\",\"a\",\"b\"]]]],\"y\"]"],
+]
+
+test('parse list: chains read in a loop make the trees the recursion made', () => {
+  for (const [src, tree] of PINS) is(JSON.stringify(shown(parse(src))), tree, src)
+})
+
+test('parse list: 10,000 statements on one line', () => {
+  const tree = parse(`let s = 0; ${Array.from({ length: 10000 }, (_, i) => `s += ${i}`).join('; ')}; s`)
+  is(tree.length, 10003, 'a list of the declaration, 10,000 statements and the last')
+  is(JSON.stringify(tree[10001]), '["+=","s",[null,9999]]')
+})

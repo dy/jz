@@ -13,7 +13,8 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err, prec, seek, expr, word, keyword, next } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec, seek, expr, word, keyword, next, parens } from 'subscript/parse'
+import { body as armBody, follows } from 'subscript/feature/if.js'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
 import { here, where } from './ctx.js'
@@ -151,13 +152,22 @@ if (switchOp) {
     } finally { groups.length = groupDepth = outer }
   }
 }
-// The least source position in a node, Infinity where none is kept.
+// The least source position in a node, Infinity where none is kept. Its own
+// stack: a body may be a chain thousands of links deep.
 const firstLoc = (n) => {
-  if (!Array.isArray(n)) return Infinity
-  let at = typeof n.loc === 'number' ? n.loc : Infinity
-  for (let i = 1; i < n.length; i++) { const c = firstLoc(n[i]); if (c < at) at = c }
+  let at = Infinity
+  const todo = [n]
+  while (todo.length) {
+    const m = todo.pop()
+    if (!Array.isArray(m)) continue
+    if (typeof m.loc === 'number' && m.loc < at) at = m.loc
+    for (let i = 1; i < m.length; i++) todo.push(m[i])
+  }
   return at
 }
+// Whether every position in node `n` lies past `open`; a node placed at or
+// before it answers at once.
+const allPast = (n, open) => !(Array.isArray(n) && typeof n.loc === 'number' && n.loc <= open) && firstLoc(n) > open
 const CONTROL = new Set(['if', 'for', 'for await', 'while', 'with', ':'])
 const bodyOf = st => st[0] === 'if' && st.length > 3 ? st[3] : st[2]
 const isFn = n => Array.isArray(n) && (n[0] === 'function' || n[0] === 'function*' || n[0] === 'class' ||
@@ -173,7 +183,7 @@ const endsInBrace = (st, open) => {
     if (op === 'export') return isFn(st[1]) || Array.isArray(st[1]) && st[1][0] === 'default' && isFn(st[1][1])
     if (!CONTROL.has(op)) return false
     st = bodyOf(st)
-    if (st == null || firstLoc(st) > open) return true   // an empty or braced body
+    if (st == null || allPast(st, open)) return true   // an empty or braced body
   }
 }
 // Whether statement `st` ended with the `)` of a do-while (ASI inserts `;` after it on one line).
@@ -358,6 +368,91 @@ jessieParse.step = (a, p, cc, expr) => {
   return r
 }
 
+// A list in meaning is read in a loop, a link a pass, to the tree subscript's
+// recursion builds, node for node: an `else if` (feature/if.js reads the else
+// arm as a statement, which reads the next `if`), a `?:` in the alternate of
+// another (op/ternary.js reads the alternate, which reads the next `?`), and the
+// statements of a `;` list (seq.js reads what follows a `;` by a call inside the
+// one that read the statement before). The depth of a parse is then the nesting
+// of its source, not the length of a list. A link read inside the one before
+// went on reading at that link's precedence once its node stood; the loops take
+// those steps too, innermost first, as the calls returned.
+const readOn = (node, p) => {
+  let cc, n
+  while ((cc = jessieParse.space()) && (n = jessieParse.step(node, p, cc, expr))) node = n
+  return node
+}
+const ifRule = lookup[105].ops.find(d => d.op === 'if')
+ifRule.map = () => {
+  const links = []
+  let at = -1
+  for (;;) {
+    jessieParse.space()
+    const node = ['if', parens(), armBody()]
+    if (links.length) node.loc = at
+    links.push(node)
+    if (!follows('else')) break
+    // the arm is the next link where the dispatcher would take `if` for the keyword
+    if (jessieParse.space() !== 105 || !word('if') || jessieParse.prop && !jessieParse.prop(idx + 2)) { node.push(armBody()); break }
+    at = idx
+    skip(2)
+  }
+  for (let k = links.length - 1; k > 0; k--) links[k - 1].push(readOn(links[k], body))
+  return links[0]
+}
+const ternaryRule = lookup[63].ops.find(d => d.op === '?'), ALT = ternaryRule.p - 1
+ternaryRule.map = (a) => {
+  if (!a) return
+  const links = []
+  let cond = a, at = -1, alt
+  for (;;) {
+    const then = expr(ALT)
+    if (!then || !next(c => c === 58)) {
+      if (!links.length) return
+      seek(at)   // this `?` reads as no link: the alternate before it ends there
+      alt = cond
+      break
+    }
+    links.push([cond, then, at])
+    // the alternate read up to a `?` the step would take as the next link
+    alt = expr(ALT + 1)
+    const cc = jessieParse.space(), c1 = cur.charCodeAt(idx + 1)
+    if (alt && cc === 63 && c1 !== 63 && c1 !== 46 && !jessieParse.semi) { cond = alt; at = idx; skip(); continue }
+    alt = readOn(alt, ALT)
+    break
+  }
+  for (let k = links.length - 1; k >= 0; k--) {
+    const [c, t, pos] = links[k]
+    alt = ['?', c, t, alt]
+    if (k) { alt.loc = pos; alt = readOn(alt, ALT) }
+  }
+  return alt
+}
+// A `;` list: each statement is read at the precedence seq.js reads it, up to
+// the next `;` of the list, which the loop takes (the step hook below stops the
+// statement there). `;` followed by a line break went to the list layer already.
+const seqRule = lookup[59].ops.find(d => d.op === ';'), SEQ = seqRule.p - .5
+let seqDepth = -1, seqStop = false
+seqRule.map = (a) => {
+  const outerDepth = seqDepth, outerStop = seqStop
+  seqDepth = groupDepth
+  try {
+    const list = Array.isArray(a) && a[0] === ';' ? a : [';', a || null]
+    for (;;) {
+      seqStop = false
+      const b = expr(SEQ)
+      if (Array.isArray(b) && b[0] === ';') for (let i = 1; i < b.length; i++) list.push(b[i])
+      else list.push(b || null)
+      if (!seqStop) return list
+      skip()
+    }
+  } finally { seqDepth = outerDepth; seqStop = outerStop }
+}
+const listStep = jessieParse.step
+jessieParse.step = (a, p, cc, expr) => {
+  if (cc === 59 && p === SEQ && seqDepth === groupDepth && !jessieParse.semi) { seqStop = true; return null }
+  return listStep(a, p, cc, expr)
+}
 // A method shorthand `m(p) { … }` stands directly in the braces of an object
 // literal or a class body. subscript's reader of it (feature/accessor.js) reads a
 // call's arguments as its parameters, finds no `{` and rewinds for the call to
