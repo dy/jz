@@ -452,13 +452,13 @@ test('dead opaque-length TypeError schema is pruned from custom sections post-tr
   }
 })
 
-test('reachable opaque-length TypeError schema survives custom-section reconciliation', () => {
+test('reachable opaque-length TypeError reaches the host by its code at every tier', () => {
+  // The nullish read raises ERR.PROPERTY_NULLISH (module/core.js `__throw_property_nullish`),
+  // which the host decodes (err-codes.js): no Error object, schema or class name in the module.
   const src = `export let f = x => x.length`
   for (const optimize of levels(0, 2, 3, 'size'))
-    ok(compile(src, { optimize, wat: true }).includes('"jz:errcls"'),
-      `O${optimize}: a genuinely reachable throw keeps the Error class named`)
-  throws(() => jz(src).exports.f(null), err => err instanceof TypeError,
-    'genuinely reachable nullish .length still throws a real host TypeError')
+    throws(() => jz(src, { optimize }).exports.f(null), err => err instanceof TypeError && err.message === 'Cannot read properties of undefined',
+      `O${optimize}: a genuinely reachable nullish .length throws a real host TypeError`)
 })
 
 test('opaque .length host provenance survives aliases and internal call hops', () => {
