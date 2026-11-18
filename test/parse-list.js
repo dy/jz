@@ -5,10 +5,11 @@
 // statements: a library bundled into one file parses. The trees are subscript's,
 // node for node: TREES holds what subscript 10.8.1 gives for each source.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { parse } from '../src/parse.js'
+import { LEN } from '../src/list-form.js'
 import { onKernel } from './_matrix.js'
-import { jz } from './util.js'
+import { jz, run, oracle } from './util.js'
 
 // [source, the tree as JSON]
 const TREES = [
@@ -201,10 +202,6 @@ test('parse list: 10,000 statements on one line', () => {
   is(tree.length, 10003, 'a list of the declaration, 10,000 statements and the last')
   is(JSON.stringify(tree[10001]), '["+=","s",[null,9999]]')
 })
-
-import { throws } from 'tst/assert.js'
-import { run, oracle } from './util.js'
-import { LEN } from '../src/list-form.js'
 
 // A chain longer than LEN links is written as a list of the same meaning
 // (src/list-form.js); jz answers what Node answers on the source as written.
