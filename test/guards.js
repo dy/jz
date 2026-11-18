@@ -6,14 +6,14 @@
 // stay in the arrays and sizes that leave them; the WAT shows what was combined.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { agree, funcWat, wat } from './util.js'
+import { agree, funcWat, jzWat } from './util.js'
 import { belowOpt } from './_matrix.js'
 
 // The export's body and the passes of a loop nest the speed tier makes calls of
 // (optimize/split-funcs.js loopPasses: `$f$exp$s0`, ...), where its loop may land.
-const shapes = (src, check) => {
+const shapes = (built, check) => {
   if (belowOpt(2)) return
-  const w = wat(src), passes = [...w.matchAll(/\(func \$(f(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(w, m[1]))
+  const w = built.wat, passes = [...w.matchAll(/\(func \$(f(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(w, m[1]))
   check([funcWat(w, 'f$exp') || funcWat(w, 'f'), ...passes].join('\n'))
 }
 // The loops that hold no other loop, as text.
@@ -41,8 +41,9 @@ test('guards: an index the counter makes, within the array and past it', () => {
   return s
 }`
   // one exit test is left in the loop that reads: the reads test ahead of it
-  shapes(src, w => ok(fewest(w, 'f64.load') <= 1, 'the reads are tested ahead of the loop'))
-  for (const n of [0, 1, 5, 11, 12, 13, 21, 24, 25, 40]) for (const from of [0, 2, 30, -1, -3]) agree(src, 'f', [n, from])
+  const built = jzWat(src)
+  shapes(built, w => ok(fewest(w, 'f64.load') <= 1, 'the reads are tested ahead of the loop'))
+  for (const n of [0, 1, 5, 11, 12, 13, 21, 24, 25, 40]) for (const from of [0, 2, 30, -1, -3]) agree(built, 'f', [n, from])
 })
 
 test('guards: a counter that runs down, and one that stops early', () => {
@@ -57,7 +58,8 @@ test('guards: a counter that runs down, and one that stops early', () => {
   }
   return s
 }`
-  for (const n of [0, 1, 19, 20, 21, 50]) for (const stop of [-1, 0, 3, 19, 20, 30]) agree(src, 'f', [n, stop])
+  const built = jzWat(src)
+  for (const n of [0, 1, 19, 20, 21, 50]) for (const stop of [-1, 0, 3, 19, 20, 30]) agree(built, 'f', [n, stop])
 })
 
 test('guards: reads side by side from an index the round reads', () => {
@@ -75,8 +77,9 @@ test('guards: reads side by side from an index the round reads', () => {
   return s
 }`
   // three reads of one array: one branch leaves for all of them
-  shapes(src, w => ok(fewest(w, 'f32.load') <= 3, 'the three reads share a guard'))
-  for (const n of [0, 3, 16, 20]) for (const bad of [0, 7, 15, 16, 33]) for (const at of [0, -1, -2, -3, 5]) agree(src, 'f', [n, bad, at])
+  const built = jzWat(src)
+  shapes(built, w => ok(fewest(w, 'f32.load') <= 3, 'the three reads share a guard'))
+  for (const n of [0, 3, 16, 20]) for (const bad of [0, 7, 15, 16, 33]) for (const at of [0, -1, -2, -3, 5]) agree(built, 'f', [n, bad, at])
 })
 
 test('guards: reads side by side where only some run', () => {
@@ -94,7 +97,8 @@ test('guards: reads side by side where only some run', () => {
   }
   return s
 }`
-  for (const n of [0, 1, 2, 9, 16, 31]) for (const at of [0, 1, 2, 3, -1, -5, -29]) agree(src, 'f', [n, at])
+  const built = jzWat(src)
+  for (const n of [0, 1, 2, 9, 16, 31]) for (const at of [0, 1, 2, 3, -1, -5, -29]) agree(built, 'f', [n, at])
 })
 
 test('guards: an index the loop leaves alone', () => {
@@ -111,7 +115,8 @@ test('guards: an index the loop leaves alone', () => {
   }
   return s
 }`
-  for (const n of [0, 1, 10, 11]) for (const k of [0, 2, 3, 4, 9, -1, -7]) agree(src, 'f', [n, k])
+  const built = jzWat(src)
+  for (const n of [0, 1, 10, 11]) for (const k of [0, 2, 3, 4, 9, -1, -7]) agree(built, 'f', [n, k])
 })
 
 // A read the program keeps within its array by a test of its index stays
@@ -132,7 +137,8 @@ test('guards: a read a test of its index keeps from the border', () => {
   }
   return s
 }`
-  shapes(src, w => {
+  const built = jzWat(src)
+  shapes(built, w => {
     const copy = w.slice(w.search(/\(loop \$[^\s)]*\.f\d+[\s)]/))
     const guards = (copy.slice(0, copy.indexOf('(br $loop')).match(/br_if \$[^\s)]*__sp\.f\d+a\d+/g) || []).length
     // The offset is a full-range Number: narrowing carries j in i64 and
@@ -140,7 +146,7 @@ test('guards: a read a test of its index keeps from the border', () => {
     ok(guards === 4, 'all four reads retain their full-range index checks: ' + guards)
   })
   for (const n of [0, 1, 2, 9, 16, 17, 30]) for (const len of [16, 1, 0])
-    for (const off of [0, 1, 4, -1, 0.5, 2 ** 32, -(2 ** 32), NaN, Infinity]) agree(src, 'f', [n, len, off])
+    for (const off of [0, 1, 4, -1, 0.5, 2 ** 32, -(2 ** 32), NaN, Infinity]) agree(built, 'f', [n, len, off])
 })
 
 test('guards: reads under a test of something else', () => {
@@ -157,7 +163,8 @@ test('guards: reads under a test of something else', () => {
   }
   return s
 }`
-  for (const n of [0, 1, 7, 14, 15, 16, 40]) for (const len of [16, 17, 3, 0]) agree(src, 'f', [n, len])
+  const built = jzWat(src)
+  for (const n of [0, 1, 7, 14, 15, 16, 40]) for (const len of [16, 17, 3, 0]) agree(built, 'f', [n, len])
 })
 
 // The bound a loop's counter runs to is read through the other tests the loop
@@ -175,9 +182,10 @@ test('guards: a test on an element read shields no index made of its address', (
   }
   return result[0] + result[n - 1]
 }`
-  shapes(src, w => ok(fewest(w, 'i32.load') <= 1, 'the bit reads are tested ahead of the loop'))
+  const built = jzWat(src)
+  shapes(built, w => ok(fewest(w, 'i32.load') <= 1, 'the bit reads are tested ahead of the loop'))
   const pos = n => { const a = new Float32Array(n * 3); for (let i = 0; i < a.length; i++) a[i] = i % 4 === 0 ? 0 : i * 0.5; return a }
-  for (const n of [0, 1, 4, 9]) for (const m of [n, n + 1, Math.max(0, n - 1)]) agree(src, 'f', [pos(m), n])
+  for (const n of [0, 1, 4, 9]) for (const m of [n, n + 1, Math.max(0, n - 1)]) agree(built, 'f', [pos(m), n])
 })
 
 // An inlined callee's reads index through temps the emitter tees inside the
@@ -188,7 +196,8 @@ test('guards: the temps a removed test tees stay assigned', () => {
 for (let i = 0; i < 64; i++) { a.push([i, i + 1, i + 2, i + 3]); b.push([i * 2, 1, 2, 3]) }
 const dot = (p, q) => { let s = 0; for (let k = 0; k < 4; k++) { s += p[k] * q[k]; s += p[3 - k] - q[3 - k] } out[0] = s; return s + out[0] }
 export const f = (n) => { let acc = 0; for (let i = 0; i < n; i++) acc += dot(a[i], b[i]); return acc }`
-  for (const n of [0, 1, 3, 64]) agree(src, 'f', [n])
+  const built = jzWat(src)
+  for (const n of [0, 1, 3, 64]) agree(built, 'f', [n])
 })
 
 test('guards: a counter bounded beside a flag, read through a temp, past a test that bounds nothing', () => {
@@ -207,6 +216,7 @@ test('guards: a counter bounded beside a flag, read through a temp, past a test 
   }
   return s
 }`
-  shapes(src, w => ok(fewest(w, 'f64.load') <= 3, 'no read tests in the loop: its exit, its skips'))
-  for (const n of [0, 1, 3, 5]) for (const len of [30, 29, 12, 0]) for (const flag of [1, 0]) agree(src, 'f', [n, len, flag])
+  const built = jzWat(src)
+  shapes(built, w => ok(fewest(w, 'f64.load') <= 3, 'no read tests in the loop: its exit, its skips'))
+  for (const n of [0, 1, 3, 5]) for (const len of [30, 29, 12, 0]) for (const flag of [1, 0]) agree(built, 'f', [n, len, flag])
 })

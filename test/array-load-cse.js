@@ -1,7 +1,7 @@
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, wat } from './util.js'
+import { agree, funcWat, jzWat, wat } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 
@@ -65,7 +65,7 @@ test('array load cse: a missing nested receiver still throws at the first read',
   const src = `const rows = [[2, 3]], out = [0]
     export const f = i => { try { const a = rows[i]; const x = a[0]; out[0] = 7; const b = rows[i]; return x + b[0] }
     catch (e) { return e.name === 'TypeError' ? 9 : 0 } }`
-  for (const optimize of levels(0, 2, 3)) for (const i of [0, 1]) agree(src, 'f', [i], { optimize })
+  for (const optimize of levels(0, 2, 3)) { const built = jzWat(src, { optimize }); for (const i of [0, 1]) agree(built, 'f', [i]) }
 })
 
 test('array load cse: nested receivers survive distinct scratch stores and scalar branches', () => {

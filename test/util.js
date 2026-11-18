@@ -11,6 +11,8 @@ import jzify from '../jzify/index.js'
 import { is } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import printWat from 'watr/print'
+import watrCompile from 'watr/compile'
+import { onKernel } from './_matrix.js'
 
 /** The compiler as the tests drive it: the public options beside the internal
  *  flags (numeric levels, pass toggles, `strict`, `inspect`, `host: 'native'` …,
@@ -26,15 +28,49 @@ export function jz(code, ...args) {
   const opts = foldOptions(args[0])
   const out = compile(code, opts)
   const inspected = out && typeof out === 'object' && 'wasm' in out
-  const wasm = inspected ? out.wasm : out
-  const run = { imports: opts.imports, wasi: opts.wasi }
-  const linked = linkedMemory(opts, wasm)
-  if (linked) run.memory = linked
-  const result = instantiate(wasm, run)
+  const result = start(inspected ? out.wasm : out, opts)
   if (inspected) result.inspect = out.inspect
   return result
 }
 jz.memory = publicJz.memory
+
+const start = (wasm, opts) => {
+  const run = { imports: opts.imports, wasi: opts.wasi }
+  const linked = linkedMemory(opts, wasm)
+  if (linked) run.memory = linked
+  return instantiate(wasm, run)
+}
+
+// What instantiation takes beside the bytes, a callback, what the bytes carry beyond
+// the module the text prints (a name section, a source map), what a compile returns
+// beside them: a source compiled with any of these goes through wat() and jz(). So
+// does the init snapshot, whose bytes may keep its probe's type section
+// (src/snapshot.js bakeBinary).
+const NOT_ONCE = ['imports', 'memory', 'wasi', 'warnings', 'names', 'sourceMap', 'inspect', 'profile']
+
+/** `wat()` and `jz()` of one source from one compile: `{ src, wat, exports, memory,
+ *  instance, module, fresh }`. The text is compiled the first time it or an instance
+ *  is asked for; the instance is made from watr's encoding of the text the first
+ *  time `exports`, `memory`, `instance` or `module` is read; `fresh()` makes another
+ *  from the same bytes, as a jz() per input would. That encoding is the bytes compile() returns for the source
+ *  (test/wat-bytes.js). The hosted compiler encodes its own bytes, so on its leg each
+ *  instance is a jz() of its own and the text a compile of its own, as before. */
+export function jzWat(code, opts = {}) {
+  const kept = NOT_ONCE.find(k => opts[k] != null) ?? (opts.optimize?.snapshotInit ? 'snapshotInit' : null)
+  if (kept) throw new Error(`jzWat: '${kept}' takes wat() and jz()`)
+  let text, bytes, first
+  const read = () => text ??= compile(code, { ...opts, wat: true })
+  const fresh = () => onKernel() ? jz(code, opts) : start(bytes ||= watrCompile(read()), foldOptions(opts))
+  const one = () => first ||= fresh()
+  return {
+    src: code, fresh,
+    get wat() { return read() },
+    get exports() { return one().exports },
+    get memory() { return one().memory },
+    get instance() { return one().instance },
+    get module() { return one().module },
+  }
+}
 
 /** The in-process compiler past any test compile target, for tests that read analysis state. */
 export const compileInProcess = (code, opts = {}) => compileNative(code, opts, jzify)
@@ -77,10 +113,12 @@ export function oracle(src) {
   return new Function(`"use strict";\n${body}\nreturn { ${pairs.map(([k, v]) => k === v ? k : k + ': ' + v).join(', ')} }`)()
 }
 
-/** Assert that jz and the host agree on `exports[name](...args)`; returns the value. */
+/** Assert that jz and the host agree on `exports[name](...args)`; returns the value.
+ *  `src` may be a jzWat() result: its one compile, an instance of its own a call. */
 export const agree = (src, name, args = [], opts, label) => {
-  const want = oracle(src)[name](...args), got = run(src, opts)[name](...args)
-  is(got, want, label || `${name}(${args.map(String).join(', ')}): ${src.replace(/\s+/g, ' ').trim().slice(0, 72)}`)
+  const built = typeof src === 'string' ? null : src, code = built ? built.src : src
+  const want = oracle(code)[name](...args), got = (built ? built.fresh().exports : run(code, opts))[name](...args)
+  is(got, want, label || `${name}(${args.map(String).join(', ')}): ${code.replace(/\s+/g, ' ').trim().slice(0, 72)}`)
   return got
 }
 

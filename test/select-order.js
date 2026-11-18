@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { agree, wat, funcWat } from './util.js'
+import { agree, jzWat, wat, funcWat } from './util.js'
 
 const src = `let val = new Float64Array(8); val[0] = 24; val[1] = 91
 export let plain = (h, n, D) => { let t; return (t = h + n - 1) >= D ? t - D : t }
@@ -30,7 +30,8 @@ const calls = [['plain', [0, 2, 4]], ['plain', [3, 2, 4]], ['added', [0, 2, 4]],
 
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`select order: a test that assigns what the arms read at ${optimize}`, () => {
-    for (const [name, args] of calls) agree(src, name, args, { optimize }, `${name}(${args}) at ${optimize}`)
+    const srcBuilt = jzWat(src, { optimize })
+    for (const [name, args] of calls) agree(srcBuilt, name, args, undefined, `${name}(${args}) at ${optimize}`)
   })
 
 test('select order: only a writing test forfeits the branchless select', () => {

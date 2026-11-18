@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, oracle, run, wat } from './util.js'
+import { agree, funcWat, jzWat, oracle, run, wat } from './util.js'
 import parseWat from 'watr/parse'
 import { narrowFloat32 } from '../src/optimize/float32.js'
 
@@ -135,7 +135,8 @@ export function f(n, seed) {
     ok(count(w, 'f32.sqrt') >= 1, 'the length computes in f32')
     ok(count(w, 'f32.gt') >= 3, 'the zero tests compare in f32')
   })
-  for (const n of [0, 1, 2, 17, 100]) for (const seed of SEEDS) agree(src, 'f', [n, seed])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 17, 100]) for (const seed of SEEDS) agree(srcBuilt, 'f', [n, seed])
 })
 
 test('float32: a product rounded early when every read rounds it', () => {
@@ -150,7 +151,8 @@ export function f(n, seed) {
   shapes(src, w => {
     ok(count(w, 'f32.mul') >= 2, 'the store value computes in f32')
   })
-  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(src, 'f', [n, seed])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(srcBuilt, 'f', [n, seed])
 })
 
 test('float32: a value whose rounding would show stays f64', () => {
@@ -162,7 +164,8 @@ test('float32: a value whose rounding would show stays f64', () => {
     is(count(w, 'f32.mul'), 0, 'the product stays f64: its sum reads it before the store rounds')
     is(count(w, 'f32.add'), 0, 'the sum stays f64')
   })
-  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(src, 'f', [n, seed])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(srcBuilt, 'f', [n, seed])
 })
 
 test('float32: a compare against a constant the f32 format holds, and one it does not', () => {
@@ -182,7 +185,8 @@ export function f(n, seed) {
     ok(count(w, 'f32.gt') >= 1, '0.25 compares in f32')
     ok(count(w, 'f64.gt') >= 1, '0.1 is not an f32 value: the compare stays f64')
   })
-  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(src, 'f', [n, seed])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(srcBuilt, 'f', [n, seed])
 })
 
 test('float32: a read exact by its reaching write alone, of a local that stays f64', () => {
@@ -197,7 +201,8 @@ test('float32: a read exact by its reaching write alone, of a local that stays f
     out[n + i] = v
   }${HASH}
 }`
-  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(src, 'f', [n, seed])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 64]) for (const seed of SEEDS) agree(srcBuilt, 'f', [n, seed])
 })
 
 test('float32: a write late in a loop body reaches the read at its head', () => {
@@ -212,7 +217,8 @@ export function f(n, seed) {
   shapes(src, w => {
     is(count(w, 'f32.mul'), 0, 'the carried product is f64 at the head of the next iteration')
   })
-  for (const n of [0, 1, 2, 5, 64]) for (const seed of SEEDS) agree(src, 'f', [n, seed])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 5, 64]) for (const seed of SEEDS) agree(srcBuilt, 'f', [n, seed])
 })
 
 test('float32: the pass keeps the marks later passes read', () => {
@@ -230,7 +236,8 @@ export function f(n, sel, k) {
   return s
 }`
   if (!belowOpt(3)) ok(wat(src, { optimize: 'speed' }).includes('br_table'), 'the table call keeps its direct arms')
-  for (const sel of [0, 1, 2]) for (const n of [0, 1, 9]) agree(src, 'f', [n, sel, 1.5], { optimize: 'speed' })
+  const srcBuilt = jzWat(src, { optimize: 'speed' })
+  for (const sel of [0, 1, 2]) for (const n of [0, 1, 9]) agree(srcBuilt, 'f', [n, sel, 1.5])
 })
 
 test('float32: a value that may hold a BigInt box beside exact values keeps its bits', () => {
@@ -262,7 +269,8 @@ test('float32: a local written by constants alone stays f64', () => {
     is(count(w, 'f64.promote_f32'), 0, 'no promote is added')
     ok(!/\(local \$\S+ f32\)/.test(w), 'no local narrows')
   })
-  for (const n of [0, 1, 9, 40]) for (const k of [0.25, 1.5, -3]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 9, 40]) for (const k of [0.25, 1.5, -3]) agree(srcBuilt, 'f', [n, k])
 })
 
 // The reaching writes held a relation of reads and writes, and a copy of the
@@ -307,5 +315,6 @@ export function f(n, k) {
   for (let i = 0; i < n; i++) { if (out[i] !== out[i]) nans++; else sum += out[i] }
   return nans * 1000 + sum
 }`
-  for (const [n, k] of [[4, 0], [4, 1], [4, 3], [4, 4], [8, 5]]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const [n, k] of [[4, 0], [4, 1], [4, 3], [4, 4], [8, 5]]) agree(srcBuilt, 'f', [n, k])
 })

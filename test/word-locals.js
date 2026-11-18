@@ -9,7 +9,7 @@
 // keeps the f64.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, oracle, run, wat, funcWat as funcWatOf } from './util.js'
+import { agree, jzWat, oracle, run, wat, funcWat as funcWatOf } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
 import { T } from '../src/ast.js'
 
@@ -107,7 +107,8 @@ test('word local: an FNV hash seeded above 2^31', () => {
     h ^= h >>> 16
     return h >>> 0 }`
   word(src)
-  for (const n of [0, 1, 5, 1000]) for (const k of [1, 31, 65537]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 1000]) for (const k of [1, 31, 65537]) agree(srcBuilt, 'f', [n, k])
 })
 
 test('word local: a bare argument of Math.imul and Math.clz32', () => {
@@ -116,7 +117,8 @@ test('word local: a bare argument of Math.imul and Math.clz32', () => {
     for (let i = 0; i < n; i++) { h = Math.imul(h, 1540483477); h ^= k + i }
     return Math.clz32(h) + (h & 65535) }`
   word(src)
-  for (const n of [0, 1, 9]) for (const k of [0, 3, 1e9]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 9]) for (const k of [0, 3, 1e9]) agree(srcBuilt, 'f', [n, k])
 })
 
 test('word local: any number written, fractions and non-finite included', () => {
@@ -125,7 +127,8 @@ test('word local: any number written, fractions and non-finite included', () => 
     for (let i = 0; i < n; i++) { s += (t | 0) + (t & 255) + (t >>> 28) + (~t) + (t << 3) + (t >> 2); t = (x + i) * 1.25 }
     return s }`
   word(src, 't')
-  for (const x of NUMS) for (const n of [1, 3]) agree(src, 'f', [x, n])
+  const srcBuilt = jzWat(src)
+  for (const x of NUMS) for (const n of [1, 3]) agree(srcBuilt, 'f', [x, n])
 })
 
 test('word local: the value stored to an integer element', () => {
@@ -136,7 +139,8 @@ test('word local: the value stored to an integer element', () => {
     a[0] = h; b[0] = h; c[0] = h; d[0] = h
     return a[0] + b[0] * 3 + c[0] * 5 + d[0] * 7 }`
   word(src)
-  for (const n of [0, 1, 4, 77]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 4, 77]) agree(srcBuilt, 'f', [n])
 })
 
 test('word local: a possibly missing element read as a word', () => {
@@ -149,16 +153,19 @@ test('word local: a possibly missing element read as a word', () => {
 test('word local: a returned number stays a number', () => {
   const src = `export let f = (n) => { let h = 2166136261; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h }`
   wide(src)
-  for (const n of [0, 1, 4]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 4]) agree(srcBuilt, 'f', [n])
 })
 
 test('word local: a compared number stays a number', () => {
   const src = `export let f = (n) => { let h = 2166136261; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return (h === 2166136261 ? 10 : 20) + (h & 3) }`
   wide(src)
-  for (const n of [0, 1, 4]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 4]) agree(srcBuilt, 'f', [n])
   const src2 = `export let f = (n) => { let h = 4294967296 * n; return (h ? 1 : 2) + (h | 0) }`
   wide(src2)
-  for (const n of [0, 1, 2]) agree(src2, 'f', [n])
+  const src2Built = jzWat(src2)
+  for (const n of [0, 1, 2]) agree(src2Built, 'f', [n])
 })
 
 test('word local: an index stays a number', () => {
@@ -171,28 +178,33 @@ test('word local: an index stays a number', () => {
     for (let i = 0; i < k; i++) { s += a[h] + (h & 7); h = (n + i) * 2 }
     return s }`
   wide(src)
-  for (const n of [0, 2]) for (const k of [1, 3]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 2]) for (const k of [1, 3]) agree(srcBuilt, 'f', [n, k])
 })
 
 test('word local: a stepped number stays a number', () => {
   const src = `export let f = (x) => { let h = x; h += 0.5; h += 0.5; return h | 0 }`
   wide(src)
-  for (const x of NUMS) agree(src, 'f', [x])
+  const srcBuilt = jzWat(src)
+  for (const x of NUMS) agree(srcBuilt, 'f', [x])
   const src2 = `export let f = (x) => { let h = x + 0.75; h++; return (h | 0) ^ (h & 15) }`
   wide(src2)
-  for (const x of NUMS) agree(src2, 'f', [x])
+  const src2Built = jzWat(src2)
+  for (const x of NUMS) agree(src2Built, 'f', [x])
 })
 
 test('word local: a float or clamped store stays a number', () => {
   const src = `export let f = (n) => { const a = new Float64Array(1), c = new Uint8ClampedArray(1); let h = 2166136261 + n; a[0] = h; c[0] = h; return a[0] + c[0] + (h & 1) }`
   wide(src)
-  for (const n of [0, 1, -2166136261, 0.5]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, -2166136261, 0.5]) agree(srcBuilt, 'f', [n])
 })
 
 test('word local: a captured number stays a number', () => {
   const src = `export let f = (n) => { let h = 2166136261 + n; const g = () => h; return g() + (h & 1) }`
   if (!belowOpt(2)) is(storage(src, 'f', 'h'), null, 'a captured binding lives in its cell')
-  for (const n of [0, 1]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1]) agree(srcBuilt, 'f', [n])
 })
 
 test('word local: the weld hash of a vertex', () => {
@@ -214,7 +226,8 @@ test('word local: the weld hash of a vertex', () => {
     }
     return sum }`
   word(src, 'hash')
-  for (const n of [0, 1, 7, 20]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 7, 20]) agree(srcBuilt, 'f', [n])
   if (!belowOpt(2)) ok(!/\$__to_num|\$__dyn_/.test(funcWat(wat(src), 'f')), 'no dynamic conversion in the kernel')
 })
 

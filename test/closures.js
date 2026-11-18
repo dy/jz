@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, levels, ownedLevels } from './_matrix.js'
 import { ctx } from '../src/ctx.js'
-import { funcWat, oracle, run, wat, jz, compile, compileInProcess } from './util.js'
+import { funcWat, oracle, run, wat, jz, jzWat, compile, compileInProcess } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { T, walkAst } from '../src/ast.js'
 import { K, tagOf } from '../src/summary/kind.js'
@@ -2892,11 +2892,15 @@ test('closures: a helper called from a closure takes its integer arguments as wo
     }
     export const run = (x) => make(64).step([x])`
   const want = oracle(src).run
-  for (const optimize of levels(0, 2, 3, 'size'))
+  let at2
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const m = jzWat(src, { optimize })
+    if (optimize === 2) at2 = m
     for (const x of [0, 1, 31, 100, 511, 4095, -1, 2.5, NaN])
-      is(jz(src, { optimize }).exports.run(x), want(x), `run(${x}) at ${optimize}`)
+      is(m.fresh().exports.run(x), want(x), `run(${x}) at ${optimize}`)
+  }
   if (belowOpt(2)) return
-  ok(/\(param \$n[^\s)]* i32\)/.test(funcWat(wat(src, { optimize: 2 }), 'g')), 'the field arrives as a word')
+  ok(/\(param \$n[^\s)]* i32\)/.test(funcWat(at2 ? at2.wat : wat(src, { optimize: 2 }), 'g')), 'the field arrives as a word')
 })
 
 // A function declared in a function is a closure whose parameter node is null

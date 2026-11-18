@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, oracle, run, wat, jz } from './util.js'
+import { agree, jzWat, funcWat, oracle, run, wat, jz } from './util.js'
 
 const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
 
@@ -33,7 +33,8 @@ const before = (fn) => fn.slice(0, fn.indexOf('(loop '))
 
 test('header hoist: the kernels answer what the host answers, a zero-trip loop reads nothing', () => {
   for (const optimize of levels(0, 2, 3)) {
-    for (const n of [0, 1, 64]) agree(src, 'run', [n], { optimize }, `run(${n}) at ${optimize}`)
+    const srcBuilt = jzWat(src, { optimize })
+    for (const n of [0, 1, 64]) agree(srcBuilt, 'run', [n], undefined, `run(${n}) at ${optimize}`)
     const host = oracle(src), jz = run(src, { optimize })
     throws(() => jz.run(70), 'a read past a: the element has no [0]'); throws(() => host.run(70))
     is(jz.sum(0), host.sum(0), `sum(0) before bind at ${optimize}: the missing receiver is never read`)

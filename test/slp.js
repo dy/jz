@@ -6,22 +6,24 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { onWasi, ownedLevels } from './_matrix.js'
-import { jz, compile, oracle } from './util.js'
+import { jz, jzWat, compile, oracle } from './util.js'
 import { sameBase, windowDefs } from '../src/optimize/vectorize/access.js'
 
 // The arrays stay in memory: a module array only constant indices reach would be
 // locals of the kernel (plan/scratch.js), with no store left to pack.
 const speed = { level: 'speed', moduleScratch: false }
 const speedNoSimd = { level: 'speed', noSimd: true, moduleScratch: false }
-const fires = (src) => (compile(src, { wat: true, optimize: speed }).match(/v128\.store/g) || []).length
+const stores = (text) => (text.match(/v128\.store/g) || []).length
+// The SIMD build: its text, and its module from the same compile.
+const packed = (src) => jzWat(src, { optimize: speed })
 // (a loop's stores the round never reads leave it with sinkStores, and pack past it: the
 // field-pair kernels below store each round to pin the packing in the loop)
-const firesInLoop = (src) => (compile(src, { wat: true, optimize: { ...speed, sinkStores: false } }).match(/v128\.store/g) || []).length
+const firesInLoop = (src) => stores(compile(src, { wat: true, optimize: { ...speed, sinkStores: false } }))
 
-// Run the same source SIMD vs scalar; assert byte-identical numeric result.
-function bitExact(name, src) {
+// Run the same source SIMD (`m`, its packed build) vs scalar; assert byte-identical numeric result.
+function bitExact(name, src, m) {
   if (onWasi()) return  // compares JS-side `.exports.run()` returns, which the WASI boundary doesn't surface
-  const a = jz(src, { optimize: speed }).exports.run()
+  const a = m.exports.run()
   const b = jz(src, { optimize: speedNoSimd }).exports.run()
   ok(Object.is(a, b), `${name}: SIMD == scalar (${a})`)
 }
@@ -34,8 +36,9 @@ test('slp: 2-wide map packs to v128 + bit-exact', () => {
       for (let i = 0; i < 64; i += 2) { o[i] = a[i] * 2.0 + 1.0; o[i+1] = a[i+1] * 2.0 + 1.0 }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + o[i] * (i + 1); return s
     }`
-  ok(fires(src) >= 1, 'packs adjacent stores into a v128 store')
-  bitExact('2-wide map', src)
+  const m = packed(src)
+  ok(stores(m.wat) >= 1, 'packs adjacent stores into a v128 store')
+  bitExact('2-wide map', src, m)
 })
 
 test('slp: multi-array map (a+b) packs + bit-exact', () => {
@@ -46,8 +49,9 @@ test('slp: multi-array map (a+b) packs + bit-exact', () => {
       for (let i = 0; i < 64; i += 2) { o[i] = a[i] + b[i]; o[i+1] = a[i+1] + b[i+1] }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + o[i]; return s
     }`
-  ok(fires(src) >= 1, 'two distinct non-view bases pack soundly')
-  bitExact('multi-array', src)
+  const m = packed(src)
+  ok(stores(m.wat) >= 1, 'two distinct non-view bases pack soundly')
+  bitExact('multi-array', src, m)
 })
 
 // Soundness pins: SLP MUST bail when a typed-array view exists
@@ -65,8 +69,9 @@ test('slp: bails on a subarray view (aliasing)', () => {
       for (let i = 0; i < 64; i += 2) { v[i] = a[i] + 1.0; v[i+1] = a[i+1] + 2.0 }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + a[i]; return s
     }`
-  is(fires(src), 0, 'view present → SLP bails (no v128 store)')
-  bitExact('subarray view', src)
+  const m = packed(src)
+  is(stores(m.wat), 0, 'view present → SLP bails (no v128 store)')
+  bitExact('subarray view', src, m)
 })
 
 test('slp: bails on an INLINE subarray view (no binding)', () => {
@@ -79,8 +84,9 @@ test('slp: bails on an INLINE subarray view (no binding)', () => {
       for (let i = 0; i < 64; i += 2) { a.subarray(1)[i] = a[i] * 2.0; a.subarray(1)[i+1] = a[i+1] * 2.0 }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + a[i]; return s
     }`
-  is(fires(src), 0, 'inline subarray view → SLP bails')
-  bitExact('inline subarray', src)
+  const m = packed(src)
+  is(stores(m.wat), 0, 'inline subarray view → SLP bails')
+  bitExact('inline subarray', src, m)
 })
 
 test('slp: does NOT splat distinct allocations (array-literal scatter)', () => {
@@ -129,11 +135,13 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
       let s = 0.0; for (let i = 0; i < 99; i++) s = s + o[i]; return s
     }`
   const unforwarded = compile(src, { wat: true, optimize: { ...speed, forwardStores: false } })
-  is((unforwarded.match(/v128\.store/g) || []).length, 0, 'forward-shift RAW → SLP bails (no v128 store)')
-  bitExact('forward shift', src)
+  is(stores(unforwarded), 0, 'forward-shift RAW → SLP bails (no v128 store)')
+  if (onWasi()) return  // the runs compare JS-side `.exports.run()` returns, which the WASI boundary doesn't surface
+  const m = packed(src)
+  bitExact('forward shift', src, m)
   // ground-truth: a regressed guard would re-pack and diverge from plain JS
   const js = (() => { let o = new Float64Array(99); for (let i=0;i<99;i++) o[i]=i+1; for (let k=0;k<96;k+=3){o[k+1]=o[k];o[k+2]=o[k+1]} let s=0; for (let i=0;i<99;i++) s+=o[i]; return s })()
-  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), js, 'jz speed == JS ground truth')  // WASI doesn't surface the return value
+  is(m.fresh().exports.run(), js, 'jz speed == JS ground truth')
 })
 
 test('slp: bails on a buffer-backed view (the watr self-compile class)', () => {
@@ -146,8 +154,9 @@ test('slp: bails on a buffer-backed view (the watr self-compile class)', () => {
       for (let i = 0; i < 64; i += 2) { o[i] = a[i] * 2.0 + 1.0; o[i+1] = a[i+1] * 3.0 + 1.0 }
       let s = 0.0; for (let i = 0; i < 64; i++) s = s + o[i]; return s
     }`
-  is(fires(src), 0, 'buffer-backed view → SLP bails (no v128 store)')
-  bitExact('buffer-backed view', src)
+  const m = packed(src)
+  is(stores(m.wat), 0, 'buffer-backed view → SLP bails (no v128 store)')
+  bitExact('buffer-backed view', src, m)
 })
 
 // mat4 multiply the way vector libraries write it: every lane leaf is a local loaded
@@ -190,8 +199,10 @@ const groundTruth = (src) => new Function(src.replace(/export let run/, 'return 
 test('slp: field pairs pack a kernel that loads its fields into locals first', () => {
   const src = mat4('const step = (i) => { mul(out, a, b); return out[0] + out[15] }')
   ok(firesInLoop(src) >= 8, 'every row packs: (a0k,a1k) and (a2k,a3k) are one v128 each')
-  bitExact('field pairs', src)
-  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
+  if (onWasi()) return  // the runs compare JS-side `.exports.run()` returns, which the WASI boundary doesn't surface
+  const m = packed(src)
+  bitExact('field pairs', src, m)
+  is(m.fresh().exports.run(), groundTruth(src), 'jz speed == JS ground truth')
 })
 
 test('slp: field pairs through a staged receiver (a parameter that may be absent)', () => {
@@ -201,8 +212,10 @@ test('slp: field pairs through a staged receiver (a parameter that may be absent
     for (let i = 0; i < 4; i++) as.push([1 + i, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.25, 0.125, 4 - i])
     const step = (i) => { mul(out, as[i & 3], b); return out[0] + out[15] }`)
   ok(firesInLoop(src) >= 8, 'the staged reads pair')
-  bitExact('staged field pairs', src)
-  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
+  if (onWasi()) return  // the runs compare JS-side `.exports.run()` returns, which the WASI boundary doesn't surface
+  const m = packed(src)
+  bitExact('staged field pairs', src, m)
+  is(m.fresh().exports.run(), groundTruth(src), 'jz speed == JS ground truth')
 })
 
 // A record's field read unboxes its pointer as the low word of its bits, its field store as the
@@ -218,8 +231,9 @@ test('slp: a record\'s field read and field store address one base in either spe
 const ps = []
 for (let i = 0; i < N; i++) ps.push({ x: i * 0.5, y: i + 1, vx: i % 7 - 3, vy: i % 5 * 0.25 })
 export let step = () => { for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x += p.vx; p.y += p.vy } return ps[0].x + ps[N - 1].y }`
-  for (const optimize of ownedLevels(2, 'speed')) ok((compile(src, { wat: true, optimize }).match(/v128\.store/g) || []).length >= 1, `the two field stores pack at ${optimize}`)
-  if (!onWasi()) is(jz(src, { optimize: 2 }).exports.step(), oracle(src).step(), 'jz == Node')
+  const at2 = jzWat(src, { optimize: 2 })
+  for (const optimize of ownedLevels(2, 'speed')) ok(stores(optimize === 2 ? at2.wat : compile(src, { wat: true, optimize })) >= 1, `the two field stores pack at ${optimize}`)
+  if (!onWasi()) is(at2.exports.step(), oracle(src).step(), 'jz == Node')
 })
 
 test('slp: bails when the high value loads the low store\'s slot through another name', () => {
@@ -230,6 +244,7 @@ test('slp: bails when the high value loads the low store\'s slot through another
     const x = [3, 5, 0, 0], y = [1, 1, 0, 0]
     function shift(o, a) { o[1] = a[0] * 2.0; o[2] = a[1] * 2.0; return o }
     export let run = () => { let s = 0; for (let i = 0; i < 4; i++) { x[0] = 3; x[1] = 5; shift(x, x); s += x[2]; shift(y, x); s += y[2] } return s }`
-  is(fires(src), 0, 'aliased forward shift → SLP bails')
-  if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), 96, 'jz speed == JS ground truth (x[2] = 2 * (2 * x[0]))')
+  const m = packed(src)
+  is(stores(m.wat), 0, 'aliased forward shift → SLP bails')
+  if (!onWasi()) is(m.exports.run(), 96, 'jz speed == JS ground truth (x[2] = 2 * (2 * x[0]))')
 })

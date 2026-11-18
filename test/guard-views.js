@@ -7,29 +7,31 @@
 // the same source; sums are integer so no lane order shows in them.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { oracle, run, wat, funcWat as funcWatOf, jz } from './util.js'
+import { oracle, run, funcWat as funcWatOf, jz, jzWat } from './util.js'
 import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { loopCount } from '../scripts/wat-probe.mjs'
 
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
 /** Element reads and stores that decide the receiver's kind or the element's width at run time. */
-const dispatches = (src, opts, name = 'f') => loopCount(parseWat(funcWat(wat(src, opts), name)),
+const dispatches = (built, name = 'f') => loopCount(parseWat(funcWat(built.wat, name)),
   n => n[0] === 'call' && /^\$__(typed_idx|typed_get_idx|typed_set_idx|str_idx|dyn_get\w*|dyn_set)$/.test(n[1]))
 const OFF = { optimize: { level: 2, guardViews: false } }
 const f32 = (n) => Float32Array.from({ length: n }, (_, i) => ((i * 7919) % 97 - 48) / 8)
 const i32 = (n) => Int32Array.from({ length: n }, (_, i) => (i * 2654435761) | 0)
-const same = (src, args, label) => is(run(src).f(...args()), oracle(src).f(...args()), label)
+// (`built` a jzWat() build: a fresh instance a call, as a jz() a call)
+const same = (built, args, label) => is(built.fresh().exports.f(...args()), oracle(built.src).f(...args()), label)
 
 const SUM = `let s = 0; for (let i = 0; i < a.length; i++) s = (s + (a[i] * 8 | 0)) | 0; return s`
 
 test('guard view: a parameter guarded by instanceof reads its elements by width', () => {
   const src = `export let f = (a) => { if (!(a instanceof Float32Array)) throw new TypeError('Float32Array expected'); ${SUM} }`
-  if (!belowOpt(2)) is(dispatches(src), 0, 'no dispatch per element')
-  ok(dispatches(src, OFF) > 0, 'without the pass each element dispatches')
+  const built = jzWat(src), unguarded = jzWat(src, OFF)
+  if (!belowOpt(2)) is(dispatches(built), 0, 'no dispatch per element')
+  ok(dispatches(unguarded) > 0, 'without the pass each element dispatches')
   for (const n of [0, 1, 7, 1000]) {
-    same(src, () => [f32(n)], `n=${n}`)
-    is(run(src, OFF).f(f32(n)), run(src).f(f32(n)), `the pass changes no value, n=${n}`)
+    same(built, () => [f32(n)], `n=${n}`)
+    is(unguarded.fresh().exports.f(f32(n)), built.fresh().exports.f(f32(n)), `the pass changes no value, n=${n}`)
   }
 })
 
@@ -38,9 +40,9 @@ test('guard view: the guard leaves as written for any other value', () => {
   const { f } = run(src)
   for (const v of [new Float64Array(4), new Int32Array(4), [1, 2, 3], 7, 'abc', null, undefined, {}])
     throws(() => f(v), /Float32Array expected/, `throws for ${Object.prototype.toString.call(v)}`)
-  const ret = `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; ${SUM} }`
-  for (const v of [new Float32Array(4), [1, 2], 3, undefined]) is(run(ret).f(v), -1)
-  same(ret, () => [i32(50)])
+  const ret = `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; ${SUM} }`, built = jzWat(ret)
+  for (const v of [new Float32Array(4), [1, 2], 3, undefined]) is(built.fresh().exports.f(v), -1)
+  same(built, () => [i32(50)])
 })
 
 test('guard view: one guard over several parameters', () => {
@@ -50,17 +52,19 @@ test('guard view: one guard over several parameters', () => {
     let s = 0
     for (let i = 0; i < p.length; i++) s = (s + (p[i] * 8 | 0) + (n[i] * 4 | 0) + t[i]) | 0
     return s }`
-  if (!belowOpt(2)) is(dispatches(src), 0, 'no dispatch per element')
-  same(src, () => [f32(64), f32(64), i32(64)])
-  throws(() => run(src).f(f32(4), f32(4), f32(4)), /typed inputs expected/)
-  throws(() => run(src).f(new Float64Array(4), f32(4), i32(4)), /typed inputs expected/)
+  const built = jzWat(src)
+  if (!belowOpt(2)) is(dispatches(built), 0, 'no dispatch per element')
+  same(built, () => [f32(64), f32(64), i32(64)])
+  throws(() => built.fresh().exports.f(f32(4), f32(4), f32(4)), /typed inputs expected/)
+  throws(() => built.fresh().exports.f(new Float64Array(4), f32(4), i32(4)), /typed inputs expected/)
 })
 
 test('guard view: && under a positive branch is no guard of the rest', () => {
   const src = `export let f = (a) => { if (a instanceof Float32Array && a.length > 2) return -1; let s = 0; for (let i = 0; i < a.length; i++) s = (s + (a[i] | 0)) | 0; return s }`
-  same(src, () => [f32(2)])
-  same(src, () => [i32(9)])
-  same(src, () => [[1, 2, 3]])
+  const built = jzWat(src)
+  same(built, () => [f32(2)])
+  same(built, () => [i32(9)])
+  same(built, () => [[1, 2, 3]])
 })
 
 test('guard view: the bits of the same storage', () => {
@@ -70,8 +74,9 @@ test('guard view: the bits of the same storage', () => {
     let h = 2166136261
     for (let i = 0; i < a.length; i++) h = Math.imul(h ^ (a[i] === 0 ? 0 : bits[i]), 16777619)
     return h >>> 0 }`
-  if (!belowOpt(2)) is(dispatches(src), 0, 'no dispatch per element')
-  for (const n of [0, 3, 200]) same(src, () => [f32(n)], `n=${n}`)
+  const built = jzWat(src)
+  if (!belowOpt(2)) is(dispatches(built), 0, 'no dispatch per element')
+  for (const n of [0, 3, 200]) same(built, () => [f32(n)], `n=${n}`)
 })
 
 test('guard view: a write through the view is a write to the array', () => {
@@ -85,7 +90,8 @@ test('guard view: a write through the view is a write to the array', () => {
     let s = n
     for (let i = 0; i < a.length; i++) s = (s + a[i]) | 0
     return s }`
-  for (const n of [0, 1, 2, 40]) same(src, () => [i32(n)], `n=${n}`)
+  const built = jzWat(src)
+  for (const n of [0, 1, 2, 40]) same(built, () => [i32(n)], `n=${n}`)
   // the host sees what it saw before the pass: the argument's own storage
   const { exports, memory } = jz(src)
   const p = memory.Int32Array(i32(8)), want = i32(8)
@@ -103,16 +109,18 @@ test('guard view: a use of the value itself keeps the binding', () => {
   const ret = `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; a[0] = 9; return a }`
   is([...run(ret).f(i32(3))], [...oracle(ret).f(i32(3))])
   const copy = `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; const b = a; b[1] = 4; return a[1] + b.length }`
-  same(copy, () => [i32(5)])
+  same(jzWat(copy), () => [i32(5)])
 })
 
 test('guard view: a reassigned binding and a guard in a loop keep the binding', () => {
   const re = `export let f = (a, n) => { if (!(a instanceof Int32Array)) return -1; if (n) a = new Int32Array(n); let s = a.length; for (let i = 0; i < a.length; i++) s = (s + a[i]) | 0; return s }`
-  same(re, () => [i32(5), 0])
-  same(re, () => [i32(5), 3])
+  const reBuilt = jzWat(re)
+  same(reBuilt, () => [i32(5), 0])
+  same(reBuilt, () => [i32(5), 3])
   const loop = `export let f = (a, k) => { let s = 0; for (let r = 0; r < k; r++) { if (!(a instanceof Int32Array)) break; for (let i = 0; i < a.length; i++) s = (s + a[i]) | 0 } return s }`
-  same(loop, () => [i32(9), 3])
-  same(loop, () => [f32(9), 3])
+  const loopBuilt = jzWat(loop)
+  same(loopBuilt, () => [i32(9), 3])
+  same(loopBuilt, () => [f32(9), 3])
 })
 
 test('guard view: a call through the view allocates nothing that stays', () => {

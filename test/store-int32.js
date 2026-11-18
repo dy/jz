@@ -7,7 +7,7 @@
 // against the host: a missing element stores 0, a huge value its low word.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, wat, oracle, run } from './util.js'
+import { agree, jzWat, wat, oracle, run } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -35,7 +35,8 @@ export function f(n, m) {
 }`
   shapes(src, w => is(calls(w, '__to_int32'), 0, 'the store converts inline'))
   // m > n reads past src: undefined stores 0
-  for (const [n, m] of [[0, 0], [1, 1], [5, 5], [5, 8], [3, 0]]) agree(src, 'f', [n, m])
+  const srcBuilt = jzWat(src)
+  for (const [n, m] of [[0, 0], [1, 1], [5, 5], [5, 8], [3, 0]]) agree(srcBuilt, 'f', [n, m])
 })
 
 test('store-int32: a loop-carried local stepped by element reads', () => {
@@ -55,7 +56,8 @@ export function f(n) {
   return s
 }`
   shapes(src, w => is(calls(w, '__to_int32'), 0, 'the stores convert inline: the local has the hull of its element kind'))
-  for (const n of [0, 1, 2, 5, 20]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 5, 20]) agree(srcBuilt, 'f', [n])
 })
 
 test('store-int32: finite constant steps have a floating magnitude enclosure', () => {
@@ -144,5 +146,6 @@ test('store-int32: an unknown value converts inline below 2^63 and through the k
   shapes(src, w => ok(/\(f64\.(?:lt|ge)\s*\(f64\.abs/.test(w) && calls(w, '__to_int32') >= 1, 'the kernel stays behind the magnitude guard'))
   const VALUES = [0, 1, -1, 1.5, -1.5, 2147483647, 2147483648, -2147483649, 4294967296.5, 1e20, -1e20,
     2 ** 53 + 2, 2 ** 63 - 1024, -(2 ** 63 - 1024), 2 ** 63, -(2 ** 63), 2 ** 63 + 4096, 2 ** 84, 2 ** 84 + 2 ** 40, NaN, Infinity, -Infinity, -0]
-  for (const v of VALUES) agree(src, 'f', [v])
+  const srcBuilt = jzWat(src)
+  for (const v of VALUES) agree(srcBuilt, 'f', [v])
 })

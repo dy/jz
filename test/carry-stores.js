@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { onKernel, levels } from './_matrix.js'
-import { oracle, jz, compile } from './util.js'
+import { oracle, jzWat, compile } from './util.js'
 import { carryStores } from '../src/optimize/carry-stores.js'
 
 const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
@@ -93,15 +93,17 @@ export let run = (seed, ch) => {
 }
 
 test('carryStores: kernels agree with the host with and without the carry', () => {
+  let uncarried
   for (const [name, src] of Object.entries(KERNELS)) {
     const native = oracle(src).run
     for (const optimize of [...levels(0, 2, 3, 'size'), { level: 'speed', carryStores: false }]) {
-      const wasm = jz(src, { optimize }).exports.run
+      const m = jzWat(src, { optimize }), wasm = m.exports.run
+      if (src === KERNELS.envelope && optimize.carryStores === false) uncarried = m
       for (let a = 0; a < 4; a++) for (let b = 1; b <= 5; b++) is(wasm(b, a), native(b, a), `${name} ${JSON.stringify(optimize)}: run(${b}, ${a})`)
     }
   }
   if (onKernel()) return
-  const carried = (src, optimize) => (compile(src, { optimize, wat: true }).match(/\(local \$__cs\d+ f64\)/g) || []).length
-  ok(carried(KERNELS.envelope, 'speed') > 0, 'the envelope carries its boundary')
-  is(carried(KERNELS.envelope, { level: 'speed', carryStores: false }), 0, 'and keeps the load without the pass')
+  const carried = (text) => (text.match(/\(local \$__cs\d+ f64\)/g) || []).length
+  ok(carried(compile(KERNELS.envelope, { optimize: 'speed', wat: true })) > 0, 'the envelope carries its boundary')
+  is(carried(uncarried.wat), 0, 'and keeps the load without the pass')
 })

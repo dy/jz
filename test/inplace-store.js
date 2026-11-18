@@ -14,7 +14,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, oracle, jz, compile } from './util.js'
+import { run, oracle, jzWat, compile } from './util.js'
 import { levels, ownedLevels } from './_matrix.js'
 
 // the immutable-bench kernel shape, parameterized so each test gets a fresh module
@@ -62,10 +62,10 @@ test('inplace-store: field updates reuse a proven object pointer', () => {
   }`
   const expected = oracle(src).f
   for (const optimize of levels(0, 2, 3)) {
-    const f = jz(src, {optimize}).exports.f
+    const built = jzWat(src, {optimize}), f = built.exports.f
     for (const n of [0, 1, 9, 1]) is(f(n), expected(n), `O${optimize}: ${n} objects`)
     if (optimize) {
-      const wat = compile(src, {optimize, wat:true})
+      const wat = built.wat
       // The small step function may inline into the exported driver.
       const body = wat.split(/\(func /).find(s => /^\$(?:step|f)\s/.test(s))
       ok(body && !/call \$__ptr_offset\b/.test(body), 'field stores do not decode freshly boxed pointers')

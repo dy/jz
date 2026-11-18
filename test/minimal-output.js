@@ -8,7 +8,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { oracle, compile, jz, funcWat } from './util.js'
+import { oracle, compile, jz, jzWat, funcWat } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dropSettledTests } from '../src/optimize/settled-tests.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
@@ -673,7 +673,9 @@ test('minimal: the compact-prototype bench rows stay at or below their recorded 
 // Each pins one lowering with a differential run and a byte ratchet at
 // `optimize: 'size'` (the recorded value may only fall).
 // (a raw host: a result that may be undefined or null crosses as its i64 bits, jz:i64exp `r`)
-const run = (src, opts) => { const mod = new WebAssembly.Module(compile(src, { alloc: false, ...opts })); return adaptI64(mod, new WebAssembly.Instance(mod).exports) }
+// (`runs`: one compile, a fresh instance at each call, as a `run` per input would make)
+const runs = (src, opts) => { const mod = new WebAssembly.Module(compile(src, { alloc: false, ...opts })); return () => adaptI64(mod, new WebAssembly.Instance(mod).exports) }
+const run = (src, opts) => runs(src, opts)()
 const jsFn = (src, name) => oracle(src)[name]
 
 // A union-typed array pushed from several literal sites reserves each element
@@ -724,7 +726,7 @@ const OWNED_VIEW = `export let f = (n) => {
 test('minimal: a view over an owned typed array takes its base directly', () => {
   if (skip) return
   ok(!wat(OWNED_VIEW, 'size').includes('$__ptr_offset'), 'no pointer unboxing for x.buffer')
-  for (const n of [0, 7, 100]) is(run(OWNED_VIEW, { optimize: 'size' }).f(n), jsFn(OWNED_VIEW, 'f')(n), `n=${n}`)
+  { const fresh = runs(OWNED_VIEW, { optimize: 'size' }); for (const n of [0, 7, 100]) is(fresh().f(n), jsFn(OWNED_VIEW, 'f')(n), `n=${n}`) }
   const bytes = compile(OWNED_VIEW, { optimize: 'size', alloc: false }).length
   ok(bytes <= 529, `owned view: ${bytes} B (recorded 529)`)
 })
@@ -815,7 +817,7 @@ test('minimal: a local xorshift lambda splices at every site as uint32 draws', (
   ok(!w.includes('call_indirect'), 'no indirect call')
   ok(!w.includes('f64.trunc'), 'no f64 remainder emulation')
   ok(w.includes('i32.rem_u'), 'uint32 draws take i32.rem_u')
-  for (const n of [0, 1, 500]) is(run(XORSHIFT_DRAWS, { optimize: 'size' }).f(n), jsFn(XORSHIFT_DRAWS, 'f')(n), `n=${n}`)
+  { const fresh = runs(XORSHIFT_DRAWS, { optimize: 'size' }); for (const n of [0, 1, 500]) is(fresh().f(n), jsFn(XORSHIFT_DRAWS, 'f')(n), `n=${n}`) }
   is(run(XORSHIFT_DRAWS, { optimize: 3 }).f(500), jsFn(XORSHIFT_DRAWS, 'f')(500), 'O3')
   const bytes = compile(XORSHIFT_DRAWS, { optimize: 'size', alloc: false }).length
   ok(bytes <= 767, `xorshift draws: ${bytes} B (recorded 767)`)
@@ -899,7 +901,7 @@ test('minimal: a long-literal concat skips the SSO arms', () => {
   const w = compile(acc, { wat: true, optimize: { level: 'size', watr: false } })
   ok(w.includes('call $__str_concat_raw_long'), 'the accumulation takes the long twin')
   ok(!w.includes('call $__str_concat_raw '), 'no SSO-capable accumulation twin')
-  for (const n of [0, 1, 40]) is(jz(acc, { optimize: 'size' }).exports.f(n), jsFn(acc, 'f')(n), `n=${n}`)
+  { const m = jzWat(acc, { optimize: 'size' }); for (const n of [0, 1, 40]) is(m.fresh().exports.f(n), jsFn(acc, 'f')(n), `n=${n}`) }
   // The size tier links one body for the family: with a fresh concat in the
   // program the twin's sites take the general form (bridge.js general()).
   const src = `const BASE = 'let alpha_12 = beta + 12345;\\n'
@@ -908,7 +910,7 @@ test('minimal: a long-literal concat skips the SSO arms', () => {
   ok(!post.includes('$__str_concat_raw_long'), 'the long twin collapses into the fresh body')
   const speed = compile(src, { wat: true, optimize: { level: 3, watr: false } })
   ok(speed.includes('call $__str_concat_raw_long'), 'the speed tier keeps the twin')
-  for (const n of [0, 1, 40]) is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `n=${n}`)
+  { const m = jzWat(src, { optimize: 'size' }); for (const n of [0, 1, 40]) is(m.fresh().exports.f(n), jsFn(src, 'f')(n), `n=${n}`) }
   is(jz(src, { optimize: 3 }).exports.f(40), jsFn(src, 'f')(40), 'O3')
   const bytes = compile(src, { optimize: 'size', alloc: false }).length
   ok(bytes <= 1043, `long concat: ${bytes} B (recorded 1043)`)
@@ -1017,12 +1019,12 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
   const pre = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   const body = pre.slice(pre.indexOf('(func $f'), pre.indexOf('(func', pre.indexOf('(func $f') + 10))
   ok(!body.includes('call $__ptr_offset '), 'no forwarding follow in the function')
-  for (const n of [0, 1, 5, 40]) for (const O of levels(0, 'size', 3)) is(jz(src, { optimize: O }).exports.f(n), jsFn(src, 'f')(n), `O${O} n=${n}`)
+  for (const O of levels(0, 'size', 3)) { const m = jzWat(src, { optimize: O }); for (const n of [0, 1, 5, 40]) is(m.fresh().exports.f(n), jsFn(src, 'f')(n), `O${O} n=${n}`) }
   // an alias can grow the array behind the binding's back: the follow stays
   const aliased = src.replace('a[n + 2] = 7', 'const b = a; b.push(9); b[n + 2] = 7')
   const pre2 = compile(aliased, { wat: true, optimize: { level: 'size', watr: false } })
   ok(pre2.includes('call $__ptr_offset '), 'an alias keeps the follow')
-  for (const n of [0, 5, 40]) is(jz(aliased, { optimize: 'size' }).exports.f(n), jsFn(aliased, 'f')(n), `aliased n=${n}`)
+  { const m = jzWat(aliased, { optimize: 'size' }); for (const n of [0, 5, 40]) is(m.fresh().exports.f(n), jsFn(aliased, 'f')(n), `aliased n=${n}`) }
   // a nested function holds its own copy of the pointer: its push relocates
   // behind this function's local (the self-hosted compiler's `out.push` inside
   // a `forEach` callback trapped on exactly this)
@@ -1068,14 +1070,16 @@ test('minimal: an enumeration of a receiver no layout names is one function, wha
 test('minimal: a word length store links no conversion at the size tier', () => {
   if (skip) return
   const src = `export let f = () => { const q = [1, 2, 3]; for (let i = 0; i < 4; i++) q.push(i); q.length = 2; const a = q.length; q.length = 5; return a * 100 + q.length * 10 + (q[4] === undefined ? 1 : 0) }`
-  ok(!compile(src, { wat: true, optimize: 'size' }).includes('$__to_num'), 'no ToNumber linked')
+  const sized = jzWat(src, { optimize: 'size' })
+  ok(!sized.wat.includes('$__to_num'), 'no ToNumber linked')
   const conv = `export let f = (v) => { const q = [1, 2, 3]; q.length = v; return q.length }`
   for (const optimize of levels(0, 2, 'size')) {
-    is(jz(src, { optimize }).exports.f(), oracle(src).f(), `O${optimize}: word stores`)
-    is(jz(conv, { optimize }).exports.f(1), 1, `O${optimize}: a number`)
-    is(jz(conv, { optimize }).exports.f('2'), 2, `O${optimize}: a string converts`)
-    throws(() => jz(conv, { optimize }).exports.f(-1), RangeError, `O${optimize}: a negative length throws`)
-    throws(() => jz(conv, { optimize }).exports.f(1.5), RangeError, `O${optimize}: a fraction throws`)
+    is((optimize === 'size' ? sized : jzWat(src, { optimize })).exports.f(), oracle(src).f(), `O${optimize}: word stores`)
+    const m = jzWat(conv, { optimize })
+    is(m.fresh().exports.f(1), 1, `O${optimize}: a number`)
+    is(m.fresh().exports.f('2'), 2, `O${optimize}: a string converts`)
+    throws(() => m.fresh().exports.f(-1), RangeError, `O${optimize}: a negative length throws`)
+    throws(() => m.fresh().exports.f(1.5), RangeError, `O${optimize}: a fraction throws`)
   }
 })
 
@@ -1091,7 +1095,7 @@ test('minimal: the size tier links the key arms its keys reach', () => {
   const strs = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = 'key' + (i % 9); m.set(k, (m.get(k) | 0) + 1) } return m.size * 100 + (m.get('key' + 3) | 0) }`
   const objs = `export let f = (n) => { const os = [], m = new Map(); for (let i = 0; i < n; i++) { const o = { i }; os.push(o); m.set(o, i) } let t = 0; for (const o of os) t += m.get(o); return t + m.size }`
   for (const optimize of levels(0, 2, 'size')) for (const [name, src] of [['numbers', nums], ['strings', strs], ['objects', objs]])
-    for (const n of [0, 20]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${name}, O${optimize}, n=${n}`)
+    { const m = jzWat(src, { optimize }); for (const n of [0, 20]) is(m.fresh().exports.f(n), oracle(src).f(n), `${name}, O${optimize}, n=${n}`) }
   // (before watr, which inlines a helper of one caller under its caller's name)
   const w = (src) => compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   ok(!/\$__str_(eq|hash)\b/.test(w(nums)), 'Number and atom keys: no string arms')
@@ -1106,7 +1110,7 @@ test('minimal: the size tier links the key arms its keys reach', () => {
 test('minimal: a dropped call past a receiver guard computes no result', () => {
   if (skip) return
   const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } let t = 0; for (const [k, v] of m) t += k * v.length; return t }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 9]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`) }
   const lists = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } return n }`
   is((funcWat(compile(lists, { optimize: { level: 'size', watr: false }, wat: true }), 'f').match(/call \$__ptr_offset\b/g) || []).length, 0, 'no header read for the dropped length')
 })
@@ -1122,7 +1126,7 @@ test('minimal: a binding an if fills holds a value past it', () => {
   const guards = (src) => (funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f').match(/\$__throw_property_nullish\b/g) || []).length
   for (const fill of ['if (l === undefined) { l = []; m.set(n, l) }', 'if (l == null) l = [];', 'if (!l) { l = [n] }']) {
     const src = of('[1]', fill)
-    for (const optimize of levels(0, 2, 'size')) for (const n of [1, 2]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${fill}, O${optimize}, n=${n}`)
+    for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [1, 2]) is(m.fresh().exports.f(n), oracle(src).f(n), `${fill}, O${optimize}, n=${n}`) }
     is(guards(src), 0, `${fill}: no guard`)
   }
   for (const [seed, fill] of [
@@ -1136,7 +1140,7 @@ test('minimal: a binding an if fills holds a value past it', () => {
     ['[1]', 'const g = () => { l = m.get(9) }; if (l == null) l = []; g();'],
   ]) {
     const src = of(seed, fill), want = oracle(src).f
-    for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2]) is(out(jz(src, { optimize }).exports.f, n), out(want, n), `${fill}, O${optimize}, n=${n}`)
+    for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 1, 2]) is(out(m.fresh().exports.f, n), out(want, n), `${fill}, O${optimize}, n=${n}`) }
     ok(guards(src) > 0, `${fill}: keeps the guard`)
   }
 })
@@ -1178,11 +1182,11 @@ test('minimal: a proven source reads in place', () => {
 test('minimal: the size tier calls the bounded element read', () => {
   if (skip) return
   const src = `export let f = (n) => { const a = ['a', , 'c']; a.push('d'); let s = ''; for (const i of [0, 1, 2, 3, 4, -1, n]) s += a[i] + ',' + a[n - i] + ','; return s }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 2, 7]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 2, 7]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`) }
   const w = (s) => funcWat(compile(s, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
   ok(/\$__arr_idx_known\b/.test(w(src)), 'the bounded read')
   const nums = `export let f = (n) => { const k = n | 0, a = []; for (let i = 0; i < 9; i++) a.push(i * 0.5); return a[k] + a[k + 1] }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 8, 20]) is(jz(nums, { optimize }).exports.f(n), oracle(nums).f(n), `Numbers, O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(nums, { optimize }); for (const n of [0, 8, 20]) is(m.fresh().exports.f(n), oracle(nums).f(n), `Numbers, O${optimize}, n=${n}`) }
   ok(!/\$__arr_idx_known\b/.test(w(nums)), 'Numbers read inline')
 })
 
@@ -1192,7 +1196,7 @@ test('minimal: a settled test goes', () => {
   const src = `const g = (docs, n) => { const stop = new Set(), s = new Set(); stop.add('a1'); for (let i = 0; i <= n; i++) { const doc = docs[i]; for (let k = 0; k < doc.length; k++) if (!stop.has(doc[k])) s.add(doc[k]) } return s.size }
     export let f = (n) => { const a = [], b = []; for (let i = 0; i < 3; i++) b.push('a' + i); a.push(b); a.push(b.slice(1)); return g(a, n) + g(a, n) }`
   const out = (fn, n) => { try { return fn(n) } catch { return 'threw' } }
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2]) is(out(jz(src, { optimize }).exports.f, n), out(oracle(src).f, n), `O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 1, 2]) is(out(m.fresh().exports.f, n), out(oracle(src).f, n), `O${optimize}, n=${n}`) }
   const guards = (settledTests) => (funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false, settledTests }, wat: true }), 'g').match(/\$__throw_property_nullish\b/g) || []).length
   is([guards(false), guards(true)], [3, 1], 'one guard for the three reads of a binding')
   const drop = (body) => { const fn = ['func', '$f', ['local', '$x', 'f64'], ['local', '$y', 'f64'], ['local', '$c', 'i32'], ...body]; dropSettledTests(fn); return JSON.stringify(fn) }
@@ -1231,13 +1235,13 @@ test('minimal: a logical op of a missing Number is a Number', () => {
   if (skip) return
   const src = `const tally = (lists) => { const m = new Map(); for (const [, l] of lists) m.set(l.length, (m.get(l.length) || 0) + 1); return m }
     export let f = (n) => { const lists = new Map(); for (let i = 0; i < n; i++) { let l = lists.get(i % 3); if (l === undefined) { l = []; lists.set(i % 3, l) } l.push(i) } let t = 0; for (const [k, v] of tally(lists)) t += k * 10 + v; return t }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 2, 7]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 2, 7]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`) }
   const w = funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'tally')
   is((w.match(/\((i64|f64)\.eq\b/g) || []).length, 2, 'no conversion of the operand')
   const mixed = `export let f = (n) => { const m = new Map(); m.set(1, 'a'); m.set(2, n); return (m.get(n) || 0) + 1 }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2, 3]) is(jz(mixed, { optimize }).exports.f(n), oracle(mixed).f(n), `mixed, O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(mixed, { optimize }); for (const n of [0, 1, 2, 3]) is(m.fresh().exports.f(n), oracle(mixed).f(n), `mixed, O${optimize}, n=${n}`) }
   const bools = `export let f = (n) => { const m = new Map(); m.set(1, true); m.set(2, n > 1); return (m.get(n) || 0) + 1 }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2, 3]) is(jz(bools, { optimize }).exports.f(n), oracle(bools).f(n), `bools, O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(bools, { optimize }); for (const n of [0, 1, 2, 3]) is(m.fresh().exports.f(n), oracle(bools).f(n), `bools, O${optimize}, n=${n}`) }
 })
 
 // A probe of a table the summary proves present passes the table's offset and
@@ -1268,7 +1272,7 @@ test('minimal: a proven table probes by its key\'s form', () => {
   const out = (fn, n) => { try { return fn(n) } catch (e) { return 'threw ' + e.message } }
   for (const [name, src] of Object.entries(TABLE_KERNELS)) {
     const want = oracle(src).f
-    for (const optimize of levels(0, 2, 'size')) for (const n of [0, 3, 40]) is(out(jz(src, { optimize }).exports.f, n), out(want, n), `${name}, O${optimize}, n=${n}`)
+    for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 3, 40]) is(out(m.fresh().exports.f, n), out(want, n), `${name}, O${optimize}, n=${n}`) }
   }
   const size = (src) => compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   const ints = size(TABLE_KERNELS.ints), strs = size(TABLE_KERNELS.strs), mixed = size(TABLE_KERNELS.mixed)
@@ -1296,7 +1300,7 @@ test('minimal: a bounded index reads in place', () => {
     bfs: `export let f = (n) => { const adj = new Map(); for (let i = 0; i < n; i++) { let l = adj.get(i & 3); if (l === undefined) { l = []; adj.set(i & 3, l) } l.push(i) } const d = new Map(), q = [0]; let t = 0; for (let h = 0; h < q.length; h++) { const v = q[h]; const list = adj.get(v); if (list === undefined) continue; for (let j = 0; j < list.length; j++) { const w = list[j]; if (!d.has(w)) { d.set(w, h); t += w; q.push(w) } } } return t + ':' + q.length }`,
     shrink: `export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); let t = 0; for (let j = 0; j < a.length; j++) { t += a[j] + 1; if (j === 2) a.pop() } return t }`,
   }
-  for (const [name, src] of Object.entries(srcs)) for (const optimize of levels(0, 2, 'size')) for (const n of [0, 5, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${name}, O${optimize}, n=${n}`)
+  for (const [name, src] of Object.entries(srcs)) for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 5, 9]) is(m.fresh().exports.f(n), oracle(src).f(n), `${name}, O${optimize}, n=${n}`) }
   const w = (src, fn = 'f') => funcWat(compile(src, { optimize: { level: 'size', watr: false }, wat: true }), fn)
   ok(!/__static_str/.test(compile(srcs.rem, { optimize: { level: 'size', watr: false }, wat: true })), 'no undefined to render')
   ok(!/\$__arr_value\b/.test(w(srcs.loop)) && !/\$__arr_value\b/.test(w(srcs.bfs)), 'a bounded read of a hole-free array takes the cell')
@@ -1363,7 +1367,7 @@ test('minimal: the bits hash links the arms its keys reach', () => {
 test('minimal: the size tier prints an integer by one walk', () => {
   if (skip) return
   const src = `export let f = (n) => { const m = new Map(); for (let i = -2; i < n; i++) m.set('k' + i, i); const s = String(n | 0); return (m.get('k-1') | 0) + (m.get('k' + 12) | 0) * 100 + (s === '40' ? 10000 : 0) + m.size * 100000 + ('' + (1234567 + n)).length * 1000000000 }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 13, 40]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 13, 40]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`) }
   const w = compile(src, { optimize: { level: 'size', watr: false }, wat: true })
   ok(!funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
 })
@@ -1418,7 +1422,7 @@ test('minimal: a short concat stays canonical', () => {
       (m.get('a' + d + 'bcd') | 0) * 10000 + (m.get('a' + d + 'bcde') | 0) * 100000 + ((c + 'bcdef' === 'abcdef') ? 1000000 : 0) + (('' + c + c).length) * 10000000
   }`
   const want = oracle(src).f
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 1]) is(m.fresh().exports.f(n), want(n), `n=${n} at ${optimize}`) }
   const w = (t) => funcWat(compile(`export let f = (n) => { const c = String(n); return ${t} }`, { optimize: { level: 'size', watr: false }, wat: true }), 'f')
   ok(!/call \$__sso_norm/.test(w(`'abcd' + c + 'efgh'`)), 'seven literal units: no check')
   ok(/call \$__sso_fresh/.test(w(`'ab' + c + 'cd'`)), 'six or fewer: the check')
@@ -1442,7 +1446,7 @@ test('minimal: the size tier walks every stub', () => {
     return t + h.t.size + s.size + a.get('arr').length + a.get('arr')[n] * 1000 + (s.has(n - 1) ? 1 : 0)
   }`
   const want = oracle(src).f
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 7, 40, 300]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 1, 7, 40, 300]) is(m.fresh().exports.f(n), want(n), `n=${n} at ${optimize}`) }
 })
 
 // A count kept in a Map reads Number or missing: a fused update carries that kind
@@ -1462,7 +1466,7 @@ test('minimal: a fused update reads the kind of its read', () => {
     return m.get('k0') + m.get('z') * 100 + m.get('y') * 10000 + m.get('x') * 100000
   }`
   const want = oracle(src).f
-  for (const optimize of levels(0, 2, 'size')) for (const n of [1, 2, 9]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [1, 2, 9]) is(m.fresh().exports.f(n), want(n), `n=${n} at ${optimize}`) }
   const body = funcWat(compile(`export let f = (m, k) => { const t = new Map(); t.set(k, 1); t.set(k, (t.get(k) || 0) + 1); return t.get(k) }`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
   ok(!/__to_num\b|i64\.eq/.test(body.slice(body.indexOf('__map_slot'))), 'the old value is a Number past the test')
   const tested = funcWat(compile(`export let f = (k) => { const t = new Map(); t.set(k, 1); t.set(k, t.get(k) ? 1 : 2); return t.get(k) }`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
@@ -1489,7 +1493,7 @@ test('minimal: a loop of table operations keeps its bound', () => {
     kernel('for (let i = 0; i < sets.length; i++)', `const b = sets[sets.length - 1 - i], s = a.size < b.size ? a : b; if (s.has(i)) t++`)]
   for (const src of pure) {
     const want = oracle(src).f
-    for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 40]) is(jz(src, { optimize }).exports.f(n), want(n), `${src.slice(100, 170)} n=${n} at ${optimize}`)
+    for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 1, 40]) is(m.fresh().exports.f(n), want(n), `${src.slice(100, 170)} n=${n} at ${optimize}`) }
   }
   const body = (src) => funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
   for (const src of pure.slice(0, 2)) ok(!/__throw_property_nullish|__is_nullish|\(unreachable\)/.test(body(src)), `no guard: ${src.slice(100, 170)}`)
@@ -1510,7 +1514,7 @@ test('minimal: a loop of table operations keeps its bound', () => {
        return t }`]
   for (const src of shrinks) {
     const want = oracle(src).f
-    for (const optimize of levels(0, 2, 'size')) for (const n of [1, 5]) is(jz(src, { optimize }).exports.f(n), want(n), `${src.slice(0, 60)} n=${n} at ${optimize}`)
+    for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [1, 5]) is(m.fresh().exports.f(n), want(n), `${src.slice(0, 60)} n=${n} at ${optimize}`) }
   }
 })
 
@@ -1566,11 +1570,11 @@ test('minimal: identity holds past a growth at the size tier', () => {
     return t + (sets[0] === a ? 1000000 : 0)
   }`
   const want = oracle(src).f
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 3, 200]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 3, 200]) is(m.fresh().exports.f(n), want(n), `n=${n} at ${optimize}`) }
   ok(!/__same_ref/.test(funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'no tag test of two of one kind')
   // a holder left on the old block: the binding takes the grown array, the element keeps the stub
   const held = `export let f = (n) => { const x = [1], arrs = [x, [2]]; for (let i = 0; i < n; i++) x.push(i); let t = 0; for (let j = 0; j < arrs.length; j++) { const q = arrs[j]; if (x === q) t += 1 + j * 10 } return t }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 300]) is(jz(held, { optimize }).exports.f(n), oracle(held).f(n), `held, n=${n} at ${optimize}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(held, { optimize }); for (const n of [0, 1, 300]) is(m.fresh().exports.f(n), oracle(held).f(n), `held, n=${n} at ${optimize}`) }
 })
 
 // A function whose every return is storage it made gives nothing back at any
@@ -1638,7 +1642,7 @@ test('minimal: a remainder of an unsigned word is a word', () => {
 test('minimal: a walk of a table has one test a step', () => {
   if (skip) return
   const src = `export let f = (n) => { const s = new Set(); for (let i = 0; i < n; i++) s.add(i); let t = 0; for (const x of s) t += x; return t }`
-  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `n=${n} at ${optimize}`)
+  for (const optimize of levels(0, 2, 'size')) { const m = jzWat(src, { optimize }); for (const n of [0, 1, 9]) is(m.fresh().exports.f(n), oracle(src).f(n), `n=${n} at ${optimize}`) }
   ok(!/\(if\s+\(result i32\)\s+\(local\.tee \S+\s+\(call \$__coll_step/.test(compile(src, { optimize: 'size', wat: true })), 'no arm answers one')
   // the rule itself (optimize/peephole.js): a nonzero arm is the condition's, a zero one is not
   const shaped = (k) => { const fn = ['func', '$t', ['param', '$c', 'i32'], ['if', ['if', ['result', 'i32'], ['local.get', '$c'], ['then', ['call', '$s'], ['i32.const', k]], ['else', ['i32.const', 0]]], ['then', ['call', '$b']]]]; fusedRewrite(fn); return JSON.stringify(fn[3]) }

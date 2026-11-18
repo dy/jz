@@ -7,7 +7,7 @@
 // arguments that leave them; the WAT shows the copy.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, oracle, run, wat } from './util.js'
+import { agree, oracle, run, jzWat } from './util.js'
 import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -34,7 +34,7 @@ const integerCopies = (text) => {
   walk(parseWat(text))
   return n
 }
-const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
+const shapes = (built, check) => { if (!belowOpt(2)) check(built.wat) }
 const SIZES = [0, 1, 2, 3, 5, 7, 16, 100]
 const ANY = [...SIZES, -1, -3, 0.5, 2.75, NaN, -0, 1e9]
 
@@ -50,7 +50,8 @@ test('specialize: impossible byte extents do not hide reachable nested loops', (
       }
       return s
     }`
-    shapes(src, w => ok(integerCopies(w) > 0, `${ctor}: reachable loops retain integer copies`))
+    const built = jzWat(src)
+    shapes(built, w => ok(integerCopies(w) > 0, `${ctor}: reachable loops retain integer copies`))
     const actual = run(src), expected = oracle(src)
     for (const n of [0, 1, 8, 8, 3.5, NaN, 2, 8, -0]) for (const view of [false, true])
       ok(Object.is(actual.f(n, view), expected.f(n, view)), `${ctor}, view=${view}, length=${n}`)
@@ -116,12 +117,13 @@ test('specialize: a counter that starts from a number', () => {
   for (let i = 0; i < 16; i++) s = s * 3 + a[i]
   return s
 }`
-  shapes(src, w => {
+  const built = jzWat(src)
+  shapes(built, w => {
     ok(copies(w) >= 1, 'the loop has a copy')
     // (unsigned where the counter is proven no less than zero: optimize/unsigned-div.js)
     ok(count(w, 'i64.rem_s') + count(w, 'i32.rem_s') + count(w, 'i64.rem_u') + count(w, 'i32.rem_u') >= 2, 'its remainders are the integers\'')
   })
-  for (const n of [...SIZES, -1, 0.5, 2.75, NaN, -0, 1000.5]) agree(src, 'f', [n])
+  for (const n of [...SIZES, -1, 0.5, 2.75, NaN, -0, 1000.5]) agree(built, 'f', [n])
 })
 
 test('specialize: an index read from an array, until it leaves', () => {
@@ -135,8 +137,9 @@ test('specialize: an index read from an array, until it leaves', () => {
   for (let o = 0; o !== -1 && steps < 50; o = next[o], steps++) s = s * 3 + v[o] + (o % 3)
   return s
 }`
-  shapes(src, w => ok(copies(w) >= 1, 'the loop has a copy'))
-  for (const n of [0, 5, 15]) for (const to of [8, 0, 3, -1, -2, 16, 31, 32, 1000, 2147483647, -2147483648]) agree(src, 'f', [n, to])
+  const built = jzWat(src)
+  shapes(built, w => ok(copies(w) >= 1, 'the loop has a copy'))
+  for (const n of [0, 5, 15]) for (const to of [8, 0, 3, -1, -2, 16, 31, 32, 1000, 2147483647, -2147483648]) agree(built, 'f', [n, to])
 })
 
 test('specialize: what the copy counted goes on where a read leaves', () => {
@@ -155,7 +158,8 @@ test('specialize: what the copy counted goes on where a read leaves', () => {
   }
   return s + k * 1000 + last * 1e6 + seen * 1e9
 }`
-  for (const n of [0, 3, 15]) for (const bad of [0, 1, 9, 31, 40, 100, 1000]) agree(src, 'f', [n, bad])
+  const built = jzWat(src)
+  for (const n of [0, 3, 15]) for (const bad of [0, 1, 9, 31, 40, 100, 1000]) agree(built, 'f', [n, bad])
 })
 
 test('specialize: reads after a store in their iteration', () => {
@@ -175,7 +179,8 @@ test('specialize: reads after a store in their iteration', () => {
   }
   return s
 }`
-  for (const n of SIZES) agree(src, 'f', [n])
+  const built = jzWat(src)
+  for (const n of SIZES) agree(built, 'f', [n])
 })
 
 test('specialize: an index taken before its source moved on', () => {
@@ -194,7 +199,8 @@ test('specialize: an index taken before its source moved on', () => {
   }
   return s + out[m - 1]
 }`
-  for (const n of [0, 3, 9]) for (const step of [1, 2, 5, 7]) agree(src, 'f', [n, step])
+  const built = jzWat(src)
+  for (const n of [0, 3, 9]) for (const step of [1, 2, 5, 7]) agree(built, 'f', [n, step])
 })
 
 test('specialize: a read an earlier test keeps from an index it does not take', () => {
@@ -211,7 +217,8 @@ test('specialize: a read an earlier test keeps from an index it does not take', 
   }
   return s
 }`
-  for (const n of SIZES) agree(src, 'f', [n])
+  const built = jzWat(src)
+  for (const n of SIZES) agree(built, 'f', [n])
 })
 
 test('specialize: loops in a loop that stores, each with a copy of its own', () => {
@@ -240,8 +247,9 @@ test('specialize: loops in a loop that stores, each with a copy of its own', () 
   }
   return s
 }`
-  shapes(src, w => ok(copies(w) >= 2, 'the loops have copies'))
-  for (const n of SIZES) agree(src, 'f', [n])
+  const built = jzWat(src)
+  shapes(built, w => ok(copies(w) >= 2, 'the loops have copies'))
+  for (const n of SIZES) agree(built, 'f', [n])
 })
 
 test('specialize: a branch that leaves past the loop, and what is read after it', () => {
@@ -263,7 +271,8 @@ test('specialize: a branch that leaves past the loop, and what is read after it'
   }
   return s + last * 1e6 + hits * 1e9
 }`
-  for (const n of [0, 3, 14, 15]) for (const stop of [-1, 0, 5, 17]) agree(src, 'f', [n, stop])
+  const built = jzWat(src)
+  for (const n of [0, 3, 14, 15]) for (const stop of [-1, 0, 5, 17]) agree(built, 'f', [n, stop])
 })
 
 test('specialize: a return inside the copy', () => {
@@ -281,7 +290,8 @@ test('specialize: a return inside the copy', () => {
   }
   return -1000
 }`
-  for (const n of [0, 5, 15]) for (const want of [0, 3, 9, 100]) agree(src, 'f', [n, want])
+  const built = jzWat(src)
+  for (const n of [0, 5, 15]) for (const want of [0, 3, 9, 100]) agree(built, 'f', [n, want])
 })
 
 test('specialize: floats that are no integers keep the loop as written', () => {
@@ -293,7 +303,8 @@ test('specialize: floats that are no integers keep the loop as written', () => {
   for (let x = start; x < m; x += 1) s = s * 1.5 + v[x | 0] + x % 3
   return s
 }`
-  for (const n of [0, 7]) for (const start of ANY) agree(src, 'f', [n, start])
+  const built = jzWat(src)
+  for (const n of [0, 7]) for (const start of ANY) agree(built, 'f', [n, start])
 })
 
 // The loop as written goes on in the middle of a round: a store the copy made
@@ -316,8 +327,9 @@ test('specialize: a read that leaves after the round has stored', () => {
   }
   return s + a[3] * 1000 + steps * 1e6
 }`
-  shapes(src, w => ok(copies(w) >= 1, 'the loop has a copy'))
-  for (const n of [0, 1, 5, 16, 40]) for (const bad of [0, 3, 15, 16, 100, 255]) agree(src, 'f', [n, bad])
+  const built = jzWat(src)
+  shapes(built, w => ok(copies(w) >= 1, 'the loop has a copy'))
+  for (const n of [0, 1, 5, 16, 40]) for (const bad of [0, 3, 15, 16, 100, 255]) agree(built, 'f', [n, bad])
 })
 
 test('specialize: a count stepped inside the statement that reads', () => {
@@ -331,7 +343,8 @@ test('specialize: a count stepped inside the statement that reads', () => {
   }
   return s + sp * 1e7
 }`
-  for (const n of [0, 1, 4, 12]) for (const deep of [0, 1, 5, 8, 9, 12, -1]) agree(src, 'f', [n, deep])
+  const built = jzWat(src)
+  for (const n of [0, 1, 4, 12]) for (const deep of [0, 1, 5, 8, 9, 12, -1]) agree(built, 'f', [n, deep])
 })
 
 test('specialize: reads under a test, after a store, in either arm', () => {
@@ -356,7 +369,8 @@ test('specialize: reads under a test, after a store, in either arm', () => {
   }
   return s + b[5] + c[6]
 }`
-  for (const n of [0, 2, 9, 33]) for (const bad of [0, 1, 6, 15, 16, 47]) agree(src, 'f', [n, bad])
+  const built = jzWat(src)
+  for (const n of [0, 2, 9, 33]) for (const bad of [0, 1, 6, 15, 16, 47]) agree(built, 'f', [n, bad])
 })
 
 // An index a test computes on its way: the local it sets is set where the
@@ -369,7 +383,8 @@ test('specialize: an index set inside the test of its read', () => {
   for (let i = 0; i < n; i++) { const k = a[(i * 7) % 11]; s += k === undefined ? 100 : k }
   return s
 }`
-  for (const n of [0, 1, 3, 8, 30]) agree(src, 'f', [n])
+  const built = jzWat(src)
+  for (const n of [0, 1, 3, 8, 30]) agree(built, 'f', [n])
 })
 
 // A value tested for its kind before the runtime is asked: the copy keeps
@@ -399,7 +414,8 @@ test('specialize: a key that stops being an index', () => {
   for (let i = 0; i < m; i++) s = s * 3 + nb[i]
   return s
 }`
-  for (const n of [0, 4, 16, 30]) for (const to of [2, -1, 15, 16, 40, -7]) agree(src, 'f', [n, to])
+  const built = jzWat(src)
+  for (const n of [0, 4, 16, 30]) for (const to of [2, -1, 15, 16, 40, -7]) agree(built, 'f', [n, to])
 })
 
 // A read is a number where the emitter marked it one (a typed element): an
@@ -420,7 +436,8 @@ test('specialize: the slots of an array hold any value, a hole among them', () =
   }
   return holes * 10000 + strings * 1000 + s
 }`
-  for (const n of [0, 3, 8, 9, 12]) agree(src, 'f', [n])
+  const built = jzWat(src)
+  for (const n of [0, 3, 8, 9, 12]) agree(built, 'f', [n])
   const holes = `let a = []
   export function f(count) {
     a = new Array(count)
@@ -431,7 +448,8 @@ test('specialize: the slots of an array hold any value, a hole among them', () =
     for (let i = 0; i <= count; i++) s = s * 3 + (a[i] === undefined ? 1 : a[i])
     return s
   }`
-  for (const count of [0, 1, 4, 5, 16, 17]) agree(holes, 'f', [count])
+  const holed = jzWat(holes)
+  for (const count of [0, 1, 4, 5, 16, 17]) agree(holed, 'f', [count])
 })
 
 // An array of Numbers whose cells may be holes (a store the summary cannot bound,
@@ -450,12 +468,13 @@ export function f(n, gap) {
   // (the speed tier inlines the hole test the copy reads)
   const loops = []
   const walk = (x) => { if (!Array.isArray(x)) return; if (x[0] === 'loop' && /\.f\d+$/.test(x[1])) loops.push(x); x.forEach(walk) }
-  walk(parseWat(wat(src, { optimize: 'speed' })))
+  const fast = jzWat(src, { optimize: 'speed' })
+  walk(parseWat(fast.wat))
   const self = (c) => Array.isArray(c) && c[0] === 'f64.ne' && (c[1]?.[0] === 'local.get' || c[1]?.[0] === 'local.tee') && c[2]?.[0] === 'local.get' && c[1][1] === c[2][1]
   const leaves = (x) => Array.isArray(x) && (x[0] === 'br_if' && self(x[2]) || x.some(leaves))
   const bare = loops.filter(l => !JSON.stringify(l).includes('0x7FF87FFFFFFFFFFF') && leaves(l))
   ok(bare.length >= 1, 'a copy reads its cells with no hole test, leaving where a cell holds a NaN')
-  const host = oracle(src), speed = run(src, { optimize: 'speed' }), plain = run(src)
+  const host = oracle(src), speed = fast.exports, plain = run(src)
   for (const n of [0, 1, 2, 5, 12]) for (const gap of [0, 1, 3, -1, -2]) {
     is(speed.f(n, gap), host.f(n, gap), `speed f(${n}, ${gap})`)
     is(plain.f(n, gap), host.f(n, gap), `f(${n}, ${gap})`)
@@ -480,8 +499,9 @@ test('specialize: extents that fail inside a copy', () => {
   }
   return s + seen[3] * 1e6
 }`
-  shapes(src, w => ok(copies(w) >= 1, 'the loop has a copy'))
-  for (const n of [0, 1, 5, 9, 20]) for (const len of [0, 4, 12, 24, 64]) agree(src, 'f', [n, len])
+  const built = jzWat(src)
+  shapes(built, w => ok(copies(w) >= 1, 'the loop has a copy'))
+  for (const n of [0, 1, 5, 9, 20]) for (const len of [0, 4, 12, 24, 64]) agree(built, 'f', [n, len])
 })
 
 // The twin is no gain of the copy's own: the arm the extents choose runs as fast
@@ -509,6 +529,7 @@ export function f(n) {
   for (let i = 0; i < N; i++) h = h * 3 + re[i]
   return h
 }`
-  shapes(src, w => ok(copies(w) === 0, 'the loops have their one form'))
-  for (const n of [0, 1, 2, 3, 4, 8, 64, 100]) agree(src, 'f', [n])
+  const built = jzWat(src)
+  shapes(built, w => ok(copies(w) === 0, 'the loops have their one form'))
+  for (const n of [0, 1, 2, 3, 4, 8, 64, 100]) agree(built, 'f', [n])
 })

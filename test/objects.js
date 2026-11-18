@@ -6,7 +6,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, belowOpt, levels, ownedLevels } from './_matrix.js'
-import { run, oracle, cases, jz, compile } from './util.js'
+import { run, oracle, cases, jz, jzWat, compile } from './util.js'
 import { parse } from '../src/parse.js'
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 
@@ -566,7 +566,7 @@ test('Object.keys, values, entries and for-in list an index-keyed receiver\'s in
 export const f = (k) => { const v = pick(k); const ta = new Float64Array([1.5, 2]); return JSON.stringify(${e}) }`
   for (const e of ['Object.keys(v)', 'Object.values(v)', 'Object.entries(v)', '(() => { const r = []; for (const k in v) r.push(k); return r })()',
     '[Object.keys(ta), Object.values(ta), Object.entries(ta)]', '({ ...[5, 6], z: 1 })', 'Object.assign({}, [5, 6])'])
-    for (const k of [0, 1, 2, 3]) for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(k), oracle(src(e)).f(k), `${e} k=${k} O${optimize}`)
+    for (const optimize of levels(0, 2, 3)) { const m = jzWat(src(e), { optimize }); for (const k of [0, 1, 2, 3]) is(m.fresh().exports.f(k), oracle(src(e)).f(k), `${e} k=${k} O${optimize}`) }
 })
 
 // A copy read each value by its key through the generic property read, which
@@ -577,7 +577,7 @@ test('a spread, Object.assign and hasOwn see a string\'s and a typed array\'s in
 export const f = (k) => { const v = pick(k), key = String(k - k); const s = 'ab', ta = new Int16Array([-1, 2]); return JSON.stringify(${e}) }`
   for (const e of ['{ ...v, z: 1 }', 'Object.assign({}, v)', '[{ ...s }, { ...ta }, Object.assign({}, s, ta)]',
     '[Object.hasOwn(s, key), s.hasOwnProperty("length"), Object.hasOwn(s, "2"), Object.hasOwn(s, 1), Object.hasOwn(s, "01")]'])
-    for (const k of [0, 1]) for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(k), oracle(src(e)).f(k), `${e} k=${k} O${optimize}`)
+    for (const optimize of levels(0, 2, 3)) { const m = jzWat(src(e), { optimize }); for (const k of [0, 1]) is(m.fresh().exports.f(k), oracle(src(e)).f(k), `${e} k=${k} O${optimize}`) }
 })
 
 test('Object.assign primitive targets reject without ToObject boxing', () => {
@@ -634,12 +634,14 @@ test('an array whose named properties the program names keeps them in record slo
       return JSON.stringify(out)
     }`
   const js = oracle(src).f
+  let at2
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
-    const f = jz(src, { optimize }).exports.f
+    const m = jzWat(src, { optimize }), f = m.exports.f
+    if (optimize === 2) at2 = m
     for (const mode of [0, 1, 2, 3, 4, 0]) is(f(9, mode), js(9, mode), `record properties O${optimize}, mode ${mode}`)
   }
   if (belowOpt(2)) return
-  const wat = compile(src, { optimize: 2, wat: true })
+  const wat = at2 ? at2.wat : compile(src, { optimize: 2, wat: true })
   ok(/call \$__rec_set\b/.test(wat) && /call \$__rec_read\b/.test(wat), 'a named store and read of an array are its record\'s slots')
 })
 
@@ -2814,8 +2816,10 @@ test('in-place replace store past the length extends the array at every tier', (
   const run = (ps, n) => { let s = 0; for (let i = 0; i < n; i++) { const p = ps[i]; const nx = ((p ? p.x : 0) + 1) | 0; ps[i] = { x: nx, y: 1 }; s = (s + nx) | 0 } return s * 100 + ps.length }
   export let f = (n) => run(mk(), n)`
   const e = oracle(src)
-  for (const optimize of levels(0, 2, 3, 'size'))
-    for (const n of [2, 4, 6, 9]) is(jz(src, { optimize }).exports.f(n), e.f(n), `n=${n} @O${optimize}`)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const m = jzWat(src, { optimize })
+    for (const n of [2, 4, 6, 9]) is(m.fresh().exports.f(n), e.f(n), `n=${n} @O${optimize}`)
+  }
 })
 
 // A property key is a string (ToPropertyKey): `Object.fromEntries` stores a
@@ -2957,13 +2961,15 @@ let put = (ch, v) => { ch.k = v; return ch }
 export let f = (v) => { let s = 0; for (let c = 0; c < 2; c++) s += upd(chans[c], v); return s }
 export let g = (v) => { let s = 0; for (let r = 0; r < 4; r++) s += f(v + r); return s + chans[0].k * 100 + chans[1].a }
 export let h = (i) => { try { put(chans[i], 7); return chans[i].k } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }`
+  let at2
   for (const optimize of levels(0, 2, 'speed')) {
-    const js = oracle(src), mod = jz(src, { optimize }).exports
+    const m = jzWat(src, { optimize }), js = oracle(src), mod = m.exports
+    if (optimize === 2) at2 = m
     is(mod.g(1), js.g(1), `the slots hold what JavaScript holds at ${optimize}`)
     is(mod.h(0), js.h(0), `a store through a present element at ${optimize}`)
     is(mod.h(2), 'TypeError', `a store through a hole throws at ${optimize}`)
   }
-  ok(!compile(src, { optimize: 2, wat: true }).includes('$__dyn_set'), 'every store takes the slot')
+  ok(!(at2 ? at2.wat : compile(src, { optimize: 2, wat: true })).includes('$__dyn_set'), 'every store takes the slot')
 })
 
 // A field read through an expression whose objects the summary names by one

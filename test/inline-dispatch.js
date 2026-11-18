@@ -4,7 +4,7 @@
 // keeps the call; a site of one kind still splices, where the copy resolves.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, wat } from './util.js'
+import { agree, jzWat, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
 
 const calls = (src, callee) => (wat(src, { optimize: 'speed' }).match(new RegExp(`call \\$${callee}\\b`, 'g')) || []).length
@@ -44,5 +44,6 @@ export let f = (n) => {
   return k
 }`
   if (!belowOpt(2)) is(calls(src, 'first'), 0, 'first splices at both sites')
-  for (const n of [0, 1, 5]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5]) agree(srcBuilt, 'f', [n])
 })

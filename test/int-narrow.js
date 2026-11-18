@@ -5,7 +5,7 @@
 // differential against the host; the WAT shows where the arithmetic runs.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { agree, oracle, run, wat } from './util.js'
+import { agree, jzWat, oracle, run, wat } from './util.js'
 import { belowOpt, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -476,7 +476,8 @@ test('int-narrow: an index made of an element, its remainders and its quotient',
     ok(count(w, 'i32.div_s') + count(w, 'i64.div_s') >= 2, 'the quotients are the integers\'')
     ok(count(w, 'f64.div') === 0, 'no division is left in f64')
   })
-  for (const n of ARGS) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of ARGS) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: a product of an element past the i32 range', () => {
@@ -492,7 +493,8 @@ test('int-narrow: a product of an element past the i32 range', () => {
   return s
 }`
   shapes(src, w => ok(count(w, 'i64.mul') + count(w, 'i64.add') >= 1, 'the product is carried in i64'))
-  for (const n of ARGS) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of ARGS) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: the zero of a negative remainder keeps its sign where a division reads it', () => {
@@ -508,7 +510,8 @@ test('int-narrow: the zero of a negative remainder keeps its sign where a divisi
   }
   return s * 1000 + m
 }`
-  for (const n of [0, 1, 3, 4, 9, 12, 21, 100, -6]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 3, 4, 9, 12, 21, 100, -6]) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: minimum, maximum, magnitude and negation of integers', () => {
@@ -523,7 +526,8 @@ test('int-narrow: minimum, maximum, magnitude and negation of integers', () => {
   }
   return h
 }`
-  for (const n of ARGS) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of ARGS) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: a value that may pass 2^53 stays a number', () => {
@@ -538,7 +542,8 @@ test('int-narrow: a value that may pass 2^53 stays a number', () => {
   }
   return s + x % 1024
 }`
-  for (const n of [0, 1, -1, 7, 991, 992, 993, 1000, -100000, 2147483647, -2147483648]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, -1, 7, 991, 992, 993, 1000, -100000, 2147483647, -2147483648]) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: a fraction truncated where it is read', () => {
@@ -549,7 +554,8 @@ test('int-narrow: a fraction truncated where it is read', () => {
   for (let i = 0; i < 8; i++) { const e = a[i] - 1, t = e / 3, k = t | 0; s = (s * 31 + k + (t * 2 | 0)) | 0 }
   return s
 }`
-  for (const n of ARGS) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of ARGS) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: a value that may be missing stays as it is', () => {
@@ -560,7 +566,8 @@ test('int-narrow: a value that may be missing stays as it is', () => {
   for (let i = 0; i < 6; i++) { const e = a[i + n] - 1; s += e % 3 === 0 ? 1 : e !== e ? 100 : 10 }
   return s
 }`
-  for (const n of [0, 1, 2, 3, 5, 7, -1, -3, 16, 100]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 3, 5, 7, -1, -3, 16, 100]) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: a slot that holds any value is no number', () => {
@@ -571,7 +578,8 @@ test('int-narrow: a slot that holds any value is no number', () => {
   for (let i = 0; i < 4; i++) s = s * 3 + (row[i] == null ? 1 : row[i] === n ? 2 : 0)
   return s
 }`
-  for (const n of [0, 1, -1, 0.5]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, -1, 0.5]) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: a word of flags stays a word', () => {
@@ -586,7 +594,8 @@ test('int-narrow: a word of flags stays a word', () => {
   }
   return s
 }`
-  for (const n of [0, 1, 3, 5, 9]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 3, 5, 9]) agree(srcBuilt, 'f', [n])
 })
 
 // Two values the emitter could not type compare through the runtime; two
@@ -607,7 +616,8 @@ test('int-narrow: strict equality of values that are numbers where they are read
   }
   return same * 1e6 + differ
 }`
-  for (const n of [0, 1, 8, 16, 40]) for (const at of [0, 1, 5, 8]) for (const other of [0, 3, 9]) agree(src, 'f', [n, at, other])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 8, 16, 40]) for (const at of [0, 1, 5, 8]) for (const other of [0, 3, 9]) agree(srcBuilt, 'f', [n, at, other])
 })
 
 // A shift by a count that is not known leaves anything from the value down to
@@ -624,7 +634,8 @@ test('int-narrow: a shift by a count the intervals do not know', () => {
   }
   return s
 }`
-  for (const n of [0, 5, 9, 20]) for (const k of [0, 1, 3, 33, -1]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 5, 9, 20]) for (const k of [0, 1, 3, 33, -1]) agree(srcBuilt, 'f', [n, k])
 })
 
 // A number the intervals know is truthy where it is not zero: no call to the
@@ -642,7 +653,8 @@ test('int-narrow: the truthiness of a number the intervals know', () => {
   return total
 }`
   shapes(src, w => ok(!w.includes('$__is_truthy'), 'no truthiness through the runtime'))
-  for (const n of [0, 1, 5, 20, 100]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 20, 100]) agree(srcBuilt, 'f', [n])
 })
 
 // A typed array the function makes and keeps to itself holds what the function
@@ -662,7 +674,8 @@ test('int-narrow: elements bounded by what the function stores', () => {
   return s
 }`
   shapes(src, w => { const copy = w.slice(w.search(/\(loop \$[^\s)]*\.f\d+[\s)]/)); ok(!/i64\.mul/.test(copy.slice(0, copy.indexOf('(br $'))), 'the product of an element the stores bound is an i32') })
-  for (const n of [0, 1, 2, 5, 16, 100]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 5, 16, 100]) agree(srcBuilt, 'f', [n])
 })
 
 test('int-narrow: an element written where the function cannot see it is any word', () => {
@@ -676,7 +689,8 @@ test('int-narrow: an element written where the function cannot see it is any wor
   for (let v = 0; v < 4; v++) { if (index[v] === -1) n++; if (low[v] === -1) n += 10 }
   return n
 }`
-  for (const k of [0, 1, 2, 3, 6]) agree(src, 'f', [k])
+  const srcBuilt = jzWat(src)
+  for (const k of [0, 1, 2, 3, 6]) agree(srcBuilt, 'f', [k])
   // the pass itself: the box handed to a call that writes through it, and a store of two elements at once
   for (const [label, write] of [
     ['a call given its box', '(call $sink (f64.reinterpret_i64 (i64.or (i64.const 0x7FF9800400000000) (i64.extend_i32_u (local.get $a)))))'],
@@ -950,7 +964,8 @@ test('int-narrow: a wide integer read only for its low word is that word', () =>
     code[5] = n & 1023
     return run(code, reg)
   }`
-  for (const n of [0, 1, 2, 5, 1023]) agree(src, 'main', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 5, 1023]) agree(srcBuilt, 'main', [n])
   shapes(src, text => {
     is(count(text, 'i64.mul'), 0, 'the offset multiplies in a word')
     ok(/i32\.load offset=4/.test(text) && /i32\.load offset=8/.test(text), 'the fields read at offsets of one base')

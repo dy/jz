@@ -8,7 +8,7 @@ import encodeWat from 'watr/compile'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
 import { jumpPointers } from '../src/optimize/jump-pointers.js'
 import { ringLaps } from '../src/optimize/ring-laps.js'
-import { run, oracle, compile } from './util.js'
+import { run, oracle, compile, jzWat } from './util.js'
 import { count } from '../scripts/wat-probe.mjs'
 
 test('pointerExits: a loop keeping a counter only to stop stops by the pointer stepped beside it', () => {
@@ -95,7 +95,8 @@ test('pointerExits: a loop keeping a counter only to stop stops by the pointer s
   for (const optimize of ownedLevels('speed', { level: 'speed', pointerExits: false }, 2)) is(run(src, { optimize }).f(), want, JSON.stringify(optimize))
   if (onKernel()) return
   const ends = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__pe'))
-  ok(ends('speed') >= 1, `the record loop stops by its pointer (${ends('speed')})`)
+  const stops = ends('speed')
+  ok(stops >= 1, `the record loop stops by its pointer (${stops})`)
   is(ends({ level: 'speed', pointerExits: false }), 0, 'pointerExits: false keeps the counter')
 })
 
@@ -185,7 +186,8 @@ test('jumpPointers: a loop variable that jumps carries the address of its record
     for (const x of [0, 1, 13, 62, 1000]) is(run(src, { optimize }).f(x), want.f(x), `${JSON.stringify(optimize)} ${x}`)
   if (onKernel()) return
   const pointers = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__jp'))
-  ok(pointers('speed') >= 1, `the interpreter reads its instructions through a pointer (${pointers('speed')})`)
+  const through = pointers('speed')
+  ok(through >= 1, `the interpreter reads its instructions through a pointer (${through})`)
   is(pointers({ level: 'speed', jumpPointers: false }), 0, 'jumpPointers: false keeps the index')
 })
 
@@ -207,10 +209,9 @@ test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a t
           ['br_if', '$L', ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), k(1)]], g('$n')]]]],
       ['i32.add', ['i32.mul', g('$s'), k(7)], g('$p')]]
   const one = (f) => ringLaps(['module', f])[1]
-  const exec = (f, args) => {
-    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]])))
-    try { return m.exports.f(...args) } catch (e) { return String(e) }   // a remainder by zero traps alike
-  }
+  // (the kernels touch no memory, global or table: one instance answers every call as a fresh one would)
+  const exported = (f) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]]))).exports.f
+  const exec = (f, args) => { try { return f(...args) } catch (e) { return String(e) } }   // a remainder by zero traps alike
   const shapes = {
     'the remainder below the divisor': fn(below(g('$m'))),
     'no wrap work': fn(below(g('$m')), { wrap: null }),
@@ -233,7 +234,8 @@ test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a t
     const laps = JSON.stringify(guarded[2])
     ok(!/rem_|i32\.and/.test(laps) && laps.includes('$__rl'), `${why}: the laps step the cursor by one`)
     let bad = 0
-    for (const args of grid) if (!Object.is(exec(after, args), exec(JSON.parse(before), args))) bad++
+    const rewritten = exported(after), written = exported(JSON.parse(before))
+    for (const args of grid) if (!Object.is(exec(rewritten, args), exec(written, args))) bad++
     is(bad, 0, `${why}: same answer over ${grid.length} counts, sizes and entries`)
   }
   const kept = (f, why) => is(one(f), JSON.parse(JSON.stringify(f)), why)
@@ -287,13 +289,19 @@ test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a t
       }
       return h
     }`
+  const texts = new Map()
   for (const w of [16, 7, 1]) {
     const want = oracle(src(w)).f, opts = ['speed', { level: 'speed', ringLaps: false }, 2]
-    for (const optimize of opts) for (const [n, calls] of [[100, 3], [15, 4], [16, 2], [0, 2], [33, 5]])
-      is(run(src(w), { optimize }).f(n, calls), want(n, calls), `window ${w}, ${n} samples, ${calls} calls, ${JSON.stringify(optimize)}`)
+    for (const optimize of opts) {
+      const m = jzWat(src(w), { optimize })
+      if (w === 16) texts.set(JSON.stringify(optimize), m.wat)
+      for (const [n, calls] of [[100, 3], [15, 4], [16, 2], [0, 2], [33, 5]])
+        is(m.fresh().exports.f(n, calls), want(n, calls), `window ${w}, ${n} samples, ${calls} calls, ${JSON.stringify(optimize)}`)
+    }
   }
   if (onKernel()) return
-  const laps = (optimize) => count(parseWat(compile(src(16), { wat: true, optimize })), n => n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$__rl'))
-  ok(laps('speed') >= 2, `the window's sample loop runs in laps (${laps('speed')} lap loops)`)
+  const laps = (optimize) => count(parseWat(texts.get(JSON.stringify(optimize))), n => n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$__rl'))
+  const lapped = laps('speed')
+  ok(lapped >= 2, `the window's sample loop runs in laps (${lapped} lap loops)`)
   is(laps({ level: 'speed', ringLaps: false }), 0, 'ringLaps: false keeps the loop as written')
 })

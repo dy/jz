@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { belowOpt, onKernel, levels, ownedLevels } from './_matrix.js'
-import { run, wat, oracle, funcWat, unguardedSaturations, jz, compile } from './util.js'
+import { run, wat, oracle, funcWat, unguardedSaturations, jz, jzWat, compile } from './util.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
@@ -110,11 +110,11 @@ test('SIMD gather map: nonzero entries and INT_MIN limits retain zero work', () 
   for (const first of [0, 1, 3]) {
     const src = GATHER_MAP.replace('let i = 0; i < n', `let i = ${first}; i < n`)
       .replace('count & 31', 'Math.min(count | 0, 31)')
-    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    const built = jzWat(src, { optimize: GATHER_OPT }), native = oracle(src).probe, compiled = built.exports.probe
     for (const n of [-2147483648, -2147483647, -1, 0, 1, 2, 3, 4, 7, 31])
       for (const pick of [-1, 0, 1, 2, 3, 30, 31])
         is(compiled(n, 0.1, 0.1, pick), native(n, 0.1, 0.1, pick), `entry ${first}, count ${n}, pick ${pick}`)
-    if (!onKernel()) ok(compile(src, { optimize: GATHER_OPT, wat: true }).includes('f64x2.replace_lane'),
+    if (!onKernel()) ok(built.wat.includes('f64x2.replace_lane'),
       'the boundary check exercises vectorized gathers')
   }
 })
@@ -150,10 +150,10 @@ test('SIMD gather map: aliases, views, live-out arithmetic and cheap suffixes ke
     GATHER_MAP.replace('for (let i = 0; i < n; i++)', 'a = b; for (let i = 0; i < n; i++)'),
   ]
   for (const [index, src] of sources.entries()) {
-    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    const built = jzWat(src, { optimize: GATHER_OPT }), native = oracle(src).probe, compiled = built.exports.probe
     for (const n of [0, 1, 2, 3, 7, 15]) for (const pick of [-1, 0, n - 1, n])
       is(compiled(n, 0.25, 0.5, pick), native(n, 0.25, 0.5, pick), `declined ${index}: count ${n}, pick ${pick}`)
-    if (!onKernel()) ok(!compile(src, { optimize: GATHER_OPT, wat: true }).includes('f64x2.replace_lane'),
+    if (!onKernel()) ok(!built.wat.includes('f64x2.replace_lane'),
       `declined ${index}: no gathered vector strip`)
   }
 })
@@ -161,11 +161,11 @@ test('SIMD gather map: aliases, views, live-out arithmetic and cheap suffixes ke
 test('SIMD gather map: bounded fractional motion keeps shared-address gathers vectorized', () => {
   for (const length of [16, 16, 0, 1, 8, 16]) {
     const src = BOUNDED_GATHER_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
-    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    const built = jzWat(src, { optimize: GATHER_OPT }), native = oracle(src).probe, compiled = built.exports.probe
     for (const n of [0, 1, 2, 3, 7, 30, 31]) for (const pick of [-1, 0, Math.max(0, n - 1), n])
       is(compiled(n, 0, 0, pick), native(n, 0, 0, pick), `bounded length ${length}, count ${n}, pick ${pick}`)
     if (!onKernel() && length === 16) {
-      const w = compile(src, { optimize: GATHER_OPT, wat: true })
+      const w = built.wat
       ok(w.includes('f64x2.replace_lane'), 'shared unchecked addresses retain the SIMD suffix')
       const f = funcWat(w, 'probe')
       ok(f && !f.includes('f64.const nan'), 'the complete fractional hull proves every input read')
@@ -619,8 +619,9 @@ test('SIMD gate - a test of two arrays closes the strip by its limit, no branch 
     for (let i = 0; i < 64; i++) a[i] = i * 0.5 + 1
     return scale(b, a, nIn | 0, 3) + scale(a, a.subarray(1), (nIn | 0) - 1, 0.5)
   }`
-  for (const n of [0, 1, 2, 3, 7, 8, 33]) is(runVec(src, SIMD_OPT).main(n), runVec(src, NOVEC).main(n), `n=${n} as scalar`)
-  const w = wat(src, SIMD_OPT)
+  const on = jzWat(src, SIMD_OPT), off = jzWat(src, NOVEC)
+  for (const n of [0, 1, 2, 3, 7, 8, 33]) is(on.fresh().exports.main(n), off.fresh().exports.main(n), `n=${n} as scalar`)
+  const w = on.wat
   ok(/v128\.store/.test(w), 'the map lifts')
   const apart = w.search(/\(i32\.or\s+\(i32\.eqz\s+\(i32\.sub/)
   ok(apart > 0 && !/\(if\s*$/.test(w.slice(0, apart)), 'the test is the limit\'s condition, not a branch around the loop')
@@ -640,8 +641,9 @@ test('SIMD gate - one array\'s distance branches around the strip, two arrays\' 
     for (let half = 1; half <= 16; half *= 2) s += bf(re, im, half) + bf(re, re.subarray(h | 0), half)
     return s
   }`
-  for (const h of [0, 1, 2, 3, 5, 16]) is(runVec(src, SIMD_OPT).main(h), runVec(src, NOVEC).main(h), `h=${h} as scalar`)
-  const w = wat(src, SIMD_OPT)
+  const on = jzWat(src, SIMD_OPT), off = jzWat(src, NOVEC)
+  for (const h of [0, 1, 2, 3, 5, 16]) is(on.fresh().exports.main(h), off.fresh().exports.main(h), `h=${h} as scalar`)
+  const w = on.wat
   ok(/\(if\s+\(i32\.or\s+\(i32\.eqz\s+\(i32\.shl[^]{0,1500}?\(then\s+\(local\.set \$\S+\s+\(select\s+\(select/.test(w),
     'the distance is the branch, the limit set inside it under the two arrays\' test')
 })
@@ -1933,13 +1935,14 @@ const TONE_THEME = (n) => `
     return s
   }`
 test('SIMD tonemap - a statement\'s truncations test their lanes with one compare, bit-exact', () => {
-  const w = wat(TONE_THEME(64), SPEED)
+  const built = new Map([64, 63, 2, 1].map(n => [n, [jzWat(TONE_THEME(n), SPEED), jzWat(TONE_THEME(n), SPEED_SCALAR)]]))
+  const w = built.get(64)[0].wat
   ok(/v128\.or/.test(w) && /i64x2\.lt_s/.test(w) && !/f64x2\.max/.test(w), 'the channels\' bits meet in one compare before the lane truncation')
   // (where the compare holds no lane is NaN or past the word: the relaxed truncation, cheaper on x64)
   ok(/i32x4\.relaxed_trunc_f64x2_s_zero/.test(w) && !/trunc_sat_f64x2/.test(w), 'the lanes the compare admits truncate relaxed')
   for (const th of [[0, 0, 0, 235, 235, 235], [12, 18, 27, 1e10, -3e9, 240], [NaN, 0, 0, 5, 5, 5], [2147483647, -2147483648, 0, 1, 1, 1], [33554432, 16777216, 7, 33554432, 16777216, 7]])
     for (const n of [64, 63, 2, 1]) {
-      const host = oracle(TONE_THEME(n)), simd = runVec(TONE_THEME(n), SPEED), scal = runVec(TONE_THEME(n), SPEED_SCALAR)
+      const host = oracle(TONE_THEME(n)), simd = built.get(n)[0].fresh().exports, scal = built.get(n)[1].fresh().exports
       host.theme(...th); simd.theme(...th); scal.theme(...th)
       const want = host.main()
       is(simd.main(), want, `n=${n} theme ${th}: SIMD === host`)
@@ -1949,11 +1952,12 @@ test('SIMD tonemap - a statement\'s truncations test their lanes with one compar
 // An engine without relaxed SIMD: the same compare admits the lanes, the saturating truncation takes them
 const SPEED_STRICT = { optimize: { level: 'speed', relaxedSimd: false } }
 test('SIMD tonemap - relaxedSimd:false truncates the admitted lanes saturating, bit-exact', () => {
-  const w = wat(TONE_THEME(64), SPEED_STRICT)
+  const built = new Map([64, 63, 1].map(n => [n, jzWat(TONE_THEME(n), SPEED_STRICT)]))
+  const w = built.get(64).wat
   ok(/v128\.or/.test(w) && /i64x2\.lt_s/.test(w) && /i32x4\.trunc_sat_f64x2_s_zero/.test(w) && !/relaxed_/.test(w), 'one compare, then trunc_sat: no relaxed opcode')
   for (const th of [[12, 18, 27, 1e10, -3e9, 240], [NaN, 0, 0, 5, 5, 5], [2147483647, -2147483648, 0, 1, 1, 1]])
     for (const n of [64, 63, 1]) {
-      const host = oracle(TONE_THEME(n)), strict = runVec(TONE_THEME(n), SPEED_STRICT)
+      const host = oracle(TONE_THEME(n)), strict = built.get(n).fresh().exports
       host.theme(...th); strict.theme(...th)
       is(strict.main(), host.main(), `n=${n} theme ${th}: SIMD === host`)
     }
@@ -3173,13 +3177,13 @@ test('vectorize: a lane min/max against a literal is the pseudo-operator, exact 
     ['Math.max(a[i], -0)', 'pmax'], ['Math.min(a[i], -0)', 'min'], ['Math.max(a[i], 0)', 'max'],
   ]
   for (const [expr, op] of rows) {
-    const src = map(expr), want = oracle(src).main(xs)
+    const src = map(expr), want = oracle(src).main(xs), speedy = jzWat(src, SPEED)
     for (const opts of [SIMD_OPT, NOVEC, SPEED]) {
-      const got = runVec(src, opts).main(xs)
+      const got = (opts === SPEED ? speedy : jzWat(src, opts)).exports.main(xs)
       ok(want.every((v, i) => Object.is(v, got[i])), `${expr} ${JSON.stringify(opts)}: ${[...got].join(', ')}`)
     }
     if (onKernel()) continue
-    const w = wat(src, SPEED)
+    const w = speedy.wat
     ok(new RegExp(`f64x2\\.${op}\\b`).test(w) && (op.startsWith('p') ? !/f64x2\.(min|max)\b/.test(w) : !/f64x2\.p(min|max)/.test(w)), `${expr} → f64x2.${op}`)
   }
 })
@@ -4092,9 +4096,9 @@ test('SIMD channel order - permuted RGBA channels stay positionally correct', ()
   const perms = [[0, 1, 2, 3], [3, 0, 2, 1], [1, 0, 3, 2], [2, 3, 0, 1], [3, 2, 1, 0]]
   let firedB = false
   for (const w of [20, 67]) for (const r of [2, 4]) for (const rp of perms) {
-    const src = blur(w, r, rp, id)
-    is(runVec(src, ON).main(), runVec(src, NO).main(), `chan-perm w=${w} r=${r} rp=${rp}`)
-    if (/i16x8\.extend_high/.test(wat(src, ON))) firedB = true
+    const src = blur(w, r, rp, id), m = jzWat(src, ON)
+    is(m.exports.main(), runVec(src, NO).main(), `chan-perm w=${w} r=${r} rp=${rp}`)
+    if (/i16x8\.extend_high/.test(m.wat)) firedB = true
   }
   ok(firedB, '4-pixel SIMD must fire on a permuted-channel blur (else the test is hollow)')
   // a non-identity read perm with the channel-reduce path (narrow width → no 4-pixel lift)
@@ -4576,10 +4580,11 @@ test('SIMD general-map i32 - runtime index shift (a[i+off]) vectorizes, bit-exac
     let h = 0; for (let i = 0; i < n; i++) h = (h + out[i] * (i + 1)) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   for (const off of [0, 1, 3, 8]) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -4592,10 +4597,11 @@ test('SIMD general-map i32 - flipped operand order (a[off+i]) vectorizes, bit-ex
     let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   for (const off of [0, 2, 5]) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -4608,10 +4614,11 @@ test('SIMD general-map i16 - runtime index shift vectorizes, bit-exact', () => {
     let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present (a bare offset-shifted copy needs only v128.load/store, no i16x8 arithmetic op)')
   for (const off of [0, 4, 8]) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -4624,10 +4631,11 @@ test('SIMD general-map i8 - runtime index shift vectorizes, bit-exact (byte-stri
     let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/i8x16\./.test(w), 'i8x16 lane op present')
   for (const off of [0, 1, 7]) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -4640,10 +4648,11 @@ test('SIMD general-map i32 - write-side runtime index shift (out[i+off] = a[i]) 
     let h = 0; for (let i = 0; i < 48; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   for (const off of [0, 2, 8]) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -4657,10 +4666,11 @@ test('SIMD general-map i32 - two-array combine, one array at runtime shift (out[
     let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   for (const off of [0, 3, 6]) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -4696,9 +4706,10 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset vector
     for (let i = off; i < n; i++) a[i] = a[i - off] + a[i]
     return a[n - 1]
   }`
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
   for (const off of [1, 2, 3, 4, 5, 7, 8])
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer`)
-  const w = wat(src, SIMD_OPT)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} result unaffected by vectorizer`)
+  const w = laned.wat
   ok(/i32x4\.add/.test(w), 'the recurrence lifts to i32x4.add')
   // the one legality's test (alias.js apart): the bytes apart, 4 * off, are 0 or 16 (4 lanes) or more
   ok(/i32\.ge_u\s+\(i32\.add \(local\.get \$[^\s)]+\) \(i32\.const 15\)\)\s+\(i32\.const 31\)/.test(w),'under the distance guard (|4 * off| >= 16 bytes)')
@@ -4729,11 +4740,12 @@ test('SIMD alias-version i32 - same-array read shifted AHEAD of the write (a[i]=
       let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i] * (i + 1)) | 0
       return h
     }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   ok(/i32\.or/.test(w), 'disjointness guard present (i32.or of the two i32.le_s/i32.ge_s halves)')
   for (let k = 0; k <= 15; k++)   // lanes=4 for i32: k=0..2 overlap (delta 1..3 < 4), k≥3 disjoint
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(k), unlaned.fresh().exports.main(k), `k=${k} bit-exact vs scalar`)
 })
 
 test('SIMD alias-version i32 - same-array write shifted AHEAD of the read (a[i+k]=a[i]) versions, both directions bit-exact', () => {
@@ -4745,11 +4757,12 @@ test('SIMD alias-version i32 - same-array write shifted AHEAD of the read (a[i+k
     let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i] * (i + 1)) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 15; k++)
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(k), unlaned.fresh().exports.main(k), `k=${k} bit-exact vs scalar`)
 })
 
 test('SIMD alias-version f64 - same-array runtime-offset window (3-term affine index, offset=N memarg constant-delta fold) versions, bit-exact', () => {
@@ -4761,11 +4774,12 @@ test('SIMD alias-version f64 - same-array runtime-offset window (3-term affine i
     let s = 0.0; for (let i = 0; i < 64; i++) s += a[i]
     return s
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/f64x2\./.test(w), 'f64x2 present')
   ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 15; k++)   // lanes=2 for f64: delta = k+5 ranges 5..20, always ≥ 2 —
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(k), unlaned.fresh().exports.main(k), `k=${k} bit-exact vs scalar`)
   // swept for guard-shape coverage even though this window never overlaps; the recurrence-style
   // negative tests above already cover the "genuinely overlapping" regime for a constant delta.
 })
@@ -4779,11 +4793,12 @@ test('SIMD alias-version i16 - same-array runtime-offset shift versions, bit-exa
     let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(hasV128(w), 'v128 present')
   ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 15; k++)   // lanes=8 for i16: k=1..7 overlap, k≥8 disjoint
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(k), unlaned.fresh().exports.main(k), `k=${k} bit-exact vs scalar`)
 })
 
 test('SIMD alias-version i8 - byte-stride same-array runtime-offset shift versions, bit-exact', () => {
@@ -4795,11 +4810,12 @@ test('SIMD alias-version i8 - byte-stride same-array runtime-offset shift versio
     let h = 0; for (let i = 0; i < 80; i++) h = (h + a[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/i8x16\./.test(w) || hasV128(w), 'v128 present')
   ok(GUARD.test(w), 'disjointness guard present')
   for (let k = 0; k <= 20; k++)   // lanes=16 for i8: delta = k+16 ranges 16..36, always ≥ 16 —
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(k), unlaned.fresh().exports.main(k), `k=${k} bit-exact vs scalar`)
   // swept for guard-shape coverage; k+16 never overlaps at this stride (byte lanes need a huge
   // window to straddle 16 bytes) — the i32/i16 tests above already cover a straddling sweep.
 })
@@ -4820,9 +4836,10 @@ ${pad}    }
     let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i] * (i + 1) + c[i]) | 0
     return h
   }`
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
   for (let k = 0; k <= 15; k++)
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
-  const w = wat(src, SIMD_OPT)
+    is(laned.fresh().exports.main(k), unlaned.fresh().exports.main(k), `k=${k} bit-exact vs scalar`)
+  const w = laned.wat
   ok(hasV128(w), 'the large body vectorizes behind its guard')
   is((w.match(/\(loop/g) || []).length, 4, 'the fill, the strip and its scalar tail, the hash: the loop is not copied')
 })
@@ -4859,10 +4876,10 @@ test('SIMD two names for one array - a lift over bases that may be one array tes
     ['Uint8Array', 1, 'a.length', 'a[i] = b[i - 1]'],
   ]
   for (const [ctor, start, bound, body] of cases) {
-    const src = twoNames(ctor, start, bound, body), native = oracle(src).go, compiled = runVec(src, SIMD_OPT).go
+    const src = twoNames(ctor, start, bound, body), native = oracle(src).go, built = jzWat(src, SIMD_OPT), compiled = built.exports.go
     for (const n of [64, 13, 2]) for (const flag of [0, 1, 2])
       is(compiled(n, flag), native(n, flag), `${ctor} ${body}: n=${n}, flag=${flag}`)
-    if (!onKernel()) ok(hasV128(wat(src, SIMD_OPT)), `${ctor} ${body}: lifts`)
+    if (!onKernel()) ok(hasV128(built.wat), `${ctor} ${body}: lifts`)
   }
 })
 
@@ -4944,7 +4961,7 @@ test('SIMD two names for one array - one jz buffer at two slots of an export is 
     'for (let i = 1; i < n; i++) { const j = i - 1; a[i] = b[j] * 3 + 1 }']
   for (const body of bodies) for (const opts of [{ optimize: { level: 'speed' } }, {}]) {
     const src = `${sum}\n export let f = (a, b, n) => { ${body}; return a[n - 1] }`, js = oracle(src)
-    const { exports, memory } = jz(src, opts)
+    const built = jzWat(src, opts), { exports, memory } = built
     for (const n of [64, 17]) {
       const h = memory.Float64Array(seed(n)), g = seed(n)
       is(exports.f(h, h, n), js.f(g, g, n), `${body}: result at n=${n}`)
@@ -4952,7 +4969,7 @@ test('SIMD two names for one array - one jz buffer at two slots of an export is 
       const x = memory.Float64Array(seed(n)), y = memory.Float64Array(seed(n)), p = seed(n), q = seed(n)
       is(exports.f(x, y, n), js.f(p, q, n), `${body}: two buffers at n=${n}`)
     }
-    if (!onKernel() && opts.optimize) ok(hasV128(funcWat(wat(src, opts), 'f') ?? ''), `${body}: lifts`)
+    if (!onKernel() && opts.optimize) ok(hasV128(funcWat(built.wat, 'f') ?? ''), `${body}: lifts`)
   }
 })
 
@@ -4975,13 +4992,15 @@ test('SIMD two names for one array - a strip a recognizer builds itself opens pa
     return acc
   }`
   const speed = { optimize: 'speed' }
-  for (const flag of [0, 1]) is(runVec(blur, speed).go(flag), oracle(blur).go(flag), `blur, in place ${flag}`)
-  if (!onKernel()) ok(/i16x8\.extend_high/.test(wat(blur, speed)), 'the 4-pixel lift stands behind its test')
+  const blurred = jzWat(blur, speed)
+  for (const flag of [0, 1]) is(blurred.fresh().exports.go(flag), oracle(blur).go(flag), `blur, in place ${flag}`)
+  if (!onKernel()) ok(/i16x8\.extend_high/.test(blurred.wat), 'the 4-pixel lift stands behind its test')
   // an output column strip-mined over an input the output may be
   const conv = CONV_PARAM_SRC.replace('out = new Uint8Array(COUT * OH * OW)', 'out = pick > 0 ? inp : new Int8Array(COUT * OH * OW)')
     .replace('export let run = (n) =>', 'export let run = (n, pick) =>')
-  for (const pick of [0, 1]) is(runVec(conv, CV_ON).run(3, pick), oracle(conv).run(3, pick), `conv, in place ${pick}`)
-  if (!onKernel()) ok(/i16x8\.mul/.test(wat(conv, CV_ON)), 'the column strip stands behind its test')
+  const convolved = jzWat(conv, CV_ON)
+  for (const pick of [0, 1]) is(convolved.fresh().exports.run(3, pick), oracle(conv).run(3, pick), `conv, in place ${pick}`)
+  if (!onKernel()) ok(/i16x8\.mul/.test(convolved.wat), 'the column strip stands behind its test')
 })
 
 test('SIMD two names for one array - a lift with no strip to close stays scalar unless it keeps the order', () => {
@@ -5092,10 +5111,11 @@ test('SIMD general-reduce i32 - sum over a runtime-offset window (3-term affine 
     for (let i = 0; i < n; i++) s = (s + a[i + off + 5]) | 0
     return s
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/i32x4\.add/.test(w), 'i32x4.add reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -5108,10 +5128,11 @@ test('SIMD general-reduce i32 - xor over a runtime-offset window vectorizes, bit
     for (let i = 0; i < n; i++) x = (x ^ a[i + off + 5]) | 0
     return x
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/v128\.xor/.test(w), 'v128.xor reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -5124,10 +5145,11 @@ test('SIMD general-reduce i32 - max (ternary idiom) over a runtime-offset window
     for (let i = 0; i < n; i++) m = a[i + off + 5] > m ? a[i + off + 5] : m
     return m
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/i32x4\.max_s/.test(w), 'i32x4.max_s reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -5140,10 +5162,11 @@ test('SIMD general-reduce f64 - sum over a runtime-offset window vectorizes, bit
     for (let i = 0; i < n; i++) s = s + a[i + off + 5]
     return s
   }`
-  const w = wat(src, SIMD_RELAXED)
+  const laned = jzWat(src, SIMD_RELAXED), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/f64x2\.add/.test(w), 'f64x2.add reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_RELAXED).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -5157,10 +5180,11 @@ test('SIMD general-reduce f64 - dot-style two-array combine, one array at a runt
     for (let i = 0; i < n; i++) s = s + a[i + off + 5] * b[i]
     return s
   }`
-  const w = wat(src, SIMD_RELAXED)
+  const laned = jzWat(src, SIMD_RELAXED), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/f64x2\.mul/.test(w) && /f64x2\.add/.test(w), 'f64x2.mul + f64x2.add reduce lift present')
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_RELAXED).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
 })
 
@@ -5180,10 +5204,11 @@ test('SIMD general-reduce safety - non-associative op (s -= a[i+off+5]) never ve
     for (let i = 0; i < n; i++) s = (s - a[i + off + 5]) | 0
     return s
   }`
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
   }
-  const w = wat(src, SIMD_OPT)
+  const w = laned.wat
   ok(!/i32x4\.(add|sub)/.test(w), 'no i32x4 add/sub lift anywhere (fill loop is a non-ramp multiply-hash, no incidental SIMD; the subtract-accumulate itself is non-associative under REDUCE_OP_LOOKUP, so declines)')
 })
 
@@ -5199,10 +5224,11 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
     }
     return (s * 1000003 + t) | 0
   }`
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
   for (let off = 0; off < 16; off++) {
-    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
   }
-  const w = wat(src, SIMD_OPT)
+  const w = laned.wat
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the two-accumulator loop (body.length===2 with two unrelated accumulators fails both the bodyLen===1 and the REDUCE_CANON bodyLen===2 shape match, so declines — the "single accumulator, no other loop-carried state" precondition holds)')
 })
 
@@ -5278,10 +5304,11 @@ test('SIMD general-stencil i32 - 2-D 5-point row-base (out[c]=a[c-W]^a[c+W]^a[c-
     let h = 0; for (let i = 0; i < N; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   is((w.match(/v128\.xor/g) || []).length, 4, '2-D row-base 5-term xor chain vectorizes (4 v128.xor)')
   for (const W of [16, 17, 8, 5, 3])
-    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(W), unlaned.fresh().exports.main(W), `W=${W} bit-exact vs scalar`)
 })
 
 test('SIMD general-stencil i32 - toroidal wrap boundary (xw=x>0?x-1:n-1 / xe=x<n-1?x+1:0), 1-D periodic, vectorizes, bit-exact', () => {
@@ -5299,10 +5326,11 @@ test('SIMD general-stencil i32 - toroidal wrap boundary (xw=x>0?x-1:n-1 / xe=x<n
     let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/v128\.xor/.test(w), 'wrap-select stencil vectorizes (v128.xor present)')
   for (const n of [32, 33, 17, 9, 5, 4, 3, 1])
-    is(runVec(src, SIMD_OPT).main(n), runVec(src, NOVEC).main(n), `n=${n} bit-exact vs scalar (incl. the peeled x=0 wrap column and sub-lanes-width n)`)
+    is(laned.fresh().exports.main(n), unlaned.fresh().exports.main(n), `n=${n} bit-exact vs scalar (incl. the peeled x=0 wrap column and sub-lanes-width n)`)
 })
 
 test('SIMD general-stencil i16 - 2-D 4-neighbour row-base, separate arrays, vectorizes, bit-exact', () => {
@@ -5323,10 +5351,11 @@ test('SIMD general-stencil i16 - 2-D 4-neighbour row-base, separate arrays, vect
     let h = 0; for (let i = 0; i < N; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/v128\.xor/.test(w), 'i16 2-D row-base stencil vectorizes')
   for (const W of [16, 10, 9, 5, 3])
-    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(W), unlaned.fresh().exports.main(W), `W=${W} bit-exact vs scalar`)
 })
 
 test('SIMD general-stencil i32 - multiple input arrays (2-D row-base combine + a third, non-neighbour array), vectorizes, bit-exact', () => {
@@ -5347,10 +5376,11 @@ test('SIMD general-stencil i32 - multiple input arrays (2-D row-base combine + a
     let h = 0; for (let i = 0; i < N; i++) h = (h + out[i]) | 0
     return h
   }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   is((w.match(/v128\.xor/g) || []).length, 4, 'multi-array (a,b→out) 2-D stencil vectorizes (4 v128.xor)')
   for (const W of [16, 9, 5, 3])
-    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar`)
+    is(laned.fresh().exports.main(W), unlaned.fresh().exports.main(W), `W=${W} bit-exact vs scalar`)
 })
 
 test('SIMD general-stencil i32 - in-place 2-D row window at a RUNTIME row width, versions: SIMD when W ≥ lanes, scalar fallback when W < lanes', () => {
@@ -5378,11 +5408,12 @@ test('SIMD general-stencil i32 - in-place 2-D row window at a RUNTIME row width,
       let h = 0; for (let i = 0; i < N; i++) h = (h + a[i]) | 0
       return h
     }`
-  const w = wat(src, SIMD_OPT)
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
+  const w = laned.wat
   ok(/v128\.xor/.test(w), 'in-place row-window stencil versions (v128.xor present)')
   ok(/i32\.or/.test(w), 'disjointness guard present (row-stride delta W is a runtime param, not compile-time-foldable)')
   for (const W of [16, 9, 8, 5, 4, 3, 2, 1])   // lanes=4: W<4 overlaps → scalar fallback, W≥4 disjoint → SIMD
-    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar (both regimes)`)
+    is(laned.fresh().exports.main(W), unlaned.fresh().exports.main(W), `W=${W} bit-exact vs scalar (both regimes)`)
 })
 
 // Negative/safety: a genuine cross-iteration dependence must NEVER vectorize, in EITHER of the
@@ -5408,9 +5439,10 @@ test('SIMD general-stencil safety - in-place SAME-ROW overlapping window (a[c]=a
     let h = 0; for (let i = 0; i < N; i++) h = (h + a[i]) | 0
     return h
   }`
+  const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
   for (const W of [16, 8, 5])
-    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} result unaffected by vectorizer (declines cleanly)`)
-  const w = wat(src, SIMD_OPT)
+    is(laned.fresh().exports.main(W), unlaned.fresh().exports.main(W), `W=${W} result unaffected by vectorizer (declines cleanly)`)
+  const w = laned.wat
   ok(!/v128\.xor/.test(w), 'no v128.xor lift of the same-row recurrence (a compile-time-provable |D|=1 < lanes must decline, not version — the dead-versioning regression this session\'s own foldDeltaExpr fix catches)')
 })
 

@@ -6,7 +6,7 @@ import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { oracle, wat, funcWat, run, compileInProcess, jz } from './util.js'
+import { oracle, wat, funcWat, run, compileInProcess, jz, jzWat } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { T, TYPEOF, walkAst } from '../src/ast.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
@@ -92,9 +92,9 @@ test('integral loops: impossible typed twins disappear without losing SIMD or Nu
         if(typeof n==='number'&&n>=${lo}&&n<=${hi})return -1;
         else {let s=0,count=0;for(let i=0;i<n;${step}){s+=a[${idx}];if(++count===5)break}return s}}`
       const options={optimize:{level:2,versionIntegralLoops:false,specializeLoops:false}}
-      const body=funcWat(wat(source,options),'f')
+      const built=jzWat(source,options),body=funcWat(built.wat,'f')
       is((body.match(/\(loop /g)||[]).length,expected,`${lo}..${hi}, ${idx}, ${step}: only the implied guard is removed`)
-      const got=jz(source,options).exports,host=oracle(source)
+      const got=built.exports,host=oracle(source)
       for(const n of [0,9,Infinity,2147483648,NaN,9]) for(const [off,stride] of [[0,1],[0.5,1.5],[-1,0],[2147483648,-1]])
         is(got.f(n,off,stride),host.f(n,off,stride),'retained and removed guards preserve their reachable arms')
     }
@@ -408,12 +408,14 @@ test('integral loops: a counter bounded by a float of unknown integrality counts
       return at * 1000 + best }
     export let f = (pos, lo, hi) => corr(d, pos * 0.5, lo * 0.5, hi * 0.5)`
   const js = oracle(src)
+  let at2
   for (const optimize of levels(0, 2, 3)) {
-    const m = jz(src, { optimize }).exports
+    const built = jzWat(src, { optimize }), m = built.exports
+    if (optimize === 2) at2 = built
     for (const a of [[0, 4, 20], [6, 2, 30], [1, 3, 21], [80, 4, 40], [3, 7, 7]]) is(m.f(...a), js.f(...a), `f(${a}) at ${optimize}`)
   }
   if (belowOpt(2)) return
-  const text = wat(src, { optimize: 2 })
+  const text = at2 ? at2.wat : wat(src, { optimize: 2 })
   const loops = []
   for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
     let depth = 0, end = at
@@ -468,12 +470,14 @@ test('integral loops: a bound a closure only reads bounds a copy of words', () =
       return h
     }`
   const js = oracle(src)
+  let at2
   for (const optimize of levels(0, 2, 3)) {
-    const m = jz(src, { optimize }).exports
+    const built = jzWat(src, { optimize }), m = built.exports
+    if (optimize === 2) at2 = built
     for (const a of [[2, 6], [2, 6.5], [1, 3], [3, 9], [2, 1e9], [2, 7]]) is(m.f(...a), js.f(...a), `f(${a}) at ${optimize}`)
   }
   if (belowOpt(2)) return
-  const text = wat(src, { optimize: 2 })
+  const text = at2 ? at2.wat : wat(src, { optimize: 2 })
   const loops = []
   for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
     let depth = 0, end = at
@@ -593,8 +597,10 @@ test('integral loops: a nest over module dimensions is one version, its pixel cu
       }
     }`
   const js = oracle(src)
+  let atSpeed
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize }).exports
+    const built = jzWat(src, { optimize }), m = built.exports
+    if (optimize === 'speed') atSpeed = built
     for (const [w, h] of [[6, 4], [3, 2.5], [0, 3], [5, 1]]) {
       const got = m.resize(w, h), want = js.resize(w, h)
       m.frame(0); js.frame(0)
@@ -602,7 +608,7 @@ test('integral loops: a nest over module dimensions is one version, its pixel cu
     }
   }
   if (belowOpt(2)) return
-  const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
+  const frame = funcWat(atSpeed ? atSpeed.wat : wat(src, { optimize: 'speed' }), 'frame')
   ok(/\(local \$jint\d+ i32\)/.test(frame), 'the pixel cursor is carried as a word')
   const loops = (frame.match(/\(loop /g) || []).length
   ok(loops <= 24, `one version of the nest (${loops} loops; a version per level squares them)`)
@@ -628,8 +634,10 @@ test('integral loops: a raster nest\'s row base and derived index are words, so 
       }
     }`
   const js = oracle(src)
+  let atSpeed
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize }).exports
+    const built = jzWat(src, { optimize }), m = built.exports
+    if (optimize === 'speed') atSpeed = built
     for (const [w, h] of [[0, 0], [1, 1], [3, 5], [7, 1], [1, 7], [16, 12], [6.5, 4], [5, NaN]]) {
       const got = m.resize(w, h), want = js.resize(w, h)
       m.step(); js.step()
@@ -637,7 +645,7 @@ test('integral loops: a raster nest\'s row base and derived index are words, so 
     }
   }
   if (belowOpt(2)) return
-  const step = funcWat(wat(src, { optimize: 'speed' }), 'step')
+  const step = funcWat(atSpeed ? atSpeed.wat : wat(src, { optimize: 'speed' }), 'step')
   ok((step.match(/v128\.load/g) || []).length >= 4 && /f64x2\.add/.test(step), 'the neighbour stencil lifts to f64x2 (the row base and the derived index are words)')
 })
 
@@ -664,8 +672,10 @@ test('integral loops: a ring counter is a cursor with a floor, and a loop under 
       }
     }`
   const js = oracle(src)
+  let atSpeed
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize }).exports
+    const built = jzWat(src, { optimize }), m = built.exports
+    if (optimize === 'speed') atSpeed = built
     for (const [w, h, bits, len] of [[6, 4, 0b10100, 5], [3, 2, 0b1, 2], [5, 1, 0b111, 3.5], [4, 3, 0b10, NaN], [0, 3, 0b1, 4]]) {
       const got = m.resize(w, h), want = js.resize(w, h)
       m.setSeq(bits, len); js.setSeq(bits, len)
@@ -674,7 +684,7 @@ test('integral loops: a ring counter is a cursor with a floor, and a loop under 
     }
   }
   if (belowOpt(2)) return
-  const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
+  const frame = funcWat(atSpeed ? atSpeed.wat : wat(src, { optimize: 'speed' }), 'frame')
   ok(/call \$math\.log_v/.test(frame) && /f64x2\.mul/.test(frame), 'the iterated-map reduction lifts the pixel loop (log → $math.log_v)')
   // (`SEQLEN` holds the parameter's Number, 3.5 among them: the copies its
   // integrality versions keep the counter a word, the original loop, which runs

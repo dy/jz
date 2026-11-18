@@ -5,7 +5,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import { onWasi, onKernel, adaptI64, levels, boxed, ownedLevels } from './_matrix.js'
 import { UNDEF_NAN, instantiate } from '../interop.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
-import { cases, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
+import { cases, oracle, compileInProcess, jz, jzWat, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 
 // Prepared method readers can own the generic fallback for a source read.
@@ -358,7 +358,7 @@ test('Map/Set: an array key is found after it grows, shifts and takes properties
         held.get(kept), [plain].includes(alias), [alias].indexOf(plain), props.tag + named.loc + named.other + named.p5 + props.q5 + late.extra, m.size + s.size]
     }`
   for (const optimize of levels(0, 2, 'size'))
-    for (const n of [0, 1, 40]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, ${n} pushes`)
+    { const m = jzWat(src, { optimize }); for (const n of [0, 1, 40]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, ${n} pushes`) }
 })
 
 // A grown table leaves a stub at the block its holders name.
@@ -462,9 +462,13 @@ test('Map/Set for…of walks the table: no snapshot, values keep their layout', 
     for (const x of s) t += x
     return t + ':' + m.size
   }`
-  for (const optimize of levels(0, 2, 'speed', 'size')) for (const n of [0, 5, 200])
-    is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
-  const f = funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')
+  let atSpeed
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const m = jzWat(src, { optimize })
+    if (optimize === 'speed') atSpeed = m
+    for (const n of [0, 5, 200]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  }
+  const f = funcWat(atSpeed ? atSpeed.wat : compile(src, { optimize: 'speed', wat: true }), 'f')
   ok(!/call \$__coll_order\b/.test(f), 'no ordered snapshot of the entries')
   ok(!/call \$__dyn_(?:get|set)\w*/.test(f), 'the values\' fields are slots')
 })
@@ -534,8 +538,10 @@ test('a binding the summary shapes stores into the slot its reads use', () => {
   const mixed = one.replace('s = { a: 0, b: 0 }', 's = i & 1 ? { a: 0, b: 0 } : { b: 0, c: 1, a: 0 }')
   const missing = `export let f = (k) => { const m = new Map([[1, { a: 1 }]]); let s = m.get(k); if (k > 5) s = { a: 2 }; s.a = 7; return s.a }`
   for (const optimize of levels(0, 2, 'speed', 'size')) {
-    for (const n of [0, 1, 40]) is(jz(one, { optimize }).exports.f(n), oracle(one).f(n), `one layout, O${optimize}, n=${n}`)
-    for (const n of [0, 1, 40]) is(jz(mixed, { optimize }).exports.f(n), oracle(mixed).f(n), `two layouts, O${optimize}, n=${n}`)
+    const a = jzWat(one, { optimize })
+    for (const n of [0, 1, 40]) is(a.fresh().exports.f(n), oracle(one).f(n), `one layout, O${optimize}, n=${n}`)
+    const b = jzWat(mixed, { optimize })
+    for (const n of [0, 1, 40]) is(b.fresh().exports.f(n), oracle(mixed).f(n), `two layouts, O${optimize}, n=${n}`)
     const e = jz(missing, { optimize }).exports
     is(e.f(1), 7, `a present value, O${optimize}`)
     is(e.f(9), 7, `a literal, O${optimize}`)
@@ -559,8 +565,10 @@ test('Map/Set: a key of -0 is stored as +0', () => {
     export let counted = (z) => { const m = new Map(); const k = z * -1; m.set(k, (m.get(k) | 0) + 1); m.set(k, (m.get(k) | 0) + 1); return [...m].map(e => 1 / e[0] + ':' + e[1]).join() }
     export let fused = (z) => { const m = new Map(), s = new Set(); const k = z * -1; if (!m.has(k)) m.set(k, 1); if (!s.has(k)) s.add(k); let r = 0; for (const x of m.keys()) r += 1 / x; for (const x of s) r += 1 / x; return r }`
   const js = oracle(src)
-  for (const optimize of levels(0, 2, 'speed', 'size'))
-    for (const name of ['lit', 'ctor', 'copy', 'spread', 'update', 'counted', 'fused']) is(jz(src, { optimize }).exports[name](0), js[name](0), `${name}, O${optimize}`)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const m = jzWat(src, { optimize })
+    for (const name of ['lit', 'ctor', 'copy', 'spread', 'update', 'counted', 'fused']) is(m.fresh().exports[name](0), js[name](0), `${name}, O${optimize}`)
+  }
 })
 
 // A probe keyed by the key a walk took (`for (const w of a) if (b.has(w))`, a
@@ -597,12 +605,16 @@ test('Map: a fused read-modify-write of Number values adds as numbers', () => {
   const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i % 5; m.set(k, (m.get(k) || 0) + i); m.set(k + 10, m.get(k + 10) + 1) }
     let t = 0; for (const [k, v] of m) t += k < 10 ? v : (v !== v ? 1000 : v); return t }`
   const strs = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i % 3; m.set(k, (m.get(k) || '') + i) } return [...m.values()].join('|') }`
-  for (const optimize of levels(0, 2, 'speed', 'size'))
+  let sized
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const nums = jzWat(src, { optimize }), joined = jzWat(strs, { optimize })
+    if (optimize === 'size') sized = nums
     for (const n of [0, 7, 40]) {
-      is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `numbers, O${optimize}, n=${n}`)
-      is(jz(strs, { optimize }).exports.f(n), oracle(strs).f(n), `strings, O${optimize}, n=${n}`)
+      is(nums.fresh().exports.f(n), oracle(src).f(n), `numbers, O${optimize}, n=${n}`)
+      is(joined.fresh().exports.f(n), oracle(strs).f(n), `strings, O${optimize}, n=${n}`)
     }
-  ok(!/call \$__(str_concat|add_slow)/.test(compile(src, { optimize: 'size', wat: true })), 'Number values: no concatenation linked')
+  }
+  ok(!/call \$__(str_concat|add_slow)/.test(sized ? sized.wat : compile(src, { optimize: 'size', wat: true })), 'Number values: no concatenation linked')
 })
 
 // A `.size` read of a value the summary holds to objects where it is present
@@ -612,7 +624,7 @@ test('a .size read of an object or a missing value reads its slot', () => {
   const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set(i, { id: i, size: i * 2 }); let t = 0; const s = new Set([1, 2, 2]); for (let i = 0; i < n; i++) { const c = m.get(i); t += c.size } return t + s.size * 1000 }`
   const missing = `export let f = () => { const stack = [{ size: 1 }]; stack.pop(); const c = stack.pop(); return c.size }`
   for (const optimize of levels(0, 2, 'size')) {
-    for (const n of [0, 5]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+    { const m = jzWat(src, { optimize }); for (const n of [0, 5]) is(m.fresh().exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`) }
     throws(() => jz(missing, { optimize }).exports.f(), TypeError, `O${optimize}: a missing receiver throws`)
   }
   ok(!compile(src, { optimize: { level: 'size', watr: false }, wat: true }).includes('__dyn_get_expr_t_h'), 'the slot, no dynamic read')

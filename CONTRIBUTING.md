@@ -178,11 +178,14 @@ Before reporting a change, run what AGENTS.md ("Verify before claiming done") li
 `JZ_TEST_TIMEOUT` bounds an ordinary task in milliseconds (default one hour); bootstrap's round-trip, parity, checkpoint and recursive tasks have four hours each, a hosted file the ordinary hour, and bootstrap always runs alone in the battery. A test that must hold at several optimize levels writes `for (const optimize of levels(false, 2, 3))` (`test/_matrix.js`): each leg runs its own level ('size' and 'fast' go with 2, 'speed' with 3); the default leg also owns O1. `ownedLevels` divides the levels the same way over the JS legs and keeps the whole list on WASI and the hosted compiler, for a check whose answer can depend on the host. A literal list compiles every level on every leg; it is kept only where the assertions need the levels together. Do not split a pass-on/pass-off comparison that needs both results in the same assertion.
 
 Shared helpers live in `test/util.js`: `run` (exports), `wat` (text),
-`oracle(src)` (the same program evaluated by Node), `agree` (jz equals Node for
-one call), `funcWat` (one function's WAT), and `cases(rows)`, which compiles a
+`jzWat` (the text and the instance from one compile, and `fresh()` for an
+instance an input), `oracle(src)` (the same program evaluated by Node), `agree`
+(jz equals Node for one call; given a `jzWat` build it compiles nothing),
+`funcWat` (one function's WAT), and `cases(rows)`, which compiles a
 table of `[label, arrowSource, want, ...args]` rows as one module. A compile is
 almost all of a test's cost, so a family of one-assertion programs belongs in one
-`cases` table, not one compile per assertion. Reuse compiled exports **within a
+`cases` table, not one compile per assertion, and a source whose text a test reads
+and whose module it runs is one `jzWat`. Reuse compiled exports **within a
 fixture** for its argument table, not through a global compiler cache (which
 would hide state leaks). Keep population compilation inside test callbacks so
 `TST_GREP` cannot accidentally run an entire corpus during imports.

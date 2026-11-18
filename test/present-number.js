@@ -7,7 +7,7 @@
 // value is a differential against the host.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { agree, wat, funcWat } from './util.js'
+import { agree, jzWat, wat, funcWat } from './util.js'
 import { belowOpt } from './_matrix.js'
 
 // The kernel is the module's only user code: the counts are over the module. The
@@ -34,7 +34,8 @@ test('present-number: strict equality against a binding that may be missing', ()
   const src = KERNEL('')
   shapes(src, w => is(calls(w, '__eq_strict'), 0, 'the compare is inline'))
   // k > 0 reads past the end: undefined === undefined holds, undefined === number does not
-  for (const [n, k] of [[0, 0], [1, 0], [8, 0], [8, 3], [3, 5]]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const [n, k] of [[0, 0], [1, 0], [8, 0], [8, 3], [3, 5]]) agree(srcBuilt, 'f', [n, k])
 })
 
 test('present-number: the same compare against an element a loop-carried index reads', () => {
@@ -43,7 +44,8 @@ test('present-number: the same compare against an element a loop-carried index r
   const src = KERNEL(`
     for (let other = tv[seed], steps = 0; other !== -1 && steps < 4; other = tv[other], steps++) if (tv[other + 1] === rep) s += 100`)
   shapes(src, w => is(calls(w, '__eq_strict'), 0, 'the compare is inline'))
-  for (const n of [0, 1, 8, 20]) agree(src, 'f', [n, 0])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 8, 20]) agree(srcBuilt, 'f', [n, 0])
 })
 
 test('present-number: the length of a typed binding reassigned to the same constructor', () => {
@@ -57,7 +59,8 @@ test('present-number: the length of a typed binding reassigned to the same const
   return s
 }`
   shapes(src, w => is(calls(w, '__length.value'), 0, 'the length reads from the header'))
-  for (const n of [0, 1, 64, 65, 200]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 64, 65, 200]) agree(srcBuilt, 'f', [n])
 })
 
 test('present-number: a subarray sorted in place reads its bounds from the header', () => {
@@ -97,5 +100,6 @@ test('present-number: the truthiness of an element that may be missing', () => {
   return a * 10000 + b * 100 + c
 }`
   if (!belowOpt(2)) is(wat(src).includes('$__is_truthy'), false, 'no truthiness through the runtime')
-  for (const n of [0, 1, 3, 4, 5, 9, 16]) for (const k of [0, 1, 2]) agree(src, 'f', [n, k])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 3, 4, 5, 9, 16]) for (const k of [0, 1, 2]) agree(srcBuilt, 'f', [n, k])
 })

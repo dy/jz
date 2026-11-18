@@ -6,11 +6,14 @@ import { is, ok } from 'tst/assert.js'
 import { compile as compileWat } from 'watr'
 import { tryPrefilter } from '../src/optimize/vectorize/prefilter.js'
 import { levels } from './_matrix.js'
-import { agree, oracle, run, wat } from './util.js'
+import { agree, oracle, run, wat, jzWat } from './util.js'
 
 const scans = src => /\.bitmask/.test(wat(src, { optimize: 3 }))
-const check = (src, args, name) => {
-  for (const optimize of levels(0, 2, 3, 'size')) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
+// The source built once at each level this leg owns; `check` asks each input of a
+// fresh instance of every build what it asks Node.
+const builds = src => levels(0, 2, 3, 'size').map(optimize => [optimize, jzWat(src, { optimize })])
+const check = (built, args, name) => {
+  for (const [optimize, b] of built) agree(b, 'f', args, undefined, `${name} at ${optimize}`)
 }
 
 // `density` marks every density-th element; the walk behind the guard is the heavy work.
@@ -74,8 +77,9 @@ test('prefilter: outer counter copies keep fractional and wide bounds exact', ()
     }
     return [sum,count];
   }`
+  const built = builds(src)
   for (const n of [0, -0, -1, 0.5, 1, 2.5, 3, NaN, Infinity, -Infinity, 2147483648, 4294967296, '2.5'])
-    check(src, [n], `outer bound ${n}`)
+    check(built, [n], `outer bound ${n}`)
 })
 
 test('prefilter: outer copies preserve nested transfers and captured counters', () => {
@@ -102,14 +106,16 @@ test('prefilter: outer copies preserve nested transfers and captured counters', 
 test('prefilter: a sparse byte guard over heavy work scans by spans', () => {
   const src = scan({})
   ok(scans(src), 'the first test runs on lanes')
-  for (const d of DENSITIES) for (const n of SIZES) check(src, [d, n], `bytes(${d}, ${n})`)
+  const built = builds(src)
+  for (const d of DENSITIES) for (const n of SIZES) check(built, [d, n], `bytes(${d}, ${n})`)
 })
 
 test('prefilter: work that marks elements ahead is seen as the scalar loop sees it', () => {
   // The body marks the next element (the same span) and one forty ahead (a later span).
   const src = scan({ guard: 'a[i] === 1', work: 'if (i + 1 < N) a[i + 1] = 1 - a[i + 1]; if (i + 40 < N) a[i + 40] = 1', from: 0 })
   ok(scans(src), 'the first test runs on lanes')
-  for (const d of [0, 1, 5, 16, 97, 300]) for (const n of [0, 16, 17, 100, 700]) check(src, [d, n], `marking(${d}, ${n})`)
+  const built = builds(src)
+  for (const d of [0, 1, 5, 16, 97, 300]) for (const n of [0, 16, 17, 100, 700]) check(built, [d, n], `marking(${d}, ${n})`)
 })
 
 test('prefilter: signed and wider elements, ordered and bare tests', () => {
@@ -126,7 +132,8 @@ test('prefilter: signed and wider elements, ordered and bare tests', () => {
   for (const c of cases) {
     const src = scan(c)
     ok(scans(src), `${c.ctor} ${c.guard} runs on lanes`)
-    for (const d of [0, 1, 7, 64]) for (const n of [0, 5, 16, 33, 700]) check(src, [d, n], `${c.ctor} ${c.guard} (${d}, ${n})`)
+    const built = builds(src)
+    for (const d of [0, 1, 7, 64]) for (const n of [0, 5, 16, 33, 700]) check(built, [d, n], `${c.ctor} ${c.guard} (${d}, ${n})`)
   }
 })
 
@@ -139,11 +146,14 @@ test('prefilter: light work, a break, or a written counter keeps the scalar loop
   return h
 }`
   ok(!scans(light), 'an update is not heavy work')
-  for (const d of [0, 1, 7]) for (const n of [0, 17, 700]) check(light, [d, n], `light(${d}, ${n})`)
+  const lit = builds(light)
+  for (const d of [0, 1, 7]) for (const n of [0, 17, 700]) check(lit, [d, n], `light(${d}, ${n})`)
   const breaks = scan({ guard: 'a[i] === 1', work: 'if (h === 12345) break', from: 0 })
   ok(!scans(breaks), 'a break leaves the loop from inside the work')
-  for (const d of [0, 3, 97]) for (const n of [0, 17, 700]) check(breaks, [d, n], `break(${d}, ${n})`)
+  const broken = builds(breaks)
+  for (const d of [0, 3, 97]) for (const n of [0, 17, 700]) check(broken, [d, n], `break(${d}, ${n})`)
   const skips = scan({ guard: 'a[i] === 1', work: 'i += 2', from: 0 })
   ok(!scans(skips), 'the work moves the counter')
-  for (const d of [0, 3, 97]) for (const n of [0, 17, 700]) check(skips, [d, n], `skip(${d}, ${n})`)
+  const skipped = builds(skips)
+  for (const d of [0, 3, 97]) for (const n of [0, 17, 700]) check(skipped, [d, n], `skip(${d}, ${n})`)
 })

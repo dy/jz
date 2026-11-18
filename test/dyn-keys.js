@@ -9,7 +9,7 @@ import { f64ToI64 } from '../interop.js'
 import parseWat from 'watr/parse'
 import { walkAst } from '../src/ast.js'
 import { onKernel, withBigintStrict, levels, belowOpt, onWasi, ownedLevels } from './_matrix.js'
-import { oracle, funcWat, jz, compile } from './util.js'
+import { oracle, funcWat, jz, jzWat, compile } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
@@ -2946,8 +2946,9 @@ const BIGINT_OP = {
 
 test('round-7: local BigInt() decls through every binary arithmetic/bitwise op cross the export boundary correctly', () => {
   const ops = ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>']
-  const two = (op, v, w) => jz(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`,
-    { jzify: true }).exports.f(v, w)
+  // (one build an operator, a fresh instance a call)
+  const built = Object.fromEntries(ops.map(op => [op, jzWat(`export let f = (v, w) => { let x = BigInt(v); let y = BigInt(w); return x ${op} y }`, { jzify: true })]))
+  const two = (op, v, w) => built[op].fresh().exports.f(v, w)
   for (const op of ops) {
     const got = two(op, 6, 3)
     const want = BIGINT_OP[op](6n, 3n)
@@ -3105,10 +3106,12 @@ test('written literal keys: a literal-key write outside a literal-bound layout d
   // one path only is NOT present until that path runs: `in`, hasOwnProperty,
   // for-in and Object.keys all read what JS reads.
   const conditionalWrite = (write) => `let o = { a: 1 }; export function main(x) { if (x) ${write}; let r = ''; for (const k in o) r += k; return r + '|' + ('b' in o) + '|' + o.hasOwnProperty('b') + '|' + Object.keys(o).length }`
-  for (const write of ["o['b'] = 2", 'o.b = 2']) for (const x of [0, 1]) {
-    const src = conditionalWrite(write)
-    const expected = Function(src.replace(/export (let|function|const)/g, '$1') + '; return main')()(x)
-    for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.main(x), expected, `${write} x=${x} at O${optimize}`)
+  for (const write of ["o['b'] = 2", 'o.b = 2']) {
+    const src = conditionalWrite(write), built = levels(0, 2).map(optimize => [optimize, jzWat(src, { optimize })])
+    for (const x of [0, 1]) {
+      const expected = Function(src.replace(/export (let|function|const)/g, '$1') + '; return main')()(x)
+      for (const [optimize, m] of built) is(m.fresh().exports.main(x), expected, `${write} x=${x} at O${optimize}`)
+    }
   }
   // A top-level `??=` initializes a flattened property like a declaration: it
   // keeps a value already there, and a conditional top-level write is no

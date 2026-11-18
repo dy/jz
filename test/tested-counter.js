@@ -3,7 +3,7 @@
 // fallback keeps its full Number; values are differentials against the host.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { agree, wat, funcWat as funcWatOf } from './util.js'
+import { agree, jzWat, wat, funcWat as funcWatOf } from './util.js'
 import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
 
@@ -53,14 +53,16 @@ const WALK = (test) => `export let f = (n) => {
 test('tested counter: while (sp) keeps the guarded stack pointer an i32', () => {
   const src = WALK('while (sp)')
   fastWord(src)
-  for (const n of [0, -0, 1, 2, 7, 100, 0.5, 2.5, NaN]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, -0, 1, 2, 7, 100, 0.5, 2.5, NaN]) agree(srcBuilt, 'f', [n])
 })
 
 test('tested counter: the forms of a truthiness test', () => {
   for (const t of ['while (sp !== 0)', 'while (sp > 0)', 'while (!!sp)', 'while (sp && count < 1000)', 'for (; sp;)']) {
     const src = WALK(t)
     fastWord(src)
-    for (const n of [0, 3, 40]) agree(src, 'f', [n])
+    const srcBuilt = jzWat(src)
+    for (const n of [0, 3, 40]) agree(srcBuilt, 'f', [n])
   }
 })
 
@@ -74,18 +76,21 @@ test('tested counter: if, ?: and ! test a countdown', () => {
     }
     return s }`
   ok(storage(src, 'left') !== 'f64', 'left keeps its i32')
-  for (const n of [0, 1, 5, 39, 64]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 5, 39, 64]) agree(srcBuilt, 'f', [n])
 })
 
 test('tested counter: a fraction still widens', () => {
   const src = `export let f = (n) => { let x = n; let k = 0; while (x) { x = x > 1 ? x - 1.5 : 0; if (x < 0) x = 0; k++ } return k }`
   ok(storage(src, 'x') !== 'i32', 'x keeps the number')
-  for (const n of [0, 1, 3, 4.5, 10]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 3, 4.5, 10]) agree(srcBuilt, 'f', [n])
 })
 
 test('tested counter: a returned accumulator with no test still widens', () => {
   // The bare-escape rule this leaves alone (test/inference.js, the FFT butterfly):
   // an unbounded integer read bare and never governed keeps its magnitude.
   const src = `export let f = (n) => { let id = 1; for (let i = 0; i < n; i++) id *= 100000; return id }`
-  for (const n of [0, 1, 2, 3]) agree(src, 'f', [n])
+  const srcBuilt = jzWat(src)
+  for (const n of [0, 1, 2, 3]) agree(srcBuilt, 'f', [n])
 })

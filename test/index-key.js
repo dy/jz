@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, foldWords, funcWat, oracle, run, wat } from './util.js'
+import { agree, jzWat, foldWords, funcWat, oracle, run, wat } from './util.js'
 
 const src = `let t = new Float32Array(4); t[0] = 1; t[1] = 2; t[2] = 3; t[3] = 4
 let b = [1, 2, 3, 4]
@@ -31,7 +31,8 @@ const calls = [['reads', []], ['typedWrites', []], ['arrayWrites', []], ['window
 
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`index key: a number that names no element reads undefined and stores nothing at ${optimize}`, () => {
-    for (const [name, args] of calls) agree(src, name, args, { optimize }, `${name}(${args}) at ${optimize}`)
+    const srcBuilt = jzWat(src, { optimize })
+    for (const [name, args] of calls) agree(srcBuilt, name, args, undefined, `${name}(${args}) at ${optimize}`)
   })
 
 // The key's int32 test truncates through i64: V8's arm64 code for the

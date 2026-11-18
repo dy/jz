@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { compile, jz, oracle } from './util.js'
+import { compile, jz, jzWat, oracle } from './util.js'
 
 const fnOf = (w, name) => { const i = w.indexOf(`(func $${name}`), j = w.indexOf('\n  (func ', i + 8); return w.slice(i, j < 0 ? undefined : j) }
 const SIMD = /v128|[if](?:8x16|16x8|32x4|64x2)\./
@@ -22,8 +22,9 @@ export let check = () => { let h = 0; for (let i = 0; i < 64; i++) h = (h * 31 +
 const lifts = (name, src, at = levels(2, 3)) => {
   for (const optimize of at) {
     const at = typeof optimize === 'object' ? JSON.stringify(optimize) : optimize
-    ok(SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${name}: lifted at ${at}`)
-    const want = oracle(src), got = jz(src, { optimize }).exports
+    const m = jzWat(src, { optimize })
+    ok(SIMD.test(fnOf(m.wat, 'k')), `${name}: lifted at ${at}`)
+    const want = oracle(src), got = m.exports
     want.init(); got.init()
     is(got.k(), want.k(), `${name}: k at ${at}`)
     is(got.check(), want.check(), `${name}: memory at ${at}`)
@@ -31,8 +32,9 @@ const lifts = (name, src, at = levels(2, 3)) => {
 }
 const stays = (name, src) => {
   for (const optimize of levels(2, 3)) {
-    ok(!SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${name}: scalar at ${optimize}`)
-    const want = oracle(src), got = jz(src, { optimize }).exports
+    const m = jzWat(src, { optimize })
+    ok(!SIMD.test(fnOf(m.wat, 'k')), `${name}: scalar at ${optimize}`)
+    const want = oracle(src), got = m.exports
     want.init(); got.init()
     is(got.k(), want.k(), `${name}: k at ${optimize}`)
     is(got.check(), want.check(), `${name}: memory at ${optimize}`)
@@ -97,8 +99,9 @@ export let f = (hiIn, loIn) => {
   for (const T of TYPES) for (const body of ['for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo] * 2', 'for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo + 1] - a[i - lo]']) {
     const p = src(T, body), want = oracle(p)
     for (const optimize of levels(2, 3)) {
-      ok(SIMD.test(fnOf(compile(p, { optimize, wat: true }), 'f')), `${T} ${body}: lifted at ${optimize}`)
-      const got = jz(p, { optimize }).exports
+      const m = jzWat(p, { optimize })
+      ok(SIMD.test(fnOf(m.wat, 'f')), `${T} ${body}: lifted at ${optimize}`)
+      const got = m.exports
       for (const lo of [MIN, MIN + 1, MIN + 3, -2, 0]) for (const d of [-1, 0, 1, 2, 3, 4, 5, 15, 16, 17, 33])
         is(got.f(lo + d, lo), want.f(lo + d, lo), `${T} ${body}: ${lo + d} down to ${lo} at ${optimize}`)
     }
@@ -135,8 +138,9 @@ test('loop forms: a reduction carried in its order, the work of each element in 
     want.init()
     for (const optimize of exact) {
       const at = JSON.stringify(optimize)
-      ok(SIMD.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${name}: lifted at ${at}`)
-      const got = jz(src, { optimize }).exports
+      const m = jzWat(src, { optimize })
+      ok(SIMD.test(fnOf(m.wat, 'k')), `${name}: lifted at ${at}`)
+      const got = m.exports
       got.init()
       is(got.k(), want.k(), `${name}: k at ${at}`)
     }
@@ -160,8 +164,9 @@ test('loop forms: a copy or a fill counting down moves its bytes at once', () =>
   ]) {
     const src = prog(T, body), want = oracle(src)
     for (const optimize of levels(2, 3)) {
-      ok(/memory\.(copy|fill)/.test(fnOf(compile(src, { optimize, wat: true }), 'k')), `${T} ${name}: a bulk move at ${optimize}`)
-      const got = jz(src, { optimize }).exports
+      const m = jzWat(src, { optimize })
+      ok(/memory\.(copy|fill)/.test(fnOf(m.wat, 'k')), `${T} ${name}: a bulk move at ${optimize}`)
+      const got = m.exports
       want.init(); got.init()
       is(got.k(), want.k(), `${T} ${name}: k at ${optimize}`)
       is(got.check(), want.check(), `${T} ${name}: memory at ${optimize}`)

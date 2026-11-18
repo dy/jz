@@ -5,7 +5,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { agree, funcWat, run, wat } from './util.js'
+import { agree, jzWat, funcWat, run, wat } from './util.js'
 
 const src = `function f(x, y) { let s = 0; for (let i = 0; i < 20; i++) s += (x * i + y) % 7; return s }
   function h(x, y) { return x - y }
@@ -21,7 +21,8 @@ const src = `function f(x, y) { let s = 0; for (let i = 0; i < 20; i++) s += (x 
 
 test('function alias: every call answers what the host answers, before and after the written one swaps', () => {
   for (const optimize of levels(0, 2, 3)) {
-    for (const name of ['viaAlias', 'viaWritten', 'asValue', 'local', 'exported']) agree(src, name, [3], { optimize }, `${name}(3) at ${optimize}`)
+    const srcBuilt = jzWat(src, { optimize })
+    for (const name of ['viaAlias', 'viaWritten', 'asValue', 'local', 'exported']) agree(srcBuilt, name, [3], undefined, `${name}(3) at ${optimize}`)
     agree(src, 'swap', [], { optimize })
   }
 })
