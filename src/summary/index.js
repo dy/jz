@@ -5785,12 +5785,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (key === undefined) elementKeys.set(c, key = 'elem\0' + c)
     return key
   }
+  const sameCell = (k, key) => typeof k === 'number' && elementKey(kinds[k]) === key
   const arrayUse = (r, cx, into) => {
     const key = elementKey(r)
     if (key === null || cx === RECEIVER) return
     // A binding copy is another receiver of this same cell, not a copy of
-    // its contents. Other aggregate flows need their own reader contract.
-    if (cx === FLOW && typeof into === 'number' && elementKey(kinds[into]) === key) return
+    // its contents, and so is a flow into bindings that each are one.
+    // Other aggregate flows need their own reader contract.
+    if (cx === FLOW && (Array.isArray(into) ? into.length > 0 && into.every(k => sameCell(k, key)) : sameCell(into, key))) return
     deny(key)
   }
   const readWhole = (sid) => { const props = schemas[sid]; if (!props) return; const held = slots(sid); for (let i = 0; i < props.length; i++) if (!isPrivate(props[i]) && namesBeside(held[i], NUMBER_BIT)) deny(slotKey(sid, props[i])) }
@@ -5938,19 +5940,31 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === 'let' || op === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (provenRead(d[2])) useOf(d[2], COMPAT); else if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
     if (op === '=') {
       // A store also yields its original RHS. That result can be observed
-      // independently of the destination's converting readers.
-      if (cx !== NEUTRAL) useOf(n[2], cx, into)
-      const t = n[1]
-      if (typeof t === 'string') { if (provenRead(n[2])) useOf(n[2], COMPAT); else useOf(n[2], FLOW, keyOf(t)); return }
-      if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const keys = slotKeysOf(t[1], t[2]); if (keys.length) useOf(n[2], FLOW, keys); else demand(n[2]); return }
-      if (Array.isArray(t) && t[0] === '[]') {
-        const r = kindOfExpr(t[1]), key = indexedKey(r, t[2])
-        demand(t[1], key === null ? OTHER : RECEIVER); index(t[2], r)
-        if (key !== null) useOf(n[2], FLOW, key)
-        else demand(n[2], tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER)
-        return
+      // independently of the destination's converting readers. Down a chain
+      // `a = b = … = v` the value v is read once: it flows into each target's
+      // keys and into this read's, where reading it here and again for the
+      // store read each level twice (2^n walks for n links).
+      // `plain` holds a bit for each context the value is read in besides.
+      const keys = []
+      let plain = 0
+      if (cx === FLOW) { if (into === null) plain |= 1 << OTHER; else if (Array.isArray(into)) for (const k of into) keys.push(k); else keys.push(into) }
+      else if (cx !== NEUTRAL) plain |= 1 << cx
+      let v = n
+      for (; Array.isArray(v) && v[0] === '='; v = v[2]) {
+        const t = v[1]
+        if (typeof t === 'string') { if (provenRead(v[2])) plain |= 1 << COMPAT; else { const key = keyOf(t); if (key === null) plain |= 1 << OTHER; else keys.push(key) } }
+        else if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const ks = slotKeysOf(t[1], t[2]); if (!ks.length) plain |= 1 << OTHER; for (const k of ks) keys.push(k) }
+        else if (Array.isArray(t) && t[0] === '[]') {
+          const r = kindOfExpr(t[1]), key = indexedKey(r, t[2])
+          demand(t[1], key === null ? OTHER : RECEIVER); index(t[2], r)
+          if (key !== null) keys.push(key)
+          else plain |= 1 << (tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER)
+        }
+        else { demand(t); plain |= 1 << OTHER }
       }
-      demand(t); demand(n[2]); return
+      if (keys.length) useOf(v, FLOW, keys.length === 1 ? keys[0] : keys)
+      for (let c = OTHER; c <= RECEIVER; c++) if (plain & 1 << c) useOf(v, c)
+      return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
     if (op === '+=' && typeof n[1] === 'string' && keyOf(n[1]) !== null && strung.has(keyOf(n[1]))) { useOf(n[1], STR); useOf(n[2], STR); return }

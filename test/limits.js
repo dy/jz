@@ -22,6 +22,7 @@ import { ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { levels, onKernel, onWasi } from './_matrix.js'
+import { oracle } from './util.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const R = (n, f) => Array.from({ length: n }, (_, i) => f(i))
@@ -64,6 +65,16 @@ const NESTS = {
   'object literal': d => `export let f = (x) => { const o = ${'{ a: 1, b: '.repeat(d)}x${' }'.repeat(d)}; return o.a + x }`,
   'not': d => `export let f = (x) => ${'!'.repeat(d)}x`,
 }
+// form → depth → source: a nesting each walk takes a level at a time, where a walk
+// that read each level twice took 2^n for n levels. At DEEP_N levels it compiles
+// and answers what Node answers, at false, true, 'size' and 'speed' (each on the
+// leg that owns its level), CPU t(DEEP_N) / t(DEEP_SMALL) at most RATIO.
+const DEEP = {
+  // the summary's numeric demand read a store's value once for the store and once
+  // for the value the store yields (summary/index.js demand): 24 levels 3.2 s, 28 44 s
+  'chained assignment': d => `export let f = (x) => { let ${R(d, i => `a${i}`).join(', ')}\n return (${R(d, i => `a${i}`).join(' = ')} = x + 1) * 2 + a0 + a${d - 1} }`,
+}
+const DEEP_N = 200, DEEP_SMALL = 50, DEEP_LIMIT = 120000
 // `${kind} at ${level}` → what fails today, measured on 2026-11-17 on 14 cores at a
 // load of 30 to 60, and again on 2026-11-18 by CPU time at a load of 130 to 250:
 // 'compile', no module that answers (the row is held to fail, and the gate fails
@@ -135,16 +146,27 @@ else {
   }
   console.log(JSON.stringify({ ok: true, ms, cpu, smallCpu, answer: instantiate(b.w).exports.f(3) }))
 }`
-const compiled = (src, optimize, small) => {
+const compiled = (src, optimize, small, limit = 900000) => {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', RUNNER], {
     env: { ...process.env, JZ_ROOT: ROOT, SRC: src, SMALL: small ?? '', OPTS: JSON.stringify({ optimize }) },
-    encoding: 'utf8', timeout: 900000, killSignal: 'SIGKILL', maxBuffer: 1 << 26,
+    encoding: 'utf8', timeout: limit, killSignal: 'SIGKILL', maxBuffer: 1 << 26,
   })
   try { return JSON.parse(r.stdout.trim().split('\n').pop()) }
   catch { return { ok: false, ms: NaN, name: 'exit', message: r.signal === 'SIGKILL' ? 'stopped past the limit' : r.signal ? `ended by ${r.signal}` : `exit ${r.status}: ${String(r.stderr).slice(0, 200)}` } }
 }
-const levelName = (o) => o === false ? 'off' : 'default'
+const levelName = (o) => o === false ? 'off' : o === true ? 'default' : o
 const skip = () => onKernel() || onWasi()
+
+for (const optimize of levels(false, true, 'size', 'speed')) for (const [form, gen] of Object.entries(DEEP)) test(`limits: ${form} at ${DEEP_N} levels, the level ${levelName(optimize)}`, () => {
+  if (skip()) return
+  const row = `${form} at ${levelName(optimize)}`, src = gen(DEEP_N), want = oracle(src).f(3)
+  const r = compiled(src, optimize, gen(DEEP_SMALL), DEEP_LIMIT)
+  ok(r.ok && r.answer === want, `${row}: ${r.ok ? `answers ${r.answer}, Node ${want}` : `${r.name}: ${r.message}`}`)
+  if (!r.ok) return
+  const ratio = r.cpu / r.smallCpu
+  console.log(`  ${row}: CPU ${r.cpu.toFixed(0)} ms, t(${DEEP_N}) / t(${DEEP_SMALL}) ${ratio.toFixed(1)}`)
+  ok(ratio <= RATIO, `${row}: CPU t(${DEEP_N}) / t(${DEEP_SMALL}) = ${ratio.toFixed(1)}, at most ${RATIO}`)
+})
 
 for (const optimize of levels(false, true)) {
   const lv = levelName(optimize)
