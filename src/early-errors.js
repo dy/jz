@@ -825,7 +825,17 @@ const decodeIdentifier = name => typeof name === 'string' ? name.replace(/\\u(?:
 // The index of the first name that repeats an earlier one, -1 when none does.
 const duplicateAt = names => {
   // Binding lists are tiny; a nested comparison avoids allocating a Set (and
-  // its 8-slot table) for every declaration/parameter list.
+  // its 8-slot table) for every declaration/parameter list. A scope of
+  // thousands (generated code) takes the set: the comparison was quadratic.
+  if (names.length > 32) {
+    const seen = new Set()
+    for (let i = 0; i < names.length; i++) {
+      const name = decodeIdentifier(names[i])
+      if (seen.has(name)) return i
+      seen.add(name)
+    }
+    return -1
+  }
   for (let i = 0; i < names.length; i++) {
     const name = decodeIdentifier(names[i])
     for (let k = 0; k < i; k++) if (decodeIdentifier(names[k]) === name) return i

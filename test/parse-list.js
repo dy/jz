@@ -331,3 +331,15 @@ test('parse list: 10,000 lines of two statements each', () => {
   const src = `export let f = (x) => { let s = 0, t = 0\n${R(700, i => `s += x * ${i}; t += 1`).join('\n')}\nreturn s + t }`
   is(run(src).f(3), oracle(src).f(3), '700 lines in a function body answer as Node')
 })
+
+// The early errors look for a lexical name declared twice in a scope: a nested
+// comparison of each name with those before it, so a body of 10,000 `const`
+// declarations took 3.1 s to parse (2,500 took 0.19 s); 70 ms with a set.
+test('parse list: a scope of 10,000 declarations is checked in a time in its names', () => {
+  const src = `export let f = (x) => { const a0 = x\n${R(9999, i => `const a${i + 1} = a${i} + 1`).join('\n')}\nreturn a9999 }`
+  const t0 = performance.now()
+  parse(src)
+  const ms = performance.now() - t0
+  ok(ms < 1500, `10,000 declarations parsed in ${ms.toFixed(0)} ms`)
+  throws(() => parse(`export let f = (x) => { ${R(40, i => `const a${i} = ${i}`).join('\n')}\nconst a7 = 1 }`), /duplicate lexical declaration 'a7'/)
+})
