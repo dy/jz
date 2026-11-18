@@ -258,7 +258,7 @@ const flatSlotVal = (value) => hasAmbiguousBoolMerge(value) ? null : valTypeOf(v
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
 // Index access:  `arr[i]` → ['[]', arr, i].
-VT['[]'] = (args) => {
+VT['[]'] = (args, read) => {
   if (args.length < 2) return VAL.ARRAY
   // A literal NEGATIVE index is always out of range → reads undefined, not the
   // element type. Returning a numeric elem type here would let `a[-1] === undefined`
@@ -298,7 +298,9 @@ VT['[]'] = (args) => {
       }
     }
   }
-  const settled = ctx.summary?.at(ctx.func.current).valOfExpr(['[]', args[0], args[1]])
+  // (asked of the read itself: a read the summary's walk found inside its array is known
+  // by its node, and reads an element whatever number-named properties the array holds)
+  const settled = ctx.summary?.at(ctx.func.current).valOfExpr(read)
   if (settled != null) return settled
   // Indexed read on a known typed-array receiver, a name or an expression,
   // follows its concrete ctor. If the ctor itself is open (runtime-polymorphic
@@ -793,7 +795,7 @@ export function valTypeOf(expr) {
   const handler = VT[op]
   if (!handler) return null
   const args = takeVtArgs(expr)
-  try { return handler(args) ?? null }
+  try { return handler(args, expr) ?? null }
   finally { releaseVtArgs(args) }
 }
 
