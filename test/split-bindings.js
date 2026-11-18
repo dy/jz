@@ -431,3 +431,27 @@ test('split bindings: a statement folded away is an empty statement of the list'
     for (const optimize of levels(0, 2, 3)) is(run(src, { optimize }).f(), want, `${name}, O${optimize}`)
   }
 })
+
+// The pass takes a time in the size of the body: an assignment in each of
+// thousands of arms counted the body's mentions of its name by a walk of the
+// whole body, a name refused for its mentions outside a list was counted again
+// at each of its assignments there, each write moved every name the binding had
+// gone by, and each statement asked whether a loop follows it by a walk of the
+// rest (a guard list of 5,000 arms at the default level spent 53 s here). Two
+// bodies of 5,000 took 9.3 s and 8.2 s, and come out the same.
+test('split bindings: thousands of assignments split in a time in the body', () => {
+  const n = 5000
+  const guards = () => ['{}', [';', ['let', ['=', 'r', [null, 0]]],
+    ['label', 'L', ['{}', [';', ...Array.from({ length: n }, (_, i) => ['if', ['===', 'x', [null, i]], [';', ['=', 'r', [null, i]], ['break', 'L']]]), ['=', 'r', [null, -1]]]]], ['return', 'r']]]
+  const run = () => ['{}', [';', ['let', 'r'], ['if', 'x', [';', ...Array.from({ length: n }, (_, i) => ['=', 'r', ['+', 'r', [null, i]]]), ['return', 'r']]], ['return', 'r']]]
+  for (const [name, make] of [['a guard list', guards], ['a run of writes', run]]) {
+    const t0 = performance.now(), out = splitReassigned({ body: make(), sig: { params: [{ name: 'x' }] } }, true), ms = performance.now() - t0
+    ok(ms < 1500, `${name} of ${n}: ${ms.toFixed(0)} ms`)
+    ok(Array.isArray(out) && out[0] === '{}', `${name} stays a body`)
+  }
+  // a run of writes: each declares a binding the next reads, an arm writes the last
+  const small = splitReassigned({ body: ['{}', [';', ['let', ['=', 's', [null, 0]]], ['=', 's', ['+', 's', 'x']], ['=', 's', ['*', 's', [null, 2]]], ['if', 'x', [';', ['=', 's', [null, 7]], ['return', 's']]], ['return', 's']]], sig: { params: [{ name: 'x' }] } }, true)
+  const s0 = `s${T}s0`, s1 = `s${T}s1`
+  is(JSON.stringify(small), JSON.stringify(['{}', [';', ['let', ['=', 's', [null, 0]]], ['let', ['=', s0, ['+', 's', 'x']]], ['let', ['=', s1, ['*', s0, [null, 2]]]], ['if', 'x', [';', ['=', s1, [null, 7]], ['return', s1]]], ['return', s1]]]))
+})
+

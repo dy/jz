@@ -45,10 +45,20 @@ const census = (n, own, captured, inArrow) => {
   for (let i = 1; i < n.length; i++) census(n[i], own, captured, arrow)
 }
 
+// The name a binding is read by now: a rebinding maps the name it replaced to
+// the new one, so a name goes through each that replaced it, and keeps the last
+// (rebind below).
+const latest = (names, n) => {
+  let v = names.get(n)
+  if (v === undefined) return n
+  for (let w = names.get(v); w !== undefined; w = names.get(v)) v = w
+  names.set(n, v)
+  return v
+}
 // Apply the latest binding names to one statement. Property names and literal
 // keys are not bindings; unchanged nodes retain their identity and metadata.
 const rename = (n, names) => {
-  if (typeof n === 'string') return names.get(n) ?? n
+  if (typeof n === 'string') return latest(names, n)
   if (!Array.isArray(n) || n[0] === 'str') return n
   let out = n
   const start = n[0] === ':' ? 2 : 1, end = n[0] === '.' || n[0] === '?.' ? 2 : n[0] === ':' ? 3 : n.length
@@ -74,6 +84,14 @@ const mentions = (n, name) => {
   let c = 0
   for (let i = 1; i < n.length; i++) c += mentions(n[i], name)
   return c
+}
+// the mentions of every name in `n`, counted as `mentions` counts one
+const countMentions = (n, counts) => {
+  if (typeof n === 'string') { counts.set(n, (counts.get(n) ?? 0) + 1); return }
+  if (!Array.isArray(n) || n[0] === 'str') return
+  if (n[0] === '.' || n[0] === '?.') { countMentions(n[1], counts); return }
+  if (n[0] === ':') { countMentions(n[2], counts); return }
+  for (let i = 1; i < n.length; i++) countMentions(n[i], counts)
 }
 
 /**
@@ -123,10 +141,9 @@ export function splitReassigned(fn, nested = false) {
 
   // Later statements read `next` where they read the source binding or any name it went by:
   // an arm's statements read the arm's binding (`sum$s4`), not the source it continues.
-  const rebind = (names, name, root, next) => {
-    for (const [k, v] of names) if (v === name) names.set(k, next)
-    names.set(root, next); names.set(name, next)
-  }
+  // A name read as `name` is read through it (latest): moving each such name at each
+  // write took a time in the square of the writes.
+  const rebind = (names, name, root, next) => { names.set(root, next); names.set(name, next) }
   // `list` split over the bindings `mine(name)` admits
   const split = (list, mine) => {
     let out = null
@@ -180,6 +197,7 @@ export function splitReassigned(fn, nested = false) {
         rebind(names, name, root, next); declared.add(next); own.add(next); roots.set(next, root); joinKinds.set(next, exitKind(s, name))
       }
       out.splice(k + 1, 0, noted(s, ['let', ...decls]))
+      lastLoops.delete(out); refusedIn.delete(out)
       list = out
       k++
       // the join declared here, or a name the conditional assigned and did not
@@ -268,8 +286,16 @@ export function splitReassigned(fn, nested = false) {
   // An arm a version made is split as a list of its own, not versioned again:
   // the cursors it declares were the guard's, and a copy of a copy doubles the code.
   let armDepth = 0
+  // the index of a list's last statement with a loop in it, -1 for none: versionRest asks
+  // at each statement, and a list of thousands asked its whole rest each time
+  const lastLoops = new WeakMap()
+  const lastLoop = (list) => {
+    let at = lastLoops.get(list)
+    if (at === undefined) { at = -1; for (let i = list.length - 1; i >= 1; i--) if (hasLoop(list[i])) { at = i; break } lastLoops.set(list, at) }
+    return at
+  }
   const versionRest = (list, k, names, candidates = null, mine = null) => {
-    if (!view || armDepth || k + 1 >= list.length) return null
+    if (!view || armDepth || k + 1 >= list.length || lastLoop(list) <= k) return null
     const rest = list.slice(k + 1).map(s => names.size ? renamed(s, names) : s)   // the later statements read the names declared so far
     if (!rest.some(hasLoop)) return null
     const restNode = [';', ...rest], assigned = assignedIn(restNode)
@@ -405,12 +431,26 @@ export function splitReassigned(fn, nested = false) {
   if (nested) bares(body)
   // a list inside: over what it declared ahead of the assignment and nothing outside it mentions,
   // and over what is declared bare outside it, mentioned there alone and first by this assignment
+  // The body's mentions are counted once: the pass copies what it changes, and an
+  // assignment in each of thousands of arms walked the whole body for its count.
+  // The mentions a list holds only fall as its statements are renamed (a join it
+  // splices in forgets what the list was asked): a name refused for more mentions
+  // outside it than it may have is refused again, not counted again.
+  let bodyCounts = null
+  const refusedIn = new WeakMap()
   const within = (name, declared, list, k) => {
     // a binding this pass declared in the list is mentioned after it, in the list, alone
     if (roots.has(name)) return declared.has(name)
-    const outside = mentions(body, name) - mentions(list, name)
-    if (declared.has(name)) return outside === 0
-    if (outside !== 1 || !bare.has(name) || list[k][0] !== '=' || mentions(list[k][2], name) !== 0) return false
+    const own = declared.has(name)
+    if (!own && (!bare.has(name) || list[k][0] !== '=')) return false
+    const key = own ? name : '\0' + name
+    let refused = refusedIn.get(list)
+    if (refused?.has(key)) return false
+    if (!bodyCounts) countMentions(body, bodyCounts = new Map())
+    const outside = (bodyCounts.get(name) ?? 0) - mentions(list, name)
+    if (outside > (own ? 0 : 1)) { if (!refused) refusedIn.set(list, refused = new Set()); refused.add(key); return false }
+    if (own) return outside === 0
+    if (outside !== 1 || mentions(list[k][2], name) !== 0) return false
     for (let j = 1; j < k; j++) if (mentions(list[j], name) !== 0) return false
     return true
   }
