@@ -201,3 +201,121 @@ test('parse list: 10,000 statements on one line', () => {
   is(tree.length, 10003, 'a list of the declaration, 10,000 statements and the last')
   is(JSON.stringify(tree[10001]), '["+=","s",[null,9999]]')
 })
+
+import { throws } from 'tst/assert.js'
+import { run, oracle } from './util.js'
+import { LEN } from '../src/list-form.js'
+
+// A chain longer than LEN links is written as a list of the same meaning
+// (src/list-form.js); jz answers what Node answers on the source as written.
+// Each kind at LEN + 1 and at 100 links, and the programs that break a careless
+// list form: break, continue and a labeled break in arms; a chain in a switch
+// case, a generator, a for-update clause, an arm of another chain; a sum that
+// turns to a string; an optional chain; a reference at the top of a chain; facts
+// a guard proves that must not reach past its list.
+const R = (n, f) => Array.from({ length: n }, (_, i) => f(i))
+const KINDS = {
+  elseif: n => `export let f = (x) => { ${R(n, i => `if (x === ${i}) return ${i * 3}`).join('\n else ')}\n return -1 }`,
+  elseifa: n => `export let f = (x) => { let r = 0\n ${R(n, i => `if (x === ${i}) r = ${i * 3}`).join('\n else ')}\n else r = -1\n return r + 1 }`,
+  switch: n => `export let f = (x) => { switch (x) { ${R(n, i => `case ${i}: return ${i * 3};`).join(' ')} } return -1 }`,
+  switchb: n => `export let f = (x) => { let r = 0; switch (x) { ${R(n, i => `case ${i}: r = ${i * 3}; break;`).join(' ')} default: r = -1 } return r + 1 }`,
+  plus: n => `export let f = (x) => ${R(n, i => `x * ${i}`).join(' + ')}`,
+  minus: n => `export let f = (x) => { return ${R(n, i => `x * ${i}`).join(' - ')} }`,
+  concat: n => `export let f = (x) => '' + ${R(n, i => `'k${i % 10}' + x`).join(' + ')}`,
+  flip: n => `export let f = (x) => ${R(n, i => i === n >> 1 ? `'|'` : `x * ${i}`).join(' + ')}`,
+  and: n => `export let f = (x) => ${R(n, i => `(x + ${i})`).join(' && ')}`,
+  or: n => `export let f = (x) => ${R(n - 1, i => `(x === ${i + 1000} && ${i})`).join(' || ')} || x + 7`,
+  orright: n => `export let f = (x) => ${R(n - 1, i => `(x === ${i} && ${i + 1} || `).join('')}-1${')'.repeat(n - 1)}`,
+  nullish: n => `export let f = (x) => { let a = x > 100 ? 1 : null\n return ${R(n, () => 'a').join(' ?? ')} ?? (x || 5) }`,
+  paren: n => `export let f = (x) => ${'('.repeat(n - 1)}x * 0${R(n - 1, i => ` + x * ${i + 1})`).join('')}`,
+  tern: n => `export let f = (x) => ${R(n, i => `x === ${i} ? ${i * 3} :`).join(' ')} -1`,
+  ternexpr: n => `export let f = (x) => { const v = 1 + (${R(n, i => `x === ${i} ? ${i * 3} :`).join(' ')} -1)\n return v * 2 }`,
+  ternstmt: n => `export let f = (x) => { let r = 0\n r = ${R(n, i => `x === ${i} ? ${i * 3} :`).join(' ')} -1\n return r }`,
+  calls: n => `export let f = (x) => { const o = { s: 0, add(v) { this.s += v; return this } }\n return o${R(n, i => `.add(${i % 7})`).join('')}.s + x }`,
+  members: n => `export let f = (x) => { const o = { v: x }; o.a = o\n return o${'.a'.repeat(n)}.v }`,
+  optional: n => `export let f = (x) => { const o = x > 50 ? null : { v: x }; if (o) o.a = o\n return o?.a${'.a'.repeat(n - 1)}.v }`,
+  target: n => `export let f = (x) => { const o = { v: x }; o.a = o\n o${'.a'.repeat(n)}.v = x * 2; o${'.a'.repeat(n)}.v += 1\n return o.v }`,
+  module: n => `const k = 2\nconst s = ${R(n, i => `k * ${i}`).join(' + ')}\nexport let f = (x) => s + x`,
+  param: n => `export let f = (x, y = ${R(n, i => `x * ${i}`).join(' + ')}) => y`,
+  twice: n => `export let f = (x) => { let s = 0\n for (let i = 0; i < 3; i++) s += ${R(n, j => `(x + i) * ${j}`).join(' + ')}\n return s + (${R(n, j => `x === ${j} ? ${j} :`).join(' ')} -1) }`,
+}
+const XS = [3, 0, 64, 99, -1, 2.5, 120]
+
+test('parse list: a chain past LEN links answers as written, each kind', () => {
+  for (const [kind, gen] of Object.entries(KINDS)) for (const n of [LEN + 1, 100]) {
+    const src = gen(n), want = oracle(src).f, got = run(src).f
+    for (const x of XS) is(got(x), want(x), `${kind} of ${n} links, f(${x})`)
+  }
+})
+
+// Before the list form a walk ran out of stack near 500 links of an else-if
+// chain or a switch, 800 of a sum, 280 of a call chain and some 800 of `&&` or
+// `?:` (the early errors).
+test('parse list: chains of 1,000 links compile', () => {
+  for (const kind of ['elseif', 'switch', 'plus', 'tern', 'calls', 'and']) {
+    const src = KINDS[kind](1000), want = oracle(src).f, got = run(src).f
+    for (const x of [3, 999, -1]) is(got(x), want(x), `${kind} of 1,000 links, f(${x})`)
+  }
+})
+
+// [name, source, the argument lists to call f with]
+const N = 100, xs = (...a) => a.map(v => [v])
+const PROGRAMS = [
+  // break and continue in the arms of a chain inside a loop
+  ['loop arms', `export let f = (x) => { let s = 0
+    for (let i = 0; i < ${N + 5}; i++) { ${R(N, j => j === 2 ? `if (i === x) break` : j === 3 ? `if (i === ${N + 1}) continue` : j === 4 ? `if (i === 4) { s += 100 }` : `if (i === ${j + 7}) s += ${j}`).join('\n else ')}\n else s += i; s += 1000 }
+    return s }`, xs(0, 3, 50, -1)],
+  // the chain in a labeled block, arms leaving it
+  ['labeled block', `export let f = (x) => { let s = 0
+    L: { ${R(N, j => j % 3 === 0 ? `if (x === ${j}) break L` : j % 3 === 1 ? `if (x === ${j}) { s = ${j} }` : `if (x === ${j}) { s = ${j}; break L }`).join('\n else ')}\n else s = -3; s += 10 }
+    return s }`, xs(0, 1, 2, 3, 4, 5, 99, 500)],
+  // the chain in a switch case: the guard's break beside a switch break, and a fall through
+  ['switch case', `export let f = (x, y) => { let s = 0
+    switch (x) { case 1: ${R(N, j => j === 1 ? `if (y === 1) { s = 50; break }` : `if (y === ${j}) s = ${j}`).join('\n else ')}\n else s = 4; s += 10; case 2: s += 1000; break; default: s = -1 }
+    return s }`, [[1, 0], [1, 1], [1, 2], [1, 99], [1, 500], [2, 0], [3, 3]]],
+  // yield in the arms
+  ['generator arms', `function* g(x) { let s = 0
+    ${R(N, j => `if (x === ${j}) s = (yield ${j}) * ${j % 5}`).join('\n else ')}\n else s = yield -1
+    yield s + 100 }
+    export let f = (x) => { const it = g(x); const a = it.next().value; const b = it.next(5).value; return a * 1000 + b }`, xs(0, 7, 99, 300)],
+  // a ?: chain in a for-update clause: the flag form starts over at each evaluation
+  ['for update', `export let f = (x) => { let s = 0
+    for (let i = 0; i < 200; i += (${R(N, j => `i === ${j} ? ${(j % 3) + 1} :`).join(' ')} 50)) s += i + x
+    return s }`, xs(0, 1)],
+  // an expression-bodied arrow whose ?: chain recurses
+  ['recursive arrow', `export let f = (x) => ${R(N, j => `x === ${j} ? ${j < 3 ? j : `f(${j - 3}) + ${j * 10}`} :`).join(' ')} -1`, xs(0, 2, 4, 50, 99, 100)],
+  // a chain in an arm of another chain, both past LEN, both in expressions
+  ['inner chain', `export let f = (x, y) => 1 + (${R(N, j => j === 0 ? `x === 0 ? (${R(N, k => `y === ${k} ? ${k + 500} :`).join(' ')} 8) :` : `x === ${j} ? ${j} :`).join(' ')} -1)`, [[0, 0], [0, 99], [0, 300], [5, 0], [99, 1], [200, 1]]],
+  // else-if chains, each arm another chain, nested: each guard list takes its own label
+  ['nested guard lists', `export let f = (x, y) => { let s = 0
+    ${R(N, j => j === 7 ? `if (x === 7) { ${R(N, k => `if (y === ${k}) s = ${k}`).join('; else ')}; else s = -7 }` : `if (x === ${j}) s = ${j * 2}`).join('\n else ')}\n else s = -1
+    return s }`, [[7, 0], [7, 50], [7, 500], [3, 0], [500, 0]]],
+  // what a guard proves stays inside the list
+  ['facts: null', `export let f = (k) => { const o = k > 0 ? { v: k } : null; let s = 0
+    ${R(N, j => j === 0 ? `if (o === null) s = -1` : `if (k === ${j + 1000}) s = ${j}`).join('\n else ')}\n else s = o.v
+    return o === null ? 7 + s : s + o.v }`, xs(3, -2, 0)],
+  ['facts: typeof', `export let f = (k) => { const v = k > 0 ? 'abc' : k; let s = 0
+    ${R(N, j => j === 0 ? `if (typeof v === 'string') s = 1` : `if (v === ${j + 1000}) s = 2`).join('\n else ')}\n else s = v * 2
+    return typeof v === 'string' ? v.length + 100 + s : s + v }`, xs(3, -2, 0)],
+  ['facts: range', `export let f = (k) => { k = k | 0; let s = 0
+    ${R(N, j => j === 0 ? `if (k > 100) s = 1` : j === 1 ? `if (k < 0) s = 2` : `if (k === ${j + 1000}) s = 3`).join('\n else ')}\n else s = k
+    return k > 100 ? 1000 + s : k < 0 ? 2000 + s : s }`, xs(3, 200, -5)],
+  // a left operand held across a yield, as JavaScript holds it
+  ['yield in a sum', `let t = 0
+    function* g(x) { t = 1; const r = ${R(N, j => j === N - 1 ? '(yield 5)' : `t * ${j}`).join(' + ')}; return r }
+    export let f = (x) => { const it = g(x); it.next(); t = 100; return it.next(10).value }`, xs(0)],
+]
+
+test('parse list: chains past LEN links in the places a list form can go wrong', () => {
+  for (const [name, src, args] of PROGRAMS) {
+    const want = oracle(src).f, got = run(src).f
+    for (const a of args) is(got(...a), want(...a), `${name}: f(${a.join(', ')})`)
+  }
+})
+
+// The guard list wraps an arm in a block: an arm that is a declaration stays the
+// early error it is (the source is checked as written), at LEN links and past.
+test('parse list: a declaration arm is an early error at any length', () => {
+  for (const n of [3, LEN + 1]) for (const decl of ['let y = 1', 'const y = 1', 'class C {}', 'function g() {}'])
+    throws(() => jz(`export let f = (x) => { ${R(n, j => j === 1 ? `if (x === 1) ${decl}` : `if (x === ${j}) x = ${j}`).join('; else ')}; return x }`), /requires a block in statement position/, `${decl} at ${n} links`)
+})

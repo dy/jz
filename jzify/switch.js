@@ -4,6 +4,7 @@
  */
 
 import { withLoc } from '../src/ast.js'
+import { LEN, guardList } from '../src/list-form.js'
 
 /** Flatten a switch clause body to a single node, dropping ASI position markers.
  * Unlike a plain statement list this keeps any `break` intact — transformSwitch
@@ -90,16 +91,20 @@ export function createSwitchLowering(transform, names) {
   if (!simple) stmts.push(['let', ['=', tmp, disc]])
 
   // Phase 1 \u2014 entry index. Init to default's position (or n = "no clause runs"),
-  // then let the first matching label override it via an if/else-if chain.
+  // then let the first matching label override it via an if/else-if chain, past
+  // LEN labels the guard list of the same meaning (src/list-form.js).
   stmts.push(['let', ['=', start, [null, defaultIdx >= 0 ? defaultIdx : n]]])
-  let chain = null
+  const links = []
   for (let i = n - 1; i >= 0; i--) {
     if (cases[i][0] !== 'case') continue
-    const hit = ['=', start, [null, i]]
-    const cond = ['===', tmp, transform(cases[i][1])]
-    chain = chain != null ? ['if', cond, hit, chain] : ['if', cond, hit]
+    links.push(['if', ['===', tmp, transform(cases[i][1])], ['=', start, [null, i]]])
   }
-  if (chain) stmts.push(chain)
+  links.reverse()
+  if (links.length > LEN) stmts.push(guardList(links, null, names.switchLabel, null, 'label'))
+  else if (links.length) {
+    for (let k = links.length - 1; k > 0; k--) links[k - 1].push(links[k])
+    stmts.push(links[0])
+  }
   if (brk) stmts.push(['let', ['=', brk, [null, false]]])
 
   // Phase 2 \u2014 run clauses from the entry index, falling through until a break.

@@ -16,14 +16,16 @@ export function createNames() {
   let objThisIdx = 0
   let staticClassIdx = 0
   let classBaseIdx = 0
+  let swLabelIdx = 0
 
   return {
     reset() {
-      swIdx = argsIdx = classIdx = objThisIdx = staticClassIdx = classBaseIdx = 0
+      swIdx = argsIdx = classIdx = objThisIdx = staticClassIdx = classBaseIdx = swLabelIdx = 0
     },
     switchDisc: () => `${T}sw${swIdx++}`,
     switchStart: () => `${T}swst${swIdx++}`,
     switchBreak: () => `${T}swbrk${swIdx++}`,
+    switchLabel: () => `${T}swl${swLabelIdx++}`,
     arg: () => `\uE001arg${argsIdx++}`,
     objThis: () => `\uE003obj${objThisIdx++}`,
     classSelf: () => `\uE003self${classIdx++}`,

@@ -17,7 +17,8 @@ import { lookup, idx, cur, skip, err, prec, seek, expr, word, keyword, next, par
 import { body as armBody, follows } from 'subscript/feature/if.js'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
-import { here, where } from './ctx.js'
+import { here, where, registerResetHook } from './ctx.js'
+import { listForm, restartNames } from './list-form.js'
 import { asciiPart, idStart, idPart, lineEnd, isSpace } from './unicode.js'
 
 // IdentifierName (§12.7). subscript takes every code unit from U+00C0 but ×
@@ -496,7 +497,8 @@ const parse = (src, sourceType = 'jz', base = 0, early = true) => {
   joinedAt = gapFrom = gapEnd = closedOpen = closedAt = -1
   opens.length = 0
   try {
-    ast = foldStringRuns(jessieParse(parseSource))
+    // a long chain as a list (src/list-form.js), before any walk recurses down it
+    ast = listForm(foldStringRuns(jessieParse(parseSource)))
     if (parseSource.includes('using')) awaitUsingHeads(ast)
     if (early) validateEarlyErrors(ast, src, sourceType, base)
     if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
@@ -509,6 +511,9 @@ const parse = (src, sourceType = 'jz', base = 0, early = true) => {
   if (base !== 0) place(ast, base)
   return ast
 }
+
+// the names list-form.js mints are a compile's own
+registerResetHook(restartNames)
 
 token('NaN', 200, a => !a && ['nan'])
 
