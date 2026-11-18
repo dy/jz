@@ -20,7 +20,7 @@
 // program at every level, in modules of 40, did not end: its records joined at level 3 meet a
 // loop jz never leaves (open; the programs of that module each end alone).
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const OTHER = [0, 3, 'size']
 const OWN = ['N', 'a', 'b', 'c', 'd', 'k', 'ps', 'st', 'mk', 'kern', 'grow', 'P', 'vals', 'a0', 'b0', 'c0']
@@ -184,7 +184,7 @@ for (let i = order.length - 1, s = 1; i > 0; i--) {
   [order[i], order[j]] = [order[j], order[i]]
 }
 const at = new Map(order.map((p, i) => [p, OTHER[i % OTHER.length]]))
-test(`plain lift population: ${progs.length} programs at level 2, a third each at 0, 3 and size`, () => {
+test(sampled(`plain lift population: ${progs.length} programs at level 2, a third each at 0, 3 and size`), () => {
   population('plain lift at 2', progs, { configs: [2], own: OWN, chunk: Math.ceil(progs.length / 2) })
   for (const level of OTHER) population(`plain lift at ${level}`, progs.filter((_, i) => at.get(i) === level), { configs: [level], own: OWN })
 })

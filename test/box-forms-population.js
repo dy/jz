@@ -8,7 +8,7 @@
 // regular array and a string indexed. Each program is `f(n, s, t)`, every loop capped by its own
 // count (.work/architecture.md, "Counter widths built").
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -103,5 +103,5 @@ prog('a regular array indexed', 'let i = s\n  const a = [3, 1, 4, 1, 5, 9, 2, 6]
 prog('a regular array stored', 'let i = s\n  const a = [3, 1, 4, 1, 5, 9, 2, 6]', `while (i < n) { ${cap()}; a[i & 7] = i; sum += a[c & 7]; ${R} }`)
 prog('a string indexed', 'let i = s\n  const str = "abcdefgh"', `while (i < n) { ${cap()}; if (str[i] === undefined) u++; else sum += 1; ${R} }`)
 
-test(`box forms population: ${P.length} boxes beside the copy's other forms, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box forms population: ${P.length} boxes beside the copy's other forms, ${CONFIGS.length} configurations`), () =>
   population('box forms', P, { configs: CONFIGS, own: ['go'] }))

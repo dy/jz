@@ -498,9 +498,11 @@ function record(times, failed, processes) {
 // named to it, and runs them as below.
 const jobs = splittable ? suiteJobs(jobsArg ?? (process.env.JZ_TEST_JOBS || undefined), selected.length) : 1
 if (jobs > 1) {
-  // A file weighs its CPU seconds on this leg; one the leg has not timed, its bytes at
-  // the seconds a byte the timed files cost.
-  const timed = Object.fromEntries(Object.entries(JSON.parse(readFileSync(COSTS, 'utf8')).runs[row]?.files ?? {}).map(([f, [s]]) => [f, s]))
+  // A file weighs its CPU seconds on this leg (under JZ_TEST_SAMPLE, its sampled seconds
+  // where the sampled row has them, else its whole seconds); one the leg has not timed,
+  // its bytes at the seconds a byte the timed files cost.
+  const runs = JSON.parse(readFileSync(COSTS, 'utf8')).runs
+  const timed = Object.fromEntries(Object.entries({ ...runs[`${suite}-${legOf({ ...process.env, JZ_TEST_SAMPLE: undefined })}`]?.files, ...runs[row]?.files }).map(([f, [s]]) => [f, s]))
   const weight = estimated(selected, timed, name => statSync(new URL(`./${name}.js`, import.meta.url)).size)
   // The seed that moves the runs' boundaries (test/_jobs.js plan): JZ_TEST_SEED, or the
   // commit checked out, so a run repeats on its commit and moves on the next.

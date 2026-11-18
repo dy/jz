@@ -12,7 +12,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz } from './util.js'
-import { population, norm } from './_population.js'
+import { population, norm, sampled } from './_population.js'
 
 const CONFIGS = [0, 2, 3, 'size', { level: 'speed', relaxedFloat: false }]
 
@@ -95,7 +95,7 @@ const progs = [
   ...Object.entries(OWN).map(([name, src]) => ({ name, src, args })),
 ]
 
-test(`licm population: ${progs.length} loops with invariant subexpressions, ${args.length} operand sets and trip counts, ${CONFIGS.length} configurations`, () =>
+test(sampled(`licm population: ${progs.length} loops with invariant subexpressions, ${args.length} operand sets and trip counts, ${CONFIGS.length} configurations`), () =>
   population('licm', progs, { configs: CONFIGS, own: ['cnt', 'twice', 'big', 'tbl', 'lst', 'cell', 'one', 'src', 'dst'] }))
 
 // The bits of a NaN a product carries are the engine's own in JavaScript: Node 24 on x64 answers

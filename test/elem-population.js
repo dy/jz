@@ -20,6 +20,7 @@ import parseWat from 'watr/parse'
 import { bounded } from './_bounded.js'
 import { onKernel } from './_matrix.js'
 import { wat } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const LEVELS = [false, true, 'size', 'speed']
 const LIMIT = 60000
@@ -124,12 +125,13 @@ const generateWords = (seed, count) => {
   return Array.from({ length: count }, one)
 }
 
-const population = (seed, progs, levels = LEVELS) => {
+const population = (seed, all, levels = LEVELS) => {
   if (onKernel()) return
+  const progs = sample([...all.entries()], `seed ${seed}`)
   const bad = []
   let checks = 0
-  for (const p of progs) p.want = node(p)
-  for (const optimize of levels) for (const [j, p] of progs.entries()) {
+  for (const [, p] of progs) p.want = node(p)
+  for (const optimize of levels) for (const [j, p] of progs) {
     const out = bounded({ src: p.text, optimize, runs: [p.schedule] }, LIMIT)
     checks++
     const got = out.hung ? null : out.results[0].map(r => r.startsWith('throws') ? 'throws' : r)
@@ -137,7 +139,7 @@ const population = (seed, progs, levels = LEVELS) => {
     if (!got) bad.push(`program ${j} at ${JSON.stringify(optimize)}: no answer in ${LIMIT / 1000} s\n${p.text}\n  ${calls}`)
     else if (got.join(' ') !== p.want.join(' ')) bad.push(`program ${j} at ${JSON.stringify(optimize)}: ${got.join(' ')} for Node's ${p.want.join(' ')}\n${p.text}\n  ${calls}`)
   }
-  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} runs at ${levels.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  is(bad.length, 0, `seed ${seed}: ${progs.length} of ${all.length} programs, ${checks} runs at ${levels.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
 }
 
 // The gate of the word a level reads off memory: a population of element reads, compiled at
@@ -225,7 +227,7 @@ const loadForms = (text) => {
 // it by its mark. The gate fails once that read takes its level's form, to drop this entry.)
 const KNOWN_NARROW = { levels: [0, 1], fn: /^\$r(\$exp)?$/, cause: 'module/core.js: a word field read as i32.trunc_sat_f64_s of its load' }
 const FORM_LEVELS = [0, 1, 2, 'size', 'speed']
-test('element population: a word read off memory takes its level\'s form, at every level', () => {
+test(sampled('element population: a word read off memory takes its level\'s form, at every level'), () => {
   if (onKernel()) return
   const progs = wordKernels(), bad = [], seen = {}
   let known = 0
@@ -250,6 +252,6 @@ test('element population: a word read off memory takes its level\'s form, at eve
 })
 
 for (const seed of [1, 2, 3])
-  test(`element population: seed ${seed}, 60 modules reading arrays through what their stores make of the elements, against Node`, () => population(seed, generate(seed, 60)))
+  test(sampled(`element population: seed ${seed}, 60 modules reading arrays through what their stores make of the elements, against Node`), () => population(seed, generate(seed, 60)))
 for (const seed of [4, 5])
-  test(`element population: seed ${seed}, 30 modules reading words off memory by each level's form, against Node`, () => population(seed, generateWords(seed, 30), [false, 1, true, 'size', 'speed']))
+  test(sampled(`element population: seed ${seed}, 30 modules reading words off memory by each level's form, against Node`), () => population(seed, generateWords(seed, 30), [false, 1, true, 'size', 'speed']))

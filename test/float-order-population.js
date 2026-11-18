@@ -11,7 +11,7 @@
 // that order matters, with -0 and +0, with infinities, with a NaN. The unrolled single statements
 // are all taken; the rest a fixed seed samples.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 2, 'size', { level: 'speed', relaxedFloat: false }]
 const OWN = ['N', 'a', 'b', 'k', 'mk']
@@ -83,5 +83,5 @@ for (const arr of Object.keys(ARR)) for (const [tn, t] of Object.entries(TERM)) 
   for (const [on, o] of Object.entries(OTHER)) if ((o.length || tn === 'sum') && rand() < 0.5) progs.push({ name: `${arr} ${tn} ${on}`, src: prog(arr, o(t)), args })
 }
 
-test(`float order population: ${progs.length} programs bit for bit with Node at ${CONFIGS.length} levels`, () =>
+test(sampled(`float order population: ${progs.length} programs bit for bit with Node at ${CONFIGS.length} levels`), () =>
   population('float order', progs, { configs: CONFIGS, own: [...OWN, 'fill'], chunk: 40 }))

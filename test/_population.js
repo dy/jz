@@ -6,8 +6,42 @@
 // compile; Node evaluates the same module, as jz instantiates it once a configuration. Where the
 // README documents a divergence a program meets, its `node` is the source Node runs in its
 // place: the program as the README reads it.
+//
+// JZ_TEST_SAMPLE=<n> runs one program in n of every population: the same ones on every run,
+// picked by SEED, and the sampled test's name says so. Unset, or 1, a population runs whole.
+// A sweep that does not go through population() takes the same switch through sample().
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
+
+const SEED = 1
+const SAMPLE = (v => {
+  if (v == null || v === '') return 1
+  if (!/^[1-9]\d*$/.test(v)) throw new Error(`JZ_TEST_SAMPLE must be a whole number of 1 or more, not '${v}'`)
+  return Number(v)
+})(process.env.JZ_TEST_SAMPLE)
+
+// A place's rank under the seed: FNV-1a over its key, the bits mixed by murmur3's finalizer,
+// so the places kept do not follow a grid's strides.
+const rank = key => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193)
+  h = Math.imul(h ^ h >>> 16, 0x85ebca6b)
+  h = Math.imul(h ^ h >>> 13, 0xc2b2ae35)
+  return (h ^ h >>> 16) >>> 0
+}
+
+/** The items of `list` this run keeps, in their order: all of them, or under JZ_TEST_SAMPLE=<n>
+ *  the ceiling of one in n, the places that rank first under the seed. `label` names the list
+ *  in its file, so two lists of one length keep different places. */
+export const sample = (list, label) => {
+  if (SAMPLE === 1) return list
+  const kept = new Set(list.map((_, i) => [rank(`${SEED}:${label}:${i}`), i]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    .slice(0, Math.ceil(list.length / SAMPLE)).map(([, i]) => i))
+  return list.filter((_, i) => kept.has(i))
+}
+
+/** A sampled test's name: under JZ_TEST_SAMPLE, the sample it takes. */
+export const sampled = name => SAMPLE === 1 ? name : `${name} (one program in ${SAMPLE}, seed ${SEED})`
 
 // A value as both sides are compared: -0 and NaN told apart, an array or a typed array by its elements.
 export const norm = x => typeof x === 'number' ? (Number.isNaN(x) ? 'NaN' : Object.is(x, -0) ? '-0' : String(x))
@@ -24,10 +58,13 @@ const call = (m, k, a) => {
 }
 
 /**
- * Every program of `progs` called with each of its argument lists at each of `configs`, against
- *  Node: one assertion a differing call, and one a population saying what it ran.
+ * Every program of `all` (its sample, under JZ_TEST_SAMPLE) called with each of its argument
+ *  lists at each of `configs`, against Node: one assertion a differing call, and one a
+ *  population saying what it ran. The sample is taken before the programs are joined, so a
+ *  population joined in chunks compiles fewer of them.
  */
-export function population(label, progs, { configs, own = [], chunk = Infinity }) {
+export function population(label, all, { configs, own = [], chunk = Infinity }) {
+  const progs = sample(all, label)
   const names = new RegExp(`\\b(${['f', 'pre', 'g', ...own].join('|')})\\b`, 'g')
   let checks = 0
   for (let c0 = 0; c0 < progs.length; c0 += chunk) {
@@ -44,5 +81,5 @@ export function population(label, progs, { configs, own = [], chunk = Infinity }
       }))
     }
   }
-  is(true, true, `${label}: ${progs.length} programs, ${checks} checks, ${configs.length} configurations`)
+  is(true, true, `${label}: ${progs.length}${progs.length < all.length ? ` of ${all.length}` : ''} programs, ${checks} checks, ${configs.length} configurations`)
 }

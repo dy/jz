@@ -8,7 +8,7 @@
 // at run time, the trip count around a strip of lanes, and the function reads what the loop leaves
 // in its locals.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -104,5 +104,5 @@ for (const [t, [T, seed]] of Object.entries(TYPES)) {
 for (const [k, kern] of Object.entries(ONE))
   progs.push({ name: `arr ${k} one`, src: progOne(`const b = []; for (let i = 0; i < N; i++) b.push(i * 37 % 23 - 11 + i % 4 * 0.25); return b`, '', kern), args })
 
-test(`vector alias population: ${progs.length} loops over two views of one buffer, ${args.length} offsets and counts, ${CONFIGS.length} configurations`, () =>
+test(sampled(`vector alias population: ${progs.length} loops over two views of one buffer, ${args.length} offsets and counts, ${CONFIGS.length} configurations`), () =>
   population('vector alias', progs, { configs: CONFIGS, own: ['N', 'mk', 'kern', 'sum'] }))

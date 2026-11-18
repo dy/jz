@@ -12,6 +12,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 // [name, the three arguments, the use]
@@ -53,8 +54,9 @@ export let main = () => { sum = 0
   f(${c}, 4, 0)
   return sum }`
 
-for (const [form, at] of FORMS) test(`finalizer population: ${form}, ${USES.length} uses, ${CONFIGS.length} configurations`, () => {
-  for (const use of USES) {
+for (const [form, at] of FORMS) test(sampled(`finalizer population: ${form}, ${USES.length} uses, ${CONFIGS.length} configurations`), () => {
+  const uses = sample(USES, form)
+  for (const use of uses) {
     const src = program(use, at), want = String(oracle(src).main())
     for (const optimize of CONFIGS) {
       let got
@@ -63,5 +65,5 @@ for (const [form, at] of FORMS) test(`finalizer population: ${form}, ${USES.leng
       if (got !== want) is(got, want, `${use[0]} in ${form}, at ${JSON.stringify(optimize)}`)
     }
   }
-  is(true, true, `${form}: ${USES.length} programs`)
+  is(true, true, `${form}: ${uses.length} programs`)
 })

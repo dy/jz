@@ -21,6 +21,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -86,9 +87,11 @@ export let main = () => { sum = 0; g = 0
   try { f(new Float64Array([3, 5, 7, 9]), [13, 14, 15, 16], { a: 4 }, mk(), new Uint8Array([13, 14, 15, 16]), 'qq', 3, 1) } catch (e) { sum += 0.25 }
   return sum + g * 1000 }`
 
-for (const wrap of WRAPS) test(`handler population: ${wrap[0]}, ${SHAPES.length * THROWS.length} programs, ${CONFIGS.length} configurations`, () => {
-  for (const shape of SHAPES) for (const thrown of THROWS) check(`${shape[0]} before ${thrown[0]}, in ${wrap[0]}`, grid(shape, thrown, wrap))
-  is(true, true, `${wrap[0]}: ${SHAPES.length * THROWS.length} programs`)
+// (the grid is sampled under JZ_TEST_SAMPLE; the programs written out below run whole)
+for (const wrap of WRAPS) test(sampled(`handler population: ${wrap[0]}, ${SHAPES.length * THROWS.length} programs, ${CONFIGS.length} configurations`), () => {
+  const progs = sample(SHAPES.flatMap(shape => THROWS.map(thrown => [shape, thrown])), wrap[0])
+  for (const [shape, thrown] of progs) check(`${shape[0]} before ${thrown[0]}, in ${wrap[0]}`, grid(shape, thrown, wrap))
+  is(true, true, `${wrap[0]}: ${progs.length} programs`)
 })
 
 // The exits of a body a finalizer runs for: a `return`, `break` or `continue` leaves the try

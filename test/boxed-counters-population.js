@@ -9,6 +9,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const W = 2 ** 31
@@ -48,19 +49,20 @@ for (const [dir, shapes, tests] of [['up', UP, TESTS_UP], ['down', DOWN, TESTS_D
   return [${names}, c, t, a[0], a[1], a[5]]
 }` })
 
-const program = loops.map((l, k) => `export let f${k} = ${l.src}`).join('\n')
+const kept = sample(loops, 'loops')
+const program = kept.map((l, k) => `export let f${k} = ${l.src}`).join('\n')
 const SRC = `const a = new Float64Array(8)\n${program}`
 
-test(`boxed counters population: ${loops.length} loops over integers they write, ${CONFIGS.length} configurations`, () => {
+test(sampled(`boxed counters population: ${loops.length} loops over integers they write, ${CONFIGS.length} configurations`), () => {
   for (const optimize of CONFIGS) {
     const got = jz(SRC, { optimize }).exports, want = oracle(SRC)
-    loops.forEach(({ name }, k) => {
+    kept.forEach(({ name }, k) => {
       for (const s of STARTS) for (const st of STRIDES) for (const n of BOUNDS) {
         const a = got[`f${k}`](s, st, n), b = want[`f${k}`](s, st, n)
         // (one assertion per differing call: the population is large; -0 and NaN told apart)
         if (a.length !== b.length || a.some((x, i) => !Object.is(x, b[i]))) is(a, b, `${name} (s = ${s}, st = ${st}, n = ${n}) at ${JSON.stringify(optimize)}`)
       }
     })
-    is(true, true, `${loops.length} loops at ${JSON.stringify(optimize)}`)
+    is(true, true, `${kept.length}${kept.length < loops.length ? ` of ${loops.length}` : ''} loops at ${JSON.stringify(optimize)}`)
   }
 })

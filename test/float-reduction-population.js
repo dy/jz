@@ -18,6 +18,7 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
 import { onKernel } from './_matrix.js'
+import { sample, sampled } from './_population.js'
 
 // Patterns: reassociation visible (1e16 beside 1), rounding, NaN, infinities, signed zeros,
 // overflow, subnormals, mixed magnitudes.
@@ -146,12 +147,13 @@ const within = (cls, k, n, want, got, mag) => {
 // compiler compiled by jz, which frees nothing within a compile: the whole module runs it out of
 // memory at exact and speed, and a third of it to a module took 66 minutes (2026-11-15).
 const names = /\b(P|f|g)\b/g
-const SRC = P.map((p, k) => p.src.replace(names, `$1_${k}`)).join('\n')
-for (const [tag, optimize] of CONFIGS) test(`float reduction population: ${P.length} reductions, ${ARGS.length} patterns and lengths, at ${tag}`, () => {
+const Q = sample(P, 'reductions')
+const SRC = Q.map((p, k) => p.src.replace(names, `$1_${k}`)).join('\n')
+for (const [tag, optimize] of CONFIGS) test(sampled(`float reduction population: ${P.length} reductions, ${ARGS.length} patterns and lengths, at ${tag}`), () => {
   if (onKernel()) return
   const node = oracle(SRC), mod = jz(SRC, { optimize }).exports
   let relaxed = 0
-  P.forEach((p, k) => {
+  Q.forEach((p, k) => {
     for (const [pk, n] of ARGS) {
       const want = node[`f_${k}`](pk, n)
       let got
@@ -161,5 +163,5 @@ for (const [tag, optimize] of CONFIGS) test(`float reduction population: ${P.len
       is(show(got), show(want), `${p.name} (${pk}, ${n}) at ${tag}${tag === 'speed' ? ', past the bound' : ''}`)
     }
   })
-  is(true, true, `${P.length} programs at ${tag}${tag === 'speed' ? `: ${relaxed} calls differ from Node within the bound` : ''}`)
+  is(true, true, `${Q.length}${Q.length < P.length ? ` of ${P.length}` : ''} programs at ${tag}${tag === 'speed' ? `: ${relaxed} calls differ from Node within the bound` : ''}`)
 })

@@ -14,7 +14,7 @@
 // Node runs it with n and t so converted; s, copied into the counter that indexes the array, is
 // passed as it is (jz answers that at every level for all 210 argument lists, 2026-11-15).
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -94,7 +94,7 @@ prog('arguments of other kinds', 'let i = s', `while (i < n) { ${cap}; ${round} 
 prog('arguments of other kinds, a geometric pair', 'let ix = 0, id = s', `while (ix < n) { ${cap}; x[ix] = c; ix = 2 * (id - 1); id *= 4 }`, 'ix, id', ODD)
 // (README, "Numeric export parameters": n and t converted at the boundary, s passed as it is)
 P.find(p => p.name === 'arguments of other kinds').node = P.find(p => p.name === 'arguments of other kinds').src.replace('export let f = (n, s, t) => {', 'export let f = (n, s, t) => { n = +n; t = +t')
-test(`box probe population: ${P.length} probes of the box's entry, -0 and shape, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box probe population: ${P.length} probes of the box's entry, -0 and shape, ${CONFIGS.length} configurations`), () =>
   population('box probe', P, { configs: CONFIGS, own: ['Z', 'ZERO', 'run'] }))
 }
 
@@ -139,7 +139,7 @@ prog('the stride written between the word and the loop', 'let q = t | 0, i = q <
 prog('a held pair, the second a word of the first', 'let i = s | 0, id = i << 1', 'while (i < n) { if (++c > 44) break; x[i] = c; i = i + id; id = id * 2 }', 'i, id')
 prog('a held pair entering from literals out of the box', 'let i = 1073741824, id = 3', 'while (i < n) { if (++c > 44) break; x[i] = c; i = i + id; id = id * 2 }', 'i, id')
 prog('a held pair, one literal below zero', 'let i = -3, id = 2', 'while (i < n) { if (++c > 44) break; x[i] = c; i = i + id; id = id * 2 }', 'i, id')
-test(`box probe population: ${P.length} held names written again as declared, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box probe population: ${P.length} held names written again as declared, ${CONFIGS.length} configurations`), () =>
   population('box entry', P, { configs: CONFIGS }))
 }
 
@@ -185,7 +185,7 @@ for (const [name, [decl, head, tail]] of Object.entries(INNER)) for (const outer
       return scan(a, b, prev, LB)
     }`, args: [1, 7, 12345].flatMap(seed => [[seed, 0, 5], [seed, 1, 5], [seed, 1, 1], [seed, 1, 63], [seed, 1, 64], [seed, 1, 7]]) })
 }
-test(`box probe population: ${P.length} DP rows whose copy leaves for the loop as written, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box probe population: ${P.length} DP rows whose copy leaves for the loop as written, ${CONFIGS.length} configurations`), () =>
   population('box resume', P, { configs: CONFIGS, own: ['LB', 'scan'] }))
 }
 
@@ -227,7 +227,7 @@ for (const [name, [decl, head, tail, after]] of Object.entries(LOOP)) P.push({ n
       for (let k = 0; k <= LB; k++) h = Math.imul(h ^ prev[k], 16777619)
       return h
     }`, args: [1, 7, 12345].flatMap(seed => [[seed, 0, 5], [seed, 1, 0], [seed, 1, 1], [seed, 1, 2], [seed, 1, 5], [seed, 1, 33], [seed, 1, 63], [seed, 1, 64]]) })
-test(`box probe population: ${P.length} single rows left at a cell, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box probe population: ${P.length} single rows left at a cell, ${CONFIGS.length} configurations`), () =>
   population('box resume alone', P, { configs: CONFIGS, own: ['LB'] }))
 }
 
@@ -260,6 +260,6 @@ prog('no init', 'let j = 1', 'for (; j < 15; j++) {', '}', 'h = j')
 prog('no init, no step', 'let j = 1', 'for (; j < 15;) {', 'j = j + 1 }', 'h = j')
 prog('while', 'let j = 1', 'while (j < 15) {', 'j = j + 1 }', 'h = j')
 prog('while, stepped by ++', 'let j = 1', 'while (j < 15) {', 'j++ }', 'h = j')
-test(`box probe population: ${P.length} for inits around a copy that leaves, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box probe population: ${P.length} for inits around a copy that leaves, ${CONFIGS.length} configurations`), () =>
   population('box init', P, { configs: CONFIGS, own: ['LB'] }))
 }

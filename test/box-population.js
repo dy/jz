@@ -13,7 +13,7 @@
 // own count; an argument under a bit operation stays below 2^63 (README, "Bitwise operands under
 // 2^63").
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -223,5 +223,5 @@ for (const [name, ixw, idw] of [['shifts', 'ix = (id << 1) - n2', 'id = id << 2'
 for (const [name, call] of [['called twice', 'sum = run(x, n, s, t) + run(x, n, t, s)'], ['called in a loop', 'for (let k = 0; k < 3; k++) sum += run(x, n, s + k, t)'], ['called from a counter', 'for (let k = 0; k < 5; k++) sum += run(x, n, k, k + 1)']])
   prog({ name: `G ${name}`, pre: `const run = (x, n, s, t) => { let i = s, c = 0; while (i < n) { if (++c > 30) break; x[i] = c; i = i * 2 + t }; return i }`, names: 'c', loop: call })
 
-test(`box population: ${P.length} whiles holding their integers in a box, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box population: ${P.length} whiles holding their integers in a box, ${CONFIGS.length} configurations`), () =>
   population('box', P, { configs: CONFIGS, own: ['M', 'o', 'run'] }))

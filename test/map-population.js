@@ -8,7 +8,7 @@
 // tables in their order: a slot reused across a mutation, a key hashed by the wrong form or a
 // table laid out at the wrong load answers otherwise.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -65,5 +65,5 @@ export let f = (n) => {
 }` })
 }
 
-test(`map population: ${P.length} statements over a Map or a Set, by key kind and what runs between their halves, ${CONFIGS.length} configurations`, () =>
+test(sampled(`map population: ${P.length} statements over a Map or a Set, by key kind and what runs between their halves, ${CONFIGS.length} configurations`), () =>
   population('map statements', P, { configs: CONFIGS, own: ['K', 'O', 'grow', 'touch', 'fold'], chunk: 35 }))

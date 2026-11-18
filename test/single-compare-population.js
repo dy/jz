@@ -13,6 +13,7 @@
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { run, oracle } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer)
 const up = (x) => { if (x !== x || x === Infinity) return x; if (x === 0) return 1.401298464324817e-45; f32[0] = x; u32[0] += x > 0 ? 1 : -1; return f32[0] }
@@ -39,9 +40,10 @@ for (const shape of ['stencil', 'map']) for (const op of OPS) {
 const LEVELS = [['false', false], ['true', true], ['size', 'size'], ['exact', { level: 'speed', relaxedFloat: false }], ['speed', 'speed']]
 const CHUNK = 52
 
-test('single compare population: every comparison as Node at every level', () => {
-  for (let at = 0; at < P.length; at += CHUNK) {
-    const part = P.slice(at, at + CHUNK)
+test(sampled('single compare population: every comparison as Node at every level'), () => {
+  const Q = sample(P, 'comparisons')
+  for (let at = 0; at < Q.length; at += CHUNK) {
+    const part = Q.slice(at, at + CHUNK)
     const src = D + '\n' + part.map((p, i) => `export let f${i} = ${p.src}`).join('\n'), host = oracle(src)
     for (const [name, optimize] of LEVELS) {
       const mine = run(src, { optimize })

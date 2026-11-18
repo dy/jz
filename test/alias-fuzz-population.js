@@ -9,7 +9,7 @@
 // of the locals and of every store. A program Node throws on, or whose answers hold NaN or an
 // infinity, is left out, as the scratch population left it.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [2, 'speed']
 const TA = ['A', 'B', 'C', 'D'], AR = ['r1', 'r2'], OB = ['o1', 'o2']
@@ -82,8 +82,8 @@ export let f = (s) => {
 }
 const OWN = ['buf', 'A', 'B', 'C', 'D', 'r1', 'r2', 'r3', 'G', 'o1', 'o2', 'h', 'k']
 
-test(`alias fuzz population: 230 programs over aliasing views, arrays and objects, ${CONFIGS.length} configurations`, () =>
+test(sampled(`alias fuzz population: 230 programs over aliasing views, arrays and objects, ${CONFIGS.length} configurations`), () =>
   population('alias fuzz', programs(1, 230, false), { configs: CONFIGS, own: OWN }))
 
-test(`alias fuzz population: 150 programs adding an Int32Array, a growing array and a cursor, ${CONFIGS.length} configurations`, () =>
+test(sampled(`alias fuzz population: 150 programs adding an Int32Array, a growing array and a cursor, ${CONFIGS.length} configurations`), () =>
   population('alias fuzz 2', programs(1, 150, true), { configs: CONFIGS, own: OWN }))

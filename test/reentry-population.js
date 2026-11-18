@@ -20,6 +20,7 @@ import { instantiate } from '../interop.js'
 import { compile } from './util.js'
 import { bounded } from './_bounded.js'
 import { onKernel } from './_matrix.js'
+import { sample, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const show = v => Object.is(v, -0) ? '-0' : String(v)
@@ -107,12 +108,14 @@ const OWN = /\b(g\d|m\d|h|f|cb\d)\b/g
 // programs of other populations ran out of its memory, 2026-11-15).
 const population = (label, progs) => {
   if (onKernel()) return
-  const part = progs.map(({ text, cbOf }, j) => ({ j, text, src: text.replace(OWN, `$1_${j}`), cbs: cbOf.map((m, i) => [`cb${i}_${j}`, `m${m}_${j}`]) }))
+  // (a program keeps its number in the seed's stream; `k` is its place in the module)
+  const part = sample(progs.map(({ text, cbOf }, j) => ({ j, text, src: text.replace(OWN, `$1_${j}`), cbs: cbOf.map((m, i) => [`cb${i}_${j}`, `m${m}_${j}`]) })), label)
+    .map((q, k) => ({ ...q, k }))
   const cbs = part.flatMap(q => q.cbs)
   const body = part.map(q => q.src).join('\n')
   const node = () => new Function(`${cbs.map(([cb, m]) => `const ${cb} = () => ${m}()`).join('\n')}\n${body.replace(/export /g, '')}\nreturn { ${part.map(q => `f_${q.j}`).join(', ')} }`)()
   const want = ARGS.map(a => { const m = node(); return part.map(q => { try { return show(m[`f_${q.j}`](a)) } catch { return null } }) })
-  const live = part.filter(q => want.every(w => w[q.j] !== null))
+  const live = part.filter(q => want.every(w => w[q.k] !== null))
   const src = `import { ${cbs.map(([cb]) => cb).join(', ')} } from 'host'\n${body}`
   const runs = ARGS.map(a => live.map(q => [`f_${q.j}`, [a]]))
   let checks = 0, calls = 0
@@ -124,16 +127,16 @@ const population = (label, progs) => {
     }
     calls += out.calls
     out.results.forEach((row, ai) => row.forEach((got, i) => {
-      const q = live[i], w = want[ai][q.j]
+      const q = live[i], w = want[ai][q.k]
       checks++
       if (got !== w) is(got, w, `${label}, program ${q.j}: f(${ARGS[ai]}) at ${JSON.stringify(optimize)}\n${q.text}\n  imports call ${q.cbs.map(([, m]) => m.replace(/_\d+$/, ''))}`)
     }))
   }
-  is(true, true, `${label}: ${live.length} programs (${part.length - live.length} Node throws on), ${checks} checks, ${calls} calls back`)
+  is(true, true, `${label}: ${live.length} programs of ${part.length}${part.length < progs.length ? ` (a sample of ${progs.length})` : ''} (${part.length - live.length} Node throws on), ${checks} checks, ${calls} calls back`)
 }
 
 for (const seed of [1, 2, 3])
-  test(`reentry population: seed ${seed}, 400 generated programs on one instance an argument, ${GENERATED.length} configurations`, () => population(`seed ${seed}`, generate(seed, 400)))
+  test(sampled(`reentry population: seed ${seed}, 400 generated programs on one instance an argument, ${GENERATED.length} configurations`), () => population(`seed ${seed}`, generate(seed, 400)))
 
 // The phase 7 scout's reaches: [name, the program, the export its import `cb` calls (none: the
 // control, the export called directly), f's arguments].

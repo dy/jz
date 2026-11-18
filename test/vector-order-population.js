@@ -10,7 +10,7 @@
 // locals, W3 and W5 a store under a condition, W4 a shift in a narrow lane), which
 // test/vector-legality.js pins at levels 2 and 3.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 import { onKernel } from './_matrix.js'
 
 // (levels 1, 3 and size agree too, native and under WASI, 2026-11-15: 236 s of one core for the
@@ -197,7 +197,7 @@ add('P first element', 64, `for (let i = 0; i < n; i++) d[i] = s[0] + t[i]`, ALL
 
 // (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
 // out of memory on the whole module, 2026-11-15)
-test(`vector order population: ${progs.length} loops over typed arrays one may alias, ${CONFIGS.length} configurations`, () => {
+test(sampled(`vector order population: ${progs.length} loops over typed arrays one may alias, ${CONFIGS.length} configurations`), () => {
   if (onKernel()) return
   population('vector order', progs, { configs: CONFIGS, own: ['a', 'b', 'c', 'kern', 'fill', 'hash'] })
 })
@@ -246,5 +246,5 @@ export let f = () => { ${fillA}
 }
 const census = Object.entries(P).map(([name, src]) => ({ name, src, args: [[]] }))
 
-test(`vector order population: the census's ${census.length} programs, ${CONFIGS.length} configurations`, () =>
+test(sampled(`vector order population: the census's ${census.length} programs, ${CONFIGS.length} configurations`), () =>
   population('vector census', census, { configs: CONFIGS, own: ['a', 'b', 'd', 'out'] }))

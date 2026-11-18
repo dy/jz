@@ -22,6 +22,7 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { bounded } from './_bounded.js'
 import { levels, onKernel } from './_matrix.js'
+import { sample, sampled } from './_population.js'
 
 const LEVELS = levels(false, 1, true, 3, 'size', 'speed')
 // A seed's compile and its instances, in the worker, at most this long (a hang fails here).
@@ -73,8 +74,9 @@ const reads = (j) => [[`n_${j}`, []], ...Array.from({ length: READ }, (_, i) => 
 // A seed's programs as one module on one instance: each round, every program's calls, every
 // program read, the reset, every program read. The oracle: a fresh instance read, and for each
 // round a fresh instance after that round's calls, read.
-const population = (label, progs) => {
+const population = (label, all) => {
   if (onKernel()) return
+  const progs = sample(all, label)
   const src = progs.map(p => p.text.replace(OWN, `$1_${p.j}`)).join('\n')
   const R = Math.max(...progs.map(p => p.rounds.length))
   const calls = (r) => progs.flatMap(p => (p.rounds[r] ?? []).map(m => [`${m}_${p.j}`, []]))
@@ -85,8 +87,9 @@ const population = (label, progs) => {
     fresh.push([...calls(r), ...readAll()])
   }
   const per = READ + 1
-  // a program's reads out of a run's answers: the run's answers from `at`, program by program
-  const slice = (answers, at, j) => answers.slice(at + j * per, at + (j + 1) * per).join(' ')
+  // a program's reads out of a run's answers: the run's answers from `at`, program by program,
+  // `k` its place in the module
+  const slice = (answers, at, k) => answers.slice(at + k * per, at + (k + 1) * per).join(' ')
   let checks = 0
   const bad = []
   for (const optimize of LEVELS) {
@@ -100,11 +103,11 @@ const population = (label, progs) => {
     for (let r = 0; r < R; r++) {
       at += calls(r).length
       const want = after[r], base = calls(r).length
-      for (const p of progs) {
+      for (const [k, p] of progs.entries()) {
         if (r >= p.rounds.length) continue
         const where = (what, a, b) => `program ${p.j} at ${JSON.stringify(optimize)}, round ${r + 1} ${what}: [${a}] for [${b}]\n${p.text}\n  rounds ${p.rounds.map(c => c.join(' ')).join(' | ')}`
-        const a = slice(got, at, p.j), w = slice(want, base, p.j)
-        const z = slice(got, at + progs.length * per + 1, p.j), s = slice(start, 0, p.j)
+        const a = slice(got, at, k), w = slice(want, base, k)
+        const z = slice(got, at + progs.length * per + 1, k), s = slice(start, 0, k)
         checks += 2
         if (a !== w) bad.push(where('after its calls', a, w))
         if (z !== s) bad.push(where('after the reset', z, s))
@@ -113,11 +116,11 @@ const population = (label, progs) => {
     }
   }
   // one assertion a module: what it ran, and the first of what differed
-  is(bad.length, 0, `${label}: ${progs.length} programs, ${checks} reads at ${LEVELS.length} levels, ${bad.length} differing from a fresh instance's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  is(bad.length, 0, `${label}: ${progs.length}${progs.length < all.length ? ` of ${all.length}` : ''} programs, ${checks} reads at ${LEVELS.length} levels, ${bad.length} differing from a fresh instance's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
 }
 
 for (const seed of [1, 2, 3, 4])
-  test(`reset population: seed ${seed}, 100 arrays made at start on one instance, read after each reset as a fresh instance reads them`, () => population(`seed ${seed}`, generate(seed, 100)))
+  test(sampled(`reset population: seed ${seed}, 100 arrays made at start on one instance, read after each reset as a fresh instance reads them`), () => population(`seed ${seed}`, generate(seed, 100)))
 
 // The stores a store through a literal of the running call leaves unsaved must not reach: the
 // census's freshObjects holds a binding whose every value is an object or array literal the call
@@ -266,7 +269,7 @@ for (let i = 0; i < ${size}; i++) ${P}[K[i]] = i % 3 === 0 ? 's' + i : i % 3 ===
   return Array.from({ length: count }, (_, j) => one(j))
 }
 for (const target of ['map', 'set', 'obj', 'dict']) for (const seed of [1, 2])
-  test(`reset population: seed ${seed}, 60 ${{ obj: 'objects', dict: 'dictionaries', map: 'Maps', set: 'Sets' }[target]} made at start, read after each reset as a fresh instance reads them`,
+  test(sampled(`reset population: seed ${seed}, 60 ${{ obj: 'objects', dict: 'dictionaries', map: 'Maps', set: 'Sets' }[target]} made at start, read after each reset as a fresh instance reads them`),
     () => population(`${target} seed ${seed}`, generateTables(seed, 60, target)))
 // (a string the call makes short enough to be held inline names no memory: the entries' own
 // value log let it stay past the reset)

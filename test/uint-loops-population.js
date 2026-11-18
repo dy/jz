@@ -7,7 +7,7 @@
 // count, so any argument ends; each store past the end is no store in Node and each read there
 // undefined.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const CAP = 44
@@ -77,5 +77,5 @@ for (let round = 0; round < 4; round++) {
   { const [r, bd] = next(); prog(`bound another's length ${bd}`, r, `const y = new Uint8Array(b & 63)\n  for (let i = 0; i < y.length; i++) { ${cap}${BODY[bd]('i')} }`) }
 }
 
-test(`uint loops population: ${P.length} loops with a uint32 bound, start, stride or offset, ${ARGS.length} argument triples, ${CONFIGS.length} configurations`, () =>
+test(sampled(`uint loops population: ${P.length} loops with a uint32 bound, start, stride or offset, ${ARGS.length} argument triples, ${CONFIGS.length} configurations`), () =>
   population('uint loops', P, { configs: CONFIGS }))

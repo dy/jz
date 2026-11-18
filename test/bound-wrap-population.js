@@ -9,7 +9,7 @@
 // and over (.work/architecture.md, "Counters by a bound test: two fixes landed, the tier not";
 // 8b9c75438). Every loop leaves by its own count of 44.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const E30 = 2 ** 30, E31 = 2 ** 31
@@ -40,5 +40,5 @@ for (const [bound, pairs] of BOUNDS) for (const step of ['i++', 'i += 2']) for (
     args: pairs.flatMap(([b, t]) => [0, 3, -2, 14].map(s => [b, t, s])),
   })
 
-test(`bound wrap population: ${progs.length} loops bounded by an expression of words past the word, ${CONFIGS.length} configurations`, () =>
+test(sampled(`bound wrap population: ${progs.length} loops bounded by an expression of words past the word, ${CONFIGS.length} configurations`), () =>
   population('bound wrap', progs, { configs: CONFIGS }))

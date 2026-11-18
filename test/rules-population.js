@@ -17,6 +17,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { jz, oracle } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const same = (a, b) => Object.is(a, b) || (typeof a === 'bigint' && a === b)
@@ -34,26 +35,28 @@ const population = (label, src, names, inputs) => {
 }
 const program = (fns) => fns.map((s, i) => `export let f${i} = ${s}`).join('\n')
 const names = (fns) => fns.map((_, i) => `f${i}`)
+// A grid of arrows as one module: its sample under JZ_TEST_SAMPLE (the programs written out below run whole).
+const grid = (label, all, inputs) => { const fns = sample(all, label); population(label, program(fns), names(fns), inputs) }
 
 const COUNTS = [-33, -32, -31, -1, 0, 1, 2, 15, 30, 31, 32, 33, 63, 64]
 const WORDS = [[0], [1], [-1], [3], [0x7fffffff], [-0x80000000], [0x12345678], [2.5], [-0], [NaN]]
 for (const a of ['<<', '>>', '>>>']) for (const b of ['<<', '>>', '>>>'])
-  test(`rules population: (x ${a} K1) ${b} K2 over ${COUNTS.length}² counts`, () => {
+  test(sampled(`rules population: (x ${a} K1) ${b} K2 over ${COUNTS.length}² counts`), () => {
     const fns = []
     for (const k1 of COUNTS) for (const k2 of COUNTS) fns.push(`(x) => (x ${a} ${k1}) ${b} ${k2}`)
-    population(`(x ${a} K1) ${b} K2`, program(fns), names(fns), WORDS)
+    grid(`(x ${a} K1) ${b} K2`, fns, WORDS)
   })
 
 const BIG_COUNTS = [-65, -64, -63, -33, -1, 0, 1, 2, 31, 32, 33, 63, 64, 65]
 const BIGS = [[0n], [1n], [-1n], [0x123456789abcdefn], [-(2n ** 63n)], [2n ** 63n - 1n]]
 for (const a of ['<<', '>>']) for (const b of ['<<', '>>'])
-  test(`rules population: BigInt (x ${a} K1) ${b} K2 over ${BIG_COUNTS.length}² counts`, () => {
+  test(sampled(`rules population: BigInt (x ${a} K1) ${b} K2 over ${BIG_COUNTS.length}² counts`), () => {
     const fns = []
     for (const k1 of BIG_COUNTS) for (const k2 of BIG_COUNTS) fns.push(`(x) => BigInt.asIntN(64, BigInt.asIntN(64, x ${a} ${k1}n) ${b} ${k2}n)`)
-    population(`BigInt (x ${a} K1) ${b} K2`, program(fns), names(fns), BIGS)
+    grid(`BigInt (x ${a} K1) ${b} K2`, fns, BIGS)
   })
 
-test('rules population: a Boolean as an addend of a Number', () => {
+test(sampled('rules population: a Boolean as an addend of a Number'), () => {
   const tests = ['a < b', 'a >= b', 'a === b', 'x < a']
   const fns = []
   for (const t of tests) fns.push(
@@ -69,10 +72,10 @@ test('rules population: a Boolean as an addend of a Number', () => {
   const xs = [-0, 0, NaN, Infinity, -Infinity, 1.5, -1]
   const inputs = []
   for (const x of xs) for (const [a, b] of [[1, 0], [0, 1], [2, 2], [-1, 0]]) inputs.push([x, a, b])
-  population('Boolean addend', program(fns), names(fns), inputs)
+  grid('Boolean addend', fns, inputs)
 })
 
-test('rules population: a ternary of a Boolean and another kind, its condition a constant', () => {
+test(sampled('rules population: a ternary of a Boolean and another kind, its condition a constant'), () => {
   const conds = ['(1 % 4294967296)', '(0 % 7)', '(3 > 2)', '(2 - 2)', '!0', 'k']
   const arms = [['(c !== k)', '0.5'], ['0.5', '(c < k)'], ['(c !== k)', 'c'], ['(c === 2)', '1'], ['"s"', '(c > 1)']]
   const cmps = ['=== 1', '!== 1', '=== true', '== 1', '== true', '!== 0', '== 0', '=== false', '!== 0.5']
@@ -82,7 +85,7 @@ test('rules population: a ternary of a Boolean and another kind, its condition a
   // (the defect's own form: an unrolled loop's counter makes the condition a literal)
   for (const cmp of cmps) fns.push(`(c, k) => { let r = 0; for (let i = 0; i < 3; i++) { r += ((i % 4294967296) ? (c !== i) : 0.5) ${cmp} } return r }`)
   const inputs = [[1, 1], [2, 0], [0, 2], [NaN, 1], [1, 0], [-0, 0]]
-  population('constant ternary of mixed kinds', program(fns), names(fns), inputs)
+  grid('constant ternary of mixed kinds', fns, inputs)
 })
 
 // The phase 8 scout's three reaches as it wrote them (the forms above hold each class): two shifts
@@ -99,7 +102,7 @@ test('rules population: the phase 8 scout\'s reaches', () => {
   for (const [label, src, inputs] of REACHES) population(label, src, ['f'], inputs)
 })
 
-test('rules population: reads and writes of arrays past either end', () => {
+test(sampled('rules population: reads and writes of arrays past either end'), () => {
   const kinds = ['Int32Array', 'Float64Array', 'Uint8Array', 'Uint16Array', 'Int8Array', 'Float32Array']
   const at = ['i + 1', 'i - 1', 'i * 4 + 3', '(i + 4) | 0', 'i - 536870912 + 1', '(i << 2) + 8', 'i + 2147483647']
   const fns = []
@@ -113,5 +116,5 @@ test('rules population: reads and writes of arrays past either end', () => {
   const inputs = []
   for (const i of [0, 1, -1, 2, 3, 15, 16, 100, 2147483647, -2147483648, 1073741823, -1073741824, 536870911, 536870912, 4294967295, 4294967296, 1e9, -1e9, 12345678901, 2.5, NaN])
     inputs.push([i, 3])
-  population('accesses past either end', program(fns), names(fns), inputs)
+  grid('accesses past either end', fns, inputs)
 })

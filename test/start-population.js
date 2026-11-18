@@ -18,6 +18,7 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { bounded } from './_bounded.js'
 import { levels, onKernel } from './_matrix.js'
+import { sample, sampled } from './_population.js'
 
 const LEVELS = levels(false, 1, true, 3, 'size', 'speed')
 // One program's compile and its instance, in the worker, at most this long (a hang fails here).
@@ -76,7 +77,8 @@ const node = (text) => {
 
 const population = (seed, progs) => {
   if (onKernel()) return
-  const live = progs.map((text, j) => ({ j, text, want: node(text) })).filter(p => p.want)
+  const kept = sample(progs.map((text, j) => ({ j, text })), `seed ${seed}`)
+  const live = kept.map(p => ({ ...p, want: node(p.text) })).filter(p => p.want)
   const bad = []
   let checks = 0
   for (const optimize of LEVELS) for (const p of live) {
@@ -86,8 +88,8 @@ const population = (seed, progs) => {
     if (!got) bad.push(`program ${p.j} at ${JSON.stringify(optimize)}: no answer in ${LIMIT / 1000} s\n${p.text}`)
     else if (got.join(' ') !== p.want.join(' ')) bad.push(`program ${p.j} at ${JSON.stringify(optimize)}: ${got.join(' ')} for Node's ${p.want.join(' ')}\n${p.text}`)
   }
-  is(bad.length, 0, `seed ${seed}: ${live.length} programs (${progs.length - live.length} Node throws on), ${checks} runs at ${LEVELS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  is(bad.length, 0, `seed ${seed}: ${live.length} programs of ${kept.length}${kept.length < progs.length ? ` (a sample of ${progs.length})` : ''} (${kept.length - live.length} Node throws on), ${checks} runs at ${LEVELS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
 }
 
 for (const seed of [1, 2, 3])
-  test(`start population: seed ${seed}, 100 modules that mutate their arrays as they start, against Node`, () => population(seed, generate(seed, 100)))
+  test(sampled(`start population: seed ${seed}, 100 modules that mutate their arrays as they start, against Node`), () => population(seed, generate(seed, 100)))

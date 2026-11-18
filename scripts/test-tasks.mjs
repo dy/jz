@@ -126,10 +126,12 @@ export const legEnv = (env = {}) => ({
   JZ_SELF_TEST_KERNEL: undefined, JZ_SELF_TEST_KERNEL_SHA256: undefined, ...env,
 })
 // The leg a process runs, named by the environment it compiles under: `default`,
-// `opt0`, `wasi`, `opt3-invariants` (the armed level 3).
+// `opt0`, `wasi`, `opt3-invariants` (the armed level 3), `sample4` (one program in 4 of
+// each population, test/_population.js).
 export const legOf = (env = process.env) => [
   env.JZ_TEST_OPTIMIZE != null && `opt${env.JZ_TEST_OPTIMIZE}`, env.JZ_TEST_HOST,
   env.JZ_TEST_SWEEP === '1' && 'sweep', env.JZ_DEBUG_INVARIANTS === '1' && 'invariants',
+  Number(env.JZ_TEST_SAMPLE) > 1 && `sample${Number(env.JZ_TEST_SAMPLE)}`,
 ].filter(Boolean).join('-') || 'default'
 // Level 3 runs plain, the path users ship (CI's matrix, test:matrix), or `armed` with the
 // invariant checks (the landing battery). The two compile the same bytes; the armed one

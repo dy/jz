@@ -10,7 +10,7 @@
 // 2^32): `(a[i] * c[i]) >> 8` and `>> 15` of two Uint32Array elements, whose product passes
 // 2^63. Node runs them as the README reads them, the product so converted before the shift.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 import { onKernel } from './_matrix.js'
 
 // (levels 1, 3 and size agree too, 2026-11-15: 266 s of one core for the six levels at load 20;
@@ -75,7 +75,7 @@ for (const p of progs) if (p.name === 'u32 fixed mul' || p.name === 'u32 fixed m
 
 // (not on the leg of the compiler compiled by jz, which frees nothing within a compile and runs
 // out of memory on the whole module, 2026-11-15)
-test(`vector narrow population: ${progs.length} loops of narrow-element arithmetic, ${CONFIGS.length} configurations`, () => {
+test(sampled(`vector narrow population: ${progs.length} loops of narrow-element arithmetic, ${CONFIGS.length} configurations`), () => {
   if (onKernel()) return
   population('vector narrow', progs, { configs: CONFIGS, own: ['a', 'b', 'c'] })
 })

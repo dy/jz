@@ -11,7 +11,7 @@
 // uncapped one is called only with arguments that end it in a few trips. Observed: trips, a sum
 // of the counter, reads through it (a missing element counted), the counter after the loop.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const CAP = 44
@@ -208,5 +208,5 @@ P.push({ name: 'a callee moves the bound', src: `let N = 0\nlet bump = (k) => { 
 P.push({ name: 'a callee moves the counter', src: `let idx = 0\nlet jump = (k) => { idx += k }\nexport let f = (b, s, t) => { let c = 0, sum = 0\n  for (idx = s; idx < b; idx += t) { if (++c > ${CAP}) break; sum += idx; if (c === 3) jump(2147483648) }\n  return [c, sum, idx] }`, args: capped })
 prog('closures over each trip\'s counter', '', `const fs = []; let sum = 0\n  for (let i = s; i < b; i += t) { if (++c > 6) break; fs.push(() => i) }\n  for (let k = 0; k < fs.length; k++) sum += fs[k]() * (k + 1)\n  return [c, sum]`, capped)
 
-test(`counter widths population: ${P.length} loops at the word's edges, ${CONFIGS.length} configurations`, () =>
+test(sampled(`counter widths population: ${P.length} loops at the word's edges, ${CONFIGS.length} configurations`), () =>
   population('counter widths', P, { configs: CONFIGS, own: ['N', 'o', 'idx', 'bump', 'jump'] }))

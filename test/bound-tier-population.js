@@ -5,7 +5,7 @@
 // literal steps from the word's edges; nests, exits, a bound the body moves, an inner function's
 // integral parameter.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -97,7 +97,7 @@ prog('write: a sum bound whose term the body moves', '', `let B0 = b | 0, B1 = t
 prog('write: a module bound a callee moves', 'let N = 0\nconst bump = (k) => { N = (N + k) | 0; return k }', `N = b | 0; let sum = 0\n  for (let i = s; i <= N; i += 2) { if (++c > ${CAP}) break; sum += i; if (c === 2) sum += bump(t) }\n  return [c, sum, N]`, noBig(capped))
 prog('param: an inner function under <= its integral parameter', '', `const g = (n, st) => { let sum = 0, k = 0; for (let i = st; i <= n; i += 2) { if (++k > ${CAP}) break; sum += i + (x8[i & 7]) } return [k, sum] }\n  return [g(b | 0, s | 0), g(t | 0, 0), g(2147483647, 2147483640), g(-2147483648, -2147483648)]`, noBig(capped))
 prog('param: an inner function under < a sum of its integral parameters', '', `const g = (n, m) => { let sum = 0, k = 0; for (let i = 0; i < n + m; i += 3) { if (++k > ${CAP}) break; sum += x8[i & 7] } return [k, sum] }\n  return [g(b | 0, t | 0), g(2147483647, 2147483647), g(-2147483648, 5)]`, noBig(capped))
-test(`bound tier population: ${P.length} loops of an f64 counter for want of a bound's range, ${CONFIGS.length} configurations`, () =>
+test(sampled(`bound tier population: ${P.length} loops of an f64 counter for want of a bound's range, ${CONFIGS.length} configurations`), () =>
   population('bound tier', P, { configs: CONFIGS, own: ['N', 'bump'] }))
 }
 
@@ -151,7 +151,7 @@ for (const [nm, mk] of [
   return [s, c]
 }`, args: args.concat([[2.5, 1, 1], [2.5, 2, 1], [3.5, 3, 1], [0.5, 10, 1]]) })
 }
-test(`bound tier population: ${P.length} lengths of a receiver of several kinds, ${CONFIGS.length} configurations`, () =>
+test(sampled(`bound tier population: ${P.length} lengths of a receiver of several kinds, ${CONFIGS.length} configurations`), () =>
   population('bound length', P, { configs: CONFIGS }))
 }
 
@@ -192,6 +192,6 @@ P.push({ name: 'entry: for j from a count a loop stepped', src: `export let f = 
   for (let j = n; j < num; j++) { if (++c > 50) break; s += x[j] === undefined ? 1000 + j : x[j] }
   return [s, c, n]
 }`, args: [[3, 7.5, 0], [2147483647, 2147483650.5, 0], [2147483648, 2147483651.2, 0], [5, 2.5, 0]] })
-test(`bound tier population: ${P.length} counters entering from a length or a count, ${CONFIGS.length} configurations`, () =>
+test(sampled(`bound tier population: ${P.length} counters entering from a length or a count, ${CONFIGS.length} configurations`), () =>
   population('bound entry', P, { configs: CONFIGS }))
 }

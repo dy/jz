@@ -163,6 +163,7 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 | `npm run test:matrix` | Core default/O0/O3/WASI legs, one at a time |
 | `npm run test:integration` | Libraries, tools, examples, site/package smoke for the current leg |
 | `npm run test:generated` | Fuzz correctness, WAT populations, deterministic codegen ratchet for the current leg |
+| `JZ_TEST_SAMPLE=4 npm run test:generated` | Every population at one program in 4, the same ones on every run (a fixed seed, which a sampled test's name prints); unset, the whole, as CI runs them |
 | `npm run test:extended` | Integration matrix plus native/WASI generated owners |
 | `npm run test:bootstrap` | Fresh self compiler: round-trip, O0/O2/O3 parity/oracles, separate checkpoint overlay |
 | `npm run test:bootstrap -- --full` | Above, plus the full hosted suite and recursive compilation |
@@ -189,6 +190,13 @@ and whose module it runs is one `jzWat`. Reuse compiled exports **within a
 fixture** for its argument table, not through a global compiler cache (which
 would hide state leaks). Keep population compilation inside test callbacks so
 `TST_GREP` cannot accidentally run an entire corpus during imports.
+
+A population (programs over a grid or from a seed, each answering what Node
+answers) goes through `population()` in `test/_population.js`, which joins its
+programs into modules and takes `JZ_TEST_SAMPLE`. A sweep that must keep a module
+a program, or runs a loop of its own, takes the same switch through `sample(list,
+label)`, its test's name through `sampled(name)`; programs written out by hand,
+each a defect pinned, run whole.
 
 To count and time real compiles, including duplicates:
 

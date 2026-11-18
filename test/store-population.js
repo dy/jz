@@ -29,6 +29,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { bounded } from './_bounded.js'
 import { onKernel } from './_matrix.js'
+import { sample, sampled } from './_population.js'
 
 // The four public levels: this file owns its sweep.
 const LEVELS = [false, true, 'size', 'speed']
@@ -116,12 +117,13 @@ const node = (p) => {
   })
 }
 
-const population = (seed, progs) => {
+const population = (seed, all) => {
   if (onKernel()) return
+  const progs = sample([...all.entries()], `seed ${seed}`)
   const bad = []
   let checks = 0
-  for (const p of progs) p.want = node(p)
-  for (const optimize of LEVELS) for (const [j, p] of progs.entries()) {
+  for (const [, p] of progs) p.want = node(p)
+  for (const optimize of LEVELS) for (const [j, p] of progs) {
     const out = bounded({ src: p.text, optimize, runs: [p.schedule] }, LIMIT)
     checks++
     const got = out.hung ? null : out.results[0].map(r => r.startsWith('throws') ? 'throws' : r)
@@ -129,11 +131,11 @@ const population = (seed, progs) => {
     if (!got) bad.push(`program ${j} at ${JSON.stringify(optimize)}: no answer in ${LIMIT / 1000} s\n${p.text}\n  ${calls}`)
     else if (got.join(' ') !== p.want.join(' ')) bad.push(`program ${j} at ${JSON.stringify(optimize)}: ${got.join(' ')} for Node's ${p.want.join(' ')}\n${p.text}\n  ${calls}`)
   }
-  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} runs at ${LEVELS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  is(bad.length, 0, `seed ${seed}: ${progs.length} of ${all.length} programs, ${checks} runs at ${LEVELS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
 }
 
 for (const seed of [1, 2, 3])
-  test(`store population: seed ${seed}, 60 modules storing into arrays under every kind of index, against Node`, () => population(seed, generate(seed, 60)))
+  test(sampled(`store population: seed ${seed}, 60 modules storing into arrays under every kind of index, against Node`), () => population(seed, generate(seed, 60)))
 
 // ---- cursors the plan copies (plan/counted-loops.js's closed form, plan/integral-loops.js's copy),
 // each copy landing the cursor where its loop as written leaves it (plan/common.js landing), which
@@ -182,12 +184,13 @@ const generateLandings = (seed, count) => {
   return Array.from({ length: count }, one)
 }
 
-const landingPopulation = (seed, progs) => {
+const landingPopulation = (seed, all) => {
   if (onKernel()) return
+  const progs = sample([...all.entries()], `landings seed ${seed}`)
   const bad = []
   let checks = 0, trapped = 0, trapAnswers = 0
-  for (const p of progs) p.want = node(p)
-  for (const optimize of [...LEVELS, ...TRAPS]) for (const [j, p] of progs.entries()) {
+  for (const [, p] of progs) p.want = node(p)
+  for (const optimize of [...LEVELS, ...TRAPS]) for (const [j, p] of progs) {
     const out = bounded({ src: p.text, optimize, runs: [p.schedule] }, LIMIT)
     checks++
     const got = out.hung ? null : out.results[0].map(r => r.startsWith('throws') ? 'throws' : r)
@@ -198,9 +201,12 @@ const landingPopulation = (seed, progs) => {
     if (optimize.coldTrap) { trapped += p.schedule.length; trapAnswers += got.slice(0, upTo).filter(r => r !== 'reset').length }
     if (got.slice(0, upTo).join(' ') !== p.want.slice(0, upTo).join(' ')) bad.push(`program ${j} at ${JSON.stringify(optimize)}: ${got.join(' ')} for Node's ${p.want.join(' ')}\n${p.text}\n  ${calls}`)
   }
-  is(bad.length, 0, `seed ${seed}: ${progs.length} programs, ${checks} runs at ${LEVELS.length + TRAPS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
-  ok(trapAnswers * 5 >= trapped, `seed ${seed}: under coldTrap ${trapAnswers} of ${trapped} calls answered before a guard failed`)
+  is(bad.length, 0, `seed ${seed}: ${progs.length} of ${all.length} programs, ${checks} runs at ${LEVELS.length + TRAPS.length} levels, ${bad.length} differing from Node's${bad.length ? '; the first:\n' + bad.slice(0, 3).join('\n') : ''}`)
+  // (a share of the population's calls: a sample of a few programs may answer none)
+  const share = `seed ${seed}: under coldTrap ${trapAnswers} of ${trapped} calls answered before a guard failed`
+  if (progs.length === all.length) ok(trapAnswers * 5 >= trapped, share)
+  else ok(true, share)
 }
 
 for (const seed of [1, 2, 3])
-  test(`store population: seed ${seed}, 40 modules whose cursors the plan copies and lands, against Node, coldTrap's among them`, () => landingPopulation(seed, generateLandings(seed, 40)))
+  test(sampled(`store population: seed ${seed}, 40 modules whose cursors the plan copies and lands, against Node, coldTrap's among them`), () => landingPopulation(seed, generateLandings(seed, 40)))

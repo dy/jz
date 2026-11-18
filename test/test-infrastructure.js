@@ -66,11 +66,31 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
   // the legs' names, the keys of test/native-costs.json
   is([...matrixTasks(), invariantTask()].map(t => legOf(t.env)), ['default', 'opt0', 'opt3', 'wasi', 'opt3-invariants'])
   is(legOf({ JZ_TEST_OPTIMIZE: '0', JZ_TEST_HOST: 'wasi', JZ_TEST_SWEEP: '1' }), 'opt0-wasi-sweep')
+  is([legOf({ JZ_TEST_SAMPLE: '4' }), legOf({ JZ_TEST_HOST: 'wasi', JZ_TEST_SAMPLE: '4' }), legOf({ JZ_TEST_SAMPLE: '1' })], ['sample4', 'wasi-sample4', 'default'])
   // --costs times whole native files: a grep or the kernel is refused before anything loads
   for (const env of [{ TST_GREP: 'x' }, { JZ_TEST_TARGET: 'jz.wasm', JZ_KERNEL: '/no-kernel-listing-must-not-read' }]) {
     const r = spawnSync(process.execPath, ['test/index.js', '--list', '--costs'], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
     ok(r.status !== 0 && r.stderr.includes('--costs'), JSON.stringify(env))
   }
+})
+
+test('populations: JZ_TEST_SAMPLE keeps one program in n, the same ones every run, and the name says so', () => {
+  const ten = JSON.stringify([...Array(10).keys()])
+  const pick = (env) => {
+    const source = `import { sample, sampled } from './test/_population.js'
+console.log(JSON.stringify([sample(${ten}, 'a'), sample(${ten}, 'a'), sample(${ten}, 'b'), sample([7], 'a'), sample([], 'a'), sampled('t')]))`
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 60000 })
+    return r.status === 0 ? JSON.parse(r.stdout) : r.stderr
+  }
+  const all = JSON.parse(ten)
+  is(pick({ JZ_TEST_SAMPLE: undefined }), [all, all, all, [7], [], 't'])
+  const [a, again, b, one, none, name] = pick({ JZ_TEST_SAMPLE: '4' })
+  is(a.length, 3, 'the ceiling of one in four')
+  is(again, a, 'the same places on every call')
+  ok(a.every((x, i) => all.includes(x) && (i === 0 || x > a[i - 1])), `kept in their order: ${a}`)
+  ok(a.join() !== b.join(), `another list's label keeps other places: ${a} and ${b}`)
+  is([one, none, name], [[7], [], 't (one program in 4, seed 1)'])
+  for (const bad of ['0', '2.5', 'x']) ok(String(pick({ JZ_TEST_SAMPLE: bad })).includes(`JZ_TEST_SAMPLE must be a whole number of 1 or more, not '${bad}'`), bad)
 })
 
 test('test workers: automatic count is bounded by memory and CPUs, explicit values validate', () => {

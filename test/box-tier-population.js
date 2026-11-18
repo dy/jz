@@ -9,7 +9,7 @@
 // head read in another form. Each store past the array's end is no store in Node and each read
 // there undefined: an index that wrapped in a word lands inside the array and shows.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 
@@ -149,5 +149,5 @@ nprog('a for with an update', 'let i = s', `for (; i < n; i = i * 2 + t) { ${cap
 nprog('a negated test', 'let i = s', `while (!(i >= n)) { ${cap()}; x[i * W] = c; ${R} }`)
 nprog('a do-while', 'let i = s', `do { ${cap()}; x[i * W] = c; ${R} } while (i < n)`)
 
-test(`box tier population: ${P.length} loops of the box above the copy with no box, ${CONFIGS.length} configurations`, () =>
+test(sampled(`box tier population: ${P.length} loops of the box above the copy with no box, ${CONFIGS.length} configurations`), () =>
   population('box tier', P, { configs: CONFIGS, own: ['W', 'H', 'u', 'px', 'draw', 'walk', 'dbl'] }))

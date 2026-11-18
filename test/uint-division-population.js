@@ -9,7 +9,7 @@
 // element, by a word and an Int32Array element and they by it; a remainder; the quotient stored,
 // read unsigned, floored, truncated; a product, a comparison and a shift beside them.
 import test from 'tst'
-import { population } from './_population.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const U = { 'element': ['const a = new Uint32Array(4); a[1] = x', 'a[1]'], 'shift': ['', '(x >>> 0)'], 'local': ['const u = x >>> 0', 'u'],
@@ -39,5 +39,5 @@ const X = [0, 1, 5, 2147483647, 2147483648, 3000000000, 4294967295, -1, -5], Y =
 const ARGS = X.flatMap(x => Y.map(y => [x, y]))
 const progs = Object.entries(P).map(([name, body]) => ({ name, src: `export let f = (x, y) => { ${body} }`, args: ARGS }))
 
-test(`uint division population: ${progs.length} divisions and remainders of a uint32, ${ARGS.length} argument pairs, ${CONFIGS.length} configurations`, () =>
+test(sampled(`uint division population: ${progs.length} divisions and remainders of a uint32, ${ARGS.length} argument pairs, ${CONFIGS.length} configurations`), () =>
   population('uint division', progs, { configs: CONFIGS }))
