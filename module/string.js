@@ -189,11 +189,9 @@ export default (ctx) => {
     __str_append_unit: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
     __str_copy_over: [],
-    // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
-    // factory (v()) to discover body calls, but that realization DIVERGES under self-compile
-    // (jz.wasm) — so a body-called helper not also listed here is dropped from the kernel
-    // ("Unknown func $__clamp_idx" on `str.slice`). FN templates must declare body deps
-    // manually; pinned by test/self-compile-includes.js.
+    // __str_slice/_view are function templates: resolveIncludes' scan realizes the factory
+    // (v()) to find the helpers its body calls, and finds __clamp_idx in the hosted compiler
+    // as in the native one. Listing it here repeats the scan.
     __str_slice: ['__str_length', '__alloc', '__clamp_idx', '__mkptr'],
     __str_slice_view: ['__str_length', '__mkptr', '__str_slice', '__clamp_idx'],
     __str_indexof: ['__str_length'],

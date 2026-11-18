@@ -286,9 +286,9 @@ export default (ctx) => {
     // and on all five below — see arrayGrowDeps's comment: each now calls
     // durableArrSnapIR directly in its OWN body (the whole-array element+header
     // heal, replacing the old header-only durableLenLogIR call at these same
-    // sites), which self-compile's auto-dep scan cannot be relied on to discover
-    // just because a callee (__arr_grow*) already depends on the name transitively.
-    __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
+    // sites). resolveIncludes' scan finds that call in the hosted compiler as in the
+    // native one, so the edge repeats the scan.
+    __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx, which the scan finds too
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_typed_set_idx: () => [...(leanRuntime() ? arrTypedSetDeps() : ['__arr_typed_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])]), ...viewDeps()],

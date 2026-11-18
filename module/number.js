@@ -388,8 +388,8 @@ export default (ctx) => {
   deps({
     __mkstr: ['__alloc'],
     __mkstr_scratch: ['__mkstr', '__alloc', '__mkptr'],
-    // own edge: __static_str's body calls $__mkstr — without it the helper
-    // rides the self-compile-unreliable auto-scan (test/self-compile-includes.js)
+    // own edge: __static_str's body calls $__mkstr. The scan finds it in the hosted
+    // compiler as in the native one; test/self-compile-includes.js requires the edge besides.
     __static_str: ['__mkstr'],
     __ftoa: ['__static_str', '__ftoa_shortest'],
     __bn_mul_pow5: ['__bn_mul_small'],

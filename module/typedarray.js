@@ -154,11 +154,10 @@ export default (ctx) => {
     __typed_get_idx: () => ['__ptr_aux', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_elem_arg: ['__ptr_aux', '__box_bigint'],
     __typed_value: ['__ptr_aux', '__to_num', '__to_bigint_strict'],
-    // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
-    // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
-    // auto-scan — which diverges under self-compile (jz.wasm), dropping it ("Unknown func
-    // $__clamp_idx" on typed .fill/.subarray in the kernel). Declare it manually here so the
-    // reliable dep path includes it. Pinned by test/self-compile-includes.js.
+    // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice), and each
+    // lists it. resolveIncludes' scan finds the call in the hosted compiler as in the native
+    // one, so these edges repeat the scan. test/self-compile-includes.js does not require
+    // them: the inline range emitters inc() the helper, which exempts it there.
     __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx', '__typed_shift', '__typed_data', '__ptr_aux'],
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__clamp_idx', '__ptr_aux', '__typed_shift', '__typed_data'],
