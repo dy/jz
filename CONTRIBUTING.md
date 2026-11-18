@@ -163,7 +163,7 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 | `npm run test:matrix` | Core default/O0/O3/WASI legs, one at a time |
 | `npm run test:integration` | Libraries, tools, examples, site/package smoke for the current leg |
 | `npm run test:generated` | Fuzz correctness, WAT populations, deterministic codegen ratchet for the current leg |
-| `JZ_TEST_SAMPLE=4 npm run test:generated` | Every population at one program in 4, the same ones on every run (a fixed seed, which a sampled test's name prints); unset, the whole, as CI runs them |
+| `JZ_TEST_SAMPLE=4 npm run test:generated` | Every population at one program in 4, the same ones on every run (a fixed seed, which a sampled test's name prints); unset, the whole, as CI runs them. Under `npm test` the same switch samples the core's dearest sweeps: loop-forms' strips, missing-read, missing-arith |
 | `npm run test:extended` | Integration matrix plus native/WASI generated owners |
 | `npm run test:bootstrap` | Fresh self compiler: round-trip, O0/O2/O3 parity/oracles, separate checkpoint overlay |
 | `npm run test:bootstrap -- --full` | Above, plus the full hosted suite and recursive compilation |

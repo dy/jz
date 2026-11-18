@@ -3,7 +3,7 @@
 // element kind fills alike, and the value converts once before the fill.
 import test from 'tst'
 import { levels } from './_matrix.js'
-import { agree, oracle, jz } from './util.js'
+import { agree, oracle, jz, jzWat } from './util.js'
 import { is } from 'tst/assert.js'
 
 const sum = 'const sum = (a) => { let h = 0; for (let i = 0; i < a.length; i++) h = h * 31 + a[i]; return h }\n'
@@ -29,7 +29,9 @@ const names = ['all', 'range', 'fromEnd', 'empty', 'last', 'missing', 'text', 'f
 
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`typed fill: every element kind at ${optimize}`, () => {
-    for (const name of names) for (let k = 0; k < 11; k++) agree(src, name, [k], { optimize }, `${name}(${k})`)
+    // one compile, an instance a call
+    const built = jzWat(src, { optimize })
+    for (const name of names) for (let k = 0; k < 11; k++) agree(built, name, [k], { optimize }, `${name}(${k})`)
   })
 
 test('typed fill: a BigInt array keeps its BigInt', () => {

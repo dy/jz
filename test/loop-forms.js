@@ -10,6 +10,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { compile, jz, jzWat, oracle } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const fnOf = (w, name) => { const i = w.indexOf(`(func $${name}`), j = w.indexOf('\n  (func ', i + 8); return w.slice(i, j < 0 ? undefined : j) }
 const SIMD = /v128|[if](?:8x16|16x8|32x4|64x2)\./
@@ -76,7 +77,7 @@ test('loop forms: a loop counting down (row 3)', () => {
   lifts('Int32Array a maximum down', prog('Int32Array', 'let m = -100; for (let i = n - 1; i >= 0; i--) m = a[i] > m ? a[i] : m; return m'))
 })
 
-test('loop forms: the strips of a loop counting down stop at its low end', () => {
+test(sampled('loop forms: the strips of a loop counting down stop at its low end'), () => {
   if (belowOpt(2)) return
   // A strip runs while its lane base, the lowest iteration it holds, is at the low end or above
   // it: to a constant end the test is against a constant, the base's interval known in the strip.
@@ -96,7 +97,12 @@ export let f = (hiIn, loIn) => {
   let h = 0; for (let k = 0; k < 48; k++) h = (h * 31 + a[k] * 3 + b[k]) % 1000003
   return h + s
 }`
-  for (const T of TYPES) for (const body of ['for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo] * 2', 'for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo + 1] - a[i - lo]']) {
+  // (nearly all of this file's time is the row below at lo = -2^31, d = -1: hi wraps to 2^31 - 1,
+  // and the loop runs 2^32 - 1 rounds, a trip count past the word's, in Node and in each build:
+  // 54 and 8 CPU-s for the first program at level 2, 2026-11-18; under JZ_TEST_SAMPLE a sample of
+  // the six programs runs)
+  const progs = TYPES.flatMap(T => ['for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo] * 2', 'for (let i = hi; i > lo; i--) b[i - lo] = a[i - lo + 1] - a[i - lo]'].map(body => [T, body]))
+  for (const [T, body] of sample(progs, 'strips')) {
     const p = src(T, body), want = oracle(p)
     for (const optimize of levels(2, 3)) {
       const m = jzWat(p, { optimize })

@@ -6,6 +6,7 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { oracle, jz } from './util.js'
 import { ownedLevels } from './_matrix.js'
+import { sample, sampled } from './_population.js'
 
 const reads = {
   direct: ['', 'a[k]'],
@@ -32,8 +33,8 @@ const shells = {
 }
 
 for (const [shell, wrap] of Object.entries(shells)) for (const [read, [decl, x]] of Object.entries(reads))
-  test(`missing element in arithmetic: ${shell}, ${read}`, () => {
-    for (const [use, stmt] of Object.entries(uses)) {
+  test(sampled(`missing element in arithmetic: ${shell}, ${read}`), () => {
+    for (const [use, stmt] of sample(Object.entries(uses), `${shell} ${read}`)) {
       const src = wrap(decl, stmt(x))
       const host = oracle(src).f
       for (const optimize of ownedLevels(0, 2, 3)) {

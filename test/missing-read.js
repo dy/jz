@@ -9,6 +9,7 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
 import { oracle, jz } from './util.js'
+import { sample, sampled } from './_population.js'
 
 const pick = 'const pick = (k) => [new Float32Array(4), new Float64Array(4), new Float64Array(8).subarray(4)][k % 3]\n'
 // [module prelude, the receiver's declaration, the read]
@@ -59,21 +60,19 @@ const shells = {
   loop: (recv, decl, use) => `(k) => { ${recv}; const ${dest}; let s = 1; for (let i = 0; i < 3; i++) { ${decl}; ${use} } return s }`,
 }
 
-// One module a receiver: every shell, binding form and use is an export of it.
-const moduleOf = ([pre, recv, x]) => {
-  const names = []
-  let src = pre
-  for (const [sn, wrap] of Object.entries(shells)) for (const [bn, [decl, ref]] of Object.entries(reads)) for (const [un, stmt] of Object.entries(uses)) {
-    const name = `${sn}_${bn}_${un}`
-    names.push(name)
-    src += `export let ${name} = ${wrap(recv, decl.replace('X', x), stmt(ref(x)))}\n`
-  }
-  return { src, names }
+// One module a receiver: every shell, binding form and use is an export of it (under
+// JZ_TEST_SAMPLE, a sample of them).
+const moduleOf = ([pre, recv, x], receiver) => {
+  const forms = []
+  for (const [sn, wrap] of Object.entries(shells)) for (const [bn, [decl, ref]] of Object.entries(reads)) for (const [un, stmt] of Object.entries(uses))
+    forms.push([`${sn}_${bn}_${un}`, wrap(recv, decl.replace('X', x), stmt(ref(x)))])
+  const kept = sample(forms, receiver)
+  return { src: pre + kept.map(([name, fn]) => `export let ${name} = ${fn}\n`).join(''), names: kept.map(([name]) => name) }
 }
 
 for (const [receiver, row] of Object.entries(receivers))
-  test(`missing read: ${receiver}`, () => {
-    const { src, names } = moduleOf(row)
+  test(sampled(`missing read: ${receiver}`), () => {
+    const { src, names } = moduleOf(row, receiver)
     const host = oracle(src)
     for (const optimize of levels(0, 2, 3, 'size')) {
       const mod = jz(src, { optimize }).exports
