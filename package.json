@@ -44,6 +44,7 @@
     "lint:imports:fix": "npm run lint:imports -- --fix",
     "audit:files": "knip --no-progress",
     "test": "node test/index.js",
+    "test:quick": "npm run -s lint:imports && npm run -s audit:files && node test/index.js --suite=quick",
     "test:opt0": "JZ_TEST_OPTIMIZE=0 node test/index.js",
     "test:opt1": "JZ_TEST_OPTIMIZE=1 node test/index.js",
     "test:opt3": "JZ_TEST_OPTIMIZE=3 node test/index.js",

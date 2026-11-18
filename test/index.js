@@ -378,7 +378,7 @@ import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cpus, loadavg } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { suiteArgs, suiteOf, splits } from './_suites.js'
+import { suiteArgs, suiteOf, inSuite, splits } from './_suites.js'
 import { plan, estimated } from './_jobs.js'
 import { runTasks, suiteJobs, legOf } from '../scripts/test-tasks.mjs'
 const { suite, list, files: argFilters, jobs: jobsArg, costs } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
@@ -461,7 +461,7 @@ const onKernelTarget = target === 'jz.wasm'
 
 const selected = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
-  : TESTS.filter(name => suite === 'all' || suiteOf(name) === suite)
+  : TESTS.filter(name => inSuite(name, suite))
 ).filter(name => argFilters.includes(name) || !((onKernelTarget && (KERNEL_EXCLUDE.has(name) || suiteOf(name) === 'bootstrap' || name === 'test-infrastructure')) || legSkips(name)))
 
 if (argFilters.length && selected.length !== argFilters.length) {
@@ -471,9 +471,11 @@ if (argFilters.length && selected.length !== argFilters.length) {
 }
 
 // test/native-costs.json: each file's [CPU seconds, tests, assertions] by suite and leg.
-// --costs times every file of this run (test/_run.js): a run of named files prints the
-// times, a whole suite writes them over its row once every file is timed, counting the
-// tests that failed, and an ordinary run never writes.
+// --costs times every file of this run (test/_run.js): a run of named files or of the
+// quick tier prints the times, a whole suite writes them over its row once every file
+// is timed, counting the tests that failed, and an ordinary run never writes. The quick
+// tier's files are core's, and weigh what core's row records.
+const owner = suite === 'quick' ? 'core' : suite
 const COSTS = new URL('./native-costs.json', import.meta.url), row = `${suite}-${legOf()}`, load = loadavg()[0]
 if (costs && onKernelTarget) throw new Error('--costs times the native legs; the hosted suite has test/hosted-costs.json')
 if (costs && process.env.TST_GREP) throw new Error('--costs times whole files; TST_GREP would time a part of each')
@@ -482,6 +484,7 @@ if (costs && process.env.TST_GREP) throw new Error('--costs times whole files; T
 if (list) { console.log(selected.join('\n')); process.exit(0) }
 
 function record(times, failed, processes) {
+  if (suite === 'quick') return console.log(`# costs ${JSON.stringify(times)}`)
   const missing = selected.filter(f => !times[f])
   if (missing.length) return console.error(`--costs: ${row} not written: no time for ${missing.join(', ')}`)
   const table = JSON.parse(readFileSync(COSTS, 'utf8')), files = {}
@@ -502,7 +505,7 @@ if (jobs > 1) {
   // where the sampled row has them, else its whole seconds); one the leg has not timed,
   // its bytes at the seconds a byte the timed files cost.
   const runs = JSON.parse(readFileSync(COSTS, 'utf8')).runs
-  const timed = Object.fromEntries(Object.entries({ ...runs[`${suite}-${legOf({ ...process.env, JZ_TEST_SAMPLE: undefined })}`]?.files, ...runs[row]?.files }).map(([f, [s]]) => [f, s]))
+  const timed = Object.fromEntries(Object.entries({ ...runs[`${owner}-${legOf({ ...process.env, JZ_TEST_SAMPLE: undefined })}`]?.files, ...runs[`${owner}-${legOf()}`]?.files }).map(([f, [s]]) => [f, s]))
   const weight = estimated(selected, timed, name => statSync(new URL(`./${name}.js`, import.meta.url)).size)
   // The seed that moves the runs' boundaries (test/_jobs.js plan): JZ_TEST_SEED, or the
   // commit checked out, so a run repeats on its commit and moves on the next.
@@ -510,9 +513,12 @@ if (jobs > 1) {
     : parseInt(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.slice(0, 8), 16) || 0
   if (!Number.isSafeInteger(seed) || seed < 0) throw new Error(`JZ_TEST_SEED must be a whole number, not '${process.env.JZ_TEST_SEED}'`)
   console.log(`# seed ${seed}: JZ_TEST_SEED=${seed} repeats these runs`)
+  // A quick run's process takes under a minute; one past five is a hang (a miscompiled
+  // loop that never ends), failed then rather than at an ordinary task's hour.
+  const timeout = suite === 'quick' && !process.env.JZ_TEST_TIMEOUT ? 300_000 : undefined
   const results = await runTasks(plan(selected, weight, jobs, seed).map(({ files }) => ({
     name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...costs ? ['--costs'] : [], ...files], env: { JZ_TEST_JOBS: '1' },
-  })), { jobs })
+  })), { jobs, timeout })
   // The totals are each run's last summary: a test may print a nested run's own.
   const totals = {}, times = {}
   for (const r of results) {

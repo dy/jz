@@ -65,6 +65,8 @@ What this implies for HOW we optimize:
 
 ## Verify before claiming done
 
+- `npm run test:quick`: after every edit, the import lint, the file audit and 108 cheap core files (`QUICK`, test/_suites.js), under 2 minutes at 8 jobs.
+  It fails on each of the 15 faults it was chosen by (10 passes off, 5 bugs by hand), on the default leg only: it never replaces `npm test` and the legs below.
 - `npm test` — core suite (in-process compiler), without hidden bootstrap builds
   or generated population sweeps. Run it before reporting any change. It splits the
   files over the idle cores, each process a contiguous run of them (`test/index.js`)

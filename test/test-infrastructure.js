@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
+import { suiteArgs, suiteOf, splits, SUITES, QUICK } from './_suites.js'
 import { shards, plan, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
@@ -31,11 +31,21 @@ test('test suites: every file has exactly one owner, and listing compiles nothin
   ok(!hosted.some(n => suiteOf(n) === 'bootstrap'), 'no recursive bootstrap test registration')
 })
 
+test('quick tier: a few of core\'s files, run by --suite=quick, within its budget', () => {
+  const core = list('core'), quick = list('quick')
+  is(quick, core.filter(f => QUICK.has(f)), 'core\'s files, in the suite\'s order')
+  is(quick.length, QUICK.size, 'each name a core file the default leg runs')
+  const { files } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8')).runs['core-default']
+  const cost = quick.reduce((sum, f) => sum + (files[f]?.[0] ?? Infinity), 0)
+  ok(cost <= 600, `${Math.round(cost)} CPU seconds on the default leg's row, of 600: under two minutes at 8 jobs`)
+})
+
 test('test suites: explicit files and full sweeps remain available; invalid options fail', () => {
   is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined, costs: false })
   is(suiteArgs(['--jobs=4']).jobs, 4)
   is(suiteArgs(['--costs']).costs, true)
   is(suiteArgs([], true).suite, 'all')
+  is(suiteArgs(['--suite=quick']).suite, 'quick')
   for (const args of [['--suite=nope'], ['--suite=core', '--suite=all'], ['--unknown'], ['math', 'math.js'], ['--jobs=0'], ['--jobs='], ['--jobs=2', '--jobs=3']]) throws(() => suiteArgs(args))
   const source = `import { ownedLevels } from './test/_matrix.js'; console.log(JSON.stringify(ownedLevels(0, 2, 'speed', 'size')))`
   const values = env => {
@@ -113,7 +123,7 @@ test('suite processes: the idle cores, contiguous runs of near-equal weight, onl
     is(runs.flat(), files)
     ok(runs.length <= n && runs.every(r => r.length))
   }
-  is(['core', 'generated', 'integration', 'bootstrap', 'all'].map(splits), [true, true, false, false, false])
+  is(['core', 'generated', 'quick', 'integration', 'bootstrap', 'all'].map(splits), [true, true, true, false, false, false])
   // --jobs is refused where a run cannot split; an empty JZ_TEST_JOBS is unset
   const listed = (args, env) => spawnSync(process.execPath, ['test/index.js', '--list', ...args], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
   is(listed(['--jobs=2']).status, 0)
@@ -190,16 +200,21 @@ test('suite processes: a seed moves every boundary, so each file starts a proces
 })
 
 test('suite processes: a split run cuts its runs where the seed and the leg\'s costs say', () => {
-  // A split generated run whose grep matches no test: each run imports its files and runs
-  // none of their tests (about 3 CPU seconds in all).
-  const split = seed => spawnSync(process.execPath, ['test/index.js', '--suite=generated', '--jobs=2'], {
+  // A split generated or quick run whose grep matches no test: each run imports its files
+  // and runs none of their tests (about 3 CPU seconds a run of the suite).
+  const split = (seed, suite = 'generated') => spawnSync(process.execPath, ['test/index.js', `--suite=${suite}`, '--jobs=2'], {
     cwd: root, env: clean({ TST_GREP: '^no test has this name$', JZ_TEST_SEED: seed }), encoding: 'utf8', timeout: 120000,
   })
-  const selected = list('generated')
-  const timed = Object.fromEntries(Object.entries(JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8')).runs['generated-default'].files).map(([f, [s]]) => [f, s]))
-  const weight = estimated(selected, timed, f => statSync(join(root, 'test', `${f}.js`)).size)
   const ran = r => [...r.stdout.matchAll(/^PASS (\S+) /gm)].map(m => m[1]).toSorted()
-  const planned = seed => plan(selected, weight, 2, seed).map(r => `generated-${r.files[0]}`).toSorted()
+  const planned = (seed, suite = 'generated', row = 'generated-default') => {
+    const selected = list(suite)
+    const timed = Object.fromEntries(Object.entries(JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8')).runs[row].files).map(([f, [s]]) => [f, s]))
+    const weight = estimated(selected, timed, f => statSync(join(root, 'test', `${f}.js`)).size)
+    return plan(selected, weight, 2, seed).map(r => `${suite}-${r.files[0]}`).toSorted()
+  }
+  const quick = split('7', 'quick')
+  is(quick.status, 0, quick.stderr)
+  is(ran(quick), planned(7, 'quick', 'core-default'), 'the quick tier\'s runs, cut by the core row its files have')
   for (const seed of [7, 30]) {
     const r = split(String(seed))
     is(r.status, 0, r.stderr)
