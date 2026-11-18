@@ -1247,7 +1247,7 @@ export const dropUnreachedStaticLinks = (ast, programFacts) => {
 
 export const resolveClosureWidth = (programFacts) => {
   if (!ctx.closure.make) return
-  const { hasSpread, hasRest, maxCall, maxDef } = programFacts
+  const { hasSpread, hasRest, maxCall, maxDef, maxRestSlots } = programFacts
   const floor = ctx.closure.floor ?? 0
   // A top-level function used as a first-class value gets a boundary trampoline
   // that forwards $__a0..$__a{arity-1} into it (emit.js). The uniform closure
@@ -1262,9 +1262,16 @@ export const resolveClosureWidth = (programFacts) => {
     const n = programFacts.programIndex.graphFunctionById(dynamicRoots[i])?.sig?.params?.length ?? 0
     if (n > maxValueArity) maxValueArity = n
   }
-  ctx.closure.width = (hasSpread && hasRest)
-    ? MAX_CLOSURE_ARITY
-    : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), maxValueArity, floor))
+  const need = Math.max(maxCall, maxDef + (hasRest ? 1 : 0), maxValueArity, floor)
+  // A closure, or a function held as a value, with more slots to fill than
+  // MAX_CLOSURE_ARITY widens the one closure signature to what the program
+  // needs, its widest call with it, so no call has an argument past it. A
+  // program with none keeps the slots at most MAX_CLOSURE_ARITY: what they
+  // cost every closure call stays bounded by a longer call of a plain
+  // function, and a spread call past them hands a rest parameter the rest
+  // through $__closure_spill.
+  const wide = Math.max(maxDef, maxRestSlots, maxValueArity) > MAX_CLOSURE_ARITY
+  ctx.closure.width = wide ? need : hasSpread && hasRest ? MAX_CLOSURE_ARITY : Math.min(MAX_CLOSURE_ARITY, need)
   ctx.closure.spread = hasSpread
 }
 

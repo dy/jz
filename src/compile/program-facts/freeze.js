@@ -64,7 +64,7 @@
 const FACT_KEYS = new Set([
   'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'addressTakenNames', 'callSites',
   'computedCallSites', 'memberCallSites', 'memberDispatchSites', 'memberValueReads',
-  'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
+  'maxDef', 'maxCall', 'maxRestSlots', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
   'hasBigint', 'hasThrow', 'writtenProps', 'literalWriteKeys', 'arrResized',
   'nameEscapes', 'typedRedefs', 'literalObjectVars', 'programIndex',
 ])

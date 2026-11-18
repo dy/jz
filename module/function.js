@@ -276,9 +276,9 @@ export default (ctx) => {
    * @returns {WasmNode} NaN-boxed closure pointer
    */
   ctx.closure.make = ({ params, body, captures, restParam, defaults, scope, noProto, self }) => {
-    const fixedN = params.length - (restParam ? 1 : 0)
-    if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
-    if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
+    // the closure signature is as wide as every closure the program holds (plan/scope.js resolveClosureWidth)
+    const fixedN = params.length - (restParam ? 1 : 0), W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+    if (fixedN + (restParam ? 1 : 0) > W) err(`Closure with ${fixedN} fixed params${restParam ? ' and a rest' : ''} exceeds the closure signature's ${W} slots`)
     // Generate closure body function name
     const fnName = `${T}closure${ctx.closure.table.length}`
     const owner = ctx.func.current?.name ?? ctx.closure.emitting
@@ -508,7 +508,7 @@ export default (ctx) => {
         ['then', ['f64.load', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]]]],
         ['else', UNDEF_LIT()]])
     } else {
-      if (args.length > MAX_CLOSURE_ARITY) err(`Closure call with ${args.length} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+      if (args.length > Math.max(W, MAX_CLOSURE_ARITY)) err(`Closure call with ${args.length} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
       // The uniform type carries W slots, and W covers every declared parameter
       // list, so an argument past it is one no callee could name.
       const n = Math.min(args.length, W)

@@ -97,7 +97,7 @@ export function recordModuleInitFacts(root) {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasBigint: false,
     hasFuncValue: false, timerNames: new Set(),
-    maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
+    maxDef: 0, maxCall: 0, maxRestSlots: 0, hasRest: false, hasSpread: false,
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(), typedRedefs: new Set(),
     objectLiteralDefs: new Map(),

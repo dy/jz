@@ -636,28 +636,39 @@ test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel
   }
 })
 
-test('arity err: closure with 9 fixed params', () => {
-  // a called-only `let g = …` inlines (no closure to limit): the limit is the closure form's
-  throws(
-    `export let f = () => {
-      let g = (a,b,c,d,e,f,g,h,i) => a
+test('arity: a closure past the inline slots widens the closure signature', () => {
+  // A factory's closures over its state, one of nine parameters called directly
+  // and one of nine handed on as a value, a rest closure past eight fixed: the
+  // one closure signature is as wide as the widest needs (plan/scope.js resolveClosureWidth).
+  const src = `const make = (n) => {
+      const q = new Float64Array(9)
+      function points(a, b, e1, o1, e2, o2, e3, o3, e4) {
+        q[0] = a; q[1] = Math.abs(e1 + o1); q[2] = Math.abs(e2 + o2); q[3] = Math.abs(e3 + o3); q[4] = Math.abs(e4)
+        q[5] = Math.abs(e3 - o3); q[6] = Math.abs(e2 - o2); q[7] = Math.abs(e1 - o1); q[8] = b
+      }
+      const wide = (a, b, c, d, e, f, g, h, i, j) => a - b + c - d + e - f + g - h + i - j + n
+      const tail = (a, b, c, d, e, f, g, h, ...r) => a + h + r.length * 100 + (r[0] ?? 0)
+      return { run(x) { points(x, x + 1, 1, 2, 3, 4, 5, 6, 7); let s = 0; for (let k = 0; k < 9; k++) s += q[k]; return s }, wide, tail }
+    }
+    const fns = [make(3).wide, (a) => a]
+    export const run = (x) => make(1).run(x)
+    export const call = (k, x) => fns[k & 1](x, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    export const rest = (x) => make(0).tail(x, 1, 2, 3, 4, 5, 6, 7, 8, 9) + make(0).tail(x, 1, 2, 3, 4, 5, 6, 7)`
+  const want = oracle(src)
+  for (const optimize of [false, true, 'size', 'speed']) {
+    const e = runHost(src, { optimize })
+    for (const x of [0, 2.5, -7]) {
+      is(e.run(x), want.run(x), `${optimize}: run(${x})`)
+      is(e.call(0, x), want.call(0, x), `${optimize}: a ten-parameter closure held as a value`)
+      is(e.call(1, x), want.call(1, x), `${optimize}: a one-parameter closure called with ten`)
+      is(e.rest(x), want.rest(x), `${optimize}: eight fixed and a rest`)
+    }
+  }
+  // (the nested form, its calls kept as closure calls)
+  is(runHost(`export let f = () => {
+      let g = (a,b,c,d,e,f,g,h,i) => a + i
       return g(1,2,3,4,5,6,7,8,9)
-    }`,
-    'MAX_CLOSURE_ARITY',
-    'nested closure with 9 fixed params should error',
-    { optimize: { sourceInline: false } }
-  )
-})
-
-test('arity err: closure with 8 fixed + rest has no slot', () => {
-  throws(
-    `export let f = () => {
-      let g = (a,b,c,d,e,f,g,h,...r) => r.length
-      return g()
-    }`,
-    'MAX_CLOSURE_ARITY',
-    'closure with 8 fixed + rest should error (rest needs free slot)'
-  )
+    }`, { optimize: { sourceInline: false } }).f(), 10, 'nested closure with 9 fixed params')
 })
 
 test('arity err: closure call with 9 args', () => {
@@ -671,17 +682,12 @@ test('arity err: closure call with 9 args', () => {
   )
 })
 
-test('arity err: top-level func with 9 params used as value', () => {
+test('arity: a top-level function of 9 params used as a value', () => {
   // `big` stored into an array — a genuine non-devirtualizable escape, so the
-  // closure ABI is unavoidable and the arity ceiling must fire. (Passing it
-  // straight to a forwarder no longer suffices: inlineHotInternalCalls inlines
-  // the forwarder and the call devirtualizes to a direct `call $big`.)
-  throws(
-    `let big = (a,b,c,d,e,f,g,h,i) => a
-    export let f = () => { let arr = [big]; return arr[0](1,2,3,4,5,6,7,8) }`,
-    'MAX_CLOSURE_ARITY',
-    'top-level func with 9 params used as value should error'
-  )
+  // closure ABI is unavoidable: its trampoline takes all nine slots.
+  const src = `let big = (a,b,c,d,e,f,g,h,i) => a + (i === undefined ? 100 : i)
+    export let f = () => { let arr = [big]; return arr[0](1,2,3,4,5,6,7,8) + arr[0](1,2,3,4,5,6,7,8,9) }`
+  is(runHost(src).f(), oracle(src).f())
 })
 
 test('arity ok: closure with 8 fixed params (boundary)', () => {

@@ -2317,11 +2317,12 @@ function emitNode(node, expect) {
       return readVar(node)
     // Top-level function used as value → wrap as closure pointer for call_indirect
     if (ctx.funcs.names.has(node) && !isBoundName(node) && ctx.closure.table) {
-      // Trampoline signature: uniform closure ABI (env f64, argc i32, a0..a{MAX-1} f64) → f64.
-      // Forwards the first N inline slots to $func where N = func's fixed param count.
+      // Trampoline signature: uniform closure ABI (env f64, argc i32, a0..a{W-1} f64) → f64.
+      // Forwards the first N inline slots to $func where N = func's fixed param count;
+      // the slots are as wide as every function held as a value (plan/scope.js resolveClosureWidth).
       const func = ctx.funcs.map.get(node)
       const sigParams = func?.sig.params || []
-      if (sigParams.length > MAX_CLOSURE_ARITY) err(`Function ${node} used as closure value has ${sigParams.length} params, exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY} — bundle the extra parameters into one array/object argument`)
+      if (sigParams.length > Math.max(ctx.closure.width ?? 0, MAX_CLOSURE_ARITY)) err(`Function ${node} used as closure value has ${sigParams.length} params, exceeds the closure signature's ${ctx.closure.width} slots`)
       const trampolineName = `${T}tramp_${node}`
       if (!ctx.core.stdlib[trampolineName]) {
         const W = ctx.closure.width ?? MAX_CLOSURE_ARITY

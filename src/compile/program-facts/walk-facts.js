@@ -223,12 +223,14 @@ export function observeNodeFacts(node, f) {
   } else if (op === '{}') {
     f.hasSchemaLiterals = true
   } else if (op === '=>') {
-    let fixedN = 0
+    let fixedN = 0, rest = false
     for (const r of extractParams(args[0])) {
-      if (classifyParam(r)[PARAM_KIND] === 'rest') f.hasRest = true
+      if (classifyParam(r)[PARAM_KIND] === 'rest') f.hasRest = rest = true
       else fixedN++
     }
     if (fixedN > f.maxDef) f.maxDef = fixedN
+    // a rest parameter takes a slot past the fixed ones
+    if (rest && fixedN + 1 > f.maxRestSlots) f.maxRestSlots = fixedN + 1
   } else if (op === '()') {
     const cargs = commaList(args[1])
     if (cargs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
@@ -240,7 +242,7 @@ function emptyWalkFacts() {
   return {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasBigint: false, hasThrow: false,
-    maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
+    maxDef: 0, maxCall: 0, maxRestSlots: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [], memberCallSites: [],
     memberDispatchSites: [], memberValueReads: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
@@ -258,6 +260,7 @@ function mergeWalkFacts(into, from) {
   if (from.hasThrow) into.hasThrow = true
   if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
   if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
+  if (from.maxRestSlots > into.maxRestSlots) into.maxRestSlots = from.maxRestSlots
   if (from.hasRest) into.hasRest = true
   if (from.hasSpread) into.hasSpread = true
   for (const p of from.writtenProps) into.writtenProps.add(p)
@@ -615,6 +618,7 @@ export function collectProgramFacts(ast) {
     if (doArity) {
       if (initFacts.maxDef > f.maxDef) f.maxDef = initFacts.maxDef
       if (initFacts.maxCall > f.maxCall) f.maxCall = initFacts.maxCall
+      if (initFacts.maxRestSlots > f.maxRestSlots) f.maxRestSlots = initFacts.maxRestSlots
       if (initFacts.hasRest) f.hasRest = true
       if (initFacts.hasSpread) f.hasSpread = true
     }
@@ -647,7 +651,7 @@ export function collectProgramFacts(ast) {
     memberCallSites: f.memberCallSites,
     memberDispatchSites: f.memberDispatchSites,
     memberValueReads: f.memberValueReads,
-    maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
+    maxDef: f.maxDef, maxCall: f.maxCall, maxRestSlots: f.maxRestSlots, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals,
     hasBigint: f.hasBigint, hasThrow: f.hasThrow, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,

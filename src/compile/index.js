@@ -691,10 +691,11 @@ export function assemble(ast, profiler) {
     stdlib: [],     // stdlib functions
     customs: [],    // custom sections + exports
   }
-  // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
+  // Uniform closure convention: (env f64, argc i32, a0..a{W-1} f64) → f64.
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
-  // MAX_CLOSURE_ARITY is the fixed inline-slot count; calls with more args error.
+  // W is the program's need (plan/scope.js resolveClosureWidth): at most
+  // MAX_CLOSURE_ARITY unless a closure has more slots to fill.
   // Bare truthy, not `.size`: `ctx.closure.types` existing means `fn` loaded
   // for SOME real reason — not only literal closure minting, but any use of
   // ctx.closure.call (generic dynamic dispatch that COULD invoke a

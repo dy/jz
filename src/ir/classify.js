@@ -14,11 +14,14 @@
 import { isI32, some, REFS_THROUGH_ARROWS } from '../ast.js'
 import { typed } from './tag.js'
 
-/** Max arity of inline closure slots. Closures are compiled with signature
- *  (env f64, argc i32, a0..a{MAX-1} f64) → f64 — no per-call heap alloc.
- *  Direct (non-spread) calls with more args than MAX error. Spread calls are
+/** The inline closure slots a program with no wider closure stops at. Closures
+ *  are compiled with signature (env f64, argc i32, a0..a{W-1} f64) → f64, no
+ *  per-call heap alloc; W is what the program needs, past this only where a
+ *  closure or a function held as a value has more slots to fill
+ *  (compile/plan/scope.js resolveClosureWidth). In a program of none, a direct
+ *  (non-spread) call with more args than this errors. Spread calls are
  *  unbounded: the spread site publishes the full args-array offset in
- *  $__closure_spill, and a rest-param callee reads args[MAX..argc-1] from it
+ *  $__closure_spill, and a rest-param callee reads args[W..argc-1] from it
  *  (module/function.js spread path; compile/closure-emit.js packs the rest
  *  array, or compile/rest-view.js reads the slots in place). */
 export const MAX_CLOSURE_ARITY = 8
