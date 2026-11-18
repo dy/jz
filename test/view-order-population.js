@@ -9,9 +9,16 @@
 // of one buffer at one index are the same bytes in the same iteration, which the dependence
 // test admits (vectorize/alias.js `apart`, a distance of 0) only as long as the lift keeps
 // each element's statements in order.
+//
+// A pair's programs share a module (test/_population.js), each with a buffer of its own, at
+// every configuration but size: there a program's function compiles as it does alone, at one
+// compile a pair where it was one a program (2026-11-18, a pooled literal read as itself: of
+// 1,890 programs and configurations 1,638 the same text, the other 252, at 3 and speed, the
+// same but for which temporary local holds a value). At size the module outlines what its
+// programs repeat (an element's address into `$__out0`), so there each program stays a
+// module of its own.
 import test from 'tst'
-import { is } from 'tst/assert.js'
-import { jz, oracle } from './util.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const N = 36
@@ -39,7 +46,7 @@ const ORDERS = (() => {
 // j = i + 0`) is a site the map does not take, and the swap ran as written.
 const atDistance = (k, order) => order.replaceAll('B[j]', `B[${k ? `i ${k < 0 ? '-' : '+'} ${Math.abs(k)}` : 'i'}]`)
 const program = ([TA, TB], body) => `const buf = new ArrayBuffer(512)
-export let main = (n) => {
+export let f = (n) => {
   const w = new Uint32Array(buf)
   for (let i = 0; i < 128; i++) w[i] = 0x3f000000 + i * 977
   const A = new ${TA}(buf, 64, 40), B = new ${TB}(buf, 64, 40)
@@ -48,17 +55,10 @@ export let main = (n) => {
   return s
 }`
 
-// Every level of each program, its differences gathered: one assertion a pair, naming each
-// program and level that differs (an assertion stops its test at the first).
-for (const pair of PAIRS) test(`view order population: ${pair.join(' and ')}, ${ORDERS.length} orders, ${DISTANCES.length} distances, ${CONFIGS.length} configurations`, () => {
-  const diffs = []
-  for (const k of DISTANCES) for (const order of ORDERS) {
-    const body = atDistance(k, order), src = program(pair, body), want = String(oracle(src).main(N))
-    for (const optimize of CONFIGS) {
-      let got
-      try { got = String(jz(src, { optimize }).exports.main(N)) } catch (e) { got = `throws: ${String(e.message).split('\n')[0]}` }
-      if (got !== want) diffs.push(`${body}, at ${JSON.stringify(optimize)}: ${got}, where Node answers ${want}`)
-    }
-  }
-  is(diffs, [], `${pair.join(', ')}: ${ORDERS.length * DISTANCES.length} programs`)
+for (const pair of PAIRS) test(sampled(`view order population: ${pair.join(' and ')}, ${ORDERS.length} orders, ${DISTANCES.length} distances, ${CONFIGS.length} configurations`), () => {
+  const label = `view order: ${pair.join(' and ')}`, progs = DISTANCES.flatMap(k => ORDERS.map(order => atDistance(k, order)))
+    .map(body => ({ name: `${pair.join(' and ')}: ${body}`, src: program(pair, body), args: [[N]] }))
+  // (one label for both: under JZ_TEST_SAMPLE the same programs run at every configuration)
+  population(label, progs, { configs: CONFIGS.filter(c => c !== 'size'), own: ['buf'] })
+  population(label, progs, { configs: ['size'], own: ['buf'], chunk: 1 })
 })

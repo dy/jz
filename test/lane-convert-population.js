@@ -8,9 +8,17 @@
 // Guards the class "a lane's conversion is signed or unsigned as the scalar's conversion is":
 // an element's load says only how it widens to a word (`i32.load8_u` zero-extends), and the
 // conversion of that word to a float says how its top bit reads (`f64.convert_i32_u`).
+//
+// A test's maps, reductions and tone maps share a module (test/_population.js), each program
+// with its own values, at every configuration but size: there a program's function compiles
+// as it does alone, at one compile a test where it was one a program (2026-11-18, a pooled
+// literal read as itself: of 2,520 programs and configurations 2,394 the same text, 112 at 3
+// and speed the same but for which temporary local holds a value, the 14 tone maps there but
+// for a table's address). At size the module outlines what its programs repeat (a bounds
+// check's length load into `$__out0`), and a column convolution joined reads its values'
+// address from a global where alone it is a constant: those stay a module a program.
 import test from 'tst'
-import { is } from 'tst/assert.js'
-import { jz, oracle } from './util.js'
+import { population, sampled } from './_population.js'
 
 const CONFIGS = [0, 1, 2, 3, 'size', 'speed']
 const N = 37
@@ -59,7 +67,7 @@ const TONES = [
   ${weigh('p', 'n')}`],
 ]
 const program = (S, D, body) => `const V = [${V}]
-export let main = (n) => {
+export let f = (n) => {
   const a = new ${S}(n), b = new ${S}(n), c = new Float64Array(n), d = new ${D}(n), p = new Uint32Array(n)
   for (let i = 0; i < n; i++) { a[i] = V[i % 16]; b[i] = V[(i * 7 + 3) % 16]; c[i] = i % 5 - 2 }
   ${body}
@@ -67,7 +75,7 @@ export let main = (n) => {
 // an outer loop of output columns over unrolled taps (vectorize/outer-strip.js tryConvColumn)
 const column = (S, D) => `const V = [${V}]
 const W = 18, H = 6, K = 3, OW = W - K + 1, OH = H - K + 1
-export let main = (n) => {
+export let f = (n) => {
   const a = new ${S}(W * H), w = new Int8Array(K * K), d = new ${D}(OW * OH)
   for (let i = 0; i < W * H; i++) a[i] = V[(i * 5) % 16]
   for (let i = 0; i < K * K; i++) w[i] = (i * 37) % 7 - 3
@@ -80,28 +88,21 @@ export let main = (n) => {
   ${weigh('d', 'OW * OH')}
 }`
 
-// Every level of each program, its differences gathered: one assertion a test, naming each
-// program and level that differs (an assertion stops its test at the first).
 const article = (T) => T.startsWith('Int') ? 'an' : 'a'
-const agree = (diffs, label, src) => {
-  const want = String(oracle(src).main(N))
-  for (const optimize of CONFIGS) {
-    let got
-    try { got = String(jz(src, { optimize }).exports.main(N)) } catch (e) { got = `throws: ${String(e.message).split('\n')[0]}` }
-    if (got !== want) diffs.push(`${label}, at ${JSON.stringify(optimize)}: ${got}, where Node answers ${want}`)
-  }
+const OWN = ['V', 'W', 'H', 'K', 'OW', 'OH']
+// (one label for both: under JZ_TEST_SAMPLE the same programs run at every configuration)
+const check = (label, progs) => {
+  population(label, progs, { configs: CONFIGS.filter(c => c !== 'size'), own: OWN })
+  population(label, progs, { configs: ['size'], own: OWN, chunk: 1 })
 }
+const alone = (label, progs) => population(label, progs, { configs: CONFIGS, own: OWN, chunk: 1 })
 
 for (const S of SOURCES) {
-  test(`lane convert population: ${S} by ${DESTINATIONS.length} destinations by ${MAPS.length} maps, ${CONFIGS.length} configurations`, () => {
-    const diffs = []
-    for (const D of DESTINATIONS) for (const [name, body] of MAPS) agree(diffs, `${name} of ${article(S)} ${S} into ${article(D)} ${D}`, program(S, D, body))
-    is(diffs, [], `${S}: ${DESTINATIONS.length * MAPS.length} programs`)
-  })
-  test(`lane convert population: ${S} by ${REDUCTIONS.length} reductions, ${TONES.length} tone maps and a column convolution, ${CONFIGS.length} configurations`, () => {
-    const diffs = []
-    for (const [name, body] of [...REDUCTIONS, ...TONES]) agree(diffs, `${name} of ${article(S)} ${S}`, program(S, 'Float64Array', body))
-    for (const D of ['Uint8Array', 'Float32Array']) agree(diffs, `a column convolution of ${article(S)} ${S} into ${article(D)} ${D}`, column(S, D))
-    is(diffs, [], `${S}: ${REDUCTIONS.length + TONES.length + 2} programs`)
+  test(sampled(`lane convert population: ${S} by ${DESTINATIONS.length} destinations by ${MAPS.length} maps, ${CONFIGS.length} configurations`), () =>
+    check(`lane convert: ${S} maps`, DESTINATIONS.flatMap(D => MAPS.map(([name, body]) =>
+      ({ name: `${name} of ${article(S)} ${S} into ${article(D)} ${D}`, src: program(S, D, body), args: [[N]] })))))
+  test(sampled(`lane convert population: ${S} by ${REDUCTIONS.length} reductions, ${TONES.length} tone maps and a column convolution, ${CONFIGS.length} configurations`), () => {
+    check(`lane convert: ${S} reductions`, [...REDUCTIONS, ...TONES].map(([name, body]) => ({ name: `${name} of ${article(S)} ${S}`, src: program(S, 'Float64Array', body), args: [[N]] })))
+    alone(`lane convert: ${S} columns`, ['Uint8Array', 'Float32Array'].map(D => ({ name: `a column convolution of ${article(S)} ${S} into ${article(D)} ${D}`, src: column(S, D), args: [[N]] })))
   })
 }
