@@ -7,11 +7,16 @@
 // SyntaxError that names its construct and its line and column, at 5,000 levels
 // of each form (src/parse.js readTree, src/compiler.js nestingError).
 //
-// Each compile runs in a process of its own, at the levels this leg owns
+// Each row runs in a process of its own, at the levels this leg owns
 // (_matrix.js levels: the level off on the opt0 leg, the default on the default
-// leg). KNOWN holds each row that fails today, with its cause: such a row is
-// held to fail as it fails, so the list says what is true and the row that
-// starts to pass is taken out of it.
+// leg), and times its two sizes there once the compiler is warm: a compile of
+// the small one first, then each in turn, the faster of two of each (a cold
+// first compile, JIT warm-up included, read t(2,500) high and the ratio low).
+// The ratio is of the process's CPU time: on a machine shared by other work the
+// wall time of a compile moved by half from run to run, its CPU time by a tenth.
+// KNOWN holds each row that fails today, with its cause: such a row is held to
+// fail as it fails, so the list says what is true and the row that starts to
+// pass is taken out of it.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
@@ -42,6 +47,7 @@ const KINDS = {
   'comma': n => [`export let f = (x) => { let s = 0\n return (${R(n, i => `s += ${i}`).join(', ')}, s + x) }`, sum(n) + 3],
   'statements': n => [`export let f = (x) => { let s = 0\n${R(n, i => `s += x * ${i}`).join('\n')}\nreturn s }`, 3 * sum(n)],
   'statements on one line': n => [`export let f = (x) => { let s = 0; ${R(n, i => `s += x * ${i}`).join('; ')}; return s }`, 3 * sum(n)],
+  'statements, two a line': n => [`export let f = (x) => { let s = 0, t = 0\n${R(n >> 1, i => `s += x * ${i}; t += 1`).join('\n')}\nreturn s + t }`, 3 * sum(n >> 1) + (n >> 1)],
   'string appends': n => [`export let f = (x) => { let s = ''\n${R(n, i => `s += 'k${i % 10}' + x`).join('\n')}\n return s.length }`, 3 * n],
   'const declarations': n => [`export let f = (x) => { const a0 = x\n${R(n - 1, i => `const a${i + 1} = a${i} + 1`).join('\n')}\n return a${n - 1} }`, 3 + n - 1],
   'array literal': n => [`export let f = (x) => [${R(n, i => i).join(', ')}].length + x`, n + 3],
@@ -59,10 +65,11 @@ const NESTS = {
   'not': d => `export let f = (x) => ${'!'.repeat(d)}x`,
 }
 // `${kind} at ${level}` → what fails today, measured on 2026-11-17 on 14 cores at a
-// load of 30 to 60: 'compile', no module that answers (the row
-// is held to fail, and the gate fails when it passes); 'time', a compile that
-// answers in a time past the ratio or past minutes (a target the gate prints and
-// does not hold: the ratio of a loaded machine moves by half).
+// load of 30 to 60, and again on 2026-11-18 by CPU time at a load of 130 to 250:
+// 'compile', no module that answers (the row is held to fail, and the gate fails
+// when it passes); 'time', a compile that answers in a time past the ratio or past
+// the limit (a target the gate prints and does not hold; one that ends otherwise
+// fails).
 const KNOWN = new Map([
   // the summary takes a round a string append and stops at its cap of rounds
   // (summary/index.js): 2,500 appends compile, 10,000 end in "summary: no fixpoint"
@@ -76,7 +83,7 @@ const KNOWN = new Map([
   // list form laid flat (watr optimize.js substGets, tallyLocals): a sum of 1,000
   // links compiles, of 2,500 the stack ends; a run of 5,000 writes of one name too
   ['sum at default', 'compile'], ['difference at default', 'compile'],
-  ['comma at default', 'compile'], ['statements at default', 'compile'], ['statements on one line at default', 'compile'],
+  ['comma at default', 'compile'], ['statements at default', 'compile'], ['statements on one line at default', 'compile'], ['statements, two a line at default', 'compile'],
   ['const declarations at default', 'compile'],
   // answers, in a time that grows past the ratio or runs to minutes: watr's encoder
   // and the emitter on a call a link; the summary and the plan on an object of
@@ -93,25 +100,48 @@ const KNOWN = new Map([
   // processScope): a guard list of 2,500 returns spent 1.3 s in watOptimize, of
   // 10,000 20.6 s, where jz's own stages grew 1.2 s to 2.7 s
   ['else-if of returns at default', 'time'], ['else-if of assignments at default', 'time'], ['?: returned at default', 'time'],
+  // the store forwarding forgets at each store every slot the store may reach, by a
+  // walk of all it holds (optimize/forward-store.js overwrite): the stores of one
+  // straight list take their square. An array of 10,000 literals spends 3.6 s in
+  // optimizeFuncs, of 2,500 0.48 s (CPU t(10,000) / t(2,500) 6.9 here, 7.6 on
+  // 36330cd22, which the gate's cold wall times read as 4.6)
+  ['array literal at default', 'time'],
 ])
 
+// The row's child: SMALL compiled first to warm the compiler, then SRC and SMALL in
+// turn, twice where SRC takes under a minute; the faster of each, wall and CPU time
+// (ms, cpu), and SRC's answer.
 const RUNNER = `import { pathToFileURL } from 'node:url'
 const root = pathToFileURL(process.env.JZ_ROOT).href
 const { compileInternal } = await import(root + 'src/compiler.js')
 const { default: jzify } = await import(root + 'jzify/index.js')
 const { instantiate } = await import(root + 'interop.js')
-const t0 = performance.now()
-try {
-  const w = compileInternal(process.env.SRC, JSON.parse(process.env.OPTS), jzify), ms = performance.now() - t0
-  console.log(JSON.stringify({ ok: true, ms, answer: instantiate(w).exports.f(3) }))
-} catch (e) { console.log(JSON.stringify({ ok: false, ms: performance.now() - t0, name: e.name, message: String(e.message).split('\\n').slice(0, 2).join(' | ') })) }`
-const compiled = (src, optimize) => {
+const opts = JSON.parse(process.env.OPTS), big = process.env.SRC, small = process.env.SMALL
+const timed = (src) => {
+  const c0 = process.cpuUsage(), t0 = performance.now(), r = {}
+  try { r.w = compileInternal(src, opts, jzify) } catch (e) { r.e = e }
+  const c = process.cpuUsage(c0)
+  r.ms = performance.now() - t0; r.cpu = (c.user + c.system) / 1000
+  return r
+}
+const warm = small ? timed(small) : null
+const b = timed(big)
+if (b.e) console.log(JSON.stringify({ ok: false, ms: b.ms, name: b.e.name, message: String(b.e.message).split('\\n').slice(0, 2).join(' | ') }))
+else {
+  let ms = b.ms, cpu = b.cpu, smallCpu = NaN
+  if (small && !warm.e) {
+    smallCpu = timed(small).cpu
+    if (ms < 60000) { const b2 = timed(big); ms = Math.min(ms, b2.ms); cpu = Math.min(cpu, b2.cpu); smallCpu = Math.min(smallCpu, timed(small).cpu) }
+  }
+  console.log(JSON.stringify({ ok: true, ms, cpu, smallCpu, answer: instantiate(b.w).exports.f(3) }))
+}`
+const compiled = (src, optimize, small) => {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', RUNNER], {
-    env: { ...process.env, JZ_ROOT: ROOT, SRC: src, OPTS: JSON.stringify({ optimize }) },
-    encoding: 'utf8', timeout: optimize === false ? 600000 : 1800000, killSignal: 'SIGKILL', maxBuffer: 1 << 26,
+    env: { ...process.env, JZ_ROOT: ROOT, SRC: src, SMALL: small ?? '', OPTS: JSON.stringify({ optimize }) },
+    encoding: 'utf8', timeout: 900000, killSignal: 'SIGKILL', maxBuffer: 1 << 26,
   })
   try { return JSON.parse(r.stdout.trim().split('\n').pop()) }
-  catch { return { ok: false, ms: NaN, name: 'exit', message: r.signal ? `stopped past the limit (${r.signal})` : `exit ${r.status}: ${String(r.stderr).slice(0, 200)}` } }
+  catch { return { ok: false, ms: NaN, name: 'exit', message: r.signal === 'SIGKILL' ? 'stopped past the limit' : r.signal ? `ended by ${r.signal}` : `exit ${r.status}: ${String(r.stderr).slice(0, 200)}` } }
 }
 const levelName = (o) => o === false ? 'off' : 'default'
 const skip = () => onKernel() || onWasi()
@@ -122,22 +152,18 @@ for (const optimize of levels(false, true)) {
   for (const [kind, gen] of Object.entries(KINDS)) test(`limits: ${kind} at ${N} links, the level ${lv}`, () => {
     if (skip()) return
     const row = `${kind} at ${lv}`, known = KNOWN.get(row)
-    const [src, want] = gen(N), big = compiled(src, optimize)
+    const [src, want] = gen(N), big = compiled(src, optimize, known === 'compile' ? null : gen(SMALL)[0])
     const answers = big.ok && big.answer === want
     if (known === 'compile') { ok(!answers, `${row}: fails as KNOWN says (${big.ok ? 'answers ' + big.answer : big.name + ' ' + big.message}); a pass takes it out of KNOWN`); return }
     // a target past the time limit is a target still
-    if (known === 'time' && !big.ok && big.name === 'exit') { console.log(`  ${row}: ${big.message} (a target)`); return }
+    if (known === 'time' && !big.ok && big.message === 'stopped past the limit') { console.log(`  ${row}: ${big.message} (a target)`); return }
     ok(answers, `${row}: ${big.ok ? `answers ${big.answer}, the generator ${want}` : `${big.name}: ${big.message}`}`)
     if (!answers) return
-    // the ratio of the faster of two compiles of each size where the first is past the bound
-    let small = compiled(gen(SMALL)[0], optimize), ratio = big.ms / small.ms
-    if (ratio > RATIO && known !== 'time') {
-      const again = compiled(src, optimize), small2 = compiled(gen(SMALL)[0], optimize)
-      ratio = Math.min(big.ms, again.ok ? again.ms : Infinity) / Math.min(small.ms, small2.ok ? small2.ms : Infinity)
-      small = small.ok ? small : small2
-    }
-    console.log(`  ${row}: ${(big.ms / N).toFixed(2)} ms a link, t(${N}) / t(${SMALL}) ${ratio.toFixed(1)}${known ? ' (a target)' : ''}`)
-    if (known !== 'time') ok(small.ok && ratio <= RATIO, `${row}: t(${N}) / t(${SMALL}) = ${ratio.toFixed(1)}, at most ${RATIO}`)
+    // a ratio past the bound is measured once more, in a process of its own
+    let ratio = big.cpu / big.smallCpu
+    if (!(ratio <= RATIO) && known !== 'time') { const again = compiled(src, optimize, gen(SMALL)[0]); if (again.ok) ratio = Math.min(ratio, again.cpu / again.smallCpu) }
+    console.log(`  ${row}: ${(big.ms / N).toFixed(2)} ms a link (CPU ${(big.cpu / N).toFixed(2)}), CPU t(${N}) / t(${SMALL}) ${ratio.toFixed(1)}${known ? ' (a target)' : ''}`)
+    if (known !== 'time') ok(ratio <= RATIO, `${row}: CPU t(${N}) / t(${SMALL}) = ${ratio.toFixed(1)}, at most ${RATIO}`)
   })
 
   test(`limits: each nesting form at 5,000 levels is named, the level ${lv}`, () => {
