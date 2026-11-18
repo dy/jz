@@ -1225,8 +1225,17 @@ export const userName = (fn) => {
  *  line, a caret under the column (a tab above stays a tab below). */
 export function where(loc) {
   const at = locate(loc)
-  return at ? `\n  at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}\n  ${at.text}\n  ${at.text.slice(0, at.col - 1).replace(/[^\t]/g, ' ')}^` : ''
+  if (!at) return ''
+  // a line of generated code can be the whole program: the stretch around the column
+  let text = at.text, col = at.col
+  if (text.length > WIDE_LINE) {
+    const from = Math.max(0, col - 1 - AROUND), to = Math.min(text.length, col - 1 + AROUND)
+    text = (from > 0 ? '...' : '') + text.slice(from, to) + (to < at.text.length ? '...' : '')
+    col = col - from + (from > 0 ? 3 : 0)
+  }
+  return `\n  at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}\n  ${text}\n  ${text.slice(0, col - 1).replace(/[^\t]/g, ' ')}^`
 }
+const WIDE_LINE = 160, AROUND = 80
 
 /** Throw with source location context: the source line, and the function it
  *  stands in as the program names it. `syntax`: an early error of the language,

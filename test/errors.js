@@ -1464,3 +1464,24 @@ test('errors: a nesting too deep to parse names what nests', () => {
   is(run(`class A { v = ${R(400, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`).f(3), 203, 'a field of 400 terms compiles')
 })
 
+// An error shows its source line under the message; a program a machine wrote on
+// one line is that line, so the message carried all of it (5,000 nested
+// parentheses: 10,924 characters). A line past 160 characters shows the 80 on
+// each side of the column, the column itself as it is.
+test('errors: a long line shows the stretch around its column', () => {
+  const src = `export let f = (x) => { let s = 0; ${'s += 1; '.repeat(3000)} s += @ }`
+  let e = null
+  try { compile(src) } catch (x) { e = x }
+  ok(e instanceof SyntaxError, `${e?.name}`)
+  if (onKernel()) return
+  const lines = e.message.split('\n'), at = lines.findIndex(l => /^ {2}at line 1:\d+$/.test(l))
+  ok(at > 0 && e.message.length < 400, `a message of ${e.message.length} characters: ${lines[at]}`)
+  const shown = lines[at + 1], caret = lines[at + 2].indexOf('^')
+  ok(shown.startsWith('  ...') && shown.length < 200, `the stretch: ${shown}`)
+  let short = null
+  try { compile('export let f = (x) => { let s = 0; s += @ }') } catch (x) { short = x }
+  const sl = short.message.split('\n'), sat = sl.findIndex(l => /^ {2}at line 1:\d+$/.test(l))
+  is(sl[sat + 1], '  export let f = (x) => { let s = 0; s += @ }', 'a short line is shown whole')
+  const sc = sl[sat + 2].indexOf('^')
+  is(shown.slice(caret - 2, caret + 4), sl[sat + 1].slice(sc - 2, sc + 4), 'the caret stands where it stands on the short line')
+})
