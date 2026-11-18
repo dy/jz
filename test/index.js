@@ -366,6 +366,7 @@ const TESTS = [
   'headline',
   'examples',
   'symbol-to-primitive',
+  'limits',
 ]
 
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
