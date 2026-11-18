@@ -133,6 +133,28 @@ const g = (Uint8Array) => Uint8Array.of(4, 5)
   agreeAll(`function Float32Array() {}\nFloat32Array.of = (v) => v + 1\n`, [['a function of the name', `() => Float32Array.of(41)`]])
 })
 
+// A BigInt view's element converts with ToBigInt (ECMA-262 7.1.13), after the list is
+// evaluated whole: a Number, undefined or null is a TypeError, a string parses (a
+// SyntaxError where it is no integer), a boolean is 0n or 1n, an object goes through its
+// valueOf; an Array's slots, a Set's values and a string's characters the same. A Number
+// view's ToNumber of a BigInt throws once the items behind it are evaluated.
+test('typed constructors: a BigInt view converts each element with ToBigInt', () => {
+  const tried = (made) => `() => { log = ''; try { const a = ${made}; return log + ':' + a.length + ':' + a.join() } catch (e) { return log + ':' + e.name } }`
+  const LISTS = [`o('a', 1n), o('b', 2n)`, `1`, `n('a', 1n), 2`, `'5', true, false, ' 0x10 '`, `'1.5'`, `undefined`, `null`,
+    `o('a', 1n), n('b', 2), o('c', 3n)`, `x, n('b', 2n)`]
+  const rows = []
+  for (const xs of LISTS) for (const made of [`BigInt64Array.of(${xs})`, `BigInt64Array.from([${xs}])`, `new BigInt64Array([${xs}])`])
+    rows.push([made, tried(made)])
+  for (const xs of LISTS.slice(0, 3)) rows.push([`BigUint64Array.of(${xs})`, tried(`BigUint64Array.of(${xs})`)])
+  for (const made of ['BigInt64Array.from(bs)', 'new BigInt64Array(bs)', 'BigInt64Array.of(...bs)', 'BigInt64Array.from(ns)', 'new BigInt64Array(ns)',
+    'BigInt64Array.of(...ns)', 'BigInt64Array.from(ss)', 'BigInt64Array.from(os)', "BigInt64Array.from(new Set([5n, 6n]))", "BigInt64Array.from('12')",
+    'BigInt64Array.from(bt)', 'new BigInt64Array(bt)', "Float64Array.of(1n, n('b', 2))", "new Int32Array([n('a', 1), 2n, n('c', 3)])"])
+    rows.push([made, tried(made)])
+  rows.push(['a fresh array each call', `() => { const all = []; for (let i = 0n; i < 3n; i++) all.push(BigInt64Array.of(i, i * 2n)); return all.map(a => a.join('/')).join() }`])
+  agreeAll(LOGGED.replace('const x = o(\'x\', 9)', 'const x = o(\'x\', 9n)') +
+    `const bs = [3n, -4n], ns = [1, 2], ss = ['8', '9'], os = [o('p', 10n), o('q', 11n)], bt = BigInt64Array.of(7n, -8n)\n`, rows)
+})
+
 // The constructors are a `jz:` module's functions, the compiler's runtime and not the program:
 // O0, which keeps what the program's own code lowered to, links only those something reaches.
 test('typed constructors: O0 links only the constructors the program names', () => {

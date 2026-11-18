@@ -23,7 +23,7 @@ import { emit, storedValue, idx, deps, call, positionArgs } from '../src/bridge.
 import { strHashLiteral, durableLenLogIR } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { valTypeOf } from '../src/kind.js'
-import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
+import { K, TAGS, NULL_BITS, NUMBER, STRING, BIGINT, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
 import { typedIdxProven, typedIdxWhole, idxKey, exprType } from '../src/type.js'
 import { constIntExpr, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, repOf, intCertainOf } from '../src/reps.js'
@@ -1483,10 +1483,12 @@ export default (ctx) => {
       const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
-      // Each slot converts with ToNumber (arraySlotNumber); BigInt lanes keep
-      // their raw copy.
+      // Each slot converts with ToNumber (arraySlotNumber), or in a BigInt lane
+      // with ToBigInt: an Array's slot holds a BigInt as its box, as every
+      // ordinary storage slot does, so the strict conversion reads it.
       const slot = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
-      const srcF64 = bigint ? slot : arraySlotNumber(src, slot, elemHint)
+      if (bigint) { ctx.module.include('number'); ctx.runtime.throws = true; inc('__to_bigint_strict') }
+      const srcF64 = bigint ? ['call', '$__to_bigint_strict', ['i64.reinterpret_f64', slot]] : arraySlotNumber(src, slot, elemHint)
       const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
       const storeExprs = (fl.isF16 || fl.isClamped)
         ? [elemStoreIR(fl, dstAddr, srcF64)]
@@ -1508,7 +1510,7 @@ export default (ctx) => {
       // per-element f64→elem copy loop. For an integer view each element then stores as an
       // i32.const (2 B for small values), so a constant program / lookup table stops
       // round-tripping through the boxed-f64 array. Fresh alloc per evaluation, so identity
-      // and mutation semantics are unchanged. BigInt views (elemType>7) keep the loop.
+      // and mutation semantics are unchanged. BigInt views (code 7 as well) build here too.
       if (Array.isArray(src) && src[0] === '[' && elemType <= 7
           && !src.slice(1).some(e => Array.isArray(e) && e[0] === '...')) {
         const elems = src.slice(1)
@@ -1523,29 +1525,45 @@ export default (ctx) => {
         // file is kernel-compiled — self-compile closure-capture-after-nested-emit
         // class (.work/archive/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS). The
         // loop below reads these locals, never the free variables.
-        const strideS = stride, storeS = store, elemTypeS = elemType
-        // The literal is evaluated whole before an element converts (ECMA-262 23.2.5.1.2
-        // InitializeTypedArrayFromList takes the list): where the ToNumber of an element
-        // with another after it may run a valueOf, every element is held in a local in
-        // turn and converts after the last is evaluated. (A program with no valueOf or
-        // toString converts through none, and a constant has no effect.)
+        const strideS = stride, storeS = store, elemTypeS = elemType, bigintS = bigint
+        // A BigInt view's element converts with ToBigInt (ECMA-262 7.1.13) as a store's
+        // does (typedValue): a value proven a BigInt is its own bits, any other is taken
+        // as stored and converts through __to_bigint_strict (a Number, undefined or null
+        // a TypeError, a string parsed, an object through its valueOf).
         const view = ctx.summary.at(ctx.func.current)
-        const hold = !bigint && ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number) &&
-          elems.some((e, k) => k < elems.length - 1 && !primitiveKind(view, e))
+        const isBig = (e) => tagsOf(view.kindOfExpr(e) ?? 0) === bitOf(K.BIGINT)
+        const input = (e) => !bigintS ? asF64(emit(e)) : asF64(isBig(e) ? readI64(e, emit(e)) : storedValue(e))
+        const bigBits = (e, v) => {
+          if (isBig(e)) return v
+          ctx.module.include('number')
+          ctx.runtime.throws = true
+          inc('__to_bigint_strict')
+          return typed(['call', '$__to_bigint_strict', ['i64.reinterpret_f64', v]], 'f64')
+        }
+        // The literal is evaluated whole before an element converts (ECMA-262 23.2.5.1.2
+        // InitializeTypedArrayFromList takes the list): where the conversion of an element
+        // with another after it may run a valueOf or throw, every element is held in a
+        // local in turn and converts after the last is evaluated. ToNumber runs code only
+        // in a program with a valueOf or toString, and throws on a BigInt; ToBigInt is
+        // free only for a BigInt; a constant has no effect.
+        const runsCode = ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number), bigints = representationProgramHasBigint(ctx)
+        const mayBeBig = (e) => { const k = view.kindOfExpr(e) ?? 0; return tagsOf(k) === 0 || hasTag(k, K.BIGINT) }
+        const late = bigintS ? (e) => !isBig(e) : (e) => runsCode && !primitiveKind(view, e) || bigints && mayBeBig(e)
+        const hold = elems.some((e, k) => k < elems.length - 1 && late(e))
         const held = []
         if (hold) for (let k = 0; k < elems.length; k++) {
           const e = elems[k]
           if (!Array.isArray(e) && typeof e !== 'string' || Array.isArray(e) && (e[0] == null || e[0] === 'str')) continue
           const t = temp('tfe')
-          body.push(['local.set', `$${t}`, asF64(emit(e))])
+          body.push(['local.set', `$${t}`, input(e)])
           held[k] = typed(['local.get', `$${t}`], 'f64')
         }
         for (let k = 0; k < elems.length; k++) {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
             : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * strideS]]
-          // Each element converts with ToNumber first (free for a Number).
+          // Each element converts with ToNumber, or ToBigInt in a BigInt view, first (free for a Number or a proven BigInt).
           const value = (e) => held[k] ?? emit(e)
-          const num = (e) => bigint ? asF64(value(e)) : asF64(toNumF64(e, value(e)))
+          const num = (e) => bigintS ? bigBits(e, held[k] ?? input(e)) : asF64(toNumF64(e, value(e)))
           if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, num(elems[k]))); continue }
           if (elemTypeS <= 5) {
             // ES ToIntN, not saturation: a constant wraps exactly at compile time
@@ -1581,10 +1599,10 @@ export default (ctx) => {
       // An Array copies; any other source's values as Array.from lists them:
       // a typed array's elements, a string's characters, an iterable's values.
       const view = ctx.summary.at(ctx.func.current), kind = view.kindOfExpr(src)
-      if (bigint || tagOf(kind) === K.ARRAY && !isNullable(kind)) return fromArray(src, fl)
-      // A typed array of numbers lists its elements: the constructor's copy of
-      // it, one memory.copy or one conversion loop, with no list between.
-      if (tagOf(kind) === K.TYPED && !isNullable(kind) && typedElemKind(kind) === NUMBER) return ctx.core.emit[`new.${name}`](src)
+      if (tagOf(kind) === K.ARRAY && !isNullable(kind)) return fromArray(src, fl)
+      // A typed array of this view's family lists its elements: the constructor's
+      // copy of it, one memory.copy or one conversion loop, with no list between.
+      if (tagOf(kind) === K.TYPED && !isNullable(kind) && typedElemKind(kind) === (bigint ? BIGINT : NUMBER)) return ctx.core.emit[`new.${name}`](src)
       ctx.module.include('array')
       const t = tagOf(kind)
       return fromArray(['()', 'Array.from', src], fl, t === K.STRING ? STRING : t === K.TYPED ? view.elemOfKind(kind) : null)
