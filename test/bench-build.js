@@ -11,6 +11,7 @@ import { mix } from '../bench/_lib/benchlib.js'
 import { releaseBytes, wasmStrippedBytes } from '../bench/_lib/release-bytes.js'
 import { FIRST_MS, SETTLE_MS, countOf, settle, settleSource } from '../bench/_lib/passes.js'
 import vm from 'node:vm'
+import { compile as watr } from 'watr'
 import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audiojs/compare.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -147,6 +148,40 @@ test('bench host: a pass is a fresh instance, repeated until the engine has run 
   is(count, `passes=${lines.length}`, 'the rule\'s count, after the last pass, is the lines printed')
   is([...new Set(lines)], ['median_us=1 checksum=8 samples=1 stages=1 runs=1'], 'every pass starts its module state over')
   is(runHost(source).stdout.trim(), `${lines[0]}\npasses=1`, 'JZ_BENCH_PASSES=first runs the first pass alone')
+})
+
+// A module of MoonBit's shape (`moon build --target wasm`: WASI's fd_write, moonrun's two
+// clock imports, `memory` and `_start`) run by _lib/run-moonbit.mjs. Its `_start` adds one
+// to the checksum's digit in its memory before printing: a reused instance would answer 9.
+test('bench moonbit: moonrun\'s imports under Node, a fresh instance a pass, by the rule', () => {
+  const line = 'median_us=1 checksum=7 samples=1 stages=1 runs=1\n', at = 16, digit = at + line.indexOf('7')
+  const bytes = watr(`(module
+    (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32) (result i32)))
+    (import "__moonbit_time_unstable" "instant_now" (func $now (result externref)))
+    (import "__moonbit_time_unstable" "instant_elapsed_as_secs_f64" (func $since (param externref) (result f64)))
+    (memory (export "memory") 1)
+    (data (i32.const ${at}) "${line.replace('\n', '\\0a')}")
+    (func (export "_start") (local $t externref)
+      (local.set $t (call $now))
+      (i32.store8 (i32.const ${digit}) (i32.add (i32.load8_u (i32.const ${digit})) (i32.const 1)))
+      (if (f64.lt (call $since (local.get $t)) (f64.const 0)) (then unreachable))
+      (i32.store (i32.const 0) (i32.const ${at}))
+      (i32.store (i32.const 4) (i32.const ${line.length}))
+      (drop (call $write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 8)))))`)
+  const dir = mkdtempSync(join(tmpdir(), 'jz-bench-moonbit-'))
+  try {
+    const file = join(dir, 'src.wasm')
+    writeFileSync(file, bytes)
+    const run = passes => spawnSync(process.execPath, ['--no-warnings', join(ROOT, 'bench/_lib/run-moonbit.mjs'), file],
+      { encoding: 'utf8', timeout: 30000, maxBuffer: 1 << 26, env: { ...process.env, JZ_BENCH_PASSES: passes } })
+    const rule = run('')
+    is(rule.status, 0, rule.stderr)
+    const lines = rule.stdout.trim().split('\n'), count = lines.pop()
+    ok(lines.length > 2, `${lines.length} passes`)
+    is(count, `passes=${lines.length}`, 'the rule\'s count is the lines printed')
+    is([...new Set(lines)], [line.trim().replace('checksum=7', 'checksum=8')], 'every pass a fresh instance, the clock read')
+    is(run('first').stdout, `${line.replace('checksum=7', 'checksum=8')}passes=1\n`, 'JZ_BENCH_PASSES=first runs the first pass alone')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('bench build: every committed workload is a valid JavaScript module', () => {

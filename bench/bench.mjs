@@ -637,7 +637,7 @@ const carriesState = c => {
 // count after the last pass. The native binaries, Wasmtime's ahead-of-time code and
 // CPython run one pass and print one line.
 const RULE_LANES = new Set([...CALL_PASSES, 'jz', 'jz-exact', 'jz-base', 'as', 'wat', 'c-wasm', 'c-wasm-fast',
-  'rust-wasm', 'go-wasm', 'zig-wasm', 'tinygo', 'jawsm', 'javy', 'js2wasm', 'qjs-wasi'])
+  'rust-wasm', 'go-wasm', 'zig-wasm', 'tinygo', 'moonbit', 'jawsm', 'javy', 'js2wasm', 'qjs-wasi'])
 // A run by the rule printed as many results as its count; a run of one pass, one. A
 // pass whose line went missing, or a process that ended before the rule did, fails
 // here: one line alone would read as a first pass of FIRST_MS or more.
@@ -1495,13 +1495,14 @@ const targets = {
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), tinygoWasmPath(c)]),
   },
   // MoonBit — its own wasm-first language, compiled to the linear-memory `wasm`
-  // backend and run on moonrun (MoonBit's V8-based wasm runner, which supplies the
-  // monotonic clock the timing uses — like jz-wasmtime runs on wasmtime). The case
-  // .mbt drops into a generated single-package project alongside the shared
-  // _lib/bench.mbt helper; `moon build --release` emits the standalone wasm.
+  // backend and run in node's V8 like the other rivals' wasm, with the host moonrun
+  // (MoonBit's own V8 runner) gives it: WASI's fd_write and a monotonic clock
+  // (_lib/run-moonbit.mjs). moonrun runs a module once, with no hook for the pass rule's
+  // next instance. The case .mbt drops into a generated single-package project alongside
+  // the shared _lib/bench.mbt helper; `moon build --release` emits the standalone wasm.
   moonbit: {
-    name: 'MoonBit → wasm (moonrun)',
-    available: c => !!c.mbt && has('moon') && has('moonrun'),
+    name: 'MoonBit → wasm (V8)',
+    available: c => !!c.mbt && has('moon'),
     bin: moonbitWasmPath,
     run: c => tryRun('moonbit', c, () => {
       const proj = moonbitProjDir(c)
@@ -1511,7 +1512,7 @@ const targets = {
       copyFileSync(MOONBIT_LIB, join(proj, 'src', 'bench.mbt'))
       copyFileSync(c.mbt, join(proj, 'src', 'main.mbt'))
       execFileSync('moon', ['build', '--target', 'wasm', '--release', '--target-dir', join(proj, '_b')], { cwd: proj, stdio: 'pipe' })
-    }, ['moonrun', moonbitWasmPath(c)]),
+    }, ['node', '--no-warnings', join(LIB, 'run-moonbit.mjs'), moonbitWasmPath(c)]),
   },
 }
 
@@ -1550,7 +1551,7 @@ const TARGET_CMDS = {
   'qjs-wasi': 'qjs-wasi.wasm /case/<case>-flat.js (QuickJS-NG WASI build, the script preopened) → node (V8 wasm) · fenced interpreter reference',
   'componentize-qjs': 'componentize-qjs --wit bench.wit --js <case>-cqjs.js --sync (QuickJS + Wizer; entry exported as wasi:cli/run, console and clock over WASI) → wasmtime run · fenced interpreter reference',
   'componentize-js': 'jco componentize <case>-sm.js --wit bench.wit --disable http fetch-event (StarlingMonkey + Wizer; entry exported as wasi:cli/run) → wasmtime run · fenced interpreter reference',
-  moonbit: 'moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)',
+  moonbit: 'moon build --target wasm --release <case>.mbt → node (V8 wasm, moonrun\'s imports)',
   // the claim lanes: the strings of the flags their builds read (bench/claims.mjs)
   ...LANE_CMDS,
 }

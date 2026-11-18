@@ -1,8 +1,8 @@
 // Shared timing + checksum + print for the .mbt bench kernels — the MoonBit sibling
 // of _lib/bench.h / _lib/bench.zig. The harness compiles this into the same `src`
 // package as each case's main.mbt, so kernels call these helpers directly (no
-// qualifier). Timing uses core's monotonic clock (moonrun, MoonBit's V8 wasm
-// runner, supplies it); output is one `median_us=…` line that bench.mjs parses.
+// qualifier). Timing uses core's monotonic clock (its host supplies it:
+// _lib/run-moonbit.mjs, as moonrun does); output is one `median_us=…` line that bench.mjs parses.
 
 fn mix(h : UInt, x : UInt) -> UInt {
   (h ^ x) * 0x01000193

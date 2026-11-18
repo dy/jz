@@ -43,7 +43,7 @@ beside it. An engine compiles a function again, optimized, only after it has run
 while, and a wasm function's new code serves its next call, never the one running,
 so a case whose pass ends first runs its timed loop in the baseline tier. Every
 engine lane's runner (`_lib/passes.js`: jz's wasm, the rivals' wasm, the wat lane,
-Javy, QuickJS-NG and js2wasm under V8; V8, Deno, Bun and the JavaScriptCore,
+MoonBit's, Javy, QuickJS-NG and js2wasm under V8; V8, Deno, Bun and the JavaScriptCore,
 SpiderMonkey and GraalJS shells on the JavaScript) repeats the program's pass, its
 `main`, in one process until the engine has run it 300 ms, and counts the pass after
 that. A wasm lane's pass is a fresh instance of the one compiled module (the code
@@ -70,8 +70,9 @@ later tier's wrong answer never passes for state.
 
 The native binaries have no tiers, NumPy's lane is no JavaScript or wasm engine, and
 wasmtime (`jz-wasmtime`, the two componentizers) compiles a module whole before it
-runs, so these run once; `moonbit`'s moonrun, a V8 of its own, runs its program once
-with no hook for a second instance. `--passes=first` (or `JZ_BENCH_PASSES=first`)
+runs, so these run once. `moonbit` runs in Node's V8 with the imports moonrun, MoonBit's
+own V8 runner, gives its modules: moonrun runs a module once, with no hook for a second
+instance (the datasets before 2026-11-18 timed it on moonrun). `--passes=first` (or `JZ_BENCH_PASSES=first`)
 times every lane's first pass alone, the protocol before 2026-11-17; `meta.passes`
 names the protocol a dataset was timed by, and `--merge` refuses to mix two.
 
@@ -642,7 +643,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `componentize-js` | [ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS) 0.23.0 through `jco componentize` (jco 1.40.0): StarlingMonkey (SpiderMonkey) embedded in a component, the same deferred entry and world, its own console and clocks; `--disable http fetch-event` drops the `wasi:http` imports a command never uses. Default build: `--aot` (weval) ran mandelbrot slower here, 735 ms against 351 ms. Fenced like Javy |
 | `js2wasm` | [js2wasm](https://github.com/loopdive/js2) 0.71.0 (`@loopdive/js2`): JS compiled ahead of time to WasmGC, no engine inside. `js2wasm <case>-flat.js --target node` (wasm-opt where binaryen ^132 is installed), run in node through its generated imports helper, which supplies `console` and `performance`. Set `JS2WASM_BIN` to override |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
-| `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
+| `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run in node's V8 with the imports moonrun gives it (WASI's `fd_write` and MoonBit's monotonic clock, `_lib/run-moonbit.mjs`) — a wasm-first-language rival, when `moon` is installed |
 | `tov` | [Tov](https://github.com/richiemcilroy/Tov): a TypeScript-shaped language compiled through C to a native binary. `tov build <case>.tov -o <bin>` at its default (`-O3`, checked integer overflow), when a matching `.tov` port exists. A ported language like `rust` or `as`, not a JS host: it rejects the unchanged corpus (untyped parameters, no typed arrays, no `Math.imul`). Set `TOV_BIN` to override. |
 | `goose` | [Goose](https://github.com/aardappel/goose), Wouter van Oortmerssen's memory-safe systems language with no heap, compiled to one C file and built natively. `goose build <case>.goose -o <bin>` at its release defaults (`-O2` inlining; the emitted C compiled at `-O2` by the first C compiler it finds, which the run records), when a matching `.goose` port exists. A ported language like `tov` or `rust`. Set `GOOSE_BIN` to override. |
 | `bend` | [Bend](https://github.com/bendlang/bend) 2, Victor Taelin and the Higher Order Company's typed, pure, affine language with proofs, compiled to one C file and built natively. `bend <case>.bend -o <bin>` at its release default (the emitted C compiled by `clang -std=c11 -O3`, with the first clang 14 or newer it finds, which the run records), run as `<bin> +RTS --threads 1 --gpu off -RTS`: one core and no GPU, the flags of Bend's own SEQ-CPU measurements. When a matching `.bend` port exists. A ported language like `goose`. Set `BEND_BIN` to override. |

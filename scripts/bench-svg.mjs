@@ -37,7 +37,7 @@ export const SVG_TARGETS = [
   { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
   { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
   { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
-  { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
+  { id: 'moonbit', label: 'MoonBit', sub: 'moonc → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
   { id: 'porf-native', label: 'Porffor', sub: 'JS → C, AOT' },
   { id: 'scriptc', label: 'scriptc', sub: 'JS → LLVM, AOT' },
