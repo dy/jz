@@ -68,6 +68,18 @@ export function throwErrorWat(ctx, name, className, message) {
     (throw $__jz_err (local.get $e)))`
 }
 
+/** A shared thrower of one runtime error by its code (err-codes.js): the throw
+ *  allocates nothing, a catch materializes the Error of the code's class and
+ *  message (src/ir/sentinels.js catchErrorFunc) and the host decodes the code,
+ *  so a path that can only fail this way keeps a fixed-memory export's proof. */
+export function throwCodeWat(ctx, name, code) {
+  ctx.runtime.throwHelpers.add('$' + name)
+  const bits = errorCodeLiteral(code)
+  return `(func $${name}
+    (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${bits})))
+    (throw $__jz_err (f64.const ${bits})))`
+}
+
 /** The shared thrower of one constant error, registered on first use: every
  *  site calls it, and the allocation, the stores and the two literals live
  *  once (watr's 230 `[...x]` sites each carried their own `not iterable`). */

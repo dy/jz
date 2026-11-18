@@ -496,17 +496,11 @@ export function throwErrorIR(className, message) {
 }
 
 export function throwTypeErrorIR(kind = 'read') {
-  // Own-memory literals belong to the lazy helper, so dead guards cannot
-  // leave their message data behind in an otherwise live caller.
-  if (!ctx.memory.shared) {
-    const helper = kind === 'call' ? '__throw_not_callable' : '__throw_property_nullish'
-    ctx.runtime.throws = true
-    ctx.module.include('string')
-    ctx.schema.errorSid('TypeError')
-    inc(helper)
-    return typed(['block', ['result', 'f64'], ['call', '$' + helper], ['unreachable']], 'f64')
-  }
-  return throwErrorIR('TypeError', kind === 'call' ? 'is not a function' : 'Cannot read properties of undefined')
+  // the shared helper raises the error's code (module/core.js): no literal, no schema of its own
+  const helper = kind === 'call' ? '__throw_not_callable' : '__throw_property_nullish'
+  ctx.runtime.throws = true
+  inc(helper)
+  return typed(['block', ['result', 'f64'], ['call', '$' + helper], ['unreachable']], 'f64')
 }
 
 /** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.

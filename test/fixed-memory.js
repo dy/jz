@@ -184,6 +184,22 @@ test('fixed memory: escaping storage, unknown keys and growing state are refused
   for (const src of cases) throws(() => compile(src, options(0)), /memory.fixed cannot certify/, src)
 })
 
+test('fixed memory: a runtime TypeError is raised by its code, allocating nothing', () => {
+  // The read of a property of a nullish value throws the TypeError's code; the host and
+  // a catch get the Error (err-codes.js), so the throw keeps the export allocation-free.
+  const src = `const box = [{ v: 1.5 }, undefined]
+    export function process(i) { return box[i & 1].v }`
+  for (const optimize of tiers) {
+    const p = jz(src, options(optimize)), ref = oracle(src), used = p.memory.used
+    is(p.exports.process(0), ref(0), `${optimize}: the read`)
+    const thrown = (f) => { try { f(1) } catch (e) { return e } }
+    const got = thrown(p.exports.process), want = thrown(ref)
+    ok(got instanceof TypeError && want instanceof TypeError, `${optimize}: ${got}`)
+    is(got.message, 'Cannot read properties of undefined', `${optimize}: the message`)
+    is(p.memory.used, used, `${optimize}: no retained allocation`)
+  }
+})
+
 test('fixed memory: host reentry and non-tail recursive scratch are refused', () => {
   const recurse = `export function process(n){const a=new Float64Array(128);a[0]=n;return n>0 ? process(n-1)+a[0] : a[0]}`
   throws(() => compile(recurse, options(0)), /recursive call/)

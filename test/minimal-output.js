@@ -14,6 +14,7 @@ import { dropSettledTests } from '../src/optimize/settled-tests.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
 import encodeWat from 'watr/compile'
 import { ptrBits, PTR } from '../layout.js'
+import { errorCodeLiteral, ERR, ERROR_CODE_HI } from '../err-codes.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -519,24 +520,23 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
   }
 })
 
-// audit-#11 gap-2: throwTypeErrorIR (src/ir.js) now forces module/string.js
-// inclusion + interns 'TypeError' and its two message strings — a real
-// dependency this synthetic TypeError never needed before (both were left
-// `undefined`). Reachability MUST still gate it exactly like every other
-// Error mechanism above: a program with no member-access/call site that
-// could ever throw one pays nothing (the pin right above already covers
-// that — a program with NO nullish-receiver check site at all never even
-// calls throwTypeErrorIR, so `ctx.module.include('string')` never fires).
-// This pin is the positive half: a program that DOES have one (a Map
-// `.get()` absent-key read feeding a property access — the same shape
-// audit-#10's own dyn-keys.js repro uses) must show the real strings.
-test('minimal: nullish-receiver TypeError message strings appear exactly when the check site does (audit-#11 gap-2)', () => {
+// audit-#11 gap-2: a nullish-receiver check site raises its TypeError by the
+// code (throwTypeErrorIR, module/core.js `__throw_property_nullish`), the
+// Error made where a catch or the host observes it. Reachability gates it as
+// every other Error mechanism above: a program with no check site pays
+// nothing (the pin right above). This pin is the positive half: a program
+// that has one (a Map `.get()` absent-key read feeding a property access, the
+// shape audit-#10's dyn-keys.js repro uses) carries the code, and with no
+// catch in it neither string.
+// The code as the module spells it: the f64 literal, or the bits of a constant the optimizer hoisted
+const hasCode = (w, code) => w.includes(errorCodeLiteral(code)) || w.includes('0x' + (ERROR_CODE_HI >>> 0).toString(16) + code.toString(16).padStart(8, '0'))
+test('minimal: a nullish-receiver check site carries its code exactly when it is there (audit-#11 gap-2)', () => {
   if (skip) return
   const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
   for (const O of levels(0, 2)) {
     const w = wat(src, O)
-    ok(w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: the constructed TypeError's class name string is present`)
-    ok(w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the read-family message string is present`)
+    ok(hasCode(w, ERR.PROPERTY_NULLISH), `@O${O}: the site raises the code`)
+    ok(!w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: no message string: no catch reads one`)
   }
 })
 
@@ -570,7 +570,7 @@ test('minimal: dead opaque-.length throw path leaves neither the TypeError schem
   }
 })
 
-test('minimal: live opaque-.length throw path keeps both strings and throws a real host TypeError (fix/string-pool-reach)', () => {
+test('minimal: live opaque-.length throw path keeps its code and throws a real host TypeError (fix/string-pool-reach)', () => {
   if (skip) return
   const src = `export let f = (x) => {
     let obj = x > 0 ? { a: 1 } : undefined
@@ -578,8 +578,7 @@ test('minimal: live opaque-.length throw path keeps both strings and throws a re
   }`
   for (const O of levels(0, 2, 3)) {
     const w = wat(src, O)
-    ok(w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: obj can be undefined at runtime — the TypeError class name string must survive`)
-    ok(w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the reachable throw's message string must survive`)
+    ok(hasCode(w, ERR.PROPERTY_NULLISH), `@O${O}: obj can be undefined at runtime — the throw's code must survive`)
   }
   // skip is already false here (the early return above covers WASI/kernel, whose
   // command wrapping / self-hosted pipeline this default-JS-host instantiate call

@@ -42,7 +42,7 @@ import { hasDurableReset } from './collection/durable.js'
 import { ordUsedAddrWat } from './collection/ordered.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
-import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
+import { registerErrorClasses, throwCodeWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { symbolFork } from './symbol.js'
 import { registerReach, registerIterRelease, reachOn, belowLog, REACH_DEPS } from './core/reach.js'
@@ -203,11 +203,9 @@ export default (ctx) => {
     __length: () => [...(leanRuntime() ? LENGTH_DEPS : ['__length_tail', '__ptr_offset_fwd', '__str_len']), ...VIEW_DEPS()],
     __length_prop_num: () => ['__to_num',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
-    __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
     // the long division is its own function, the common case answered inline
     __rem: () => leanRuntime() ? [] : ['__rem_div'],
     __rem_v: ['__rem'],
-    __throw_not_callable: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
@@ -1989,13 +1987,10 @@ export default (ctx) => {
     //
     // An unresolved receiver may be an internal object/HASH, host EXTERNAL,
     // array/typed/string, primitive, or nullish. __length owns that complete
-    // runtime dispatch, including the shared nullish TypeError materializer.
+    // runtime dispatch, including the shared nullish TypeError thrower.
     ctx.module.include('collection')
     ctx.module.include('array')
     ctx.runtime.schemaTblConsumed = true
-    // The shared throw helper materializes at stdlib-pull time, but its branded
-    // schema must exist before catch/property planning freezes schema tables.
-    ctx.schema.errorSid('TypeError')
     if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
     inc('__length.value')
     setLinkDemand('typedarray')
@@ -2777,15 +2772,11 @@ export default (ctx) => {
       (then (f64.convert_i32_s (call $__len (local.get $v))))
       (else (f64.const nan:${UNDEF_NAN}))))`
 
-  // One shared materializer for nullish ordinary-property reads. The former
-  // per-site throwTypeErrorIR block duplicated allocation, two stores and two
-  // interned-string constants at every unresolved `.length`; this emits the
-  // same branded two-slot TypeError once while preserving in-wasm instanceof,
-  // .name/.message and host decoding.
-  ctx.core.stdlib['__throw_property_nullish'] = () => throwErrorWat(ctx,
-    '__throw_property_nullish', 'TypeError', 'Cannot read properties of undefined')
-  ctx.core.stdlib['__throw_not_callable'] = () => throwErrorWat(ctx,
-    '__throw_not_callable', 'TypeError', 'is not a function')
+  // The shared throwers of a nullish receiver's property read and of a call of
+  // a non-function: one helper each, raising its code, the TypeError made
+  // where a catch or the host observes it (module/core/error-object.js throwCodeWat).
+  ctx.core.stdlib['__throw_property_nullish'] = () => throwCodeWat(ctx, '__throw_property_nullish', ERR.PROPERTY_NULLISH)
+  ctx.core.stdlib['__throw_not_callable'] = () => throwCodeWat(ctx, '__throw_not_callable', ERR.NOT_CALLABLE)
   ctx.core.throwHelper = (className, message) => throwHelperName(ctx, className, message)
 
   const rawLengthPropArm = () => lengthNeedsDynArm()
