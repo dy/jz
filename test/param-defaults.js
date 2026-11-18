@@ -281,3 +281,32 @@ test('param defaults: a scan split keeps a bound or a receiver a closure of the 
     for (const args of [['abcdef', 6], ['abc', 6], ['abcdef', 1]]) is(got(...args), ref(...args), `${name}, value(${args}) at ${JSON.stringify(optimize)}`)
   }
 })
+
+// A module binding holds a word only where every write of it is one (plan/scope.js
+// inferModuleIntGlobals over type/interval-proof.js bindingFlows). A write in a
+// function's parameter default is a write of its frame, and one in a closure's
+// default runs with the closure's call: neither is in a body.
+test('param defaults: a module binding a default writes a fraction into keeps its Number', () => {
+  const programs = {
+    'a default assigns a half': `let g = 1\nexport const f = (x, y = (g = 2.5)) => g + y + x`,
+    'a default assigns NaN': `let g = 1\nexport const f = (x, y = (g = NaN)) => g`,
+    'a default adds a half': `let g = 1\nexport const f = (x, y = (g += 0.5)) => g * 10 + x`,
+    'a default divides': `let g = 7\nexport const f = (x, y = (g /= 2)) => g + x`,
+    'a default increments past a word': `let g = 2147483647\nexport const f = (x, y = g++) => g + x`,
+    'a default closure writes NaN': `let g = 1\nexport const f = (x, bump = () => { g = NaN }) => { bump(); return g }`,
+    'a default closure writes a half': `let g = 1\nexport const f = (x, bump = () => { g = 1.5 }) => { bump(); return g + x }`,
+    'a default closure of another function': `let g = 1\nconst set = (v, w = () => { g = v / 3 }) => w()\nexport const f = (x) => { set(x); return g }`,
+    'a default of an inner function': `let g = 4\nexport const f = (x) => { const h = (a, b = (g = a / 8)) => b; h(x); return g }`,
+    'a default of a method': `let g = 4\nclass K { m(a, b = (g = a + 0.25)) { return b } }\nexport const f = (x) => { new K().m(x); return g }`,
+    // (a binding every write of which is a word stays one)
+    'a default assigns an integer': `let g = 1\nexport const f = (x, y = (g = 5)) => g + y + x`,
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const want = oracle(src)
+    const wants = [want.f(1), want.f(2)].map(String)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const e = jz(src, { optimize }).exports
+      is([e.f(1), e.f(2)].map(String), wants, `${name} @${optimize}`)
+    }
+  }
+})

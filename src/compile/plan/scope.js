@@ -277,17 +277,18 @@ export const inferModuleIntGlobals = (ast) => {
     candidates.add(name)
   }
   if (!candidates.size) return
-  // Every flow a write may run in: the module's statements, each function, and
-  // each closure among them (a flow of its own: it runs whenever it is called),
-  // with the candidates each writes. A write no walk values (a pattern's, a
+  // Every flow a write may run in: the module's statements, each function (its
+  // parameter defaults as its body: function.js frameRoots), and each closure
+  // among them (a flow of its own: it runs whenever it is called), with the
+  // candidates each writes. A write no walk values (a pattern's, a
   // loop head's) proves nothing, nor does a read that may find none.
   const funcs = ctx.funcs.list.filter(f => f.body && !f.raw)
-  const roots = [{ body: ast, sig: null }, ...(ctx.module.moduleInits || []).map(body => ({ body, sig: null })), ...funcs.map(f => ({ body: f.body, sig: f.sig }))]
+  const roots = [{ body: ast, sig: null }, ...(ctx.module.moduleInits || []).map(body => ({ body, sig: null })), ...funcs.flatMap(f => frameRoots(f).map(body => ({ body, sig: f.sig })))]
   const { flows, unvalued } = bindingFlows(roots, candidates)
   const start = new Map()
   for (const name of candidates) if (!missing.has(name) && !unvalued.has(name)) start.set(name, WORD_VALUE)
   const held = flowNumbers(flows, start)
-  const bodies = [ast, ...(ctx.module.moduleInits || []), ...funcs.map(f => isBlockBody(f.body) ? f.body : ['return', f.body])]
+  const bodies = [ast, ...(ctx.module.moduleInits || []), ...funcs.flatMap(f => frameRoots(f).map(n => isBlockBody(n) ? n : ['return', n]))]
   const escaped = collectGlobalBareEscapes(bodies, name => ctx.scope.globals.has(name), ALL_WIDE)
   let retyped = false
   for (const name of candidates) {

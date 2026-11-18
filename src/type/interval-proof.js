@@ -1940,8 +1940,8 @@ export function bindingNumbers(func) {
  *  current }]: `current` walks in the active function's frame, with its local
  *  facts): each root, and each closure inside one (a flow of its own, which
  *  runs whenever it is called, its parameters its own), with the names it
- *  writes. `unvalued`: a name a pattern or a loop head writes, which no walk
- *  values; `bare`: a name declared with no initializer (undefined until a
+ *  writes. `unvalued`: a name a pattern, a loop head or a closure's parameter
+ *  default writes, which no walk values; `bare`: a name declared with no initializer (undefined until a
  *  write). A declaration of a name counts as a write of it (a shadow holds no less). */
 export function bindingFlows(roots, names) {
   const flows = [], unvalued = new Set(), bare = new Set()
@@ -1951,7 +1951,12 @@ export function bindingFlows(roots, names) {
     walkAst(root, { enter: n => {
       if (n[0] === '=>') {
         const params = []
-        someDeep(n[1], x => { if (typeof x === 'string') params.push(x); return false })
+        // (a parameter's default runs with the call, outside the body a walk values: its writes are unvalued)
+        someDeep(n[1], x => {
+          if (typeof x === 'string') params.push(x)
+          else if (Array.isArray(x) && MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && names.has(x[1])) unvalued.add(x[1])
+          return false
+        })
         gather(n[2], sig, params, current)
         return false
       }
