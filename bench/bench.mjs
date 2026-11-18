@@ -14,7 +14,7 @@ import { resolveModuleGraph } from '../src/resolve.js'
 import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
 import { writeWasm } from '../scripts/portable.mjs'
-import { classifyBenchmarkChecksum, NO_WEB, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
+import { classifyBenchmarkChecksum, NO_WEB, pairedUs, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
 import { contenders, LANE_CMDS, LANE_FLAGS } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 import { releaseBytes } from './_lib/release-bytes.js'
@@ -1916,7 +1916,8 @@ for (const cid of selectedCases) {
       if (failedIds.has(base) || failedIds.has(tid)) continue
       const ratios = rounds
         .filter(m => m.has(base) && m.has(tid))
-        .map(m => m.get(base).medianUs / m.get(tid).medianUs)
+        // (a lane timed on its first pass meets the other's first pass: pairedUs)
+        .map(m => pairedUs(m.get(base), m.get(tid)) / pairedUs(m.get(tid), m.get(base)))
         .sort((a, b) => a - b)
       if (!ratios.length) continue
       const med = ratios[ratios.length >> 1]

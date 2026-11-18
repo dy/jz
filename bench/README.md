@@ -62,8 +62,11 @@ another workload: `fabrik` a step, `jsontransform`, `setops`, `stringify`,
 disagree, the harness calls the source's `main` twice under Node's interpreter
 (`node --jitless`, where no tier can answer wrong), once a case. If those two answer
 otherwise too, the case's JS lanes run their first pass alone, the row marked
-`settled: false`, while its wasm lanes, a fresh instance a pass, settle. If they
-agree, the lane fails: a later tier's wrong answer never passes for state.
+`settled: false`, while its wasm lanes, a fresh instance a pass, settle. Against such a
+row each side's first pass is the like-for-like time (`pairedUs` in
+`assets/headline.js`): the claims gate, the paired verdict and the page's and README's
+geomeans compare jz's `firstUs` with it. If the two calls agree, the lane fails: a
+later tier's wrong answer never passes for state.
 
 The native binaries have no tiers, NumPy's lane is no JavaScript or wasm engine, and
 wasmtime (`jz-wasmtime`, the two componentizers) compiles a module whole before it

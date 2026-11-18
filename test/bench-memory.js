@@ -136,6 +136,10 @@ syncBuiltinESMExports()
     is(read().cases.alpha.targets.v8, { medianUs: 30, firstUs: 30, passes: 1, settled: false, bytes: read().cases.alpha.targets.v8.bytes, memKb: 50, parity: 'ok' },
       'a main that answers otherwise on its next call is timed on its first pass, marked')
     ok(r.stderr.includes('as its source does under Node\'s interpreter'), r.stderr)
+    r = bench(['--targets=jz,v8', '--paired=2'], { JZ_TEST_STATE: '1' })
+    is(r.status, 0, r.stderr)
+    is(read().cases.alpha.paired['jz/v8'], { ratios: [1, 1], median: 1 },
+      'the paired verdict sets jz\'s first pass (30) against the unsettled lane\'s, not its counted one (10)')
     r = bench(['--targets=v8'], { JZ_TEST_WRONG: '1' })
     is(r.status, 0, r.stderr)
     let row = read().cases.alpha.targets.v8

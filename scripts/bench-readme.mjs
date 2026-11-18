@@ -19,7 +19,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { correctBenchmarkRow, figure, newerDataset, timedBenchmarkRow } from '../assets/headline.js'
+import { correctBenchmarkRow, figure, newerDataset, pairedUs, timedBenchmarkRow } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const RESULTS = process.env.JZ_BENCH_RESULTS_JSON || join(ROOT, 'bench', 'results.json')
@@ -106,7 +106,7 @@ const ratios = (t, metric) => okCases.map((c) => {
   const jz = C[c].targets.jz, o = C[c].targets[t]
   if (!correctBenchmarkRow(o)) return null
   return metric === 'speed'
-    ? (timedBenchmarkRow(jz) && timedBenchmarkRow(o) ? jz.medianUs / o.medianUs : null)
+    ? (timedBenchmarkRow(jz) && timedBenchmarkRow(o) ? pairedUs(jz, o) / pairedUs(o, jz) : null)
     : (jz.bytes && o.bytes ? jz.bytes / o.bytes : null)
 }).filter((x) => x != null)
 

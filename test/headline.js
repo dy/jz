@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is, almost, ok } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, pairedUs, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -93,6 +93,15 @@ test('benchmark ratios: paired positive finite measurements, independent columns
       is(benchmarkRatio([...a, j, r], 'v8', metric), first, 'invalid checksum/status cannot change value or coverage')
     }
   }
+})
+
+test('benchmark ratios: a lane timed on its first pass meets the other lane\'s first pass', () => {
+  const jz = { medianUs: 10, firstUs: 40, parity: 'ok' }, v8 = { medianUs: 80, firstUs: 80, settled: false, parity: 'ok' }
+  is([pairedUs(jz, v8), pairedUs(v8, jz)], [40, 80], 'first pass to first pass where either side could not settle')
+  is(pairedUs(jz, { medianUs: 20, firstUs: 30, parity: 'ok' }), 10, 'the counted passes where both settled')
+  is(pairedUs({ medianUs: 10, parity: 'ok' }, v8), 10, 'a row from before the pass rule has no first pass but its own')
+  almost(benchmarkRatio([C(jz, { v8 })], 'v8', 'medianUs').geo, 2, 1e-12, 'speed: 80 / 40, not 80 / 10')
+  almost(benchmarkRatio([C({ ...jz, memKb: 5 }, { v8: { ...v8, memKb: 10 } })], 'v8', 'memKb').geo, 2, 1e-12, 'memory reads its own column')
 })
 
 test('figure: size median excludes invalid rows and counts every case; RSS direction is explicit for V8 and AssemblyScript', () => {

@@ -24,13 +24,19 @@ export const correctBenchmarkRow = row => !!row && row.status == null &&
 export const timedBenchmarkRow = row => correctBenchmarkRow(row) &&
   row.medianUs > 0 && Number.isFinite(row.medianUs)
 
+// A row's time against `rival`'s. A lane that could not settle (`settled: false`: a JS lane
+// on a case whose main carries state between calls, bench/README.md) was timed on its first
+// pass, so against it each side's first pass (`firstUs`) is the like-for-like time.
+export const pairedUs = (row, rival) =>
+  row.settled === false || rival.settled === false ? row.firstUs ?? row.medianUs : row.medianUs
+
 // Paired measurements only: target / JZ. Used by the corpus columns and headlines.
 export function benchmarkRatio(cases, target, metric, base = 'jz') {
   let sum = 0, n = 0
   for (const c of cases) {
     const j = c.targets[base], r = c.targets[target]
     if (!correctBenchmarkRow(j) || !correctBenchmarkRow(r)) continue
-    const a = j[metric], b = r[metric]
+    const [a, b] = metric === 'medianUs' ? [pairedUs(j, r), pairedUs(r, j)] : [j[metric], r[metric]]
     if (!(a > 0 && b > 0 && Number.isFinite(a) && Number.isFinite(b))) continue
     sum += Math.log(b) - Math.log(a); n++
   }

@@ -26,7 +26,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
+import { correctBenchmarkRow, pairedUs, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
@@ -519,22 +519,34 @@ test('claims: every claimed case carries a timed, parity-valid row of the exact 
     : 'every claimed case carries a timed, parity-valid jz-exact row')
 })
 
+// jz over the class's best rival a case: the rival jz's ratio is highest against, its time
+// against each by pairedUs (a JS lane timed on its first pass meets jz's first pass).
 const caseRatios = (rivals, ids = null, source = cases, base = 'jz') => {
   const out = []
   for (const [id, c] of Object.entries(source)) {
     if (ids ? !ids.has(id) : PENDING_CASES.has(id)) continue
     const jz = c.targets?.[base]
     if (!timedBenchmarkRow(jz)) continue
-    let best = null, who = null
+    let worst = null, who = null
     for (const rival of rivals) {
       const t = c.targets?.[rival]
       if (!timedBenchmarkRow(t)) continue
-      if (best == null || t.medianUs < best) { best = t.medianUs; who = rival }
+      const r = pairedUs(jz, t) / pairedUs(t, jz)
+      if (worst == null || r > worst) { worst = r; who = rival }
     }
-    if (best != null) out.push([id, jz.medianUs / best, who])
+    if (worst != null) out.push([id, worst, who])
   }
   return out
 }
+
+test('claims: a rival timed on its first pass is compared with jz\'s first pass', () => {
+  const row = (medianUs, firstUs, settled) => ({ parity: 'ok', medianUs, firstUs, ...(settled === false && { settled }) })
+  const source = { fabrik: { targets: { jz: row(30, 50), 'c-wasm': row(25, 26), v8: row(80, 80, false), deno: row(60, 70) } } }
+  is(caseRatios(['c-wasm'], new Set(['fabrik']), source), [['fabrik', 30 / 25, 'c-wasm']], 'two settled lanes: the counted passes')
+  is(caseRatios(['v8'], new Set(['fabrik']), source), [['fabrik', 50 / 80, 'v8']], 'a lane that could not settle: first pass to first pass')
+  is(caseRatios(['v8', 'deno'], new Set(['fabrik']), source), [['fabrik', 50 / 80, 'v8']],
+    'the binding rival is the one jz\'s ratio is highest against, each pair by its own times (v8 0.625 by first passes, deno 0.5; by counted times alone deno, the faster row, would bind at 0.5)')
+})
 
 // One test a class, for every promise this file enforces (fastest-wasm vs
 // CLAIM_RIVALS; outruns-the-JIT vs the V8-family / bun-jsc splits below): a case
