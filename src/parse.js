@@ -358,6 +358,14 @@ jessieParse.step = (a, p, cc, expr) => {
   return r
 }
 
+// A method shorthand `m(p) { … }` stands directly in the braces of an object
+// literal or a class body. subscript's reader of it (feature/accessor.js) reads a
+// call's arguments as its parameters, finds no `{` and rewinds for the call to
+// read them again: at every level of nested calls, so the time of a parse
+// doubled with each level. Outside braces it does not try.
+const methodRule = lookup[40].ops.reduce((m, d) => d.p < m.p ? d : m), readMethod = methodRule.map
+methodRule.map = a => groups.length && groups[groups.length - 1] === 125 ? readMethod(a) : undefined
+
 // Positions (ctx.js): a bundled module's shift past the sources before it;
 // a source the compiler writes (base null) keeps none.
 const place = (node, base) => {

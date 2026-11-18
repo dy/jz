@@ -137,3 +137,20 @@ test('parse list: the early errors take a time in the lines, not their square', 
   const ms = performance.now() - t0
   ok(ms < 5000, `16,000 if-else statements parsed in ${ms.toFixed(0)} ms`)
 })
+
+// A method shorthand is read only in the braces of an object literal or a class
+// body. Tried at every call, it read a call's arguments as parameters and again
+// as arguments, at each level of nested calls: 24 levels took 3.8 s to parse, 26
+// some four times that. At the program's own level a call before a block on the
+// next line read as a method (a labelled function, rejected).
+test('parse list: nested calls parse once a level; a call then a block is two statements', () => {
+  const src = `export let f = (x) => ${'g('.repeat(26)}x${')'.repeat(26)}`
+  const t0 = performance.now(), tree = parse(src), ms = performance.now() - t0
+  ok(ms < 2000, `26 nested calls parsed in ${ms.toFixed(0)} ms`)
+  let n = tree[1][1][2][2], depth = 0
+  while (Array.isArray(n) && n[0] === '()' && n[1] === 'g') { depth++; n = n[2] }
+  is(depth, 26, 'the calls nest 26 deep')
+  is(JSON.stringify(parse('f(a)\n{ x }')), '[";",["()","f","a"],["{}","x"]]')
+  is(JSON.stringify(parse('x = { f(a) { return 1 } }')), '["=","x",["{}",[":","f",["function",null,"a",["return",[null,1]]]]]]')
+  is(JSON.stringify(parse('class C { f(a) { return 1 } }')), '["class","C",null,[":","f",["function",null,"a",["return",[null,1]]]]]')
+})
