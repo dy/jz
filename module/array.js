@@ -1204,7 +1204,14 @@ export default (ctx) => {
     // literal term like the `+1` of `a[i*W + x + 1]` — to i32 ops instead of the
     // f64 convert/trunc round-trip. Non-i32 keys (string dispatch) fall back to
     // asI32(emit) inside emitIndex, so this is a strict improvement for every branch.
-    const va = emit(arr), vi = emitIndex(idx)
+    // The index is emitted where a path first takes it: a path that reads the key
+    // through storedValue alone (a dynamic dispatch, a property load) emitted it
+    // twice, the first copy left with its locals, so each level of a key nested in
+    // keys doubled them (at the level off `a[a[…a[0]…]]` of 12 levels declared
+    // 26,813 locals, of 14 more than wasm takes).
+    const va = emit(arr)
+    let viIR = null
+    const vi = () => viIR ??= emitIndex(idx)
     const ptrExpr = asF64(numberCarrierIR(arr, va))
     // Unknown property receivers can be host objects, just as for dot reads.
     // Numeric element paths do not request this fallback.
@@ -1235,7 +1242,7 @@ export default (ctx) => {
     const keyRange = numericKey ? intExprRange(idx) : null
     const elementKey = wholeKey(idx) && keyRange && keyRange[0] >= 0 && keyRange[1] < 0xffffffff
     const numericProps = !elementKey && !ctx.summary?.at(ctx.func.current).arrayNumericPropertiesAbsent(arr)
-    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
+    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi()])
     // A numeric index on an unknown receiver is array/typed access by design — kept
     // lean (no OBJECT/HASH dyn-get fork): an object with numeric keys is a degenerate
     // pattern not worth a per-access string-coercion + hash probe in every hot loop.
@@ -1282,7 +1289,7 @@ export default (ctx) => {
     // the elements are Numbers where present: the read is a Number, or undefined
     // for a hole or a miss, which a specialized loop leaves at (optimize/specialize.js)
     const holeNumber = !holeFree && ctx.summary?.at(ctx.func.current)?.arrayNumberElemsOfExpr(arr) === true
-    const arrayFast = (slow, index = vi, receiver = ptrExpr, proven = provenArray) => holeNumberRead(arrayFastRead(slow, index, receiver, proven), holeNumber)
+    const arrayFast = (slow, index = vi(), receiver = ptrExpr, proven = provenArray) => holeNumberRead(arrayFastRead(slow, index, receiver, proven), holeNumber)
     const arrayFastRead = (slow, index, receiver, proven) => {
       const off = tempI32('ao'), ix = tempI32('ax')
       inc('__ptr_offset_fwd')
@@ -1335,18 +1342,21 @@ export default (ctx) => {
           ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.NULL)]],
           ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.UNDEF)]]],
           ['then', ['call', '$__throw_property_nullish'], ['unreachable']]]]),
-        arrayFast(null, vi, ptrExpr, true)], 'f64')
+        arrayFast(null, vi(), ptrExpr, true)], 'f64')
     }
     // The size tier keeps the helper's own dispatch (`leanRuntime`, the tier
     // that links the runtime lean): the inline arm is ~50 ops per site, 14 KB of
     // watr's size build for a walker's reads the speed build alone is timed on.
-    const indexedLoad = ctx.transform.optimize?.leanRuntime
-      ? ['block', ['result', 'f64'], ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]]
+    const indexedLoad = () => ctx.transform.optimize?.leanRuntime
+      ? ['block', ['result', 'f64'], ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi()]]
       : arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], ix])
-    const arrayLoad = vt == null && numericProps
-      ? ['if', ['result', 'f64'], ptrTypeEq(ptrExpr, PTR.ARRAY),
-        ['then', arrayPropertyLoad(storedValue(idx))], ['else', indexedLoad]]
-      : indexedLoad
+    const arrayLoad = () => {
+      const load = indexedLoad()
+      return vt == null && numericProps
+        ? ['if', ['result', 'f64'], ptrTypeEq(ptrExpr, PTR.ARRAY),
+          ['then', arrayPropertyLoad(storedValue(idx))], ['else', load]]
+        : load
+    }
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       // All boxed keys (and NaN) need ToPropertyKey. The dynamic helper owns
@@ -1366,7 +1376,7 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch)
         return emitDynamicKeyDispatch(asF64(emit(arr)), keyExpr =>
           ['call', '$__arr_idx', asI64(inner), keyIndex(typed(keyExpr, 'f64'))])
-      return typed(['call', '$__arr_idx', asI64(inner), vi], 'f64')
+      return typed(['call', '$__arr_idx', asI64(inner), vi()], 'f64')
     }
     // HASH receiver with runtime string key: probe the HASH directly via
     // __hash_get_local. Mirrors the literal-key path above but defers the
@@ -1466,10 +1476,10 @@ export default (ctx) => {
       if (u != null || inlSid != null) {
         const packed = u != null || ctx.schema.inlineCellI32?.has(inlSid)
         const strideB = u ? u.stride * 4 : structInline(ctx.schema.list[inlSid].length, packed).cpe * 8
-        const pureIndex = isPureIR(vi), fast = idxProvenInBounds && pureIndex
+        const pureIndex = isPureIR(vi()), fast = idxProvenInBounds && pureIndex
         const baseI32 = tempI32('ab'), idxI32 = fast ? null : tempI32('ai')
         const base = fast ? ['local.tee', `$${baseI32}`, arrBase()] : ['local.get', `$${baseI32}`]
-        const index = fast ? vi : ['local.get', `$${idxI32}`]
+        const index = fast ? vi() : ['local.get', `$${idxI32}`]
         const cell = typed(['i32.add', base, ['i32.mul', index, ['i32.const', strideB]]], 'i32')
         cell.ptrKind = VAL.OBJECT
         if (inlSid != null) cell.ptrAux = inlSid
@@ -1480,8 +1490,8 @@ export default (ctx) => {
         // an effectful key. A call can grow this array or rebind its name.
         const capture = pureIndex ? null : temp('ar')
         const pre = pureIndex
-          ? [['local.set', `$${baseI32}`, arrBase()], ['local.set', `$${idxI32}`, vi]]
-          : [['local.set', `$${capture}`, ptrExpr], ['local.set', `$${idxI32}`, vi],
+          ? [['local.set', `$${baseI32}`, arrBase()], ['local.set', `$${idxI32}`, vi()]]
+          : [['local.set', `$${capture}`, ptrExpr], ['local.set', `$${idxI32}`, vi()],
             ['local.set', `$${baseI32}`, arrBase(['local.get', `$${capture}`], false)]]
         if (idxProvenInBounds) return Object.assign(typed(['block', ['result', 'i32'], ...pre, cell], 'i32'),
           { ptrKind: cell.ptrKind, ptrAux: cell.ptrAux, cellI32: cell.cellI32, unionKey: cell.unionKey })
@@ -1533,14 +1543,14 @@ export default (ctx) => {
         // base local must be i32. Flat tee form so downstream peepholes can fold
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
-        const baseI32 = tempI32('ab')
+        const index = vi(), baseI32 = tempI32('ab')
         const load = markElem(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
-          vi), arr)
+          index), arr)
         const rd = typed(value(load), 'f64')
         // The local holding the key, for a call through the element: a table
         // whose elements never change dispatches on it (optimize/devirt.js).
-        if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
+        if (Array.isArray(index) && index[0] === 'local.get') rd.elemKey = index[1]
         // Every element of a dense array of words is one (summary elemNumsOfExpr):
         // an integer of one signed word, never -0, which the truncation keeps exactly.
         // A float consumer reads the load itself (ir/numeric.js exactWord, `wordOf`).
@@ -1555,7 +1565,7 @@ export default (ctx) => {
       // residual cost is a single (predictable) compare per access, not a call. Skipping
       // the check would read raw memory for OOB indices (e.g. `a[1]` on a length-1 array).
       if (keyIsNum) {
-        const idxI32 = tempI32('ai')
+        const index = vi(), idxI32 = tempI32('ai')
         // The read is a receiver whose consumer throws on a missing value
         // (the nullable paths above): the miss arm throws here instead.
         const throwing = node != null && node === ctx.func.throwAbsent
@@ -1564,7 +1574,7 @@ export default (ctx) => {
         const number = holeNumber || dense && typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER
         if (ctx.transform.optimize?.leanRuntime && !throwing && fixedLen == null && !number) {
           inc('__arr_idx_known')
-          return typed(['call', '$__arr_idx_known', ['i64.reinterpret_f64', ptrExpr], vi], 'f64')
+          return typed(['call', '$__arr_idx_known', ['i64.reinterpret_f64', ptrExpr], index], 'f64')
         }
         // The receiver is a variable read here (an expression was captured
         // above), so its base is spelled out at both the length and the cell:
@@ -1577,7 +1587,7 @@ export default (ctx) => {
         numHullOf(hit, nums ?? elemHull(arr, false), nums ? null : load)
         const rd = typed(['if', ['result', 'f64'],
           ['i32.lt_u',
-            ['local.tee', `$${idxI32}`, vi],
+            ['local.tee', `$${idxI32}`, index],
             fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
           ['then', hit],
           ['else', throwing ? throwTypeErrorIR() : undefExpr()]], 'f64')
@@ -1597,7 +1607,7 @@ export default (ctx) => {
         if (nums) { rd.checkedNumRead = true; rd.numberArmsCanonical = true }
         return holeNumberRead(rd, holeNumber)
       }
-      const baseTmp = temp()
+      const index = useRuntimeKeyDispatch && !keyIsNum ? null : vi(), baseTmp = temp()
       // A present Number keeps the element path; boxed keys need ToPropertyKey.
       if (useRuntimeKeyDispatch && !keyIsNum)
         return typed(['block', ['result', 'f64'],
@@ -1610,7 +1620,7 @@ export default (ctx) => {
       inc('__arr_idx_known')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${baseTmp}`, ptrExpr],
-        (['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], vi])], 'f64')
+        (['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], index])], 'f64')
     }
     // A Number key indexes a code unit. Boxed keys still need ToPropertyKey,
     // even when the receiver's string kind is settled.
@@ -1634,7 +1644,7 @@ export default (ctx) => {
           const keyI32 = keyIndex(typed(keyExpr, 'f64'))
           return (['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32])
         })
-      return typed((['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
+      return typed((['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi()]), 'f64')
     }
     // Pure-write narrowing: an `xs[i] = v` / `xs.length = n` site in this
     // body, with no offsetting string-shape evidence (typeof string check,
@@ -1721,7 +1731,7 @@ export default (ctx) => {
       // ARRAY||TYPED tag test nor the STRING tag test below can ever take
       // its other arm. Collapse straight to the bare __typed_idx call,
       // reusing the same `arrayLoad` shape the fully-known-`vt` branches use.
-      if (recvArrTyped) return typed(arrayLoad, 'f64')
+      if (recvArrTyped) return typed(arrayLoad(), 'f64')
       // `vi` — the SAME i32-narrowed index emitIndex() already produced above
       // (line 768, shared by arrayLoad/stringLoad below) — feeds the fast
       // ARRAY/TYPED arm exactly as `arrayLoad` did before this guard existed:
@@ -1748,9 +1758,10 @@ export default (ctx) => {
       // atom, not the raw collapsed bits.
       // The hot arm is `arrayLoad`: the array read inline (an AST node under
       // a walker reads `node[0]` here), the typed read through the helper.
+      const load = arrayLoad()
       const guarded = ['if', ['result', 'f64'],
         ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
-        ['then', arrayLoad],
+        ['then', load],
         ['else', opaqueDynExprLoad(ptrExpr, storedValue(idx))] ]
       if (ctx.module.required.has('string') && !notString)
         return typed(['if', ['result', 'f64'],
@@ -1760,14 +1771,15 @@ export default (ctx) => {
       return typed(guarded, 'f64')
     }
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
+    const load = arrayLoad()
     if (ctx.module.required.has('string') && !notString)
       return typed(
         ['if', ['result', 'f64'],
           ptrTypeEq(ptrExpr, PTR.STRING),
           ['then', stringLoad()],
-          ['else', arrayLoad]],
+          ['else', load]],
         'f64')
-    return typed(arrayLoad, 'f64')
+    return typed(load, 'f64')
   }
 
   // === Push/Pop (mutate in place) ===
