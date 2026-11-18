@@ -481,3 +481,30 @@ string and with a number); `worktree-agent-a1be0465fdf269fbe` (the compaction's 
 commits, tip edac56627; 3ebce5115 goes straight after 2d03ca18c). Started since:
 `jz-baseline-tier` (done: `tier/plan/plan.md` and its critic), `jz-audio-a` (typed
 arrays' static `of`, a throw while a module starts, an import in the middle of a line).
+
+## Branches of the land-i landing (2026-11-18), tips before deletion
+
+```
+3592bf8dd land-i                             the landing branch as its second check ran it: main (7ec77254c) and 20 commits; the record's commit after it
+a0ef2262d (land-i, 18 commits)               the tree as its first check ran it; the check found be5777019's kernel
+7306b6dec worktree-agent-a417d57c6f092b160   the holders: landed as 809e342e4, b89506283, be5777019
+531d5a8f8 kinds-ada0                         the relaxed floats' writer: landed as a3a164b9a, 0fb954d28, 6eda696f5
+edac56627 worktree-agent-a1be0465fdf269fbe   the compaction's rules: landed as 30989e452 to 2d8ba71cb
+39186ffed land-h                             the earlier landing branch, the base three workflows name
+3ca2082ab land-g                             the landing branch before it, the base the words, the box and the bench workflows name
+```
+
+Handed back and waiting for the next tree: `worktree-wf_4473d3a7-3a9-1` (the bench after
+the tiers settle, nine commits on 3ca2082ab, tip 9fccec9ad; its last is the integrator's:
+the pair rule in the chart and the ledger, the README's method paragraph left as main's
+until a dataset is measured by the rule; `settle-result.json` in the session scratch is
+the workflow's whole result). Held as before: `decoders-ada0` 099c77415 (the sums in
+lanes), `worktree-agent-a5f89d0c0c9d7eb2f` 8151718b2 (the identity folds, the load
+sinking), `worktree-agent-a4519a2dc39ff972e` 238aedd6e (not ruled on). Workflows running
+when this was written: `jz-words`, `jz-nanbox`, `jz-audio-a`, `jz-wave0`, `jz-tests-time`.
+
+The check of a landing tree: `land.sh` in the session scratch (three core legs, lint, the
+file audit, bench bytes by hash against a base, `test:self`, the integration suite, the
+examples twice). It reads no kernel's loop shape under a set level: test/minimal-output.js
+skips there, and the default leg alone runs it. A writer whose change takes a fact away in
+the summary runs that file at the default level before it hands back.

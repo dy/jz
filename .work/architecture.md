@@ -2922,6 +2922,52 @@ One commit on 85e229c76, `39186ffed`.
 - **The repair.** The veto holds only where the marked hull's top is at least 2^26 elements (loop-versioning-nest.js NO_REAL_LENGTH). Every candidate the mark drops on 85e229c76 over the 70 gallery examples and the 105 bench cases at speed: plasma 0..255, dla 0..254 and wireworld 0..4 return; all the others top at 2^27 - 1 or more and stay dropped, decode-alac's gain with them. The bench corpus is byte-identical to 85e229c76. The size is a stand-in: what decides is where a bound comes from. The rule's writer left the form (the second walk keeps the range with each end tagged unfounded, a test's arm founds the end it bounds, a join keeps an end founded only if every arm does); to brief.
 - **The check on `39186ffed`** (178 minutes at load 40 to 80): lint and the file audit clean; bench bytes of 105 cases identical; `test:self` 89; level 0 7,337; default 7,554 of 7,555 and the armed level 3 7,352 of 7,353, the one failing in both the fetch test's 5 s limit (its program alone at each level: right, 35 to 40 ms, the compile 6.5 to 7 s at this load); integration 228 of 230, one skipped, the one failing `web-smoke`: its dist build and then its driver's two speed compiles of the hero grid overran its 120 s limits (alone the build passes and the driver is killed in the grid's compile, 49 to 69 s a compile at this load; the grid's bytes are 85e229c76's, 135,186). The examples' tests pass, "plasma vectorizes" among them (39 of 40 with web-smoke alone). The pin (test/interval-proof.js, plasma's shape) fails against 85e229c76's compiler at "0 f64x2".
 
+## The land-i landing: the split over a receiver that may be missing, the exported parameter kept, BigInt comparisons, the compaction's rules, a read asked by its own node (2026-11-18)
+
+20 commits on 7ec77254c, tip `3592bf8dd`.
+
+### What landed
+
+- **The holders' three** (`809e342e4`, `b89506283`, `be5777019`): a loop over an array a binding may hold missing is split under a test of each such receiver; the perf gate counts a loop only where it runs a step; `Array(n)` filled by a counter is hole-free at levels 2 and 3 as below (the summary reads the covering loop as the array split left it).
+- **A counter tested with an offset** (`a3a164b9a`): `i + c < B`, `c + i <= B`, `i - c >= B` counting down are versioned on the bound the test states; 60 more vector marks; a three-point stencil under a bound read from data 2.41 times faster on the M4 (eight paired rounds).
+- **An exported parameter stays as the program's own calls pass it** (`0fb954d28`, B2): the export rule made it a Number for every caller, so an internal call with a string, undefined, null or a boolean read it wrongly. The summary keeps the internal callers' kinds beside the host's (`internalIncoming`).
+- **A BigInt compared with a string or a Number** (`6eda696f5`): a string through StringToBigInt (`-1n < '1e1'` was true), a Number exactly (`10n < 2.5` was true).
+- **The compaction's rules** (`30989e452` to `2d8ba71cb`, eleven commits): no walk on the round a loop leaves; a loop's first walk is one that drops what it makes; the visited bits cleared over what a walk reached, not the heap's span; the host's walk asked as soon as the calls since its last look may have passed the threshold; a loop site's window carried across its entries. A stress form (`JZ_DEBUG_COMPACT=1`, a word of slack) runs the files that move memory in the generated suite, cut to 4.5 minutes.
+- **`669dadbe8`, the integrator's**: the value type of an indexed read is asked of the read's own node. VT['[]'] (src/kind/val-type-of.js) asked the summary about a copy of the read, which the presence facts (keyed by node) do not know; an array that holds a number-named property then had no value type on any read. A store under a counter no span bounds raises one (`a[i] = v` under `i < n`, n a parameter), so `Array(n)` filled by a counter was typed only through its hole, and `be5777019`, taking the hole away at levels 2 and 3, sent each read of the split's main loop through a self-compare and `__to_num` and lost the vector loop. Found by the tree's first check (test/minimal-output.js "numeric Array(n) (arithmetic fill) skips ToNumber/string" at level 2, the default leg) and by scanning the tree's commits. The fix also closes seven cells of the data-form gate, all of an array literal read through a closure (`gather` from 27 calls and 1,028 operators over the best form to the best form).
+- Listings rewritten on the assembled tree (`a0ef2262d`) and after the fix (`3592bf8dd`): data-forms 640 of 744 short (main 653), spellings 42 of 470, vector marks 453 of 840 (main 393), the reset probe 344 of 344.
+
+### Wrong answers fixed here
+
+On main, not checked on v1.0.3:
+
+- `export let f = x => ...` also called inside the program with a string, undefined, null or a boolean: `f('10')` 0 for 9, `f('2')` NaN for "21".
+- `-1n < '1e1'`, `10n < '1e1'`, `1n < true`, `10n < 2.5`: true for false.
+
+24 rows of the integrator's probe as Node at four levels; 16 of them differ on main.
+
+### What is measured
+
+- Bench bytes against main: size total +0.02% (9 cases; stdlib-special +414, `$__str_to_bigint` comes in), speed total +0.48% (94 cases: +88 bytes in 51 of them, the compaction's kernel; sosfilter -11.4%; webaudio +7,204, 4,979 of it two closure bodies equal but for their locals' names that are no longer one text). The fix alone: webaudio's size build -23 bytes, the other 104 cases identical.
+- The integrator's probes on the tip: the rebinding programs 128, 408 and 300 rows, none differing; 19 programs that store under negative, fractional and unknown keys and read in and past the range, six levels, 912 rows, none differing (on main and on the tree before the fix as well); plasma 585 f64x2 and 61 sin2; the review script line for line as on land-g (a zero's sign at speed, the forms past 2^31, the export contract's comparison).
+- The first check, on `a0ef2262d` (163 minutes at load 72 to 155): default 7,562 of 7,563, the kernel above; the armed level 3 7,360 of 7,361 (the fetch test's 5 s limit); integration 228 of 230 (web-smoke at that load).
+- The check on `3592bf8dd` (92 minutes at load 100 to 184): lint and the file audit clean; bench bytes of 105 cases, no error; `test:self` 89; default 7,563 of 7,563; the armed level 3 7,361 of 7,361; level 0 7,345 of 7,345; integration 229 of 230, one skipped, none failing; the examples 1.79 and 1.63 of V8 at that load (noise: blackhole 0.99 then above 1, percolation 0.90 in the second).
+
+### What the first check taught
+
+- A writer runs the files it touches. test/minimal-output.js skips under a set level, so the two levelled legs do not run it, and the writer's files did not include it: a fact taken away in the summary changed a kernel's loops in a file nobody ran before the default leg did.
+- The integrator's probes compare answers with Node. None reads a kernel's loop shape, and the answer here was right at every level.
+
+### Known wrong on this tree, landed knowingly
+
+- A store under a counter below the array's own count still raises a number-named property: the count's range after `Array(n)` returns, [0, 2^32 - 1], is no fact of the intervals. The read is typed now; the store's fact is a rule for the intervals.
+- `a3a164b9a`'s message names a defect of level 0 it met (a number compared with a string or an object, in a function the program calls with a string): whether `0fb954d28` closes it is not checked.
+- As on land-g: an integer element's word on x64 (land-e's callback); a NaN's bits read as a box (v1.0.3 too); `optimize: false` never releases a call that returns a heap value; a closure in a parameter default; `Object.getOwnPropertyDescriptor`'s result tested; `Symbol.toPrimitive` never called; a 500-case switch, a 500-arm else-if chain and a sum of 800 terms overflow the compiler's stack; the parser's time doubling with nested calls; `%TypedArray%.of` refused.
+- **CI's default test job takes 3.5 to 4.2 hours on each of the last four commits** (85e229c76 3 h 28, d58dde69e 4 h 10, 92d14e2ba 3 h 45, 9d0bf1ec2 3 h 38; on 7ec77254c still running after 4 h): over the owner's one-hour rule. The test-time chain is the remedy and has not landed.
+
+### Handed back and waiting for the next tree
+
+- **The bench after the tiers settle** (`worktree-wf_4473d3a7-3a9-1`, nine commits on 3ca2082ab, tip `9fccec9ad`): a program's pass repeats in one process until 300 ms have passed, the pass after is counted, the first recorded beside it. Six cases' `main` carries state between calls (fabrik, jsontransform, setops, stringify, threegeom, threescene): their JS lanes run once and jz meets them first pass to first pass, so fabrik against C's wasm settles and fabrik against V8 does not. MoonBit's lane moves from moonrun to Node's V8. The README's method sentence waits for the first dataset measured by the rule. No CI run of it yet.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
