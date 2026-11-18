@@ -132,8 +132,14 @@ const markFlow = (fn, entry) => {
     if (op === 'block' || op === 'loop' || op === 'try_table') {
       const label = { name: labelOf(n), state: BOT }
       const body = operands(n, 1).filter(c => !/^catch/.test(c[0]))
-      // an exception lands at a catch's label from anywhere in the body: no mark is known there
-      for (const c of n) if (Array.isArray(c) && /^catch/.test(c[0])) branch(c[c.length - 1], new Set())
+      // An exception lands at a catch's label from anywhere in the body: what
+      // holds a mark there is what held one entering it and the body never writes.
+      if (op === 'try_table') {
+        const written = new Set()
+        for (const c of body) walkAst(c, { enter: m => { if ((m[0] === 'local.set' || m[0] === 'local.tee') && typeof m[1] === 'string') written.add(m[1]) } })
+        const kept = new Set([...s].filter(x => !written.has(x)))
+        for (const c of n) if (Array.isArray(c) && /^catch/.test(c[0])) branch(c[c.length - 1], kept)
+      }
       if (op !== 'loop') {
         labels.push(label)
         const out = seq(body, s)

@@ -81,6 +81,10 @@ test('runtime inspection: a frame that stores its mark back allocates nothing', 
   is(alloc(fn(['global.set', '$__heap', ['local.get', '$a']])), null, 'an export\'s parameter is the host\'s value')
   is(alloc(fn(mark, ['call', '$give', ['local.get', '$m']]), ['func', '$g', ['export', '"g"'], ['call', '$give', ['i32.const', 8]]]), null,
     'a release another caller hands an address')
+  // an exception lands at a catch's label from anywhere in the body
+  const caught = (...body) => fn(mark, ['block', '$c', ['try_table', ['catch_all', '$c'], ...body]], back)
+  is(alloc(caught(['drop', ['i32.load', ['local.get', '$a']]])), true, 'a catch keeps the marks its body never writes')
+  is(alloc(caught(eight, ['drop', ['i32.load', ['local.get', '$a']]], mark)), null, 'a catch knows nothing of a local its body writes')
 })
 
 test('runtime inspection: nondecimal counter immediates cannot forge a work proof', () => {
