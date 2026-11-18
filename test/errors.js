@@ -1411,3 +1411,30 @@ test('errors: an early error is the SyntaxError JavaScript throws', () => {
     ok(error instanceof SyntaxError && (onKernel() || /at line \d+:\d+/.test(error.message)), `${JSON.stringify(src)}: ${error?.constructor?.name} ${error?.message.split('\n')[0]}`)
   }
 })
+
+// A nesting no list flattens, past what the stack holds, is a SyntaxError that
+// names the construct and its line and column: past the parser's depth the
+// brackets left open or the token where the reader stood (src/parse.js
+// readTree), past a later walk's the construct most of the deepest path is
+// (src/compiler.js nestingError). Each was an internal error, a jz bug to report.
+test('errors: a nesting too deep names its construct and place', () => {
+  const forms = {
+    'call': d => `const g = (x) => x + 1\nexport let f = (x) => ${'g('.repeat(d)}x${')'.repeat(d)}`,
+    'array literal': d => `export let f = (x) => ${'['.repeat(d)}x${']'.repeat(d)}.length`,
+    'negation': d => `export let f = (x) => ${'-('.repeat(d)}x${')'.repeat(d)}`,
+    'block': d => `export let f = (x) => { ${'if (x > 0) { x--; '.repeat(d)}${'}'.repeat(d)} return x }`,
+    'object literal': d => `export let f = (x) => { const o = ${'{ a: 1, b: '.repeat(d)}x${' }'.repeat(d)}; return o.a + x }`,
+    'arrow': d => `export let f = (x) => { const h = ${'(y) => '.repeat(d)}x; return x }`,
+    'not': d => `export let f = (x) => ${'!'.repeat(d)}x`,
+  }
+  const named = (src) => { try { compile(src) } catch (e) { return e } return null }
+  for (const [form, gen] of Object.entries(forms)) {
+    const e = named(gen(5000))
+    ok(e instanceof SyntaxError && /nesting too deep to (parse|compile)/.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form} 5,000 deep: ${e?.name} ${String(e?.message).split('\n')[0]}`)
+  }
+  // deep enough for a walk after the parse, not for the parser: the construct in words
+  const e = named(forms['array literal'](700))
+  ok(e instanceof SyntaxError && /nesting too deep to compile: \d+ levels, array literal/.test(e.message), `${e?.name} ${String(e?.message).split('\n')[0]}`)
+  is(run(forms.call(200)).f(3), 203, 'a nesting the walks hold compiles')
+})
+

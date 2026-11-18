@@ -478,6 +478,65 @@ const stoppedAt = (message, src) => {
   return { message: message.slice(0, m.index), at: at + +m[2] - 1 }
 }
 
+// A stack overflow: V8's, SpiderMonkey's, and a regular expression's in V8.
+export const overflowed = (e) => (e?.name === 'RangeError' || e?.name === 'InternalError') && /call stack|recursion/i.test(e.message) ||
+  e?.name === 'SyntaxError' && /: Stack overflow$/.test(e.message)
+// subscript's reader recurses a few frames a level of the source's nesting: a
+// nesting past what the stack holds is named where the reader stood, by the
+// brackets left open (the enter hook's groups) or the token there.
+const OPENER = { 41: '(', 93: '[', 125: '{' }
+const readTree = (src) => {
+  try { return jessieParse(src) } catch (e) {
+    if (!overflowed(e)) throw e
+    const tok = /^\s*(=>|\.\.\.|[A-Za-z_$][\w$]*|\S)/.exec(cur.slice(idx, idx + 40))
+    const open = groups.length, what = open > 64 ? `: ${open} brackets open, the innermost \`${OPENER[groups[open - 1]]}\`` : tok ? ` at \`${tok[1]}\`` : ''
+    err(`nesting too deep to parse${what}`, idx)
+  }
+}
+// The construct a node is, in words, for the error that names a nesting too deep.
+const UNARY = new Set(['-', '+', '!', '~', 'typeof', 'void', 'delete', 'await', 'yield', '...', 'new'])
+const constructOf = (n) => {
+  const op = n[0]
+  if (op === '[]') return n.length === 2 ? 'array literal' : 'index'
+  if (op === '()') return n.length === 2 ? 'parentheses' : 'call'
+  if (op === '{}') return 'braces'
+  if (op === '=>' || op === 'function' || op === 'function*') return 'function'
+  if (op === '?') return 'conditional ?:'
+  if (op === 'if' || op === 'for' || op === 'while' || op === 'do' || op === 'switch' || op === 'try') return `${op} statement`
+  if (n.length === 2 && UNARY.has(op)) return `unary ${op}`
+  if (op === ';') return 'statement list'
+  return typeof op === 'string' ? `\`${op}\`` : 'literal'
+}
+/** The deepest point of a source's tree: its depth, the construct that repeats
+ *  most on the way to it and the position of its outermost one. Null when the
+ *  source does not parse. The walk keeps its own stack. */
+export function nestingOf(src, sourceType, base) {
+  let ast
+  try { ast = parse(src, sourceType, base) } catch { return null }
+  const nodes = [], parents = [], depths = []
+  const st = [ast, -1, 1]
+  let best = -1
+  while (st.length) {
+    const d = st.pop(), p = st.pop(), n = st.pop()
+    const id = nodes.length
+    nodes.push(n); parents.push(p); depths.push(d)
+    if (best < 0 || d > depths[best]) best = id
+    for (let i = n.length - 1; i >= 1; i--) if (Array.isArray(n[i])) st.push(n[i], id, d + 1)
+  }
+  if (best < 0) return null
+  const path = []
+  for (let k = best; k >= 0; k = parents[k]) path.push(nodes[k])
+  path.reverse()
+  // the construct that repeats most, a list's or a grouping's only where no other does
+  const count = new Map()
+  for (const n of path) { const c = constructOf(n); count.set(c, (count.get(c) ?? 0) + 1) }
+  let construct = null, most = 0
+  for (const [c, k] of count) if (c !== 'statement list' && c !== 'parentheses' && c !== '`,`' && k > most) { construct = c; most = k }
+  if (!construct) for (const [c, k] of count) if (k > most) { construct = c; most = k }
+  const first = path.find(n => constructOf(n) === construct && typeof n.loc === 'number')
+  return { depth: depths[best], construct, loc: first ? first.loc : null }
+}
+
 /** Source text to its AST. `base` places the source among the compile's
  *  (ctx.js addSource): 0 for the program, null for text the compiler wrote.
  *  `early` false leaves the early errors, most of a parse's time, to the
@@ -498,7 +557,7 @@ const parse = (src, sourceType = 'jz', base = 0, early = true) => {
   opens.length = 0
   try {
     // a long chain as a list (src/list-form.js), before any walk recurses down it
-    ast = listForm(foldStringRuns(jessieParse(parseSource)))
+    ast = listForm(foldStringRuns(readTree(parseSource)))
     if (parseSource.includes('using')) awaitUsingHeads(ast)
     if (early) validateEarlyErrors(ast, src, sourceType, base)
     if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)

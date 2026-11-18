@@ -46,12 +46,12 @@
 import { captureRuntimeInspect } from './compile/func-inspect.js'
 import { configureFixedMemory, verifyFixedEmitted, verifyFixedMemory } from './compile/fixed-memory.js'
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
-import { parse } from './parse.js'
+import { parse, overflowed, nestingOf } from './parse.js'
 import watrCompile, { sourceMapURL } from "watr/compile";
 import { annotateSource, completeSourceMap } from './source-map.js'
 import { snapshotInit } from "./snapshot.js";
 import watrPrint from "watr/print";
-import { ctx, err, errorNode, warn, setLinkDemand, flushWarnings } from './ctx.js'
+import { ctx, err, errorNode, warn, setLinkDemand, flushWarnings, where } from './ctx.js'
 import { GLOBALS } from './prepare/index.js'
 import { frontHalf } from './front.js'
 import { configureDiagnostics, configureMemory, beginSession } from './session.js'
@@ -180,6 +180,7 @@ export function compileInProcess(code, opts = {}, jzify = null) {
   try {
     return jzCompileInner(code, opts, jzify)
   } catch (e) {
+    if (overflowed(e)) { const named = nestingError(opts, e); if (named) throw named }
     // Any uncaught native exception (TypeError, ReferenceError, etc.) is a jz
     // codegen leak — surface it as an internal compile error with the source
     // location we were standing on. err()-thrown errors already pass through.
@@ -190,6 +191,22 @@ export function compileInProcess(code, opts = {}, jzify = null) {
     }
     throw e
   }
+}
+
+// A walk ran out of stack. Where the tree is that deep the nesting is named, the
+// deepest point of the program and of each module it bundles (src/parse.js
+// nestingOf), as a SyntaxError; a shallow tree that overflows is a jz bug.
+const DEEP = 200
+const nestingError = (opts, cause) => {
+  const e = ctx.error, sources = [[e.src, 0], ...(e.parts ?? []).map(p => [p.src, p.base])]
+  let best = null
+  for (const [src, base] of sources) {
+    if (typeof src !== 'string') continue
+    const n = nestingOf(src, opts.sourceType || 'jz', base)
+    if (n && (!best || n.depth > best.depth)) best = n
+  }
+  if (!best || best.depth < DEEP) return null
+  return new SyntaxError(`nesting too deep to compile: ${best.depth} levels, ${best.construct} the most of them${where(best.loc)}`, { cause })
 }
 
 // Defaults the test matrix installs (test/_env.js, from JZ_TEST_OPTIMIZE,
