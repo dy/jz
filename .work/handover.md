@@ -578,7 +578,7 @@ Workflows running: `jz-nanbox` (repair), `jz-tests-time` (step five).
 
 ```
 93bd6202f land-m                         the landing branch as its check ran it: main (86df52211) and 13 commits; the record's commit after it
-d75c13129 worktree-agent-ab0f34829902a23e5  the embedding lane's six (the writer's c5d1c3520 and five): landed as c442b6f39 to d75c13129
+1a748c898 worktree-agent-ab0f34829902a23e5  the embedding lane's six (c5d1c3520 to 1a748c898): landed as c442b6f39 to d75c13129
 93bd6202f land-m-fix                     scratch worktree `bisect-m`, where the two regressions were bisected
 ```
 
