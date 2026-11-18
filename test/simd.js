@@ -3,7 +3,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { belowOpt, onKernel, levels } from './_matrix.js'
+import { belowOpt, onKernel, levels, ownedLevels } from './_matrix.js'
 import { run, wat, oracle, funcWat, unguardedSaturations, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -687,7 +687,7 @@ test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-
 test('secondary counter ranges reject additional step writes', () => {
   const src = `let a=new Float64Array([1,2,3,4]);
     export function f(n){let s=0;for(let i=0,k=0;i<4;i++,k++,k*=2){if(i>=n)break;s+=a[k]}return s}`
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of ownedLevels(2, 'speed')) {
     const f = jz(src, { optimize }).exports.f
     is(f(0), 0, 'zero body reads')
     is(f(1), 1, 'first counter value')
@@ -916,7 +916,7 @@ test('SIMD AoS - Math.sign, a float remainder and copysign lift per lane, bit-ex
   const input = []
   for (const a of vals) for (const b of vals) input.push(a, b, (a - b) * 0.37)
   const n = input.length / 3
-  for (const optimize of [SIMD_OPT.optimize, NOVEC.optimize]) {
+  for (const optimize of ownedLevels(SIMD_OPT.optimize, NOVEC.optimize)) {
     const e = jz(src, { optimize }).exports
     for (let i = 0; i < input.length; i++) e.set(i, input[i])
     e.map(n)
@@ -2447,7 +2447,7 @@ class K { constructor() { this.a = new Float64Array(N); this.b = new Float64Arra
 const k = new K()
 export let dot = () => k.dot()`
   for (const [name, src] of [['a plain array at module level', module], ['plain arrays as parameters', param], ['typed arrays held by this', held]]) {
-    for (const optimize of [2, 'speed']) ok(lifted(src, optimize, 'f64x2.mul') >= 1, `${name} at ${optimize}: the dot's products in lanes`)
+    for (const optimize of ownedLevels(2, 'speed')) ok(lifted(src, optimize, 'f64x2.mul') >= 1, `${name} at ${optimize}: the dot's products in lanes`)
     is(jz(src, { optimize: 2 }).exports.dot(), oracle(src).dot(), `${name}: the loop's sum`)
   }
 })
@@ -2457,7 +2457,7 @@ export let dot = () => k.dot()`
 test('vectorize: an integer sum of converted f64 lanes lifts', () => {
   const src = `const c = [${Array.from({ length: 64 }, (_, i) => (i * 37 + 11) % 64).join(', ')}]
 export let isum = () => { let s = 0; for (let i = 0; i < 64; i++) s += c[i]; return s }`
-  for (const optimize of [2, 'speed']) ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, { optimize })), `at ${optimize}: two conversions a pass`)
+  for (const optimize of ownedLevels(2, 'speed')) ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, { optimize })), `at ${optimize}: two conversions a pass`)
   is(jz(src, { optimize: 2 }).exports.isum(), oracle(src).isum(), 'the integer sum')
 })
 

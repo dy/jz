@@ -5,7 +5,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate } from '../interop.js'
-import { onWasi, belowOpt, levels } from './_matrix.js'
+import { onWasi, belowOpt, levels, ownedLevels } from './_matrix.js'
 import { run, oracle, cases, jz, compile } from './util.js'
 
 // A class's methods and accessors are its prototype's, its private names no
@@ -786,7 +786,7 @@ test('a function with properties taken as a value stays callable, typeof functio
     export let own = () => f.tag + f(1)
   `
   const host = oracle(src)
-  for (const optimize of [0, 'speed']) {
+  for (const optimize of ownedLevels(0, 'speed')) {
     const got = run(src, { jzify: true, optimize })
     for (const k of ['every', 'viaParam', 'viaElement', 'own']) is(got[k](), host[k](), `${k} O${optimize}`)
   }
@@ -2926,7 +2926,7 @@ test('defineProperty: a descriptor without value defines the key as undefined', 
     function has() { try { defineProperty({}, 'x', {}); return true } catch (err) { return false } }
     export let f = (k) => { const o = { a: 1 }; defineProperty(o, 'x', {}); defineProperty(o, 'a', { enumerable: false }); const d = { writable: true }; defineProperty(o, k, d)
       return [has(), 'x' in o, o.x === undefined, o.a, k in o, o[k] === undefined].join(' ') }`
-  for (const optimize of [0, 2, 3, 'size']) is(jz(src, { optimize }).exports.f('z'), 'true true true 1 true true', `at ${optimize}`)
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f('z'), 'true true true 1 true true', `at ${optimize}`)
 })
 
 test('Object.assign preserves literal target layout with unknown source keys', () => {

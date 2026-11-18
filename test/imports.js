@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi, adaptI64, levels, belowOpt } from './_matrix.js'
+import { onWasi, adaptI64, levels, belowOpt, ownedLevels } from './_matrix.js'
 import { instantiate } from '../interop.js'
 import { jz, compile } from './util.js'
 
@@ -11,7 +11,7 @@ test('module renaming preserves AST operators that share a binding name', () => 
     export const flag = bool(true)
     export const f = x => bool(x) === true
   ` }
-  for (const optimize of [0, 1, 2, 3, 'fast']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'fast')) {
     const { exports: e } = jz('import { f, flag } from "m"; export const run = x => f(x) && flag', { modules, optimize })
     is(e.run(true), true)
     is(e.run(false), false)
@@ -496,7 +496,7 @@ test('import: host function arguments cross as values at every level', () => {
     export let bool = (x) => seen(x > 1)
     export let str = (x) => seen('s' + x)
     export let none = () => seen()`
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const got = []
     const { exports } = jz(src, { optimize, imports: { host: { seen: (v) => { got.push(v); return 0 } } } })
     exports.num(3); exports.bool(3); exports.bool(0); exports.str(3); exports.none()

@@ -14,8 +14,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { oracle } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
-const EXACT = [false, true, 'size', { level: 'speed', relaxedFloat: false }]
+const EXACT = ownedLevels(false, true, 'size', { level: 'speed', relaxedFloat: false })
 const name = o => JSON.stringify(o)
 const bits = x => Object.is(x, -0) ? '-0' : String(x)
 // Every export of `src` called with `args` at `optimize`, against Node, bit for bit.
@@ -45,7 +46,7 @@ test('relaxedFloat: speed is the relaxed build, by default and on request', () =
   // the trade is real: in lanes the ones beside 1e16 are not lost
   const want = oracle(SUMS).sum(8, 0)
   is(want, 1, 'Node loses each one to 1e16')
-  for (const optimize of ['speed', { relaxedFloat: true }]) ok(jz(SUMS, { optimize }).exports.sum(8, 0) !== want, `${name(optimize)} adds in lanes`)
+  for (const optimize of ownedLevels('speed', { relaxedFloat: true })) ok(jz(SUMS, { optimize }).exports.sum(8, 0) !== want, `${name(optimize)} adds in lanes`)
 })
 
 // the maximum of +0 and -0 across two lanes: the scalar loop keeps the first it meets
@@ -78,6 +79,6 @@ const CONST = 'export let c = () => 0.1 + 0.2 - 0.3'
 test('relaxedFloat: constant chains round per operation unless relaxedFloat or rationalConst says otherwise', () => {
   for (const optimize of [...EXACT, { level: 'speed', rationalConst: false }]) agreeAt(CONST, optimize, [['c', [[]]]])
   const rational = 2.7755575615628914e-17   // the exact 1/36028797018963968, rounded once
-  for (const optimize of ['speed', { level: false, rationalConst: true }, { level: 'size', rationalConst: true }, { relaxedFloat: true }])
+  for (const optimize of ownedLevels('speed', { level: false, rationalConst: true }, { level: 'size', rationalConst: true }, { relaxedFloat: true }))
     is(jz(CONST, { optimize }).exports.c(), rational, `${name(optimize)} folds in rationals`)
 })

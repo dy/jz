@@ -8,7 +8,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { f64ToI64 } from '../interop.js'
 import parseWat from 'watr/parse'
 import { walkAst } from '../src/ast.js'
-import { onKernel, withBigintStrict, levels, belowOpt, onWasi } from './_matrix.js'
+import { onKernel, withBigintStrict, levels, belowOpt, onWasi, ownedLevels } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
@@ -515,7 +515,7 @@ test('array length assignment preserves the value and validates both numeric con
 })
 
 test('runtime keys read collection size after growth, deletion and clearing', () => {
-  for (const ctor of ['Map', 'Set']) for (const optimize of [0, 2, 'speed']) {
+  for (const ctor of ['Map', 'Set']) for (const optimize of ownedLevels(0, 2, 'speed')) {
     const put = ctor === 'Map' ? 'm.set(i,i)' : 'm.add(i)'
     const src = `export function f(k,n){const m=new ${ctor}();const empty=m[k];for(let i=0;i<n;i++)${put};
       const grown=m[k];m.delete(0);const removed=m[k];const present=k in m;m.clear();return empty+':'+grown+':'+removed+':'+m[k]+':'+present}`
@@ -579,7 +579,7 @@ test('typed-array property keys preserve named values and canonical numeric inde
     return [assigned, a[key], a['label'], a[0], a[1], a.length]
   }`
   const expected = oracle(src).f
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const key of ['label', '0', '01', '-0', '-1', '1.5', 'NaN', 'Infinity', '1e0', '', 'é', 'a\0b',
       '1.0', '+1', ' 1', '2147483647', '9007199254740993',
@@ -603,7 +603,7 @@ test('exported typed-array index parameters take the numeric boundary; internal 
     const ref = new Float64Array([3, 5])
     const at = key => ref[+key]
     const expected = { get: at, mixed: (key) => at(key) + (key | 0) }
-    for (const optimize of [...levels(0, 2, 3), 'size']) {
+    for (const optimize of levels(0, 2, 3, 'size')) {
       const wasm = jz(src, { optimize }).exports
       for (const name of ['get', 'mixed'])
         for (const key of ['length', 'byteLength', 'byteOffset', 0, '1', '', 'length\0', 'length'])
@@ -613,7 +613,7 @@ test('exported typed-array index parameters take the numeric boundary; internal 
   const internal = `const a = new Float64Array([3, 5]);
     function get(key) { return a[key] }
     export function props() { return [get('length'), get('byteLength'), get('byteOffset'), get('1'), get(''), get('length\\0')] }`
-  for (const optimize of [...levels(0, 2, 3), 'size'])
+  for (const optimize of levels(0, 2, 3, 'size'))
     is(jz(internal, { optimize }).exports.props(), [2, 16, 0, 5, undefined, undefined], `O${optimize}: string keys through an internal helper`)
 })
 
@@ -621,7 +621,7 @@ test('exported typed-array stores take the numeric boundary for key and value; i
   const src = `const a = new Float64Array([3, 5]);
     export function put(key, value) { a[key] = value; }
     export function get(key) { return a[key]; }`
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports, ref = new Float64Array([3, 5])
     const at = key => ref[+key]
     for (const [key, value] of [['note', 'text'], ['note', undefined], ['01', 9], [0, '11'], ['1', 13], ['', false]]) {
@@ -635,7 +635,7 @@ test('exported typed-array stores take the numeric boundary for key and value; i
     function put(key, value) { a[key] = value }
     function get(key) { return a[key] }
     export function probe() { put('note', 'text'); put('01', 9); put('1', 13); return [get('note'), get('01'), get('1'), get('0'), get('length')] }`
-  for (const optimize of [...levels(0, 2, 3), 'size'])
+  for (const optimize of levels(0, 2, 3, 'size'))
     // '01' is not a canonical numeric string: an ordinary property on the typed array, like 'note'.
     is(jz(internal, { optimize }).exports.probe(), ['text', 9, 13, 3, 2], `O${optimize}: named keys through internal helpers`)
 })
@@ -660,7 +660,7 @@ test('typed-array named slots survive aliases, views, deletion and reuse', () =>
       return [a[b[0]], a[index]];
     }`
   const expected = oracle(src)
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     for (const mode of [0, 1, 1, 0])
       for (const key of ['label', '01', 'é', undefined, null, false, 'label'])
@@ -675,7 +675,7 @@ test('proven integer index locals retain element dispatch after nullable summari
     for (let i = 0; i < indices.length; i++) { const k = indices[i]; values[k] = (values[k] + 1) | 0 }
     return values[2];
   }`
-  for (const optimize of [2, 'size']) {
+  for (const optimize of ownedLevels(2, 'size')) {
     is(jz(src, { optimize }).exports.f(), 1)
     ok(!compile(src, { optimize, wat: true }).includes('(func $__dyn_get'), 'present integer keys need no property runtime')
   }
@@ -689,7 +689,7 @@ test('typed-array dynamic reads retain BigInt and Number arithmetic domains', ()
     return [a[key], a[key] - a[key], -a[key], ~a[key]];
   }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const key of [0, '0', 1, 'note', 'zero', undefined, null, 'absent'])
       is(f(key), expected(key), `O${optimize}: ${String(key)}`)
@@ -702,7 +702,7 @@ test('typed-array missing numeric keys need no named-property lookup on closed a
     const key = b[0];
     return [a[b[0]], a[key]];
   }`
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     is(jz(src, { optimize }).exports.f(), [undefined, undefined])
     ok(!compile(src, { optimize, wat: true }).includes('(func $__dyn_get'), 'existing index presence checks suffice')
   }
@@ -712,7 +712,7 @@ test('typed-array reads parse indices without the numeric string-conversion runt
   const src = `function make() { return new Float64Array([1.5, 2.5, 3.5]) }
     export function f(key) { key = '' + key; const a = make(); return a[key] }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const key of [0, '0', '2', '3', '01', '-0', '-1', '1.5', '1e0', 'NaN', 'Infinity',
       '2147483647', '2147483648', '9007199254740993', 'length', 'byteLength', 'byteOffset', '', null, undefined])
@@ -759,7 +759,7 @@ test('computed typed-array accessors follow own properties on owned, empty and v
       return [inherited, own, value, present, a[key], key in a];
     }`
   const expected = oracle(src)
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     for (const mode of [0, 0, 1, 2, 3, 4, 5, 0])
       for (const key of ['length', 'byteLength', 'byteOffset', 'length\0', 'byteLength\0']) {
@@ -790,7 +790,7 @@ test('typed payload provenance preserves missing receivers through locals and al
       return [calls, 'ok'];
     }`
   const expected = oracle(src)
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     for (const which of [0, 0, 1, -1, 0]) {
       is(wasm.value(which), expected.value(which), `O${optimize}: value ${which}`)
@@ -818,7 +818,7 @@ test('direct nullable receivers preserve values, holes and field/index failures'
     }
     export function value(i) { const xs = [${value}]; const a = xs[i]; return a; }`
     const expected = oracle(src)
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const wasm = jz(src, { optimize }).exports
       for (const i of [0, 0, 1, 2, 3, -1, 0]) {
         is(wasm.value(i), expected.value(i), `O${optimize}: ${value}, value(${i})`)
@@ -841,7 +841,7 @@ test('nullable index guards retain the receiver and defer object-key conversion'
     } catch (e) { return [e.name, events]; }
   }`
   const expected = oracle(src).f
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const empty of [0, 0, 1, 1, 0]) is(f(empty), expected(empty), `O${optimize}: empty=${empty}`)
   }
@@ -868,7 +868,7 @@ test('nullable typed stores preserve assignment values and reject missing receiv
       a[0] = ${value}; return a[0];
     }`
     const expected = oracle(src).f
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const { f, direct, store } = jz(src, { optimize }).exports
       const directExpected = oracle(src).direct
       for (const which of [0, 0, 1, -1, 0])
@@ -894,7 +894,7 @@ test('nullable typed stores capture the reference and evaluate RHS before reject
     } catch (e) { return [e.name, events, original[0], replacement[0]]; }
   }`
   const expected = oracle(src).f
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const which of [0, 0, 1, 2, 3, -1, 0])
       for (const fail of [0, 1, 0]) is(f(which, fail), expected(which, fail), `O${optimize}: ${which}, throw=${fail}`)
@@ -910,7 +910,7 @@ test('runtime typed stores reject a missing receiver before value coercion', () 
       catch (e) { return [events, e.name]; }
     }`
     const expected = oracle(src).f
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const { f } = jz(src, { optimize }).exports
       for (const which of [0, 0, 1, 2, 3, 4, -1, 0]) is(f(which), expected(which), `O${optimize}: ${ctor}, receiver=${which}`)
     }
@@ -929,7 +929,7 @@ test('nullable BigInt fields retain raw and boxed payloads through catch and opt
       export function expression(i) { try { return ([{ x: ${value} }][i]).x; } catch (e) { return e.name; } }
       export function optional(i) { const a = [{ x: ${value} }][i]; return a?.x; }`
       const expected = oracle(src)
-      for (const optimize of [0, 2, 3, 'size']) {
+      for (const optimize of ownedLevels(0, 2, 3, 'size')) {
         const wasm = jz(src, { optimize }).exports
         for (const name of ['f', 'direct', 'expression', 'optional'])
           for (const i of [0, 0, 1, -1, 0]) is(wasm[name](i), expected[name](i), `O${optimize}: ${name}, ${value}, i=${i}, write=${!!written}`)
@@ -945,7 +945,7 @@ test('dynamic typed assignment results keep their tagged BigInt carrier', () => 
     try { const assigned = (a[key] = 7n); return [assigned, a[0]]; } catch (e) { return e.name; }
   }`
   const expected = oracle(src).f
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const i of [0, 0, 1, -1, 0])
       for (const key of [0, 1, -1, '0', 'label', '1.5']) is(f(i, key), expected(i, key), `O${optimize}: i=${i}, key=${key}`)
@@ -970,7 +970,7 @@ test('expression field stores retain schema carriers and the original receiver',
       try { return xs[i]['x']; } catch (e) { return e.name; }
     }`
     const expected = oracle(src)
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const wasm = jz(src, { optimize }).exports
       for (const name of ['direct', 'effects', 'bracket'])
         for (const i of [0, 0, 1, 2, 3, -1, 0]) is(wasm[name](i), expected[name](i), `O${optimize}: ${name}, ${value}, i=${i}`)
@@ -985,7 +985,7 @@ test('nullable typed reads keep missing elements distinct from numeric conversio
       return [a[0], a[-1], a[k]${ctor === 'Float64Array' ? ', a[k] - a[k]' : ''}];
     }`
     const expected = oracle(src).f
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const { f } = jz(src, { optimize }).exports
       for (const k of [0, 1, -1, 0]) {
         is(f(0, k), expected(0, k), `O${optimize}: ${ctor}, k=${k}`)
@@ -1006,7 +1006,7 @@ test('nullable compound references throw before key coercion and the RHS', () =>
   }`
   // GetValue stores the converted key in the Reference (ECMA-262 6.2.5.5).
   // Node 25 converts it twice; test/to-primitive.js pins this divergence too.
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const empty of [0, 0, 1, 1, 0])
       is(f(empty), empty ? [1, 'TypeError'] : [123, 9], `O${optimize}: empty=${empty}`)
@@ -1021,7 +1021,7 @@ test('compound writes retain the converted key through PutValue', () => {
       const result = o[key] ${op}; return [result, o.x, o.y, calls];
     }`
     const expected = oracle(src.replace('const result = o[key]', 'const prop = String(key); const result = o[prop]')).f
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const { f } = jz(src, { optimize }).exports
       is(f(), expected(), `O${optimize}: ${op}`)
       is(f(), expected(), `O${optimize}: repeated ${op}`)
@@ -1037,7 +1037,7 @@ test('nullable receiver unions preserve non-number assignment keys', () => {
       catch (e) { return e.name; }
     }`
     const expected = oracle(src).f
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const { f } = jz(src, { optimize }).exports
       for (const empty of [0, 0, 1, 1, 0]) is(f(empty), expected(empty), `O${optimize}: ${key}, empty=${empty}`)
     }
@@ -1051,7 +1051,7 @@ test('loop versioning does not inspect absent buffers on zero-work calls', () =>
     export function nested(n) {
       let s = 0; for (let j = 0; j < n; j++) for (let i = 0; i < p.length; i++) s += p[i]; return s;
     }`
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports, expected = oracle(src)
     for (const name of ['sum', 'nested']) {
       for (const n of [0, 0, -1, 1, 0]) {
@@ -1071,7 +1071,7 @@ test('loop receiver presence does not prove unrelated index bounds', () => {
     export function sum(n, k) {
       let s = 0; for (let i = 0; i < n; i++) { s += a[i & 3]; s += a[k]; } return s;
     }`
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports, expected = oracle(src)
     is(wasm.sum(0, 100), 0)
     throws(() => wasm.sum(1, 0), TypeError)
@@ -1093,7 +1093,7 @@ test('loop guards reject buffer replacement through helper calls', () => {
           s += a[i & 3]; if (i === 0) forward(1); s += a[(i + 1) & 3];
         } return s;
       }`
-    for (const optimize of [0, 2, 3, 'size', { level: 2, sourceInline: false }, { level: 3, sourceInline: false }]) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size', { level: 2, sourceInline: false }, { level: 3, sourceInline: false })) {
       const wasm = jz(src, { optimize }).exports, expected = oracle(src)
       for (let run = 0; run < 2; run++) {
         is(wasm.sum(0), 0)
@@ -1119,7 +1119,7 @@ test('loop guards account for Math argument coercion and captured receivers', ()
        let s = 0; for (let i = 0; i < n; i++) { s += a[i & 3]; clear(); s += a[(i + 1) & 3]; } return s;
      }`,
   ]
-  for (const src of sources) for (const optimize of [0, 2, 3, 'size', { level: 3, sourceInline: false }]) {
+  for (const src of sources) for (const optimize of ownedLevels(0, 2, 3, 'size', { level: 3, sourceInline: false })) {
     const wasm = jz(src, { optimize }).exports
     for (let run = 0; run < 2; run++) {
       wasm.init(); is(wasm.sum(0), 0)
@@ -1139,7 +1139,7 @@ test('loop guards include helper defaults and loop-header writes', () => {
       function change() { a = undefined; return true; }
       function forward(k = change()) { return k; }
       export function sum(n) { let s = 0; ${loop} return s; }`
-    for (const optimize of [0, 2, 3, { level: 3, sourceInline: false }]) {
+    for (const optimize of ownedLevels(0, 2, 3, { level: 3, sourceInline: false })) {
       const wasm = jz(src, { optimize }).exports
       is(wasm.sum(0), 0)
       wasm.init(); throws(() => wasm.sum(2), TypeError)
@@ -1165,7 +1165,7 @@ test('loop guards reject changes to bounds, offsets and duplicate cursor steps',
        for (let i = 0, k = 0; i < n; i++, k += 1, k += 1) s += a[k]; return s;
      }`,
   ]
-  for (const src of sources) for (const optimize of [0, 2, 3, { level: 2, sourceInline: false }, { level: 3, sourceInline: false }]) {
+  for (const src of sources) for (const optimize of ownedLevels(0, 2, 3, { level: 2, sourceInline: false }, { level: 3, sourceInline: false })) {
     const wasm = jz(src, { optimize }).exports, expected = oracle(src)
     for (const n of [0, 0, 1, 2, 3, 0]) is(wasm.sum(n), expected.sum(n), JSON.stringify(optimize))
   }
@@ -1179,7 +1179,7 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
     let k = 0; for (let i = 0; i < n; i++) { if (a[i] === 4) continue; out[k] = a[i]; k++ } return k * 1000 + out[0] + out[n - 1] }`
   const post = `export function run(n) { const a = new Float64Array(n), out = new Float64Array(n + 1); for (let i = 0; i < n; i++) a[i] = i * 2;
     let k = 0; for (let i = 0; i < n; i++) { if (a[i] === 4) continue; k++; out[k] = a[i] } return k * 1000 + out[1] + out[n] }`
-  for (const src of [pre, post]) for (const optimize of [0, 2, 3]) {
+  for (const src of [pre, post]) for (const optimize of ownedLevels(0, 2, 3)) {
     const wasm = jz(src, { optimize }).exports, expected = oracle(src)
     for (const n of [0, 1, 3, 8, 8, 3.5, -0, 0, 1]) is(wasm.run(n), expected.run(n), `${optimize} n=${n}`)
   }
@@ -1298,7 +1298,7 @@ test('cached typed loads preserve absence separately from numeric arithmetic', (
     return [value, value - value, value + 1];
   }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const n of [0, 0, 1, 0, 1]) is(f(n), expected(n), `O${optimize}: n=${n}`)
   }
@@ -1312,7 +1312,7 @@ test('numeric local storage publishes the converted value kind', () => {
     return x;
   }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const n of [0, 1]) for (const positive of [0, 1])
       is(f(n, positive), expected(n, positive), `O${optimize}: n=${n}, positive=${positive}`)
@@ -1333,7 +1333,7 @@ test('load reuse separates numeric conversion from raw typed-element identity', 
       return [first, difference, last, neg, bits, sum];
     }`
     const expected = oracle(src).f
-    for (const optimize of [...levels(0, 2, 3), 'size', { level: 3, loadCSE: false }]) {
+    for (const optimize of [...levels(0, 2, 3, 'size'), { level: 3, loadCSE: false }]) {
       const { f } = jz(src, { optimize }).exports
       for (const i of [2, 2, 0, 1, -1, 2, 0]) is(f(i), expected(i), `${ctor}, O${optimize}: i=${i}`)
     }
@@ -1351,14 +1351,14 @@ test('typed-array named slots can refer back to the receiver', () => {
     a.box = { inner: a }; a.box.inner.note = 17;
     return [a.self.note, a.self[0]];
   }`
-  for (const optimize of [...levels(0, 2, 3), 'size'])
+  for (const optimize of levels(0, 2, 3, 'size'))
     is(jz(src, { optimize }).exports.f(), [17, 9])
 })
 
 test('typed-array numeric string membership works without element reads or writes', () => {
   const src = `export function f(key) { const a = new Int32Array(2); return key in a }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const key of ['0', '1', '2', '-0', '01', 'NaN', '', 0, 2, undefined])
       is(f(key), expected(key), `O${optimize}: ${key}`)
@@ -1373,7 +1373,7 @@ test('typed-array dynamic index stores respect empty and nonempty view boundarie
     return [base[0], base[1], base[2], a.length];
   }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const end of [1, 2])
       for (const key of [-2, -1, 0, 1, 2, '-2', '-1', '0', '1', '2', '1.5', 'NaN', 'label'])
@@ -1393,7 +1393,7 @@ test('typed-array invalid numeric keys still convert the RHS; named keys do not'
     try { a[key] = 4n; return a[key] } catch (e) { return e.name }
   }`
   const expected = oracle(src)
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     for (const key of ['label', '01', '0', '-0', '-2', 'NaN', 0, -2, 1.5, Infinity])
       for (const name of ['f', 'g']) is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
@@ -1411,7 +1411,7 @@ test('polymorphic indexed stores convert before bounds and preserve assignment v
     try { a[0] = 7n; return a[0] } catch (e) { return e.name }
   }`
   const expected = oracle(src)
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     const scalar = jz(src.slice(0, src.indexOf('export function g')), { optimize }).exports
     for (const kind of [0, 1]) for (const n of [0, 1]) {
@@ -1434,7 +1434,7 @@ test('typed stores retain a global receiver across direct and called RHS writes'
       return [original[0], original[1], a[0], a[1]];
     }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const called of [0, 0, 1, 0, 1]) is(f(called), expected(called), `O${optimize}: called=${called}`)
   }
@@ -1458,7 +1458,7 @@ test('typed-array dynamic stores preserve the reference before RHS effects', () 
     return [original[0], original[1], original.label, a[0], a[1], a.label];
   }`
   const expected = oracle(src)
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     for (const key of [0, 1, 'label', '01', undefined])
       for (const name of ['f', 'g', 'h']) is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
@@ -1473,7 +1473,7 @@ test('typed-array dynamic stores through a parameter written with a string keep 
   const src = `export function g(key) { const a = new Int32Array([3, 5]); const t = key; key = 'label'; a[t] = 13; return [a[0], a[1], a.label] }
   export function h(key) { const a = new Int32Array([3, 5]); a[key] = 13; key = 'label'; return [a[0], a[1], a.label, key] }`
   const expected = oracle(src)
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const wasm = jz(src, { optimize }).exports
     for (const key of [0, 1, 'label', '01', undefined])
       for (const name of ['g', 'h']) is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
@@ -1491,7 +1491,7 @@ test('schema lookup preserves content equality and slot lifetime for every key f
     o[k] = 9; return s + '|' + o[k] + ':' + (k in o) + '|' + Object.keys(o).length;
   }`
   const expected = oracle(src).f
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const json of ['', '{}', JSON.stringify(fields)])
       for (const key of [...Object.keys(fields), 'absent', 'abcdefX', 'abcdeg', '', 0, 1, 2]) {
@@ -1517,7 +1517,7 @@ test('Map value analysis follows aliases and calls without leaking between compi
 test('static global initializers retain schemas at the host boundary', () => {
   for (const value of ['{a:7,b:undefined,c:null}', '{inner:{value:7}}', '[{value:7}]']) {
     const expected = Function(`return ${value}`)()
-    for (const optimize of [0, 1, 'fast', {level:2,watr:false}, 2, 3]) {
+    for (const optimize of ownedLevels(0, 1, 'fast', {level:2,watr:false}, 2, 3)) {
       const f = jz(`const o = ${value}; export const f = () => o`, {optimize}).exports.f
       is(f(), expected, `${JSON.stringify(optimize)}: ${value}`)
       is(f(), expected, 'the hoisted value remains decodable on repeated calls')
@@ -3247,7 +3247,7 @@ test('typed stores take the number of an object value for every element kind, in
       return [events, a[0], a[1], typeof r]
     }`
     const expected = oracle(src).f
-    for (const optimize of [0, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 2, 3, 'size')) {
       const { f } = jz(src, { optimize }).exports
       for (const i of [0, 1, 5, -1]) is(f(i), expected(i), `O${optimize}: ${ctor}[${i}]`)
     }

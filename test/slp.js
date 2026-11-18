@@ -5,7 +5,7 @@
 // (a missed view = packing aliased memory = miscompile, the watr self-compile class).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, ownedLevels } from './_matrix.js'
 import { jz, compile, oracle } from './util.js'
 import { sameBase, windowDefs } from '../src/optimize/vectorize/access.js'
 
@@ -218,7 +218,7 @@ test('slp: a record\'s field read and field store address one base in either spe
 const ps = []
 for (let i = 0; i < N; i++) ps.push({ x: i * 0.5, y: i + 1, vx: i % 7 - 3, vy: i % 5 * 0.25 })
 export let step = () => { for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x += p.vx; p.y += p.vy } return ps[0].x + ps[N - 1].y }`
-  for (const optimize of [2, 'speed']) ok((compile(src, { wat: true, optimize }).match(/v128\.store/g) || []).length >= 1, `the two field stores pack at ${optimize}`)
+  for (const optimize of ownedLevels(2, 'speed')) ok((compile(src, { wat: true, optimize }).match(/v128\.store/g) || []).length >= 1, `the two field stores pack at ${optimize}`)
   if (!onWasi()) is(jz(src, { optimize: 2 }).exports.step(), oracle(src).step(), 'jz == Node')
 })
 

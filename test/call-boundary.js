@@ -9,7 +9,7 @@
 // comes back, read after the call (it may grow the memory).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { levels, belowOpt, onWasi } from './_matrix.js'
+import { levels, belowOpt, onWasi, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
 
 const src = `
@@ -210,7 +210,7 @@ test('call boundary: a parameter a closure rebinds crosses as the number its ari
   const code = `export function f(k){const bump=()=>{k=k+1};bump();return k-1}
     export function g(a){let b=a;const w=()=>{a=[9]};w();b[0]=7;return a[0]}`
   const want = oracle(code)
-  for (const optimize of [0, 1, 2, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 'size')) {
     const { f, g } = jz(code, { optimize }).exports
     for (const x of [true, 1, '2', undefined, null]) is(f(x), want.f(+x), `O${optimize} f(${x})`)
     const mine = [1], theirs = [1]

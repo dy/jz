@@ -8,7 +8,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { oracle, run, wat, funcWat as funcWatOf, jz } from './util.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { loopCount } from '../scripts/wat-probe.mjs'
 
@@ -146,7 +146,7 @@ export let f = (a) => { if (!typed(a)) return -1; a[0] = 9; return a[0] * 1000 +
     ['a store in a counted loop', `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; for (let i = 0; i < a.length; i++) a[i] = a[i] * 2 + 1; return a[0] * 1000 + a[1] }`, () => new Int32Array([1, 2, 3])],
     ['an empty array', `export let f = (a) => { if (!(a instanceof Int32Array)) return -1; let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s + a.length }`, () => new Int32Array(0)],
   ]
-  for (const opts of [undefined, OFF, { optimize: 0 }, { optimize: 'size' }, { optimize: 'speed' }])
+  for (const opts of [undefined, OFF, ...ownedLevels(0, 'size', 'speed').map(optimize => ({ optimize }))])
     for (const [label, src, arg] of rows) is(run(src, opts).f(arg()), oracle(src).f(arg()), `${label} (${JSON.stringify(opts?.optimize ?? 'default')})`)
 })
 

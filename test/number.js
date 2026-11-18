@@ -4,7 +4,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, cases, wat, funcWat, oracle, jz, compile } from './util.js'
-import { levels, onWasi, onKernel } from './_matrix.js'
+import { levels, onWasi, onKernel, ownedLevels } from './_matrix.js'
 import encodeWat from 'watr/compile'
 import { numberNanIR, truthyIR } from '../src/ir/sentinels.js'
 
@@ -119,7 +119,7 @@ test('integer formatting: exact UTF-16 writes at decimal and memory boundaries',
   // The fused concat renders at a width __ilen took (__itoa_sn); a ToString renders
   // through __itoa_s/__itoa, which count their own. Two digits a step outside the
   // size tier, one within it: both writers, every width.
-  for (const level of [2, 'size']) {
+  for (const level of ownedLevels(2, 'size')) {
     const text = wat(`export let f = (i, v) => 'x' + (i|0) + ',' + (v|0) + '!'
       export let g = (v) => 'y' + (v|0)`, { optimize: { level, watr: false } })
     // Isolate the actual helpers so a wrong width cannot hide in spare heap space.

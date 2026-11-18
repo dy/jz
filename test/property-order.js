@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { oracle, funcWat, jz, compile } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 const snapshot = `function snapshot(o) {
   let loop = ''
@@ -8,7 +9,7 @@ const snapshot = `function snapshot(o) {
   return JSON.stringify([Object.keys(o), Object.values(o), Object.entries(o), loop, JSON.stringify(o)])
 }`
 const check = (src, inputs) => {
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const got = jz(snapshot + src, { optimize }).exports, want = oracle(snapshot + src)
     for (const k of inputs) is(got.f(k), want.f(k), `O${optimize}, input ${k}`)
   }

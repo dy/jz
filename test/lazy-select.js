@@ -2,7 +2,7 @@
 // Its trap/effect/alias proofs are tested in watr; these pin JS lowering and tiering.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, levels } from './_matrix.js'
+import { onKernel, levels, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
 
 const POLY = '(((((x + 1) * x + 2) * x + 3) * x + 4) * x + 5) * x + 6'
@@ -22,7 +22,7 @@ test('lazy select: expensive arithmetic moves inside exclusive branches', () => 
     ok(off.includes('(select') && !off.includes('(if'), 'the baseline evaluates both value arms')
   }
   const native = oracle(SRC).f
-  for (const optimize of ['speed', OFF]) {
+  for (const optimize of ownedLevels('speed', OFF)) {
     const f = jz(SRC, { optimize }).exports.f
     for (const x of [0, -0, 0.2, 0.2, -0.7, 0.2, Number.MIN_VALUE, Number.MAX_VALUE, Infinity, -Infinity, NaN])
       for (const a of [-1, 0, 1, NaN]) for (const b of [-1, 0, 1, NaN])
@@ -32,7 +32,7 @@ test('lazy select: expensive arithmetic moves inside exclusive branches', () => 
 
 test('lazy select: default and size tiers retain their output', () => {
   if (onKernel()) return
-  for (const level of [2, 'size'])
+  for (const level of ownedLevels(2, 'size'))
     is(compile(SRC, { optimize: level, wat: true }),
       compile(SRC, { optimize: { level, watr: { lazySelect: false } }, wat: true }), `${level}`)
 })

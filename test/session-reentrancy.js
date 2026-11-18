@@ -37,7 +37,7 @@ import {
   representationProgramRejectCount, representationResultRep,
 } from '../src/compile/representation-plan.js'
 import { withControlFrame, withExpectedValue, withInitializerScope } from '../src/compile/flow-state.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import { compile } from './util.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -410,7 +410,7 @@ test('jsstring boundary planning leaves the session frame inactive across repeat
   }`
   const length = `export const f = (s = '') => s.length`
   const number = `export const f = s => s + 1`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of ownedLevels(0, 2, 3)) {
     const retained = []
     for (const src of [digits, digits, length, number, digits]) {
       const bytes = compile(src, { host: 'js', optimize })

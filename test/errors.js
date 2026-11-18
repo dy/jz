@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi, onKernel, levels } from './_matrix.js'
+import { onWasi, onKernel, levels, ownedLevels } from './_matrix.js'
 import { run, cases, oracle, jz, compile } from './util.js'
 import { instantiate } from '../interop.js'
 
@@ -1316,7 +1316,7 @@ test('runtime throws: a constant error is thrown by one shared helper, every sit
     export const a = (v) => [...v].length
     export const b = (v) => { let n = 0; for (const x of v) n += x; return n }
     export const c = (v, w) => [...v, ...w].length`
-  for (const optimize of [0, 2, { level: 'size' }]) {
+  for (const optimize of ownedLevels(0, 2, { level: 'size' })) {
     const wat = compile(src, { optimize, wat: true })
     const defs = (wat.match(/\(func \$__throw_TypeError_value_is_not_iterable\b/g) || []).length
     const calls = (wat.match(/\(call \$__throw_TypeError_value_is_not_iterable\)/g) || []).length
@@ -1343,7 +1343,7 @@ test('catch: a spread of a value that may not iterate keeps its try', () => {
     export const call = (v) => { let r = 0; try { r = len(...v) } catch (e) { r = 7 } return r }
     export const obj = (v) => { let r = 0; try { r = Object.keys({ ...v }).length } catch (e) { r = 7 } return r }
     export const known = (v) => { let r = 0; try { const a = [...[v, v]]; r = a.length } catch (e) { r = 7 } return r }`
-  for (const optimize of [0, 2]) {
+  for (const optimize of ownedLevels(0, 2)) {
     const wat = compile(src, { optimize, wat: true })
     const { exports } = instantiate(compile(src, { optimize }))
     is(exports.lit(5), 7, `${optimize}: a spread of a number is caught`)

@@ -24,8 +24,9 @@ import { selectBits } from '../src/optimize/select-bits.js'
 import { selectArms } from '../src/optimize/select-arms.js'
 import { narrowFloat32 } from '../src/optimize/float32.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
+import { ownedLevels } from './_matrix.js'
 
-const CONFIGS = [false, 2, 'size', 'speed']
+const CONFIGS = ownedLevels(false, 2, 'size', 'speed')
 
 test('rules: two shifts left merge with each count taken mod 32', () => {
   // (x << -1) << 1 is (x << 31) << 1, 0 at x = 1; the counts summed raw were 0, a shift by nothing

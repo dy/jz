@@ -4,7 +4,7 @@
 // promoted cells.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import { T } from '../src/ast.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -37,7 +37,7 @@ test('poolFloats: nonzero float literals read immutable globals at speed, bit fo
     return s + (n < 0 ? NaN : 0)
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 100]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  for (const optimize of ownedLevels('speed', 2, 'size')) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 100]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const wat = compile(src, { wat: true, optimize: 'speed' })
   const body = wat.slice(wat.indexOf('(func $f'))
@@ -70,7 +70,7 @@ test('selectBits: a float select the data decides picks the operands\' bits at s
     return acc + best
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 6, 64, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  for (const optimize of ownedLevels('speed', 2)) { const f = run(src, { optimize }).f; for (const n of [0, 1, 6, 64, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const ast = parseWat(compile(src, { wat: true, optimize: 'speed' }))
   let bits = 0, plain = 0, pmin = 0
@@ -103,7 +103,7 @@ test('selectBits: a clamp against bounds its loop never writes keeps its float s
     return acc + best
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2]) {
+  for (const optimize of ownedLevels('speed', 2)) {
     const f = run(src, { optimize }).f
     for (const [lo, hi] of [[-1, 1], [0, 0], [-0, 0], [2, -2], [NaN, 1], [-1, NaN], [-Infinity, Infinity]])
       for (const n of [0, 1, 7, 64, 500]) is(f(lo, hi, n), host(lo, hi, n), `O${optimize} lo=${lo} hi=${hi} n=${n}`)
@@ -144,7 +144,7 @@ test('selectBits: a choice between its test\'s operands is their pseudo-minimum 
   }`
   const host = oracle(src).f
   const same = (got, want, msg) => is(got.map(x => Object.is(x, -0) ? '-0' : String(x)), want.map(x => Object.is(x, -0) ? '-0' : String(x)), msg)
-  for (const optimize of [{ level: 'speed' }, 2, { level: 'speed', simd: false }]) {
+  for (const optimize of ownedLevels({ level: 'speed' }, 2, { level: 'speed', simd: false })) {
     const f = run(src, { optimize }).f
     for (const seed of [0x2545f491, 7, -99]) for (const n of [0, 1, 4, 9, 64, 500]) same(f(n, seed), host(n, seed), `${JSON.stringify(optimize)} seed=${seed} n=${n}`)
   }
@@ -194,7 +194,7 @@ test('selectBits: a running minimum of values of no sign chooses by their words'
   export let g = (x, y, from) => farthest(x, y, from)`
   const host = oracle(src)
   const same = (got, want, msg) => is([got].flat().map(x => Object.is(x, -0) ? '-0' : String(x)), [want].flat().map(x => Object.is(x, -0) ? '-0' : String(x)), msg)
-  for (const optimize of [{ level: 'speed' }, 2, { level: 'speed', simd: false }]) {
+  for (const optimize of ownedLevels({ level: 'speed' }, 2, { level: 'speed', simd: false })) {
     const m = run(src, { optimize })
     for (const [x, y] of [[0, 0], [0.5, 3.25], [7.9, 1.1], [NaN, 0], [Infinity, 1], [-0, 0], [-3.5, -12.25], [1e15, 2]]) {
       same(m.f(x, y), host.f(x, y), `${JSON.stringify(optimize)} nearest ${x},${y}`)
@@ -250,7 +250,7 @@ test('fp-registers: a loop keeps the invariant reads its registers have no room 
   }
   for (const stages of [8, 2]) {
     const host = oracle(src(stages)).f
-    for (const optimize of ['speed', 2]) { const f = run(src(stages), { optimize }).f; for (const n of [0, 1, 7, 300]) is(f(n), host(n), `${stages} sections O${optimize} n=${n}`) }
+    for (const optimize of ownedLevels('speed', 2)) { const f = run(src(stages), { optimize }).f; for (const n of [0, 1, 7, 300]) is(f(n), host(n), `${stages} sections O${optimize} n=${n}`) }
   }
   if (onKernel()) return
   ok(hot(compile(src(8), { wat: true, optimize: 'speed' })) >= 41, 'eight sections: the loop reads its 40 coefficients and its sample')
@@ -268,7 +268,7 @@ test('hoistVectorConsts: a vector loop reads its lane ramp from a local set befo
     return h
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 64, 5000]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  for (const optimize of ownedLevels('speed', 2)) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 64, 5000]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const f = parseWat(compile(src, { wat: true, optimize: 'speed' })).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f')
   let inLoop = 0, before = 0
@@ -320,7 +320,7 @@ test('maskOperands: a byte mask over `^`/`|` moves onto the operand it narrows',
     return ((c ^ -1) >>> 0) + h
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 256, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  for (const optimize of ownedLevels('speed', 2, 'size')) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 256, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const masked = (optimize) => {
     let moved = 0
@@ -381,7 +381,7 @@ test('searchLoops: a loop whose body is a guarded loop scans for its guard in a 
     return h + primes
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', { level: 'speed', searchLoops: false }, 2]) {
+  for (const optimize of ownedLevels('speed', { level: 'speed', searchLoops: false }, 2)) {
     const f = run(src, { optimize }).f
     for (const [w, n] of [[3, 2], [8, 30], [33, 1000], [64, 10000]]) is(f(w, n), host(w, n), `${JSON.stringify(optimize)} w=${w} n=${n}`)
   }
@@ -509,7 +509,7 @@ test('leadGathers: a loop over items that searches from a gathered slot reads th
       return join(keys, vals, build, probes)
     }`
   const host = oracle(src).f
-  for (const optimize of ['speed', { level: 'speed', leadGathers: false }, 2]) {
+  for (const optimize of ownedLevels('speed', { level: 'speed', leadGathers: false }, 2)) {
     const f = run(src, { optimize }).f
     for (const seed of [1, 0x1234abcd, -7, 99991]) is(f(seed), host(seed), `${JSON.stringify(optimize)} seed=${seed}`)
   }
@@ -576,7 +576,7 @@ test('earlyStores: a store ready before a long computation it does not read goes
       return h
     }`
   const want = oracle(src).f(100)
-  for (const optimize of ['speed', { level: 'speed', earlyStores: false }, 2]) is(run(src, { optimize }).f(100), want, JSON.stringify(optimize))
+  for (const optimize of ownedLevels('speed', { level: 'speed', earlyStores: false }, 2)) is(run(src, { optimize }).f(100), want, JSON.stringify(optimize))
   if (onKernel()) return
   // the statements of the cascade's sample loop: is a store ahead of the first section's output?
   const ahead = (optimize) => {
@@ -663,7 +663,7 @@ test('leadChains: a cascade computes its output chain ahead of the state updates
       return h
     }`
   const want = oracle(src).f(500)
-  for (const optimize of ['speed', { level: 'speed', leadChains: false }, 2]) is(run(src, { optimize }).f(500), want, JSON.stringify(optimize))
+  for (const optimize of ownedLevels('speed', { level: 'speed', leadChains: false }, 2)) is(run(src, { optimize }).f(500), want, JSON.stringify(optimize))
   if (onKernel()) return
   const fresh2 = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && /\$l\d+$/.test(n[1]))
   ok(fresh2('speed') >= 4, `the sections' outputs lead (${fresh2('speed')} fresh locals)`)
@@ -726,7 +726,7 @@ const rk4 = `export let f = (n) => {
 }`
 test('issueOrder: an integrator step is written in the order that issues its chain soonest', () => {
   const want = oracle(rk4).f(5000)
-  for (const optimize of ['speed', { level: 'speed', issueOrder: false }, 2]) is(run(rk4, { optimize }).f(5000), want, JSON.stringify(optimize))
+  for (const optimize of ownedLevels('speed', { level: 'speed', issueOrder: false }, 2)) is(run(rk4, { optimize }).f(5000), want, JSON.stringify(optimize))
   if (onKernel()) return
   // the loop's operations each a statement of their own, in a new order (fresh locals); as written when off
   const fresh = (optimize) => count(parse(rk4, optimize), n => n[0] === 'local' && typeof n[1] === 'string' && /^\$io\d+$/.test(n[1]))
@@ -813,7 +813,7 @@ export let f = (nb, seed, spread) => {
 test('jamItems: two items of an item loop run their inner chains side by side, where their elements are apart', () => {
   const src = jamSrc('pass(input, bus, inOff, busOff, len, nb, 0.5); pass(input, bus, inOff, busOff, len, nb, 0.25)')
   const js = oracle(src).f
-  for (const optimize of ['speed', { level: 'speed', jamItems: false }, 2]) {
+  for (const optimize of ownedLevels('speed', { level: 'speed', jamItems: false }, 2)) {
     const f = run(src, { optimize }).f
     // (a narrow spread overlaps the bus ranges of neighbours: the pair runs them one after the other)
     for (const nb of [0, 1, 2, 7, 24]) for (const spread of [8, 60, 400]) is(f(nb, 11 + nb, spread), js(nb, 11 + nb, spread), `${JSON.stringify(optimize)}: nb=${nb} spread=${spread}`)

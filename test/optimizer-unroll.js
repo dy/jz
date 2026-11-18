@@ -2,7 +2,7 @@
 // kernels) and the scalar replacement of the fixed typed arrays it exposes.
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
-import { onKernel, levels, belowOpt } from './_matrix.js'
+import { onKernel, levels, belowOpt, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { compileJzAt } from '../bench/_lib/compile.js'
 import { dirname, join } from 'node:path'
@@ -508,7 +508,7 @@ test('unrollTrips: a loop of 4 to 16 known iterations is written out at speed', 
     return t
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  for (const optimize of ownedLevels('speed', 2, 'size')) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const f = parseWat(compile(src, { wat: true, optimize: 'speed' })).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f')
   let loads = 0, loops = 0
@@ -702,7 +702,7 @@ test('an unrolled float sum keeps its grouping where floats are JavaScript\'s', 
       return dot(n, x, y)
     }`
   const host = oracle(src)
-  for (const optimize of [2, { level: 'speed', relaxedFloat: false }]) {
+  for (const optimize of ownedLevels(2, { level: 'speed', relaxedFloat: false })) {
     const m = jz(src, { optimize }).exports
     for (const n of [7, 20, 1000, 1023]) is(m.main(n), host.main(n), `${JSON.stringify(optimize)}: main(${n}) bit for bit`)
   }
@@ -717,5 +717,5 @@ test('a neighborhood walk over literals unrolls like a count from zero', () => {
   const wat = funcWat(compile(src, { wat: true, optimize: { level: 'speed' } }), 'f')
   ok(!/\(loop/.test(wat), 'the walk unrolls')
   const a = new Float64Array([1, 2, 3, 4, 5, 6, 7, 8])
-  for (const level of [0, 2, 'speed']) is(jz(src, { optimize: { level } }).exports.f(a, 3), 2, `O${level}`)
+  for (const level of ownedLevels(0, 2, 'speed')) is(jz(src, { optimize: { level } }).exports.f(a, 3), 2, `O${level}`)
 })

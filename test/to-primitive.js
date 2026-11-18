@@ -1,11 +1,12 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { oracle, jz, compile } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 // The same receiver crosses both the known-layout and generic coercion paths.
 // Repeated calls also exercise helper state across successes and TypeErrors.
 const check = (src, args, reference = src) => {
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const want = oracle(reference), got = jz(src, { optimize }).exports
     for (const a of args) is(got.f(a), want.f(a), `O${optimize}, input ${a}`)
   }
@@ -167,7 +168,7 @@ test('numeric call arguments: captured Number/object unions convert at every use
       try { const result = twice(x); return [result, x, calls] }
       catch (e) { return [e === 7 ? 7 : e.name, x, calls] }
     }`
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const want = oracle(src), got = jz(src, { optimize }).exports
     for (const k of [0, 0, 1, 2, 3, 4, 5, 1])
       is(got.f(k), want.f(k), `O${optimize}, conversion/throw/reuse ${k}`)
@@ -183,7 +184,7 @@ test('numeric Boolean unions: conversions keep their branch, count and throwing 
       try { return [use(xs[k], count), calls] }
       catch(e) { return [e === 7 ? 7 : e.name, calls] }
     }`
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const want = oracle(src), got = jz(src, { optimize }).exports
     for (const k of [0, 2, 2, 3, 4, 1, 2]) for (const count of [0, 1, 2, 0])
       is(got.f(k, count), want.f(k, count), `O${optimize}, union ${k}, uses ${count}`)
@@ -642,7 +643,7 @@ test('ToPrimitive: shared member census covers defaults, modules and repeated co
     function render(o = { toString() { return 'default' } }) { return String(o) }
     export const f = () => render() + ':' + render(obj) + ':' + /(a)/.exec('a')[1]`
   const modules = { './dep.js': `export const obj = { toString() { return 'module' } }` }
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     for (let i = 0; i < 2; i++) is(jz(src, { modules, optimize }).exports.f(), 'default:module:a')
     const plain = 'export const f = () => String({ a: 1 })'
     is(compile(plain, { optimize, wat: true }).includes('$__jz_tp_'), false, 'method-free compile has no coercion prelude')
@@ -665,7 +666,7 @@ test('ToPrimitive: dynamic addition preserves BigInt and rejects mixed domains',
     ['big', 'num'], ['num', 'big'], ['big', 'missing'], ['missing', 'big'],
     ['big', 'nil'], ['big', 'bool'], ['big', 'str'], ['str', 'big'],
     ['num', 'num'], ['nil', 'bool'], ['missing', 'missing'], ['big', 'big']]
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const got = jz(src, { optimize }).exports
     for (const [a, b] of pairs) is(got.f(a, b), want.f(a, b), `O${optimize}, ${a} + ${b}`)
   }
@@ -677,7 +678,7 @@ test('ToPrimitive: nullable numeric collection reads add without string dispatch
     return m.get(k) + 1
   }`
   check(src, ['n', 'missing', 'n', 'missing'])
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const wat = compile(src, { optimize, wat: true })
     is(wat.includes('$__str_concat'), false, 'Number or undefined cannot concatenate')
     is(wat.includes('$__add_slow'), false, 'numeric addition needs no generic helper')
@@ -770,7 +771,7 @@ test('ToPrimitive: dynamic BigInt equality distinguishes numeric bits from a pay
     return Array.from(src.subarray(1, 3), v => [v, typeof v])
   }`
   const want = oracle(src)
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const got = jz(src, { optimize }).exports
     for (const k of [0, 1, 2, 3, 4, 5, 0]) is(got.copy(k), want.copy(k), `O${optimize}, copy ${k}`)
   }
@@ -787,7 +788,7 @@ test('ToPrimitive: equality specializations preserve every primitive conversion 
       ${literal} === v[k], v[k] === ${literal}, ${literal} != v[k], v[k] !== ${literal}]
   }`).join('\n')
   const want = oracle(src)
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const got = jz(src, { optimize }).exports
     for (let n = 0; n < 16; n++) for (let k = 0; k <= values.length; k++)
       is(got['f' + n](k), want['f' + n](k), `O${optimize}, ${values[n]} vs ${values[k]}`)
@@ -843,7 +844,7 @@ test('Date coercion: own methods retain the requested hint and primitive type', 
     const out=[Number(d),+d,d*2,d<8,8>d,d>8,8<d,d+1,1+d,d==9,9==d,String(d)];
     return[out,trace]
   }`
-  for(const optimize of [0,1,2,3,'size']){
+  for(const optimize of ownedLevels(0,1,2,3,'size')){
     const got=jz(src,{optimize}).exports.f,want=oracle(src).f
     for(const mode of [0,0,1,2,3,0])is(got(mode),want(mode),`O${optimize}, ${receiver} hint ${mode}`)
   }
@@ -860,7 +861,7 @@ test('Date coercion: typed values honor own hooks before inherited methods', () 
       try{const result=a.fill(d);return[Array.from(a),trace,result===a]}
       catch(e){return[Array.from(a),trace,typeof e==='number'?e:e.name]}
     }`
-    for(const optimize of [0,1,2,3,'size']){
+    for(const optimize of ownedLevels(0,1,2,3,'size')){
       const got=jz(src,{optimize}).exports.f,want=oracle(src).f
       for(const mode of [0,0,1,2,3,4,5,6,0])is(got(mode),want(mode),`O${optimize}, ${ctor} ${mode}`)
     }
@@ -871,7 +872,7 @@ test('Date coercion: typed values honor own hooks before inherited methods', () 
     try{const a=new Float64Array(1);a.fill(d);return[a[0],Number(d),trace]}
     catch(e){return[e,trace]}
   }`
-  for(const optimize of [0,1,2,3,'size']){
+  for(const optimize of ownedLevels(0,1,2,3,'size')){
     const got=jz(src,{optimize}).exports.f,want=oracle(src).f
     for(const mode of [0,0,1,0])is(got(mode),want(mode),`O${optimize}, inherited valueOf ${mode}`)
   }
@@ -884,7 +885,7 @@ test('Date coercion: relational BigInt uses number hint and keeps conversion err
     try{return[d<8n,8n>d,d>8n,8n<d,d==20,20==d,trace]}
     catch(e){return[e,trace]}
   }`
-  for(const optimize of [0,1,2,3,'size']){
+  for(const optimize of ownedLevels(0,1,2,3,'size')){
     const got=jz(src,{optimize}).exports.f,want=oracle(src).f
     for(const mode of [0,0,1,2,3,0])is(got(mode),want(mode),`O${optimize}, comparison ${mode}`)
   }
@@ -900,7 +901,7 @@ test('Date coercion: explicit numeric constructors dispatch after primitive conv
       d.toString=()=>{trace+='s';return '19'};
       try{return[${ctor}(d),trace]}catch(e){return[typeof e==='number'?e:e.name,trace]}
     }`
-    for(const optimize of [0,1,2,3,'size']){
+    for(const optimize of ownedLevels(0,1,2,3,'size')){
       const got=jz(src,{optimize}).exports.f,want=oracle(src).f
       for(const mode of [0,0,1,2,3,4,5,6,7,8,9,10,0])
         is(got(mode),want(mode),`O${optimize}, ${ctor}(${receiver}) ${mode}`)
@@ -914,7 +915,7 @@ test('Date coercion: inherited and boxed primitive BigInt constructors preserve 
       Symbol('x'),'13','bad',new Date(10),new Date(NaN),new String('17'),[],[3],[1,2]];
     try{return BigInt(xs[k])}catch(e){return e.name}
   }`
-  for(const optimize of [0,1,2,3,'size']){
+  for(const optimize of ownedLevels(0,1,2,3,'size')){
     const got=jz(src,{optimize}).exports.f,want=oracle(src).f
     for(const k of [0,0,...Array.from({length:20},(_,i)=>i),0])
       is(got(k),want(k),`O${optimize}, boxed input ${k}`)
@@ -924,7 +925,7 @@ test('Date coercion: inherited and boxed primitive BigInt constructors preserve 
 test('Date coercion: eager registration does not introduce a Date dependency', () => {
   const ordinary=`export function f(){return Number({valueOf(){return 7}})}`
   const date=`export function f(){const d=new Date(10);d.valueOf=()=>7;return +d}`
-  for(const optimize of [0,2])for(const src of [ordinary,ordinary,date,ordinary]) {
+  for(const optimize of ownedLevels(0,2))for(const src of [ordinary,ordinary,date,ordinary]) {
     for(const eager of [false,true]) {
       const opts={optimize,_eagerStdlib:eager};
       is(jz(src,opts).exports.f(),7,`O${optimize}, eager ${eager}`)

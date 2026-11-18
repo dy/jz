@@ -8,7 +8,7 @@
 // parameters that do the same; and every program answers what the host answers.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, levels, onWasi } from './_matrix.js'
+import { belowOpt, levels, onWasi, ownedLevels } from './_matrix.js'
 import { funcWat, oracle, run, wat, jz } from './util.js'
 
 const agree = (src, calls) => {
@@ -79,7 +79,7 @@ test('static locals: a loop the emitter copies places its block in every copy', 
   // constructor is placed too, since `sum` reads the block at its address
   const src = SUM + `export let f = (k) => { let s = 0; for (let j = 0; j < 3; j++) { const a = new Int32Array(4); a[(k + j) & 3] += j + 1; a[k & 3] += 1; s = s * 100 + sum(a) } return s }`
   const host = oracle(src)
-  for (const level of [2, 3]) for (const k of [0, 1, 5])
+  for (const level of ownedLevels(2, 3)) for (const k of [0, 1, 5])
     is(run(src, { optimize: { level, scalarTypedLoopUnroll: 0 } }).f(k), host.f(k), `O${level}, no plan unroll: f(${k})`)
 })
 

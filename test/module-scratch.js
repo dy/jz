@@ -9,7 +9,7 @@
 // what the host answers.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import { oracle, run, wat, compile, funcWat } from './util.js'
 
 // A helper that writes two results at a stride: over its second copy's budget, so two sites keep the call.
@@ -186,7 +186,7 @@ test('module scratch: the words a helper returns through the array stay words', 
     for (const x of xs) is(m.g(x), host.g(x), `g(${x}) at ${optimize}`)
   }
   if (belowOpt(2)) return
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of ownedLevels(2, 'speed')) {
     const text = funcWat(wat(WORDS, { optimize }), 'f')
     ok(!/f64\.convert_i32_u|0x4338000000000000|6755399441055744/.test(text), `at ${optimize}: no word goes through a Number`)
   }

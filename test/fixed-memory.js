@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import { jz, compile } from './util.js'
 
 const options = optimize => ({ optimize, memory: { fixed: ['process'] } })
@@ -131,7 +131,7 @@ test('fixed memory: typed guards keep borrowed receivers allocation-free', () =>
     if (!(a instanceof Float32Array)) return -1
     return a[0]
   }`
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const p = jz(src, options(optimize))
     const empty = p.memory.Float32Array([]), a = p.memory.Float32Array([1]), b = p.memory.Float32Array([7, 8, 9])
     const other = p.memory.Float64Array([4]), used = p.memory.used, bytes = p.memory.buffer.byteLength

@@ -11,7 +11,7 @@
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
+import { belowOpt, onKernel, onWasi, withBigintStrict, levels, ownedLevels } from './_matrix.js'
 import { foldWords, run, oracle, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
 import { parse as watTree, callsOutside, walk } from '../scripts/wat-probe.mjs'
@@ -1960,7 +1960,7 @@ test('param i32-narrowing: recursive identity arg does not poison the i32 consen
     }
     export let main = (n, w) => solve((1<<n)-1, 0, 0, 0, w | 0)`
   const host = oracle(weighed)
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of ownedLevels(0, 2, 'speed')) {
     const m = jz(weighed, { optimize }).exports
     for (const [n, w] of [[4, 1], [6, 1], [6, 1000000000], [8, 100000000]]) is(m.main(n, w), host.main(n, w), `main(${n}, ${w}) at ${optimize}`)
   }
@@ -1980,7 +1980,7 @@ test('result i32-narrowing: a recursive integer result narrows to i32 (optimisti
   const weighed = `let sumTo = (n, w) => { if (n <= 0) return w; let s = 0; let i = 0; while (i < n) { s = s + sumTo(n - 1 - i, w); i++ } return s & 0x3ffffff }
     export let main = (n, w) => sumTo(n, w | 0) | 0`
   const host = oracle(weighed)
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of ownedLevels(0, 2, 'speed')) {
     const m = jz(weighed, { optimize }).exports
     for (const [n, w] of [[3, 1], [7, 1], [5, 0x3ffffff], [9, 0x3ffffff]]) is(m.main(n, w), host.main(n, w), `main(${n}, ${w}) at ${optimize}`)
   }

@@ -11,6 +11,7 @@ import { funcWat as funcWatOf, run, wat } from './util.js'
 import { buildPureFuncMap } from '../src/optimize/pure-funcs.js'
 import { solveEffects } from '../src/optimize/effects.js'
 import parseWat from 'watr/parse'
+import { ownedLevels } from './_matrix.js'
 
 const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', valueNumber: false } }
@@ -144,7 +145,7 @@ test('value numbering: a holder assigned inside a switch arm does not reach past
 
 test('value numbering: floating constants preserve the sign of zero', () => {
   const src = 'export let f = () => { let a = +0, b = -0; return 1 / a === 1 / b }'
-  for (const optimize of [2, 'speed', 'size']) is(run(src, { optimize }).f(), false, String(optimize))
+  for (const optimize of ownedLevels(2, 'speed', 'size')) is(run(src, { optimize }).f(), false, String(optimize))
 })
 
 test('value numbering: a shared assignment stays after sibling reads', () => {
@@ -157,7 +158,7 @@ test('value numbering: a shared assignment stays after sibling reads', () => {
       var x = 0; if ((x ${op} (x = 1)) !== ${ascending}) return 2;
       return 0
     }`
-    for (const optimize of [2, 'speed', 'size']) is(run(src, { optimize }).f(), 0, `${op}, ${optimize}`)
+    for (const optimize of ownedLevels(2, 'speed', 'size')) is(run(src, { optimize }).f(), 0, `${op}, ${optimize}`)
   }
 })
 

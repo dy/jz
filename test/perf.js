@@ -1,6 +1,6 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { belowOpt, levels, onWasi, onKernel } from './_matrix.js'
+import { belowOpt, levels, onWasi, onKernel, ownedLevels } from './_matrix.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
 import printWat from 'watr/print'
@@ -848,7 +848,7 @@ test('codegen: load-CSE never reuses a load across a store through an aliasing v
   const width = `let F = new Float64Array(4), U = new Uint8Array(F.buffer)
     export let f = () => { F[0] = 1.5; let x = F[0]; U[7] = 192; let y = F[0]; return x + y }`
   const widthJs = (() => { const F = new Float64Array(4), U = new Uint8Array(F.buffer); F[0] = 1.5; const x = F[0]; U[7] = 192; return x + F[0] })()
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of ownedLevels(2, 'speed')) {
     is(jz(subarray, { optimize }).exports.f(), 101, `subarray view store reloads (optimize ${optimize})`)
     is(jz(width, { optimize }).exports.f(), widthJs, `byte-view store reloads the f64 (optimize ${optimize})`)
   }
@@ -877,7 +877,7 @@ test('codegen: load-CSE reloads after user code — calls, and conversions that 
       export let f = () => { a[0] = 1; const x = a[0]; const t = h(new P(), 0); const z = a[0]; return x + z + t }`, 9],
   }
   for (const [name, [src, expect]] of Object.entries(cases))
-    for (const optimize of [2, 'speed']) is(jz(src, { optimize }).exports.f(), expect, `${name} (optimize ${optimize})`)
+    for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), expect, `${name} (optimize ${optimize})`)
 })
 
 test('codegen: load-CSE preserves expression order and scoped index proofs', () => {
@@ -895,7 +895,7 @@ test('codegen: load-CSE preserves expression order and scoped index proofs', () 
     ['unbounded numeric displacement', `const bound=n+4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 2],
     ['unbounded word displacement', `const bound=n+4294967296;for(let j=0;j<bound;j++){let i=0,b=(i+bound)|0;let x=a[i];a[b]=7;return x+a[i]}`, 8],
   ]
-  for (const [name, body, expected] of cases) for (const optimize of [2, 'speed']) {
+  for (const [name, body, expected] of cases) for (const optimize of ownedLevels(2, 'speed')) {
     const src = `let a=new Float64Array([1,2,3]);function g(n){a[0]=5;return n>0?g(n-1):0}export function f(n){${body}}`
     is(jz(src, { optimize }).exports.f(0), expected, `${name}, ${optimize}`)
   }
@@ -904,7 +904,7 @@ test('codegen: load-CSE preserves expression order and scoped index proofs', () 
 test('codegen: shared integer gathers do not acquire an artificial undefined initializer', () => {
   const src = `const a=new Int32Array([1,2,3,0]),b=new Float64Array([5,7,11,13]);
     export function f(n){let s=0;for(let i=0;i<n;i++)s+=b[a[i]]+a[i]*a[i];return s}`
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of ownedLevels(2, 'speed')) {
     const f = jz(src, { optimize }).exports.f
     for (const n of [0, 1, 4, 5, 4, 0])
       is(f(n), n > 4 ? NaN : n === 0 ? 0 : n === 1 ? 8 : 50, `O${optimize}: ${n} reads`)
@@ -931,7 +931,7 @@ test('codegen: a cached in-bounds element stores as the Number it holds', () => 
     }`
   for (const bound of ['8', 'n']) {
     const src = sift(bound), native = oracle(src).f
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(src, { optimize }).exports.f
       for (const x of [100, -0, NaN, -Infinity, Infinity, 3.5]) for (const n of [8, 12])
         is(f(x, n), native(x, n), `c < ${bound}, O${optimize}, x=${x}, n=${n}`)
@@ -954,7 +954,7 @@ test('codegen: a loop guard offset from its counter stays integer within its tes
   ]
   for (const head of heads) {
     const src = loop(head), native = oracle(src).f
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(src, { optimize }).exports.f
       for (const x of [0, 7, -3, 2147483647, 100]) is(f(x), native(x), `${head}, O${optimize}, x=${x}`)
     }
@@ -998,7 +998,7 @@ test('codegen: an element read keyed by an integer element stays a word', () => 
     }`
   for (const bound of ['12', 'x & 15']) {
     const s = src(bound), native = oracle(s).f
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(s, { optimize }).exports.f
       for (const x of [3, 200, 0, 16, 255, 13]) is(f(x), native(x), `bound ${bound}, O${optimize}, x=${x}`)
     }
@@ -1026,7 +1026,7 @@ test('codegen: a loop-declared counter bounds the declarations its body types', 
     }`
   for (const bound of ['4096', '(x & 4095) + 1']) {
     const src = beat(bound), native = oracle(src).f
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(src, { optimize }).exports.f
       for (const x of [0, 7, 4095, 1234]) is(f(x), native(x), `bound ${bound}, O${optimize}, x=${x}`)
     }
@@ -1042,7 +1042,7 @@ test('codegen: a loop-declared counter bounds the declarations its body types', 
   ]
   for (const body of edges) {
     const src = `export function f(x) { ${body} }`, native = oracle(src).f
-    for (const optimize of [0, 2, 'speed', 'size'])
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size'))
       for (const x of [0, 5, 63, -1]) is(jz(src, { optimize }).exports.f(x), native(x), `${body.slice(0, 48)}…, O${optimize}, x=${x}`)
   }
   if (onKernel()) return
@@ -1076,14 +1076,14 @@ test('codegen: buffers swapped between passes keep their shared length', () => {
     ['closure write', pingpong(16, 16, 'const grow = () => { b = new Int32Array(4) }; if (k === 99) grow()')],
   ]
   for (const [name, src] of cases) {
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(src, { optimize }).exports.f, native = oracle(src).f
       for (const x of [0, 5, 99, -7]) is(f(x), native(x), `${name}, O${optimize}, x=${x}`)
     }
   }
   const param = `const pass = (a, b) => { for (let p = 0; p < 2; p++) { for (let i = 0; i < 8; i++) b[i] = a[i] + 1; const t = a; a = b; b = t } return a }
     export function f(x) { const r = pass(new Float64Array(8).fill(x), new Float64Array(4)); return [r[0], r[5]] }`
-  for (const optimize of [0, 2, 'speed']) for (const x of [1, -2]) is(jz(param, { optimize }).exports.f(x), oracle(param).f(x), `reassigned params, O${optimize}, x=${x}`)
+  for (const optimize of ownedLevels(0, 2, 'speed')) for (const x of [1, -2]) is(jz(param, { optimize }).exports.f(x), oracle(param).f(x), `reassigned params, O${optimize}, x=${x}`)
   if (onKernel()) return
   const w = funcWat(compile(pingpong(16, 16), { optimize: 'speed', wat: true }), 'f')
   ok(w && !w.includes('i32.lt_u'), 'equal ping-pong buffers need no bounds checks')
@@ -1102,7 +1102,7 @@ test('codegen: a typed array built by from is a fresh typed array', () => {
     export let mapped = (x) => { const b = Int16Array.from([1, 2, x], (v, i) => v * 1000 + i); return [b[0], b[2], b.length] }
     export let boxed = (x) => { const b = Float32Array.from([new Box(x), new Box(1.5)]); return [b[0], b[1]] }`
   const native = oracle(src)
-  for (const optimize of [0, 2, 'speed', 'size']) {
+  for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
     const m = jz(src, { optimize }).exports
     for (const x of [0, 3, -9]) {
       is(m.main(x), native.main(x), `main, O${optimize}, x=${x}`)
@@ -1134,7 +1134,7 @@ test('codegen: mutable integer hulls include every writer and preserve missing v
   for (const [name, body] of cases) {
     const src = `export function f(n){const a=new Int32Array([0,3,7,11]);${body}}`
     const native = oracle(src).f
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(src, { optimize }).exports.f
       for (const n of [0, 1, 3, 4, 5, 3, 0]) is(f(n), native(n), `${name}, O${optimize}, n=${n}`)
     }
@@ -1176,7 +1176,7 @@ test('codegen: fractional index hulls preserve rounding and require every write'
   for (const [name, body] of cases) {
     const src = `const STEP=0.3103103103103103;export function f(n){const a=new Float64Array(16);for(let i=0;i<16;i++)a[i]=(i-3)*0.125;${body}}`
     const native = oracle(src).f
-    for (const optimize of [0, 2, 'speed', 'size']) {
+    for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
       const f = jz(src, { optimize }).exports.f
       for (const n of [0, 1, 2, 3, 15, 30, 31, 31, 2, 0])
         is(f(n), native(n), `${name}, O${optimize}, n=${n}`)

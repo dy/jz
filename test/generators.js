@@ -10,13 +10,14 @@ import { is, ok } from 'tst/assert.js'
 import { oracle, batch, jz, compile } from './util.js'
 import { parse } from '../src/parse.js'
 import jzify from '../jzify/index.js'
+import { ownedLevels } from './_matrix.js'
 
 const j = (code) => jz(code).exports.f()
 
 // Every export of `source` answers what Node answers, at each level.
 const agreeAll = (source) => {
   const expected = oracle(source)
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const actual = jz(source, { optimize }).exports
     for (const name of Object.keys(expected))
       if (typeof expected[name] === 'function') is(actual[name](), expected[name](), `${name}, level ${optimize}`)
@@ -35,7 +36,7 @@ test('generators: nested array literals preserve holes and spread evaluation ord
       return [JSON.stringify(items), order]
     }`
   const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(source, { optimize }).exports
     for (const n of [0, 1, 1, 4, 0]) is(f(n), expected(n), `level ${optimize}, count ${n}`)
   }
@@ -66,7 +67,7 @@ test('generators: nested literal factories keep independent captures and close a
     return out
   }`
   const expected = oracle(source)
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const actual = jz(source, { optimize }).exports
     for (const args of [[0, 0], [0, 0], [4, 1], [-3, 0], [0, 1], [0, 0]])
       is(actual.f(...args), expected.f(...args), `level ${optimize}, ${args}`)
@@ -645,7 +646,7 @@ test('generators: yield* of a module generator call takes the protocol only', ()
   function* g() { const r = yield* h(); yield r }
   export let all = () => [...g()].join()
   export let early = () => { const it = g(); it.next(); log.length = 0; const r = it.return(7); return JSON.stringify(r) + log.join() }`
-  for (const optimize of [2, 'size']) is(/\$__str_points\b/.test(compile(src, { wat: true, optimize })), false, `O${optimize}: no indexed arm`)
+  for (const optimize of ownedLevels(2, 'size')) is(/\$__str_points\b/.test(compile(src, { wat: true, optimize })), false, `O${optimize}: no indexed arm`)
   return agreeAll(src)
 })
 

@@ -11,7 +11,7 @@ import { T } from '../src/ast.js'
 import { splitReassigned } from '../src/prepare/split-bindings.js'
 import { scanReassignedTopLevel, writtenNames } from '../src/prepare/ident-purity.js'
 import { parse } from '../src/parse.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import { foldWords, funcWat, oracle, run, wat, compile } from './util.js'
 import { parse as probeParse, walk as probeWalk } from '../scripts/wat-probe.mjs'
 
@@ -152,7 +152,7 @@ test('split bindings: the boundary reads a parameter the same at every level', (
   const src = 'export let f = (s) => { let x = s; x = x + x; return x }\nexport let g = (a, b) => { a = a + 1; b += a; return a + b }'
   const at = (optimize) => { const m = run(src, { optimize }); return [m.f('ab'), m.f(3), m.f('7'), m.g(1, 2), m.g('1', '2')] }
   const base = at(0)
-  for (const optimize of [1, 2, 3, 'size']) is(at(optimize), base, `level ${optimize} answers as level 0`)
+  for (const optimize of ownedLevels(1, 2, 3, 'size')) is(at(optimize), base, `level ${optimize} answers as level 0`)
   is(base[1], 6, 'a number doubles')
 })
 
@@ -167,7 +167,7 @@ test('split bindings: a binding of its predecessor\'s type takes its slot', () =
     'a float scaled in turn': 'export let f = (x) => { let y = x * 0.5; y = y + 1; y = y * y; return y }',
   }
   for (const [name, src] of Object.entries(rows)) {
-    for (const level of ['size', 3]) {
+    for (const level of ownedLevels('size', 3)) {
       const text = wat(src, { optimize: level })
       ok(!new RegExp(`\\(local \\$\\w*${T}s\\d+ `).test(text), `${name} at ${level}: no local of the split`)
     }

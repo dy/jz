@@ -17,6 +17,7 @@ const reuseLoads = (fn, fx) => numberValues(fn, LOAD_AT, fx)
 import { forwardCheckedElements } from '../src/optimize/forward-checked.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
 import { promoteGlobals } from '../src/optimize/globals.js'
+import { ownedLevels } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const count = (n, op) => !Array.isArray(n) ? 0 : (n[0] === op ? 1 : 0) + n.reduce((s, c) => s + count(c, op), 0)
@@ -60,6 +61,7 @@ const PROGRAMS = [
 
 test('effects: every hand fact holds where the module holds the helper\'s body', () => {
   const seen = new Set()
+  // (both levels on every leg: the last assertion reads the helpers either level holds)
   for (const src of PROGRAMS) for (const optimize of [0, 2]) {
     const funcs = funcsOf(compile(src, { optimize, wat: true }))
     const raw = solveEffects(funcs.filter(n => n[0] === 'func'), { raw: true })
@@ -89,6 +91,7 @@ test('effects: every hand fact holds where the module holds the helper\'s body',
 // here, over the programs above at three levels.
 test('effects: a wide store writes no header word (HEADER_STORE_FREE)', () => {
   let stores = 0
+  // (every level on every leg: the count after the sweep is over all three)
   for (const src of PROGRAMS) for (const optimize of [0, 2, 'speed']) {
     for (const fn of funcsOf(compile(src, { optimize, wat: true }))) {
       if (fn[0] !== 'func') continue
@@ -237,7 +240,7 @@ export let f = (n) => { cb(); let s = 0; for (let i = 0; i < n; i++) { ${call} s
 let g = [7, 6, 5]
 export let m = () => { g = [3, 4, 5] }
 export let f = (k) => { let s = 0; for (let i = 0; i < 2; i++) { cb(); s += g[0]; for (let j = 0; j < k + 1; j++) { s += g.length; s += g[1]; s += g[0] } }; return s }`
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of ownedLevels(2, 'speed')) {
     const ex = {}, m = jz(arr, { optimize, imports: { host: { cb: () => ex.m() } } }).exports
     ex.m = m.m
     is([m.f(1), m.f(0)], [46, 26], `an array the host replaces, at ${optimize}`)

@@ -10,7 +10,7 @@
 // receiver. Every form is compared with the host at every tier.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { levels } from './_matrix.js'
+import { levels, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
 
 test('logical stores retain conversion exceptions, finally and enclosing bound effects', () => {
@@ -143,7 +143,7 @@ const calls = (s) => (s.match(/call \$__to_int32/g) || []).length
 const store = (body, op) => { const at = body.indexOf(`(${op}`); let depth = 0; for (let i = at; i < body.length; i++) { if (body[i] === '(') depth++; else if (body[i] === ')' && --depth === 0) return body.slice(at, i + 1) } return '' }
 
 test('typed store: a composite through a byte lut and a fade store words, no ToInt32 call', () => {
-  for (const optimize of [0, 2, 3, 'size', 'speed']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size', 'speed')) {
     const wat = compile(pixels, { optimize, wat: true })
     is(calls(fn(wat, 'composite')), 0, `composite at ${optimize}`)
     is(calls(fn(wat, 'fade')), 0, `fade at ${optimize}`)
@@ -153,7 +153,7 @@ test('typed store: a composite through a byte lut and a fade store words, no ToI
 })
 
 test('typed store: a clamped sum converts inline at the speed tiers, through the kernel at -Os', () => {
-  for (const optimize of [2, 3, 'speed']) {
+  for (const optimize of ownedLevels(2, 3, 'speed')) {
     const body = fn(compile(splat, { optimize, wat: true }), 'splat')
     ok(/i64\.trunc_sat_f64_s/.test(body), `the fast path is inline at ${optimize}`)
     // (one guard of the value's magnitude, the kernel its cold arm; the speed tier
@@ -178,7 +178,7 @@ export const valued = (r) => (d[0] = r)`
 test('typed store: a clamped byte rounds half to even inside [0, 255], inline', () => {
   const edges = [0.5, 1.5, 2.5, 254.5, 255.5, -0.5, 0.49999, 300, -300, NaN, Infinity, -Infinity, 1e300, 127.5, 128.5, -1.2, 2, -2000000000, 2000000000]
   agrees(clamped + '\nresize(8)', [...edges.flatMap(r => [['put', 0, r], ['put', 1, r], ['fill', r], ['valued', r]])], 'clamped')
-  for (const optimize of [0, 2, 3, 'size', 'speed']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size', 'speed')) {
     const wat = compile(clamped, { optimize, wat: true })
     is((fn(wat, 'put').match(/__u8_clamp/g) || []).length, 0, `no clamp call at ${optimize}`)
     if (optimize !== 0) is((fn(wat, 'put').match(/f64\.nearest/g) || []).length, 1, `one rounding, of the number: a word and a constant clamp without it, at ${optimize}`)

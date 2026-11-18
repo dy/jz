@@ -15,7 +15,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, jz, compile } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, ownedLevels } from './_matrix.js'
 
 // the immutable-bench kernel shape, parameterized so each test gets a fresh module
 const KERNEL = `
@@ -108,7 +108,7 @@ test('inplace-store: a cursor its next statement projects stays a raw cell addre
   // `const p = ps[i]` then `p.x…`: the element read throws for absence itself,
   // so p holds the packed cell's address, not a box, and the replace store
   // derives the array base from it — no per-iteration receiver dispatch.
-  for (const optimize of [PRE_WATR, { level: 2, watr: false }]) {
+  for (const optimize of ownedLevels(PRE_WATR, { level: 2, watr: false })) {
     const wat = compile(KERNEL, { wat: true, optimize })
     const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
     const innerLoop = stepBody.slice(stepBody.lastIndexOf('(loop '))

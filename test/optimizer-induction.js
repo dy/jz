@@ -3,7 +3,7 @@
 // min recurrence.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, levels, belowOpt, onWasi } from './_matrix.js'
+import { onKernel, levels, belowOpt, onWasi, ownedLevels } from './_matrix.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
@@ -425,14 +425,14 @@ test('counted loops: a counter declared outside the for is the loop\'s own', () 
   const inside = 'export let f = (n) => { let a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = a[i] * 2 + 1; return a[n - 1] }'
   const outside = 'export let f = (n) => { let a = new Float64Array(n); let i = 0; for (i = 0; i < n; i++) a[i] = a[i] * 2 + 1; return a[n - 1] }'
   const after = 'export let f = (n) => { let a = new Float64Array(n); let i = 0; for (i = 0; i < n; i++) a[i] = a[i] * 2 + 1; return a[n - 1] + i }'
-  for (const optimize of [2, 3]) {
+  for (const optimize of ownedLevels(2, 3)) {
     ok(/v128/.test(compile(outside, { optimize, wat: true })), 'O' + optimize + ': the loop vectorizes as the one declaring its counter does')
     is(run(outside, { optimize }).f(7), run(inside, { optimize }).f(7), 'O' + optimize + ': the same result')
     is(run(after, { optimize }).f(7), 8, 'O' + optimize + ': a counter read after the loop stays outside: ' + 8)
   }
   // A module binding is read outside the function: the loop counts with it, as written.
   const shared = 'let i = 0\nexport let f = (n) => { for (i = 0; i < n; i++); return 0 }\nexport let g = () => i'
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of ownedLevels(0, 2, 3)) {
     const e = run(shared, { optimize })
     e.f(5)
     is(e.g(), 5, 'O' + optimize + ': a module counter keeps the loop\'s writes: 5')
@@ -466,7 +466,7 @@ test('rec-unroll: the carry takes the element type\'s conversion', () => {
     `export let f=(n)=>{ const a=new Uint8ClampedArray(70); for(let j=1;j<=n;j++){ const t=a[j-1]+100.5; a[j]=t } let s=0; for(let k=0;k<70;k++)s=(s*31+a[k])|0; return s }`,
   ]) {
     const host = oracle(src).f
-    for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 2, 3, 10, 60]) is(f(n), host(n), `O${optimize} n=${n}`) }
+    for (const optimize of ownedLevels('speed', 2)) { const f = run(src, { optimize }).f; for (const n of [0, 1, 2, 3, 10, 60]) is(f(n), host(n), `O${optimize} n=${n}`) }
   }
 })
 
@@ -509,7 +509,7 @@ test('rec-unroll and chain unroll: the counter starts where the whole head leave
     `export let f=(n)=>{ const b=new Uint8Array(n); for(let k=0;k<n;k++)b[k]=k+1; const t=new Int32Array(256); for(let k=0;k<256;k++)t[k]=k*3+1; let crc=0; for(let i=0,m=255;i<n;i++){ crc=t[(crc^b[i])&m]^(crc>>>8) } return crc }`,
   ]) {
     const host = oracle(src).f
-    for (const optimize of [2, 3, 'speed']) { const f = run(src, { optimize }).f; for (const n of [6, 9]) is(f(n), host(n), `O${optimize} n=${n}`) }
+    for (const optimize of ownedLevels(2, 3, 'speed')) { const f = run(src, { optimize }).f; for (const n of [6, 9]) is(f(n), host(n), `O${optimize} n=${n}`) }
   }
 })
 

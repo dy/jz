@@ -6,7 +6,7 @@ import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import compileWat from 'watr/compile'
 import { inlineTiny } from '../src/optimize/inline-tiny.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
 
 const run = (mod) => new WebAssembly.Instance(new WebAssembly.Module(compileWat(mod))).exports
@@ -60,7 +60,7 @@ export let main = (n) => {
 
 test('inline tiny: the speed tier answers as the source does, with the helpers spliced', () => {
   const native = oracle(SRC).main
-  for (const optimize of [{ level: 'speed' }, { level: 'speed', inlineTiny: false }]) {
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', inlineTiny: false })) {
     const main = jz(SRC, { optimize }).exports.main
     for (const n of [0, 1, 9, 100]) is(main(n), native(n), `${JSON.stringify(optimize)}: main(${n})`)
   }
@@ -156,7 +156,7 @@ const HELPERS = ['$__ilen', '$__itoa_sn', '$__str_length', '$__str_copy_over']
 
 test('inline tiny: a loop formatting records splices the runtime it calls per row', () => {
   const native = oracle(ROWS).main
-  for (const optimize of [{ level: 'speed' }, { level: 'speed', loopNodes: 16 }, { level: 2 }]) {
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', loopNodes: 16 }, { level: 2 })) {
     const main = jz(ROWS, { optimize }).exports.main
     for (const s of [0, 1, 7, -3]) is(main(s), native(s), `${JSON.stringify(optimize)}: main(${s})`)
   }
@@ -235,7 +235,7 @@ test('inline tiny: the speed tier splices the math kernels an arm of a loop call
   // the splice is the kernel's own code: every tier answers the same bits, and the host within
   // the last bits its libm differs in
   const native = oracle(SLERP).main, ref = jz(SLERP, { optimize: { level: 'speed', kernelNodes: 0 } }).exports.main
-  for (const optimize of [{ level: 'speed' }, { level: 2 }]) {
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 2 })) {
     const main = jz(SLERP, { optimize }).exports.main
     for (const [n, t] of [[0, 0.5], [1, 0.25], [64, 0.75], [300, 0.1]]) {
       is(main(n, t), ref(n, t), `${JSON.stringify(optimize)}: main(${n}, ${t})`)

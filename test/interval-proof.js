@@ -4,7 +4,7 @@
 import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, belowOpt, levels } from './_matrix.js'
+import { onKernel, belowOpt, levels, ownedLevels } from './_matrix.js'
 import { funcWat, oracle, jz, compile } from './util.js'
 import { scanIntervalIdx } from '../src/type/interval-proof.js'
 import { scanBoundedArrIdx } from '../src/type/canonical-bounds.js'
@@ -185,7 +185,7 @@ export function f(n) {
   take(a, src, best, best + 2)
   return a.length * 1000 + a[0] + a[a.length - 1]
 }`
-  if (!belowOpt(2)) for (const optimize of [2, 'speed'])
+  if (!belowOpt(2)) for (const optimize of ownedLevels(2, 'speed'))
     ok(/\(param \$to i32\)/.test(funcWat(compile(src, { wat: true, optimize }), 'take')), `O${optimize}: the bound arrives as a word`)
   const want = oracle(src).f
   for (const optimize of levels(0, 2, 3)) {

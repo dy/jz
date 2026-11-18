@@ -6,7 +6,7 @@
 // the receiver each end the first read's reach.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import { oracle, wat, funcWat, jz } from './util.js'
 
 const agrees = (src, args, label) => {
@@ -92,7 +92,7 @@ const named = guards.replace('export let f', 'export let g = (n) => { try { retu
 test('field cse: a type every guard answers by layout is not read', () => {
   agrees(named, [[0], [1], [2], [-1]], 'named')
   if (belowOpt(2)) return
-  for (const optimize of [2]) {
+  for (const optimize of ownedLevels(2)) {
     const body = funcWat(wat(named, { optimize }), 'timeOf')
     ok(body, `timeOf is a function at ${optimize}`)
     const reads = (body.match(/\$__dyn_get/g) || []).length

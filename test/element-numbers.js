@@ -14,7 +14,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import { agree, wat, funcWat, compileInProcess as compile, oracle, run } from './util.js'
 
 // The summary's numbers of the array an expression holds (module scope), as `[lo, hi, int, nz]`.
@@ -251,7 +251,7 @@ test('element numbers: masked, shifted and filled arrays answer what the host an
 
 test('element numbers: an element of bounded Numbers converts with no test of its magnitude', () => {
   if (belowOpt(2)) return
-  for (const optimize of [2, 3]) {
+  for (const optimize of ownedLevels(2, 3)) {
     const w = fnText(wat(masked, { optimize }), 'walk')
     ok(w && !w.includes(MAGNITUDE), `walk at ${optimize}: the index's word with no magnitude test`)
     const text = wat(shifted, { optimize })
@@ -311,7 +311,7 @@ test('element numbers: a word read off memory takes the level\'s form', () => {
 
 test('element numbers: an array a counter from 0 fills reads with no hole test', () => {
   if (belowOpt(2)) return
-  for (const optimize of [2, 3]) {
+  for (const optimize of ownedLevels(2, 3)) {
     const s = fnText(wat(filled, { optimize }), 'sum')
     ok(s && !HOLE.test(s), `sum at ${optimize}: no hole's test`)
   }

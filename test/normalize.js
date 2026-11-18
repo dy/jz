@@ -4,7 +4,7 @@
 // the edges of each rewrite against Node, at this leg's levels.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { levels } from './_matrix.js'
+import { levels, ownedLevels } from './_matrix.js'
 import { oracle, jz, wat } from './util.js'
 import { normalize, numberNames } from '../src/normalize.js'
 
@@ -103,7 +103,7 @@ test('normalize: a do-while is a while where its test holds on entry, else a fla
 
 test('normalize: once kinds are known, a counter declared from a parameter is in the one form too', () => {
   const src = (loop) => `const a = new Float64Array(64)\nexport let f = (k, n, d) => { let s = 0; ${loop} s += a[i]; return s }`
-  for (const optimize of [2, 'speed']) for (const [canon, spellings] of [
+  for (const optimize of ownedLevels(2, 'speed')) for (const [canon, spellings] of [
     ['for (let i = k; i < n; ++i)', ['for (let i = k; n > i; i = 1 + i)', 'for (let i = k; i < n; i = i + 1)', 'for (let i = k; n > i; i -= -1)', 'for (let i = k; i < n; i = i - -1)']],
     ['for (let i = k; i < n; i += d)', ['for (let i = k; i < n; i = i + d)', 'for (let i = k; n > i; i = d + i)']],
   ]) {

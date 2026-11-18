@@ -9,7 +9,7 @@
 // copy a later pass makes of the main loop.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'
 
 const src = `
@@ -99,7 +99,7 @@ const shape = { sourceInline: false, watr: false }   // (each kernel a function 
 test('array scan: the tail counter and the store temporaries keep names of their own at every level', () => {
   // (inlined into its caller at level 3, the tail's counter met the array store's f64 temporary of one name)
   const host = oracle(src)
-  for (const level of [3, 'speed']) {
+  for (const level of ownedLevels(3, 'speed')) {
     const exports = run(src, { optimize: level })
     for (const [name, ...args] of calls.filter(([n]) => n === 'pair' || n === 'skip' || n === 'mixed')) is(exports[name](...args), host[name](...args), `${name}(${args}) at ${level}`)
   }
@@ -107,7 +107,7 @@ test('array scan: the tail counter and the store temporaries keep names of their
 
 test('array scan: under a bound other than the length, the main loop stores in place', () => {
   if (belowOpt(2)) return
-  for (const level of [2, 'speed']) {
+  for (const level of ownedLevels(2, 'speed')) {
     const text = wat(src, { optimize: { level, ...shape } })
     for (const name of ['bumpTo6', 'bumpTo', 'doubleInto']) {
       const loops = innerLoops(funcWat(text, name))
@@ -150,7 +150,7 @@ test('array scan: the tail counter is an index', () => {
     }
   }
   if (belowOpt(2)) return
-  for (const level of [2, 'speed']) {
+  for (const level of ownedLevels(2, 'speed')) {
     const [plain, mixed] = kernels.map(([kernel]) => wat(kernel, { optimize: { level, ...shape } }))
     ok(!/\$__dyn_set\b/.test(plain) && !/\$__dyn_set\b/.test(mixed), `at ${level}: the tail stores at an index`)
     ok(!/\$__arr_prop\b/.test(plain), `at ${level}: the array holds no named numeric property`)
@@ -181,7 +181,7 @@ test('array scan: a bound declared before the loop', () => {
     }
   }
   if (belowOpt(2)) return
-  for (const level of [2, 'speed']) {
+  for (const level of ownedLevels(2, 'speed')) {
     const text = wat(declared, { optimize: { level, ...shape } })
     ok(!/\$__arr_set_idx_ptr/.test(funcWat(text, 'bumpN')), `bumpN at ${level}: in bounds, nothing grows`)
     ok(/\$__arr_set_idx_ptr/.test(funcWat(text, 'shrunk')), `shrunk at ${level}: a pop between keeps the growth call`)
@@ -190,7 +190,7 @@ test('array scan: a bound declared before the loop', () => {
 
 test('array scan: a constant start under the length is in bounds', () => {
   if (belowOpt(2)) return
-  for (const level of [2, 'speed']) {
+  for (const level of ownedLevels(2, 'speed')) {
     const body = funcWat(wat(src, { optimize: { level, ...shape } }), 'fromN')
     ok(/f64\.store/.test(body) && !/\$__arr_set_idx_ptr/.test(body), `fromN at ${level}: stores in place, nothing grows`)
   }
@@ -210,7 +210,7 @@ test('array scan: a store inside the length grows nothing', () => {
     for (const n of [0, 1, 7]) is(jz.go(n), host.go(n), `go(${n}) at ${optimize}`)
   }
   if (belowOpt(2)) return
-  for (const level of [2, 'speed']) {
+  for (const level of ownedLevels(2, 'speed')) {
     const body = funcWat(wat(bounded, { optimize: { level, ...shape } }), 'bump')
     ok(!/global\.get \$__heap(?![\w.])/.test(body), `at ${level}: no mark of the heap's top around the store`)
   }

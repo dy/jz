@@ -2,7 +2,7 @@
 // typed-array methods they reach, and reads of arrays whose kind is known.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, levels } from './_matrix.js'
+import { onKernel, levels, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { run, oracle, jz, compile } from './util.js'
 import { count, walk } from '../scripts/wat-probe.mjs'
@@ -529,7 +529,7 @@ test('promoteIntArrayLiterals: a .filter().map() chain answers as an Array\'s do
     export const halves = () => { const xs = [1, 2, 3]; return xs.filter(x => x > 1).map(x => x / 2) }
   `
   // [3,4,5].filter(>2) → [3,4,5]; *10 → [30,40,50] → 3*100 + 30 + 40*10 + 50*1000 = 50_730
-  for (const optimize of [0, 1, 2, 'speed']) {
+  for (const optimize of ownedLevels(0, 1, 2, 'speed')) {
     const { main, past, halves } = run(src, { optimize })
     is(main(), 50730, `the chain at ${optimize}`)
     is(past(), [5, undefined, 1], `an index past what the filter kept, at ${optimize}`)
@@ -551,7 +551,7 @@ test('promoteIntArrayLiterals: a derived array is an Array where it is told from
   }
   const src = `const keep = (a) => a\n` + Object.entries(forms).map(([name, body]) => `export let ${name} = () => { const xs = [1, 2, 3, 4]; ${body} }`).join('\n')
   const want = oracle(src)
-  for (const optimize of [0, 1, 2, 'speed']) {
+  for (const optimize of ownedLevels(0, 1, 2, 'speed')) {
     const got = run(src, { optimize })
     for (const name in forms) {
       const g = got[name](), w = want[name]()

@@ -4,7 +4,7 @@
 // (module/typedarray.js __typed_sort), in every element kind.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { levels } from './_matrix.js'
+import { levels, ownedLevels } from './_matrix.js'
 import { oracle, run, jz, compile } from './util.js'
 
 const KINDS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
@@ -135,7 +135,7 @@ test('typed sort: the size tier and the reference tier agree', () => {
   const r = rng(4242)
   for (const name of ['Int32Array', 'Float64Array', 'Uint8Array']) {
     const a = fill(CTORS[name], 300, r, name.startsWith('Float')), want = bytes(a.slice().sort())
-    for (const optimize of ['size', 0, 'speed']) is(bytes(CTORS[name].from(run(SORT(name), { optimize }).f(Float64Array.from(a)))), want, `${name} at ${optimize}`)
+    for (const optimize of ownedLevels('size', 0, 'speed')) is(bytes(CTORS[name].from(run(SORT(name), { optimize }).f(Float64Array.from(a)))), want, `${name} at ${optimize}`)
   }
 })
 

@@ -1,7 +1,7 @@
 // Closures: capture, currying, callbacks, methods, ABI/arity, unboxing
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, onWasi, onKernel, levels } from './_matrix.js'
+import { belowOpt, onWasi, onKernel, levels, ownedLevels } from './_matrix.js'
 import { ctx } from '../src/ctx.js'
 import { funcWat, oracle, run, wat, jz, compile, compileInProcess } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
@@ -185,7 +185,7 @@ const fnBody = (w, name) => {
 test('function length uses source parameters, including runtime keys and deduplicated bodies', () => {
   const src = `function named(a,b,c){return 1}
     export function f(k,n){let capture=9;const fs=[()=>1,a=>1,(a,b)=>1,(a,b=2,c)=>1,(a,...r)=>1,(...r)=>1,named,(a,b)=>capture];return fs[n][k]}`
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of ownedLevels(0, 2, 'speed')) {
     const f = jz(src, { optimize }).exports.f
     for (const [i, n] of [0,1,2,1,1,0,3,2].entries()) is(f('length', i), n, `arity ${i}, ${optimize}`)
     is(f('missing', 2), undefined, 'missing property')
@@ -207,7 +207,7 @@ test('function length of a static read through the constructor survives the data
     const all = [C, D, g]
     export let f = () => [new C().g(), new C().h(), new D().k(), all[2].p.length, C.m.length, D.m.length]`
   const want = oracle(src).f()
-  for (const optimize of [0, 2, 'speed']) is(jz(src, { optimize }).exports.f(), want, `O${optimize}`)
+  for (const optimize of ownedLevels(0, 2, 'speed')) is(jz(src, { optimize }).exports.f(), want, `O${optimize}`)
   const memory = new WebAssembly.Memory({ initial: 32, maximum: 128, shared: true })
   is(jz(src, { sharedMemory: true, memory }).exports.f(), want, 'shared memory')
 })

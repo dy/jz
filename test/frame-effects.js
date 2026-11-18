@@ -1298,7 +1298,7 @@ test('frame effects: what a callee reached by a tail call stored into a module b
     function f(n) { return g(n, 1) }
     export let h = (n) => g(n, 2)[1]
     export let go = (n) => { const tmp = new Float64Array(16); tmp.fill(n + 1); const r = f(n); return r[3] + tmp[1] + keep.length * 1000 + keep[2] }`
-  for (const optimize of [...levels(0, 2, 3), 'size']) {
+  for (const optimize of levels(0, 2, 3, 'size')) {
     const m = jz(src, { optimize }).exports, js = oracle(src)
     for (let i = 0; i < 4; i++) is(m.go(40), js.go(40), `${optimize}, call ${i}: the array the first call made holds what every call added`)
     is(m.h(40), js.h(40), `${optimize}: and by a call of its own`)

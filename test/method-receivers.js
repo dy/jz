@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi, levels } from './_matrix.js'
+import { onWasi, levels, ownedLevels } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 
 // A builtin-named method through a receiver of no known kind: an own property
@@ -227,7 +227,7 @@ test('method receiver: optional builtin calls prove the receiver family before a
     return [value, n]
   }`
   const native = new Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of ownedLevels(0, 2, 3)) {
     const { f } = jz(src, { optimize }).exports
     for (const k of [0, 0, 6, 7, 8, 9, 10, 11, 4, 5, 1, 2, 3, 6])
       is(f(k), native(k), `O${optimize}, receiver ${k}`)
@@ -242,7 +242,7 @@ test('method receiver: nonoptional missing builtins evaluate arguments then thro
     catch(e) {return [e.name, n]}
   }`
   const native = new Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of ownedLevels(0, 2, 3)) {
     const { f } = jz(src, { optimize }).exports
     for (const k of [0, 0, 1, 2, 3, 4, 5, 6, 0]) is(f(k), native(k), `O${optimize}, receiver ${k}`)
   }
@@ -273,7 +273,7 @@ test('method receiver: optional call does not make its property read optional', 
       try {return [${call}, n]} catch(e) {return [e.name, n]}
     }`
     const native = new Function(src.replace('export ', '') + ';return f')()
-    for (const optimize of [0, 2, 3]) {
+    for (const optimize of ownedLevels(0, 2, 3)) {
       const { f } = jz(src, { optimize }).exports
       for (const k of [0, 0, 1, 2, 3, 0]) is(f(k), native(k), `O${optimize}, receiver ${k}`)
     }

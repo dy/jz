@@ -9,7 +9,7 @@
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onKernel, levels } from './_matrix.js'
+import { onKernel, levels, ownedLevels } from './_matrix.js'
 import { solveEffects } from '../src/optimize/index.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -329,7 +329,7 @@ test('LICM: an invariant subexpression leaves every loop, at any position of a l
   ]
   for (const [what, src, pred, args] of kernels) {
     const want = oracle(src).f
-    for (const optimize of [2, { level: 'speed', relaxedFloat: false }]) {
+    for (const optimize of ownedLevels(2, { level: 'speed', relaxedFloat: false })) {
       is(loopCount(findFunc(parse(src, preWatr(optimize)), '$f'), pred), 0, `${what}: out of every loop at ${JSON.stringify(optimize)}`)
       const f = jz(src, { optimize }).exports.f
       for (const a of args) ok(Object.is(f(...a), want(...a)), `${what} (${a}) at ${JSON.stringify(optimize)}`)
@@ -854,7 +854,7 @@ export let g = (n) => { let s = 0; for (let k = 0; k < n; k++) { s += chain.xs[k
   const header = n => n[0] === 'i32.load' && Array.isArray(n[n.length - 1]) && n[n.length - 1][0] === 'i32.sub'
   is(loopCount(findFunc(parse(src, { level: 'speed' }), '$f'), header), 0, 'no header word is read in the loop')
   // a loop that stores the field reads it each time
-  for (const level of [0, 2, 'speed']) {
+  for (const level of ownedLevels(0, 2, 'speed')) {
     const e = jz(src, { optimize: { level } }).exports
     is(e.f(3), 135, `O${level}`)
     is(e.g(3), 0 + 2 + 4, `the stored field O${level}`)
@@ -888,7 +888,7 @@ export let h = () => { for (let i = 0; i < a.length; i += 3) { m.apply(a, i); ot
   is(loads('$f'), 0, 'no element of the matrix is read in the loop')
   is(loads('$h'), 0, 'nor where the loop stores into an array of another cell')
   ok(loads('$g') > 0, 'a loop storing into the matrix reads it each pass')
-  for (const level of [0, 2, 'speed']) {
+  for (const level of ownedLevels(0, 2, 'speed')) {
     const e = jz(src, { optimize: { level } }).exports, want = oracle(src)
     for (const k of ['f', 'g', 'h', 'f']) is(e[k](), want[k](), `${k} O${level}`)
     // a matrix a read past the source's end left missing cells in: NaN through the loop

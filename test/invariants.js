@@ -1450,6 +1450,7 @@ test('debug lifecycle: repeated sessions, drift and failed-session recovery', ()
 
 test('debug lifecycle: real compiles retain semantics across shape changes and errors', () => {
   const entry = new URL('./util.js', import.meta.url).href   // the test entry: the levels 0-3
+  // (every tier on every leg: the child checks one process's state across all of them)
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import { jz } from ${JSON.stringify(entry)}
     const sources = [
@@ -1473,6 +1474,7 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
 
 test('invariant: inlining and cleanup preserve binding storage and evaluation order', () => {
   const entry = new URL('./util.js', import.meta.url).href   // the test entry: the levels 0-3
+  // (every level on every leg: the armed leg checks the invariants at level 3 alone)
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict'
     import { jz } from ${JSON.stringify(entry)}
@@ -1601,6 +1603,7 @@ test('invariant: two proofs of a binding\'s integer hull meet, neither widens th
   // seed 174 tripped a restamp assertion between the two at opt 2.
   const { spawnSync } = await import('node:child_process')
   const root = new URL('..', import.meta.url).pathname
+  // (both levels on every leg: the armed leg checks the invariants at level 3 alone)
   const script = `
     import { compile } from './test/util.js'
     const src = 'export let f = (p0) => { let i0 = 0; while (i0 < 5) { if (i0) { let v1 = i0; } i0 = (i0 + 1); } return 0; }'

@@ -13,8 +13,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, wat } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
-const LEVELS = [false, true, 'size', { level: 'speed', relaxedFloat: false }, 'speed']
+const LEVELS = ownedLevels(false, true, 'size', { level: 'speed', relaxedFloat: false }, 'speed')
 const name = (o) => JSON.stringify(o)
 const lanes = (src, optimize) => (wat(src, { optimize }).match(/f32x4\.(eq|ne|lt|gt|le|ge)/g) || []).length
 
@@ -29,7 +30,7 @@ test('single compare: an element at RN32(0.1) is above 0.1, in the lanes too', (
   is(want[1], 0.5, 'Node: a[0] = RN32(0.1) > 0.1')
   for (const optimize of LEVELS) is(Array.from(run(src, { optimize }).f(8)), want, `${name(optimize)}: as Node`)
   // the loop lifts to an f32 lane at the default level and at speed (the arm 0.25 is a single)
-  for (const optimize of [true, 'speed']) ok(lanes(src, optimize) > 0, `${name(optimize)}: an f32x4 comparison`)
+  for (const optimize of ownedLevels(true, 'speed')) ok(lanes(src, optimize) > 0, `${name(optimize)}: an f32x4 comparison`)
 })
 
 test('single compare: each operator against a constant between singles, on one, and NaN', () => {

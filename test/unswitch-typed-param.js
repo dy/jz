@@ -9,7 +9,7 @@
 // for Float64Array (owned + view), and EVERY other type / shape falls back bit-exact.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, levels, ownedLevels } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 
 const speed = { level: 'speed' }
@@ -45,7 +45,7 @@ test('unswitch: tagged numeric reads retain repeated receiver and BigInt fallbac
       return [a[0],1/a[1],a[2],a[3],b[0],b[1],b[2],b[3]]}`
   if (!onWasi()) {
     const want = oracle(src).run()
-    for (const optimize of [speed, { level: 'speed', noSimd: true }, { level: 0 }]) {
+    for (const optimize of levels(speed, { level: 'speed', noSimd: true }, { level: 0 })) {
       const api = jz(src, { optimize }).exports
       for (let i=0;i<2;i++) is(api.run(), want, 'A/A and changed receiver retain exact values')
     }
@@ -137,7 +137,7 @@ test('unswitch: local typed widths preserve bounds, rounding and assignment valu
   // a copy per constructor the local may hold (plan/kind-split.js), each storing its own width
   ok(wat.includes('f32.store') && wat.includes('f64.store') && wat.includes('i32.store8'), 'each width has direct stores')
   const js = oracle(src).f
-  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+  for (const optimize of ownedLevels(speed, { level: 'speed', unswitchTypedParamLoop: false }, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (const which of [0, 1, 2]) for (const view of [false, true]) for (const n of [-1, 0, 4, 8, 9]) {
       const expected = js(which, n, view)
@@ -171,7 +171,7 @@ test('unswitch: paired local widths preserve mixed storage, views and nullable r
     return [a[0], a[3], a[4], b[0], b[3], b[4], b[7], b[8], rows[output][0], rows[output][7]]
   }`
   const js = oracle(src).f
-  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+  for (const optimize of ownedLevels(speed, { level: 'speed', unswitchTypedParamLoop: false }, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (const input of [0, 1, 2, 3]) for (const output of [0, 1, 2, 3])
       for (const view of [false, true]) for (const same of [false, true]) for (const n of [-1, 0, 1, 4, 9]) {
@@ -207,7 +207,7 @@ test('unswitch: a store of either float width runs a copy per width', () => {
   ok(fw.includes('$__utw'), 'the loop as written takes a versioned copy')
   ok(inner.length <= 12, `the copies stay bounded (${inner.length} loops)`)
   const js = oracle(src).f
-  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+  for (const optimize of ownedLevels(speed, { level: 'speed', unswitchTypedParamLoop: false }, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (const wo of [false, true]) for (const wi of [false, true]) for (const n of [-1, 0, 3, 8, 9])
       is(f(wo, wi, n), js(wo, wi, n), `${wo}/${wi}/${n}: either width, either input, out of bounds`)
@@ -230,7 +230,7 @@ test('unswitch: nullable typed reads retain key evaluation order and receiver id
     return ['ok', calls, sum]
   }`
   const js = oracle(src).f
-  for (const optimize of [speed, 0]) {
+  for (const optimize of ownedLevels(speed, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (const which of [0, 1, 2]) for (const n of [0, 1, 3]) for (const op of [0, 1, 2])
       is(f(which, n, op), js(which, n, op), `${which}/${n}/${op}: capture receiver, compute key, reject null, convert key`)
@@ -252,7 +252,7 @@ test('unswitch: companion guards reject missing, BigInt and changing receivers',
     return ['ok', b[0], b[1]]
   }`
   const js = oracle(src).f
-  for (const optimize of [speed, 0]) {
+  for (const optimize of ownedLevels(speed, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (const input of [0, 1, 2, 3]) for (const output of [0, 1])
       for (const n of [0, 1, 5]) for (const swap of [false, true])
@@ -273,7 +273,7 @@ test('unswitch: cached numeric input storage covers every element width and sign
     return [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]]
   }`
   const js = oracle(src).f
-  for (const optimize of [speed, { level: 'speed', noSimd: true }, 0]) {
+  for (const optimize of ownedLevels(speed, { level: 'speed', noSimd: true }, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (let input = 0; input < 10; input++) for (const wide of [false, true])
       for (const n of [-1, 0, 1, 8, 9]) for (const view of [false, true]) {
@@ -328,7 +328,7 @@ test('unswitch: absent numeric reads store NaN but retain the assignment result'
     return [result, a[0], a[1], Number.isNaN(a[1]), a[1] === undefined]
   }`
   const js = oracle(src).f
-  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+  for (const optimize of ownedLevels(speed, { level: 'speed', unswitchTypedParamLoop: false }, 0)) {
     const { f } = jz(src, { optimize }).exports
     for (const which of [false, true]) for (const n of [0, 1, 4, 5])
       is(f(which, n), js(which, n), 'missing source stays undefined as a value, becomes NaN in floating storage')

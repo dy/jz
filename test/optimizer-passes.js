@@ -2,7 +2,7 @@
 // stores, copy and forward propagation, local slots, dead tables, effects.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, levels, belowOpt } from './_matrix.js'
+import { onKernel, levels, belowOpt, ownedLevels } from './_matrix.js'
 import { solveEffects, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
@@ -405,7 +405,7 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
     [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Float64Array([0]), 0], [new Float64Array([0]), 5]]],
   ]) {
     const js = oracle(s).f
-    for (const level of [{ level: 1 }, { level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' }]) {
+    for (const level of ownedLevels({ level: 1 }, { level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' })) {
       const onF = jz(s, { optimize: level }).exports.f
       const offF = jz(s, { optimize: { ...level, propagateLocals: false } }).exports.f
       for (const a of args) {
@@ -425,8 +425,8 @@ test('propagateLocals: loads and persistent writes remain ordered across calls',
   const src = `const b = new Float64Array([7]);
     export function f(n) { const v = b[0]; b[0] = n; return v }
     export const state = () => b[0]`
-  for (const optimize of ['fast', {level: 'fast', propagateLocals: false},
-    {level: 2, watr: false}, 2, 3]) {
+  for (const optimize of ownedLevels('fast', {level: 'fast', propagateLocals: false},
+    {level: 2, watr: false}, 2, 3)) {
     const js = oracle(src)
     const wasm = jz(src, { optimize }).exports
     const observe = ex => [7, 7, 99, 0, -0, 7].map(n => [ex.f(n), ex.state()])
@@ -445,8 +445,8 @@ test('propagateLocals: abrupt values preserve operand order and state before rec
     try { return ['value', f(arg)] }
     catch (e) { return ['throw', e.name] }
   }
-  for (const optimize of [{ level: 'fast' }, { level: 'fast', propagateLocals: false },
-    { level: 2, watr: false }, { level: 2 }, { level: 3 }]) {
+  for (const optimize of ownedLevels({ level: 'fast' }, { level: 'fast', propagateLocals: false },
+    { level: 2, watr: false }, { level: 2 }, { level: 3 })) {
     const js = oracle(src)
     const wasm = jz(src, { optimize }).exports
     const args = ['4', '4', '0', 'bad', '4']
@@ -463,7 +463,7 @@ for (const src of [
     'export const f = n => ({a: n, b: undefined, c: null})',
     'export const f = n => n ? {a: n} : null',
     ...['Error', 'TypeError', 'RangeError'].map(name => `export function f() { throw new ${name}("message") }`),
-]) for (const optimize of ['fast', {level: 2, watr: false}, 2, 3]) {
+]) for (const optimize of ownedLevels('fast', {level: 2, watr: false}, 2, 3)) {
   test(`propagateLocals: schema metadata: ${JSON.stringify(optimize)}: ${src}`, () => {
     const observe = (f, n) => {
       try { return ['value', f(n)] }

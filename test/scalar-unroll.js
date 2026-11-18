@@ -4,7 +4,7 @@
 // none stays a loop, whatever it holds.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, ownedLevels } from './_matrix.js'
 import { oracle, wat, jz } from './util.js'
 
 // Passes over a scratch array of 24: the pass counter indexes nothing, and the
@@ -58,13 +58,13 @@ test('scalar unroll: stages over a state array agree with JS', () => agrees(stag
 
 test('scalar unroll: a counter that indexes nothing copies nothing', () => {
   if (belowOpt(2)) return
-  for (const optimize of [2, 3])
+  for (const optimize of ownedLevels(2, 3))
     ok(loops(passes('6'), optimize) === loops(passes('m'), optimize), `a constant pass count makes the loops of a variable one at ${optimize}`)
 })
 
 test('scalar unroll: a counter that indexes the array still copies', () => {
   if (belowOpt(2)) return
-  for (const optimize of [2, 3])
+  for (const optimize of ownedLevels(2, 3))
     ok(loops(stages('4'), optimize) < loops(stages('m'), optimize), `the stage loop is written out at ${optimize}`)
 })
 

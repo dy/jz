@@ -2,7 +2,7 @@
 // record a jumping variable reaches, and a ring's cursor run a lap at a time.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
@@ -92,7 +92,7 @@ test('pointerExits: a loop keeping a counter only to stop stops by the pointer s
     }
     export let f = () => scan(build())`
   const want = oracle(src).f()
-  for (const optimize of ['speed', { level: 'speed', pointerExits: false }, 2]) is(run(src, { optimize }).f(), want, JSON.stringify(optimize))
+  for (const optimize of ownedLevels('speed', { level: 'speed', pointerExits: false }, 2)) is(run(src, { optimize }).f(), want, JSON.stringify(optimize))
   if (onKernel()) return
   const ends = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__pe'))
   ok(ends('speed') >= 1, `the record loop stops by its pointer (${ends('speed')})`)
@@ -181,7 +181,7 @@ test('jumpPointers: a loop variable that jumps carries the address of its record
       return run(code, reg, 10)
     }`
   const want = oracle(src)
-  for (const optimize of ['speed', { level: 'speed', jumpPointers: false }, 2, 0])
+  for (const optimize of ownedLevels('speed', { level: 'speed', jumpPointers: false }, 2, 0))
     for (const x of [0, 1, 13, 62, 1000]) is(run(src, { optimize }).f(x), want.f(x), `${JSON.stringify(optimize)} ${x}`)
   if (onKernel()) return
   const pointers = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__jp'))

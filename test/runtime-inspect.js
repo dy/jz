@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { captureRuntimeInspect } from '../src/compile/func-inspect.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import { compile } from './util.js'
 
 const inspect = (src, opts = {}) => compile(src, { ...opts, inspect: true }).inspect.runtime
@@ -26,7 +26,7 @@ test('runtime inspection: final exports include transitive allocation and host e
 test('runtime inspection: bounded counters, recursion and unknown work', () => {
   if (onKernel()) return
   const src = 'export function process(a){for(let i=0;i<128;i++)a[i]=a[i]*0.5}'
-  for (const optimize of [0, 3]) {
+  for (const optimize of ownedLevels(0, 3)) {
     const r = inspect(src, { optimize, noSimd: true }).process
     is(r.noAllocation, true); is(r.noHostCalls, true); is(r.boundedWork, true)
     ok(Number.isSafeInteger(r.maxInstructions) && r.maxInstructions >= 128, 'conservative instruction bound')

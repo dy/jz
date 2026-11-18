@@ -9,8 +9,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, wat } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
-const LEVELS = [false, true, 'size', { level: 'speed', relaxedFloat: false }, 'speed']
+const LEVELS = ownedLevels(false, true, 'size', { level: 'speed', relaxedFloat: false }, 'speed')
 const name = (o) => JSON.stringify(o)
 // (a record's lanes in the module, a kernel's loop at 'speed' perhaps in a split of main: a block's
 // shuffles where every field is read, a gather's second lanes where one is)
@@ -42,7 +43,7 @@ test('record lanes: two fields of a record beside a stride-1 read lift, as Node 
       s0 += t * x; s1 += t * y; s2 += x * y`)
   const want = oracle(src).main()
   for (const optimize of LEVELS) is(run(src, { optimize }).main(), want, `${name(optimize)}: as Node`)
-  for (const optimize of [true, 'speed']) ok(shuffles(src, optimize) >= 2, `${name(optimize)}: two fields, two shuffles`)
+  for (const optimize of ownedLevels(true, 'speed')) ok(shuffles(src, optimize) >= 2, `${name(optimize)}: two fields, two shuffles`)
 })
 
 test('record lanes: a field of records of three, four and eight', () => {
@@ -51,7 +52,7 @@ test('record lanes: a field of records of three, four and eight', () => {
       s0 += t * x; s1 += x * x`)
     const want = oracle(src).main()
     for (const optimize of LEVELS) is(run(src, { optimize }).main(), want, `k ${k}, field ${j}, ${name(optimize)}: as Node`)
-    for (const optimize of [true, 'speed']) ok(gathers(src, optimize) > 0, `k ${k}, ${name(optimize)}: the field gathered`)
+    for (const optimize of ownedLevels(true, 'speed')) ok(gathers(src, optimize) > 0, `k ${k}, ${name(optimize)}: the field gathered`)
   }
 })
 
@@ -62,7 +63,7 @@ ${fit(2, 2, `const a = b1(t) * pts[(o + i) * 2], c = b2(t) * pts[(o + i) * 2 + 1
       s0 += a * a; s1 += a * c; s2 += c * c`)}`
   const want = oracle(src).main()
   for (const optimize of LEVELS) is(run(src, { optimize }).main(), want, `${name(optimize)}: as Node`)
-  for (const optimize of [true, 'speed']) ok(shuffles(src, optimize) >= 2, `${name(optimize)}: two fields, two shuffles`)
+  for (const optimize of ownedLevels(true, 'speed')) ok(shuffles(src, optimize) >= 2, `${name(optimize)}: two fields, two shuffles`)
 })
 
 // What stays as written: an index local is an address's value only where it is written once in a
@@ -89,7 +90,7 @@ const noted = (t) => { seen = t; return t * 3.0 }
 ${fit(2, 2, body).replace('let s0 = 0, s1 = 0, s2 = 0', 'let s0 = 0, s1 = 0, s2 = 0, j = o')}`
     const want = oracle(src).main()
     for (const optimize of LEVELS) is(run(src, { optimize }).main(), want, `${label}, ${name(optimize)}: as Node`)
-    for (const optimize of [true, 'speed']) is(shuffles(src, optimize) + gathers(src, optimize), 0, `${label}, ${name(optimize)}: no record lanes`)
+    for (const optimize of ownedLevels(true, 'speed')) is(shuffles(src, optimize) + gathers(src, optimize), 0, `${label}, ${name(optimize)}: no record lanes`)
   }
 })
 
@@ -125,6 +126,6 @@ test('record lanes: two arrays read at one runtime offset, and a map over record
   for (const [label, body, form] of rows) {
     const src = offsets(body), want = oracle(src).main()
     for (const optimize of LEVELS) is(run(src, { optimize }).main(), want, `${label}, ${name(optimize)}: as Node`)
-    for (const optimize of [true, 'speed']) ok((form ? gathers(src, optimize) : vectors(src, optimize)) > 0, `${label}, ${name(optimize)}: lanes`)
+    for (const optimize of ownedLevels(true, 'speed')) ok((form ? gathers(src, optimize) : vectors(src, optimize)) > 0, `${label}, ${name(optimize)}: lanes`)
   }
 })

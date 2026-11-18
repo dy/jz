@@ -3,7 +3,7 @@
 // reads, and the intervals wordRanges computes.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, levels, belowOpt } from './_matrix.js'
+import { onKernel, levels, belowOpt, ownedLevels } from './_matrix.js'
 import { optimizeFunc } from '../src/optimize/index.js'
 import { lowerToInt32Tails } from '../src/optimize/peephole.js'
 import parseWat from 'watr/parse'
@@ -58,7 +58,7 @@ test('trunc-range fold: a WRITTEN param must not resolve to its later write (ToU
   // saturated 31.
   const s1 = `export let f = (p0, p1, p2) => { p1 = (1 >>> Math.abs(p0)); p0 = 0; return p1; }`
   const s2 = `export let f = (p0, p1, p2) => { let v0 = p0; let i4 = 0; while (i4 < 14) { p2 = 0; p0 = 0; i4 = (i4 + 1); } return (1 >> Math.abs(v0)); }`
-  for (const o of [1, 2, 'speed']) {
+  for (const o of ownedLevels(1, 2, 'speed')) {
     is(run(s1, { optimize: o }).f(-Infinity, 0.5, 3520.439785003662), 1, `s1 opt=${o}`)
     is(run(s2, { optimize: o }).f(-Infinity, 0.5, 3520.439785003662), 1, `s2 opt=${o}`)
     is(run(s1, { optimize: o }).f(NaN, 0, 0), 1, `s1 NaN opt=${o}`)
@@ -506,9 +506,9 @@ test('unsignedDivision: a non-negative dividend divides unsigned', () => {
     return t
   }`
   const host = oracle(src).f
-  for (const optimize of ['speed', 2, 1]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 5, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  for (const optimize of ownedLevels('speed', 2, 1)) { const f = run(src, { optimize }).f; for (const n of [0, 1, 5, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
-  for (const o of ['speed', 2]) {
+  for (const o of ownedLevels('speed', 2)) {
     const wat = compile(src, { wat: true, optimize: o }), body = wat.slice(wat.indexOf('(func $f'))
     ok(/\(i32\.div_u/.test(body) && /\(i32\.rem_u/.test(body), `O${o}: the byte sum's quotient and the byte's remainder are unsigned`)
     ok(/\(i32\.div_s/.test(body) && /\(i32\.rem_s/.test(body), `O${o}: a dividend that may be negative stays signed`)

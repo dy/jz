@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { instantiate, codecOf } from '../interop.js'
-import { belowOpt, onKernel, levels } from './_matrix.js'
+import { belowOpt, onKernel, levels, ownedLevels } from './_matrix.js'
 import { foldWords, funcWat, oracle, agree, jz, compile } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
@@ -1131,7 +1131,7 @@ test('audit: a catch links the error decoder only when its binding is read', () 
 test('audit: dead class-call guards leave no error-message data', () => {
   if (onKernel()) return
   const src='class Box{run(x){return x+1}} export function f(n){const a=[];for(let i=0;i<n;i++)a.push(new Box());let v=0;for(let i=0;i<a.length;i++)v=a[i].run(v);return v}'
-  for (const optimize of [2, 'size', 3]) {
+  for (const optimize of ownedLevels(2, 'size', 3)) {
     const bytes=compile(src, {optimize})
     for (const text of ['Cannot read properties', 'is not a function', 'TypeError'])
       ok(!Buffer.from(bytes).includes(Buffer.from(text,'utf16le')), 'dead '+text)

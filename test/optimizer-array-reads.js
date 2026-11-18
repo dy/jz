@@ -3,7 +3,7 @@
 // once, and an untyped receiver reads inline at speed.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onKernel, levels } from './_matrix.js'
+import { onKernel, levels, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { funcWat, run, oracle, jz, compile } from './util.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -111,7 +111,7 @@ export let at = (i) => rows[1][i] + rows[1].length`,
     walk(fn, n => { if (n[0] === 'then' && has(n, grow) && !n.slice(1).some(c => Array.isArray(c) && has(c, m => m[0] === 'then' && has(m, grow)))) arms.push(n) })
     ok(arms.length > 0, `${name}: the push grows in an arm of its own`)
     ok(arms.every(a => has(a, m => m[0] === 'f64.store' || m[0] === 'i64.store')), `${name}: the grow rebinds its slot`)
-    for (const level of [0, 2, 'speed']) {
+    for (const level of ownedLevels(0, 2, 'speed')) {
       const e = jz(src, { optimize: { level } }).exports
       e.fill(100)
       is(e.at(57), 157, `${name} O${level}`)
@@ -145,7 +145,7 @@ export let h = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i+
   const nanTest = n => n[0] === 'select' && Array.isArray(n[2]) && n[2][0] === 'f64.const' && n[2][1] === 'nan'
   is(count(parse(typed, { level: 'speed' }), nanTest), 0, 'a typed read takes no hole-fused test')
   is(jz(typed, { optimize: { level: 'speed' } }).exports.h(64), (() => { const a = new Float64Array(64); for (let i = 0; i < 64; i++) a[i] = (i * 7919) % 13; let i = 0, child = 1, c = 0; while (child < 64) { if (child + 1 < 64 && a[child] < a[child + 1]) child++; if (a[i] >= a[child]) break; const t = a[i]; a[i] = a[child]; a[child] = t; i = child; child = 2 * i + 1; c++ } return c })(), 'sift')
-  for (const level of [0, 2, 'speed']) {
+  for (const level of ownedLevels(0, 2, 'speed')) {
     const e = jz(src, { optimize: { level } }).exports
     e.grow(10)
     is(e.f(3), 3, `in bounds O${level}`)

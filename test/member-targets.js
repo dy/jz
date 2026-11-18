@@ -3,7 +3,7 @@
 // source, as ES orders it.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { levels, onWasi } from './_matrix.js'
+import { levels, onWasi, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
@@ -56,7 +56,7 @@ test('member targets: NaN payload tags cannot donate object property storage', (
       catch(e){return[e===7?7:e.name,trace]}
     }`
   const want=oracle(source)
-  for(const optimize of [0,1,2,3,'size']) {
+  for(const optimize of ownedLevels(0,1,2,3,'size')) {
     const got=jz(source,{optimize:{level:optimize,sourceInline:false}}).exports
     const words=[0x7ff80000,0x7ff00000,0xfff00000,0x401d0000,
       ...Array.from({length:16},(_,tag)=>(0xfff80000|(tag<<15))>>>0)]
@@ -116,7 +116,7 @@ test('member targets: scalar-replaced receivers preserve effectful stores', () =
     `function next(n){if(n<0)throw 7;return n+1}
       export function f(n){const a=[n];try{a[0]=next(n)}catch(e){return[a[0],e]}return[a[0]]}`,
   ]
-  for (const src of cases) for (const level of [0,1,2,3,'size']) {
+  for (const src of cases) for (const level of ownedLevels(0,1,2,3,'size')) {
     const got=jz(src,{optimize:{level,sourceInline:false}}).exports.f, want=oracle(src).f
     for(const n of [1,1,0,5,-1,1])is(got(n),want(n),`O${level}, ${n}: ${src.slice(0,55)}`)
   }
@@ -179,7 +179,7 @@ test('member targets: RHS calls and conversions keep the original receiver', () 
     const src=`export function f(mode){let out=${init};${setup}const old=out;
       function rhs(){out=${replacement};if(mode===2)throw 7;return 3}
       try{${store};return ${result}}catch(e){return[e,${result}]}}`
-    for (const optimize of [0,1,2,3,'size']) {
+    for (const optimize of ownedLevels(0,1,2,3,'size')) {
       const want=oracle(src), got=jz(src,{optimize}).exports
       for (const mode of [0,0,1,2,0,2]) is(got.f(mode),want.f(mode),`${label} O${optimize}, ${mode}`)
     }
@@ -191,7 +191,7 @@ test('member targets: RHS calls and conversions keep the original receiver', () 
     try{out[0]=helper(value);return[old[0],out[0]]}
     catch(e){return[e,old[0],out[0]]}}
   `
-  for (const optimize of [0,1,2,3,'size']) {
+  for (const optimize of ownedLevels(0,1,2,3,'size')) {
     const want=oracle(src), got=jz(src,{optimize}).exports
     for (const mode of [0,0,1,0,1,0]) is(got.f(mode),want.f(mode),`callee conversion O${optimize}, ${mode}`)
   }
@@ -233,7 +233,7 @@ test('member targets: plain writes preserve key, conversion and error order', ()
         function rhs(){calls++;if(mode)throw 7;return 3}
         try{out[0]=rhs();return['ok',calls]}catch(e){return[e===7?7:e.name,calls]}}`),
   ]
-  for (let i=0;i<cases.length;i++) for (const optimize of [0,1,2,3,'size']) {
+  for (let i=0;i<cases.length;i++) for (const optimize of ownedLevels(0,1,2,3,'size')) {
     const src=cases[i], want=oracle(src), got=jz(src,{optimize}).exports
     for (const mode of [0,0,1,2,0,2]) is(got.f(mode),want.f(mode),`reference order ${i} O${optimize}, ${mode}`)
   }
@@ -247,7 +247,7 @@ test('member targets: primitive write errors follow property-key conversion', ()
       function rhs(){trace+='r';if(mode===6)throw 8;return 3}
       try{out[key]=rhs();return['ok',trace,out.x]}
       catch(e){return[e===7?7:e===8?8:e.name,trace]}}`
-    for (const optimize of [0,1,2,3,'size']) {
+    for (const optimize of ownedLevels(0,1,2,3,'size')) {
       const want=oracle(src), got=jz(src,{optimize}).exports
       for (const mode of [0,0,1,2,3,4,5,6,0]) is(got.f(mode),want.f(mode),`${init} O${optimize}, ${mode}`)
     }
@@ -261,7 +261,7 @@ test('member targets: native sidecars retain identity and Symbol stores', () => 
       object[key]=7;object.value=11;alias[mode?'extra':'value']=13;
       return[object===alias,object[key],object.value,object.extra,alias[key]]
     }`
-    for(const optimize of [0,1,2,3,'size']) {
+    for(const optimize of ownedLevels(0,1,2,3,'size')) {
       const got=jz(src,{optimize}).exports.f,want=oracle(src).f
       for(const mode of [0,0,1,0])is(got(mode),want(mode),`O${optimize}, ${init}, ${mode}`)
     }

@@ -8,7 +8,7 @@
 // the heap above the mark `memory.reset()` returns to.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { levels, onWasi } from './_matrix.js'
+import { levels, onWasi, ownedLevels } from './_matrix.js'
 import { oracle, jz } from './util.js'
 
 const CALLS = 2000
@@ -21,7 +21,7 @@ test('call release: old boxed results release inner scratch without a reachabili
       return n<0?{value:scratch[0]}:kept[scratch[0]&1]}
     export function run(n){const a=lookup(n),b=lookup(n+1),c=lookup(n+2);
       return new Float64Array([a.value+b.value+c.value])}`
-  for(const level of [0,1,2,3,'size']) {
+  for(const level of ownedLevels(0,1,2,3,'size')) {
     const {exports,memory}=jz(source,{optimize:{level,sourceInline:false,arenaReach:false,arenaRewind:true}})
     const want=oracle(source), held=[]
     for(const n of [0,0,7,-4,2,0]) {

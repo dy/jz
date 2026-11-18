@@ -8,7 +8,7 @@
 // full `super.x` property semantics, a getter or setter with a computed name.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi, onKernel, OPT_LEVEL, levels } from './_matrix.js'
+import { onWasi, onKernel, OPT_LEVEL, levels, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile as compileWat } from './util.js'
 import { instantiate } from '../interop.js'
 
@@ -68,7 +68,7 @@ test('derived closure class methods stay hidden through property growth and copy
   const prefix = `function make(x){class B{x;constructor(v){this.x=v}m(){return this.x}}
     class D extends B{n(){return this.m()+1}get total(){return this.x+2}}return new D(x)}
     export function f(n){let d=make(3);for(let i=0;i<n;i++)d['k'+i]=i;`
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of ownedLevels(0, 2, 'speed')) {
     const keys = jz(prefix + `return Object.keys(d).join(',')}`, { optimize }).exports.f
     for (const n of [0, 1, 32, 0]) is(keys(n), ['x', ...Array.from({ length: n }, (_, i) => 'k' + i)].join(','), `keys ${n}, ${optimize}`)
     for (const expr of ['Object.keys({...d}).join()', 'Object.keys(Object.assign({},d)).join()', 'Object.keys(structuredClone(d)).join()', 'Object.values(d).join()', 'JSON.stringify(d)']) {
@@ -788,7 +788,7 @@ test('class struct: nullable method values retain binding and reject missing rec
       const rows = [new P(4)], p = rows[i];
       try { const method = p.dbl; return method(); } catch (e) { return e.name; }
     }`
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f } = jz(src, { optimize }).exports
     for (const i of [0, 0, 1, -1, 0]) is(f(i), i === 0 ? 8 : 'TypeError', `O${optimize}: row ${i}`)
   }
@@ -803,7 +803,7 @@ test('class struct: a method wider than the closure lanes keeps a bound value', 
     export const f = (k) => { const o = k ? new M() : new V(), s = o.set
       return k ? s(1, 2, 3, 4, 5, 6, 7, 8).e[7] + (s(1).e[9] === undefined ? 100 : 0) : s(5).x }
     export const g = () => new M().set(1, 2, 3, 4, 5, 6, 7, 8, 9, 10).e[9]`
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const { f, g } = jz(src, { optimize }).exports
     for (const k of [1, 1, 0, 1]) is(f(k), k ? 108 : 5, `O${optimize}: value ${k}`)
     is(g(), 10, `O${optimize}: direct call`)

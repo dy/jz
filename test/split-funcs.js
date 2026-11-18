@@ -6,7 +6,7 @@ import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import compileWat from 'watr/compile'
 import { splitFuncs, loopPasses } from '../src/optimize/split-funcs.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
 
 const FORCE = { fnMin: 0, armMin: 1 }
@@ -333,7 +333,7 @@ export let run = (n) => {
 
 test('split funcs: the speed tier answers as the source does, whole and split to its arms', () => {
   const native = oracle(SRC).run
-  const opts = [{ level: 'speed' }, { level: 'speed', splitFn: 0, splitArm: 8 }, { level: 'speed', splitFn: 0, splitArm: 1 }]
+  const opts = ownedLevels({ level: 'speed' }, { level: 'speed', splitFn: 0, splitArm: 8 }, { level: 'speed', splitFn: 0, splitArm: 1 })
   for (const optimize of opts) {
     const run = jz(SRC, { optimize }).exports.run
     for (const n of [0, 1, 9, 10, 23, 60, 200]) is(run(n), native(n), `${JSON.stringify(optimize)}: run(${n})`)
@@ -345,7 +345,7 @@ test('split funcs: the speed tier answers as the source does, whole and split to
 
 test('split funcs: the default and size tiers keep their functions whole', () => {
   if (onKernel()) return
-  for (const level of [2, 'size'])
+  for (const level of ownedLevels(2, 'size'))
     ok(!/\(func \$[^\s()]*\$s\d+/.test(compile(SRC, { optimize: { level, splitFn: 0, splitArm: 1 }, wat: true })), `${level}`)
 })
 
@@ -492,7 +492,7 @@ test('loop passes: the speed tier moves a driver\'s rounds and answers as the so
   if (onKernel()) return
   ok(/\(func \$main\$s\d+/.test(compile(NEST_SRC(), { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
   ok(!/\(func \$main\$s\d+/.test(compile(NEST_SRC('n'), { optimize: { level: 'speed' }, wat: true })), 'rounds a runtime value counts stay')
-  for (const level of [2, 'size'])
+  for (const level of ownedLevels(2, 'size'))
     ok(!/\(func \$main\$s\d+/.test(compile(NEST_SRC(), { optimize: { level }, wat: true })), `${level} keeps it`)
 })
 

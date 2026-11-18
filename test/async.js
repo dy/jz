@@ -11,7 +11,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { batch, oracle, jz, compile } from './util.js'
-import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
+import { onWasi, onKernel, levels, belowOpt, ownedLevels } from './_matrix.js'
 import { parse } from '../src/parse.js'
 import jzify from '../jzify/index.js'
 
@@ -832,7 +832,7 @@ test('async: a promise without an executor is a TypeError', async () => {
     async function foo() { await new Promise(5) }
     export let start = () => foo().catch((e) => { awaited = e instanceof TypeError ? 1 : 2 })
     export let check = () => sync * 10 + awaited`
-  for (const optimize of [0, 2]) {
+  for (const optimize of ownedLevels(0, 2)) {
     const m = jz(src, { optimize }).exports
     await m.start()
     is(m.check(), 11, `O${optimize}: both the call and the await reject with a TypeError`)

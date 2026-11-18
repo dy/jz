@@ -7,7 +7,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { agree, wat } from './util.js'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { numberValues, narrowByteLoads, LOAD_AT, TAG, OFFSET, SUBSCRIPT, CONSTANT } from '../src/optimize/numbering.js'
@@ -184,7 +184,7 @@ test('numbering: a finalizer after a throw reads what its own way made', () => {
         try { f(b, 1) } catch (e) { sum += 100 }
         return sum }`,
   }
-  for (const [name, src] of Object.entries(programs)) for (const optimize of [2, 'size', 'speed'])
+  for (const [name, src] of Object.entries(programs)) for (const optimize of ownedLevels(2, 'size', 'speed'))
     agree(src, 'main', [], { optimize }, `${name}, at ${optimize}`)
 })
 

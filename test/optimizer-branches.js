@@ -2,7 +2,7 @@
 // tests fused to one compare, truthiness, and values a statement drops.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onKernel, levels, belowOpt } from './_matrix.js'
+import { onKernel, levels, belowOpt, ownedLevels } from './_matrix.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -492,7 +492,7 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   is((body.match(/\(call \$b[\s)]/g) || []).length, 3, 'b is called once per test')
   is((body.match(/\(call \$c[\s)]/g) || []).length, 2, 'c is called once per test')
   const ref = oracle(src).f
-  for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
+  for (const O of ownedLevels(0, 1, 2, 3, 'fast', 'size')) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })
 
 // A call made as a statement, or under `void`, drops its value folded, `(drop (call …))`: a `drop` written flat

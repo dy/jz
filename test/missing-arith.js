@@ -5,6 +5,7 @@
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { oracle, jz } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 const reads = {
   direct: ['', 'a[k]'],
@@ -35,7 +36,7 @@ for (const [shell, wrap] of Object.entries(shells)) for (const [read, [decl, x]]
     for (const [use, stmt] of Object.entries(uses)) {
       const src = wrap(decl, stmt(x))
       const host = oracle(src).f
-      for (const optimize of [0, 2, 3]) {
+      for (const optimize of ownedLevels(0, 2, 3)) {
         const f = jz(src, { optimize }).exports.f
         for (const k of [1, 9]) ok(Object.is(f(k), host(k)), `${use}, k=${k} at ${optimize}: ${f(k)} for ${host(k)}`)
       }
@@ -53,7 +54,7 @@ test('missing value in arithmetic: held in a field or a captured binding', () =>
     `export let f = (k) => { ${M}; let v = m.get(k); const g = () => { v = v }; g(); return v * 2 }`,
   ]) {
     const host = oracle(src).f
-    for (const optimize of [0, 2, 3]) {
+    for (const optimize of ownedLevels(0, 2, 3)) {
       const f = jz(src, { optimize }).exports.f
       for (const k of ['a', 'missing']) ok(Object.is(f(k), host(k)), `${k} at ${optimize}: ${f(k)} for ${host(k)}: ${src.slice(0, 60)}`)
     }

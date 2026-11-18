@@ -605,7 +605,7 @@ test('minimal: a literal whose last referent the optimizer folded away leaves th
   for (const [k, kept, gone] of [[1, first, second], [2, second, first]]) {
     const src = `const pick = (k) => k === 1 ? '${first}' : '${second}'
 export let f = () => pick(${k})`
-    for (const O of [...levels(2, 3), 'size']) {
+    for (const O of levels(2, 3, 'size')) {
       const w = wat(src, O)
       ok(w.includes(enc(kept)), `@O${O} pick(${k}): the string the program reads keeps its bytes`)
       ok(!w.includes(enc(gone)), `@O${O} pick(${k}): the folded arm's string leaves the data segment`)

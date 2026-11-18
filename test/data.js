@@ -2,7 +2,7 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import { onWasi, onKernel, adaptI64, levels, boxed } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels, boxed, ownedLevels } from './_matrix.js'
 import { UNDEF_NAN, instantiate } from '../interop.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
@@ -377,7 +377,7 @@ test('Map/Set: a holder of a grown table reaches it in one hop', async () => {
     return sum
   }`
   const want = oracle(src).f
-  for (const optimize of ['speed', 'size']) {
+  for (const optimize of ownedLevels('speed', 'size')) {
     const { instance } = await WebAssembly.instantiate(compile(src, { optimize, helperCounters: true, alloc: false }))
     const e = instance.exports
     const chases = (reps) => { e.__helper_counts_reset(); is(e.f(1000, reps), want(1000, reps), `${optimize}: f(1000, ${reps})`); return Number(e.__hc_ptr_offset_fwd.value) }

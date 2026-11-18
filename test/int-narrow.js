@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { agree, oracle, run, wat } from './util.js'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { narrowInts, narrowWrappedWords } from '../src/optimize/int-narrow.js'
@@ -176,7 +176,7 @@ test('int-narrow: nested guarded loops retain wide bounds and final counter valu
     return [sum,steps,i,j,n]
   }`
   const expected = oracle(source)
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const actual = run(source, { optimize })
     for (const n of [0,0,4,3.5,0.5,-0,-1,NaN,2147483647,2147483648,2 ** 32 + 0.5,2 ** 52,Infinity,-Infinity,4,0])
       is(actual.f(n), expected.f(n), `O${optimize}: A → A → changed bound → A, ${n}`)
@@ -221,7 +221,7 @@ test('int-narrow: bit removal preserves wide inputs, zero signs and changed read
   ]
   for (const src of sources) {
     const host = oracle(src).f
-    for (const optimize of [0, 1, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
       const f = run(src, { optimize: { level: optimize, sourceInline: false } }).f
       for (const [x, mask] of [[0,0], [0,0], [-0,-1], [1,-1], [-1,1], [2147483647,-1], [-2147483648,7],
         [2147483648,-1], [-2147483649,1], [4294967296,-1], [0.5,1], [NaN,1], [Infinity,1], [-Infinity,-1], [0,0]])
@@ -256,7 +256,7 @@ test('int-narrow: low-bit scans retain exact iteration counts and source effects
   }
   export function f(k) { return scan(k) }`
   const host = oracle(src).f
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const f = run(src, { optimize: { level: optimize, sourceInline: false } }).f
     for (const k of [0,0,1,7,-1,-2147483648,2147483647,0x55555555,0xaaaaaaaa,0])
       is(f(k), host(k), `O${optimize}: zero-work / A → A → B → A, ${k}`)
@@ -362,7 +362,7 @@ test('int-narrow: late word guards preserve recursive values across reuse', () =
   }
   export function value(k) { return count(k & 7) }`
   const host = oracle(src).value
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
     const f = run(src, { optimize: { level: optimize, sourceInline: false } }).value
     for (const x of [0, 0, 1, 7, 3, -1, 2147483647, -2147483648, 0])
       is(f(x), host(x), `O${optimize}: recursive zero-work / A → A → B → A, ${x}`)
@@ -767,7 +767,7 @@ test('int-narrow: guard refinements follow later operand writes', () => {
   ]
   for (const body of bodies) {
     const src = `export function f(n) { let x = n & 7; ${body} }`, host = oracle(src).f
-    for (const optimize of [0, 1, 2, 3, 'size']) {
+    for (const optimize of ownedLevels(0, 1, 2, 3, 'size')) {
       const f = run(src, { optimize }).f
       for (const n of [6, 6, 0, 6, -1, 1, 2, 7, 8, 14, 2147483647, -2147483648])
         is(f(n), host(n), `${body}, ${optimize}, ${n}`)
@@ -1005,7 +1005,7 @@ test('int-narrow: a NaN written to a local every read truncates is its zero', ()
     return s
   }`
   const host = oracle(src)
-  for (const optimize of [false, 1, 2, 3, { level: 'speed' }, { level: 'size' }]) {
+  for (const optimize of ownedLevels(false, 1, 2, 3, { level: 'speed' }, { level: 'size' })) {
     const m = run(src, { optimize })
     for (const o of [m, host]) { const a = o.words(); for (let i = 0; i < 64; i++) a[i] = Math.imul(i + 1, 2654435761) >>> 0 }
     for (const n of [0, 1, 5, 64, 70]) is(m.f(n), host.f(n), `f(${n}) at ${JSON.stringify(optimize)}`)

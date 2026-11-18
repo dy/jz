@@ -11,6 +11,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { jz, compile } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 const runF = (src, o) => jz(src, { optimize: o }).exports.run()
 const watRun = (src) => {
@@ -86,7 +87,7 @@ test('cond-vectorize: an integer comparison selects float64 lanes', () => {
     ok(/v128\.bitselect/.test(f), `${T} ${cond}: the map runs in f64x2 lanes`)
     if (mask) ok(/i64x2\.extend_low_i32x4_s/.test(f), `${T} ${cond}: its mask is the integer comparison widened`)
     const host = new Function(s.replace('export let run =', 'return'))()
-    for (const o of [0, { level: 'speed', noSimd: true }, { level: 'speed' }]) {
+    for (const o of ownedLevels(0, { level: 'speed', noSimd: true }, { level: 'speed' })) {
       const run = jz(s, { optimize: o }).exports.run
       for (const n of [0, 1, 2, 5, 64, 67]) for (const k of [1, 120, -2])
         is(run(n, k), host(n, k), `${T} ${cond}, ${JSON.stringify(o)}: n=${n} k=${k}`)
@@ -101,7 +102,7 @@ const funcWatOf = (src, name, extra = {}) => {
   const i = w.indexOf(`(func $${name}`)
   return i < 0 ? '' : w.slice(i, w.indexOf('\n  (func ', i + 8))
 }
-const LEVELS = [0, { level: 'speed', noSimd: true }, { level: 'speed' }]
+const LEVELS = ownedLevels(0, { level: 'speed', noSimd: true }, { level: 'speed' })
 const agree = (label, src, argSets, extra = {}) => {
   const host = new Function(src.replace('export let go =', 'return'))()
   for (const o of LEVELS) {

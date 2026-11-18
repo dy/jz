@@ -39,6 +39,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { funcWat, jz, oracle, run, ulpDiff, wat } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 const CR_POW = { optimize: { crPow: true } }
 const CR_POW_APPROX = { optimize: { crPow: true, approxPow: true } }
@@ -385,6 +386,6 @@ export let norm = (x, y) => (x * x + y * y) ** 0.5
 export let lane = (n) => { const a = new Float64Array(n), o = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i % 3 === 0 ? -0 : i / 4; for (let i = 0; i < n; i++) o[i] = a[i] ** 0.5; let h = 0; for (let i = 0; i < n; i++) h += 1 / o[i] > 0 ? 1 : 0; return h }`
 
 test('(-0) ** 0.5 is +0 at every level', () => {
-  for (const optimize of [false, true, 'size', 'speed'])
+  for (const optimize of ownedLevels(false, true, 'size', 'speed'))
     agreeRoots(ROOTS, optimize, [['pow', [[-0], [0], [4], [2], [NaN]]], ['mathPow', [[-0], [0], [2]]], ['literal', [[]]], ['norm', [[-0, -0], [0, -0], [3, 4]]], ['lane', [[3], [16], [33]]]])
 })

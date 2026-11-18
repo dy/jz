@@ -7,6 +7,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { funcWat as funcWatOf, run, wat } from './util.js'
+import { ownedLevels } from './_matrix.js'
 
 const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', scheduleStatements: false } }
@@ -53,7 +54,7 @@ test('scheduling: integer recurrence agrees with JavaScript across optimization 
     return carry
   }`
   const native = new Function(src.replace('export ', '') + '; return f')()
-  for (const optimize of [0, 2, 'speed', 'size']) {
+  for (const optimize of ownedLevels(0, 2, 'speed', 'size')) {
     const { f } = run(src, { optimize })
     for (const n of [0, 1, 1, 7]) for (const seed of [-2147483648, -1, 0, 2147483647])
       is(f(n, seed, -1), native(n, seed, -1), `${optimize}: n=${n}, seed=${seed}`)

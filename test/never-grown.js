@@ -11,7 +11,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, compileInProcess, jz, compile } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, ownedLevels } from './_matrix.js'
 import { scanBindingUses, invalidateBindingUsesCache, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
 
 test('binding census: declaration demand retains forward uses and outer captures', () => {
@@ -159,7 +159,7 @@ export let main = () => { const a = new SH(), basis = [0, 0, 0, 0, 0, 0, 0, 0, 0
   for (let i = 0; i < 9; i++) a.coefficients[i].set(i, i * 0.5, -i)
   SH.fill9(new V(0, 0.6, 0.8), basis); a.toArray(arr)
   return s3(new SH().fromArray(arr).coefficients[8]) }`
-  for (const optimize of [1, 2, 'speed']) is(run(src, { optimize }).main(), oracle(src).main(), `value exact (optimize:${optimize})`)
+  for (const optimize of ownedLevels(1, 2, 'speed')) is(run(src, { optimize }).main(), oracle(src).main(), `value exact (optimize:${optimize})`)
   const wat = compile(src, { wat: true, optimize: { level: 2, sourceInline: false, watr: false } })
   const body = wat.split('(func ').find(c => /^\$V\S*fromArray\b/.test(c)) || ''
   ok(body, 'V.fromArray emitted outlined (no source or WAT inlining)')

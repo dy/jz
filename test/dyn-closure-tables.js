@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, jz, compile } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, ownedLevels } from './_matrix.js'
 
 const SPEED = { level: 'speed', watr: false }
 const wat = (src, opts = SPEED) => compile(src, { wat: true, optimize: opts })
@@ -45,7 +45,7 @@ test('dyn-closure-tables: a typed element key keeps the table callees and their 
     export const run = (n) => { const code = new Int32Array(n), ks = new Int32Array(n)
       for (let i = 0; i < n; i++) { code[i] = (i * 7) & 3; ks[i] = i * 31 }
       let x = 1; for (let i = 0; i < n; i++) x = ops[code[i]](x, ks[i]); return x }`
-  for (const level of ['speed', 'size']) {
+  for (const level of ownedLevels('speed', 'size')) {
     const w = wat(src, { level })
     ok(!/__add_slow|__str_concat/.test(w), `${level}: the callees add numbers`)
     const { run } = jz(src, { optimize: { level } }).exports, want = oracle(src)

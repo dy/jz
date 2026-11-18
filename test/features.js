@@ -1,7 +1,7 @@
 // Spread, destruct alias, TypedArrays, Set, Map
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { adaptI64, levels, belowOpt, onWasi } from './_matrix.js'
+import { adaptI64, levels, belowOpt, onWasi, ownedLevels } from './_matrix.js'
 import { run, oracle, jz, compile } from './util.js'
 import { UNDEF_NAN } from '../interop.js'
 
@@ -762,7 +762,7 @@ test('jzify: the bundler-helper fold keeps a counted head\'s empty parts', () =>
     export let bare = (n) => { var k = 1, sum = 0; for (;;) { sum += k; if (k >= n) break; k += 1 } return sum }
   `
   const host = oracle(src)
-  for (const optimize of [0, 'speed']) {
+  for (const optimize of ownedLevels(0, 'speed')) {
     const got = run(src, { jzify: true, optimize })
     for (const f of ['noTest', 'noInit', 'stepOnly', 'bare']) is(got[f](10), host[f](10), `${f} O${optimize}`)
   }

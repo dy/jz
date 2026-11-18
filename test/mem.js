@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate, codecOf } from '../interop.js'
-import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels, belowOpt, ownedLevels } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 import { bounded } from './_bounded.js'
 import { readFileSync } from 'node:fs'
@@ -1147,7 +1147,7 @@ test('shared string pools include literals emitted by runtime helpers', () => {
   const source = n => `const make = () => new Float64Array(${n});
     export function read(key) { key = '' + key; const a = make(); return a[key]; }
     export function sliced(key) { return read(('!' + key + '!').slice(1, -1)); }`
-  for (const optimize of [0, 2, 3, 'size']) {
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
     const memory = jz.memory()
     const first = jz(source(3), { optimize, memory })
     for (const name of ['read', 'sliced']) {
