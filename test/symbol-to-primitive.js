@@ -123,3 +123,9 @@ export let f = (x) => [x][0] + o`, { optimize: false })
   is([lookups(exotic, '__jz_tp_str'), lookups(exotic, '__jz_tp_num'), lookups(exotic, '__jz_tp_dflt')], [3, 3, 3], 'a [Symbol.toPrimitive]')
 })
 
+// An Error's message is ToString of its argument: a literal or a binding with the key
+// converts through it, where its keys alone read as a closed object with no method.
+const ERRORS = `const held = { k: 1, [Symbol.toPrimitive](hint) { return 'h:' + hint } }
+export let errs = () => [new Error({ [Symbol.toPrimitive](hint) { return 'l:' + hint } }).message,
+  new TypeError(held).message, new RangeError({ k: 2 }).message].join()`
+test('symbol-to-primitive: an Error message converts its argument with the string hint', () => agreeAll(ERRORS, 'errors'))

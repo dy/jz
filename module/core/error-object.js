@@ -10,6 +10,7 @@ import print from 'watr/print'
 import { typed, asF64, temp, tempI32, isUndef, truthyIR, toStrI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
+import { TO_PRIMITIVE_METHODS } from '../../src/member-uses.js'
 import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'
@@ -77,6 +78,8 @@ export function throwHelperName(ctx, className, message) {
 }
 
 export const registerErrorClasses = () => {
+  // (a `[Symbol.toPrimitive]` key is `@@toPrimitive`, ToString's first method)
+  const conversionKey = (key) => TO_PRIMITIVE_METHODS.includes(key)
   // Object-literal AST shape with NO 'toString'/'valueOf' key: a DEFINITIVE
   // (not merely unproven) empty OrdinaryToPrimitive method chain — a spread
   // makes the key set open (an unknown source might carry either at runtime),
@@ -88,7 +91,7 @@ export const registerErrorClasses = () => {
     for (const p of items) {
       if (Array.isArray(p) && p[0] === '...') return false
       const key = Array.isArray(p) && p[0] === ':' ? p[1] : (typeof p === 'string' ? p : null)
-      if (key === 'toString' || key === 'valueOf') return false
+      if (conversionKey(key)) return false
     }
     return true
   }
@@ -133,7 +136,7 @@ export const registerErrorClasses = () => {
     const sid = ctx.schema.idOf?.(node)
     if (sid == null || ctx.schema.isErrorSid?.(sid)) return false
     const schema = ctx.schema.list[sid]
-    if (!schema || schema.includes('toString') || schema.includes('valueOf')) return false
+    if (!schema || schema.some(conversionKey)) return false
     if (ctx.types.dynKeyVars?.has(node)) return false
     const w = ctx.types.literalWriteKeys?.get(node)
     if (w) for (const k of w) if (!schema.includes(k)) return false
@@ -146,12 +149,12 @@ export const registerErrorClasses = () => {
         ? node[1].slice(1) : node.slice(1)
       return items.some(p => {
         const key = Array.isArray(p) && p[0] === ':' ? p[1] : (typeof p === 'string' ? p : null)
-        return key === 'toString' || key === 'valueOf'
+        return conversionKey(key)
       })
     }
     if (typeof node !== 'string' || ctx.types.dynKeyVars?.has(node)) return false
     const sid = ctx.schema.idOf?.(node), schema = sid == null ? null : ctx.schema.list[sid]
-    if (!schema || (!schema.includes('toString') && !schema.includes('valueOf'))) return false
+    if (!schema || !schema.some(conversionKey)) return false
     const writes = ctx.types.literalWriteKeys?.get(node)
     if (writes) for (const key of writes) if (!schema.includes(key)) return false
     return true
