@@ -450,12 +450,21 @@ export function analyzeFuncForEmit(func, programFacts) {
     const carried = carryElements(body, bodyFacts, func.distinctParams, () => reanalyzeBody(body))
     if (carried) { bodyFacts = carried; ctx.func.locals = bodyFacts.locals }
   }
-  // A cached load the body proves in bounds holds a Number, as the load itself
-  // would: its temp is present. Only while the temp's one write is that load;
-  // a versioned copy may write it from an unproven twin.
+  // A cached load the body proves in bounds holds what the element does, as the
+  // load itself would: its temp is present where the element is. A typed array's
+  // always is; an array's where its cell holds no hole and no stored nullish (a
+  // hole inside the length reads undefined as a read past it does). Only while
+  // the temp's one write is that load; a versioned copy may write it from an
+  // unproven twin.
   if (cseReads.length && bodyFacts) {
+    const held = read => {
+      const s = loadStorage(read[1], read)
+      if (s !== ARRAY) return s != null && s !== UNTYPED
+      const e = summary?.elemOfKind(summary.kindOfExpr(read[1]))
+      return e != null && !hasTag(e, K.ABSENT) && !hasTag(e, K.NULLISH)
+    }
     const present = withBodyTypedFacts(bodyFacts, () => cseReads.filter(([name, read]) =>
-      soleWrite(body, name, read) && !receiverMayBeAbsent(read[1], read[2]) && typedIdxProven(read[1], read[2], read)))
+      soleWrite(body, name, read) && !receiverMayBeAbsent(read[1], read[2]) && typedIdxProven(read[1], read[2], read) && held(read)))
     for (const [name, read] of present) summary?.alias(name, read, true)
     invalidateIntervalProof(body)
   }

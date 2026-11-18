@@ -321,3 +321,37 @@ test('array holes: a filled array leaves the holes of an array its cell joins', 
     }
   }
 })
+
+// One load serves two reads of an element in a statement list (compile/cse-load.js). The
+// temp of a read the body proves inside the length is present only where the element is:
+// a hole, a deleted element, a stored undefined or null read there as they are.
+test('array holes: an element read twice inside the length keeps its hole for the second read', () => {
+  const holed = `const A = new Array(8)\nfor (let i = 0; i < 8; i += 2) A[i] = i * 0.5 - 7\n`
+  const loop = (body, pre = holed) => `${pre}export let m = () => { let h = 7, t = 0; for (let s = 0; s < A.length; s++) { ${body} } return h + t }`
+  const word = `h = Math.imul(h ^ (A[s] | 0), 16777619)`
+  const programs = {
+    'a word, then ??': loop(`${word}; t += A[s] ?? 1`),
+    '?? first': loop(`t += A[s] ?? 1; ${word}`),
+    'a word, then === undefined': loop(`${word}; t += A[s] === undefined ? 1 : A[s]`),
+    'a word, then typeof': loop(`${word}; t += typeof A[s] === 'number' ? A[s] : 1`),
+    'a word, then != null': loop(`${word}; if (A[s] != null) t += A[s]; else t += 1`),
+    'a word, then a call that tests': `const f = v => v ?? 1\n` + loop(`${word}; t += f(A[s])`),
+    '>>> 0, then ??': loop(`h = (h + (A[s] >>> 0)) | 0; t += A[s] ?? 1`),
+    'a product, ??, a word': loop(`h += A[s] * 2; t += A[s] ?? 1; h ^= A[s] | 0`),
+    'integers': loop(`${word}; t += A[s] ?? 1`, `const A = new Array(8)\nfor (let i = 0; i < 8; i += 2) A[i] = i - 7\n`),
+    'through a parameter': holed + `const g = (a) => { let h = 7, t = 0; for (let s = 0; s < a.length; s++) { h = Math.imul(h ^ (a[s] | 0), 16777619); t += a[s] ?? 1 } return h + t }\nexport let m = () => g(A)`,
+    'a deleted element': loop(`${word}; t += A[s] ?? 1`, `const A = [1.5, 2.5, 3.5, 4.5]\ndelete A[1]\n`),
+    'a length grown': loop(`${word}; t += A[s] ?? 1`, `const A = [1.5, 2.5]\nA.length = 4\n`),
+    'a stored undefined': loop(`${word}; t += A[s] ?? 1`, `const A = [1.5, 2.5, 3.5, 4.5]\nA[1] = undefined\n`),
+    'a stored null': loop(`${word}; t += A[s] ?? 100`, `const A = [1.5, 2.5, 3.5, 4.5]\nA[2] = null\n`),
+    'a row that may be null': `const R = [[1, 2], null, [3]]\nexport let m = () => { let n = 0, t = 0; for (let s = 0; s < R.length; s++) { n += R[s] ? R[s].length : 0; t += R[s] == null ? 10 : 0 } return n * 100 + t }`,
+    'a row that may be a hole': `const R = new Array(4)\nR[0] = [1, 2]; R[2] = [3]\nexport let m = () => { let n = 0, t = 0; for (let s = 0; s < R.length; s++) { n += R[s] !== undefined ? R[s].length : 0; t += R[s] === undefined ? 10 : 0 } return n * 100 + t }`,
+    // (where the element is always there the temp stays present)
+    'a dense array': loop(`${word}; t += A[s] ?? 1`, `const A = [1.5, 2.5, 3.5, 4.5]\n`),
+    'a typed array': loop(`${word}; t += A[s] ?? 1`, `const A = new Float64Array([1.5, 2.5, 3.5])\n`),
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const want = oracle(src).m()
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is(jz(src, { optimize }).exports.m(), want, `${name} @${optimize}`)
+  }
+})
