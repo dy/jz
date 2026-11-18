@@ -654,7 +654,9 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
     if (parsed.error) return failed(parsed)
     // every pass answers what the first answered: a fresh instance must
     if (parsed.checksums.some(cs => cs !== parsed.checksums[0])) {
-      const seen = [...new Set(parsed.checksums)].join(', ')
+      // (a short pass repeats hundreds of times: the first three checksums name it)
+      const all = [...new Set(parsed.checksums)]
+      const seen = all.slice(0, 3).join(', ') + (all.length > 3 ? ` and ${all.length - 3} more` : '')
       if (!CALL_PASSES.has(id)) return { id, error: `pass checksums differ: ${seen}` }
       // (stderr: a `[run]` line is open on stdout)
       console.warn(`[passes] ${key}: main answers ${seen} on successive calls, carrying state between them; the lane runs its first pass alone`)
