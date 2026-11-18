@@ -202,16 +202,37 @@ const heapRestores = (funcs, outside) => {
   }
 }
 
-/** Shared call/effect census of emitted code, including runtime helpers. */
+/** An elem segment's functions by table slot, from its constant offset: null
+ *  for a segment placed at a computed offset. */
+const elemSlots = (n, into) => {
+  if (n[1]?.[0] !== 'i32.const' || typeof n[1][1] !== 'number') return false
+  let at = n[1][1]
+  for (let i = 2; i < n.length; i++) {
+    const c = n[i]
+    if (c === 'func' || c === 'funcref') continue
+    into[at++] = typeof c === 'string' ? c : Array.isArray(c) && c[0] === 'ref.func' ? c[1] : null
+  }
+  return true
+}
+
+/** Shared call/effect census of emitted code, including runtime helpers.
+ *  A record holds a function's direct callees (`calls`) apart from its
+ *  indirect calls (`indirect`: each call's targets, null where nothing bounds
+ *  them, and its source position). Before link, a call the emitter knew the
+ *  closures of carries their table slots (wat/assemble/closure-table.js
+ *  closureCallSlots) and lands on those alone; any other indirect call lands
+ *  on an entry of the table, every entry where the table is closed. */
 export function runtimeGraph(module, sharedMemory = false) {
   const funcs = new Map(), exports = [], records = new Map()
   // The closure table is closed when nothing outside the module can reach or
   // change it: declared here, neither imported nor exported, never written. A
   // call_indirect then lands on one of its elem entries, so the entries stand
-  // in for the target. Any other table shape, a raw funcref, or call_ref stays
-  // unknown. With no table at all the call traps; that is not certified either.
-  let table = false, tableOpen = false
-  const entries = new Set()
+  // in for the target (every jz closure has the one closure type, so these are
+  // the entries of the call's signature). Any other table shape, a raw
+  // funcref, or call_ref stays unknown. With no table at all the call traps;
+  // that is not certified either.
+  let table = false, tableOpen = false, slotted = true
+  const entries = new Set(), slots = []
   for (const n of module) {
     if (!Array.isArray(n)) continue
     if (n[0] === 'func') {
@@ -231,30 +252,46 @@ export function runtimeGraph(module, sharedMemory = false) {
   for (const n of module) if (Array.isArray(n) && n[0] === 'elem') {
     for (const c of n) if (typeof c === 'string' && funcs.has(c)) entries.add(c)
     walkAst(n, { enter: c => { if (c[0] === 'ref.func') entries.add(c[1]) } })
+    if (!elemSlots(n, slots)) slotted = false
   }
   const outside = new Set(entries)
   for (const [, f] of exports) outside.add(f)
   const restoring = heapRestores(funcs, outside)
+  const sites = new Map()
   for (const [name, fn] of funcs) {
-    const rec = { calls: new Set(), allocation: false, unknown: false, indirect: false }
+    const rec = { calls: new Set(), allocation: false, unknown: false, host: null, indirect: [] }, calls = []
     walkAst(fn, { enter: (n, parent) => {
       if (initArm(n, parent)) return false
       const op = n[0]
       if (op === 'call' || op === 'return_call') rec.calls.add(n[1])
-      if (op === 'import' || /^(return_)?call_ref$/.test(op)) rec.unknown = true
-      if (/^(return_)?call_indirect$/.test(op)) rec.indirect = true
+      if (op === 'import') { rec.unknown = true; rec.host = `${JSON.parse(n[1])}.${JSON.parse(n[2])}` }
+      if (/^(return_)?call_ref$/.test(op)) rec.unknown = true
+      if (/^(return_)?call_indirect$/.test(op)) calls.push(n)
       if (/^table\.(set|grow|fill|copy|init)$/.test(op) || op === 'ref.func') tableOpen = true
       if (op === 'memory.grow' || op === 'table.grow' || op === 'global.set' && /^\$__heap(?:_|$)/.test(n[1]) && !restoring.has(n) ||
           sharedMemory && isMemWrite(op)) rec.allocation = true
     } })
     records.set(name, rec)
+    sites.set(name, calls)
   }
   const closed = table && !tableOpen
-  for (const rec of records.values()) if (rec.indirect) {
-    if (closed && entries.size) for (const e of entries) rec.calls.add(e)
-    else rec.unknown = true
+  for (const [name, calls] of sites) {
+    const rec = records.get(name)
+    for (const n of calls) {
+      const known = closed && slotted && Array.isArray(n.slots) ? [...new Set(n.slots.map(s => slots[s]).filter(f => f != null))] : null
+      const targets = known ?? (closed && entries.size ? [...entries] : null)
+      if (!targets) rec.unknown = true
+      rec.indirect.push({ targets, site: n.site ?? null, slots: known ? n.slots : null })
+    }
   }
-  return { funcs, exports, records, closed, entries }
+  return { funcs, exports, records, closed, entries, slots: slotted ? slots : null }
+}
+
+/** Every function a record can call: its direct callees and its indirect calls' targets. */
+export const calleesOf = (rec) => {
+  const out = [...rec.calls]
+  for (const site of rec.indirect) if (site.targets) out.push(...site.targets)
+  return out
 }
 
 /** true means proved; null means unknown. Counts instructions, not latency.
@@ -321,7 +358,7 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
       const rec = records.get(name)
       if (!rec || rec.unknown) { noHostCalls = null; noAllocation = null }
       if (rec?.allocation) noAllocation = null
-      if (rec) for (const c of rec.calls) pending.push(c)
+      if (rec) for (const c of calleesOf(rec)) pending.push(c)
     }
     const maxInstructions = cost(target)
     result[exportName] = { noAllocation, noHostCalls, boundedWork: maxInstructions == null ? null : true, maxInstructions }

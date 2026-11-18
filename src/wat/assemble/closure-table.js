@@ -41,15 +41,16 @@ const mixNumber = (h, n) => {
 /**
  * Phase: calls of one known closure body.
  *
- * A call the emitter tagged with a summary closure id (`closureId`,
- * module/function.js ctx.closure.call: a record's field or a binding the
- * summary types as that one closure, `br.read(k)` on a reader a factory
- * returned) calls the body emitted for it: every value of the callee carries
- * that body's table index, so the direct call is the call the table makes.
- * Left indirect where the id names several bodies (its literal emitted in two
- * copies of its function), and everywhere when a closure the summary never
- * saw was emitted (a body cloned after it ran, which such a field may hold).
- * Runs before the dedup, which renames these calls with the rest.
+ * A call the emitter tagged with the summary closure ids its callee can be
+ * (`closureIds`, module/function.js ctx.closure.call: a record's field or a
+ * binding the summary types as closures, `br.read(k)` on a reader a factory
+ * returned) calls, where that is one closure, the body emitted for it: every
+ * value of the callee carries that body's table index, so the direct call is
+ * the call the table makes. Left indirect where the id names several bodies
+ * (its literal emitted in two copies of its function), and everywhere when a
+ * closure the summary never saw was emitted (a body cloned after it ran,
+ * which such a field may hold). Runs before the dedup, which renames these
+ * calls with the rest.
  */
 export function devirtClosureCalls(sec) {
   const ids = ctx.closure.summaryId
@@ -60,12 +61,55 @@ export function devirtClosureCalls(sec) {
     bodyOf.set(id, bodyOf.has(id) ? null : name)
   }
   const rewrite = { exit: (n, parent, i) => {
-    if (n[0] !== 'call_indirect' || n.closureId == null || !parent) return
-    const name = bodyOf.get(n.closureId)
+    if (n[0] !== 'call_indirect' || n.closureIds?.length !== 1 || !parent) return
+    const name = bodyOf.get(n.closureIds[0])
     if (name) parent[i] = ['call', `$${name}`, ...n.slice(2, -1)]
   } }
   for (const fn of sec.funcs) walkAst(fn, rewrite)
   for (const fn of sec.start) walkAst(fn, rewrite)
+}
+
+/**
+ * Phase: the table slots an indirect call of known closures lands on.
+ *
+ * A call the emitter tagged with its callee's summary closure ids is given
+ * the slots of every body emitted for them (`slots`): the fixed-memory proof
+ * follows the call to those bodies alone (compile/fixed-memory.js). An id
+ * no body was emitted for names a closure no value can hold. Untagged
+ * everywhere when a closure the summary never saw was emitted, as
+ * devirtClosureCalls leaves every call; an untagged call may land on any
+ * entry of the table. Runs before the dedup, while each slot holds its
+ * body's own name.
+ */
+export function closureCallSlots(sec) {
+  const ids = ctx.closure.summaryId
+  if (!ids?.size) return
+  const slotsOf = new Map()
+  for (const [name, id] of ids) {
+    if (id === undefined) return
+    const slot = ctx.closure.table.indexOf(name)
+    if (slot < 0) continue
+    let list = slotsOf.get(id)
+    if (!list) slotsOf.set(id, list = [])
+    list.push(slot)
+  }
+  const tag = { enter: n => {
+    if (n[0] !== 'call_indirect' || !n.closureIds) return
+    const slots = []
+    for (const id of n.closureIds) for (const s of slotsOf.get(id) ?? []) slots.push(s)
+    n.slots = slots
+  } }
+  for (const fn of sec.funcs) walkAst(fn, tag)
+  for (const fn of sec.start) walkAst(fn, tag)
+}
+
+// A body the dedup folds into an equal one runs as that one: each indirect
+// call of the kept body lands where either's did. Equal bodies have their
+// calls at the same places; a call with no slots of its own may land anywhere.
+const mergeSlots = (kept, gone) => {
+  if (!Array.isArray(kept) || !Array.isArray(gone)) return
+  if (kept[0] === 'call_indirect' && kept.slots) kept.slots = gone.slots ? [...new Set([...kept.slots, ...gone.slots])] : null
+  for (let i = 1; i < kept.length; i++) mergeSlots(kept[i], gone[i])
 }
 
 export function dedupClosureBodies(closureFuncs, sec) {
@@ -143,9 +187,9 @@ export function dedupClosureBodies(closureFuncs, sec) {
     if (!bucket) buckets.set(h, bucket = [])
     let canonical = null
     for (const cand of bucket) {
-      if (equalBodies(fn, locals, cand.fn, cand.locals)) { canonical = cand.name; break }
+      if (equalBodies(fn, locals, cand.fn, cand.locals)) { canonical = cand; break }
     }
-    if (canonical) redirect.set(name, canonical)
+    if (canonical) { redirect.set(name, canonical.name); mergeSlots(canonical.fn, fn) }
     else bucket.push({ fn, locals, name })
   }
   if (!redirect.size) return
@@ -179,6 +223,13 @@ export function dedupClosureBodies(closureFuncs, sec) {
   sec.funcs.length = 0
   sec.funcs.push(...kept)
 }
+
+/** The closure table's export, `__jz_table`, or none: none for the raw ABI,
+ *  a target profile that calls exports only, and a fixed-memory module, whose
+ *  proof bounds an indirect call by the table's entries (compile/func-inspect.js
+ *  runtimeGraph): a table the host can write holds any function. */
+export const closureTableExport = () =>
+  ctx.transform.alloc === false || !ctx.transform.targetProfile.exportClosureTable || ctx.memory.fixed ? [] : [['export', '"__jz_table"']]
 
 /**
  * Phase: closure-table finalize + ABI shrink.
@@ -234,8 +285,7 @@ export function finalizeClosureTable(sec) {
   }
   if (indirectUsed) {
     if (!ctx.closure.table) ctx.closure.table = []
-    sec.table = [['table', ...(ctx.transform.alloc === false || !ctx.transform.targetProfile.exportClosureTable ? [] : [['export', '"__jz_table"']]),
-      ctx.closure.table.length, 'funcref']]
+    sec.table = [['table', ...closureTableExport(), ctx.closure.table.length, 'funcref']]
     sec.elem = ctx.closure.table.length ? [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]] : []
     return
   }

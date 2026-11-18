@@ -200,11 +200,56 @@ test('fixed memory: a runtime TypeError is raised by its code, allocating nothin
   }
 })
 
+test('fixed memory: a closure call is followed to the closures it can reach', () => {
+  // A module binding holds a no-op until setup puts a factory's closure in it, the
+  // factory's state its typed arrays: process calls through the closure table.
+  const factory = `const make = (n) => {
+      const state = new Float64Array(n)
+      const step = (x, i) => state[i] = state[i] * 0.5 + x
+      return (inp, out) => { for (let i = 0; i < inp.length; i++) out[i] = step(inp[i], i) }
+    }
+    let proc = (inp, out) => {}
+    let inp = new Float64Array(0), out = new Float64Array(0)
+    export function setup(n) { inp = new Float64Array(n); out = new Float64Array(n); for (let i = 0; i < n; i++) inp[i] = i; proc = make(n) }
+    export function process(n) { proc(inp, out); return out[n] }`
+  // The table also holds a closure that allocates, which process never calls.
+  const apart = factory + `
+    let grow = (n) => [n]
+    export function other(n) { return grow(n).length }
+    export function swap() { grow = (n) => new Float64Array(n) }`
+  for (const optimize of tiers) for (const src of [factory, apart]) {
+    const label = `${optimize}${src === apart ? ', an allocating closure apart' : ''}`
+    const p = jz(src, options(optimize)), ref = new Function(src.replaceAll('export ', '') + '; return { setup, process }')()
+    p.exports.setup(8); ref.setup(8)
+    const used = p.memory.used, bytes = p.memory.buffer.byteLength
+    for (let k = 0; k < 16; k++) is(p.exports.process(k & 7), ref.process(k & 7), `${label}: call ${k}`)
+    is(p.memory.used, used, `${label}: no retained allocation`)
+    is(p.memory.buffer.byteLength, bytes, `${label}: no growth`)
+    ok(!WebAssembly.Module.exports(new WebAssembly.Module(compile(src, options(optimize)))).some(e => e.name === '__jz_table'),
+      `${label}: the table the proof bounds the call by is the module's own`)
+  }
+  // A call of a closure that allocates is refused at the call that reaches it.
+  const allocates = `let f = (n) => n
+    export function setup() { f = (n) => [n, n].length }
+    export function process(n) {
+      return f(n)
+    }`
+  let refused = ''
+  try { compile(allocates, options(0)) } catch (e) { refused = e.message }
+  ok(/memory\.fixed cannot certify process → .*called through a closure at line 4:/.test(refused) && /heap allocation/.test(refused), refused)
+  // A cycle through a closure call is recursion.
+  const cycle = `let f = (n) => 0
+    const g = (n) => n > 0 ? f(n - 1) + 1 : 0
+    export function setup() { f = g }
+    export function process(n) { return f(n) }`
+  throws(() => compile(cycle, options(0)), /recursive call/)
+})
+
 test('fixed memory: host reentry and non-tail recursive scratch are refused', () => {
   const recurse = `export function process(n){const a=new Float64Array(128);a[0]=n;return n>0 ? process(n-1)+a[0] : a[0]}`
   throws(() => compile(recurse, options(0)), /recursive call/)
   const host = `import { tick } from 'host'; export function process(n){const a=new Float64Array(128);a[0]=n;tick();return a[0]}`
-  throws(() => compile(host, { ...options(0), imports: { host: { tick() {} } } }), /host or unresolved call/)
+  throws(() => compile(host, { ...options(0), imports: { host: { tick() {} } } }), /process → host\.tick: host call/)
   // A selected root's constant argument may erase the recursive branch after
   // inlining. The helper's scratch must also be safe for its other callers.
   const helper = `function step(n) {

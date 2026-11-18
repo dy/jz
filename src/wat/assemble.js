@@ -27,7 +27,7 @@ export { buildStartFn, hoistConstGlobalInits } from './assemble/start-fn.js'
 export { pullStdlib, syncImports } from './assemble/stdlib-pull.js'
 
 // Phases 3-4: closure-body dedup, then closure-table finalize + ABI shrink.
-export { devirtClosureCalls, dedupClosureBodies, finalizeClosureTable } from './assemble/closure-table.js'
+export { devirtClosureCalls, closureCallSlots, dedupClosureBodies, finalizeClosureTable, closureTableExport } from './assemble/closure-table.js'
 
 // Phase 6 (stripStaticDataPrefix) and phases 9-10 (stripDeadLazyTables,
 // stripDeadInternedSpans): data-segment tail lifecycle.

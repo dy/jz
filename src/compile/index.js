@@ -64,7 +64,7 @@ import plan from './plan/index.js'
 import { foldModuleConstants } from './plan/scope.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
-  buildStartFn, devirtClosureCalls, dedupClosureBodies, finalizeClosureTable,
+  buildStartFn, devirtClosureCalls, closureCallSlots, dedupClosureBodies, finalizeClosureTable, closureTableExport,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables, stripDeadInternedSpans,
 } from '../wat/assemble.js'
 import { link } from '../link/index.js'
@@ -724,8 +724,7 @@ export function assemble(ast, profiler) {
   // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
 
   if (ctx.closure.table?.length)
-    sec.table.push(['table', ...(ctx.transform.alloc === false || !ctx.transform.targetProfile.exportClosureTable ? [] : [['export', '"__jz_table"']]),
-      ctx.closure.table.length, 'funcref'])
+    sec.table.push(['table', ...closureTableExport(), ctx.closure.table.length, 'funcref'])
 
   sec.funcs.push(...closureFuncs, ...funcs)
 
@@ -774,6 +773,7 @@ export function assemble(ast, profiler) {
   syncImports(sec)
 
   if (ctx.transform.optimize?.devirtClosureCalls) devirtClosureCalls(sec)
+  if (ctx.memory.fixed) closureCallSlots(sec)
   dedupClosureBodies(closureFuncs, sec)
 
   finalizeClosureTable(sec)

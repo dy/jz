@@ -3,7 +3,7 @@
  * every selected call graph is closed, non-recursive and free of host calls.
  * This is a memory contract, not a wall-clock or host-marshalling guarantee.
  */
-import { ctx, err } from '../ctx.js'
+import { ctx, err, locate } from '../ctx.js'
 import { callArgs, walkAst, stmtList, refsName, isFunctionNode } from '../ast.js'
 import { frameRoots } from '../function.js'
 import { K, core, tagOf, tagsOf, bitOf } from '../summary/kind.js'
@@ -96,18 +96,61 @@ export function planFixedScratch(func) {
   ctx.memory.scratch.set(func.sig, placements)
 }
 
-const prover = (records, allocation) => {
-  const safe = new Set(), active = new Set()
-  const visit = (name, path) => {
-    if (active.has(name)) return `${path.join(' → ')}: recursive call`
+// The proof walks the call graph twice. Before link, where each indirect call
+// still knows the closures it can reach (func-inspect.js runtimeGraph), it
+// follows every call to its targets: scratch owners are proved there whole,
+// and each selected export learns the table slots its indirect calls reach and
+// that no cycle runs through one. The final code is walked again after link
+// and watr, which keep no call's targets but keep every closure's table slot
+// (a closure value carries it as a constant): from the export and from each
+// body in those slots, by direct calls alone, every function must be free of
+// allocation, host calls, reachability walks and direct recursion. Any indirect
+// call the final code reaches lands in those slots, the closures the export's
+// calls reached before.
+
+const siteText = (loc) => {
+  const at = loc == null ? null : locate(loc)
+  return at ? ` at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}` : ''
+}
+
+/** A step of a call path as a refusal shows it: an export by its name, a host
+ *  import by its module and field, a closure reached through an indirect call
+ *  with the call's source position. */
+const shown = (records, step) => {
+  const name = step.label ?? records.get(step.name)?.host ?? step.name
+  return step.indirect ? `${name} (called through a closure${siteText(step.site)})` : name
+}
+
+/** What a function itself fails by, or null. */
+const failure = (rec, name, allocation) => {
+  if (!rec) return 'unresolved call'
+  if (rec.host) return 'host call'
+  if (rec.unknown) {
+    const open = rec.indirect.find(s => !s.targets)
+    return open ? `indirect call the compiler cannot bound${siteText(open.site)}` : 'call through a function reference'
+  }
+  if (allocation && rec.allocation) return 'heap allocation or memory growth'
+  if (name === '$__survive' || name.startsWith('$__reach')) return 'runtime reachability walk'
+  return null
+}
+
+/** A depth-first walk from a root step: the first reason the code it reaches
+ *  fails, with its call path, or null. `edges(rec)`: the steps out of a
+ *  function; `fails(rec, name)`: what the function itself fails by; `cyclic(steps)`:
+ *  whether a cycle closed through those steps fails the walk. A function proved
+ *  is proved for every root of the same walk. */
+const walker = (records, edges, fails, cyclic) => {
+  const safe = new Set(), active = new Map()
+  const say = (path, why) => `${path.map(s => shown(records, s)).join(' → ')}: ${why}`
+  const visit = (path) => {
+    const name = path[path.length - 1].name
+    if (active.has(name)) return cyclic(path.slice(active.get(name) + 1)) ? say(path, 'recursive call') : null
     if (safe.has(name)) return null
-    const rec = records.get(name)
-    if (!rec || rec.unknown) return `${path.join(' → ')}: host or unresolved call`
-    if (allocation && rec.allocation) return `${path.join(' → ')}: heap allocation or memory growth`
-    if (name === '$__survive' || name.startsWith('$__reach')) return `${path.join(' → ')}: runtime reachability walk`
-    active.add(name)
-    for (const callee of rec.calls) {
-      const reason = visit(callee, [...path, callee])
+    const rec = records.get(name), why = fails(rec, name)
+    if (why) return say(path, why)
+    active.set(name, path.length - 1)
+    for (const next of edges(rec)) {
+      const reason = visit([...path, next])
       if (reason) return reason
     }
     active.delete(name)
@@ -115,6 +158,13 @@ const prover = (records, allocation) => {
     return null
   }
   return visit
+}
+
+const directSteps = (rec) => [...rec.calls].map(name => ({ name }))
+const allSteps = (rec) => {
+  const out = directSteps(rec)
+  for (const s of rec.indirect) for (const name of s.targets ?? []) out.push({ name, indirect: true, site: s.site })
+  return out
 }
 
 /** The emitted owners and selected exports are all the final proof retains. */
@@ -125,18 +175,61 @@ export function fixedMemoryFacts() {
     for (const v of f.boundaryVariants || []) names.add(v.exportName)
   for (const placements of ctx.memory.scratch.values()) for (const slot of placements.values())
     if (slot.offset != null) owners.add(slot.owner)
-  return { names: [...names], owners: [...owners] }
+  return { names: [...names], owners: [...owners], reach: new Map() }
 }
 
-/** Before Wasm inlining can erase a scratch owner's identity, prove its storage
- * safe in EVERY call context, including callers outside the selected exports. */
-export function verifyFixedScratch(module, facts) {
+/** The closures an export's indirect calls reach before link: their table
+ *  slots, each with the call path that first reached it; `open`, the first
+ *  indirect call nothing bounds (its function's call path and its position);
+ *  `cycle`, a call path closing a cycle through an indirect call. */
+const indirectReach = (records, slots, root) => {
+  const reached = new Map(), active = new Map(), done = new Set()
+  let open = null, cycle = null
+  const go = (path) => {
+    const name = path[path.length - 1].name
+    if (active.has(name)) {
+      if (!cycle && path.slice(active.get(name) + 1).some(s => s.indirect)) cycle = path
+      return
+    }
+    if (done.has(name)) return
+    done.add(name)
+    const rec = records.get(name)
+    if (!rec) return
+    const unbound = open ? null : rec.indirect.find(s => !s.targets)
+    if (unbound) open = { path, site: unbound.site }
+    active.set(name, path.length - 1)
+    for (const step of allSteps(rec)) {
+      if (step.indirect && !reached.has(step.name)) reached.set(step.name, [...path, step])
+      go([...path, step])
+    }
+    active.delete(name)
+  }
+  go([root])
+  const bySlot = new Map()
+  if (slots) for (let s = 0; s < slots.length; s++) if (reached.has(slots[s])) bySlot.set(s, reached.get(slots[s]))
+  return { slots: slots ? bySlot : null, open, cycle }
+}
+
+/** Before link and Wasm inlining: prove each scratch owner's storage safe in
+ *  EVERY call context, including callers outside the selected exports, while
+ *  the owner keeps its identity; and bound each selected export's indirect
+ *  calls by the closures they reach (`facts.reach`, for verifyFixedMemory). */
+export function verifyFixedEmitted(module, facts) {
   if (!facts) return
-  const { records } = runtimeGraph(module, false), visit = prover(records, false)
+  const { exports, records, slots } = runtimeGraph(module, false)
+  const visit = walker(records, allSteps, (rec, name) => failure(rec, name, false), () => true)
   for (const owner of facts.owners) {
     if (!records.has(owner)) continue // no emitted body
-    const reason = visit(owner, [owner])
+    const reason = visit([{ name: owner }])
     if (reason) throw new Error(`memory.fixed cannot certify ${reason}`)
+  }
+  const targets = new Map(exports)
+  for (const name of facts.names) {
+    const target = targets.get(name)
+    if (!target) continue // verifyFixedMemory names it
+    const reach = indirectReach(records, slots, { name: target, label: name })
+    if (reach.cycle) throw new Error(`memory.fixed cannot certify ${reach.cycle.map(s => shown(records, s)).join(' → ')}: recursive call`)
+    facts.reach.set(name, reach)
   }
 }
 
@@ -147,13 +240,25 @@ export function verifyFixedMemory(module, facts) {
   const limits = memory?.filter(n => typeof n === 'number')
   if (limits?.length > 1 && limits[0] > limits[1])
     throw new Error(`memory.fixed needs ${limits[0]} initial pages, exceeding memory.maximum (${limits[1]})`)
-  const { exports, records } = runtimeGraph(module, false)
-  const targets = new Map(exports), visit = prover(records, true)
+  const { exports, records, slots } = runtimeGraph(module, false)
+  const targets = new Map(exports)
   for (const name of facts.names) {
     const target = targets.get(name)
     if (!target) throw new Error(`memory.fixed: '${name}' is not a function export`)
-    const reason = visit(target, [name])
-    if (reason) throw new Error(`memory.fixed cannot certify ${reason}`)
+    const reach = facts.reach.get(name), bodies = reach?.slots
+    // An indirect call lands in the slots the export's calls reached before
+    // link, where every one of those calls was bounded; the first that was
+    // not is the position a refusal names.
+    const fails = (rec, fn) => rec?.indirect.length && (reach?.open || !bodies?.size || rec.indirect.some(s => !s.targets))
+      ? `indirect call the compiler cannot bound${siteText(reach?.open?.site)}`
+      : failure(rec, fn, true)
+    const visit = walker(records, directSteps, fails, () => true)
+    const roots = [[{ name: target, label: name }]]
+    for (const [slot, path] of bodies ?? []) if (slots?.[slot] != null) roots.push([...path.slice(0, -1), { ...path.at(-1), name: slots[slot] }])
+    for (const root of roots) {
+      const reason = visit(root)
+      if (reason) throw new Error(`memory.fixed cannot certify ${reason}`)
+    }
   }
 }
 

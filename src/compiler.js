@@ -44,7 +44,7 @@
  */
 
 import { captureRuntimeInspect } from './compile/func-inspect.js'
-import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from './compile/fixed-memory.js'
+import { configureFixedMemory, verifyFixedEmitted, verifyFixedMemory } from './compile/fixed-memory.js'
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
 import { parse } from './parse.js'
 import watrCompile, { sourceMapURL } from "watr/compile";
@@ -328,7 +328,7 @@ const compilePipeline = (code, opts = {}, jzify) => {
 
   const cfg = ctx.transform.optimize
   const facts = tailFacts()
-  verifyFixedScratch(module, facts.fixedMemory)
+  verifyFixedEmitted(module, facts.fixedMemory)
   // The shared final-optimizer tail (src/optimize/watr-tail.js): watr options +
   // watr (the sole generic fixpoint, once) + the ONE narrow post-watr proof
   // repair (hoistGlobalPtrOffset — watr's inliner can merge stable-pointee

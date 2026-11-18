@@ -12,9 +12,11 @@
  * `fromWat` decodes the assembled module, tape passes run, `toWat` encodes
  * it back. Each WAT-array pass ported here deletes its array version; when
  * emit builds the tape directly the decoder goes. Until then the facts
- * carried across are the result type (`.type`) and the schema id
- * (`.schemaSid`); the other expando facts end at the boundary, nothing after
- * it reads them.
+ * carried across are the result type (`.type`), the schema id
+ * (`.schemaSid`), the source position (`.sourceLoc`) and, on an indirect
+ * call, the table slots of the closures it can reach and its source position
+ * (`.slots`, `.site`), which the fixed-memory proof reads after link; the
+ * other expando facts end at the boundary, nothing after it reads them.
  *
  * @module ir/tape
  */
@@ -47,6 +49,7 @@ export const T = {
   bigs: [],
   blobs: [],
   locations: null,
+  calls: null,   // an indirect call's node → [its closures' slots, its source position]
 }
 
 const columns = (cap) => {
@@ -67,6 +70,7 @@ export function resetTape() {
   T.bigs = []
   T.blobs = []
   T.locations = null
+  T.calls = null
 }
 
 /** The tape as data, its columns and the rest (the node count, symbols, atoms), and
@@ -74,11 +78,11 @@ export function resetTape() {
  *  checkpoint as these, the tree it was decoded from left behind, the columns
  *  moving down past the rewind (scripts/self.js compileModule). */
 export const tapeColumns = () => [T.op, T.a, T.next, T.ty, T.imm, T.sym, T.sid]
-export const tapeState = () => ({ n: T.n, syms: T.syms, symId: T.symId, bigs: T.bigs, blobs: T.blobs, locations: T.locations })
+export const tapeState = () => ({ n: T.n, syms: T.syms, symId: T.symId, bigs: T.bigs, blobs: T.blobs, locations: T.locations, calls: T.calls })
 export const restoreTape = (s, columns) => {
   const [op, a, next, ty, imm, sym, sid] = columns
   T.n = s.n; T.op = op; T.a = a; T.next = next; T.ty = ty; T.imm = imm; T.sym = sym; T.sid = sid
-  T.syms = s.syms; T.symId = s.symId; T.bigs = s.bigs; T.blobs = s.blobs; T.locations = s.locations
+  T.syms = s.syms; T.symId = s.symId; T.bigs = s.bigs; T.blobs = s.blobs; T.locations = s.locations; T.calls = s.calls
 }
 
 export const intern = (s) => {
@@ -145,6 +149,7 @@ export function clone(id) {
   const c = node(T.op[id])
   T.ty[c] = T.ty[id]; T.imm[c] = T.imm[id]; T.sym[c] = T.sym[id]; T.sid[c] = T.sid[id]
   if (T.locations?.has(id)) T.locations.set(c, T.locations.get(id))
+  if (T.calls?.has(id)) T.calls.set(c, T.calls.get(id))
   let prev = NONE
   for (let k = T.a[id]; k !== NONE; k = T.next[k]) { const kc = clone(k); if (prev === NONE) T.a[c] = kc; else T.next[prev] = kc; prev = kc }
   return c
@@ -181,6 +186,7 @@ function decode(x) {
     if (typeof x.type === 'string') T.ty[id] = intern(x.type)
     if (typeof x.schemaSid === 'number') T.sid[id] = x.schemaSid
     if (typeof x.sourceLoc === 'number') (T.locations ??= new Map()).set(id, x.sourceLoc)
+    if (x.slots !== undefined || x.site !== undefined) (T.calls ??= new Map()).set(id, [x.slots, x.site])
     let prev = NONE
     for (let i = 1; i < x.length; i++) {
       const c = decode(x[i])
@@ -220,6 +226,8 @@ export function toWat(id) {
   if (T.ty[id] !== 0) out.type = T.syms[T.ty[id]]
   if (T.sid[id] !== NONE) out.schemaSid = T.sid[id]
   if (T.locations?.has(id)) out.sourceLoc = T.locations.get(id)
+  const call = T.calls?.get(id)
+  if (call) { if (call[0] !== undefined) out.slots = call[0]; if (call[1] !== undefined) out.site = call[1] }
   return out
 }
 

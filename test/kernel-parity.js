@@ -73,7 +73,7 @@ test('kernel parity: fixed-memory rejects unsafe final code and recovers to ordi
     ['dynamic allocation', 'export function f(n){return new Float64Array(n).length}', /heap allocation or memory growth/],
     ['escaping constant allocation', 'export function f(){return new Float64Array(4)}', /heap allocation or memory growth/],
     ['growing state', 'let a=[];export function f(n){a.push(n);return a.length}', /heap allocation or memory growth/],
-    ['host call', 'import {tick} from "host";export function f(){return tick()}', /host or unresolved call/],
+    ['host call', 'import {tick} from "host";export function f(){return tick()}', /f → host\.tick: host call/],
     ['recursive scratch', 'export function f(n){const a=new Float64Array(4);a[0]=n;return n>0?f(n-1)+a[0]:a[0]}', /recursive call/],
     ['recursive scratch in another caller', 'function step(n){const a=new Float64Array(4);a[0]=n;return n>0?step(n-1)+a[0]:a[0]}export function f(){return step(0)}export function outside(n){return step(n)}', /recursive call/],
   ]
