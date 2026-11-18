@@ -17,7 +17,7 @@ import { ctx, inc, PTR, LAYOUT, setLinkDemand } from '../../ctx.js'
 import { TYPED_CTORS } from '../../std/typed.js'
 import { createFunction } from '../../function.js'
 import { memberUses } from '../../member-uses.js'
-import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, T } from '../../ast.js'
+import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, T, argList } from '../../ast.js'
 import { asF64, asI64, boolBoxIR, boxedPtrTypeEq, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, tempI32, throwErrorIR, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
 import { hasDurableReset } from '../../../module/collection/durable.js'
 import { valTypeOf } from '../../kind.js'
@@ -160,7 +160,6 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
 }
 
 const withReceiver = (recv, args) => args.length === 0 ? recv : [',', recv, ...args]
-const argList = (args) => args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
 
 /** The class function's result in the representation the access `node` has
  *  to its readers: a BOOL result stays the raw 0/1 only where the reader's

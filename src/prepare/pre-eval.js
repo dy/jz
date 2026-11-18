@@ -81,7 +81,7 @@
  * @module prepare/pre-eval
  */
 
-import { copyLoc, COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
+import { argList, copyLoc, COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
 import { isNamedCallee } from '../autoload.js'
 import { ctx } from '../ctx.js'
 import { int32, numBinOp } from '../static.js'
@@ -850,8 +850,7 @@ function foldCallPartial(node, env, state) {
   const rawArgs = collectArgs(node[2])
   const args = rawArgs.map(a => foldNode(a, env, state))
   if (callee === node[1] && args.every((a, i) => a === rawArgs[i])) return node
-  const newArgsNode = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
-  return [node[0], callee, newArgsNode]
+  return [node[0], callee, argList(args)]
 }
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@
 
 import { ctx, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, argList } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen } from '../../type.js'
@@ -1001,7 +1001,7 @@ export const resolveHeldMethods = (ast) => {
     let out = n
     for (let i = 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
     const argsOf = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1) : a == null ? [] : [a]
-    const list = (args) => args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+    const list = argList
     // `name.call( recv, …args )`: a prototype method on the receiver, a function of the target on the args
     // (`name` a held name, or a member of a held namespace the walk named in place)
     const target = out[0] === '()' && out.length === 3 && Array.isArray(out[1]) && out[1][0] === '.' && out[1][2] === 'call'

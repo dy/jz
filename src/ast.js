@@ -517,9 +517,16 @@ export function callArgs(node) {
   return commaList(node[2])
 }
 
+/** An argument list as a call node holds it, the inverse of commaList: none is null, one
+ *  stands alone, several are a comma group. A sole argument that is itself a comma
+ *  expression (`f((a, b))`, which prepare holds as a group of one) stays a group of one:
+ *  bare, it reads as two arguments. */
+export const argList = (args) => args.length === 0 ? null
+  : args.length === 1 && !(Array.isArray(args[0]) && args[0][0] === ',') ? args[0] : [',', ...args]
+
 /** Write normalized args back onto a call node. */
 export function setCallArgs(node, args) {
-  node[2] = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+  node[2] = argList(args)
 }
 
 /** Unwrap handler/rest `args` when the sole element is a comma-group. */

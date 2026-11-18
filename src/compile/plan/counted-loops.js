@@ -40,7 +40,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, noted, extractParams, collectParamName, collectParamNames, nodeEqual } from '../../ast.js'
+import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, noted, extractParams, collectParamName, collectParamNames, nodeEqual, argList } from '../../ast.js'
 import { frameNode, frameRoots } from '../../function.js'
 import { closureCensus } from '../loop-model.js'
 import { freshId } from '../../ir.js'
@@ -60,7 +60,7 @@ const intOf = (n) => isInt(n) ? n[1] : typeof n === 'string' && ctx.scope.constI
 const fresh = (tag) => `${T}${tag}${freshId(ctx)}`
 const add = (a, k) => k === 0 ? a : ['+', a, lit(k)]
 const scale = (k, e) => k === 1 ? e : ['*', lit(k), e]
-const call = (fn, ...args) => ['()', fn, args.length === 1 ? args[0] : [',', ...args]]
+const call = (fn, ...args) => ['()', fn, argList(args)]
 /** `out` carrying what `node` carries beside its elements (positions, marks). */
 const like = (node, out) => { for (const key in node) if (!(key in out)) out[key] = node[key]; return out }
 

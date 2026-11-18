@@ -9,7 +9,7 @@ import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '.
 import { K, tagOf, tagsOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
 import { bitOf } from '../../summary/kind.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
-import { T, ACCESSOR_GET, isLeaf, isReassigned } from '../../ast.js'
+import { T, ACCESSOR_GET, isLeaf, isReassigned, argList } from '../../ast.js'
 import { RESOLVED_PROP_MODULES, includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt, holds, exprText } from '../../ctx.js'
 import {
@@ -250,7 +250,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
         for (const sp of parsed.spreads) if (sp.pos === pos) args.push(['...', sp.expr])
         if (pos < parsed.normal.length) args.push(parsed.normal[pos])
       }
-      const call = ['()', fname, args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]]
+      const call = ['()', fname, argList(args)]
       return emit(call)
     }
   }

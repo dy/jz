@@ -1604,3 +1604,26 @@ test('statements: a labeled break inside a switch case keeps its target', () => 
     for (const [x, y] of [[1, 0], [1, 1], [2, 0], [1, 2], [1, 3], [3, 1]]) is(got(x, y), want(x, y), `f(${x}, ${y}): ${src.slice(25, 90)}`)
   }
 })
+
+// A parenthesized comma expression as the only argument of a call is one argument, its
+// value the last operand. prepare holds it as a group of one (renestSoleCommaArg); a pass
+// that rebuilt the argument list wrote one argument bare, and a bare comma reads as a list:
+// where the constant folder folded an operand, `id((1 + 2, x))` called `id(3, x)` (v1.0.3
+// too), and `f.call(o, (a, b))` lost the group with its receiver. One encoder now writes
+// every argument list (src/ast.js argList).
+test('calls: a parenthesized comma expression as the only argument is one argument', () => {
+  const head = `let log = ''\nconst n = (i, x) => { log += i; return x }\nconst id = (r) => r\nconst cnt = (...a) => a.length * 1000 + a[a.length - 1]
+const o = { m(r) { return r } }\nclass C { constructor(r) { this.r = r } m(r) { return r + this.r } static s(r) { return r } }
+class D extends C { constructor(r) { super((1 + 1, r)) } m(r) { return super.m((2 * 2, r)) } }\nconst arr = [5, 6, 7]\nlet t = 0\nconst done = (r) => { const s = r + '|' + log; log = ''; return s }\n`
+  const parts = [['1 + 2', 'x'], ['x', '6 & 3'], ['1 + 2', '3 * 4'], ['n(1, 0)', 'x'], ['t = 1 + 2', 't + x'], ['n(1, 0)', '2 + 2', 'n(3, x)'], [`'a' + 'b'`, 'x'], ['x', 'Math.max(2, 3)']]
+  const calls = [e => `id(${e})`, e => `cnt(${e})`, e => `o.m(${e})`, e => `new C(1).m(${e})`, e => `C.s(${e})`, e => `new C(${e}).r`, e => `new D(${e}).m(${e})`,
+    e => `id.call(null, ${e})`, e => `Math.abs(${e})`, e => `String(${e})`, e => `arr.indexOf(${e})`, e => `id(id(${e}))`, e => `id((${e}))`, e => `cnt(${e}, 4)`, e => `cnt(4, ${e})`]
+  for (const call of calls) for (const p of parts) {
+    const expr = call(`(${p.join(', ')})`), src = head + `export const f = (x) => done(${expr})`
+    const node = oracle(src), want = [0, 2, 5].map(x => node.f(x)).join(';')
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const e = jz(src, { optimize }).exports
+      is([0, 2, 5].map(x => e.f(x)).join(';'), want, `${expr} @${optimize}`)
+    }
+  }
+})
