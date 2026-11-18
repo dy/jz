@@ -1548,3 +1548,43 @@ test('statements: labeled block vs object-literal prop disambiguation', () => {
   is(run(`export let f = () => { let o = {x: 1, y: {z: 2}}; return o.y.z }`).f(), 2)
   is(run(`export let f = () => ({ y: { z: 5 } }).y.z`).f(), 5)
 })
+
+// A module literal read only by static keys is folded into its reads (plan/literals.js
+// foldStaticConstAggregates). An element that reads a binding the program writes is the
+// value the binding held where the literal was made, whatever the binding holds later.
+test('assignment: a module literal keeps what its element held when a binding is written after', () => {
+  const programs = {
+    array: `let A = [1, 2, 3]; const O = { a: A }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { A = [7, 8]; return A.length }`,
+    number: `let A = 5; const O = { a: A }; export let q = () => O.a * 10; export let m = () => { A = 6; return A }`,
+    string: `let A = 'xy'; const O = { a: A }; export let q = () => O.a.length * 10; export let m = () => { A = 'pqr'; return A.length }`,
+    object: `let A = { v: 1 }; const O = { a: A }; export let q = () => O.a.v * 10; export let m = () => { A = { v: 2 }; return A.v }`,
+    typed: `let A = new Float64Array([1, 2, 3]); const O = { a: A }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { A = new Float64Array([7, 8]); return A.length }`,
+    'in a list': `let A = [1, 2, 3]; const O = [A]; export let q = () => O[0].length * 10 + O[0][0]; export let m = () => { A = [7, 8]; return A.length }`,
+    'a let holder': `let A = [1, 2, 3]; let O = { a: A }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { A = [7, 8]; return A.length }`,
+    'an expression': `let A = 3; const O = { a: A + 1, b: -A }; export let q = () => O.a * 10 + O.b; export let m = () => { A = 10; return A }`,
+    'an update': `let n = 1; const O = { a: n }; export let q = () => O.a * 10; export let m = () => { n++; return n }`,
+    'a compound assignment': `let n = 1; const O = [n]; export let q = () => O[0] * 10; export let m = () => { n += 5; return n }`,
+    'a logical assignment': `let A = 0; const O = { a: A }; export let q = () => O.a * 10; export let m = () => { A ||= 4; return A }`,
+    'a destructuring': `let A = 1, B = 2; const O = { a: A, b: B }; export let q = () => O.a * 10 + O.b; export let m = () => { [A, B] = [B, A]; return A }`,
+    'a loop head': `let A = 1; const O = { a: A }; export let q = () => O.a * 10; export let m = () => { for (A of [4, 5]) {} return A }`,
+    'a write in a closure': `let A = [1, 2, 3]; const O = { a: A }; const set = () => { A = [7, 8] }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { [0].forEach(() => set()); return A.length }`,
+    'a write at start': `let A = 5; const O = { a: A }; A = 6; export let q = () => O.a * 10; export let m = () => A`,
+    'a function': `let f = () => 1; const O = { f }; export let q = () => O.f() * 10; export let m = () => { f = () => 2; return f() }`,
+    shorthand: `let a = 1, b = 2; const O = { a, b }; export let q = () => O.a * 10 + O.b; export let m = () => { a = 7; b = 8; return a + b }`,
+    var: `var A = [1, 2, 3]; var O = { a: A }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { A = [7, 8]; return A.length }`,
+    'a closure made before the literal': `let A = [1, 2, 3]; const set = () => { A = [7, 8] }; const O = { a: A }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { set(); return A.length }`,
+    'a callback called before the literal': `let A = 5; [0].forEach(() => { A = 6 }); const O = { a: A }; export let q = () => O.a * 10; export let m = () => A`,
+    // (what the fold may still do: a binding nothing writes after the literal is made)
+    'a write before the literal': `let A = 1; A = 2; const O = { a: A }; export let q = () => O.a * 10; export let m = () => A`,
+    'set in a branch before the literal': `var H, L; if (new Uint8Array(new Uint16Array([1]).buffer)[0] === 1) { H = 1; L = 0 } else { H = 0; L = 1 } var ix = { H: H, L: L }; var h = ix.H; export let q = () => h * 10 + ix.L; export let m = () => ix.H`,
+    'a const, its array pushed to': `const A = [1, 2, 3]; const O = { a: A }; export let q = () => O.a.length * 10 + O.a[0]; export let m = () => { A.push(4); return A.length }`,
+    'functions of a table': `const add = (a, b) => a + b, sub = (a, b) => a - b; const ops = { add, sub }; export let q = () => ops.add(3, 4) * 10 + ops.sub(3, 4); export let m = () => ops.add(1, 1)`,
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const node = oracle(src), want = [node.q(), node.m(), node.q()]
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const e = jz(src, { optimize }).exports
+      is([e.q(), e.m(), e.q()], want, `${name} @${optimize}`)
+    }
+  }
+})

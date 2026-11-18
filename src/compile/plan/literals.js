@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callbackReadsArray, collectBareRefs, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, collectAssignedNames, hasControlTransfer, callArgs,
+  callbackReadsArray, isFunctionNode, collectBareRefs, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, collectAssignedNames, hasControlTransfer, callArgs,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -1138,17 +1138,45 @@ export function foldStaticConstAggregates(ast) {
   const pos = new Map()
   moduleStmts.forEach((s, i) => pos.set(s, i))
 
+  // An element is copied into each read, and a read may run after any statement: a name
+  // it reads holds, from the literal's statement on, what it held there (`let A = [1];
+  // const O = { a: A }; A = [2]`: `O.a` is the first array). So no function writes the
+  // name, a function running whenever it is called, and a module statement that writes it
+  // stands before the literal's in the literal's own module (`HIGH` set by an `if`, then
+  // `{ HIGH, LOW }`). By spelling, as collectAssignedNames reads a write.
+  const later = new Set(), writers = new Map(), seqOf = new Map()
+  for (const f of funcs) for (const n of funcNodes(f)) collectAssignedNames(n, later)
+  const writesOf = (n, now) => {
+    if (!Array.isArray(n)) return now
+    if (isFunctionNode(n)) { collectAssignedNames(n, later); return now }
+    if (isDeclOp(n[0])) { for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=') writesOf(n[i][2], now); return now }
+    if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') now.add(n[1])
+    for (let i = 1; i < n.length; i++) writesOf(n[i], now)
+    return now
+  }
+  seqs.forEach((seq, k) => {
+    for (const s of moduleStmtsOf(seq)) {
+      seqOf.set(s, k)
+      for (const name of writesOf(s, new Set())) (writers.get(name) ?? writers.set(name, []).get(name)).push(s)
+    }
+  })
+  const holds = (name, at) => !later.has(name) &&
+    (writers.get(name) ?? []).every(s => seqOf.get(s) === seqOf.get(at) && pos.get(s) < pos.get(at))
+  const changes = (e, at) => typeof e === 'string' ? !holds(e, at)
+    : Array.isArray(e) && e[0] != null && e[0] !== 'str' && e.some((c, i) => i > 0 && changes(c, at))
+
   const arr = new Map(), obj = new Map(), initStmts = new Map()
-  const consider = (name, value, init) => {
+  // `at`: the statement that makes the literal
+  const consider = (name, value, init, at) => {
     if (ctx.funcs.exports?.[name]) return                 // exported → escapes to JS
-    const elems = scalarArrayElems(value)
-    if (elems) { arr.set(name, elems); initStmts.set(name, init); return }
-    const props = scalarObjectProps(value)
-    if (props) { obj.set(name, props); initStmts.set(name, init) }
+    const elems = scalarArrayElems(value), props = elems ? null : scalarObjectProps(value)
+    if (!(elems ?? props) || (elems ?? props.values).some(e => changes(e, at))) return
+    if (elems) arr.set(name, elems); else obj.set(name, props)
+    initStmts.set(name, init)
   }
   for (const [name, info] of inlineInit) {
     // a decl-initialized binding that is ALSO assigned is reassigned → not constant.
-    if (info && !assigns.has(name)) consider(name, info.value, new Set([info.stmt]))
+    if (info && !assigns.has(name)) consider(name, info.value, new Set([info.stmt]), info.stmt)
   }
   for (const [name, list] of assigns) {
     // `var` lowering: exactly one assignment, a matching uninit decl, and no
@@ -1161,7 +1189,7 @@ export function foldStaticConstAggregates(ast) {
     const refsBefore = moduleStmts.some((s, i) => i < at && s !== uninitDecl.get(name) && refsName(s, name, REFS_IN_EXPR))
     const refsInFn = funcs.some(f => !paramNames(f).includes(name) && funcNodes(f).some(n => refsName(n, name, REFS_IN_EXPR)))
     if (refsBefore || refsInFn) continue
-    consider(name, assign[2], new Set([assign, uninitDecl.get(name)]))
+    consider(name, assign[2], new Set([assign, uninitDecl.get(name)]), assign)
   }
   if (!arr.size && !obj.size) return false
 
