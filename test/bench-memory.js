@@ -89,7 +89,8 @@ syncBuiltinESMExports()
 
 // The pass rule (bench/_lib/passes.js) as the harness reads it: one line a pass, the last
 // counted and the first kept, memory from a process of the first pass alone, every pass's
-// checksum the first's, and the old protocol by its switch, never merged with the new.
+// checksum the first's but where the source's main carries state, the count printed, and
+// the old protocol by its switch, never merged with the new.
 test('pass rule: the last pass is counted, the first kept beside it, memory of one pass', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'jz bench passes '))
   try {
@@ -101,11 +102,17 @@ const line = (us, cs = ref) => 'median_us=' + us + ' checksum=' + cs + ' samples
 cp.spawnSync = (cmd, args, opts) => {
   const lane = args.find(a => /\\/run-(v8|jz-host)\\.mjs$/.test(a))
   if (lane) {
-    const first = (opts.env ?? process.env).JZ_BENCH_PASSES === 'first', { JZ_TEST_STATE: state, JZ_TEST_LOST: lost } = process.env
-    // lost: 'silent', the passes after the first print to nowhere; 'exit', the process ends after the first
-    const stdout = first ? line(30) + 'passes=1\\n' : lost === 'silent' ? line(30) + 'passes=3\\n' : lost === 'exit' ? line(30)
-      : line(30) + line(12, state ? 1 : ref) + line(10, state ? 2 : ref) + 'passes=3\\n'
-    return { status: 0, stdout, stderr: 'Maximum resident set size (kbytes): ' + (first ? 50 : 99) }
+    const mode = (opts.env ?? process.env).JZ_BENCH_PASSES, n = mode === 'first' ? 1 : +mode || 3
+    const { JZ_TEST_STATE: state, JZ_TEST_WRONG: wrong, JZ_TEST_LOST: lost } = process.env
+    // state: the source's main answers another checksum on each call, under any engine (fabrik's
+    // step); wrong: a pass after the first answers wrong where the source carries none, never
+    // under Node's interpreter (a tier's miscompile); lost: 'silent', the passes after the first
+    // print to nowhere, 'exit', the process ends after the first
+    const calls = lane.endsWith('/run-v8.mjs'), jitless = args.includes('--jitless')
+    const cs = k => k && (state && calls || wrong && !jitless) ? k : ref
+    const stdout = n > 1 && lost === 'silent' ? line(30) + 'passes=3\\n' : n > 1 && lost === 'exit' ? line(30)
+      : [30, 12, 10].slice(0, n).map((us, k) => line(us, cs(k))).join('') + 'passes=' + n + '\\n'
+    return { status: 0, stdout, stderr: 'Maximum resident set size (kbytes): ' + (n === 1 ? 50 : 99) }
   }
   if (cmd === '/usr/bin/time') return { status: 0 }
   return spawn(cmd, args, opts)
@@ -128,17 +135,23 @@ syncBuiltinESMExports()
     is(r.status, 0, r.stderr)
     is(read().cases.alpha.targets.v8, { medianUs: 30, firstUs: 30, passes: 1, settled: false, bytes: read().cases.alpha.targets.v8.bytes, memKb: 50, parity: 'ok' },
       'a main that answers otherwise on its next call is timed on its first pass, marked')
-    r = bench(['--targets=jz'], { JZ_TEST_STATE: '1' })
+    ok(r.stderr.includes('as its source does under Node\'s interpreter'), r.stderr)
+    r = bench(['--targets=v8'], { JZ_TEST_WRONG: '1' })
     is(r.status, 0, r.stderr)
-    const { jz } = read().cases.alpha.targets
-    is([jz.status, /pass checksums differ: 633180752, 1, 2/.test(jz.reason)], ['fail', true], 'a fresh instance that answers otherwise fails')
+    let row = read().cases.alpha.targets.v8
+    is([row.status, row.reason], ['fail', 'pass checksums differ: 633180752, 1, 2, where two calls of the source\'s main answer alike under Node\'s interpreter'],
+      'a later tier\'s wrong answer fails the lane, never passes for state the source does not carry')
+    r = bench(['--targets=jz'], { JZ_TEST_WRONG: '1' })
+    is(r.status, 0, r.stderr)
+    row = read().cases.alpha.targets.jz
+    is([row.status, row.reason], ['fail', 'pass checksums differ: 633180752, 1, 2'], 'a fresh instance that answers otherwise fails')
 
     // a run whose count disagrees with its lines fails, never reads as one long first pass
     for (const [lost, lane, reason] of [['silent', 'jz', 'the pass rule ran 3 passes, 1 printed a result'],
       ['exit', 'v8', 'the pass rule printed no count after 1 result: the process ended before the rule did']]) {
       r = bench([`--targets=${lane}`], { JZ_TEST_LOST: lost })
       is(r.status, 0, r.stderr)
-      const row = read().cases.alpha.targets[lane]
+      row = read().cases.alpha.targets[lane]
       is([row.status, row.reason], ['fail', reason], `${lost}: ${lane} fails with what it printed`)
     }
 

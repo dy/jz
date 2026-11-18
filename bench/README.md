@@ -52,18 +52,25 @@ stays, the memory starts over); a JS lane's is another call of the same module's
 24 runs in the corpus (`test/bench-build.js` holds every case to that share), alone
 outlast the 300 ms. Each pass prints its line, and the rule prints `passes=<n>` after
 the last: a run whose lines are fewer than its count, or that ends before printing one,
-fails, so lost passes never read as one long first pass. Every pass must answer the
-first's checksum; the row keeps the first pass's median as `firstUs` and the passes run
-as `passes`. A case whose `main`
-advances module state answers another checksum on its next call, another workload
-(under Node on 2026-11-17: `fabrik`, `jsontransform`, `setops`, `stringify`,
-`threegeom` and `threescene`, of 106): its JS lanes run the first pass alone, the row
-marked `settled: false`, while its wasm lanes settle. The native binaries have no tiers, NumPy's lane is no JavaScript or
-wasm engine, and wasmtime (`jz-wasmtime`, the two componentizers) compiles a module
-whole before it runs, so these run once; `moonbit`'s moonrun, a V8 of its own, runs
-its program once with no hook for a second instance. `--passes=first` (or `JZ_BENCH_PASSES=first`) times every lane's
-first pass alone, the protocol before 2026-11-17; `meta.passes` names the protocol
-a dataset was timed by, and `--merge` refuses to mix two.
+fails, so lost passes never read as one long first pass. The row keeps the first
+pass's median as `firstUs` and the passes run as `passes`.
+
+Every pass must answer the first's checksum, with one exception, read off the source.
+A case whose `main` advances module state answers another checksum on each call,
+another workload: `fabrik` a step, `jsontransform`, `setops`, `stringify`,
+`threegeom` and `threescene` a seed (6 of 106 on 2026-11-17). Where a JS lane's passes
+disagree, the harness calls the source's `main` twice under Node's interpreter
+(`node --jitless`, where no tier can answer wrong), once a case. If those two answer
+otherwise too, the case's JS lanes run their first pass alone, the row marked
+`settled: false`, while its wasm lanes, a fresh instance a pass, settle. If they
+agree, the lane fails: a later tier's wrong answer never passes for state.
+
+The native binaries have no tiers, NumPy's lane is no JavaScript or wasm engine, and
+wasmtime (`jz-wasmtime`, the two componentizers) compiles a module whole before it
+runs, so these run once; `moonbit`'s moonrun, a V8 of its own, runs its program once
+with no hook for a second instance. `--passes=first` (or `JZ_BENCH_PASSES=first`)
+times every lane's first pass alone, the protocol before 2026-11-17; `meta.passes`
+names the protocol a dataset was timed by, and `--merge` refuses to mix two.
 
 New cases remain `unclassified` until an independently verified checksum is
 pinned in `REFERENCE_CHECKSUMS` in `bench.mjs`. A new measurement never replaces

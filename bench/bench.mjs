@@ -613,11 +613,24 @@ const maxSrcMtime = (c) => {
 const firstPassMem = new Map()
 const firstPassOpts = o => ({ ...o, env: { ...process.env, JZ_BENCH_PASSES: 'first' } })
 // The lanes whose pass is another call of the module's main, where a wasm lane's is a
-// fresh instance. A case whose main advances module state (fabrik's target and pose)
-// answers another checksum on its next call, another workload: there such a lane runs
-// its first pass alone, the row marked `settled: false`. Lane:case pairs found so.
+// fresh instance.
 const CALL_PASSES = new Set(['v8', 'deno', 'bun', 'jsc', 'spidermonkey', 'graaljs'])
-const carriesState = new Set()
+// Whether a case's main answers otherwise on its next call (fabrik advances a step, five
+// cases a seed), so that each call computes another workload: a property of the source,
+// read off two calls under Node's interpreter (`--jitless`, where no tier can answer
+// wrong), once a case and only where a lane's passes disagreed. On such a case a lane of
+// CALL_PASSES runs its first pass alone, its row `settled: false`; anywhere else passes
+// that disagree fail the lane, whatever its engine.
+const statefulCases = new Map()
+const carriesState = c => {
+  if (!statefulCases.has(c.id)) {
+    const r = passCheck(runProc([process.execPath, '--jitless', join(LIB, 'run-v8.mjs'), c.js],
+      { env: { ...process.env, JZ_BENCH_PASSES: '2' } }), true)
+    if (r.error) console.warn(`[passes] ${c.id}: two calls of main under Node's interpreter failed: ${r.error}`)
+    statefulCases.set(c.id, !r.error && r.passes === 2 && r.checksums[0] !== r.checksums[1])
+  }
+  return statefulCases.get(c.id)
+}
 // The lanes a JavaScript or wasm engine runs, each by the pass rule, which prints its
 // count after the last pass. The native binaries, Wasmtime's ahead-of-time code and
 // CPython run one pass and print one line.
@@ -665,17 +678,18 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
     }
     const failed = r => ({ id, error: r.error, ...(r.timedOut && { timedOut: true }) })
     const firstRun = () => passCheck(runProc(firstArgv, firstPassOpts(runOpts)), false)
-    let parsed = carriesState.has(key) ? firstRun() : passCheck(runProc(argv, runOpts), RULE_LANES.has(id) && !FIRST_PASS_ONLY)
+    const calls = CALL_PASSES.has(id), unsettled = () => calls && statefulCases.get(c.id) === true
+    let parsed = unsettled() ? firstRun() : passCheck(runProc(argv, runOpts), RULE_LANES.has(id) && !FIRST_PASS_ONLY)
     if (parsed.error) return failed(parsed)
-    // every pass answers what the first answered: a fresh instance must
+    // every pass answers what the first answered, unless a call of main computes another workload
     if (parsed.checksums.some(cs => cs !== parsed.checksums[0])) {
       // (a short pass repeats hundreds of times: the first three checksums name it)
       const all = [...new Set(parsed.checksums)]
       const seen = all.slice(0, 3).join(', ') + (all.length > 3 ? ` and ${all.length - 3} more` : '')
-      if (!CALL_PASSES.has(id)) return { id, error: `pass checksums differ: ${seen}` }
+      if (!calls) return { id, error: `pass checksums differ: ${seen}` }
+      if (!carriesState(c)) return { id, error: `pass checksums differ: ${seen}, where two calls of the source's main answer alike under Node's interpreter` }
       // (stderr: a `[run]` line is open on stdout)
-      console.warn(`[passes] ${key}: main answers ${seen} on successive calls, carrying state between them; the lane runs its first pass alone`)
-      carriesState.add(key)
+      console.warn(`[passes] ${key}: main answers ${seen} on successive calls, as its source does under Node's interpreter; the lane runs its first pass alone`)
       parsed = firstRun()
       if (parsed.error) return failed(parsed)
     }
@@ -689,7 +703,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       parsed.memKb = firstPassMem.get(key)
     }
     const { ruled, ...row } = parsed
-    return { id, ...row, ...(carriesState.has(key) && { settled: false }) }
+    return { id, ...row, ...(unsettled() && { settled: false }) }
   } catch (e) {
     return { id, error: e.message }
   }
