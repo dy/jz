@@ -305,6 +305,8 @@ const scopeBuilder = (map) => {
     if (op === 'class') {
       here = childScope(scope)
       here.strict = true
+      // (a class's own name is bound in its body, an expression's nowhere else)
+      if (typeof node[1] === 'string') addBuiltinName(here, node[1])
     }
     if (op === 'catch') {
       here = childScope(scope)
@@ -532,15 +534,16 @@ function canonSymbols(node, bindings = false) {
 // is no name of its own to any later stage. `E.constructor` asks `__ctor` of the
 // same module, which answers a typed array's function and reads any other value's
 // member; `this.constructor` is the member a class's instance carries (classes.js).
-function typedCtorValues(node) {
+function typedCtorValues(node, constructed = false) {
   if (!Array.isArray(node) || node[0] == null || node[0] === 'str') return node
   const prior = enterBuiltinScope(node)
   try {
     const op = node[0]
     const named = (n) => typeof n === 'string' && TYPED_CTORS.has(n) && !scopeHasBuiltin(activeBuiltinScope, n)
     if (op === '.' && named(node[1]) && node[2] === 'BYTES_PER_ELEMENT') { node.splice(0, node.length, null, TYPED_BYTES[node[1]]); return node }
-    // (the parser's call is `['()', callee, args]` and its array literal `['[]', args]`, one args form)
-    if (op === '()' && node.length === 3 && Array.isArray(node[1]) && node[1][0] === '.' && named(node[1][1]) && node[1][2] === 'of') {
+    // (the parser's call is `['()', callee, args]` and its array literal `['[]', args]`, one args form;
+    // under `new` the call is a construction of `of` itself, a TypeError in JavaScript: left as written)
+    if (!constructed && op === '()' && node.length === 3 && Array.isArray(node[1]) && node[1][0] === '.' && named(node[1][1]) && node[1][2] === 'of') {
       node[1] = withLoc(['.', node[1][1], 'from'], node[1])
       node[2] = withLoc(['[]', node[2]], node)
     }
@@ -556,7 +559,7 @@ function typedCtorValues(node) {
         if (named(c) && !(op === 'new' || op === 'instanceof' && i === 2 || op === '.' || op === '?.' || op === '()' && i === 1 || op === ':' && i === 1)) node[i] = '__' + c
         continue
       }
-      typedCtorValues(c)
+      typedCtorValues(c, op === 'new' && i === 1)
       if (Array.isArray(c) && c[0] === '.' && c[2] === 'constructor' && c[1] !== 'this' && c[1] !== 'super' && !(target && i === 1) && !compared)
         node[i] = ['()', '__ctor', c[1]]
     }

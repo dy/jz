@@ -130,7 +130,23 @@ const g = (Uint8Array) => Uint8Array.of(4, 5)
     ['a binding of the name in an inner block', `() => { let s = 0; { const Int8Array = { of: () => 7 }; s += Int8Array.of() } return s + Int8Array.of(1, 2).length }`],
   ])
   agreeAll(`const Int32Array = { of: (a, b) => a - b }\n`, [['a module binding of the name', `() => Int32Array.of(10, 3)`]])
-  agreeAll(`function Float32Array() {}\nFloat32Array.of = (v) => v + 1\n`, [['a function of the name', `() => Float32Array.of(41)`]])
+  agreeAll(`function Float32Array() {}\nFloat32Array.of = (v) => v + 1\n`, [['a function of the name', `() => Float32Array.of(41)`]])  // (a class's own name is bound in its body, a class expression's nowhere else)
+  agreeAll(`const C = class Uint16Array { static of(...a) { return 'own' + a.length } static make() { return Uint16Array.of(1, 2) } }
+class Int32Array { static of() { return 9 } v = Int32Array.of() }
+class Uint8Array { static of() { return 'mine' } m() { return Uint8Array.of() } }
+const B = class Float64Array { static BYTES_PER_ELEMENT = 3; static m() { return Float64Array.BYTES_PER_ELEMENT } }
+`, [
+    ['a class expression of the name', `() => C.make()`],
+    ['a class of the name, in a field', `() => new Int32Array().v`],
+    ['a class of the name, in a method', `() => new Uint8Array().m()`],
+    ['a class expression of the name, its BYTES_PER_ELEMENT', `() => B.m()`],
+  ])
+  // `new T.of()` constructs `of` itself, a TypeError in JavaScript: no array is made of it
+  for (const src of [`export let f = () => String(new Float64Array.of(1))`, `export let f = () => String(new Int8Array.of(1, 2))`]) {
+    let made = null
+    try { made = jz(src).exports.f() } catch {}
+    is(made, null, src)
+  }
 })
 
 // A BigInt view's element converts with ToBigInt (ECMA-262 7.1.13), after the list is
