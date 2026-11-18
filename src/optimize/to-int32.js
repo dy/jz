@@ -113,7 +113,12 @@ const lower = (n, s) => {
   // A 64-bit truncation, or the word of one, with `add`: the add where its
   // interval keeps it within ±2^51, else the add where a test finds it there and
   // the truncation itself past it (NaN fails the test and truncates to zero there).
+  // One of a load stays (int-narrow.js provenForm writes it for an element that may
+  // be missing and is no integer, and for one bounded past ±2^51): its number dies
+  // at the conversion, one instruction on arm64, where the test would put a
+  // rounding, an add and the test on the word's path.
   const wide = s.add && wideOf(n)
+  if (wide && isArr(wide.of[1]) && wide.of[1][0] === 'f64.load') { wide.of[1] = lower(wide.of[1], s); return n }
   if (wide) {
     const v = s.at(wide.of[1])
     const x = wide.of[1] = lower(wide.of[1], s)

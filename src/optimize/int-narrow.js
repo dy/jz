@@ -458,7 +458,13 @@ const provenOf = (t, x) => t.wordOf != null ? WORD
  *  its own saturation could fire inside the bound (a position's truncation keeps it).
  *  Under 'add', within ±2^51: the truncation plus 1.5·2^52 read as bits, no conversion
  *  and no test; where the number may be a missing value, a NaN, that sum's exponent
- *  tested, the NaN's arm 0, as every truncation takes it (`temp`: an i64 local).
+ *  tested, the NaN's arm 0, as every truncation takes it (`temp`: an i64 local). An
+ *  element that may be missing and is no integer keeps the 64-bit truncation, which
+ *  takes the NaN to 0 itself, and the tail keeps it (to-int32.js): the tested sum
+ *  over its rounding put a rounding, an add and the test on the word's path, where
+ *  that truncation is one conversion, and on the M4 an index array of such elements
+ *  (bench/polytri at speed) ran 1.04 times the 32-bit truncation's time, the 64-bit
+ *  truncation 0.94, the same array summed with no rounding 1.00.
  *  Otherwise the truncation the level keeps: the 32-bit one under 'narrow', else the
  *  low word of the 64-bit one (bench/lowering.mjs: on x64 V8 the 32-bit one is the
  *  dearest where its number outlives it, on arm64 the 64-bit one is the cheaper). */
@@ -468,7 +474,7 @@ const provenForm = (t, words, temp, F) => {
   const x = wide ? t[1][1] : t[1], v = provenOf(t, x)
   if (!v || (op === 'i32.trunc_sat_f64_s' ? !fitsI32(truncation(v)) : !(v.lo > -(2 ** 63) && v.hi < 2 ** 63))) return null
   const w = op === 'i64.trunc_sat_f64_s' ? 'i64' : 'i32', node = F(x)
-  if (words === 'add' && v.lo > -NEAR && v.hi < NEAR) {
+  if (words === 'add' && v.lo > -NEAR && v.hi < NEAR && (v.int || !v.nan)) {
     const s = v.int ? node : ['f64.trunc', node]
     if (!v.nan) return added(s, w)
     const b = temp('i64'), bits = ['local.tee', b, ['i64.reinterpret_f64', ['f64.add', s, ['f64.const', 6755399441055744]]]]

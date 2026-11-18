@@ -263,10 +263,12 @@ test('element numbers: an element of bounded Numbers converts with no test of it
 })
 
 // A word read off memory into a loop whose only carried chain is integer, a hash: a pushed
-// array's integers, halves (a bound that is no integer) and a holed array's numbers (a hole
-// reads 0). Its form is the level's (ir/numeric.js memoryWord, optimize/int-narrow.js
-// provenForm): at speed the sum with 1.5·2^52 read as bits (the integers' with no rounding,
-// the halves' over their truncation, the holed array's with its exponent tested), elsewhere
+// array's integers, halves (a bound that is no integer), a holed array's integers and a holed
+// array's halves (a hole reads 0). Its form is the level's (ir/numeric.js memoryWord,
+// optimize/int-narrow.js provenForm): at speed the sum with 1.5·2^52 read as bits (the
+// integers' with no rounding, the halves' over their truncation, the holed integers' with its
+// exponent tested), and the holed halves' the low word of the 64-bit truncation, which the
+// tail keeps (optimize/to-int32.js): no rounding, add and test on the word's path. Elsewhere
 // the low word of the 64-bit truncation, and nowhere the 32-bit one, the dearest form on x64
 // where its number outlives it (bench/lowering.mjs).
 const hashed = `const N = 64
@@ -276,20 +278,22 @@ const halves = () => { const a = []; for (let i = 0; i < N; i++) a.push(i * 0.5 
 const holed = () => { const a = []; for (let i = 0; i < N; i += 2) a[i] = i % 13; return a }
 export const words = () => { const a = pushed(); let h = 7; for (let j = 0; j < a.length; j++) h = mix(h, (a[j] << 1) + j); return h }
 export const fracs = () => { const a = halves(); let h = 7; for (let j = 0; j < a.length; j++) h = mix(h, a[j] | 0); return h }
-export const holes = () => { const a = holed(); let h = 7; for (let j = 0; j < a.length; j++) h = mix(h, a[j] | 0); return h }`
+export const holes = () => { const a = holed(); let h = 7; for (let j = 0; j < a.length; j++) h = mix(h, a[j] | 0); return h }
+const holedHalves = () => { const a = []; for (let i = 0; i < N; i += 2) a[i] = i * 0.5 - 7; return a }
+export const holedFracs = () => { const a = holedHalves(); let h = 7; for (let j = 0; j < a.length; j++) h = mix(h, a[j] | 0); return h }`
 
 test('element numbers: a word read off memory takes the level\'s form', () => {
   const host = oracle(hashed)
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const jz = run(hashed, { optimize })
-    for (const f of ['words', 'fracs', 'holes']) is(jz[f](), host[f](), `${f}() at ${optimize}`)
+    for (const f of ['words', 'fracs', 'holes', 'holedFracs']) is(jz[f](), host[f](), `${f}() at ${optimize}`)
   }
   // (below level 2 the loop is the function's own and its export a call of it: `funcWat`
   // takes the function first, the export where the body moved onto it)
   const NARROW = /i32\.trunc_sat_f64_s/, WIDE = /\(i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s\s*\(f64\.load/
   for (const optimize of levels(0, 1, 2, 'size')) {
     const text = wat(hashed, { optimize })
-    for (const f of ['words', 'fracs', 'holes']) {
+    for (const f of ['words', 'fracs', 'holes', 'holedFracs']) {
       const body = funcWat(text, f)
       ok(WIDE.test(body) && !NARROW.test(body), `${f} at ${optimize}: the load's 64-bit truncation, its low word, no 32-bit one`)
     }
@@ -297,11 +301,12 @@ test('element numbers: a word read off memory takes the level\'s form', () => {
   if (belowOpt(2)) return
   // (the sum's 1.5·2^52 inline, not read from the speed tier's float pool)
   const text = wat(hashed, { optimize: { level: 'speed', poolFloats: false } })
-  const [words, fracs, holes] = ['words', 'fracs', 'holes'].map(f => fnText(text, f))
+  const [words, fracs, holes, holedFracs] = ['words', 'fracs', 'holes', 'holedFracs'].map(f => fnText(text, f))
   const SUM = /\(i64\.reinterpret_f64\s*\(f64\.add\s*\(f64\.load/, OF_TRUNC = /\(f64\.add\s*\(f64\.trunc\s*\(f64\.load/
   ok(SUM.test(words) && !/trunc/.test(words), 'words at speed: the load plus 1.5·2^52, no truncation and no rounding')
   ok(OF_TRUNC.test(fracs) && !/trunc_sat/.test(fracs), 'fracs at speed: the sum over the load\'s rounding, no conversion')
   ok(holes.includes(MAGNITUDE) && SUM.test(holes) && !/trunc/.test(holes), 'holes at speed: the sum, its exponent tested for the hole\'s NaN, no truncation')
+  ok(WIDE.test(holedFracs) && !/f64\.trunc\b|6755399441055744/.test(holedFracs), 'holed halves at speed: the load\'s 64-bit truncation, its low word, no rounding and no sum')
 })
 
 test('element numbers: an array a counter from 0 fills reads with no hole test', () => {
