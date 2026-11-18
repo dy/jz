@@ -573,3 +573,23 @@ module/typedarray.js about 3096, module/string.js about 225, src/wat/assemble/st
 Writers at work (Agent tool, briefs in session scratch): `w0-fix/brief-limits.md` on
 `worktree-wf_00b2d799-cc8-12`; `audio-b/brief-audio-b.md` in a worktree of its own.
 Workflows running: `jz-nanbox` (repair), `jz-tests-time` (step five).
+
+## Branches of the land-m landing (2026-11-18, the night), tips before deletion
+
+```
+93bd6202f land-m                         the landing branch as its check ran it: main (86df52211) and 13 commits; the record's commit after it
+d75c13129 worktree-agent-ab0f34829902a23e5  the embedding lane's six (the writer's c5d1c3520 and five): landed as c442b6f39 to d75c13129
+93bd6202f land-m-fix                     scratch worktree `bisect-m`, where the two regressions were bisected
+```
+
+Waiting: `land-o` f28925d2c (land-m at 69271d30a, the limits' 21 commits of
+`worktree-wf_00b2d799-cc8-12`, c8d17fdfa and f28925d2c; lacks 94d20af3a and 93bd6202f:
+rebase onto main); `land-n` b86e68e60 (land-m at d8fb5aecd and the NaN box's 17 of
+`worktree-wf_cc3b338f-0f7-2`); `nanbox-rest` (the follow-up writer, brief in session
+scratch `nanbox-w/brief-rest.md`); `tests-time` (steps five to nine); `decoders-ada0`
+099c77415 and a5f8's 8151718b2, held. watr `encode-locals-linear` c6459c7 (scratch clone
+`w0-fix/limits/watr`) and subscript `nested-call-parse` 65ce463: not pushed, the owner's.
+The landing check from here: `LEGS="wasi default inv3 opt0" sh land.sh <tree> <tag> <base> 8`,
+and the touched test files on a fresh hosted compiler (`hosted-some.mjs`) before it.
+A wall-time bound that fails inside a loaded check (test/perf.js, examples/bench.mjs) is
+rerun alone before it is believed either way.

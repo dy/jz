@@ -3112,6 +3112,54 @@ A module whose top level can throw has no start section: it exports `_initialize
 - subscript's nested-call parse (`nested-call-parse`, 12 commits, not pushed): repaired (`65ce463`: `new get[k](x).z`); the owner's to push and publish; bench/jessie grows 8.5% in bytes with it.
 - The test-time chain's steps five to nine; the NaN box; the embedding lane's three.
 
+## The land-m landing: the fixed-memory proof follows closure calls, a closure of any arity, two TypeErrors raised by code, CI's WASI leg (2026-11-18, the night)
+
+13 commits on 86df52211, tip `93bd6202f`.
+
+### What landed
+
+- **CI's WASI leg, red since land-k** (`bb8332764`): the fixed-memory entry pin asked a WASI module for `_initialize`, and interop's start-throw after a host read is a program the compiler refuses there. The integrator's miss: the landing check ran no WASI leg and CI was not read before land-l went on top. The check runs WASI now (session scratch `land.sh`, `LEGS`), first.
+- **The embedding lane's six** (`c442b6f39` to `d75c13129`):
+  - A property read of null or undefined and a call of a non-function raise their TypeError by code (`__throw_property_nullish`, `__throw_not_callable`, ERR 129 and 131; a catch builds the object). A path that can only fail this way no longer allocates.
+  - The census of emitted code counts a frame's mark stored back into the heap cursor as no allocation, and keeps at a catch's label the marks its try body never writes.
+  - **The fixed-memory proof follows a closure call** to the closures it can reach (`ctx.closure.targetsOf` → `call.closureIds` → the tape's calls); a `memory.fixed` module keeps `__jz_table` to itself.
+  - **A closure of any arity**: the one closure signature is as wide as the program's widest closure (plan/scope.js resolveClosureWidth; 8 lanes unless a wider closure exists).
+- **The integrator's six**:
+  - `679f11a45`: a table of arrows called by index, two of them with one body, did not compile from level 2 (the dedup renamed a body the dispatch still called by its old name). Main and v1.0.3 too.
+  - `94d20af3a`: a module that only calls a host object's methods keeps its memory (stdlib-pull.js hostOps). The old thrower's allocation had kept it; without, such a module went memoryless and the scalar codec cannot carry a host reference. Found by the check's first run.
+  - `93bd6202f`: a function's `length` under WASI where the program holds a function as a value (module/core.js lengthNeedsDynArm). The old thrower had registered the TypeError schema that kept the arm; four WASI tests said so.
+  - `69271d30a`, `d8fb5aecd`, `f5c242b5d`: the fixed-memory refusal's position is asked only where the compiler holds the source (the hosted one does not); CONTRIBUTING on the table; the data-forms listing (the gather over a late-grown sequence: one call fewer, 68 to 76 fewer operations).
+
+### Not compiled on v1.0.3, compiled here
+
+- A closure of more than eight parameters; a table of arrows called by index with two equal bodies (level 2 and up).
+
+### What is measured
+
+- Bench bytes: 38 of 105 cases move, 36 smaller in both builds; threeanim +64 at speed (−31 at size), threegeom +65 at size (−38 at speed), neither examined. Totals: size 2,712,651 → 2,708,371, speed 5,988,518 → 5,983,846.
+- The 70 examples at speed: every module smaller, 2,614,602 → 2,588,618 bytes; lenia −4,584, maze −845, lsystem −682, the rest about 300 each.
+- The integrator's probes on the tip, against Node and main: the two TypeErrors 684 rows, none differing from main; the proof over programs that allocate through a closure 3,402 rows, no wrong certificate; over clean ones 288 of 378 certified (main 18); over direct calls 1,044 rows, none wrong, 286 certified (main 274); wide closures 390 of 396 as Node (main 288), the six below; equal-bodied tables 60 rows, none differing; host values 96 rows as main; a function's length right on every host and level.
+- The touched test files on a freshly self-compiled compiler: parity 19, fixed-memory 14, feature-gating 36, closures 186, interop 66, minimal-output 131, function-props 9, all pass.
+- The check on `93bd6202f` (93 minutes, the load 27 to 109, another session's agents on 12 cores): lint and the file audit clean; bench bytes of 105 cases, no error; `test:self` 89; default 7,617 of 7,617; armed level 3 7,399; level 0 7,377; integration 238 of 239, one skipped; WASI 7,489 of 7,490, the one test/perf.js's wall-time bound (spread concat 8.0 ms against 5 ms; alone under WASI it passes three times of three). The examples in the check: 1.65 of V8, then 1.77 with rfft at 0.79 (a failure); at a load of 13 to 16, alternating with main: this tree 1.72 and 1.69, 25 of 25 both; main 1.69 (24 of 25, rfft 0.97) and 1.68. rfft is noise on both.
+- The check's first run (69271d30a, 117 minutes at a load of 100 to 200) found the two regressions above and nothing else.
+
+### The audio corpus (the embedding writer's run, the audio session re-runs it on this commit)
+
+99 processors compile; 90 pass the real-time gate; `memory: { fixed: ['process'] }` certifies 26 (none on a27648bc1). The next wall for 15: `__to_num` and `Math.pow` call themselves, which the proof refuses.
+
+### Known wrong on this tree, landed knowingly
+
+- A call of more than eight arguments of a callee the compiler cannot name, in a program with no closure that wide, is refused (6 of the probe's 396 rows).
+- The proof: `__to_num` and `Math.pow` self-calls; the moog filter's Number-key scratch at 'size'; a closure call bounded by a set wider than what reaches it; a closure made per call.
+- As on land-l.
+
+### Waiting
+
+- `land-o` (the input limits, 21 commits, and the integrator's two: a parenthesized comma expression as the only argument became two arguments where an operand folds, 846 of the probe's 1,800 rows on main; an optional call of a declared function did not compile or answered wrong, 69 of 90): assembled on this tree less its last two commits, its check next. Eight of the gate's rows wait for watr's encoder fix (`encode-locals-linear` c6459c7 in a scratch clone of watr, the owner's to push and publish).
+- `land-n` (the NaN box, 17 commits: 2,973 probe answers fixed, none lost) and its follow-up writer on `nanbox-rest`: five classes still read a raw Number's bits as a box.
+- The test-time chain's steps five to nine. CI's default job on 86df52211: 117 minutes (4 h 19 before the split), over the owner's hour; the runner has no shard option yet.
+- subscript's `nested-call-parse` (65ce463), the owner's to push and publish.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
