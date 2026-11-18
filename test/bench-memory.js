@@ -98,6 +98,8 @@ test('pass rule: the last pass is counted, the first kept beside it, memory of o
     writeFileSync(hook, `import cp from 'node:child_process'
 import { syncBuiltinESMExports } from 'node:module'
 const spawn = cp.spawnSync, ref = 633180752
+// JZ_TEST_RSS_STEP: each process of one pass peaks 1 kB above the last, from 50
+let ones = 0
 const line = (us, cs = ref) => 'median_us=' + us + ' checksum=' + cs + ' samples=1 stages=1 runs=1\\n'
 cp.spawnSync = (cmd, args, opts) => {
   const lane = args.find(a => /\\/run-(v8|jz-host)\\.mjs$/.test(a))
@@ -112,7 +114,7 @@ cp.spawnSync = (cmd, args, opts) => {
     const cs = k => k && (state && calls || wrong && !jitless) ? k : ref
     const stdout = n > 1 && lost === 'silent' ? line(30) + 'passes=3\\n' : n > 1 && lost === 'exit' ? line(30)
       : [30, 12, 10].slice(0, n).map((us, k) => line(us, cs(k))).join('') + 'passes=' + n + '\\n'
-    return { status: 0, stdout, stderr: 'Maximum resident set size (kbytes): ' + (n === 1 ? 50 : 99) }
+    return { status: 0, stdout, stderr: 'Maximum resident set size (kbytes): ' + (n > 1 ? 99 : process.env.JZ_TEST_RSS_STEP ? 50 + ones++ : 50) }
   }
   if (cmd === '/usr/bin/time') return { status: 0 }
   return spawn(cmd, args, opts)
@@ -136,6 +138,10 @@ syncBuiltinESMExports()
     is(read().cases.alpha.targets.v8, { medianUs: 30, firstUs: 30, passes: 1, settled: false, bytes: read().cases.alpha.targets.v8.bytes, memKb: 50, parity: 'ok' },
       'a main that answers otherwise on its next call is timed on its first pass, marked')
     ok(r.stderr.includes('as its source does under Node\'s interpreter'), r.stderr)
+    r = bench(['--targets=v8', '--paired=3'], { JZ_TEST_RSS_STEP: '1' })
+    is(r.status, 0, r.stderr)
+    is(read().cases.alpha.targets.v8.memKb, 52.5,
+      'paired memory: a first-pass process a counted run (50 to 55), the median of the rounds\' pair means, none in the warm round')
     r = bench(['--targets=jz,v8', '--paired=2'], { JZ_TEST_STATE: '1' })
     is(r.status, 0, r.stderr)
     is(read().cases.alpha.paired['jz/v8'], { ratios: [1, 1], median: 1 },

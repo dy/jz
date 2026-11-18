@@ -1099,9 +1099,9 @@ by wrapping every measured run in `time(1)` (`/usr/bin/time -l` on darwin, GNU
 an unmeasured value). One number per lane run of one pass, the footprint a deploy
 actually pays: more passes (the pass rule above) raise the peak with a second
 instance beside the first's garbage or a heap that grew, so a lane that ran more
-takes its figure from a process of the first pass alone, once per lane and case
-(`JZ_BENCH_PASSES=first`, or a shell's plain script). Node-hosted rows carry the
-engine baseline (so same-host rows
+takes its figure from a process of the first pass alone run beside it, every counted
+run its own (`JZ_BENCH_PASSES=first`, or a shell's plain script; `--paired`'s warm
+round measures none). Node-hosted rows carry the engine baseline (so same-host rows
 differ by their heap alone), native rows just the binary, `porf` compiles
 in-process each run (its deployment shape). Under `--paired` the recorded
 value is the cross-round median of each forward/reverse pair's mean. Both

@@ -582,6 +582,8 @@ const boundedBuild = (cmd, args, opts = {}, limitS = BUILD_LIMIT_S) => {
 // to remove). Keyed set filled by tryRun, cleared per case by the paired loop.
 const pairedBuilt = new Set()
 let PAIRED_REUSE = false
+// --paired's warm round, which records nothing: no memory reading
+let PAIRED_WARM = false
 // Persistent cross-run prep cache: a rival toolchain rebuild (rustc/zig/asc/go,
 // seconds each) is pure waste when neither case source nor the shared harness has
 // changed. Keyed on the max mtime of the case source, this file and bench/_lib,
@@ -608,9 +610,9 @@ const maxSrcMtime = (c) => {
   return m
 }
 // Peak RSS stays what one pass of the case costs: time(1) reads a whole process, so a
-// run of more than one pass takes it from a process of the first pass alone
-// (JZ_BENCH_PASSES=first, or the lane's `firstArgv`), once per lane and case.
-const firstPassMem = new Map()
+// run of more than one pass takes it from a process of the first pass alone beside it
+// (JZ_BENCH_PASSES=first, or the lane's `firstArgv`), each counted run its own: --paired
+// keeps its cross-round median of each pair's mean, and its warm round measures none.
 const firstPassOpts = o => ({ ...o, env: { ...process.env, JZ_BENCH_PASSES: 'first' } })
 // The lanes whose pass is another call of the module's main, where a wasm lane's is a
 // fresh instance.
@@ -694,13 +696,9 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       if (parsed.error) return failed(parsed)
     }
     if (parsed.passes > 1 && parsed.memKb != null) {
-      if (!firstPassMem.has(key)) {
-        const once = firstRun()
-        const mem = !once.error && once.checksum === parsed.checksum ? once.memKb : null
-        if (mem == null) console.warn(`[bench] ${key} memory unmeasured: the first pass alone ${once.error ?? `answered cs=${once.checksum}`}`)
-        firstPassMem.set(key, mem)
-      }
-      parsed.memKb = firstPassMem.get(key)
+      const once = PAIRED_WARM ? null : firstRun()
+      parsed.memKb = once && !once.error && once.checksum === parsed.checksum ? once.memKb : null
+      if (once && parsed.memKb == null) console.warn(`[bench] ${key} memory unmeasured: the first pass alone ${once.error ?? `answered cs=${once.checksum}`}`)
     }
     const { ruled, ...row } = parsed
     return { id, ...row, ...(unsettled() && { settled: false }) }
@@ -1847,7 +1845,7 @@ for (const cid of selectedCases) {
     // WARM round (uncounted): builds every artifact (tryRun memoizes the prep)
     // and heats caches/tiering, so counted rounds execute prebuilt binaries
     // only — no compile churn between timed runs.
-    PAIRED_REUSE = true
+    PAIRED_REUSE = PAIRED_WARM = true
     pairedBuilt.clear()
     for (const tid of avail) {
       const r = targets[tid].run(c)
@@ -1857,6 +1855,7 @@ for (const cid of selectedCases) {
         console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}${r.buildFailed || r.timedOut ? '' : '; retrying in counted rounds'}`)
       }
     }
+    PAIRED_WARM = false
     for (let round = 0; round < PAIRED; round++) {
       // ABBA: forward then reverse within the round; per-target round value =
       // mean of the two position-symmetric runs.
