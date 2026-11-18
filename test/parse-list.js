@@ -124,3 +124,16 @@ test('parse list: a program of 2500 functions compiles and runs', () => {
   const { f } = jz(src, { jzify: true }).exports
   for (const x of [0, 1.5, -7]) is(f(x), want(x), `f(${x})`)
 })
+
+// The early errors find the line before an `else` or a `while` by scanning back
+// from it; a kind of line terminator the source lacks sent the scan to the
+// source's start, so the time went with the square of the lines: 16,000 if-else
+// statements took 77 s to parse (4,000 took 5.0 s), 0.3 to 0.5 s once the scan
+// stays on its line.
+test('parse list: the early errors take a time in the lines, not their square', () => {
+  const src = `export let f = (x) => { let s = 0\n${Array.from({ length: 16000 }, (_, i) => `if (x === ${i}) s += 1\nelse s -= 1`).join('\n')}\nreturn s }`
+  const t0 = performance.now()
+  parse(src)
+  const ms = performance.now() - t0
+  ok(ms < 5000, `16,000 if-else statements parsed in ${ms.toFixed(0)} ms`)
+})

@@ -1,6 +1,6 @@
 import { ASSIGN_OPS, some } from './ast.js'
 import { ctx, err } from './ctx.js'
-import { asciiPart, isSpace } from './unicode.js'
+import { asciiPart, isSpace, lineEnd } from './unicode.js'
 
 /**
  * ECMAScript early errors that a permissive subset parser cannot enforce while
@@ -263,10 +263,13 @@ const previousSourceToken = (src, from) => {
     // Once whitespace crossed a line boundary, any `//...` text at the end
     // of the preceding line is trivia too. This helper is only entered from a
     // known token boundary, so the last `//` on that line is unambiguous.
+    // The search stays on that line: a terminator kind the source lacks sent
+    // lastIndexOf to its start, at every line, a time in the square of its lines.
     if (newline && i >= 1) {
-      const lineStart = Math.max(src.lastIndexOf('\n', i), src.lastIndexOf('\r', i),
-        src.lastIndexOf('\u2028', i), src.lastIndexOf('\u2029', i)) + 1
-      const slash = src.lastIndexOf('//', i)
+      let lineStart = i
+      while (lineStart > 0 && !lineEnd(src.charCodeAt(lineStart - 1))) lineStart--
+      let slash = i
+      while (slash >= lineStart && !(src.charCodeAt(slash) === 47 && src.charCodeAt(slash + 1) === 47)) slash--
       if (slash >= lineStart) { i = slash - 1; continue }
     }
     return [i, newline]
