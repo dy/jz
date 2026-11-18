@@ -14,13 +14,14 @@ import { foldWrappedWords, narrowBoxedLocals, narrowFlagLocals } from './int-nar
  * @module optimize/watr-tail
  */
 import { shareSplitSlots } from './split-slots.js'
-import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
+import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants, normalize as watrPasses } from 'watr/optimize'
 import { constWords, hexHalf } from '../static-data.js'
 import {
   SIMD_PINNED, LANE_PINS, solveEffects,
 } from './index.js'
 import { mathKernel } from './effects.js'
 import { guardToInt32 } from './to-int32.js'
+import { guardTables } from './guard-tables.js'
 import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
 import { unsignedDivision } from './unsigned-div.js'
@@ -711,6 +712,8 @@ export const TAIL = [
   // Generic local rewrites run only here, after link consumed JZ annotations.
   // Fast mode uses the same passes without the full module fixpoint.
   ['watOptimize', (t) => { t.m = t.time('watOptimize', () => watOptimize(t.m, t.watrOpts)) }],
+  // (the dispatch watr's chainTable takes as an else-if chain, written as a run of guarded exits)
+  ['guardTables', (t) => { if (watrPasses(t.watrOpts).chainTable) t.time('guardTables', () => guardTables(t.m)) }],
   ['conditions', (t) => { t.time('watCleanup', () => conditions(t.m)) }],
   ['propagate', (t) => { t.m = t.time('watCleanup', () => mergeLocals(propagate(t.m))) }],
   ['bool', (t) => { t.m = t.time('watCleanup', () => mergeBlocks(vacuum(bool(t.m)))) }],

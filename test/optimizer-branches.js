@@ -9,6 +9,7 @@ import encodeWat from 'watr/compile'
 import { funcWat, run, oracle, jz, compile } from './util.js'
 import { parse, count, walk } from '../scripts/wat-probe.mjs'
 import { findFunc } from './_optimizer.js'
+import { guardTables } from '../src/optimize/guard-tables.js'
 
 test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier)', () => {
   // A data-dependent guarded scalar update (min/max/clamp reduction) becomes a `select` instead
@@ -569,4 +570,81 @@ test('peephole: a word tested against zero and a constant bound is one unsigned 
     for (const x of [-2147483648, -1, 0, 1, 299, 300, 511, 512, 2147483647]) for (const y of [-1, 0, 299, 300])
       is(after(x, y), before(x, y), `condition ${k}: x=${x} y=${y}`)
   }
+})
+
+// A run of guarded exits on one word is a dispatch, and it takes a table
+// (src/optimize/guard-tables.js): the list form writes an else-if chain and a
+// switch's entry past LEN links as such a run, which watr's chainTable, reading
+// the else-if chain, does not match. A switch or an else-if of 65 cases or more
+// went from one br_table to none at the default and speed levels, a compare a
+// case: a switch of 200 ran 4.6 times slower. Each program here answers as Node,
+// with the tables it should have, at both levels.
+test('guard tables: a dispatch past LEN keeps its table', () => {
+  const J = (n, f, sep) => Array.from({ length: n }, (_, i) => f(i)).join(sep)
+  const loop = (k, idx = `i % ${k}`) => `\nexport let f = (n) => { let a = 1; for (let i = 0; i < n; i++) a = step(${idx}, a); return a }`
+  const arm = i => `(a * ${(i % 5) + 1} + ${i}) % 65521`
+  const cases = [
+    ['a switch of 100 returns', `function step(op, a) { switch (op) { ${J(100, i => `case ${i}: return ${arm(i)};`, ' ')} } return a }` + loop(100), 1],
+    ['a switch of 100 breaks and a default', `function step(op, a) { switch (op) { ${J(100, i => `case ${i}: a = ${arm(i)}; break;`, ' ')} default: a = 0 } return a }` + loop(101), 1],
+    ['an else-if of 100 returns', `function step(op, a) { ${J(100, i => `if (op === ${i}) return ${arm(i)}`, '\n else ')}\n return a }` + loop(100), 1],
+    ['an else-if of 100 assignments', `function step(op, a) { ${J(100, i => `if (op === ${i}) a = ${arm(i)}`, '\n else ')}\n else a = 7\n return a }` + loop(103), 1],
+    ['a ?: chain of 100 returned', `function step(op, a) { return ${J(100, i => `op === ${i} ? ${arm(i)} :`, ' ')} a }` + loop(100), 1],
+    ['keys with holes', `function step(op, a) { switch (op) { ${J(100, i => `case ${i + (i >> 1)}: return ${arm(i)};`, ' ')} } return a + 1 }` + loop(150), 1],
+    ['negative keys', `function step(op, a) { switch (op) { ${J(100, i => `case ${i - 50}: return ${arm(i)};`, ' ')} } return a }` + loop(100, 'i % 100 - 50'), 1],
+    ['keys too sparse for a table', `function step(op, a) { switch (op) { ${J(100, i => `case ${i * 7}: return ${arm(i)};`, ' ')} } return a + 1 }` + loop(700), 0],
+    // (the loop stands twice, a copy for an integer counter and one for any number:
+    // the inner switch takes a table in each, the outer in the first, as on main)
+    ['a switch in a case of another', `function step(op, a) { switch (op) { ${J(70, i => i === 3 ? `case 3: switch (a & 127) { ${J(80, j => `case ${j}: return ${arm(j)} + 1;`, ' ')} } return 9;` : `case ${i}: return ${arm(i)};`, ' ')} } return a }` + loop(70), 3],
+  ]
+  for (const optimize of [true, 'speed']) for (const [name, src, tables] of cases) {
+    const w = compile(src, { optimize, wat: true })
+    is((String(w).match(/br_table/g) || []).length, tables, `${name} at ${optimize === true ? 'the default' : optimize}: br_table count`)
+    const want = oracle(src).f, got = run(src, { optimize }).f
+    for (const n of [0, 1, 7, 151, 400]) is(got(n), want(n), `${name} at ${optimize === true ? 'the default' : optimize}: f(${n})`)
+  }
+})
+
+// The pass on hand-written runs: a first test that writes the word, `br_if` arms,
+// a key in a pooled global, a repeated key (the run ends before it), and the runs it
+// leaves: an arm branching by depth (a new block would move it), and light arms
+// that load (chainTable's gate: the compare chain predicts better).
+test('guard tables: the run, the words and the gates', () => {
+  const module = (arms) => `(module (memory 1) (global $k6 i32 (i32.const 6))
+    (func $g (param i32) (result i32) (i32.add (local.get 0) (i32.const 1000)))
+    (func $f (export "f") (param $x i32) (result i32) (local $s i32)
+      (block $out
+        (if (i32.eqz (local.tee $s (i32.sub (local.get $x) (i32.const 10)))) (then (return (i32.const 100))))
+        ${arms}
+        (return (i32.const -1)))
+      (i32.const 7)))`
+  const run = (tree) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports.f
+  const tables = (tree) => { let k = 0; walk(tree, n => { if (n[0] === 'br_table') k++ }); return k }
+  const check = (name, arms, want) => {
+    const src = module(arms), before = run(parseWat(src)), tree = guardTables(parseWat(src))
+    is(tables(tree), want, `${name}: tables`)
+    const after = run(tree)
+    for (let x = -3; x < 30; x++) is(after(x), before(x), `${name}: f(${x})`)
+    return tree
+  }
+  const tree = check('a run', `(if (i32.eq (local.get $s) (i32.const 1)) (then (return (i32.const 101))))
+    (br_if $out (i32.eq (local.get $s) (i32.const 2)))
+    (if (i32.eq (i32.const 3) (local.get $s)) (then (return (i32.const 103))))
+    (if (i32.eq (local.get $s) (i32.const 5)) (then (return (call $g (local.get $s)))))
+    (if (i32.eq (local.get $s) (global.get $k6)) (then (return (i32.const 106))))
+    (if (i32.eq (local.get $s) (i32.const 6)) (then (return (i32.const 999))))
+    (if (i32.eq (local.get $s) (i32.const 7)) (then (return (i32.const 107))))`, 1)
+  const out = findFunc(tree, '$f').find(n => Array.isArray(n) && n[0] === 'block')
+  is(out[2][0], 'local.set', 'the first test\'s write comes first')
+  is(out[4][0], 'if', 'the repeated key and what follows it stay ifs')
+  check('an arm that branches by depth', `(if (i32.eq (local.get $s) (i32.const 1)) (then (br 1)))
+    (if (i32.eq (local.get $s) (i32.const 2)) (then (return (i32.const 102))))
+    (if (i32.eq (local.get $s) (i32.const 3)) (then (return (i32.const 103))))
+    (if (i32.eq (local.get $s) (i32.const 4)) (then (return (i32.const 104))))`, 0)
+  check('light arms that load', [1, 2, 3, 4, 5].map(k => `(if (i32.eq (local.get $s) (i32.const ${k})) (then (return (i32.load (i32.const ${k * 4})))))`).join(' '), 0)
+  check('arms that do more', [1, 2, 3, 4, 5].map(k => `(if (i32.eq (local.get $s) (i32.const ${k})) (then (i32.store (i32.const 0) (local.get $x)) (return (i32.load (i32.const ${k * 4})))))`).join(' '), 1)
+  // a table nests a block an arm: 1,100 arms take a table a 512 of their keys
+  const wide = guardTables(parseWat(module(Array.from({ length: 1099 }, (_, i) => `(if (i32.eq (local.get $s) (i32.const ${i + 1})) (then (return (call $g (i32.const ${i})))))`).join(' '))))
+  is(tables(wide), 3, 'three tables')
+  const f = run(wide)
+  for (const x of [10, 11, 530, 1109, 1110, 2000, -1]) is(f(x), x === 10 ? 100 : x > 10 && x < 1110 ? 1000 + x - 11 : -1, `1,100 arms: f(${x})`)
 })

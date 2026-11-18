@@ -192,6 +192,7 @@ export const PASSES = [
   P('narrowBoxedLocals', 'tail', ''),
   P('stillLoads', 'tail', '+stillLoads'),
   P('watOptimize', 'tail', '?watr', { after: [['shareSplitSlots', 'the function the source wrote'], ['foldWrappedWords', 'the words'], ['narrowBoxedLocals', 'the pointers'], ['stillLoads', 'the loads ahead of the loop']], takes: 'watrOpts' }),
+  P('guardTables', 'tail', '?watr', { after: [['watOptimize', 'the runs watr leaves, each read through the local its narrowing left']], takes: 'watrOpts' }),
   // (without watr's fixpoint: its cleanup passes, once)
   P('conditions', 'tail', '!watr chainConditions'),
   P('propagate', 'tail', '!watr propagateLocals'),
