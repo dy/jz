@@ -72,6 +72,136 @@ const initArm = (n, parent) => n[0] === 'then' && Array.isArray(parent) && paren
   parent.some(c => Array.isArray(c) && c[0] === 'i32.eqz' && Array.isArray(c[1]) &&
     c[1][0] === 'global.get' && c[1][1] === '$__init_done')
 
+// === Marks: the cursor stored back ===
+//
+// A rewound frame reads the heap's cursor as it is entered (its mark) and
+// stores the mark back at each return, or hands it to the conditional
+// release, `$__frame_give` (optimize/arena-rewind.js). Such a store moves the
+// cursor only where something between the read and the store moved it, which
+// the census of that code counts, so the store itself allocates nothing. A
+// local holds a mark where every path to the point last wrote it the cursor or
+// another mark: watr's local reuse gives one local a mark and an address in
+// turn, so the question is asked of each point, forward over the structured
+// body. A parameter holds one where every call passes one; a parameter of a
+// function the host or the table can call holds any value.
+
+const isHeapRead = (v) => Array.isArray(v) && v.length === 2 && v[0] === 'global.get' && v[1] === '$__heap'
+const BOT = 0   // the state of a point no path reaches; any other is the Set of locals holding marks
+const meet = (a, b) => a === BOT ? b : b === BOT ? a : new Set([...a].filter(x => b.has(x)))
+const sameState = (a, b) => a === b || a !== BOT && b !== BOT && a.size === b.size && [...a].every(x => b.has(x))
+const holds = (s, v) => isHeapRead(v) || Array.isArray(v) && (v[0] === 'local.get' && s !== BOT && s.has(v[1]) ||
+  v[0] === 'local.tee' && holds(s, v[2]))
+const ANNOT = new Set(['result', 'param', 'type', 'local', 'export', 'import'])
+const EXITS = new Set(['return', 'unreachable', 'throw', 'rethrow', 'throw_ref', 'return_call', 'return_call_indirect', 'return_call_ref'])
+
+/** One forward pass over `fn` from `entry`, the parameters that hold marks:
+ *  each `global.set $__heap` whether it stores a mark back (`restoring`), and
+ *  each direct call which of its arguments are marks (`args`). */
+const markFlow = (fn, entry) => {
+  const restoring = new Map(), args = new Map(), labels = []
+  const target = (l) => {
+    if (typeof l === 'number') return labels[labels.length - 1 - l]
+    for (let i = labels.length - 1; i >= 0; i--) if (labels[i].name === l) return labels[i]
+    return null
+  }
+  const branch = (l, s) => { const t = target(l); if (t) t.state = meet(t.state, s) }
+  const seq = (list, s) => { for (const c of list) { if (s === BOT) return BOT; s = walk(c, s) } return s }
+  const operands = (n, from) => n.slice(from).filter(c => Array.isArray(c) && !ANNOT.has(c[0]))
+  const labelOf = (n) => typeof n[1] === 'string' && n[1][0] === '$' ? n[1] : null
+  const walk = (n, s) => {
+    if (!Array.isArray(n) || s === BOT) return s
+    const op = n[0]
+    if (op === 'local.set' || op === 'local.tee') {
+      s = walk(n[2], s)
+      if (s === BOT) return BOT
+      const kept = new Set(s)
+      if (holds(s, n[2])) kept.add(n[1]); else kept.delete(n[1])
+      return kept
+    }
+    if (op === 'global.set') {
+      s = walk(n[2], s)
+      if (n[1] === '$__heap') restoring.set(n, holds(s, n[2]))
+      return s
+    }
+    if (op === 'call' || op === 'return_call') {
+      const marks = []
+      for (const a of n.slice(2)) { s = walk(a, s); marks.push(holds(s, a)) }
+      args.set(n, marks)
+      return op === 'return_call' ? BOT : s
+    }
+    if (op === 'block' || op === 'loop' || op === 'try_table') {
+      const label = { name: labelOf(n), state: BOT }
+      const body = operands(n, 1).filter(c => !/^catch/.test(c[0]))
+      // an exception lands at a catch's label from anywhere in the body: no mark is known there
+      for (const c of n) if (Array.isArray(c) && /^catch/.test(c[0])) branch(c[c.length - 1], new Set())
+      if (op !== 'loop') {
+        labels.push(label)
+        const out = seq(body, s)
+        labels.pop()
+        return meet(out, label.state)
+      }
+      for (let at = s; ;) {
+        label.state = BOT
+        labels.push(label)
+        const out = seq(body, at)
+        labels.pop()
+        const next = meet(s, label.state)
+        if (sameState(next, at)) return out
+        at = next
+      }
+    }
+    if (op === 'if') {
+      const parts = operands(n, 1), cond = parts.filter(c => c[0] !== 'then' && c[0] !== 'else')
+      const then = parts.find(c => c[0] === 'then'), els = parts.find(c => c[0] === 'else')
+      s = seq(cond, s)
+      if (s === BOT) return BOT
+      const label = { name: labelOf(n), state: BOT }
+      labels.push(label)
+      const a = then ? seq(operands(then, 1), s) : s, b = els ? seq(operands(els, 1), s) : s
+      labels.pop()
+      return meet(meet(a, b), label.state)
+    }
+    if (op === 'br') { branch(n[1], s); return BOT }
+    if (op === 'br_if') { s = seq(operands(n, 2), s); if (s !== BOT) branch(n[1], s); return s }
+    if (op === 'br_table') {
+      const ls = n.slice(1).filter(c => !Array.isArray(c))
+      s = seq(operands(n, 1), s)
+      for (const l of ls) branch(l, s)
+      return BOT
+    }
+    s = seq(operands(n, 1), s)
+    return EXITS.has(op) ? BOT : s
+  }
+  walk(['block', ...fn.slice(2).filter(c => Array.isArray(c) && !ANNOT.has(c[0]))], entry)
+  return { restoring, args }
+}
+
+/** Every function's heap stores that put a mark back, the parameters' marks
+ *  settled across the calls that pass them. */
+const heapRestores = (funcs, outside) => {
+  const params = new Map(), entry = new Map()
+  for (const [name, fn] of funcs) {
+    const ps = fn.filter(c => Array.isArray(c) && c[0] === 'param').map(c => c[1])
+    params.set(name, ps)
+    entry.set(name, new Set(outside.has(name) ? [] : ps.filter(p => typeof p === 'string')))
+  }
+  for (let flows; ;) {
+    flows = new Map()
+    for (const [name, fn] of funcs) flows.set(name, markFlow(fn, entry.get(name)))
+    let changed = false
+    for (const [, flow] of flows) for (const [call, marks] of flow.args) {
+      const own = entry.get(call[1]), ps = params.get(call[1])
+      if (!own?.size) continue
+      for (let i = 0; i < ps.length; i++) if (own.has(ps[i]) && !marks[i]) { own.delete(ps[i]); changed = true }
+    }
+    if (!changed) {
+      const restoring = new Set()
+      for (const [, flow] of flows) for (const [n, back] of flow.restoring) if (back) restoring.add(n)
+      return restoring
+    }
+  }
+}
+
 /** Shared call/effect census of emitted code, including runtime helpers. */
 export function runtimeGraph(module, sharedMemory = false) {
   const funcs = new Map(), exports = [], records = new Map()
@@ -102,6 +232,9 @@ export function runtimeGraph(module, sharedMemory = false) {
     for (const c of n) if (typeof c === 'string' && funcs.has(c)) entries.add(c)
     walkAst(n, { enter: c => { if (c[0] === 'ref.func') entries.add(c[1]) } })
   }
+  const outside = new Set(entries)
+  for (const [, f] of exports) outside.add(f)
+  const restoring = heapRestores(funcs, outside)
   for (const [name, fn] of funcs) {
     const rec = { calls: new Set(), allocation: false, unknown: false, indirect: false }
     walkAst(fn, { enter: (n, parent) => {
@@ -111,7 +244,7 @@ export function runtimeGraph(module, sharedMemory = false) {
       if (op === 'import' || /^(return_)?call_ref$/.test(op)) rec.unknown = true
       if (/^(return_)?call_indirect$/.test(op)) rec.indirect = true
       if (/^table\.(set|grow|fill|copy|init)$/.test(op) || op === 'ref.func') tableOpen = true
-      if (op === 'memory.grow' || op === 'table.grow' || op === 'global.set' && /^\$__heap(?:_|$)/.test(n[1]) ||
+      if (op === 'memory.grow' || op === 'table.grow' || op === 'global.set' && /^\$__heap(?:_|$)/.test(n[1]) && !restoring.has(n) ||
           sharedMemory && isMemWrite(op)) rec.allocation = true
     } })
     records.set(name, rec)

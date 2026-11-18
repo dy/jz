@@ -59,6 +59,30 @@ test('runtime inspection: the init guard an export opens with is initialization'
   is(captureRuntimeInspect(mod(['call', '$__start'], ['call', '$__start'])).f.noAllocation, null, 'a call of init past the guard is the export\'s')
 })
 
+test('runtime inspection: a frame that stores its mark back allocates nothing', () => {
+  // optimize/arena-rewind.js: a rewound frame reads the cursor as it is entered and
+  // stores it back at each return, or hands it to its conditional release.
+  const heap = ['global', '$__heap', ['mut', 'i32'], ['i32.const', 64]]
+  const give = ['func', '$give', ['param', '$save', 'i32'],
+    ['if', ['i32.gt_u', ['global.get', '$__heap'], ['local.get', '$save']], ['then', ['global.set', '$__heap', ['local.get', '$save']]]]]
+  const fn = (...body) => ['func', '$f', ['export', '"f"'], ['param', '$a', 'i32'], ['local', '$m', 'i32'], ...body]
+  const alloc = (...rest) => captureRuntimeInspect(['module', heap, give, ...rest]).f.noAllocation
+  const mark = ['local.set', '$m', ['global.get', '$__heap']], back = ['global.set', '$__heap', ['local.get', '$m']]
+  const eight = ['local.set', '$m', ['i32.const', 8]]
+  is(alloc(fn(mark, back)), true, 'the mark stored back')
+  is(alloc(fn(mark, ['call', '$give', ['local.get', '$m']])), true, 'the mark handed to the release')
+  is(alloc(fn(['local.set', '$m', ['local.tee', '$a', ['global.get', '$__heap']]], ['global.set', '$__heap', ['local.get', '$a']])), true, 'a copy of the mark')
+  is(alloc(fn(eight, ['drop', ['i32.load', ['local.get', '$m']]], mark, back)), true, 'a local an address held before the mark (watr reuses locals)')
+  is(alloc(fn(mark, eight, back)), null, 'an address written over the mark')
+  is(alloc(fn(mark, ['if', ['local.get', '$a'], ['then', eight]], back)), null, 'on one path the local holds an address')
+  is(alloc(fn(mark, ['block', '$b', ['br_if', '$b', ['local.get', '$a']], eight], back)), null, 'a branch past the write meets the path through it')
+  is(alloc(fn(mark, ['loop', '$l', back, eight, ['br_if', '$l', ['local.get', '$a']]])), null, 'a loop brings the address round to the store')
+  is(alloc(fn(back)), null, 'a local never written holds no mark')
+  is(alloc(fn(['global.set', '$__heap', ['local.get', '$a']])), null, 'an export\'s parameter is the host\'s value')
+  is(alloc(fn(mark, ['call', '$give', ['local.get', '$m']]), ['func', '$g', ['export', '"g"'], ['call', '$give', ['i32.const', 8]]]), null,
+    'a release another caller hands an address')
+})
+
 test('runtime inspection: nondecimal counter immediates cannot forge a work proof', () => {
   const inspectLoop = (step, bound) => captureRuntimeInspect(['module',
     ['func', '$f', ['export', '"f"'], ['local', '$i', 'i32'],
