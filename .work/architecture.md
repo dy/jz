@@ -3020,6 +3020,49 @@ CI on 7125c4739: examples-perf, test262, pages, self-compile (bootstrap and four
 
 - **The embedding lane's small ones** (`worktree-wf_757e86d3-74a-1`, seven commits on 85e229c76, tip `26ea299f6`): `%TypedArray%.of` as `from` of the list of its arguments (jzify); a literal's elements converted after the last is evaluated; a BigInt view's elements through ToBigInt; a throw while a module starts given to the host as an export's is (an init that can throw is `_initialize`); the fixed-memory proof without the init guard; import sites read off the parser (an import in the middle of a line). Its last commit the integrator's: a class's own name bound in its body, `new T.of()` left as written.
 
+## The land-k landing: the embedding lane's small ones (2026-11-18)
+
+Seven commits on e46e3705c, tip `3da3e688f`. No listing moves.
+
+### What landed
+
+- **`%TypedArray%.of`** (`c705f6734`; ECMA-262 23.2.2.2): jzify's typedCtorValues rewrites `T.of(args)` as `T.from([args])`, under the shadow test the `BYTES_PER_ELEMENT` fold beside it uses, so no later stage learns the name. Every kind, a spread, no arguments, effects in order, a fresh array a call, a module-level one. Not handled, refused as before: `of` as a value, `.of.call`, `?.of`, `['of']`; under the test-only `strict` option jzify is skipped and `of` stays refused.
+- **A typed array's literal converts its elements after the last is evaluated** (`3474662e4`): `T.from([…])` and `new T([…])` converted each element as it was evaluated, so a `valueOf` ran before the later elements (aAbB for abAB). Held only where the program defines a `valueOf` or `toString` and an element before the last is not proven primitive.
+- **A BigInt view's elements go through ToBigInt** (`7dee036db`): `of`, `from([…])`, `new T([…])` and the Array copy stored a Number's bits or a box's (`BigInt64Array.of(1)` 4607182418800017408 where JavaScript throws); `T.from` of a BigInt view routes by its source's kind (a Set, a string); a Number view holds its items where one may be a BigInt.
+- **A throw while a module starts reaches the host as an export's does** (`95953170b`): an init that can throw is emitted as `_initialize` in place of a start section (optimize/watr-tail.js initThrows), so `jz()` and `instantiate()` throw the program's Error, string, number or object; 28 programs as Node, 21 of them `object {}` or `RuntimeError: unreachable` before. An export called first runs init through its guard. A module whose init cannot throw keeps its start section: over the 69 gallery examples and the 105 bench cases the 19 modules that export `_initialize` are the same as before.
+- **The fixed-memory proof leaves the init guard out** (`95324756e`): the census of emitted code counted the guard's arm as the export's own work and refused `memory: { fixed: [...] }` with "process → $__start" for a WASI build and a host-reading init (on main already), then for a throwing init.
+- **Import sites off the parser** (`70fd740ba`): src/resolve.js read them by a line-anchored pattern; an import in the middle of a line (a minified bundle) was missed. 219 graphs of the repo fingerprint the same.
+- **`3da3e688f`, the integrator's**: a class's own name is bound in its body (a class expression named as a typed constructor had its `of` taken for the real one's, and its `BYTES_PER_ELEMENT` folded to 8 for its own 3 on main); a call that `new` constructs is left as written (`new Float64Array.of(1)` made an array where JavaScript throws). The branch's final review found both.
+
+### What is measured
+
+- Bench bytes: 0 of 105 cases move. The four listings as on main.
+- The integrator's probes on the tip: `of` and the forms beside it 12 rows as Node at four levels; the class and `new` forms as intended; the earlier probes (912, 108, 168, 168, 24 rows) none differing; plasma 585 f64x2.
+- The check on `3da3e688f` (108 minutes at load 20 to 35): lint and the file audit clean; bench bytes of 105 cases, no error; `test:self` 89; default 7,597 of 7,597; the armed level 3 7,395; level 0 7,379; integration 238 of 239, one skipped; the examples 1.69 and 1.66 of V8, the first run naming blackhole at 0.88 (its build byte for byte main's).
+
+### What land-j moved on x64
+
+Two runners, both AMD; the Xeon 6975P-C where land-e's callback lost is not measured yet.
+
+- EPYC 7763 (44298567534, five rounds): callback 0.968, polytri 0.984, async 0.979, decode-qoa 0.951, each in every round; decode-tta 1.031, every round slower; nine others within 0.1%.
+- EPYC 9V74 (44305778388, seven rounds): callback 0.961, polytri 0.975, decode-qoa 0.930; decode-tta 1.001.
+- Against C's wasm on the 7763, by the pass rule: polytri 2.268, mapint 1.326, fabrik 1.276, stdlib-gamma 1.032.
+
+### For an embedder
+
+A module whose top level can throw has no start section: it exports `_initialize`, and every export runs it first if it has not run. A host that reads the module's memory before it calls any export calls `_initialize` itself. Under WASI a throw at start traps in wasmtime with no message (the owner's ABI decision).
+
+### Known wrong on this tree, landed knowingly
+
+- From this lane's reviews, on main before it too: `new Float64Array(aBigInt64Array)` copies bits; `Float64Array.from(BigInt64Array.from([1n]))` is NaN at three levels; a typed constructor held in a variable, an element or a parameter has no statics (a runtime TypeError); `'a'.repeat(-1)` returns a string the host cannot read; an Error's `cause` is dropped; `e.constructor` of a runtime-raised error is undefined; `T[Symbol.species]`, `Symbol.toStringTag` of a typed array.
+- A module `let` written a fraction in a parameter default is held to a word (5 for 6; v1.0.3 too): fixed on `wave0-loops`, for the next tree but one.
+- As on land-j.
+
+### Handed back and waiting
+
+- **The test-time chain's first four steps** (`tests-time`, eight commits, picked onto this tree as `land-l`): test/optimizer.js cut into 17 files; a file's CPU seconds a leg (`--costs`), a split run weighed by them; the landing battery's armed level 3 in place of plain; the one-process core run moved to a weekly workflow and the per-push default leg split; each leg its own levels.
+- **Wave 0** (the audit's soundness tasks): `wave0-loops` (13 commits on e46e3705c: loop passes and a default's closures, the descriptor through an alias, a function's prototype, three compile-state leaks, the default's write above), the hosted compiler's helper dependencies (sound, comments), Symbol.toPrimitive (four commits, no blocker). Two with a blocker and a writer on each: the input limits' gate (watr's encoder quadratic in locals) and subscript's nested-call parse (`new get[k](x).z`).
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

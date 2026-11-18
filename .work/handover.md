@@ -533,3 +533,21 @@ To do after this landing: the x64 probe of callback, polytri and the word's othe
 cases against 7125c4739, and the revert of polytri's form if it loses there; the gate
 `test/bench-claims.js` does not ask a dataset for `meta.passes`; the first reference run
 by the pass rule, with the README's method sentence in the commit that brings its data.
+
+## Branches of the land-k landing (2026-11-18), tips before deletion
+
+```
+3da3e688f land-k                        the landing branch as its check ran it: main (e46e3705c) and seven commits; the record's commit after it
+26ea299f6 worktree-wf_757e86d3-74a-1    the embedding lane's small ones: landed as 3474662e4 to 3da3e688f
+```
+
+Waiting, each named in the record: `land-l` (this tree and `tests-time`'s eight, 182eb94ae
+to d22ffe40f; the chain's fifth step still being written on `tests-time`); `wave0-loops`
+(scratch worktree `w0-loops`, tip 8837fce12; its d3372be72 adds a test to test/optimizer.js,
+which land-l's split deletes: move it to the split file when both meet);
+`worktree-wf_00b2d799-cc8-10` 782b0c991 (the hosted helper dependencies);
+`worktree-wf_00b2d799-cc8-17` b39e6aa36 (Symbol.toPrimitive);
+`worktree-wf_00b2d799-cc8-12` 1f6989576 (the limits, a writer repairing its gate);
+`nested-call-parse` ce53752 in /Users/div/projects/subscript (a writer repairing a tree).
+Workflows running: `jz-nanbox`, `jz-tests-time`. Briefs of the two repairs: session
+scratch `w0-fix/`.
