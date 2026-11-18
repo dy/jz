@@ -467,3 +467,17 @@ measurement of lowering forms; VS Code's universal binary runs as Node in x64 mo
 Rosetta (instruction counts, not Intel's latencies). Two compilers loaded in one process
 share the parser's registrations and the second fails to parse: build each tree's output
 in its own process.
+
+## The land-h landing (2026-11-17, the evening)
+
+```
+39186ffed land-h   main (85e229c76) and one commit: plasma's lift back; the record's commit after it
+```
+
+Handed back since the land-g record and waiting for the next tree: `kinds-ada0`
+(3b574224d a loop whose counter is tested with an offset, 185a661f5 an exported
+parameter kept as the program's own calls pass it, 531d5a8f8 a BigInt compared with a
+string and with a number); `worktree-agent-a1be0465fdf269fbe` (the compaction's twelve
+commits, tip edac56627; 3ebce5115 goes straight after 2d03ca18c). Started since:
+`jz-baseline-tier` (done: `tier/plan/plan.md` and its critic), `jz-audio-a` (typed
+arrays' static `of`, a throw while a module starts, an import in the middle of a line).
