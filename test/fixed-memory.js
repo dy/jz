@@ -236,7 +236,9 @@ test('fixed memory: a closure call is followed to the closures it can reach', ()
     }`
   let refused = ''
   try { compile(allocates, options(0)) } catch (e) { refused = e.message }
-  ok(/memory\.fixed cannot certify process → .*called through a closure at line 4:/.test(refused) && /heap allocation/.test(refused), refused)
+  // (the hosted compiler keeps no source text, so no error of its names a position: test/error-location.js)
+  const through = onKernel() ? /memory\.fixed cannot certify process → .*called through a closure/ : /memory\.fixed cannot certify process → .*called through a closure at line 4:/
+  ok(through.test(refused) && /heap allocation/.test(refused), refused)
   // A cycle through a closure call is recursion.
   const cycle = `let f = (n) => 0
     const g = (n) => n > 0 ? f(n - 1) + 1 : 0
