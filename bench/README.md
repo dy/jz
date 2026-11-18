@@ -50,8 +50,11 @@ that. A wasm lane's pass is a fresh instance of the one compiled module (the cod
 stays, the memory starts over); a JS lane's is another call of the same module's
 `main`. A first pass of 2.4 s or more counts as it is: its warm-ups, never under 3 of
 24 runs in the corpus (`test/bench-build.js` holds every case to that share), alone
-outlast the 300 ms. Each pass prints its line; every pass must answer the first's
-checksum, and the row keeps the first pass's median as `firstUs`. A case whose `main`
+outlast the 300 ms. Each pass prints its line, and the rule prints `passes=<n>` after
+the last: a run whose lines are fewer than its count, or that ends before printing one,
+fails, so lost passes never read as one long first pass. Every pass must answer the
+first's checksum; the row keeps the first pass's median as `firstUs` and the passes run
+as `passes`. A case whose `main`
 advances module state answers another checksum on its next call, another workload
 (under Node on 2026-11-17: `fabrik`, `jsontransform`, `setops`, `stringify`,
 `threegeom` and `threescene`, of 106): its JS lanes run the first pass alone, the row

@@ -463,13 +463,14 @@ const discoverCases = () => readdirSync(CASES_DIR, { withFileTypes: true })
   .sort((a, b) => Object.keys(CASE_NAMES).indexOf(a.id) - Object.keys(CASE_NAMES).indexOf(b.id))
 
 // One line a pass (_lib/passes.js): the last pass is the one counted, the first is kept
-// beside it as `firstUs`, and every pass's checksum is returned for the caller to hold.
+// beside it as `firstUs`, every pass's checksum is returned for the caller to hold, and
+// `ruled` is the count the pass rule printed after its last pass (null where none ran).
 const parseLine = stdout => {
   const lines = [...stdout.matchAll(/median_us=(\d+)\s+checksum=(-?\d+)\s+samples=(\d+)\s+stages=(\d+)\s+runs=(\d+)/g)]
   if (!lines.length) return null
-  const m = lines.at(-1)
+  const m = lines.at(-1), ruled = [...stdout.matchAll(/^passes=(\d+)$/gm)].at(-1)
   return { medianUs: +m[1], checksum: (+m[2]) >>> 0, samples: +m[3], stages: +m[4], runs: +m[5],
-    firstUs: +lines[0][1], passes: lines.length, checksums: lines.map(l => (+l[2]) >>> 0) }
+    firstUs: +lines[0][1], passes: lines.length, checksums: lines.map(l => (+l[2]) >>> 0), ruled: ruled ? +ruled[1] : null }
 }
 
 // Peak memory per run: unbounded invocations are wrapped in /usr/bin/time
@@ -617,6 +618,19 @@ const firstPassOpts = o => ({ ...o, env: { ...process.env, JZ_BENCH_PASSES: 'fir
 // its first pass alone, the row marked `settled: false`. Lane:case pairs found so.
 const CALL_PASSES = new Set(['v8', 'deno', 'bun', 'jsc', 'spidermonkey', 'graaljs'])
 const carriesState = new Set()
+// The lanes a JavaScript or wasm engine runs, each by the pass rule, which prints its
+// count after the last pass. The native binaries, Wasmtime's ahead-of-time code and
+// CPython run one pass and print one line.
+const RULE_LANES = new Set([...CALL_PASSES, 'jz', 'jz-exact', 'jz-base', 'as', 'wat', 'c-wasm', 'c-wasm-fast',
+  'rust-wasm', 'go-wasm', 'zig-wasm', 'tinygo', 'jawsm', 'javy', 'js2wasm', 'qjs-wasi'])
+// A run by the rule printed as many results as its count; a run of one pass, one. A
+// pass whose line went missing, or a process that ended before the rule did, fails
+// here: one line alone would read as a first pass of FIRST_MS or more.
+const passCheck = (r, rule) => r.error ? r
+  : rule ? r.ruled === r.passes ? r : { error: r.ruled == null
+    ? `the pass rule printed no count after ${r.passes} result${r.passes === 1 ? '' : 's'}: the process ended before the rule did`
+    : `the pass rule ran ${r.ruled} passes, ${r.passes} printed a result` }
+  : r.passes === 1 && (r.ruled ?? 1) === 1 ? r : { error: `a run of one pass printed ${r.passes} results` }
 const tryRun = (id, c, prep, argv, opts = {}) => {
   try {
     mkdirSync(caseBuild(c), { recursive: true })
@@ -650,7 +664,8 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       pairedBuilt.add(key)
     }
     const failed = r => ({ id, error: r.error, ...(r.timedOut && { timedOut: true }) })
-    let parsed = carriesState.has(key) ? runProc(firstArgv, firstPassOpts(runOpts)) : runProc(argv, runOpts)
+    const firstRun = () => passCheck(runProc(firstArgv, firstPassOpts(runOpts)), false)
+    let parsed = carriesState.has(key) ? firstRun() : passCheck(runProc(argv, runOpts), RULE_LANES.has(id) && !FIRST_PASS_ONLY)
     if (parsed.error) return failed(parsed)
     // every pass answers what the first answered: a fresh instance must
     if (parsed.checksums.some(cs => cs !== parsed.checksums[0])) {
@@ -661,19 +676,20 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       // (stderr: a `[run]` line is open on stdout)
       console.warn(`[passes] ${key}: main answers ${seen} on successive calls, carrying state between them; the lane runs its first pass alone`)
       carriesState.add(key)
-      parsed = runProc(firstArgv, firstPassOpts(runOpts))
+      parsed = firstRun()
       if (parsed.error) return failed(parsed)
     }
     if (parsed.passes > 1 && parsed.memKb != null) {
       if (!firstPassMem.has(key)) {
-        const once = runProc(firstArgv, firstPassOpts(runOpts))
-        const mem = !once.error && once.passes === 1 && once.checksum === parsed.checksum ? once.memKb : null
-        if (mem == null) console.warn(`[bench] ${key} memory unmeasured: the first pass alone ${once.error ?? `ran ${once.passes} passes, cs=${once.checksum}`}`)
+        const once = firstRun()
+        const mem = !once.error && once.checksum === parsed.checksum ? once.memKb : null
+        if (mem == null) console.warn(`[bench] ${key} memory unmeasured: the first pass alone ${once.error ?? `answered cs=${once.checksum}`}`)
         firstPassMem.set(key, mem)
       }
       parsed.memKb = firstPassMem.get(key)
     }
-    return { id, ...parsed, ...(carriesState.has(key) && { settled: false }) }
+    const { ruled, ...row } = parsed
+    return { id, ...row, ...(carriesState.has(key) && { settled: false }) }
   } catch (e) {
     return { id, error: e.message }
   }
@@ -1976,6 +1992,8 @@ for (const cid of selectedCases) {
           medianUs: r.medianUs,
           // the first pass's median: what a cold run costs (the counted one where it ran alone)
           firstUs: r.firstUs,
+          // the passes its process ran: 1 where the first was FIRST_MS or more, or ran alone
+          passes: r.passes,
           // a JS lane on a case whose main carries state between calls: its first pass counted
           ...(r.settled === false && { settled: false }),
           bytes: r.bytes ?? null,

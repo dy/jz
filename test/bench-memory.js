@@ -63,7 +63,7 @@ const spawn = cp.spawnSync, samples = JSON.parse(process.env.JZ_TEST_RSS)
 cp.spawnSync = (cmd, args, opts) => {
   if (args.some(a => a.endsWith('/run-v8.mjs'))) {
     const rss = samples.shift()
-    return { status: 0, stdout: 'median_us=10 checksum=633180752 samples=1 stages=1 runs=1',
+    return { status: 0, stdout: 'median_us=10 checksum=633180752 samples=1 stages=1 runs=1\\npasses=1\\n',
       stderr: rss == null ? '' : 'Maximum resident set size (kbytes): ' + rss }
   }
   if (cmd === '/usr/bin/time') return { status: 0 }
@@ -101,9 +101,11 @@ const line = (us, cs = ref) => 'median_us=' + us + ' checksum=' + cs + ' samples
 cp.spawnSync = (cmd, args, opts) => {
   const lane = args.find(a => /\\/run-(v8|jz-host)\\.mjs$/.test(a))
   if (lane) {
-    const first = (opts.env ?? process.env).JZ_BENCH_PASSES === 'first', state = process.env.JZ_TEST_STATE
-    return { status: 0, stdout: first ? line(30) : line(30) + line(12, state ? 1 : ref) + line(10, state ? 2 : ref),
-      stderr: 'Maximum resident set size (kbytes): ' + (first ? 50 : 99) }
+    const first = (opts.env ?? process.env).JZ_BENCH_PASSES === 'first', { JZ_TEST_STATE: state, JZ_TEST_LOST: lost } = process.env
+    // lost: 'silent', the passes after the first print to nowhere; 'exit', the process ends after the first
+    const stdout = first ? line(30) + 'passes=1\\n' : lost === 'silent' ? line(30) + 'passes=3\\n' : lost === 'exit' ? line(30)
+      : line(30) + line(12, state ? 1 : ref) + line(10, state ? 2 : ref) + 'passes=3\\n'
+    return { status: 0, stdout, stderr: 'Maximum resident set size (kbytes): ' + (first ? 50 : 99) }
   }
   if (cmd === '/usr/bin/time') return { status: 0 }
   return spawn(cmd, args, opts)
@@ -119,17 +121,26 @@ syncBuiltinESMExports()
     let r = bench(['--targets=v8'])
     is(r.status, 0, r.stderr)
     const { v8 } = read().cases.alpha.targets
-    is([v8.medianUs, v8.firstUs, v8.memKb, v8.parity, v8.settled], [10, 30, 50, 'ok', undefined], 'the last pass, the first beside it, the memory of the first alone')
+    is([v8.medianUs, v8.firstUs, v8.passes, v8.memKb, v8.parity, v8.settled], [10, 30, 3, 50, 'ok', undefined], 'the last pass, the first beside it, the memory of the first alone')
     is(read().meta.passes, { settleMs: 300, firstMs: 2400 }, 'the dataset names its protocol')
 
     r = bench(['--targets=v8'], { JZ_TEST_STATE: '1' })
     is(r.status, 0, r.stderr)
-    is(read().cases.alpha.targets.v8, { medianUs: 30, firstUs: 30, settled: false, bytes: read().cases.alpha.targets.v8.bytes, memKb: 50, parity: 'ok' },
+    is(read().cases.alpha.targets.v8, { medianUs: 30, firstUs: 30, passes: 1, settled: false, bytes: read().cases.alpha.targets.v8.bytes, memKb: 50, parity: 'ok' },
       'a main that answers otherwise on its next call is timed on its first pass, marked')
     r = bench(['--targets=jz'], { JZ_TEST_STATE: '1' })
     is(r.status, 0, r.stderr)
     const { jz } = read().cases.alpha.targets
     is([jz.status, /pass checksums differ: 633180752, 1, 2/.test(jz.reason)], ['fail', true], 'a fresh instance that answers otherwise fails')
+
+    // a run whose count disagrees with its lines fails, never reads as one long first pass
+    for (const [lost, lane, reason] of [['silent', 'jz', 'the pass rule ran 3 passes, 1 printed a result'],
+      ['exit', 'v8', 'the pass rule printed no count after 1 result: the process ended before the rule did']]) {
+      r = bench([`--targets=${lane}`], { JZ_TEST_LOST: lost })
+      is(r.status, 0, r.stderr)
+      const row = read().cases.alpha.targets[lane]
+      is([row.status, row.reason], ['fail', reason], `${lost}: ${lane} fails with what it printed`)
+    }
 
     r = bench(['--targets=v8', '--passes=first'])
     is(r.status, 0, r.stderr)
@@ -157,7 +168,7 @@ cp.spawnSync = (cmd, args, opts) => {
     writeFileSync(${JSON.stringify(counts)}, JSON.stringify(counts))
     if (key === 'v8/alpha' && counts[key] === Number(process.env.JZ_TEST_FAIL_AT))
       return { status: 1, stderr: 'intentional lane failure' }
-    return { status: 0, stdout: 'median_us=10 checksum=' + (name === 'alpha' ? 633180752 : 2929747182) + ' samples=1 stages=1 runs=1', stderr: '' }
+    return { status: 0, stdout: 'median_us=10 checksum=' + (name === 'alpha' ? 633180752 : 2929747182) + ' samples=1 stages=1 runs=1\\npasses=1\\n', stderr: '' }
   }
   return spawn(cmd, args, opts)
 }

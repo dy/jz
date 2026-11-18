@@ -86,6 +86,8 @@ if (args[0] === '--help' || args[0] === '--version') process.exit(0)
 const src = fs.readFileSync(args[0], 'utf8')
 if (!/^var performance =/m.test(src)) process.exit(9)
 console.log(${JSON.stringify(METRIC)})
+// the pass rule's script (bench.mjs writeFlat) prints its count after the last pass
+if (src.includes("'passes=' + n")) console.log('passes=1')
 `)
     chmodSync(shell, 0o755)
 

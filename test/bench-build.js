@@ -9,7 +9,8 @@ import { instantiate } from '../interop.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
 import { mix } from '../bench/_lib/benchlib.js'
 import { releaseBytes, wasmStrippedBytes } from '../bench/_lib/release-bytes.js'
-import { FIRST_MS, SETTLE_MS, settle } from '../bench/_lib/passes.js'
+import { FIRST_MS, SETTLE_MS, countOf, settle, settleSource } from '../bench/_lib/passes.js'
+import vm from 'node:vm'
 import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audiojs/compare.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -38,7 +39,7 @@ test('bench host: deferred initialization completes before the first kernel call
     export function main() { env.logResult(0, data[0], data.length, 1, 1) }
   `)
   is(result.status, 0, result.stderr)
-  is(result.stdout.trim(), 'median_us=0 checksum=7 samples=1 stages=1 runs=1')
+  is(result.stdout.trim(), 'median_us=0 checksum=7 samples=1 stages=1 runs=1\npasses=1')
 })
 
 test('bench host: deferred initialization and host globals use the runtime bridge once', () => {
@@ -56,8 +57,8 @@ test('bench host: deferred initialization and host globals use the runtime bridg
     }
   `)
   is(result.status, 0, result.stderr)
-  is(result.stdout.trim().split('\n'), [0, 2, 2, 1, 0].map(n =>
-    `median_us=0 checksum=${100 + 7 * n} samples=${n} stages=1 runs=1`))
+  is(result.stdout.trim().split('\n'), [...[0, 2, 2, 1, 0].map(n =>
+    `median_us=0 checksum=${100 + 7 * n} samples=${n} stages=1 runs=1`), 'passes=1'])
 })
 
 test('bench host: absent graph imports stay undefined and the clock returns numbers', () => {
@@ -70,7 +71,7 @@ test('bench host: absent graph imports stay undefined and the clock returns numb
     }
   `)
   is(result.status, 0, result.stderr)
-  is(result.stdout.trim(), 'median_us=0 checksum=1 samples=0 stages=1 runs=1')
+  is(result.stdout.trim(), 'median_us=0 checksum=1 samples=0 stages=1 runs=1\npasses=1')
 })
 
 test('bench host: missing entry points and unsupported host calls fail visibly', () => {
@@ -83,13 +84,14 @@ test('bench host: missing entry points and unsupported host calls fail visibly',
   is(unsupported.stdout, '', 'a failure cannot report benchmark results')
 })
 
-// The pass rule (bench/_lib/passes.js) on a fake clock: a pass of `ms` each.
-const settled = async (ms, first) => {
+// The pass rule (bench/_lib/passes.js) on a fake clock: a pass of `ms` each, the start of
+// every pass, and the count the rule answers, which must be the passes it ran.
+const settled = async (ms, n) => {
   const real = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let now = 0
   const starts = []
   Object.defineProperty(globalThis, 'performance', { value: { now: () => now }, configurable: true, writable: true })
-  try { await settle(() => { starts.push(now); now += ms }, first) }
+  try { is(await settle(() => { starts.push(now); now += ms }, n), starts.length, 'the rule answers the passes it ran') }
   finally { Object.defineProperty(globalThis, 'performance', real) }
   return starts
 }
@@ -99,8 +101,23 @@ test('bench passes: the pass after the settling time is counted, a long first pa
   is(await settled(SETTLE_MS), [0, SETTLE_MS], 'a pass of the settling time runs twice')
   is(await settled(FIRST_MS - 1), [0, FIRST_MS - 1], 'a first pass short of FIRST_MS runs twice')
   is(await settled(FIRST_MS), [0], 'a first pass of FIRST_MS counts as it is')
-  is(await settled(1, true), [0], 'the old protocol runs the first pass alone')
+  is(await settled(1, countOf('first')), [0], 'the old protocol runs the first pass alone')
+  is(await settled(FIRST_MS, countOf('2')), [0, FIRST_MS], 'a count runs that many passes, however long')
   ok((await settled(7)).at(-1) >= SETTLE_MS, 'the counted pass begins after the settling time')
+  is(countOf(undefined), 0, 'unset, the rule')
+  let thrown = null
+  try { countOf('frist') } catch (e) { thrown = e.message }
+  ok(thrown?.includes("'first' or a count"), 'a value of the switch it does not know fails, never runs the rule unasked')
+})
+
+// The shells run the rule from source text (bench.mjs writeFlat): it prints its count too.
+test('bench passes: the shells\' rule prints its count after the last pass', async () => {
+  const out = [], line = 'median_us=1 checksum=1 samples=1 stages=1 runs=1'
+  await vm.runInNewContext(`const main = () => console.log('${line}')\n;${settleSource('main')}`,
+    { console: { log: s => out.push(s) }, performance })
+  ok(out.length > 2, `${out.length - 1} passes`)
+  is(out.at(-1), `passes=${out.length - 1}`, 'the count follows the last pass and counts every line')
+  is([...new Set(out.slice(0, -1))], [line], 'every other line a pass\'s')
 })
 
 // FIRST_MS proves a long first pass's timed runs began after SETTLE_MS only while its
@@ -125,10 +142,11 @@ test('bench host: a pass is a fresh instance, repeated until the engine has run 
   `
   const rule = runHost(source, '')
   is(rule.status, 0, rule.stderr)
-  const lines = rule.stdout.trim().split('\n')
+  const lines = rule.stdout.trim().split('\n'), count = lines.pop()
   ok(lines.length > 2, `${lines.length} passes`)
+  is(count, `passes=${lines.length}`, 'the rule\'s count, after the last pass, is the lines printed')
   is([...new Set(lines)], ['median_us=1 checksum=8 samples=1 stages=1 runs=1'], 'every pass starts its module state over')
-  is(runHost(source).stdout.trim(), lines[0], 'JZ_BENCH_PASSES=first runs the first pass alone')
+  is(runHost(source).stdout.trim(), `${lines[0]}\npasses=1`, 'JZ_BENCH_PASSES=first runs the first pass alone')
 })
 
 test('bench build: every committed workload is a valid JavaScript module', () => {
