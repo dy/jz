@@ -786,8 +786,14 @@ export default (ctx) => {
   // shared OrdinaryToPrimitive chain (compile/emit/to-primitive.js).
   // ToPrimitive with the default hint (ES2024 7.1.1): a user valueOf/toString
   // through the prelude (compile/emit/to-primitive.js) when the program has
-  // one, else the kind's inherited string. Callers pass a heap value.
-  ctx.core.stdlib['__to_prim_dflt'] = () => `(func $__to_prim_dflt (param $v i64) (result i64)
+  // one, else the kind's inherited string. Callers pass a heap value. A
+  // program with a `[Symbol.toPrimitive]` has the default hint's own prelude,
+  // which takes a Date too.
+  ctx.core.stdlib['__to_prim_dflt'] = () => ctx.funcs.runtimeRoots.has('__jz_tp_dflt') ? `(func $__to_prim_dflt (param $v i64) (result i64)
+    (if (i32.or (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+      (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.HASH})))
+      (then (return (i64.reinterpret_f64 (call $__jz_tp_dflt (f64.reinterpret_i64 (local.get $v)))))))
+    (call $__to_str (local.get $v)))` : `(func $__to_prim_dflt (param $v i64) (result i64)
     ${ctx.module.required.has('date') && ctx.schema.dateSid != null ? `(if (i32.and
       (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
       (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
