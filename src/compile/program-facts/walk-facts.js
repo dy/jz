@@ -7,7 +7,7 @@
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/walk-facts
  */
-import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, walkAst, STATIC_BASE } from '../../ast.js'
+import { commaList, siteArgs, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, walkAst, STATIC_BASE } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { VAL } from '../../reps.js'
 import { nullishArm } from '../../kind.js'
@@ -382,8 +382,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // innermost arrow it runs in (`arrow`): its arguments are that body's
         // values, which the lattices read from that body, not the caller's.
         {
-          const a = node[2]
-          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          const argList = siteArgs(node)
           acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node, arrow })
         }
         for (let i = 2; i < node.length; i++) {
@@ -403,8 +402,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       // purely additive, changes no other observation.
       if (isCallOp && Array.isArray(node[1]) && node[1][0] === '[]' &&
           node[1].length === 3 && typeof node[1][1] === 'string') {
-        const a = node[2]
-        const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        const argList = siteArgs(node)
         acc.computedCallSites.push({ objName: node[1][1], argList, callerFunc: caller, node })
       }
       // `.`-member call `ns.prop(args)` on a bare-name receiver: a direct-call
@@ -431,8 +429,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
           Array.isArray(node[1][1]) && node[1][1][0] === '?:' && typeof node[1][2] === 'string') {
         const leaves = dispatchLeaves(node[1][1])
         if (leaves && leaves.length) {
-          const a = node[2]
-          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          const argList = siteArgs(node)
           acc.memberDispatchSites.push({ leaves, prop: node[1][2], argList, callerFunc: caller, node })
         }
       }
@@ -568,8 +565,7 @@ export function collectProgramFacts(ast) {
   const initCallSites = (node) => walkAst(node, { enter: node => {
     const isCallOp = node[0] === '()' || node[0] === '?.()'
     if (isCallOp && isFuncRef(node[1], ctx.funcs.names)) {
-      const a = node[2]
-      const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+      const argList = siteArgs(node)
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
     }
     if (isCallOp && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
@@ -867,7 +863,7 @@ export function synthesizeComputedDispatchCallSites(programFacts, programIndex) 
       // same unsuppliable-param and arity gates as before.
       const innerSite = (n, callee) => {
         programFacts.memberCallSites.push({ callee, callerFunc: site.callerFunc })
-        const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
+        const innerArgList = siteArgs(n).map(a => substitute(a, subst))
         const ok = (!unsuppliable.size || innerArgList.every(a => !mentionsAny(a, unsuppliable))) &&
           !calleeArityShortfalls(callee, innerArgList.length)
         if (ok)

@@ -1627,3 +1627,38 @@ class D extends C { constructor(r) { super((1 + 1, r)) } m(r) { return super.m((
     }
   }
 })
+
+// `f?.(a, b)` of a function the program declares is the call `f(a, b)`: the function is never
+// nullish. An optional call holds its arguments flat after its callee where a call holds them
+// in one slot, and the program facts read the one slot of both (program-facts/walk-facts.js):
+// of `f?.(a, b)` they saw the argument `a` alone, the emitter then took `f` as a value no
+// closure form was made for, and the program did not compile ("'__a0' is not in scope", v1.0.3
+// too); a comma expression as the argument was two arguments; a pass that wrote a site's
+// arguments back wrote the one slot (plan/lanes.js, an object argument's fields shifted).
+test('calls: an optional call of a declared function is the call', () => {
+  const programs = {
+    'two arguments': `const two = (a, b) => a * 100 + b\nexport const f = (x) => two?.(x, 5)`,
+    'the second varies': `const two = (a, b) => a * 100 + b\nexport const f = (x) => two?.(1, x)`,
+    'a string': `const two = (a, b) => a + ':' + b\nexport const f = (x) => two?.(x, 'k')`,
+    'a default': `const two = (a, b = 7) => a * 100 + b\nexport const f = (x) => two?.(x, 5) + two?.(x)`,
+    'three arguments': `const three = (a, b, c) => a * 100 + b * 10 + c\nexport const f = (x) => three?.(1, 2, x)`,
+    'beside a plain call': `const two = (a, b) => a * 100 + b\nexport const f = (x) => two(1, 2) + two?.(x, 0.5)`,
+    'an argument missing at one site': `const two = (a, b) => b === undefined ? -1 : a + b\nexport const f = (x) => two?.(x, 3) + two(x)`,
+    'a comma expression': `const id = (r) => r\nexport const f = (x) => id?.((3, x))`,
+    'a declaration': `function two(a, b) { return a * 100 + b }\nexport const f = (x) => two?.(x, 5.5)`,
+    'a typed array': `const two = (a, b) => a + b[0]\nexport const f = (x) => two?.(x, new Float64Array([2.5]))`,
+    'an object literal': `const two = (a, b) => a + b.k\nexport const f = (x) => two?.(x, { k: 2.5 })`,
+    'a closure': `const two = (a, g) => a + g(1)\nexport const f = (x) => two?.(x, (v) => v + 0.5)`,
+    'at the module start': `const two = (a, b) => a * 100 + b\nconst K = two?.(1, 2.5)\nexport const f = (x) => K + x`,
+    // (a local of the function's name is the local: the call stays optional)
+    'a parameter of its name, null': `const two = (a, b) => a * 2 + b\nconst run = (two, x) => two?.(x, 1) ?? -1\nexport const f = (x) => run(x > 1 ? null : (a, b) => a + 100 + b, x) + two(1, 2)`,
+    'a local of its name, null': `const two = (a, b) => a * 2 + b\nexport const f = (x) => { let two = x > 1 ? null : (a, b) => a + b; return two?.(x, 1) ?? -1 }`,
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const node = oracle(src), want = [0, 2, 3.5].map(x => String(node.f(x))).join()
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const e = jz(src, { optimize }).exports
+      is([0, 2, 3.5].map(x => String(e.f(x))).join(), want, `${name} @${optimize}`)
+    }
+  }
+})

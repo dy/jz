@@ -26,7 +26,7 @@
  * @module compile/plan/lanes
  */
 import { ctx } from '../../ctx.js'
-import { ASSIGN_OPS, isFunctionNode } from '../../ast.js'
+import { ASSIGN_OPS, isFunctionNode, setCallArgs } from '../../ast.js'
 import { materializeVariant } from '../variant.js'
 import { isExported } from '../func-exports.js'
 import { transitiveFrameEffects } from '../analyze/frame-effects.js'
@@ -34,7 +34,6 @@ import { frameRoots } from '../../function.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
-const argsNode = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
 const MAX_LANES = 8
 const PURE_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '??', 'str', 'bool'])
 
@@ -155,7 +154,7 @@ export function laneRecordParams(programFacts) {
       })
       sites.forEach((site, i) => {
         const list = [...site.argList.slice(0, k), ...lanesAt[i], ...site.argList.slice(k + 1)]
-        site.node[2] = argsNode(list)
+        setCallArgs(site.node, list)
         site.argList = list
       })
       changed = true

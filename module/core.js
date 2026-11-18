@@ -22,7 +22,7 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, isBoundName, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
 import { emit, emitReference, emitIdentitySafe, storedValue, deps, general, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
@@ -3387,6 +3387,11 @@ export default (ctx) => {
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
   ctx.core.emit['?.()'] = (callee, ...args) => {
+    // A named function is there to call, never nullish: the call `f(...)` is, which the
+    // program facts count this site as (program-facts/walk-facts.js). Taken as a value
+    // here, a function nothing else holds as one had no closure form to call.
+    if (typeof callee === 'string' && ctx.funcs.names.has(callee) && !isBoundName(callee))
+      return asF64(ctx.core.emit['()'](callee, args.length === 0 ? null : [',', ...args]))
     // Statically-lifted func-prop callee: `p.step?.()` where prepare lifted
     // `p.step = arrow` into the named function `p$step`. Non-nullish by
     // construction, so the optional is moot — delegate to the full `()` dispatch

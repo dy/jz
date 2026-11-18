@@ -27,7 +27,7 @@
  * @module compile/plan/called-args
  */
 import { ctx } from '../../ctx.js'
-import { T, ASSIGN_OPS, callArgs, setCallArgs, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { T, ASSIGN_OPS, callArgs, siteArgs, setCallArgs, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { invalidateBodies } from '../analyze.js'
@@ -215,7 +215,7 @@ export const specializeCalledArgs = (programFacts, ast) => {
       })
       for (const site of sites) {
         if (!str) {
-          const args = callArgs(site.node), k = called(func, param)
+          const args = siteArgs(site.node), k = called(func, param)
           args[k] = [null, undefined]; setCallArgs(site.node, args); site.argList[k] = args[k]
         }
         touched.add(site.callerFunc?.body ?? ast)

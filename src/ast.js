@@ -524,9 +524,14 @@ export function callArgs(node) {
 export const argList = (args) => args.length === 0 ? null
   : args.length === 1 && !(Array.isArray(args[0]) && args[0][0] === ',') ? args[0] : [',', ...args]
 
-/** Write normalized args back onto a call node. */
+/** The arguments of a call site: a `()` holds them in one slot (a comma group for several),
+ *  an optional call `?.()` holds them flat after its callee (prepare/handlers.js '?.()'). */
+export const siteArgs = (node) => node[0] === '?.()' ? node.slice(2) : commaList(node[2])
+
+/** Write a call site's arguments back in the node's own form. */
 export function setCallArgs(node, args) {
-  node[2] = argList(args)
+  if (node[0] === '?.()') node.splice(2, node.length - 2, ...args)
+  else node[2] = argList(args)
 }
 
 /** Unwrap handler/rest `args` when the sole element is a comma-group. */
