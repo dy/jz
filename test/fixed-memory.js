@@ -214,9 +214,10 @@ test('fixed memory: an init that runs as an entry stays outside the certified gr
   const src = init + 'export function process(x, i) { return x * table[i & 63] }'
   const own = init + 'const saved = []\nexport function process(x, i) { saved.push(x); return x * table[i & 63] }'
   const host = src.replace('check(k)', 'globalThis.N ?? 64')
-  const cases = [[src, {}, '_initialize'], [src, { host: 'wasi' }, '__jz_init'], [host, {}, '_initialize']]
+  // (each row names its host: the entry is the host's, whatever host the leg compiles for)
+  const cases = [[src, { host: 'js' }, '_initialize'], [src, { host: 'wasi' }, '__jz_init'], [host, { host: 'js' }, '_initialize']]
   for (const optimize of tiers) for (const [code, extra, entry] of cases) {
-    const opts = { ...options(optimize), ...extra }, label = `${optimize}, ${extra.host ?? 'js'}${code === host ? ', host init' : ''}`
+    const opts = { ...options(optimize), ...extra }, label = `${optimize}, ${extra.host}${code === host ? ', host init' : ''}`
     ok(WebAssembly.Module.exports(new WebAssembly.Module(compile(code, opts))).some(e => e.name === entry), `${label}: init is ${entry}`)
     const p = jz(code, opts), ref = oracle(code), used = p.memory.used
     for (const [x, i] of [[2, 3], [-1, 63], [0.5, 64]]) is(p.exports.process(x, i), ref(x, i), `${label}: process(${x}, ${i})`)

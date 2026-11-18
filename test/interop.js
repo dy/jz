@@ -1440,7 +1440,8 @@ test('interop: a throw while the module starts', async () => {
     ['a number', `throw 42\nexport const f = () => 1`],
     ['an object', `throw { code: 7, why: 'x' }\nexport const f = () => 1`],
     ['an Error of a class naming itself', `class E extends RangeError { constructor(m) { super(m); this.name = 'E'; this.at = 3 } }\nthrow new E('far')\nexport const f = () => 1`],
-    ['after a host read', `const g = globalThis.missingThing\nthrow new Error('host ' + typeof g)\nexport const f = () => 1`],
+    // (a WASI module has no host global to read: the compiler refuses the program there)
+    ...(onWasi() ? [] : [['after a host read', `const g = globalThis.missingThing\nthrow new Error('host ' + typeof g)\nexport const f = () => 1`]]),
   ]
   // [label, the read at start, the same read in an export]
   const runtime = [
