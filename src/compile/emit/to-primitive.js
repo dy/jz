@@ -1,16 +1,24 @@
 /**
- * OrdinaryToPrimitive (ES2024 7.1.1.1) shared by known and unknown receivers,
- * synthesized as prepared functions the runtime coercion kernels (`__to_str`,
- * `__to_num`, `__eq`, the dynamic `+`) call by name: an own `toString`/`valueOf`
- * slot is probed and called, a class instance reaches its class function, and
- * a method that returns an object falls through to the next method or the
- * TypeError the spec requires. The inherited Object.prototype.toString
- * resolves to `[object Object]`.
+ * ToPrimitive (ECMA-262 7.1.1) and OrdinaryToPrimitive (7.1.1.1) shared by
+ * known and unknown receivers, synthesized as prepared functions, one for each
+ * hint, that the runtime coercion kernels (`__to_str`, `__to_num`, `__eq`, the
+ * dynamic `+`) call by name: an own `toString`/`valueOf` slot is probed and
+ * called, a class instance reaches its class function, and a method that
+ * returns an object falls through to the next method or the TypeError the spec
+ * requires. The inherited Object.prototype.toString resolves to `[object Object]`.
  *
- * A program with no user `toString`/`valueOf` anywhere synthesizes nothing;
- * the kernels keep their constant arm. The functions are runtime roots
- * (`ctx.funcs.runtimeRoots`): address-taken, so they keep the boxed ABI the
- * kernels call with.
+ * A program that defines or stores a `[Symbol.toPrimitive]` (jzify spells the
+ * key `@@toPrimitive`) looks it up first, once (GetMethod): undefined or null
+ * goes on to OrdinaryToPrimitive, anything else not callable is a TypeError,
+ * and a callable one is called with the hint string, its object result a
+ * TypeError. Only such a program has a third function, the default hint's
+ * (`+`, `==`): elsewhere no method can tell it from the number hint, a Date
+ * aside, which the kernel `__to_prim_dflt` takes in its own arm.
+ *
+ * A program with no user `toString`/`valueOf`/`[Symbol.toPrimitive]` anywhere
+ * synthesizes nothing; the kernels keep their constant arm. The functions are
+ * runtime roots (`ctx.funcs.runtimeRoots`): address-taken, so they keep the
+ * boxed ABI the kernels call with.
  *
  * Implicit coercions retain surrounding catches, since method calls only become explicit during
  * emission.
@@ -20,17 +28,20 @@
 import { ctx, inc, PTR } from '../../ctx.js'
 import { createFunction } from '../../function.js'
 import { ACCESSOR_GET, ACCESSOR_SET } from '../../ast.js'
-import { typed, asF64, asI64, ptrTypeEq, boxedPtrTypeEq, UNDEF_NAN, TOMB_NAN, TO_PRIMITIVE } from '../../ir.js'
+import { typed, asF64, asI64, ptrTypeEq, boxedPtrTypeEq, isNullish, UNDEF_NAN, TOMB_NAN, TO_PRIMITIVE } from '../../ir.js'
 import { emit } from '../../bridge.js'
 import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { stringHash } from '../../string-data.js'
-import { memberUses, definesToPrimitive } from '../../member-uses.js'
+import { memberUses, definesToPrimitive, definesExoticToPrimitive } from '../../member-uses.js'
 
 const T = '__jz_tp_'
 /** Hint string: `toString`, then `valueOf`. */
 const TO_PRIM_STR = TO_PRIMITIVE.string
 /** Hint number and default: `valueOf`, then `toString`. */
 const TO_PRIM_NUM = TO_PRIMITIVE.number
+/** Hint default: the number order, but the string one for a Date. */
+const TO_PRIM_DFLT = TO_PRIMITIVE.default
+const EXOTIC = '@@toPrimitive'
 const R = T + 'r', V = T + 'v', M = T + 'm'
 
 const classes = () => ctx.transform.classes
@@ -46,6 +57,7 @@ const classesWith = (name) => classes()
 export function synthesizeToPrimitive() {
   if (ctx.funcs.list.some(f => f.name === TO_PRIM_STR)) return
   if (!definesToPrimitive(memberUses())) return
+  const exotic = definesExoticToPrimitive(memberUses())
   // Preserve absence as TOMB: an own undefined/null/non-callable value
   // shadows the class/prototype method just as a callable own property does.
   ctx.core.emit.__tp_get = (r, propLit) => {
@@ -64,17 +76,21 @@ export function synthesizeToPrimitive() {
   }
   ctx.core.emit.__tp_missing = (v) => typed(['i64.eq', asI64(emit(v)), ['i64.const', TOMB_NAN]], 'i32')
   ctx.core.emit.__tp_callable = (v) => boxedPtrTypeEq(asF64(emit(v)), PTR.CLOSURE)
-  ctx.core.emit.__tp_call = (v, r) => ctx.closure.call
-    ? ctx.closure.call(typed(asF64(emit(v)), 'f64'), [], false, false, asF64(emit(r)))
+  // (a `[Symbol.toPrimitive]` takes the hint, the other two methods nothing)
+  ctx.core.emit.__tp_call = (v, r, hint) => ctx.closure.call
+    ? ctx.closure.call(typed(asF64(emit(v)), 'f64'), hint === undefined ? [] : [hint], false, false, asF64(emit(r)))
     : typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
+  ctx.core.emit.__tp_nullish = (v) => typed(isNullish(asF64(emit(v))), 'i32')
   ctx.core.emit.__isprim = (v) => { inc('__is_object'); return typed(['i32.eqz', ['call', '$__is_object', asI64(asF64(emit(v)))]], 'i32') }
-  ctx.core.emit.__tperr = () => {
+  const raise = (err) => {
     ctx.runtime.throws = true
-    const code = ['f64.const', errorCodeLiteral(ERR.TO_PRIMITIVE)]
+    const code = ['f64.const', errorCodeLiteral(err)]
     return typed(['block', ['result', 'f64'],
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', code]],
       ['throw', '$__jz_err', code]], 'f64')
   }
+  ctx.core.emit.__tperr = () => raise(ERR.TO_PRIMITIVE)
+  ctx.core.emit.__tpnotfn = () => raise(ERR.TO_PRIMITIVE_METHOD)
   // Date's inherited methods participate only after an own method is absent.
   // Both hints use this same chain; the order remains the caller's choice.
   const date = ctx.module.demanded.has('date')
@@ -115,9 +131,34 @@ export function synthesizeToPrimitive() {
       ['if', ['__tp_missing', M], inherited,
         ['if', ['__tp_callable', M], accept(['__tp_call', M, R])]])
   }
-  for (const [name, order] of [[TO_PRIM_STR, ['toString', 'valueOf']], [TO_PRIM_NUM, ['valueOf', 'toString']]]) {
+  // ToPrimitive step 1.b: the method's result if a primitive, else the TypeError.
+  const answer = (value) => block(['=', V, value], ['if', ['__isprim', V], ['return', V]], ['return', ['__tperr']])
+  // GetMethod: undefined and null mean no method, any other value not callable throws.
+  const exoticCall = (hint) => ['if', ['__tp_nullish', M], block(),
+    ['if', ['__tp_callable', M], answer(['__tp_call', M, R, ['str', hint]]), ['return', ['__tpnotfn']]]]
+  const exoticStep = (hint) => {
+    let inherited = block()
+    for (const e of classesWith(EXOTIC).reverse()) {
+      const getter = e.methods.get(EXOTIC + ACCESSOR_GET)
+      const method = getter ? block(['=', M, call(getter, R)], exoticCall(hint))
+        : e.methods.has(EXOTIC + ACCESSOR_SET) ? block() : answer(['()', e.methods.get(EXOTIC), [',', R, ['str', hint]]])
+      inherited = ['if', ['instanceof', R, e.brand], method, inherited]
+    }
+    return block(['=', M, ['__tp_get', R, ['str', EXOTIC]]], ['if', ['__tp_missing', M], inherited, exoticCall(hint)])
+  }
+  const ordinary = (order) => [...order.map(step), ['return', ['__tperr']]]
+  const STRING = ['toString', 'valueOf'], NUMBER = ['valueOf', 'toString']
+  const hints = [[TO_PRIM_STR, 'string', ordinary(STRING)], [TO_PRIM_NUM, 'number', ordinary(NUMBER)]]
+  // Date.prototype [ %Symbol.toPrimitive% ] reads the default hint as the string one.
+  if (exotic) {
+    const body = ordinary(NUMBER)
+    if (date) body.unshift(['if', ['__tp_isdate', R], block(...ordinary(STRING))])
+    hints.push([TO_PRIM_DFLT, 'default', body])
+  }
+  for (const [name, hint, body] of hints) {
+    if (exotic) body.unshift(exoticStep(hint))
     ctx.funcs.list.push(createFunction(name,
-      block(['let', M, V], ...order.map(step), ['return', ['__tperr']]),
+      block(['let', M, V], ...body),
       { params: [{ name: R, type: 'f64' }], results: ['f64'], dispatcher: true }))
     ctx.funcs.runtimeRoots.add(name)
   }

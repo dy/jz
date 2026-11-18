@@ -6,7 +6,7 @@
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, missToNaN, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
-import { MUTATE_OPS, some, isReassigned, walkAst, literalNumber } from '../../ast.js'
+import { MUTATE_OPS, some, isReassigned, walkAst, literalNumber, ACCESSOR_GET } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf, stringMayMiss } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
 import { intExprRange, negRangeFitsI32, forCounterRange, cancelledIntExpr, constNumExpr, intLiteralValue } from '../../static.js'
@@ -15,6 +15,7 @@ import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux, bitOf, TAGS
 import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
+import { TO_PRIMITIVE_METHODS } from '../../member-uses.js'
 // whether an expression is at least one in magnitude: a literal, or a name or expression the range solver holds off (-1, 1)
 const atLeastOne = (e) => {
   if (Array.isArray(e) && e[0] == null) return typeof e[1] === 'number' && Math.abs(e[1]) >= 1
@@ -346,18 +347,17 @@ const mayBeString = (node) => {
 // Heap kinds whose ToPrimitive (default hint) is a string: an operand of one
 // makes `+` a concatenation. OBJECT joins them unless a user primitive-conversion method may run.
 const STRINGISH_KINDS = new Set([VAL.ARRAY, VAL.TYPED, VAL.MAP, VAL.SET, VAL.HASH, VAL.DATE, VAL.CLOSURE, VAL.BUFFER, VAL.REGEX])
-// Whether an OBJECT operand may reach a user toString/valueOf: its schema slot or class
-// method, or a dynamic write the program makes somewhere. Only possible when
+// Whether an OBJECT operand may reach a user conversion method: its schema slot or class
+// method, or its getter, or a dynamic write the program makes somewhere. Only possible when
 // the ToPrimitive prelude exists (compile/emit/to-primitive.js).
 const objectMayPrimitiveMethod = (node) => {
   if (!ctx.funcs.runtimeRoots.has('__jz_tp_num')) return false
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
   const sid = k != null && tagOf(k) === K.OBJECT ? paramOf(k) : UNKNOWN
   if (sid === UNKNOWN) return true
-  const brand = ctx.schema.brandOf?.(sid)
-  return ['valueOf', 'toString'].some(name => ctx.schema.list[sid]?.includes(name)
-    || brand && ctx.transform.classes?.get(brand)?.methods.has(name)
-    || ctx.summary.memberMayBeOwn(name))
+  const brand = ctx.schema.brandOf?.(sid), methods = brand && ctx.transform.classes?.get(brand)?.methods
+  return TO_PRIMITIVE_METHODS.some(name => [name, name + ACCESSOR_GET].some(slot =>
+    ctx.schema.list[sid]?.includes(slot) || methods?.has(slot)) || ctx.summary.memberMayBeOwn(name))
 }
 const stringishOperand = (vt, n) => vt != null && ((vt === VAL.OBJECT || vt === VAL.HASH || vt === VAL.DATE)
   ? !objectMayPrimitiveMethod(n) : STRINGISH_KINDS.has(vt))

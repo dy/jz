@@ -71,6 +71,13 @@ export function plainMember(view, sids, prop) {
     sids.some(sid => view.layoutMember(sid, slot) || view.layoutSlot(sid, slot) || (dynamic && view.layoutSide(sid, slot))))
 }
 
-/** Whether the program defines or stores a `toString`/`valueOf` anywhere: the
- *  user conversions OrdinaryToPrimitive would run (compile/emit/to-primitive.js). */
-export const definesToPrimitive = ({ defined, written }) => ['toString', 'valueOf'].some(name => defined.has(name) || written.has(name))
+/** The member names a conversion calls: ToPrimitive's `[Symbol.toPrimitive]`
+ *  (`@@toPrimitive` from jzify on) first, then OrdinaryToPrimitive's. */
+export const TO_PRIMITIVE_METHODS = ['@@toPrimitive', 'toString', 'valueOf']
+const definesAny = ({ defined, written }, names) => names.some(name => defined.has(name) || written.has(name))
+/** Whether the program defines or stores a conversion method anywhere: the
+ *  user conversions ToPrimitive would run (compile/emit/to-primitive.js). */
+export const definesToPrimitive = (uses) => definesAny(uses, TO_PRIMITIVE_METHODS)
+/** Whether it defines or stores a `[Symbol.toPrimitive]`: no object of a
+ *  program that names none has one, as jzify spells every such key. */
+export const definesExoticToPrimitive = (uses) => definesAny(uses, ['@@toPrimitive'])

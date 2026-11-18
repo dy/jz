@@ -31,7 +31,7 @@ export const ERR_SCHEMA_PROPS = ['message', 'name']
 
 export const ERR = {
   // ── 1xx TypeError-class ──────────────────────────────────────────────────
-  TO_PRIMITIVE: 100,           // OrdinaryToPrimitive: every valueOf/toString returned non-primitive
+  TO_PRIMITIVE: 100,           // ToPrimitive: a [Symbol.toPrimitive], or every valueOf/toString, returned no primitive
   ARRAY_FROM_MAPFN: 101,       // Array.from(iterable, mapFn) — mapFn is not callable
   GROUP_BY_CALLBACK: 102,      // Object.groupBy/Map.groupBy — callback is not callable
   CLONE_UNCLONEABLE: 103,      // structuredClone — function/host handle can't be cloned
@@ -64,6 +64,7 @@ export const ERR = {
   FS_OFFSET: 127,              // fs.readSync/writeSync: offset is not a Number
   FS_EMPTY: 128,               // fs.readSync: a nonzero length into an empty buffer
   PROPERTY_NULLISH: 129,       // a property or element read or store of null/undefined (the runtime's generic accessors)
+  TO_PRIMITIVE_METHOD: 130,    // ToPrimitive: a [Symbol.toPrimitive] neither undefined, null nor callable
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -129,6 +130,7 @@ export const ERR_INFO = {
   [ERR.JSON_BIGINT]: { name: 'TypeError', message: 'Do not know how to serialize a BigInt' },
   [ERR.OBJECT_NULLISH]: { name: 'TypeError', message: 'Cannot convert undefined or null to object' },
   [ERR.PROPERTY_NULLISH]: { name: 'TypeError', message: 'Cannot read properties of undefined' },
+  [ERR.TO_PRIMITIVE_METHOD]: { name: 'TypeError', message: 'Symbol.toPrimitive is not a function' },
   [ERR.ACCESSOR_DESCRIPTOR]: { name: 'TypeError', message: 'Accessor descriptors are declared on classes; Object.defineProperty defines data properties' },
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.BIGINT_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a BigInt value to a number' },

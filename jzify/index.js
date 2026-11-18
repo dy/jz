@@ -449,7 +449,7 @@ bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lo
 transformSwitch = createSwitchLowering(transform, names)
 
 
-const WELL_KNOWN = new Map([['iterator', '@@iterator'], ['dispose', '@@dispose'], ['asyncDispose', '@@asyncDispose'], ['asyncIterator', '@@asyncIterator']])
+const WELL_KNOWN = new Map([['iterator', '@@iterator'], ['dispose', '@@dispose'], ['asyncDispose', '@@asyncDispose'], ['asyncIterator', '@@asyncIterator'], ['toPrimitive', '@@toPrimitive']])
 const symbolProp = n => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && WELL_KNOWN.get(n[2])
 // Iterator-helper method names (ES2025) — a CALL of one of these on any
 // receiver, in a program that mints iterators, gates decorated generator

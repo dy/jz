@@ -673,7 +673,7 @@ function census(scopeView, roots, declRoots, params, typedParams = NO_NAMES, con
   }
   const reaches = (fns) => { for (const fn of fns) reach(fn) }
   const converts = ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)
-  const conversion = () => { reach(TO_PRIMITIVE.number); reach(TO_PRIMITIVE.string) }
+  const conversion = () => { reach(TO_PRIMITIVE.number); reach(TO_PRIMITIVE.string); if (ctx.funcs.runtimeRoots.has(TO_PRIMITIVE.default)) reach(TO_PRIMITIVE.default) }
   const convert = (e) => { if (converts && e !== undefined && !primitiveKind(view, e)) conversion() }
   // A typed array converts a source's elements: primitive elements run no user code.
   const convertElements = (e) => { if (converts && e !== undefined && !primitiveKind(view, e) && !primitiveElements(view, e)) conversion() }

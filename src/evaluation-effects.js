@@ -10,7 +10,9 @@ import { ctx } from './ctx.js'
 import { COMPOUND_NUMERIC_OPS } from './kind-traits.js'
 import { K, tagOf, tagsOf, hasTag, bitOf, NUMBER_OPS } from './summary/kind.js'
 
-export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num' }
+// The default hint's own function exists only where a `[Symbol.toPrimitive]`
+// can tell it from the number hint (compile/emit/to-primitive.js).
+export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num', default: '__jz_tp_dflt' }
 /** RegExp.prototype's flag accessors and the flag each answers (module/regex.js). */
 export const REGEX_FLAG_PROPS = [['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'],
   ['dotAll', 's'], ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v']]

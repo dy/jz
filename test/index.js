@@ -365,6 +365,7 @@ const TESTS = [
   'kernel-oracle',
   'headline',
   'examples',
+  'symbol-to-primitive',
 ]
 
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
