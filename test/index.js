@@ -493,7 +493,13 @@ if (jobs > 1) {
   // the seconds a byte the timed files cost.
   const timed = Object.fromEntries(Object.entries(JSON.parse(readFileSync(COSTS, 'utf8')).runs[row]?.files ?? {}).map(([f, [s]]) => [f, s]))
   const weight = estimated(selected, timed, name => statSync(new URL(`./${name}.js`, import.meta.url)).size)
-  const results = await runTasks(plan(selected, weight, jobs).map(({ files }) => ({
+  // The seed that moves the runs' boundaries (test/_jobs.js plan): JZ_TEST_SEED, or the
+  // commit checked out, so a run repeats on its commit and moves on the next.
+  const seed = process.env.JZ_TEST_SEED ? Number(process.env.JZ_TEST_SEED)
+    : parseInt(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.slice(0, 8), 16) || 0
+  if (!Number.isSafeInteger(seed) || seed < 0) throw new Error(`JZ_TEST_SEED must be a whole number, not '${process.env.JZ_TEST_SEED}'`)
+  console.log(`# seed ${seed}: JZ_TEST_SEED=${seed} repeats these runs`)
+  const results = await runTasks(plan(selected, weight, jobs, seed).map(({ files }) => ({
     name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...costs ? ['--costs'] : [], ...files], env: { JZ_TEST_JOBS: '1' },
   })), { jobs })
   // The totals are each run's last summary: a test may print a nested run's own.

@@ -1,0 +1,28 @@
+name: one-process
+# The core suite at the default level in one process: every file meets the compiler
+# state every earlier file left behind. A push splits the suite into contiguous runs
+# whose boundaries move with the commit (test/index.js), so neighbours meet over a few
+# pushes; files further apart than a run meet only here. A red here that test.yml did
+# not show on the same commit is a leak between such files (AGENTS.md).
+on:
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    # 2 h 16 min and 3 h 7 min on the last two runs of test.yml's default leg
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - run: npm test
+        env:
+          JZ_TEST_JOBS: '1'

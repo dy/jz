@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
@@ -112,6 +112,14 @@ test('suite processes: the idle cores, contiguous runs of near-equal weight, onl
   for (const args of [['--jobs=2', 'math'], ['--jobs=2', '--suite=integration'], ['--jobs=2', '--suite=all']]) ok(listed(args).status !== 0, args.join(' '))
 })
 
+// The recorded costs of the suites a run splits (test/native-costs.json), by leg.
+const splitRows = () => {
+  const { runs } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
+  const rows = Object.entries(runs).filter(([run]) => splits(run.split('-')[0]))
+  if (!rows.some(([run]) => run === 'core-default')) throw Error('test/native-costs.json: the default core leg is not timed')
+  return rows
+}
+
 test('suite processes: weighed by the leg\'s CPU seconds, an untimed file by its bytes; none far over the mean', () => {
   const bytes = { a: 100, b: 300, x: 200 }
   is(['a', 'b', 'x'].map(estimated(['a', 'b', 'x'], { a: 2, b: 6 }, f => bytes[f])), [2, 6, 4], 'an untimed file weighs its bytes at the seconds a byte of the timed: 8 s for 400 bytes')
@@ -119,21 +127,81 @@ test('suite processes: weighed by the leg\'s CPU seconds, an untimed file by its
   is(estimated(['a', 'x'], { a: 0 }, f => bytes[f])('a'), 0, 'a file timed at nothing is timed')
   const weight = { a: 5, b: 1, c: 1, d: 1, e: 4 }
   is(plan(Object.keys(weight), f => weight[f], 1), [{ files: ['a'], weight: 5 }, { files: ['e'], weight: 4 }, { files: ['b', 'c', 'd'], weight: 3 }], 'three runs to a process, the dearest first')
-  // On each split suite's recorded costs, at 4 and at 12 processes, each next run to the
-  // first process free as runTasks gives them: the dearest process within 1.3 of the mean,
-  // or no dearer than the dearest file where that file alone is more (no plan splits a file).
-  const { runs } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
-  const split = Object.entries(runs).filter(([run]) => splits(run.split('-')[0]))
-  ok(split.some(([run]) => run === 'core-default'), 'the default core leg is timed')
-  for (const [run, { files }] of split) {
+  // On each split suite's recorded costs, at 4 and at 12 processes and at every seed, each
+  // next run to the first process free as runTasks gives them: the dearest process within
+  // 1.3 of the mean, or no dearer than the dearest file where that file alone is more (no
+  // plan splits a file).
+  for (const [run, { files }] of splitRows()) {
     const names = Object.keys(files), cost = f => files[f][0], total = names.reduce((sum, f) => sum + cost(f), 0)
+    const file = Math.max(...names.map(cost))
     for (const jobs of [4, 12]) {
-      const loads = Array(jobs).fill(0)
-      for (const r of plan(names, cost, jobs)) loads[loads.indexOf(Math.min(...loads))] += r.weight
-      const dearest = Math.max(...loads), file = Math.max(...names.map(cost))
-      ok(dearest <= Math.max(1.3 * total / jobs, file), `${run}, ${jobs} processes: the dearest is ${(dearest * jobs / total).toFixed(2)} of the mean${dearest === file ? ', one file' : ''}`)
+      let dearest = 0, worst = 0
+      for (let seed = 0; seed < names.length; seed++) {
+        const loads = Array(jobs).fill(0)
+        for (const r of plan(names, cost, jobs, seed)) loads[loads.indexOf(Math.min(...loads))] += r.weight
+        if (Math.max(...loads) > dearest) [dearest, worst] = [Math.max(...loads), seed]
+      }
+      ok(dearest <= Math.max(1.3 * total / jobs, file), `${run}, ${jobs} processes: the dearest is ${(dearest * jobs / total).toFixed(2)} of the mean at seed ${worst}${dearest === file ? ', one file' : ''}`)
     }
   }
+})
+
+test('suite processes: a seed moves every boundary, so each file starts a process and each pair of neighbours meets in one', () => {
+  const weight = { a: 5, b: 1, c: 1, d: 1, e: 4 }, files = Object.keys(weight), w = f => weight[f]
+  is(plan(files, w, 1, 0), plan(files, w, 1), 'seed 0 cuts the list as it stands')
+  is(plan(files, w, 1, 5), plan(files, w, 1), 'the seed counts files round the ring')
+  is(plan(['a', 'b', 'c', 'd', 'e', 'f'], () => 1, 1, 1).map(r => r.files), [['b', 'c'], ['d', 'e'], ['f', 'a']], 'seed 1 starts the ring at the second file')
+  is(shards(['a', 'b', 'e'], w, 3), [['a'], ['b'], ['e']], 'a file of a run\'s weight or more runs alone')
+  // On each split suite's recorded costs at 3 processes (CI's runner) and 4: every plan is
+  // arcs of the ring holding each file once; over the seeds each file starts a run, and two
+  // neighbours share one unless one of them weighs a run or more and runs alone.
+  for (const [run, { files }] of splitRows()) {
+    const names = Object.keys(files), cost = f => files[f][0], total = names.reduce((sum, f) => sum + cost(f), 0)
+    const at = new Map(names.map((f, i) => [f, i]))
+    for (const jobs of [3, 4]) {
+      const starts = new Set(), met = new Set(), broken = []
+      for (let seed = 0; seed < names.length; seed++) {
+        const runs = plan(names, cost, jobs, seed)
+        if (runs.flatMap(r => r.files).toSorted().join() !== names.toSorted().join()) broken.push(seed)
+        for (const { files: r } of runs) {
+          starts.add(r[0])
+          for (let i = 1; i < r.length; i++) {
+            if ((at.get(r[i - 1]) + 1) % names.length !== at.get(r[i])) broken.push(seed)
+            met.add(r[i])
+          }
+        }
+      }
+      const alone = f => cost(f) * jobs * 3 >= total
+      const apart = names.slice(1).filter((f, i) => !met.has(f) && !alone(f) && !alone(names[i]))
+      is(broken, [], `${run}, ${jobs} processes: every plan is arcs of the ring, each file once`)
+      is(names.filter(f => !starts.has(f)), [], `${run}, ${jobs} processes: every file starts a run at some seed`)
+      is(apart, [], `${run}, ${jobs} processes: every file meets the one before it at some seed`)
+    }
+  }
+})
+
+test('suite processes: a split run cuts its runs where the seed and the leg\'s costs say', () => {
+  // A split generated run whose grep matches no test: each run imports its files and runs
+  // none of their tests (about 3 CPU seconds in all).
+  const split = seed => spawnSync(process.execPath, ['test/index.js', '--suite=generated', '--jobs=2'], {
+    cwd: root, env: clean({ TST_GREP: '^no test has this name$', JZ_TEST_SEED: seed }), encoding: 'utf8', timeout: 120000,
+  })
+  const selected = list('generated')
+  const timed = Object.fromEntries(Object.entries(JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8')).runs['generated-default'].files).map(([f, [s]]) => [f, s]))
+  const weight = estimated(selected, timed, f => statSync(join(root, 'test', `${f}.js`)).size)
+  const ran = r => [...r.stdout.matchAll(/^PASS (\S+) /gm)].map(m => m[1]).toSorted()
+  const planned = seed => plan(selected, weight, 2, seed).map(r => `generated-${r.files[0]}`).toSorted()
+  for (const seed of [7, 30]) {
+    const r = split(String(seed))
+    is(r.status, 0, r.stderr)
+    ok(r.stdout.includes(`# seed ${seed}: JZ_TEST_SEED=${seed} repeats these runs`), 'the header names the seed')
+    is(ran(r), planned(seed), `seed ${seed}: the runs the plan cuts by the generated-default row`)
+  }
+  ok(planned(7).join() !== planned(30).join(), 'two seeds cut different runs')
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout
+  ok(split(undefined).stdout.includes(`# seed ${parseInt(head.slice(0, 8), 16)}:`), 'unset, the seed is the commit checked out')
+  const bad = split('x')
+  ok(bad.status !== 0 && bad.stderr.includes('JZ_TEST_SEED'), 'a seed that is no whole number is refused')
 })
 
 test('test reporter: BigInt failures preserve later failures and the final result', () => {

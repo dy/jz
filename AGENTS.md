@@ -69,10 +69,11 @@ What this implies for HOW we optimize:
   or generated population sweeps. Run it before reporting any change. It splits the
   files over the idle cores, each process a contiguous run of them (`test/index.js`)
   weighed by each file's CPU seconds on the leg (`test/native-costs.json`, which
-  `--costs` refreshes and an ordinary run never writes);
+  `--costs` refreshes and an ordinary run never writes), the runs' boundaries moved
+  by the commit (the header's `JZ_TEST_SEED=<n>` repeats them);
   `JZ_TEST_JOBS=N` or `--jobs=N` sets the count. `JZ_TEST_JOBS=1` is the one-process
-  run, kept by CI's default leg, where the state a file leaves behind meets every
-  later file. Focus with `npm test -- dyn-keys strings` (named files run in one
+  run, CI's weekly `one-process` workflow, where the state a file leaves behind meets
+  every later file. Focus with `npm test -- dyn-keys strings` (named files run in one
   process); inspect ownership with `node test/index.js --suite=all --list`.
 - `npm run test:matrix` — core opt0/opt2/opt3/wasi matrix, a leg at a time, each
   split the same way, level 3 plain as CI runs it; the battery runs level 3 armed
@@ -121,7 +122,9 @@ What this implies for HOW we optimize:
 A test that **passes standalone but fails in the full suite** is almost always a
 **compile-state leak** — global mutable state that isn't reset between `compile()`
 calls (see [src/ctx.js](src/ctx.js)). Reproduce cold (`node -e "import…compile(src)"`)
-vs warm (after other compiles) before assuming a logic bug.
+vs warm (after other compiles) before assuming a logic bug. A split run that fails at
+one seed and passes at another is the same class: the header's `JZ_TEST_SEED` repeats
+the failing runs, on the parent commit too.
 
 ## Never hand-edit generated artifacts
 

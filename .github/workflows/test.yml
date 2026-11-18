@@ -44,23 +44,16 @@ jobs:
       - name: check source cleanup
         if: matrix.variant == 'default'
         run: npm run lint:imports && npm run audit:files
-      - name: test (${{ matrix.variant }})
+      - name: core (${{ matrix.variant }})
         run: |
-          # The default leg keeps the whole suite in one process: compiler state a
-          # file leaves behind meets every later file's compiles. The other legs
-          # split it over the runner's cores (test/index.js).
+          # Split over the runner's cores, the runs' boundaries moved by the commit
+          # (test/index.js). The whole suite in one process runs weekly (one-process.yml).
           case "${{ matrix.variant }}" in
-            default) export JZ_TEST_JOBS=1 ;;
             opt0) export JZ_TEST_OPTIMIZE=0 ;;
             opt3) export JZ_TEST_OPTIMIZE=3 ;;
             wasi) export JZ_TEST_HOST=wasi ;;
           esac
           npm test
-          npm run test:integration
-          # These files own their optimize sweeps; preserve both host variants.
-          case "${{ matrix.variant }}" in
-            default|wasi) npm run test:generated ;;
-          esac
       # Smoke test: every example still compiles. Output wasm is built + deployed by
       # pages.yml (not committed), so there's no drift gate — just confirm they build.
       - run: npm run build:examples
@@ -68,6 +61,28 @@ jobs:
       # Public declarations are release code: type-check every exported subpath.
       - run: npm run test:types
         if: matrix.variant == 'default'
+
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [default, opt0, opt3, wasi]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - name: integration (${{ matrix.variant }})
+        run: |
+          case "${{ matrix.variant }}" in
+            opt0) export JZ_TEST_OPTIMIZE=0 ;;
+            opt3) export JZ_TEST_OPTIMIZE=3 ;;
+            wasi) export JZ_TEST_HOST=wasi ;;
+          esac
+          npm run test:integration
       # The default integration leg's web-smoke builds the browser dist; no
       # bootstrap compiler is needed to pack the published JavaScript package.
       - name: verify the published package installs and runs
@@ -78,6 +93,25 @@ jobs:
           npm install --prefix "$smoke_dir" --ignore-scripts "$PWD/$package_tarball"
           cd "$smoke_dir"
           node --input-type=module -e 'import jz from "jz"; import "jz/interop"; if (jz("export let f = () => 42").exports.f() !== 42) throw Error("package compile failed")'
+
+  # These files own their optimize sweeps; both hosts, split over the runner's cores.
+  generated:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [default, wasi]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - name: generated (${{ matrix.variant }})
+        run: |
+          if [ "${{ matrix.variant }}" = wasi ]; then export JZ_TEST_HOST=wasi; fi
+          npm run test:generated
 
   # Extended differential fuzz: `npm test`'s in-suite `fuzz` test gates only seeds
   # 1..200; this runs the full 5000-seed pass (jz-wasm vs JS at opt {0,1,2,3},

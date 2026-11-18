@@ -156,8 +156,8 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 
 | Command | Work |
 | --- | --- |
-| `npm test` | Core semantic/structural regressions, split over the idle cores; **no bootstrap or generated population sweeps** |
-| `JZ_TEST_JOBS=1 npm test` | The same in one process: the state a file leaves behind meets every later file (CI's default leg) |
+| `npm test` | Core semantic/structural regressions, split over the idle cores into contiguous runs whose boundaries move with the commit (`JZ_TEST_SEED=<n>`, printed in the header, repeats them); **no bootstrap or generated population sweeps** |
+| `JZ_TEST_JOBS=1 npm test` | The same in one process: the state a file leaves behind meets every later file (CI's weekly `one-process` workflow) |
 | `npm test -- strings dyn-keys` | Named files, regardless of owner, in one process; keeps completed-test GC and warm compile-state checks |
 | `npm test -- --costs` | The core suite on the current leg, each file timed: its CPU seconds, tests and assertions written to the leg's row of `test/native-costs.json`, by which a split run weighs its processes (`--suite=` picks another suite; named files print their times instead) |
 | `npm run test:matrix` | Core default/O0/O3/WASI legs, one at a time |
@@ -173,7 +173,7 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 
 Before reporting a change, run what AGENTS.md ("Verify before claiming done") lists.
 
-`node test/index.js --suite=all --list` lists every registered file without compiling. `--suite=core|integration|generated|bootstrap` selects an owner; `--suite=all` explicitly requests the old single-process collection (including heavy builds). `test/_suites.js` gives each file exactly one owner; `test/test-infrastructure.js` checks that the union is complete. CI runs the core and integration on all four legs, generated checks on native/WASI, and bootstrap in its own workflow.
+`node test/index.js --suite=all --list` lists every registered file without compiling. `--suite=core|integration|generated|bootstrap` selects an owner; `--suite=all` explicitly requests the old single-process collection (including heavy builds). `test/_suites.js` gives each file exactly one owner; `test/test-infrastructure.js` checks that the union is complete. CI runs the core and integration on all four legs (O3 plain, the path users ship), generated checks on native/WASI, each a job of its own, the core in one process weekly, and bootstrap in its own workflow.
 
 `JZ_TEST_TIMEOUT` bounds an ordinary task in milliseconds (default one hour); bootstrap's round-trip, parity, checkpoint and recursive tasks have four hours each, a hosted file the ordinary hour, and bootstrap always runs alone in the battery. A test that must hold at several optimize levels writes `for (const optimize of levels(false, 2, 3))` (`test/_matrix.js`): each leg runs its own level; the default leg also owns O1. Do not split a pass-on/pass-off comparison that needs both results in the same assertion.
 

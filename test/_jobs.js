@@ -14,10 +14,13 @@ export function testJobs(requested, count, cores = availableParallelism(), memor
 // An ordered file list as at most `n` runs of near-equal weight, every file in
 // exactly one. A run is contiguous: neighbours stay in one process, where
 // compiler state one file leaves behind still meets the next file's compiles.
+// Two files a boundary parts never meet: plan moves the boundaries by a seed. A file
+// of a run's weight or more runs alone, or the files before it lengthen its process.
 export function shards(files, weight, n) {
   const total = files.reduce((sum, f) => sum + weight(f), 0), out = []
   let run = [], seen = 0
   for (const f of files) {
+    if (run.length && out.length < n - 1 && weight(f) * n >= total) { out.push(run); run = [] }
     run.push(f)
     seen += weight(f)
     if (out.length < n - 1 && seen * n >= total * (out.length + 1)) { out.push(run); run = [] }
@@ -28,10 +31,15 @@ export function shards(files, weight, n) {
 
 // The runs a split suite starts, dearest first: three to a process, so the light ones
 // started last level the finish (scripts/test-tasks.mjs runTasks gives each next run
-// to the first process free).
-export const plan = (files, weight, jobs) => shards(files, weight, jobs * 3)
-  .map(run => ({ files: run, weight: run.reduce((sum, f) => sum + weight(f), 0) }))
-  .sort((a, b) => b.weight - a.weight)
+// to the first process free). The list is a ring cut from file `seed` on: a seed
+// moves every boundary, so over runs of several seeds each file starts a process
+// and each pair of neighbours meets in one, which one fixed cut never shows.
+export const plan = (files, weight, jobs, seed = 0) => {
+  const at = files.length ? seed % files.length : 0
+  return shards([...files.slice(at), ...files.slice(0, at)], weight, jobs * 3)
+    .map(run => ({ files: run, weight: run.reduce((sum, f) => sum + weight(f), 0) }))
+    .sort((a, b) => b.weight - a.weight)
+}
 
 // A file list as n slices for n machines, every file in exactly one: the dearest file
 // first goes to the slice lightest so far (bench/shards.mjs packs its cases the same
