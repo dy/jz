@@ -284,15 +284,17 @@ test('element numbers: a word read off memory takes the level\'s form', () => {
     const jz = run(hashed, { optimize })
     for (const f of ['words', 'fracs', 'holes']) is(jz[f](), host[f](), `${f}() at ${optimize}`)
   }
-  if (belowOpt(2)) return
-  const NARROW = /i32\.trunc_sat_f64_s/, WIDE = /\(i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/
-  for (const optimize of levels(2, 'size')) {
+  // (below level 2 the loop is the function's own and its export a call of it: `funcWat`
+  // takes the function first, the export where the body moved onto it)
+  const NARROW = /i32\.trunc_sat_f64_s/, WIDE = /\(i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s\s*\(f64\.load/
+  for (const optimize of levels(0, 1, 2, 'size')) {
     const text = wat(hashed, { optimize })
     for (const f of ['words', 'fracs', 'holes']) {
-      const body = fnText(text, f)
-      ok(WIDE.test(body) && !NARROW.test(body), `${f} at ${optimize}: the 64-bit truncation's low word, no 32-bit one`)
+      const body = funcWat(text, f)
+      ok(WIDE.test(body) && !NARROW.test(body), `${f} at ${optimize}: the load's 64-bit truncation, its low word, no 32-bit one`)
     }
   }
+  if (belowOpt(2)) return
   // (the sum's 1.5·2^52 inline, not read from the speed tier's float pool)
   const text = wat(hashed, { optimize: { level: 'speed', poolFloats: false } })
   const [words, fracs, holes] = ['words', 'fracs', 'holes'].map(f => fnText(text, f))
