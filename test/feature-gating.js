@@ -355,6 +355,24 @@ test('autowire: JS object method call via __ext_call', async () => {
   is(callMe(obj), 'hi world')
 })
 
+// A module whose own code touches no memory still takes host objects and gets any value back
+// from their methods (a long string, the object itself): it keeps the memory the boundary
+// codec carries those in (wat/assemble/stdlib-pull.js hostOps). It had one only while the
+// TypeError of a call of a non-function was built on the heap.
+test('autowire: a module that only calls a host object\'s methods exchanges any value with it', async () => {
+  if (onWasi()) return  // wasi: external object / js-object arg
+  const jz = (await import('../index.js')).default
+  const obj = { greet(n) { return 'hello, ' + n }, self() { return this }, list() { return [1, 2, 3] } }
+  const host = { o: () => obj }
+  for (const optimize of [false, true, 'size', 'speed']) {
+    is(jz(`export let f = (o) => o.greet('world')`, { optimize }).exports.f(obj), 'hello, world', `a long string, ${optimize}`)
+    is(jz(`export let f = (o) => o.greet(5)`, { optimize }).exports.f(obj), 'hello, 5', `a number argument, ${optimize}`)
+    is(jz(`export let f = (o) => o.self()`, { optimize }).exports.f(obj), obj, `the receiver, ${optimize}`)
+    is(jz(`export let f = (o) => o.list()`, { optimize }).exports.f(obj), [1, 2, 3], `a list, ${optimize}`)
+    is(jz(`import { o } from 'host'\nexport let f = () => o().greet('x')`, { optimize, imports: { host } }).exports.f(), 'hello, x', `on an import's result, ${optimize}`)
+  }
+})
+
 test('autowire: JS object .prop write goes through __ext_set', async () => {
   if (onWasi()) return  // wasi: external object / js-object arg
   const jz = (await import('../index.js')).default

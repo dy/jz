@@ -242,9 +242,15 @@ export function pullStdlib(sec) {
   const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n', '__clear']
   // Even an ignored catch can receive a long string or BigInt from the host.
   // Its boundary codec needs memory, without forcing Wasm allocator helpers.
+  // The host's dynamic operations (the runtime's own imports: a property read of a host
+  // object, a call of its method) hand the module any value, a long string or a host
+  // reference among them, and take host objects as the module's arguments: the codec
+  // that carries those is the one of a module with memory (interop.js bind), whatever
+  // the module's own code reads. A module whose only heap work was building the
+  // TypeError of a call of a non-function had its memory from that alone.
+  const hostOps = ctx.transform.alloc !== false && [...reachable].some(n => /^\s*\(import /.test(realize(n)))
   ctx.runtime.hostThrows = ctx.runtime.userThrows && ctx.transform.alloc !== false &&
-    (sec.imports.some(n => n[0] === 'import' && n[3]?.[0] === 'func') ||
-      [...reachable].some(n => /^\s*\(import /.test(realize(n))))
+    (sec.imports.some(n => n[0] === 'import' && n[3]?.[0] === 'func') || hostOps)
   let needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
     !!(ctx.memory.shared && dataLen() > 0)
@@ -273,7 +279,7 @@ export function pullStdlib(sec) {
   // A WASI host takes the module's memory export before it serves any call, one that
   // reads no memory too (`proc_exit`; wasmtime: "missing required memory export").
   const wasiImport = ctx.module.imports.some(i => i[1] === '"wasi_snapshot_preview1"')
-  const needsMemory = needsAlloc || explicitMemory || wasiImport || ctx.runtime.hostThrows ||
+  const needsMemory = needsAlloc || explicitMemory || wasiImport || ctx.runtime.hostThrows || hostOps ||
     dataLen() > (ctx.runtime.staticDataLen || 0) ||
     reachable.has('__ptr_type') ||
     [...reachable].some(n => MEM_OPS.test(realize(n))) ||
