@@ -13,13 +13,14 @@
  */
 
 import print from 'watr/print'
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish, numberNanIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, toStrI64, TO_PRIMITIVE, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish, numberNanIR } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex } from '../layout.js'
 import { emit, storedValue, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
 import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
+import { primitiveKind } from '../src/evaluation-effects.js'
 import { VAL } from '../src/reps.js'
 import { K, core, tagOf, isNullable } from '../src/summary/kind.js'
 import { inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
@@ -2307,7 +2308,14 @@ export default (ctx) => {
   // for whatever valTypeOf still can't reach (e.g. a name never assigned an
   // object-shaped RHS in THIS function at all, only received boxed through a
   // dynamic path).
+  // Where the program has a `[Symbol.toPrimitive]` (the default hint's function,
+  // compile/emit/to-primitive.js), an object argument converts: its string at the
+  // call for parseInt, in `__parseFloat`'s `__to_str` for parseFloat, a radix by
+  // ToNumber. A program with valueOf or toString alone keeps the reject: converting
+  // there an argument of no known kind costs watr 508 bytes at size.
+  const converts = () => ctx.funcs.runtimeRoots.has(TO_PRIMITIVE.default)
   const rejectObjectArg = (x, who) => {
+    if (converts()) return
     const objType = valTypeOf(x) === VAL.OBJECT
     const hasToPrimitiveMethod = typeof x === 'string' && ctx.schema?.slotOf &&
       (ctx.schema.slotOf(x, 'valueOf') >= 0 || ctx.schema.slotOf(x, 'toString') >= 0)
@@ -2332,7 +2340,9 @@ export default (ctx) => {
     rejectObjectArg(x, 'parseInt')
     rejectObjectArg(radix, 'parseInt')
     const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
-    return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
+    // (`__parseInt` reads a value that is no string or number as NaN)
+    const str = converts() && !primitiveKind(ctx.summary?.at(ctx.func.current), x) ? toStrI64(x, emit(x)) : strInputI64(x)
+    return typed(['call', '$__parseInt', str, radixIR], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
 

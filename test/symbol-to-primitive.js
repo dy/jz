@@ -52,7 +52,7 @@ const FORMS = {
   eqn: 'o == 7', eqs: "o == 'dfl'", ne: "o != 'ld'", neq: '7 == o',
   // string
   tpl: '`${o}`', tpl2: '`<${o}|${o}>`', String: 'String(o)', key: 'KEYS[o]', in: 'o in KEYS',
-  store: '{ const h = {}; h[o] = 1; return Object.keys(h).join() }', join: "[o, 1].join('-')",
+  store: '{ const h = {}; h[o] = 1; return Object.keys(h).join() }', join: "[o, 1].join('-')", parseInt: 'parseInt(o)',
 }
 const body = (expr) => expr.startsWith('{') ? expr : `{ return ${expr} }`
 const program = () => PRELUDE + Object.entries(FORMS).map(([name, expr]) =>
