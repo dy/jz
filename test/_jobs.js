@@ -1,15 +1,4 @@
-import { availableParallelism, freemem } from 'node:os'
 import { positiveInteger } from '../scripts/test-tasks.mjs'
-
-const gib = 1024 ** 3
-
-// CPU count alone is not a memory budget: each worker loads a compiler and owns
-// Wasm instances. Conservative automatic cap; an explicit override is honored.
-export function testJobs(requested, count, cores = availableParallelism(), memory = process.availableMemory?.() ?? freemem()) {
-  const jobs = requested != null ? positiveInteger(requested, 'test262 jobs')
-    : Math.max(1, Math.min(2, cores, Math.floor((memory - gib) / gib)))
-  return Math.min(jobs, Math.max(1, count))
-}
 
 // An ordered file list as at most `n` runs of near-equal weight, every file in
 // exactly one. A run is contiguous: neighbours stay in one process, where

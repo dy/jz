@@ -5,7 +5,7 @@
  *   node test/test262.js                  # run all applicable tests
  *   node test/test262.js --quick          # run first 100 per category
  *   node test/test262.js --filter=String  # only run String tests
- *   node test/test262.js --jobs=2         # override the memory-bounded worker count
+ *   node test/test262.js --jobs=2         # override the worker count (JZ_TEST_JOBS)
  *
  * Requires: test262 checkout at ./test262 (auto-cloned if missing).
  *
@@ -14,57 +14,16 @@
  * language and full test262 denominators.
  *
  * Execution is parallel: the main thread collects the work list, then fans it
- * out round-robin to a pool of worker_threads (each with its own jz instance).
- * Worker count: --jobs=N or JZ_TEST262_JOBS; otherwise at most two, memory-bounded.
+ * out round-robin to worker threads, one a process of a suite run (test/_test262.js).
  */
-import { readdirSync, statSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { AUDITED_OUT } from './test262-out.js'
 import { join, relative } from 'path'
-import { execSync } from 'child_process'
-import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
-import { testJobs } from './_jobs.js'
+import { isMainThread } from 'worker_threads'
 import { collect } from './_gc.js'
+import { TEST262, LOCK, FILTER, ensureTest262, walk, countJs, ASYNC_DONE_SHIM, runWorker, fanOut } from './_test262.js'
 
 const ROOT = join(import.meta.dirname, '..')
-const TEST262 = join(import.meta.dirname, 'test262')
-
-// Pinned upstream commit — audit-#11 item 7 sub-2: an unpinned `--depth 1`
-// clone made the gate depend on whichever tc39/test262 snapshot happened to
-// fill the cache that day (pass/fail/xfail counts drift under jz unchanged).
-// Bump procedure: pick the new upstream SHA (usually tc39/test262's current
-// `main` tip), update PINNED_COMMIT below, delete test/test262/ (or let
-// ensureTest262 re-pin an existing checkout), run `npm run test:262 &&
-// npm run test:262:builtins`, and reconcile: prune any EXPECTED_FAIL_FILES/
-// LEGACY_LANG_LIMITATIONS entries reported as xpass, add any genuinely new
-// out-of-scope fails as xfail with a reason, and update test262-baseline.json
-// (corpus SHA + language/builtins floors + exact accepted-negative ledger, audit-#12 item 3
-// — the one committed lock both runners read) together with this commit.
-const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
-
-// Ensure test262 is checked out AT the pinned commit (main thread only —
-// workers inherit the checkout). `git fetch --depth 1 origin <sha>` works
-// directly against GitHub for any reachable commit, not just a ref, so this
-// stays a shallow (single-commit) checkout — just a deterministic one instead
-// of "whatever main tipped to when the clone ran".
-function ensureTest262() {
-  if (!existsSync(TEST262)) {
-    console.log(`Cloning test262 @ ${PINNED_COMMIT.slice(0, 8)} (this may take a minute)...`)
-    execSync(`git init -q ${TEST262}`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} remote add origin https://github.com/tc39/test262.git`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} fetch --depth 1 origin ${PINNED_COMMIT}`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} checkout -q FETCH_HEAD`, { stdio: 'inherit' })
-    return
-  }
-  const head = execSync(`git -C ${TEST262} rev-parse HEAD`, { encoding: 'utf8' }).trim()
-  if (head === PINNED_COMMIT) return
-  console.log(`test262 checkout at ${head.slice(0, 8)}, pinning to ${PINNED_COMMIT.slice(0, 8)}...`)
-  try {
-    execSync(`git -C ${TEST262} checkout -q ${PINNED_COMMIT}`, { stdio: 'inherit' })
-  } catch {
-    execSync(`git -C ${TEST262} fetch --depth 1 origin ${PINNED_COMMIT}`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} checkout -q FETCH_HEAD`, { stdio: 'inherit' })
-  }
-}
 if (isMainThread) ensureTest262()
 
 // Language directories currently tracked as coverage work. This list is not a
@@ -231,26 +190,7 @@ const isGeneratorTest = (rel) => /\/(expressions|statements)\/generators\//.test
 
 // Quick mode: limit tests per subdirectory
 const QUICK = process.argv.includes('--quick')
-const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
-const JOBS_ARG = process.argv.find(a => a.startsWith('--jobs='))?.slice(7)
 const MAX_PER_DIR = QUICK ? 50 : Infinity
-
-// Collect test files
-function* walk(dir) {
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name)
-      if (entry.isDirectory()) yield* walk(full)
-      else if (entry.name.endsWith('.js') && !entry.name.startsWith('.')) yield full
-    }
-  } catch { /* skip unreadable dirs */ }
-}
-
-function countJs(dir) {
-  let count = 0
-  for (const _ of walk(dir)) count++
-  return count
-}
 
 // Legacy Sputnik language tests that exercise genuine jz limitations.
 // Dropping the blanket `Test262Error legacy harness` skip let jz run this
@@ -807,14 +747,6 @@ try {
   process.exit(1)
 }
 
-const ASYNC_DONE_SHIM = `
-let __t262d = 0
-let __t262e = undefined
-let $DONE = (e) => { if (__t262d) return; __t262d = 1; if (e != null && e !== false) __t262e = '' + e }
-let asyncTest = (fn) => { fn().then(() => $DONE(), (e) => $DONE(e == null ? 'rejected' : e)) }
-export let __t262_check = () => __t262d === 0 ? '@pending' : __t262e == null ? '@ok' : __t262e
-`
-
 function runTest(src, options = {}) {
   // Strip test262 harness directives and includes
   let code = src
@@ -1084,31 +1016,15 @@ async function runChunk(items) {
   return { perDir, fails, xfails, xpasses, negaccepts, skipruns }
 }
 
-if (!isMainThread) {
-  // Spawned worker: run the assigned slice and report tallies back.
-  runChunk(workerData.items).then(r => parentPort.postMessage(r))
-} else {
+if (!isMainThread) runWorker(runChunk)
+else {
   // Main: collect work, fan out to a worker pool, aggregate
   const languageTest262Files = countJs(testDir)
   const allTest262Files = countJs(join(TEST262, 'test'))
   const { work, dirSkip } = collectWork()
 
-  const jobs = testJobs(JOBS_ARG ?? process.env.JZ_TEST262_JOBS, work.length)
-
-  // Round-robin split: spreads heavy dirs (class/, expressions/) evenly so no
-  // single worker draws the whole slow tail.
-  const chunks = Array.from({ length: jobs }, () => [])
-  work.forEach((item, i) => chunks[i % jobs].push(item))
-
-  console.log(`Running ${work.length} tests across ${jobs} worker${jobs > 1 ? 's' : ''}...`)
   const t0 = Date.now()
-
-  const chunkResults = await Promise.all(chunks.map(items => new Promise((resolve, reject) => {
-    const w = new Worker(import.meta.filename, { workerData: { items } })
-    w.once('message', resolve)
-    w.once('error', reject)
-    w.once('exit', code => code === 0 || reject(new Error(`worker exited with code ${code}`)))
-  })))
+  const chunkResults = await fanOut(import.meta.filename, work)
 
   // Merge worker tallies with the dir-level skips counted during collection.
   const perDir = Object.create(null)
@@ -1209,31 +1125,18 @@ if (!isMainThread) {
     process.exit(1)
   }
   if (!QUICK && !FILTER) {
-    const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
-    // The lock's corpus SHA must match what this run just measured against —
-    // a stale lock (PINNED_COMMIT bumped here without refreshing
-    // test262-baseline.json, or vice versa) would silently compare today's
-    // counts against numbers measured on a different corpus.
-    if (lock.corpus !== PINNED_COMMIT) {
-      console.error(`\nFAIL: test262-baseline.json's corpus (${lock.corpus}) != this runner's PINNED_COMMIT (${PINNED_COMMIT}) — refresh the lock alongside a corpus pin bump.`)
-      process.exit(1)
-    }
-    const baseline = Number(process.env.JZ_TEST262_BASELINE) || lock.language
+    const baseline = Number(process.env.JZ_TEST262_BASELINE) || LOCK.language
     if (results.pass < baseline) {
       console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
       process.exit(1)
     }
     const negLock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-neg-accepts.json'), 'utf8'))
-    if (negLock.corpus !== PINNED_COMMIT) {
-      console.error(`\nFAIL: test262-neg-accepts.json corpus ${negLock.corpus} != PINNED_COMMIT ${PINNED_COMMIT}`)
-      process.exit(1)
-    }
     const expectedNeg = Object.values(negLock.families).flat().sort()
     const actualNeg = [...negaccepts].sort()
     const expectedSet = new Set(expectedNeg), actualSet = new Set(actualNeg)
     const added = actualNeg.filter(path => !expectedSet.has(path))
     const removed = expectedNeg.filter(path => !actualSet.has(path))
-    if (negLock.count !== expectedNeg.length || lock.negAcceptExact !== expectedNeg.length ||
+    if (negLock.count !== expectedNeg.length || LOCK.negAcceptExact !== expectedNeg.length ||
         actualNeg.length !== expectedNeg.length || added.length || removed.length) {
       console.error(`\nFAIL: accepted-negative ledger drift: actual=${actualNeg.length}, expected=${expectedNeg.length}, added=${added.length}, removed=${removed.length}`)
       for (const path of added.slice(0, 20)) console.error(`  + ${path}`)

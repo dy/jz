@@ -30,11 +30,11 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
-      # test262.js's own PINNED_COMMIT const clones (or re-pins an existing
-      # checkout to) the exact tc39/test262 SHA the baselines below were
-      # measured against — no separate clone step needed. The cache just saves
-      # the network round-trip; bump the key's version suffix whenever
-      # PINNED_COMMIT moves so a stale cached checkout can't shadow the pin.
+      # The runner clones (or re-pins an existing checkout to) the tc39/test262
+      # commit test/test262-baseline.json names as `corpus`, the one the floors
+      # were measured on (test/_test262.js ensureTest262): no clone step. The
+      # cache saves the network round-trip; bump the key's suffix when `corpus`
+      # moves, so the cached checkout is the pinned one.
       - name: Cache test262 corpus
         id: cache-test262
         uses: actions/cache@v4

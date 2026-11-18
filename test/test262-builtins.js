@@ -9,44 +9,16 @@
  * Strategy: run curated built-ins functionality tests and explicitly skip
  * descriptor/prototype/runtime-shape tests until those semantics are in scope.
  *
- * Execution: the work list is split round-robin across a pool of worker
- * threads (at most two by default, memory-bounded; override with --jobs=N or JZ_TEST262_JOBS).
- * Each worker has its own module registry, and jz resets all state per call,
- * so a worker's tallies are identical to running the same files sequentially.
+ * Execution: the work list is dealt round-robin to worker threads, one a
+ * process of a suite run (--jobs=N or JZ_TEST_JOBS; test/_test262.js).
  */
-import { readdirSync, readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import { join, relative } from 'path'
-import { execSync } from 'child_process'
-import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
-import { testJobs } from './_jobs.js'
+import { isMainThread } from 'worker_threads'
 import { collect } from './_gc.js'
+import { TEST262, LOCK, FILTER, ensureTest262, walk, countJs, ASYNC_DONE_SHIM, runWorker, fanOut } from './_test262.js'
 
 const ROOT = join(import.meta.dirname, '..')
-const TEST262 = join(import.meta.dirname, 'test262')
-
-// Pinned upstream commit — see test/test262.js's own copy of this constant and
-// comment for the bump procedure (both runners must move together).
-const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
-
-function ensureTest262() {
-  if (!existsSync(TEST262)) {
-    console.log(`Cloning test262 @ ${PINNED_COMMIT.slice(0, 8)} (this may take a minute)...`)
-    execSync(`git init -q ${TEST262}`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} remote add origin https://github.com/tc39/test262.git`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} fetch --depth 1 origin ${PINNED_COMMIT}`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} checkout -q FETCH_HEAD`, { stdio: 'inherit' })
-    return
-  }
-  const head = execSync(`git -C ${TEST262} rev-parse HEAD`, { encoding: 'utf8' }).trim()
-  if (head === PINNED_COMMIT) return
-  console.log(`test262 checkout at ${head.slice(0, 8)}, pinning to ${PINNED_COMMIT.slice(0, 8)}...`)
-  try {
-    execSync(`git -C ${TEST262} checkout -q ${PINNED_COMMIT}`, { stdio: 'inherit' })
-  } catch {
-    execSync(`git -C ${TEST262} fetch --depth 1 origin ${PINNED_COMMIT}`, { stdio: 'inherit' })
-    execSync(`git -C ${TEST262} checkout -q FETCH_HEAD`, { stdio: 'inherit' })
-  }
-}
 if (isMainThread) ensureTest262()
 
 const TRACKED_BUILTIN_PATHS = [
@@ -692,9 +664,6 @@ const FUNCTIONAL_TESTS = new Set([
   'built-ins/Date/prototype/valueOf/S9.4_A3_T2.js',
 ])
 
-const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
-const JOBS_ARG = process.argv.find(a => a.startsWith('--jobs='))?.slice(7)
-
 const NUMBER_CONSTANT_TESTS = new Set([
   'built-ins/Number/MAX_VALUE/value.js',
   'built-ins/Number/MIN_VALUE/value.js',
@@ -847,22 +816,6 @@ assert.throws = (expected, fn, msg) => {
 }
 `
 
-function* walk(dir) {
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name)
-      if (entry.isDirectory()) yield* walk(full)
-      else if (entry.name.endsWith('.js') && !entry.name.startsWith('.')) yield full
-    }
-  } catch { }
-}
-
-function countJs(dir) {
-  let count = 0
-  for (const _ of walk(dir)) count++
-  return count
-}
-
 // flags:[async] — the test calls $DONE(err?) when its promise chain settles;
 // runTest runs it through the module-level shim and polls __t262_check.
 function isAsyncFlagged(content) {
@@ -930,17 +883,6 @@ function shouldSkip(raw, rel) {
 
 // the test entry: a blocking agent's `sharedMemory` is an internal flag (src/options.js)
 const { jz } = await import(join(ROOT, 'test/util.js'))
-
-// flags:[async] tests — module-level $DONE shim (doneprintHandle.js stand-in);
-// the host polls __t262_check, each call draining the module's microtask queue
-// at the boundary.
-const ASYNC_DONE_SHIM = `
-let __t262d = 0
-let __t262e = undefined
-let $DONE = (e) => { if (__t262d) return; __t262d = 1; if (e != null && e !== false) __t262e = '' + e }
-let asyncTest = (fn) => { fn().then(() => $DONE(), (e) => $DONE(e == null ? 'rejected' : e)) }
-export let __t262_check = () => __t262d === 0 ? '@pending' : __t262e == null ? '@ok' : __t262e
-`
 
 function runTest(src, isAsync) {
   let code = src
@@ -1073,30 +1015,14 @@ async function runChunk(items) {
   return { perPath, results, fails, skips, xfails, xpasses }
 }
 
-if (!isMainThread) {
-  // Spawned worker: run the assigned slice and report tallies back.
-  runChunk(workerData.items).then(r => parentPort.postMessage(r))
-} else {
+if (!isMainThread) runWorker(runChunk)
+else {
   // Main: collect work, fan out to a worker pool, aggregate
   const allBuiltinsFiles = countJs(builtinsDir)
   const work = collectWork()
 
-  const jobs = testJobs(JOBS_ARG ?? process.env.JZ_TEST262_JOBS, work.length)
-
-  // Round-robin split: spreads heavy paths (Math/, DataView/) evenly so no
-  // single worker draws the whole slow tail.
-  const chunks = Array.from({ length: jobs }, () => [])
-  work.forEach((item, i) => chunks[i % jobs].push(item))
-
-  console.log(`Running ${work.length} tests across ${jobs} worker${jobs > 1 ? 's' : ''}...`)
   const t0 = Date.now()
-
-  const chunkResults = await Promise.all(chunks.map(items => new Promise((resolve, reject) => {
-    const w = new Worker(import.meta.filename, { workerData: { items } })
-    w.once('message', resolve)
-    w.once('error', reject)
-    w.once('exit', code => code === 0 || reject(new Error(`worker exited with code ${code}`)))
-  })))
+  const chunkResults = await fanOut(import.meta.filename, work)
 
   // Merge worker tallies.
   const results = { pass: 0, fail: 0, xfail: 0, skip: 0 }
@@ -1163,16 +1089,7 @@ if (!isMainThread) {
   // refreshed alongside a corpus pin bump or a real fix) is a hard failure.
   // JZ_TEST262_BASELINE, if set, overrides the file — an escape hatch, not
   // the source of truth.
-  const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
-  // audit-#12 item 3: the lock's corpus SHA must match the checkout this run
-  // just measured against — a stale lock (PINNED_COMMIT bumped here without
-  // refreshing test262-baseline.json, or vice versa) would silently compare
-  // today's counts against numbers measured on a different corpus.
-  if (lock.corpus !== PINNED_COMMIT) {
-    console.error(`\nFAIL: test262-baseline.json's corpus (${lock.corpus}) != this runner's PINNED_COMMIT (${PINNED_COMMIT}) — refresh the lock alongside a corpus pin bump.`)
-    process.exit(1)
-  }
-  const baseline = Number(process.env.JZ_TEST262_BASELINE) || lock.builtins
+  const baseline = Number(process.env.JZ_TEST262_BASELINE) || LOCK.builtins
   if (xpasses.length) {
     console.error(`\nFAIL: ${xpasses.length} test(s) in EXPECTED_FAIL_FILES now pass — prune them (listed above).`)
     process.exit(1)

@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, statSync 
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
-import { testJobs, shards, plan, slices, measured, estimated } from './_jobs.js'
+import { shards, plan, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
 import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv, legOf } from '../scripts/test-tasks.mjs'
@@ -91,17 +91,6 @@ console.log(JSON.stringify([sample(${ten}, 'a'), sample(${ten}, 'a'), sample(${t
   ok(a.join() !== b.join(), `another list's label keeps other places: ${a} and ${b}`)
   is([one, none, name], [[7], [], 't (one program in 4, seed 1)'])
   for (const bad of ['0', '2.5', 'x']) ok(String(pick({ JZ_TEST_SAMPLE: bad })).includes(`JZ_TEST_SAMPLE must be a whole number of 1 or more, not '${bad}'`), bad)
-})
-
-test('test workers: automatic count is bounded by memory and CPUs, explicit values validate', () => {
-  const gib = 1024 ** 3
-  is(testJobs(undefined, 100, 64, 64 * gib), 2)
-  is(testJobs(undefined, 100, 64, 2 * gib), 1)
-  is(testJobs(undefined, 100, 1, 64 * gib), 1)
-  is(testJobs('4', 100, 64, 2 * gib), 4)
-  is(testJobs('4', 2), 2)
-  is(testJobs(undefined, 0), 1)
-  for (const v of ['', '0', '-1', '1.5', 'NaN', 'Infinity']) throws(() => testJobs(v, 100))
 })
 
 test('suite processes: the idle cores, contiguous runs of near-equal weight, only where files share nothing', () => {
