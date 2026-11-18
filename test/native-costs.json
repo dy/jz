@@ -1218,7 +1218,7 @@
    }
   },
   "generated-default": {
-   "measured": "2026-11-18 at 7a53f62c0 on Apple M4 Max, 4 processes at a time, load average 17 at the start and 14 at the end",
+   "measured": "2026-11-18 at 7a53f62c0 on Apple M4 Max, 4 processes at a time, load average 17 at the start and 14 at the end; step dups re-timed vector-coverage (its own Node battery dropped) on 2026-11-18 at 177ad88a9's tree plus that change, one process beside the parent's, load 77 to 89",
    "files": {
     "wat-invariants": [57.3, 18, 34],
     "vector-dependence": [137.4, 1, 54072],
@@ -1259,11 +1259,11 @@
     "perf-ratchet": [106.3, 11, 17],
     "spellings": [111.1, 28, 64],
     "data-forms": [140.6, 12, 36],
-    "vector-coverage": [299.5, 57, 113]
+    "vector-coverage": [119.2, 57, 57]
    }
   },
   "generated-sample4": {
-   "measured": "2026-11-18 on the populations as 1f639f5d6 commits them (timed before the commit), JZ_TEST_SAMPLE=4, Apple M4 Max, 4 processes at a time, load average 24 at the start and 16 at the end, up to 68 between",
+   "measured": "2026-11-18 on the populations as 1f639f5d6 commits them (timed before the commit), JZ_TEST_SAMPLE=4, Apple M4 Max, 4 processes at a time, load average 24 at the start and 16 at the end, up to 68 between; step dups re-timed vector-coverage, which takes no sample, as in generated-default",
    "files": {
     "wat-invariants": [51.4, 18, 34],
     "vector-dependence": [126.8, 1, 54072],
@@ -1304,7 +1304,7 @@
     "perf-ratchet": [94.6, 11, 17],
     "spellings": [97.1, 28, 64],
     "data-forms": [123.3, 12, 36],
-    "vector-coverage": [194.1, 57, 113]
+    "vector-coverage": [119.2, 57, 57]
    }
   },
   "integration-default": {
