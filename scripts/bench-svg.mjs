@@ -19,7 +19,7 @@
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { timedBenchmarkRow } from '../assets/headline.js'
+import { pairedUs, timedBenchmarkRow } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
@@ -49,8 +49,9 @@ export const SVG_TARGETS = [
 const COVERAGE = new Set(['porf-native', 'scriptc', 'perry'])
 
 /** The chart rows of a dataset's cases ({ id: { targets } }): per lane, the geometric
- *  mean of lane ÷ JZ median over the cases where both have a timed row with an accepted
- *  checksum (lower = faster; JZ = 1.00×). `cases` = every case, the caption's N and the
+ *  mean of lane ÷ JZ time over the cases where both have a timed row with an accepted
+ *  checksum (lower = faster; JZ = 1.00×), each side's first pass where one could not
+ *  settle (assets/headline.js pairedUs). `cases` = every case, the caption's N and the
  *  coverage denominator. A lane with no such case has no row. */
 export function svgRows(cases) {
   const ids = Object.keys(cases)
@@ -58,7 +59,7 @@ export function svgRows(cases) {
   for (const t of SVG_TARGETS) {
     const logs = ids.flatMap(id => {
       const r = cases[id].targets ?? {}
-      return timedBenchmarkRow(r.jz) && timedBenchmarkRow(r[t.id]) ? [Math.log(r[t.id].medianUs / r.jz.medianUs)] : []
+      return timedBenchmarkRow(r.jz) && timedBenchmarkRow(r[t.id]) ? [Math.log(pairedUs(r[t.id], r.jz) / pairedUs(r.jz, r[t.id]))] : []
     })
     // At the 2 decimals the chart prints, so the drawing reproduces from its numbers.
     if (logs.length) rows.push({ label: t.label, sub: COVERAGE.has(t.id) ? `native, runs ${logs.length} / ${ids.length}` : t.sub,

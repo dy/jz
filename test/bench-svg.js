@@ -74,6 +74,13 @@ test('bench-svg: rows are the geomean of lane ÷ JZ over timed, accepted cases',
   is(rows.some(r => r.label === 'Perry'), false, 'a lane without evidence has no row')
 })
 
+test('bench-svg: a lane that could not settle meets the first pass of JZ', () => {
+  const t = (medianUs, firstUs, more) => ({ medianUs, firstUs, parity: 'ok', ...more })
+  const { rows } = svgRows({ fabrik: { targets: { jz: t(29, 51), v8: t(80, 80, { settled: false }), 'c-wasm': t(26, 27) } } })
+  is(rows.find(r => r.label === 'V8').ratio, 1.57, 'first pass over first pass, 80 / 51, not 80 / 29')
+  is(rows.find(r => r.label === 'C').ratio, 0.9, 'two settled lanes by their counted passes, 26 / 29')
+})
+
 test('bench-svg: only a complete live run may replace the chart', () => {
   const targets = [
     { id: 'jz', label: 'JZ' },

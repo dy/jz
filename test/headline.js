@@ -104,6 +104,25 @@ test('benchmark ratios: a lane timed on its first pass meets the other lane\'s f
   almost(benchmarkRatio([C({ ...jz, memKb: 5 }, { v8: { ...v8, memKb: 10 } })], 'v8', 'memKb').geo, 2, 1e-12, 'memory reads its own column')
 })
 
+test('ledger: a lane that could not settle is read first pass to first pass', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-ledger-test-'))
+  try {
+    const t = (medianUs, firstUs, more) => ({ medianUs, firstUs, parity: 'ok', ...more })
+    const bench = join(dir, 'bench.json'), ledger = join(dir, 'ledger.jsonl')
+    writeFileSync(bench, JSON.stringify({
+      meta: { date: '2026-11-18', commit: 'abc1234', host: { cpu: 'Test CPU', platform: 'linux' } },
+      cases: { fabrik: { targets: { jz: t(29, 51), v8: t(80, 80, { settled: false }), 'c-wasm': t(26, 27) } } },
+    }))
+    const run = (...args) => execFileSync(process.execPath, ['scripts/ledger.mjs', ...args], { encoding: 'utf8', env: { ...process.env, JZ_LEDGER: ledger } })
+    run('add', bench, '--run=t1', '--kind=probe')
+    const row = JSON.parse(readFileSync(ledger, 'utf8'))
+    is(row.cases.fabrik.cold, ['v8'], 'the lane that could not settle is named')
+    is(row.cases.fabrik.first, { jz: 51, v8: 80, 'c-wasm': 27 }, 'every lane keeps its first pass beside it')
+    const line = run('show', 'fabrik').split('\n').find(l => l.startsWith('t1'))
+    ok(line.includes('0.637') && line.includes('1.115'), `jz 51 / 80 against V8, 29 / 26 against C's wasm: ${line}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('figure: size median excludes invalid rows and counts every case; RSS direction is explicit for V8 and AssemblyScript', () => {
   const pair = (bytes, memKb = 50) => C({ bytes, memKb, parity: 'ok' }, {
     as: { bytes: 100, memKb: 100, parity: 'ok' }, v8: { memKb: 100, parity: 'ok' },

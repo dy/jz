@@ -628,8 +628,8 @@ const carriesState = c => {
   if (!statefulCases.has(c.id)) {
     const r = passCheck(runProc([process.execPath, '--jitless', join(LIB, 'run-v8.mjs'), c.js],
       { env: { ...process.env, JZ_BENCH_PASSES: '2' } }), true)
-    if (r.error) console.warn(`[passes] ${c.id}: two calls of main under Node's interpreter failed: ${r.error}`)
-    statefulCases.set(c.id, !r.error && r.passes === 2 && r.checksums[0] !== r.checksums[1])
+    // (a check that failed answers neither way: the lane fails by that reason)
+    statefulCases.set(c.id, r.error ? { error: r.error } : r.passes === 2 && r.checksums[0] !== r.checksums[1])
   }
   return statefulCases.get(c.id)
 }
@@ -689,7 +689,8 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       const all = [...new Set(parsed.checksums)]
       const seen = all.slice(0, 3).join(', ') + (all.length > 3 ? ` and ${all.length - 3} more` : '')
       if (!calls) return { id, error: `pass checksums differ: ${seen}` }
-      if (!carriesState(c)) return { id, error: `pass checksums differ: ${seen}, where two calls of the source's main answer alike under Node's interpreter` }
+      const state = carriesState(c)
+      if (state !== true) return { id, error: `pass checksums differ: ${seen}, ${state ? `and two calls of the source's main under Node's interpreter failed: ${state.error}` : `where two calls of the source's main answer alike under Node's interpreter`}` }
       // (stderr: a `[run]` line is open on stdout)
       console.warn(`[passes] ${key}: main answers ${seen} on successive calls, as its source does under Node's interpreter; the lane runs its first pass alone`)
       parsed = firstRun()
@@ -1641,6 +1642,12 @@ let LIST = false
 // --passes=first (or JZ_BENCH_PASSES=first): every lane times its first pass alone, the
 // protocol before the pass rule (_lib/passes.js), for comparing the two. The runners
 // read the variable; the shells run the plain script (runFlat).
+// (a count of passes is the state check's own, set for its one process: a dataset timed
+// by a count would name the rule as its protocol)
+if (process.env.JZ_BENCH_PASSES && process.env.JZ_BENCH_PASSES !== 'first') {
+  console.error(`JZ_BENCH_PASSES=${process.env.JZ_BENCH_PASSES}: bench.mjs times by the pass rule, or by 'first'`)
+  process.exit(1)
+}
 let FIRST_PASS_ONLY = process.env.JZ_BENCH_PASSES === 'first'
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
@@ -1726,7 +1733,7 @@ if (MERGE && !PREV && !MERGE_ALLOW_SHRINK) {
 const PASSES = FIRST_PASS_ONLY ? 'first' : { settleMs: SETTLE_MS, firstMs: FIRST_MS }
 const passesText = data => JSON.stringify(data?.meta ? data.meta.passes ?? 'first' : PASSES)
 if (MERGE && PREV && passesText(PREV) !== JSON.stringify(PASSES)) {
-  console.error(`--merge: ${JSON_PATH} was timed by the pass protocol ${passesText(PREV)}, this run by ${JSON.stringify(PASSES)} — refusing to mix them. A full --json run times every row by one, or --passes=first matches a dataset from before the pass rule.`)
+  console.error(`--merge: ${JSON_PATH} was timed by the pass protocol ${passesText(PREV)}, this run by ${JSON.stringify(PASSES)}: refusing to mix them. A full --json run times every row by one, or --passes=first matches a dataset from before the pass rule.`)
   process.exit(1)
 }
 

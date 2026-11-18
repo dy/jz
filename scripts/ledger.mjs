@@ -27,11 +27,14 @@ const rows = () => existsSync(LEDGER)
   : []
 const flag = (args, name) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3)
 
-/** A case's ledger entry: valid timings, the memory cases' RSS, jz/as bytes. */
+/** A case's ledger entry: valid timings, the memory cases' RSS, jz/as bytes. Where a
+ *  lane could not settle (a JS lane of a case whose main carries state, bench/README.md),
+ *  `cold` names those lanes and `first` holds every lane's first pass. */
 const entryOf = (id, c) => {
-  const us = {}, entry = { us }
-  for (const [tid, t] of Object.entries(c.targets || {})) if (timed(t)) us[tid] = t.medianUs
+  const us = {}, entry = { us }, cold = []
+  for (const [tid, t] of Object.entries(c.targets || {})) if (timed(t)) { us[tid] = t.medianUs; if (t.settled === false) cold.push(tid) }
   if (!Object.keys(us).length) return null
+  if (cold.length) { entry.cold = cold; entry.first = Object.fromEntries(Object.keys(us).map(tid => [tid, c.targets[tid].firstUs ?? us[tid]])) }
   if (MEMORY_CASES.includes(id)) {
     const kb = {}
     for (const tid of ['jz', 'v8']) if (c.targets[tid]?.memKb > 0) kb[tid] = Math.round(c.targets[tid].memKb)
@@ -90,19 +93,24 @@ const findJson = dir => {
   return null
 }
 
+/** A lane's time over a rival's in a case's entry: each side's first pass where either
+ *  could not settle (assets/headline.js pairedUs), or null where one has no time. */
+const over = (e, lane, rival) => {
+  const us = e?.cold?.includes(lane) || e?.cold?.includes(rival) ? e.first : e?.us
+  return us?.[lane] > 0 && us[rival] > 0 ? us[lane] / us[rival] : null
+}
 /** The worst ratio a claim class holds against its jz lane on one case: [ratio, rival]. */
-const worst = (us, rivals, base = 'jz') => {
+const worst = (e, rivals, base = 'jz') => {
   let best = null
-  if (!(us?.[base] > 0)) return best
-  for (const r of rivals) if (us[r] > 0 && (!best || us[base] / us[r] > best[0])) best = [us[base] / us[r], r]
+  for (const r of rivals) { const x = over(e, base, r); if (x != null && (!best || x > best[0])) best = [x, r] }
   return best
 }
-const claimWorst = (id, us) => {
+const claimWorst = (id, e) => {
   let best = null
   // (a class's named exceptions answer to their bands, not to this column)
   for (const [label, rivals] of CLAIM_CLASSES) {
     if (exceptionsOf(label).has(id)) continue
-    const w = worst(us, rivals, baseOf(label))
+    const w = worst(e, rivals, baseOf(label))
     if (w && (!best || w[0] > best[0])) best = w
   }
   return best
@@ -129,7 +137,7 @@ const status = cpuWant => {
   const ids = new Set(cols.flatMap(c => Object.keys(c.last.cases)))
   const lines = []
   for (const id of ids) {
-    const ws = cols.map(c => [c.prev && claimWorst(id, c.prev.cases[id]?.us), claimWorst(id, c.last.cases[id]?.us)])
+    const ws = cols.map(c => [c.prev && claimWorst(id, c.prev.cases[id]), claimWorst(id, c.last.cases[id])])
     const top = Math.max(...ws.map(([, w]) => w ? w[0] : 0))
     lines.push([top, id.padEnd(12) + ws.map(([p, w]) => `${p ? cell(p) + ' → ' : ''}${cell(w)}`.padEnd(44)).join('')])
   }
@@ -137,7 +145,7 @@ const status = cpuWant => {
   for (const [top, line] of lines) if (top >= 1) console.log(line)
   console.log(`\n${lines.filter(l => l[0] < 1).length} of ${lines.length} cases lead on every machine listed`)
   for (const c of cols) {
-    const open = Object.keys(c.last.cases).filter(id => (claimWorst(id, c.last.cases[id].us)?.[0] ?? 0) >= 1)
+    const open = Object.keys(c.last.cases).filter(id => (claimWorst(id, c.last.cases[id])?.[0] ?? 0) >= 1)
     const mem = MEMORY_CASES.map(id => [id, c.last.cases[id]?.kb]).filter(([, kb]) => kb?.jz && kb?.v8)
       .map(([id, kb]) => `${id} ${(kb.jz / kb.v8).toFixed(3)}${mark(kb.jz / kb.v8)}`)
     console.log(`${shortCpu(c.cpu)} @ ${c.last.commit}: ${open.length} open; peak RSS jz/v8 ${mem.join(', ') || '-'}`)
@@ -154,7 +162,7 @@ const show = (id, cpuWant) => {
     for (const r of rs) {
       const us = r.cases[id].us
       console.log(String(r.run).padEnd(15) + r.kind.padEnd(11) + r.commit.padEnd(10) + String(r.load ?? '-').padStart(5) + String(us.jz ?? '-').padStart(8) +
-        rivals.map(t => (us.jz > 0 && us[t] > 0 ? (us.jz / us[t]).toFixed(3) + mark(us.jz / us[t]) : '-').padStart(10)).join(''))
+        rivals.map(t => { const x = over(r.cases[id], 'jz', t); return (x != null ? x.toFixed(3) + mark(x) : '-').padStart(10) }).join(''))
     }
   }
 }
