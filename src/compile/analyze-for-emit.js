@@ -38,7 +38,7 @@ import { invalidateLocalsCache } from './analyze/body-facts.js'
 import { runsConversion } from './analyze/frame-effects.js'
 import { frameNode } from '../function.js'
 import { viewsOn } from '../../module/schema.js'
-import { K, NUMBER, bitOf, tagsOf, tagOf, core, hasTag } from '../summary/kind.js'
+import { K, NUMBER, bitOf, tagsOf, tagOf, core, hasTag, TAGS } from '../summary/kind.js'
 
 // A write of a parameter split into a binding of its own (prepare/split-bindings.js
 // `paramWrites`) is the parameter's as the source wrote it, one variable: where one
@@ -49,6 +49,13 @@ const writtenString = (func, name, summary) => (func.paramWrites?.get(name) ?? [
   const k = summary?.kindOfExpr(v)
   return k == null || tagOf(core(k)) === K.ANY || hasTag(k, K.STRING)
 })
+// What the program's own calls pass a parameter (the summary's join of their
+// arguments, the host's seed aside) is Numbers alone: no other kind, no nullish,
+// no missing argument; nothing at all where only the host calls.
+const internalNumbers = (summary, name) => {
+  const k = summary?.internalParamKindOf?.(name)
+  return k == null || (k & TAGS & ~bitOf(K.NUMBER)) === 0
+}
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
@@ -302,7 +309,13 @@ export function analyzeFuncForEmit(func, programFacts) {
           // somewhere it flows is a use as a string (the summary's demand).
           && !summary?.stringDemand(p.name)
           && !writtenString(func, p.name, summary)
-          && (summary?.numericDemand(p.name) || paramAllUsesNumeric(frameNode(func), p.name) || paramNeverString(frameNode(func), p.name)))
+          && (summary?.numericDemand(p.name) || paramAllUsesNumeric(frameNode(func), p.name) || paramNeverString(frameNode(func), p.name))
+          // The boundary's ToNumber is the host's alone: a call from inside the
+          // program passes its argument as it is, so every such argument must be a
+          // Number already. Where one may be a string or an object, the parameter
+          // stays as that join says, JavaScript's semantics there (`n + 1` with
+          // n = '10' is '101'), and the host's value then crosses as it is.
+          && internalNumbers(summary, p.name))
         // An f64 slot holds a genuine number (the JS API's ToNumber made
         // `undefined` NaN), and neither proof admits a nullish test, so the
         // UNDEF-pad nullability is moot: reads and loop bounds stay plain.

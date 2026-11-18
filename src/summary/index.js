@@ -1970,7 +1970,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // the parameter before any reassignment can run sees only this; `kinds`
   // holds the join with the reassignments too.
   const incoming = []
-  const bindParam = (key, k, quiet = false) => { raise(incoming, key, k, quiet); raise(kinds, key, k, quiet) }
+  // The same join of the program's own arguments alone, the host's seed aside
+  // (`seed` below): what a call from inside passes an exported parameter.
+  const internalIncoming = []
+  const bindParam = (key, k, quiet = false, host = false) => {
+    raise(incoming, key, k, quiet); raise(kinds, key, k, quiet)
+    if (!host) internalIncoming[key] = merge(internalIncoming[key] ?? K.NONE, k, true)
+  }
   // A passive parameter is only tested, compared by identity or asked its
   // typeof, including data fields used in those positions. No reference
   // escapes or invokes user code, so a join need not lose its shapes. Other
@@ -5716,7 +5722,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (cls) methods.set(sid, new Map(cls.methods))
   }
   const queryFacts = {
-    kinds, incoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
+    kinds, incoming, internalIncoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
@@ -6142,7 +6148,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // parameter is always the array the export collects (the fixpoint binds it).
   const seed = (numeric) => {
     for (const key of undeclaredGlobals) raise(kinds, key, NULLISH)
-    for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) { if (p.rest) continue; const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
+    for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) { if (p.rest) continue; const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY, false, true) }
   }
   // A module global a top-level statement stores unconditionally was assumed
   // written before any read (`initWrites`). The initializers run every statement
@@ -6426,7 +6432,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     if (losses) losses.length = 0
-    kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
     wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)

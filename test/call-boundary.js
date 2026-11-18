@@ -238,3 +238,23 @@ test('call boundary: a typed array the module keeps on a host object stays its s
     is(b.state[0], a.state[0], `the host reads the module's state at ${optimize}`)
   }
 })
+
+// The boundary's ToNumber is the host's alone: an exported parameter the program's own call
+// passes a string, or a value of a list that holds one, is that string there, as JavaScript has
+// it (`n + 1` concatenates, a loop test converts it each round), not the NaN its bits would be.
+test('call boundary: an exported parameter a call inside passes a string is that string', () => {
+  const src = `export let f = (n) => { let c = 0; for (let i = 0; i + 1 < n; i++) c++; return c }
+    export let a = () => { const xs = ['10', 7.5]; return [f(xs[0]), f(xs[1])] }
+    export let c = () => f('10')
+    export let g = (n) => n + 1
+    export let h = () => g('10')
+    export let k = (n) => { let c = 0; for (let i = 0; i + 1 < n; i++) c++; return [c, n + 1] }
+    export let m = () => k('10')`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const { exports } = jz(src, { optimize })
+    for (const name of ['a', 'c', 'h', 'm']) is(exports[name](), want[name](), `${name} at ${optimize}`)
+    is(exports.f(4), want.f(4), `f from the host at ${optimize}`)
+    is(exports.g(5), want.g(5), `g from the host at ${optimize}`)
+  }
+})

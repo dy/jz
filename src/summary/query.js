@@ -22,7 +22,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
 
 export function summaryQueries(facts, internal = false) {
-  const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
+  const { kinds, incoming, internalIncoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildStore, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, fnAssigned, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
@@ -841,6 +841,8 @@ export function summaryQueries(facts, internal = false) {
       numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'number' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : pub(canon(incoming[key] ?? K.NONE)) },
+      // The same of the program's own calls alone, the host's seed aside (none where only the host calls).
+      internalParamKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : pub(canon(internalIncoming?.[key] ?? K.NONE)) },
       // Whether some call lets the parameter's default run (a missing or possibly undefined argument, an unseen caller).
       defaultMayRun: name => { const key = keyOf(name); return key === null || !defaultRuns || defaultRuns.has(key) },
       // Named storage supplies producer provenance, not the complete read
