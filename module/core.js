@@ -2745,8 +2745,11 @@ export default (ctx) => {
   // number are always dispatched. The __len disjunction collapses to whichever of
   // ARRAY/TYPED/HASH/SET/MAP are reachable. STRING covers both heap and SSO via __str_len.
   // Can `.length` on an unproven receiver resolve to an ORDINARY own property?
-  // Only when the program can hold one: a registered object schema, or the
-  // dyn-prop/hash machinery. Otherwise the fallback arm stays plain undefined
+  // Only when the program can hold one: a registered object schema, the
+  // dyn-prop/hash machinery, or a function held as a value, whose `length` is its
+  // parameters (the closure table: until the nullish read's TypeError was raised by
+  // its code, that error's schema stood in for it, and without the host's dynamic
+  // operations a function's length read undefined). Otherwise the fallback arm stays plain undefined
   // and __length pulls no dyn dispatcher. The dispatcher lives in
   // module/collection.js — gate on its registration too, so a build whose
   // autoload never pulled that module keeps the lean arm instead of
@@ -2756,7 +2759,8 @@ export default (ctx) => {
   const lengthNeedsDynArm = () =>
     ctx.core.stdlib[ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] != null &&
     (ctx.linkDemand.external || ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
-     (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) || ctx.core.includes.has('__hash_set'))
+     (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) || ctx.core.includes.has('__hash_set') ||
+     ctx.closure.table?.length > 0)
 
   const lengthTagIR = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const arrayLengthIR = `(block (result f64)
