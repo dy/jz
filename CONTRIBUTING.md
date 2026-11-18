@@ -318,7 +318,8 @@ to it: `instantiate()` runs it and throws what it throws, as an export's throw;
 an embedder calling it gets the transport, the value's bits in
 `__jz_last_err_bits`) and the names
 under `__jz_`: the allocator (`__jz_alloc`, `__jz_clear`, `__jz_heap`), the
-closure table (`__jz_table`), the release and compaction handles, the async
+closure table (`__jz_table`, which a `memory.fixed` module keeps to itself: its
+proof bounds a closure call by the table's entries), the release and compaction handles, the async
 boundary, a class's members, a kernel's kind variants. A program export never
 takes `memory` or a `__jz_` name (`compile` rejects it at the export); its own
 `_initialize` or `_start` is the WASI entry, after jz's init. `instantiate()`'s
