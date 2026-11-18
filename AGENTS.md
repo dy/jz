@@ -67,7 +67,9 @@ What this implies for HOW we optimize:
 
 - `npm test` — core suite (in-process compiler), without hidden bootstrap builds
   or generated population sweeps. Run it before reporting any change. It splits the
-  files over the idle cores, each process a contiguous run of them (`test/index.js`);
+  files over the idle cores, each process a contiguous run of them (`test/index.js`)
+  weighed by each file's CPU seconds on the leg (`test/native-costs.json`, which
+  `--costs` refreshes and an ordinary run never writes);
   `JZ_TEST_JOBS=N` or `--jobs=N` sets the count. `JZ_TEST_JOBS=1` is the one-process
   run, kept by CI's default leg, where the state a file leaves behind meets every
   later file. Focus with `npm test -- dyn-keys strings` (named files run in one

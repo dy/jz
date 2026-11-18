@@ -26,6 +26,13 @@ export function shards(files, weight, n) {
   return out
 }
 
+// The runs a split suite starts, dearest first: three to a process, so the light ones
+// started last level the finish (scripts/test-tasks.mjs runTasks gives each next run
+// to the first process free).
+export const plan = (files, weight, jobs) => shards(files, weight, jobs * 3)
+  .map(run => ({ files: run, weight: run.reduce((sum, f) => sum + weight(f), 0) }))
+  .sort((a, b) => b.weight - a.weight)
+
 // A file list as n slices for n machines, every file in exactly one: the dearest file
 // first goes to the slice lightest so far (bench/shards.mjs packs its cases the same
 // way), and a slice lists its files in the list's order. Same inputs, same slices.
@@ -47,4 +54,13 @@ export function slices(files, weight, n) {
 export function measured(files, seconds) {
   const dearest = Math.max(1, ...files.map(f => seconds[f]).filter(s => s > 0))
   return f => seconds[f] > 0 ? seconds[f] : dearest
+}
+
+// Measured seconds per file as a weight, and a file the table has not timed weighs its
+// guess (its bytes, say) at the seconds a unit of guess costs the timed files of the
+// list. With none of them timed, the guess alone.
+export function estimated(files, seconds, guess) {
+  const timed = files.filter(f => Object.hasOwn(seconds, f))
+  const rate = timed.reduce((sum, f) => sum + seconds[f], 0) / timed.reduce((sum, f) => sum + guess(f), 0) || 1
+  return f => Object.hasOwn(seconds, f) ? seconds[f] : guess(f) * rate
 }

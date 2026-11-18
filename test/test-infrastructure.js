@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
-import { testJobs, shards, slices, measured } from './_jobs.js'
+import { testJobs, shards, plan, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
 import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv, legOf } from '../scripts/test-tasks.mjs'
@@ -99,6 +99,30 @@ test('suite processes: the idle cores, contiguous runs of near-equal weight, onl
   is(listed(['--jobs=2']).status, 0)
   is(listed(['--jobs=2'], { JZ_TEST_JOBS: '' }).stdout, listed([]).stdout)
   for (const args of [['--jobs=2', 'math'], ['--jobs=2', '--suite=integration'], ['--jobs=2', '--suite=all']]) ok(listed(args).status !== 0, args.join(' '))
+})
+
+test('suite processes: weighed by the leg\'s CPU seconds, an untimed file by its bytes; none far over the mean', () => {
+  const bytes = { a: 100, b: 300, x: 200 }
+  is(['a', 'b', 'x'].map(estimated(['a', 'b', 'x'], { a: 2, b: 6 }, f => bytes[f])), [2, 6, 4], 'an untimed file weighs its bytes at the seconds a byte of the timed: 8 s for 400 bytes')
+  is(estimated(['x'], { a: 2 }, f => bytes[f])('x'), 200, 'none of the list timed: the bytes alone')
+  is(estimated(['a', 'x'], { a: 0 }, f => bytes[f])('a'), 0, 'a file timed at nothing is timed')
+  const weight = { a: 5, b: 1, c: 1, d: 1, e: 4 }
+  is(plan(Object.keys(weight), f => weight[f], 1), [{ files: ['a'], weight: 5 }, { files: ['e'], weight: 4 }, { files: ['b', 'c', 'd'], weight: 3 }], 'three runs to a process, the dearest first')
+  // On each split suite's recorded costs, at 4 and at 12 processes, each next run to the
+  // first process free as runTasks gives them: the dearest process within 1.3 of the mean,
+  // or no dearer than the dearest file where that file alone is more (no plan splits a file).
+  const { runs } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
+  const split = Object.entries(runs).filter(([run]) => splits(run.split('-')[0]))
+  ok(split.some(([run]) => run === 'core-default'), 'the default core leg is timed')
+  for (const [run, { files }] of split) {
+    const names = Object.keys(files), cost = f => files[f][0], total = names.reduce((sum, f) => sum + cost(f), 0)
+    for (const jobs of [4, 12]) {
+      const loads = Array(jobs).fill(0)
+      for (const r of plan(names, cost, jobs)) loads[loads.indexOf(Math.min(...loads))] += r.weight
+      const dearest = Math.max(...loads), file = Math.max(...names.map(cost))
+      ok(dearest <= Math.max(1.3 * total / jobs, file), `${run}, ${jobs} processes: the dearest is ${(dearest * jobs / total).toFixed(2)} of the mean${dearest === file ? ', one file' : ''}`)
+    }
+  }
 })
 
 test('test reporter: BigInt failures preserve later failures and the final result', () => {

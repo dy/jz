@@ -372,7 +372,7 @@ import { spawnSync } from 'node:child_process'
 import { cpus, loadavg } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { suiteArgs, suiteOf, splits } from './_suites.js'
-import { shards } from './_jobs.js'
+import { plan, estimated } from './_jobs.js'
 import { runTasks, suiteJobs, legOf } from '../scripts/test-tasks.mjs'
 const { suite, list, files: argFilters, jobs: jobsArg, costs } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
 // A whole core or generated run may be split over processes; named files and a
@@ -489,11 +489,11 @@ function record(times, failed, processes) {
 // named to it, and runs them as below.
 const jobs = splittable ? suiteJobs(jobsArg ?? (process.env.JZ_TEST_JOBS || undefined), selected.length) : 1
 if (jobs > 1) {
-  // A file's size stands in for its time, unknown before it runs. Three runs to a
-  // process, the heaviest started first, so the light ones level the finish.
-  const size = name => statSync(new URL(`./${name}.js`, import.meta.url)).size
-  const runs = shards(selected, size, jobs * 3).map(files => ({ files, size: files.reduce((sum, f) => sum + size(f), 0) })).sort((a, b) => b.size - a.size)
-  const results = await runTasks(runs.map(({ files }) => ({
+  // A file weighs its CPU seconds on this leg; one the leg has not timed, its bytes at
+  // the seconds a byte the timed files cost.
+  const timed = Object.fromEntries(Object.entries(JSON.parse(readFileSync(COSTS, 'utf8')).runs[row]?.files ?? {}).map(([f, [s]]) => [f, s]))
+  const weight = estimated(selected, timed, name => statSync(new URL(`./${name}.js`, import.meta.url)).size)
+  const results = await runTasks(plan(selected, weight, jobs).map(({ files }) => ({
     name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...costs ? ['--costs'] : [], ...files], env: { JZ_TEST_JOBS: '1' },
   })), { jobs })
   // The totals are each run's last summary: a test may print a nested run's own.

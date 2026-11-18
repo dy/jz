@@ -159,6 +159,7 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 | `npm test` | Core semantic/structural regressions, split over the idle cores; **no bootstrap or generated population sweeps** |
 | `JZ_TEST_JOBS=1 npm test` | The same in one process: the state a file leaves behind meets every later file (CI's default leg) |
 | `npm test -- strings dyn-keys` | Named files, regardless of owner, in one process; keeps completed-test GC and warm compile-state checks |
+| `npm test -- --costs` | The core suite on the current leg, each file timed: its CPU seconds, tests and assertions written to the leg's row of `test/native-costs.json`, by which a split run weighs its processes (`--suite=` picks another suite; named files print their times instead) |
 | `npm run test:matrix` | Core default/O0/O3/WASI legs, one at a time |
 | `npm run test:integration` | Libraries, tools, examples, site/package smoke for the current leg |
 | `npm run test:generated` | Fuzz correctness, WAT populations, deterministic codegen ratchet for the current leg |
