@@ -2938,9 +2938,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const x = isNullishLiteral(c[2]) ? c[1] : isNullishLiteral(c[1]) ? c[2] : null
     // a name's field (`params._glide == null`), by its slots: loosely either
     // way, strictly where it is never nullish (null and undefined share a tag)
+    // (one whose name no call has bound yet decides nothing rather than waiting: a
+    // test left pending is walked in no arm that round, and the joins meet in
+    // another order, threegeom's `Box3.min` keeping no one class)
     if (Array.isArray(x) && x[0] === '.') {
       const f = nullishName(x)
-      if (typeof f !== 'boolean') return f
+      if (typeof f !== 'boolean') return undefined
       if (f && op !== '==' && op !== '!=') return undefined
       return op === '==' || op === '===' ? f : !f
     }
