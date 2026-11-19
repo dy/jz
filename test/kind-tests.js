@@ -227,29 +227,28 @@ test('kind tests: a test of a parameter some call may leave nullish stays', () =
   }
 })
 
-// A value a statement dereferences is not nullish after it: `p.rate = 0.1`
-// throws where `p` is undefined or null, so past it `p` is an object, and a
-// call passing it lets no default run (summary deref). An element read that
-// may be past the end (`chP[c]`) then reaches `kernel(d, params = {})` as an
-// object, and `process` allocates nothing. Every way of dereferencing folds
-// alike; every path the dereference may not be on keeps the default, and the
-// answer is the host's.
+// A value a store or a method call went through is not nullish after it:
+// `p.rate = 0.1` throws where `p` is undefined or null, so past it `p` is an
+// object, and a call passing it lets no default run (summary deref). An
+// element read that may be past the end (`chP[c]`) then reaches
+// `kernel(d, params = {})` as an object, and `process` allocates nothing.
+// Every store and call folds alike; every path the dereference may not be on
+// keeps the default, and the answer is the host's. (A member read proves
+// nothing: summary deref says why.)
 const DEREF = `const chP = [{ rate: 1, v: [2] }, { rate: 3, v: [4] }]
 const kernel = (d, params = { rate: 7 }) => d * params.rate`
 const DEREFS = {
   'a store': 'p.rate = 0.5',
-  'a read': 'd += p.rate',
-  'an index read': 'd += p["v"][0]',
   'a computed store': 'p[KEY] = 0.5',
   'a method call': 'd += p.hasOwnProperty("rate") ? 1 : 0',
   'a compound store': 'p.rate += 1',
   'an update': 'p.rate++',
 }
 const derefSrc = (body) => `${DEREF}\nconst KEY = 'rate'\nexport const process = (c, d) => { let p = chP[c | 0]; ${body}; return kernel(d, p) }`
-// an index read or store of a typed array an element read may leave missing
+// an index store of a typed array an element read may leave missing
 const ROWS = `const rows = [new Float64Array(2), new Float64Array(2)]
 const kern = (d, s = new Float64Array(2)) => d + s[0] + s[1]`
-const INDEXED = { 'an index store': 's[1] = d', 'an index read': 'd += s[1]', 'an index update': 's[0]++' }
+const INDEXED = { 'an index store': 's[1] = d', 'an index update': 's[0]++' }
 
 test('kind tests: a dereferenced value reaches a call as an object', () => {
   const cases = [...Object.entries(DEREFS).map(([name, body]) => [name, derefSrc(body)]),

@@ -4034,7 +4034,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (mask === 0 && (op === '.' || op === '?.' || op === '[]')) {
       const key = n[2], prop = op !== '[]' ? key
         : Array.isArray(key) && (key[0] == null || key[0] === 'str') ? key[1] : null
-      if (dataProperty(prop)) { selectedExpr(n[1], 0); if (op !== '?.') deref(n[1]); return K.NONE }
+      if (dataProperty(prop)) { selectedExpr(n[1], 0); return K.NONE }
     }
     if (typeof n === 'string' && mask === 0) { testing++; try { return selectKind(expr(n), 0) } finally { testing-- } }
     if (mask !== 7 && !logical && n?.[0] !== '?' && n?.[0] !== '?:' && n?.[0] !== ',') return selectKind(expr(n), mask)
@@ -4095,17 +4095,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         testing++; const r = receiver(n[1]); testing--
         let k = member(cop, refine(r, PRIMITIVE_BITS | UNKNOWN), prop)
         for (const a of mixedArrays) k = merge(k, member(cop, a, prop))
-        if (op === '.') deref(n[1])
         return optionalResult(cop, r, k)
       }
       const recv = receiver(n[1])
       if (typeof prop === 'string') noteMissing(n, recv, cop)
       if (cop === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
-      if (typeof prop !== 'string') { expr(prop); if (op === '.') deref(n[1]); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
+      if (typeof prop !== 'string') { expr(prop); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
       const outerMember = memberNode; memberNode = n
       const k = member(cop, recv, prop), pk = op === '.' && pathDepth ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
       memberNode = outerMember
-      if (op === '.') deref(n[1])
       return pmask === undefined ? k : refine(k, pmask)
     }
     if (op === '[]') {
@@ -4118,12 +4116,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         const ik = expr(n[2])
         let k = hasTag(recv, K.STRING) ? join(STRING, ABSENT) : ABSENT
         for (const a of mixedArrays) k = merge(k, orAbsent(entryOf(a, ik)))
-        deref(n[1])
         return optionalResult(chainOp(op, n[1]), recv, k)
       }
       const recv = receiver(n[1]), cop = chainOp(op, n[1])
       if (n.length === 3) noteMissing(n, recv, cop)
-      const read = optionalResult(cop, recv, (() => {
+      return optionalResult(cop, recv, (() => {
       const idx = n[2], t = tagOf(recv)
       if (literalKeyOf(idx) !== null) return member(cop === '?.' ? '?.' : '.', recv, literalKeyOf(idx))
       // `o[1]` on an object is the property "1" (ToPropertyKey of a number literal)
@@ -4173,8 +4170,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (hasTag(recv, K.OBJECT)) escapeLostFields(ik === NUMBER)
       return ANY
       })())
-      if (cop === '[]' && n.length === 3) deref(n[1])
-      return read
     }
     if (op === '(') return expr(n[1])
     if (op === '()' || op === '?.()') {
@@ -5445,12 +5440,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // before (`if (o == null) return; if (typeof o === 'number') o = null`: the second
   // test's arm ends by restoring "not nullish").
   const endProofs = (key) => { refined.delete(key); for (let i = 0; i < rtop; i++) if (rKeys[i] === key) rPriors[i] = undefined }
-  // A name a member read or store, a method call or an index went through
-  // holds no nullish value after it: `p.rate = 0.1` throws where `p` is
+  // A name a store (`p.rate = 0.1`, `p[i] += v`) or a method call (`p.m()`)
+  // went through holds no nullish value after it: either throws where `p` is
   // undefined or null, so what follows on its path reads `p` as an object,
   // and a call passing it lets no default run. The proof is the path's, as a
   // guard's is: an arm, a loop's body and update, a try's block and handler
-  // and a parameter's default each unwind it.
+  // and a parameter's default each unwind it. A member read throws alike, but
+  // proving through every read grew webaudio by 4 KB, and mapint's and
+  // mapobj's speed builds by 3 KB, by a path not traced: reads prove nothing.
   const deref = (recv) => {
     if (typeof recv !== 'string') return
     const key = keyOf(recv)
