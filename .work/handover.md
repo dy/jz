@@ -593,3 +593,28 @@ The landing check from here: `LEGS="wasi default inv3 opt0" sh land.sh <tree> <t
 and the touched test files on a fresh hosted compiler (`hosted-some.mjs`) before it.
 A wall-time bound that fails inside a loaded check (test/perf.js, examples/bench.mjs) is
 rerun alone before it is believed either way.
+
+## Branches of the land-o landing (2026-11-19), tips before deletion
+
+```
+48b221b29 land-o                         the landing branch as its checks ran it: main (5f3865889) and 29 commits; the record's commit after it
+e473d681a fix-len                        the length read by the closure, on main: landed as 1404dfd3f
+6b49e4f3e worktree-wf_00b2d799-cc8-12    the input limits' 21 commits, before the rebase: landed as 62debf945 to ebb10c430
+1a748c898 worktree-agent-ab0f34829902a23e5  the embedding lane's six, kept past land-m for the hash the handover had wrong
+```
+
+Waiting, each to review with the integrator's own probes before it lands:
+`nanbox-rest` 13c8dd1de (26 commits on `land-n` b86e68e60, which is land-m at d8fb5aecd and
+the NaN box's 17: the armed check `assertNumberBitsUnread` and what it named; rebase onto
+main; it grows three*, webaudio and polytri at the optimizing levels, so time them first);
+`tests-time` 99cfc1c3f (the test-time chain's nine steps, each written by one agent and
+checked by another; scratch worktree `tests-wt`; the workflow's journal holds each report);
+`decoders-ada0` 099c77415 and a5f8's 8151718b2, held. watr `encode-locals-linear` c6459c7
+(scratch clone `w0-fix/limits/watr`) and subscript `nested-call-parse` 65ce463: not pushed,
+the owner's. Two briefs written and not launched: session scratch `audio-c/brief-helpers.md`
+and `audio-c/brief-facts.md`.
+
+The limits follow-up, to brief: a bound on the nesting of what jz hands watr (the call
+chain under WASI, the index chain of 1,000, the gate's ten rows that fail at the default
+level); the hosted entry naming a walk's overflow; the cubic time of a member chain behind
+an optional chain; test/hosted-costs.json timed again.

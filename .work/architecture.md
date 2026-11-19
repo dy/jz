@@ -3160,6 +3160,67 @@ A module whose top level can throw has no start section: it exports `_initialize
 - The test-time chain's steps five to nine. CI's default job on 86df52211: 117 minutes (4 h 19 before the split), over the owner's hour; the runner has no shard option yet.
 - subscript's `nested-call-parse` (65ce463), the owner's to push and publish.
 
+## The land-o landing: how big an input compiles, a sole comma argument, an optional call of a declared function, a function's length by the closure (2026-11-19)
+
+29 commits on 5f3865889, tip `48b221b29`.
+
+### What landed
+
+- **The input limits** (`62debf945` to `ebb10c430`, 21 commits, the limits writer's):
+  - **The reader takes a chain a link a pass** (`89ca50c19`, `3f945f608`): an else-if chain, a `?:` chain down its alternates, a `;` list on one line. It overflowed near 1,000 links of else-if or `?:` and 1,500 statements.
+  - **A chain that is a list in meaning is written as one past 64 links** (`d7b16fd1c`, src/list-form.js, run by the parse before the early errors): an else-if chain as a guard list, a `?:` chain as that chain or as chunks behind a flag, one logical operator as a balanced tree, any other left spine (arithmetic, comparisons, string +, member reads, calls) as steps on an accumulator; the switch lowering builds its entry chain the same way. No chain of the corpus reaches 64 links.
+  - **A run of guarded exits on one word gets a table** (`a4fbe7af3`, src/optimize/guard-tables.js, after watr): what the list form and jzify/switch.js write, watr's chainTable took only as an else-if chain.
+  - **A nesting too deep for the parse or a walk after it is a SyntaxError that names its construct and place** (`c417ee452`, `4262a0a5d`); a long line shows the stretch around the column (`37751b717`).
+  - **Nine times that grew by the square of the input or doubled a level, each to its size**: the method-shorthand reader tried at every call (26 nested calls: 82 s); the early errors' line search; a body's bindings split (`9a2ee287e`, `33700d80f`); a lexical name declared twice (10,000 consts: 3.1 s to 70 ms); `typeof typeof … x` and `a0 = a1 = … = x` (each level twice the one inside); a flag local's writes; an element read's key emitted twice a level (`a[a[…a[0]…]]` of 14 levels: "local count too large").
+  - **A labeled break inside a switch case keeps its target** (`62debf945`): `break L` out of a block in a case gated the rest of the case (Node 10, jz 0), `break outer` out of a loop around the switch only left the case (Node 0, jz 30). Main and v1.0.3 too.
+  - **The gate** (test/limits.js, the generated suite): each chain kind at 10,000 links in a process of its own, answering what its generator computes, its time held to t(10,000) / t(2,500) at most 6 by the compiling thread's CPU, warm; 8 nesting forms at 5,000 levels each a SyntaxError.
+  - **What holds, and what does not** (the gate's own header): at the level off 11 of the 22 kinds hold the bound at 10,000 links and 8 more once watr takes a function's locals in one splice (past 5.13.7); the rest are named in KNOWN with their cause. **At the default level no kind holds at 10,000 links**: 10 fail (8 in an internal stack overflow, 1 in SIGABRT, 1 in "summary: no fixpoint") and 12 compile past the bound (7.1 to 16.4). At 1,000 links six kinds compile at the default level (test/parse-list.js). The optimizing levels' limit is the depth and the time of what jz hands watr.
+- **The integrator's**:
+  - `f68a89b26`: `f((a, b))` is one argument. Every pass that rebuilt a call's arguments wrote one argument bare, and a sole comma expression became two arguments where the constant folder had folded an operand (src/ast.js argList, the inverse of commaList). The list form writes this shape for a chain that is an argument.
+  - `6b79fa731`: `f?.(a, b)` of a declared function is the call `f(a, b)`; the facts counted the two as one site and read the optional call's arguments in the wrong form, and the program did not compile.
+  - `1404dfd3f`: a function's `length` is read from the closure itself where nothing else in the program can hold one (module/core.js lengthClosureArm). **The integrator's miss in land-m**: 93bd6202f linked the whole dynamic read into every module that holds a closure, which cost such a module two kilobytes and refused the fixed-memory proof for a module of closures and arrays reading a `length` of an unproven receiver (the audio session's standalone program: certified on 94d20af3a, refused on 5f3865889, certified here).
+  - `22fd8181a`: the handover gave the embedding writer's branch tip a wrong hash (1a748c898 is the tip).
+  - `2b2096465`: **the nesting error's own hole**. A walk's overflow is named by parsing the source again, and the engine drops its compiled frames at an overflow, so that parse ran out where the compile's own had held; nestingOf took it for "does not parse" and the compile ended in an internal error (a class field's sum of 1,800 terms in a warm process, at the level off and the default). The measuring parse's nesting error is now the answer. The limits tests pinned a stage to a depth, which goes by the engine's state (a field's sum of 1,500 terms: "to compile" where the test asked "to parse", two runs of three at the level off; found by the check's level 0 leg): they hold the stage only where no stack holds the input, and across the band a module or a SyntaxError naming the nesting.
+  - `e4a034e88`: `guardTables` named in the kernel's phase table (the rebase met the test that holds the table to every timed phase).
+  - `1b2880faf`: the call chain of 1,000 links is left to the JS host (below).
+  - `48b221b29`: test/errors.js says what the hosted compiler does with a nesting too deep (below), runs the band on the native legs alone, and asserts nestingOf's three answers.
+
+### Wrong on v1.0.3, right here
+
+- Run on the v1.0.3 tree and this one (session scratch `own/v103wrong.mjs`), at the level off and the default:
+  - `break L` out of a block in a switch case (Node 10, v1.0.3 0) and `break outer` out of a loop around a switch (Node 0, v1.0.3 30), both levels.
+  - `id((1 + 2, x))`: Node 7, v1.0.3 3, both levels.
+  - `g?.(x, 2)` of a declared function: v1.0.3 does not compile at the default level ('__a0' is not in scope); `id?.((3, x))` does not compile at the level off and answers 3 at the default.
+
+### What is measured
+
+- Bench bytes: 27 of 105 cases move, all at speed, all smaller by 27 to 65 bytes (the table takes the runtime's own runs: `__to_str` and `__json_val` on a value's type, `__date_to_string` on a day or month): speed 5,983,846 → 5,982,860; size 2,708,371, unmoved. Not timed by the integrator; the writer's six cases read 0.93 to 1.07 of base at a load of 80 to 150.
+- The integrator's probes on the rebased tree, against Node: a sole comma argument 1,800 rows, a parenthesized comma 114, a comma in a loop head 48, optional calls 90, shadowed names 72: none differs. The chain population (22 kinds, the lengths to 1,000, five levels): 5,440 rows and the four kinds of a shard stopped after an hour, 3 differing: an index chain of 1,000 links at level 2, size and speed overflows the stack.
+- The listings (data forms, perf ratchet on both hosts, spellings, vector coverage): none moves. The reset probe: 344 cells, none differs.
+- The check on `1b2880faf` (76 minutes, the load 11 to 68): lint and the file audit clean; bench bytes of 105 cases, no error; `test:self` 89; WASI 7,514 of 7,514; default 7,641 of 7,641; armed level 3 7,423; level 0 7,401; integration 238 of 239, one skipped; the examples 1.69 of V8 with 25 of 25, then 1.67 with 24 of 25 (blackhole 0.99).
+- The touched test files on a freshly self-compiled compiler (37,646,128 bytes, of `1b2880faf`): parity 19, limits 27, optimizer-branches 25, optimizer-words 44, parse-list 14, split-bindings 19, statements 191, fixed-memory 15, all pass; errors 147 of 150, the three the hosted overflow below; with `48b221b29`'s test on that compiler, errors 150 of 150 twice in 53 s (the errors file on the four native legs: 150 of 150 each).
+- test/hosted-costs.json, which plans CI's hosted slices, was not timed again: it holds parse-list at 1 s and statements at 56 s, and they took 45 s and 248 s here.
+- **The check's first run** (`1404dfd3f`, 107 minutes at a load of 120 to 139) found what the three follow-up commits answer: the phase name (default leg), the call chain under WASI (WASI leg, deterministic, the limits branch's own before the rebase), the stage a depth meets (level 0 leg), and one wall-time bound (a body of 8,000 lines in 10.2 s; alone three times of three it passes). The integrator's miss: land-o's earlier runs had no WASI leg and no hosted run of the errors file; the limits branch's own check ran while CI's WASI leg was red.
+
+### Found, not fixed
+
+- **A member chain behind an optional chain compiles in cubic time** (main too): 200 links 1.05 s, 400 links 12.5 s (the plain chain: 0.23 s). 69% in `continuesOptional` (src/summary/kind.js), asked by `chainOp` (src/summary/query.js) at each link of each query.
+- **Under WASI a call chain stops near 300 links at the optimizing levels** (500 overflow in watr's substGets; the JS host compiles 1,000): the WASI target keeps every closure on the whole closure ABI (session.js preserveClosureTable), the callee read off the receiver the link before returned, and watr re-nests each receiver into its one use, five levels a link. The same class as the index chain of 1,000: the depth of what jz hands watr is the source's chain length times a constant. The remedy is a bound on the nesting of an emitted expression (the first-evaluated operand of a tree past the bound goes to a local of its own), or watr's walks off the stack.
+- At 1,000 links the sum and the switch need more than 500 kB of Node's 984 kB stack at the default level (they pass at 700). Not measured on x64: CI's default leg is the first run there.
+- **The hosted compiler names a nesting only where its parse runs out.** A walk after the parse that runs out there ends in the engine's RangeError: its entry (scripts/self.js compileModule) has no conversion like compileInProcess's, and one means a catch inside a phase of the kernel's arena. Which of the two a depth meets goes by the tier its wasm functions run at (5,000 arrows: named in one test, a RangeError in the next, one process). test/errors.js accepts the RangeError on the hosted compiler alone.
+- The WASI target's closures never take the narrowed signature the JS host's do (the same flag): a method call of an object literal passes six operands there, two on the JS host. Not measured.
+- `(f ? proc : sets).length` beside `sets[i]` weakens the element read to the dynamic one; `proc.length` on a module binding of closures under the JS host links `__dyn_get_any_t_h`.
+- The limits writer's own list: a typed array's nested keys, a switch of returns at the level off, the rows the gate names; a switch of 200 breaks at speed read 1.24 of base once (single runs 250 to 773 ms at a load of 80 to 150), not settled.
+
+### The audio catalogue on 5f3865889 (the audio session's run)
+
+- 99 processors compile, 90 pass the real-time gate, 26 certify fixed memory. The 73 refused, by last cause: 24 `__alloc_hdr`, 13 the recursion in `math.pow`, 2 in `__to_num`, 7 a closure entered again, 7 `__length.value_tail` (the bus sets whose slots differ in their channels lose "is an array"; `1404dfd3f` answers the standalone form, the seven keep an object literal that links the dispatcher), 5 `__alloc_hdr_n`, 3 `__durable_obj_snap`, 3 `__str_idx`, 2 `__mkstr`, 1 each `__dyn_get_t`, `__durable_arr_snap`, a kernel's own closure. Two briefs stand written for it (the helpers' self-calls and the named-key read; the facts a default no call takes needs).
+
+### land-m on x64 (bench-probe, jz against 86df52211, ratio of times)
+
+- EPYC 9V45, 5 rounds: polytri 1.002, dispatch 0.999, decode-tta 0.994, decode-alac 0.990, decode-wav 1.002, threeanim 1.002, threegeom 0.996, mapstr 1.000, entity 1.001, decode-qoa 1.050; decode-qoa again at 9 rounds: 0.994 (EPYC 7763), 0.990 (Xeon 8370C). Nothing moved.
+- CI on 5f3865889: the WASI job green, the first since land-k; it took 2 h 33 min, the level 3 job longer: both past the owner's hour.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
