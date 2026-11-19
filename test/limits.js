@@ -23,14 +23,13 @@
 // fail as it fails, or its time is printed as a target, so the list says what is
 // true and the row that starts to pass is taken out of it.
 //
-// What holds today (watr 5.13.7): at the level off 11 of the 22 kinds, each in 5
-// runs of 5 (3.3 to 5.9), and the 8 of WATR_LOCALS once watr takes a function's
-// locals in one splice; at the default level no kind: 10 are held to fail (8 end
-// in an internal stack overflow, 1 in SIGABRT, 1 in "summary: no fixpoint") and 12
-// are printed as targets, each past the bound (by thread CPU on 2026-11-18 at a
-// load of 9 to 22: ?: in an expression 7.1, array literal 8.5, object literal
-// 10.5, else-if of assignments 10.6, ?? 10.8, ?: returned 13.3, || 13.3, else-if
-// of returns 13.4, && 14.0, member chain 14.0, call chain 14.5, string + 16.4).
+// What holds today: at the level off 12 of the 22 kinds, each in 5 runs of 5
+// (3.3 to 5.9; switch of returns 3.6 to 4.3 on 2026-11-19), and the 8 of
+// WATR_LOCALS once watr takes a function's locals in one splice. At the default
+// level, through watr 5.13.7: array literal (3.8 to 4.0 in 5 runs on 2026-11-19),
+// the rest held to fail as KNOWN says or printed as targets. On the watr branch past it 13 kinds, each in
+// 5 runs at a load of 20 to 80 on 2026-11-19 (TIMES); 8 are targets and string
+// appends ends in "summary: no fixpoint".
 import test from 'tst'
 import { ok, throws } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
@@ -124,6 +123,17 @@ const DEEP_N = 200, DEEP_SMALL = 50, DEEP_LIMIT = 300000
 const WATR = JSON.parse(readFileSync(new URL('../node_modules/watr/package.json', import.meta.url), 'utf8')).version.split('.').map(Number)
 const watrTakesLocals = WATR[0] !== 5 ? WATR[0] > 5 : WATR[1] !== 13 ? WATR[1] > 13 : WATR[2] > 7
 const WATR_LOCALS = ['&&', '||', '??', 'string +', 'statements, two a line', 'call chain', '?: in an expression', 'switch of breaks']
+// watr's walks of what jz hands it at the optimizing levels: it forwarded a local's
+// one use into the statement after it, re-nesting what the list form laid flat
+// into one tree a level a statement (optimize.js substGets, sinkSets), deadset
+// scanned a run of ifs two frames an if, and cse (processScope), deadset (a scan
+// from each const store), propagate (the loop a pure set feeds) and value
+// numbering (what each local holds, copied into each arm) each took the square of
+// a run. Through 5.13.7 those rows fail as KNOWN says; the release after it (the
+// watr branch limits-depth, on encode-locals-linear: taken to be the one release
+// carrying both) forwards no deeper than 256 levels a statement (FORWARD_DEPTH)
+// and takes each run in a time in it.
+const watrBoundsRuns = watrTakesLocals
 // `${kind} at ${level}` → what fails today, measured on 2026-11-17 on 14 cores at a
 // load of 30 to 60, on 2026-11-18 by the process's CPU time at a load of 130 to
 // 250, and at the level off by the thread's at a load of 18 to 46:
@@ -133,46 +143,54 @@ const WATR_LOCALS = ['&&', '||', '??', 'string +', 'statements, two a line', 'ca
 // fails).
 const KNOWN = new Map([
   ...(watrTakesLocals ? [] : WATR_LOCALS.map(kind => [`${kind} at off`, 'time'])),
-  // after an `if` whose arm leaves, the emitter asks of each name the test refines
-  // whether a later statement of the block writes it, statement by statement
-  // (emit/dispatch.js emitBlockBody): a switch's run of such ifs takes the square
-  // of its cases, 0.8 s of 2.7 s in isReassigned at 10,000 (5.5 to 7.2 in five runs,
-  // 6.5 on watr's branch)
-  ['switch of returns at off', 'time'],
   // the summary takes a round a string append and stops at its cap of rounds
   // (summary/index.js): 2,500 appends compile, 10,000 end in "summary: no fixpoint"
+  // (the summary's time at the level off 0.29, 1.04, 3.61 s at 500, 1,000, 2,000)
   ['string appends at off', 'compile'], ['string appends at default', 'compile'],
-  // watr's deadset scans a run of if statements by a pair of calls that call the
-  // continuation at the same depth (watr optimize.js S and evalK): a switch of
-  // 1,000 cases compiles, of 2,500 the stack ends (of 10,000 breaks the process
-  // aborted, SIGABRT)
-  ['switch of returns at default', 'compile'], ['switch of breaks at default', 'compile'],
+  // Through watr 5.13.7 (watrBoundsRuns above): deadset scans a run of if
+  // statements by a pair of calls that call the continuation at the same depth
+  // (watr optimize.js S and evalK), a switch of 2,500 cases running out of stack;
   // watr forwards a local's one use into the next statement, re-nesting what the
-  // list form laid flat (watr optimize.js substGets, tallyLocals): a sum of 1,000
-  // links compiles, of 2,500 the stack ends; a run of 5,000 writes of one name too
-  ['sum at default', 'compile'], ['difference at default', 'compile'],
-  ['comma at default', 'compile'], ['statements at default', 'compile'], ['statements on one line at default', 'compile'], ['statements, two a line at default', 'compile'],
-  ['const declarations at default', 'compile'],
-  // answers, in a time that grows past the ratio or runs to minutes: the summary
-  // and the plan on an object of 10,000 keys (2,500 keys 0.45 s, 10,000 keys 3.5 s:
-  // the summary 0.09 s to 1.1 s, narrowSignatures 0.09 s to 0.7 s; by thread CPU
-  // 12.8 to 14.1 at the level off); at the default level, not yet profiled, balanced trees, chunks behind a
-  // flag and a string + (at 10,000 links || 13 minutes, ?: 10, && 2.3 with
-  // t(10,000) / t(2,500) 21.8, ?? 2.1 with 10.0, string + past 15 and within 30)
+  // list form laid flat (substGets, sinkSets), a sum of 2,500 links running out
+  // of stack; cse copies what is live into each arm of a run of ifs (processScope),
+  // a guard list of 10,000 returns 20.6 s in watOptimize
+  ...(watrBoundsRuns ? [] : [
+    ['switch of returns at default', 'compile'], ['switch of breaks at default', 'compile'],
+    ['sum at default', 'compile'], ['difference at default', 'compile'],
+    ['comma at default', 'compile'], ['statements at default', 'compile'], ['statements on one line at default', 'compile'], ['statements, two a line at default', 'compile'],
+    ['const declarations at default', 'compile'],
+    ['else-if of returns at default', 'time'], ['else-if of assignments at default', 'time'], ['?: returned at default', 'time'],
+  ]),
+  // answers, in a time that grows past the ratio: the summary and the plan on an
+  // object of 10,000 keys (2,500 keys 0.45 s, 10,000 keys 3.5 s: the summary 0.09 s
+  // to 1.1 s, narrowSignatures 0.09 s to 0.7 s; by thread CPU 12.8 to 14.1 at the
+  // level off, 13.1 at the default)
+  ['object literal at off', 'time'], ['object literal at default', 'time'],
+  // and at the default level, by thread CPU on watr's branch (TIMES below): balanced
+  // trees, chunks behind a flag, a string +, call and member chains
   ['call chain at default', 'time'], ['member chain at default', 'time'],
   ['string + at default', 'time'],
-  ['object literal at off', 'time'], ['object literal at default', 'time'],
   ['|| at default', 'time'], ['&& at default', 'time'], ['?? at default', 'time'], ['?: in an expression at default', 'time'],
-  // watr's CSE copies what is live into each arm of a run of ifs (optimize.js
-  // processScope): a guard list of 2,500 returns spent 1.3 s in watOptimize, of
-  // 10,000 20.6 s, where jz's own stages grew 1.2 s to 2.7 s
-  ['else-if of returns at default', 'time'], ['else-if of assignments at default', 'time'], ['?: returned at default', 'time'],
-  // the store forwarding forgets at each store every slot the store may reach, by a
-  // walk of all it holds (optimize/forward-store.js overwrite): the stores of one
-  // straight list take their square. An array of 10,000 literals spends 3.6 s in
-  // optimizeFuncs, of 2,500 0.48 s (CPU t(10,000) / t(2,500) 6.9 here, 7.6 on
-  // 36330cd22, which the gate's cold wall times read as 4.6)
-  ['array literal at default', 'time'],
+])
+// TIMES: CPU t(10,000) / t(2,500), the compiling thread's, on 2026-11-19. On watr's
+// branch, held in 5 runs each: else-if of returns 3.7 to 4.8, else-if of
+// assignments 2.9 to 4.5, switch of returns 3.0 to 4.3, switch of breaks 3.6 to 4.1,
+// sum 4.0 to 4.4, difference 3.9 to 4.2, ?: returned 4.2 to 4.6, comma 3.5 to 4.2,
+// statements 3.5 to 4.1, statements on one line 3.7 to 4.1, statements, two a line
+// 4.2 to 5.7, const declarations 4.1 to 5.1, array literal 3.9 to 4.1. The targets,
+// once each (the CPU time of the 10,000): string + 15.1 (560 s), member chain 13.1
+// (93 s), object literal 13.1 (8 s), || 13.3 (133 s), && 13.0 (44 s), ?? 11.8 (22 s),
+// call chain 8.9 (22 s), ?: in an expression 7.2 (74 s).
+// How a row held to fail fails: its own failure, not another one on the way. On
+// watr 5.13.7 the stack ends in watr's walks (the message is the internal error's,
+// the source being shallow), but for const declarations, which on this tree runs
+// past the 15 minutes first (by thread CPU on 2026-11-19, the stack ended after 14 s
+// on bd6def506): propagate scanned from each forwarded pure set to the end of the
+// run for a loop it feeds, the square of the run.
+const FAILS = new Map([
+  ['string appends at off', /summary: no fixpoint/], ['string appends at default', /summary: no fixpoint/],
+  ...[...KNOWN].filter(([row, k]) => k === 'compile' && !row.startsWith('string appends')).map(([row]) => [row, /Maximum call stack size exceeded/]),
+  ...(watrBoundsRuns ? [] : [['const declarations at default', /Maximum call stack size exceeded|stopped past the limit/]]),
 ])
 
 // The row's child: SMALL compiled first to warm the compiler, its answer printed,
@@ -261,7 +279,7 @@ for (const optimize of levels(false, true)) {
     const [src, want] = gen(N), [small, wantSmall] = gen(SMALL)
     const big = compiled(src, optimize, known === 'compile' ? null : small, known === 'time' ? TARGET_LIMIT : undefined)
     const answers = big.ok && big.answer === want
-    if (known === 'compile') { ok(!answers, `${row}: fails as KNOWN says (${big.ok ? 'answers ' + big.answer : big.name + ' ' + big.message}); a pass takes it out of KNOWN`); return }
+    if (known === 'compile') { ok(!answers && FAILS.get(row).test(`${big.name}: ${big.message}`), `${row}: fails as KNOWN says, by ${FAILS.get(row)} (${big.ok ? 'answers ' + big.answer : big.name + ' ' + big.message}); a pass takes it out of KNOWN`); return }
     // the small one answers whatever becomes of the large (a target may be stopped before it has)
     const stopped = !big.ok && big.message === 'stopped past the limit'
     if (!(known === 'time' && stopped && big.small === undefined)) ok(big.small === wantSmall, `${row} at ${SMALL} links: answers ${big.small}, the generator ${wantSmall}`)

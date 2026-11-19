@@ -6,6 +6,7 @@
 // node for node: TREES holds what subscript 10.8.1 gives for each source.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
+import { readFileSync } from 'node:fs'
 import { parse } from '../src/parse.js'
 import { LEN } from '../src/list-form.js'
 import { onKernel, onWasi } from './_matrix.js'
@@ -248,12 +249,16 @@ test('parse list: a chain past LEN links answers as written, each kind', () => {
 // Before the list form a walk ran out of stack near 500 links of an else-if
 // chain or a switch, 800 of a sum, 280 of a call chain and some 800 of `&&` or
 // `?:` (the early errors). Under WASI a call chain stops near 300 links at the
-// optimizing levels, in watr: a method call there takes the closure ABI whole
-// (session.js preserveClosureTable), its callee read off the receiver the link
-// before returned, and watr forwards each receiver into its one use, five levels
-// a link (optimize.js substGets). The chain of 100 above holds there.
+// optimizing levels through watr 5.13.7: a method call there takes the closure
+// ABI whole (session.js preserveClosureTable), its callee read off the receiver
+// the link before returned, and watr forwards each receiver into its one use, five
+// levels a link (optimize.js substGets). The release after it forwards no deeper
+// than 256 levels a statement (FORWARD_DEPTH; test/limits.js watrBoundsRuns), and
+// 3,000 links compile there. The chain of 100 above holds on either.
+const WATR = JSON.parse(readFileSync(new URL('../node_modules/watr/package.json', import.meta.url), 'utf8')).version.split('.').map(Number)
+const watrBoundsRuns = WATR[0] !== 5 ? WATR[0] > 5 : WATR[1] !== 13 ? WATR[1] > 13 : WATR[2] > 7
 test('parse list: chains of 1,000 links compile', () => {
-  for (const kind of ['elseif', 'switch', 'plus', 'tern', ...(onWasi() ? [] : ['calls']), 'and']) {
+  for (const kind of ['elseif', 'switch', 'plus', 'tern', ...(onWasi() && !watrBoundsRuns ? [] : ['calls']), 'and']) {
     const src = KINDS[kind](1000), want = oracle(src).f, got = run(src).f
     for (const x of [3, 999, -1]) is(got(x), want(x), `${kind} of 1,000 links, f(${x})`)
   }
