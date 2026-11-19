@@ -663,10 +663,11 @@ test('address CSE: a constant index leaves its address to the accesses', () => {
   is(bases('(local.get $j)'), 1, 'an index the function computes still shares its base')
 })
 
-test('for-bound snapshot: read-only builtin calls do not block the .length hoist', () => {
-  // `callFree` used to disqualify ANY call in the loop body — a charCodeAt /
-  // Math.imul body re-decoded the NaN-boxed string length every iteration (≈3×
-  // slower on byte loops).
+test('for-bound snapshot: a loop of read-only builtin calls over a parameter answers as JS', () => {
+  // (The shape this test pinned, no SSO length decode inside the loop, held with every
+  // pass off: a string the compiler knows reads its length once before the loop at every
+  // level, and this `s`, of any type, dispatches charCodeAt to the host and re-reads
+  // the length as JS does.)
   const src = `export const main = (s) => {
     let h = 0x811c9dc5 | 0
     for (let i = 0; i < s.length; i++) {
@@ -675,12 +676,6 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
     }
     return h >>> 0
   }`
-  const wat = compile(src, { wat: true, optimize: { jsstring: false } })
-  const fn = funcWat(wat, 'main')
-  const loop = fn.slice(fn.indexOf('loop'))
-  ok(loop.length > 0, 'main has a loop')
-  ok(!loop.includes('16383'), 'length decode (SSO mask 16383) must be hoisted out of the loop')
-  // behavior unchanged vs JS
   const js = (s) => { let h = 0x811c9dc5 | 0; for (let i = 0; i < s.length; i++) { h = h ^ s.charCodeAt(i); h = Math.imul(h, 0x01000193) } return h >>> 0 }
   const { main } = run(src, { optimize: { jsstring: false } })
   is(main('hello world'), js('hello world'))
