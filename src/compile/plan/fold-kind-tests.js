@@ -15,6 +15,9 @@ import { ctx } from '../../ctx.js'
 const isArr = Array.isArray
 const isLit = (e) => isArr(e) && (e[0] == null || e[0] === 'str')
 const isNullishLit = (e) => isArr(e) && e[0] == null && e[1] == null
+// `(a, b)` as one value: a bare comma where a call's sole argument stood
+// would read as two arguments (`h(x.isV ? 1 : 2)` passing `x.isV` and 2)
+const seq = (a, b) => ['(', [',', a, b]]
 
 // A test whose evaluation can do nothing: a name, a literal, typeof,
 // instanceof or Array.isArray of names, a strict comparison of such, a loose
@@ -53,7 +56,7 @@ export const foldKindTests = () => {
           // after the test where evaluating it may do something; an empty
           // statement leaves a sequence that keeps another
           const arm = (t ? c[2] : c[3]) ?? null
-          const out = inert(c[1]) ? arm : c[0] !== 'if' ? [',', c[1], arm] : arm == null ? c[1] : ['{}', [';', c[1], arm]]
+          const out = inert(c[1]) ? arm : c[0] !== 'if' ? seq(c[1], arm) : arm == null ? c[1] : ['{}', [';', c[1], arm]]
           if (out == null && n[0] === ';' && n.length > 2) n.splice(j, 1)
           else n[j] = out
           changed = true

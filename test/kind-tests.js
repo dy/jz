@@ -113,3 +113,13 @@ export let f = (k) => run(k)`
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `at ${optimize}`)
   ok(!/\$wrap/.test(compile(src, { optimize: 0, wat: true })), 'the arm never taken is gone, and the function only it calls')
 })
+
+// A sequence a fold leaves where a call's sole argument stood stays one value:
+// `h(x.isV ? 1 : 2)` with `x` a number keeps the member read (it may throw)
+// and passes 2 alone, not `x.isV` and 2.
+test('kind tests: a folded test is one argument', () => {
+  const src = `const h = (a, b) => b === undefined ? a : 100 + b
+const g = (x) => h(x.isV ? 1 : 2)
+export const f = () => g(3)`
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `at ${optimize}`)
+})
