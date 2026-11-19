@@ -4263,9 +4263,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     if (logical) {
       const a = selectedExpr(n[1], mask & logical)
+      // (a test waiting on an unbound parameter walks both: leaving the right
+      // unwalked a round changes the order the joins meet in, and the shapes
+      // they keep, as threecull's Matrix3 receiver lost its one class)
       const runs = rightRuns(op, n[1])
       decide(n, runs)
-      if (runs === 'pending') return K.NONE
       if (runs === false) return a
       branch++; flowPath++
       const mark = rtop
@@ -4352,7 +4354,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     else if (logical) {
       const t = expr(target), runs = rightRuns(op, target)
       if (node !== null) decide(node, runs)
-      if (runs === 'pending') return K.NONE
       if (runs === false) return t
       v = merge(op === '??=' ? core(t) : t, expr(value))
     }
