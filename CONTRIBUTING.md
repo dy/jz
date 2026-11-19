@@ -156,7 +156,7 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 
 | Command | Work |
 | --- | --- |
-| `npm run test:quick` | After every edit: the import lint, the file audit, then the quick tier, `QUICK` in `test/_suites.js` (a cheap core file or two for each subject of the compiler, the determinism and pass-table gates, the cheapest pins of each family of passes), split over processes as `npm test` is; under 2 minutes at 8 jobs, the default leg only |
+| `npm run test:quick` | After every edit: the import lint, the file audit, then the quick tier, `QUICK` in `test/_suites.js` (a cheap core file or two for each subject of the compiler, the determinism and pass-table gates, the cheapest pins of each family of passes), split over processes as `npm test` is; under 2 minutes at 6 jobs on a quiet machine, the default leg only |
 | `npm test` | Core semantic/structural regressions, split over the idle cores into contiguous runs whose boundaries move with the commit (`JZ_TEST_SEED=<n>`, printed in the header, repeats them); **no bootstrap or generated population sweeps** |
 | `JZ_TEST_JOBS=1 npm test` | The same in one process: the state a file leaves behind meets every later file (CI's weekly `one-process` workflow) |
 | `npm test -- strings dyn-keys` | Named files, regardless of owner, in one process; keeps completed-test GC and warm compile-state checks |

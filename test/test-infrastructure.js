@@ -295,6 +295,13 @@ test('suite processes: a split run cuts its runs where the seed and the leg\'s c
   const quick = split('7', 'quick')
   is(quick.status, 0, quick.stderr)
   is(ran(quick), planned(7, 'quick', 'core-default'), 'the quick tier\'s runs, cut by the core row its files have')
+  // A quick process past five minutes fails as a hang (test/index.js). The same split with
+  // the bound made a tenth of a second as this run loads: every process outlives it.
+  const bounded = spawnSync(process.execPath, ['--import', './test/_mutant.mjs', 'test/index.js', '--suite=quick', '--jobs=2'], {
+    cwd: root, env: clean({ TST_GREP: '^no test has this name$', JZ_TEST_SEED: '7', JZ_TEST_SAMPLE: undefined, JZ_TEST_TIMEOUT: undefined, JZ_MUTANT_EDITS: JSON.stringify({ 'test/index.js': [['? 300_000 :', '? 100 :']] }) }),
+    encoding: 'utf8', timeout: 120000,
+  })
+  ok(bounded.status !== 0 && /^FAIL quick-\S+ [\d.]+s \(timeout\)$/m.test(bounded.stdout), `a quick run's process has a bound: ${bounded.stdout.slice(-300)}${bounded.stderr.slice(-300)}`)
   for (const seed of [7, 30]) {
     const r = split(String(seed))
     is(r.status, 0, r.stderr)

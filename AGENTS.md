@@ -65,8 +65,8 @@ What this implies for HOW we optimize:
 
 ## Verify before claiming done
 
-- `npm run test:quick`: after every edit, the import lint, the file audit and 108 cheap core files (`QUICK`, test/_suites.js), under 2 minutes at 8 jobs.
-  It fails on each of the 15 faults it was chosen by (10 passes off, 5 bugs by hand), on the default leg only: it never replaces `npm test` and the legs below.
+- `npm run test:quick`: after every edit, the import lint, the file audit and 109 cheap core files (`QUICK`, test/_suites.js): under 2 minutes at 6 jobs on a quiet machine, 4.5 at load 50. A process past 5 minutes fails as a hang.
+  Each of the 16 faults it was chosen by (10 passes off, 6 bugs by hand) fails a file it holds, on the default leg only: it never replaces `npm test` and the legs below.
 - `npm run test:landing`: the landing check, a leg at a time over the cores less two: lint, the file audit, core at the default level, level 0, level 3 armed and on WASI, the generated suite (populations and the core's dear sweeps at one program in 4), integration, test262 and `test:self`. Each leg prints its wall and CPU seconds, a table follows, and it is red on a failing leg, a leg past a quarter and ten seconds over the CPU seconds of its last recorded run (`test/native-costs.json` `landing`, which `-- --record` rewrites) or a whole past an hour.
 - `npm test` — core suite (in-process compiler), without hidden bootstrap builds
   or generated population sweeps. Run it before reporting any change. It splits the

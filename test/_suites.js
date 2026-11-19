@@ -27,6 +27,8 @@ export const QUICK = new Set([
   'inline-args', 'inline-hoist', 'inline-cycles', 'constants', 'lanes', 'held-number', 'unread-globals', 'offset-bound', 'loop-invariants', 'scalar-unroll', 'unswitch-loops', 'reciprocal-loops', 'object-reads',
   'const-seed', 'variant-result', 'guarded-clone', 'bigint-boundary',
   'multi-return', 'pointers', 'number-or-missing', 'number-eq', 'unknown-sum', 'index-key', 'remainder',
+  // (a string the runtime makes: a wrong constant in toUpperCase's kernel fails it, and no other file here)
+  'mixed-read',
   'scalar-record', 'tag-literals', 'chosen-calls', 'iterate-present',
   // summary, type, kind
   'summary-keys', 'absent-member', 'element-numbers', 'param-range', 'flow-range', 'loop-square', 'kind-tests',
