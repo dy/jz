@@ -4750,11 +4750,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // within a function's walk such a binding holds no straight-line fact and no
   // proof a guard gave, as one a closure assigns holds none (`closureAssigned`):
   // `X = 1; w(); return X + 1` read a Number where `w` had stored a string.
-  const fnAssigned = new Set()
+  // So does a function's binding a closure assigns (`outerAssigned`), within
+  // the walk of any scope but its own: a closure reading it may call the one
+  // that assigns it (`if (p == null) return; drop(); kernel(p)`, `drop = () =>
+  // { p = undefined }` made beside it). The declaring scope's own walk drops
+  // its facts where it makes that closure (`closureAssigned`).
+  const fnAssigned = new Set(), outerAssigned = new Set()
   for (let i = 0; i < writes.length; i += 5) {
     if (writes[i] === MODULE) continue
     const key = keyOf(writes[i + 1], writes[i])
-    if (key !== null && bindingScope[key] === MODULE) fnAssigned.add(key)
+    if (key === null) continue
+    if (bindingScope[key] === MODULE) fnAssigned.add(key)
+    else if (bindingScope[key] !== writes[i]) outerAssigned.add(key)
   }
   // A binding's one definition: its declaration's value, or the one value a
   // statement of the module assigns it where no read sees it unassigned
@@ -5246,8 +5253,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // the declarations of the names it assigns (`let called; function foo() {
   // called = true } foo()` reads `called` as the join, not as absent).
   const closureAssigned = new Set()
+  // Whether a call here may assign the binding: no fact of it holds past one.
+  const callAssigned = (key) => closureAssigned.has(key) || fnAssigned.has(key) || outerAssigned.has(ctxBase[key] ?? key) && bindingScope[key] !== current
   // Whether the straight-line state follows a binding here.
-  const followed = (key) => flowPath === 0 && current !== null && !closureAssigned.has(key) && !fnAssigned.has(key)
+  const followed = (key) => flowPath === 0 && current !== null && !callAssigned(key)
   let branch = 0            // the depth of paths (branches, loop bodies, arms) the walk is in
   // The depth of paths whose assignments the straight-line state cannot
   // follow: loops (an iteration's read may see the last one's store), handlers,
@@ -5282,7 +5291,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   let rtop = 0, pathDepth = 0
   const refineName = (name, mask) => refineKey(keyOf(name), mask)
   const refineKey = (key, mask) => {
-    if (key === null || closureAssigned.has(key) || fnAssigned.has(key)) return
+    if (key === null || callAssigned(key)) return
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++

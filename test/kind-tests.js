@@ -123,3 +123,26 @@ const g = (x) => h(x.isV ? 1 : 2)
 export const f = () => g(3)`
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `at ${optimize}`)
 })
+
+// A closure's proof about a binding it captures holds past no call where a
+// closure beside it assigns the binding: `drop()` may store undefined, so the
+// guard `p == null` no longer says what `p` holds (summary outerAssigned).
+test('kind tests: a captured binding a closure beside assigns holds no proof past a call', () => {
+  const uses = {
+    'a default': ['const kernel = (d, params = { rate: 7 }) => d * params.rate', 'return kernel(3, p)'],
+    'a test': ['', 'return p == null ? 9 : p.rate'],
+  }
+  for (const [use, [head, tail]] of Object.entries(uses)) {
+    const src = `${head}
+export const run = (k) => {
+  let p = { rate: 2 }
+  const drop = () => { p = undefined }
+  const f = () => { if (p == null) return -1; if (k) drop(); ${tail} }
+  return f()
+}`
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const mod = jz(src, { optimize }).exports, host = oracle(src)
+      for (const k of [0, 1]) { let a, b; try { a = mod.run(k) } catch (e) { a = e.constructor.name } try { b = host.run(k) } catch (e) { b = e.constructor.name } is(a, b, `${use}, run(${k}) at ${optimize}`) }
+    }
+  }
+})
