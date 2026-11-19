@@ -10,6 +10,7 @@ import { is, ok } from 'tst/assert.js'
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { K, hasTag, tagOf } from '../src/summary/kind.js'
+import { ATOM, atomNanHex } from '../layout.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
 import { agree, funcWat, wat, compileInProcess as compile, jz } from './util.js'
 
@@ -24,8 +25,12 @@ const paramKind = (src, fn = 'g', param = 'v') => {
 // A callee too large to inline, with an early return that reads the parameter by identity.
 const G = 'function g(v) { if (v === undefined) { return -1 } let s = 1; ' + Array.from({ length: 40 }, (_, k) => `s = s * v + ${(k + 1) * 0.37}; if (s > 1e300) { s = ${k} }`).join(' ') + ' return v * 2 + s }\n'
 const MK = 'const mk = (n) => { const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = i * 0.5; return o }\n'
-// (at level 3 g inlines into probe all the same: its body is there)
-const conversions = (src) => funcWat(wat(src, { optimize: 3 }), 'g', 'probe').match(/__to_num/g)?.length ?? 0
+// The callee's tests of its parameter's bits for undefined, below level 2, where g is a
+// function of its own: where v may be undefined, `v === undefined` and each of its 41
+// other uses test them (42 in all); where v is a number, none does. From level 2 g
+// inlines into probe, each arm of the test folds, and a lost proof shows no test there.
+const UNDEF = atomNanHex(ATOM.UNDEF)
+const undefinedTests = (src, optimize) => funcWat(wat(src, { optimize }), 'g').split(UNDEF).length - 1
 
 test('typed presence: a read inside a known count binds a number', () => {
   const present = {
@@ -43,7 +48,7 @@ test('typed presence: a read inside a known count binds a number', () => {
   for (const [name, src] of Object.entries(present)) {
     is(paramKind(src), 'number', name)
     for (const optimize of levels(0, 2, 3)) agree(src, 'probe', name.includes('unknown') ? [64] : [], { optimize }, `${name} at ${optimize}`)
-    if (!belowOpt(3)) is(conversions(src), 0, `${name}: the callee converts nothing`)
+    for (const optimize of levels(0, 1)) is(undefinedTests(src, optimize), 0, `${name}: the callee tests nothing for undefined at ${optimize}`)
   }
 })
 
@@ -61,6 +66,7 @@ test('typed presence: a read the walk cannot place inside the count stays number
   for (const [name, src] of Object.entries(absent)) {
     is(paramKind(src), 'number|undefined', name)
     for (const optimize of levels(0, 2, 3)) agree(src, 'probe', name.includes('helper of two') ? [0] : name.includes('unknown') ? [32] : [], { optimize }, `${name} at ${optimize}`)
+    for (const optimize of levels(0, 1)) ok(undefinedTests(src, optimize) > 0, `${name}: the callee tests for undefined at ${optimize}, the form a present read must not show`)
   }
 })
 
