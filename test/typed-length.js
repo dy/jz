@@ -4,7 +4,7 @@
 // (module/typedarray.js '__typed_len').
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import { funcWat, oracle, wat, jz } from './util.js'
 
 const KINDS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
@@ -90,6 +90,43 @@ test('typed length: a field a store, a size or a holder may change keeps its tes
       is(m.f(300), want.f(300), `${label}: f at O${optimize}`)
     }
     if (!belowOpt(2)) ok(sampleChecks(src) > 0, `${label}: the reads keep their tests`)
+  }
+})
+
+// A parameter every call passes a typed array of one size holds that size
+// (summary paramShapeOf): `a[i & 255]` in `g` needs no bounds test where each
+// call passes 256 elements, the table a record's field holds among them once
+// the plan passes the field as a parameter of its own (plan/lanes.js). A call
+// passing another size, one the walk cannot size or none, a caller it cannot
+// see, an assignment of the parameter keep the tests; each answers as the host.
+const param = (head, calls) => `const T = new Float64Array(256).fill(2), U = new Float64Array(256).fill(3), V = new Float64Array(100).fill(5)
+${head}
+export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += ${calls}; return s }`
+const gChecks = (src) => { const text = wat(src, { optimize: { level: 2, watr: false, sourceInline: false } }); return (funcWat(text, 'g').match(/i32\.lt_u/g) || []).length }
+test('typed length: a parameter every call passes one size reads its elements untested', () => {
+  // (the fields of records a function makes: a slot's size, which no name carries)
+  const src = param('const mk = (k) => { const a = new Float64Array(256); for (let i = 0; i < 256; i++) a[i] = i * k; return { a } }\nconst R = mk(1), Q = mk(3)\nconst g = (a, i) => a[i & 255]', 'g(R.a, i) + g(Q.a, i * 7)')
+  for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(300), oracle(src).f(300), `O${optimize}`)
+  if (!belowOpt(2)) is(gChecks(src), 0, 'no bounds test')
+  const cases = {
+    'a call of another size': param('const g = (a, i) => a[i & 255] ?? -1', 'g(T, i) + g(V, i * 7)'),
+    'a call of a size the walk cannot fix': param('const g = (a, i) => a[i & 255] ?? -1\nconst W = new Float64Array((Math.random() > 2) + 99)', 'g(T, i) + g(W, i * 7)'),
+    'a call that passes none': param('const g = (a = new Float64Array(9), i) => a[i & 255] ?? -1', 'g(T, i) + g(undefined, i * 7)'),
+    'an exported function': param('export const g = (a, i) => a[i & 255] ?? -1', 'g(T, i) + g(U, i * 7)'),
+    'a function the host holds': param('const g = (a, i) => a[i & 255] ?? -1\nexport const held = () => g', 'g(T, i) + g(U, i * 7)'),
+    'an assignment of the parameter': param('const g = (a, i) => { if (i > 200) a = V; return a[i & 255] ?? -1 }', 'g(T, i) + g(U, i * 7)'),
+  }
+  for (const [label, src] of Object.entries(cases)) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 3)) {
+      const m = jz(src, { optimize }).exports
+      is(m.f(300), want.f(300), `${label}: f at O${optimize}`)
+      // (a host array of 100 read at 250: none on WASI, which passes no host array)
+      const host = () => new Float64Array(100).fill(5)
+      if (want.g && !onWasi()) is(m.g(host(), 250), want.g(host(), 250), `${label}: the host's call at O${optimize}`)
+      if (want.held && !onWasi()) is(m.held()(host(), 250), want.held()(host(), 250), `${label}: the held function at O${optimize}`)
+    }
+    if (!belowOpt(2)) ok(gChecks(src) > 0, `${label}: the reads keep their tests`)
   }
 })
 

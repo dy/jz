@@ -1157,6 +1157,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const argumentEntries = []     // same entries, in insertion order, without per-round Map iterator pairs
   let argumentRound = 0
   const moved = new Map()        // function name → each position's bound-change count; four opens it
+  const shapeMoves = new Map()   // the same for the sizes of the typed arrays a position takes
   // A function the host, a dispatcher or a caller the walk never sees may
   // call receives anything: it has no hull.
   const openCaller = (name, f) => exportedNames.has(f.name) || hostClosures.has(name) || escaped.has(name) || !!f.sig.dispatcher
@@ -1168,6 +1169,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (reassignedIn(f.body, paramNamesOf(f), f.defaults).includes(name)) return null
     const i = paramNamesOf(f).indexOf(name)
     return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
+  }
+  // The size of the typed array a named function's parameter holds, where every
+  // call passes one of that size and nothing assigns the parameter (a record's
+  // field the plan passes on as a parameter of its own, plan/lanes.js, keeps
+  // the size the field's slot holds); null else.
+  const paramShapeOf = (fn, name) => {
+    const f = funcByName.get(fn)
+    if (!f || openCaller(fn, f) || reassignedIn(f.body, paramNamesOf(f), f.defaults).includes(name)) return null
+    const i = paramNamesOf(f).indexOf(name)
+    return i < 0 ? null : argRanges.get(fn)?.shapes?.[i] ?? null
   }
   // The numbers a named function's parameter holds (num-range.js): its
   // arguments' hull over every call, the integers of it where every argument is
@@ -1192,13 +1203,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!f || openCaller(name, f)) return
     let entry = roundArgs.get(name)
     if (!entry) {
-      entry = { name, ranges: names.map(() => undefined), ints: names.map(() => true), round: argumentRound }
+      entry = { name, ranges: names.map(() => undefined), ints: names.map(() => true), shapes: names.map(() => undefined), round: argumentRound }
       roundArgs.set(name, entry); argumentEntries.push(entry)
     }
-    else if (entry.round !== argumentRound) { entry.ranges.fill(undefined); entry.ints.fill(true); entry.round = argumentRound }
+    else if (entry.round !== argumentRound) { entry.ranges.fill(undefined); entry.ints.fill(true); entry.shapes.fill(undefined); entry.round = argumentRound }
     let spread = false
     for (let i = 0; i < names.length; i++) {
       if (i < n && kspread[base + i]) spread = true
+      // the size of a typed array every call passes at the position (typedShapeOf), null where one is another or none
+      const ps = entry.shapes[i]
+      if (ps !== null) {
+        const s = spread || i >= n || args === null || tagOf(ks[base + i]) !== K.TYPED ? null : typedShapeOf(current ?? MODULE, argAt(args, i))
+        entry.shapes[i] = ps === undefined || s === null ? s : s.len === ps.len && s.bytes === ps.bytes ? ps : null
+      }
       const prev = entry.ranges[i]
       // An unbounded argument already opens this position for the round.
       // Later bounds cannot narrow it, so do not build and discard their hulls.
@@ -1238,10 +1255,22 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         moves[i] = m
         if (m >= 4) entry.ranges[i] = null
       }
-      if (!last) argRanges.set(name, last = { ranges: [], ints: [] })
-      const reusable = last.ranges, reusableInts = last.ints
+      // (a size that changes changes the summary; one that has changed four rounds over opens)
+      for (let i = 0; i < entry.shapes.length; i++) {
+        let s = entry.shapes[i]
+        if (s === undefined) s = entry.shapes[i] = null
+        const p = last?.shapes?.[i] ?? null
+        if (s === p || (s && p && s.len === p.len && s.bytes === p.bytes)) continue
+        changed = true
+        let moves = shapeMoves.get(name)
+        if (!moves) shapeMoves.set(name, moves = [])
+        if ((moves[i] = (moves[i] ?? 0) + 1) >= 4) entry.shapes[i] = null
+      }
+      if (!last) argRanges.set(name, last = { ranges: [], ints: [], shapes: [] })
+      const reusable = last.ranges, reusableInts = last.ints, reusableShapes = last.shapes
       last.ranges = entry.ranges; entry.ranges = reusable
       last.ints = entry.ints; entry.ints = reusableInts
+      last.shapes = entry.shapes; entry.shapes = reusableShapes
     }
     argumentRound++
   }
@@ -4971,6 +5000,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const typedShapeOf = (scope, e, seen = null) => {
     if (typeof e === 'string') {
       const key = keyOf(e, scope), def = key === null ? undefined : definitions[key]
+      // a parameter: the size every call passes it (paramShapeOf)
+      if (!def && key !== null && paramKeys.has(key) && typeof bindingScope[key] === 'string') return paramShapeOf(bindingScope[key], e)
       if (!def || seen?.has(key)) return null
       ;(seen ??= new Set()).add(key)
       return typedShapeOf(def[0], def[1], seen)
@@ -6565,7 +6596,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); moduleConstRanges.clear(); numsStrict = false
+    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
     wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
