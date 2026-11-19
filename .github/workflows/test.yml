@@ -119,9 +119,12 @@ jobs:
       - run: npm rebuild esbuild
       - name: integration (${{ matrix.variant }})
         run: |
+          # Level 3 runs armed (JZ_DEBUG_INVARIANTS=1): over integration's level-3 files it
+          # compiles the bytes the plain leg does (104 compiles, 0 apart), checks the passes'
+          # contracts besides, at a tenth more CPU, and runs nowhere else on its own.
           case "${{ matrix.variant }}" in
             opt0) export JZ_TEST_OPTIMIZE=0 ;;
-            opt3) export JZ_TEST_OPTIMIZE=3 ;;
+            opt3) export JZ_TEST_OPTIMIZE=3 JZ_DEBUG_INVARIANTS=1 ;;
             wasi) export JZ_TEST_HOST=wasi ;;
           esac
           npm run test:integration

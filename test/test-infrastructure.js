@@ -248,22 +248,30 @@ test('suite slices: arcs of the ring over machines, none far over its share, and
   // row (or, without one, its armed twin's or the default leg's) cuts, together every file once.
   const workflow = readFileSync(join(root, '.github/workflows/test.yml'), 'utf8')
   const job = name => workflow.split(/\n {2}(?=[\w-]+:\n)/).find(s => s.startsWith(`${name}:\n`)) ?? ''
+  // a variant's environment as its job's shell sets it: `opt0) export K=V ...;;` or `= wasi ]; then export K=V; fi`
+  const envOf = text => {
+    const out = {}
+    for (const m of text.matchAll(/^\s*(\w+)\) export ([^;]+);;$|= (\w+) \]; then export ([^;]+); fi/gm))
+      out[m[1] ?? m[3]] = Object.fromEntries((m[2] ?? m[4]).trim().split(/\s+/).map(kv => kv.split('=')))
+    return variant => out[variant] ?? {}
+  }
+  is(envOf(job('integration'))('opt3'), { JZ_TEST_OPTIMIZE: '3', JZ_DEBUG_INVARIANTS: '1' }, 'integration runs level 3 armed: its one armed run')
   const { runs } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
-  const env = { default: {}, opt0: { JZ_TEST_OPTIMIZE: '0' }, opt3: { JZ_TEST_OPTIMIZE: '3' }, wasi: { JZ_TEST_HOST: 'wasi' } }
+  const head = parseInt(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.slice(0, 8), 16)
   for (const [name, suite, variants] of [['test', 'core', ['default', 'opt0', 'opt3', 'wasi']], ['generated', 'generated', ['default', 'wasi']]]) {
-    const text = job(name), legs = {}
+    const text = job(name), legs = {}, env = envOf(text)
     ok(text.includes('-- --slice=${{ matrix.slice }}/${{ matrix.slices }}'), `${name}: each job runs its slice`)
     for (const [, variant, i, n] of text.matchAll(/- \{ variant: (\w+), slice: (\d+), slices: (\d+) \}/g)) (legs[variant] ??= []).push([+i, +n])
     is(Object.keys(legs), variants, `${name}: every leg`)
-    for (const [variant, parts] of Object.entries(legs)) {
-      const n = parts[0][1], seed = { JZ_TEST_SEED: '7', JZ_TEST_SAMPLE: undefined }
+    for (const [variant, parts] of Object.entries(legs)) for (const s of [7, head]) {
+      const n = parts[0][1], seed = { JZ_TEST_SEED: String(s), JZ_TEST_SAMPLE: undefined }
       is(parts, Array.from({ length: n }, (_, i) => [i + 1, n]), `${name} (${variant}): slices 1 to ${n}`)
-      const whole = list(suite, { ...env[variant], ...seed })
-      const row = [env[variant], { ...env[variant], JZ_DEBUG_INVARIANTS: '1' }, {}].map(e => runs[`${suite}-${legOf(e)}`]).find(Boolean).files
-      const want = arcs(whole, estimated(whole, Object.fromEntries(Object.entries(row).map(([f, [s]]) => [f, s])), f => statSync(join(root, 'test', `${f}.js`)).size), n, 7)
-      const got = parts.map(([i]) => spawnSync(process.execPath, ['test/index.js', '--list', `--suite=${suite}`, `--slice=${i}/${n}`], { cwd: root, env: clean({ ...env[variant], ...seed }), encoding: 'utf8', timeout: 30000 }).stdout.trim().split('\n'))
-      is(got, want, `${name} (${variant}): the arcs the row cuts`)
-      is(got.flat().toSorted(), whole.toSorted(), `${name} (${variant}): together every file of the leg once`)
+      const whole = list(suite, { ...env(variant), ...seed })
+      const row = [env(variant), { ...env(variant), JZ_DEBUG_INVARIANTS: '1' }, {}].map(e => runs[`${suite}-${legOf(e)}`]).find(Boolean).files
+      const want = arcs(whole, estimated(whole, Object.fromEntries(Object.entries(row).map(([f, [sec]]) => [f, sec])), f => statSync(join(root, 'test', `${f}.js`)).size), n, s)
+      const got = parts.map(([i]) => spawnSync(process.execPath, ['test/index.js', '--list', `--suite=${suite}`, `--slice=${i}/${n}`], { cwd: root, env: clean({ ...env(variant), ...seed }), encoding: 'utf8', timeout: 30000 }).stdout.trim().split('\n'))
+      is(got, want, `${name} (${variant}), seed ${s}: the arcs the row cuts`)
+      is(got.flat().toSorted(), whole.toSorted(), `${name} (${variant}), seed ${s}: together every file of the leg once`)
     }
   }
   // a slice of named files, of a suite that does not split, or timed for its row, is refused

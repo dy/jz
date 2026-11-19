@@ -152,7 +152,7 @@ export const extendedTasks = ({ armed = false } = {}) => [
 
 // The landing check (npm run test:landing, scripts/battery.mjs landing): what a change
 // passes before it lands, a leg at a time. Level 3 runs armed in place of plain, as in the
-// battery. What CI runs and this does not: integration at levels 0 and 3 and on WASI, the
+// battery. What CI runs and this does not: integration at level 0, at level 3 armed and on WASI, the
 // generated suite on WASI and whole, the 5,000-seed fuzz (test.yml), the hosted suite and
 // recursive compilation (self-compile.yml).
 export const landingTasks = () => [
