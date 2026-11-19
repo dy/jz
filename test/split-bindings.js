@@ -11,7 +11,7 @@ import { T } from '../src/ast.js'
 import { splitReassigned } from '../src/prepare/split-bindings.js'
 import { scanReassignedTopLevel, writtenNames } from '../src/prepare/ident-purity.js'
 import { parse } from '../src/parse.js'
-import { belowOpt, levels, ownedLevels } from './_matrix.js'
+import { belowOpt, levels, onKernel, ownedLevels } from './_matrix.js'
 import { foldWords, funcWat, oracle, run, wat, compile } from './util.js'
 import { parse as probeParse, walk as probeWalk } from '../scripts/wat-probe.mjs'
 
@@ -461,9 +461,24 @@ test('split bindings: thousands of assignments split in a time in the body', () 
 // write after it. The writes were a walk of the whole body each time, so a body
 // of 10,000 lines of two writes took 18 s at the level off (2,500 took 1.9 s);
 // they are the body's memo, as its census is, and take 3.2 s.
+// Held by the share of the compile the analysis that asks takes (opts.profile,
+// analyzeFuncs): 7.6% to 11.4% of 2.1 to 3.0 s in ten processes here, 82% of 10 to
+// 12 s with the walk back (2026-11-19, at a load of 20). A bound in milliseconds
+// went by the machine (CI's runner took 8.5 s of the 8 it had, where this one takes
+// 3), and the time of 8,000 lines against 1,000 by the process: 8 to 18 in twelve of
+// them, 32 with the walk back.
 test('split bindings: a body of 8,000 lines of two writes compiles in a time in its size', () => {
   const src = `export let f = (x) => { let s = 0, t = 0\n${Array.from({ length: 8000 }, (_, i) => `s += x * ${i}; t += 1`).join('\n')}\nreturn s + t }`
-  const t0 = performance.now(), f = run(src, { optimize: false }).f, ms = performance.now() - t0
-  ok(ms < 8000, `8,000 lines compiled in ${ms.toFixed(0)} ms`)
-  is(f(3), 3 * 8000 * 7999 / 2 + 8000)
+  const answer = 3 * 8000 * 7999 / 2 + 8000
+  // the hosted compiler keeps no profile
+  if (onKernel()) { is(run(src, { optimize: false }).f(3), answer); return }
+  const share = () => {
+    const profile = {}, t0 = performance.now(), f = run(src, { optimize: false, profile }).f, ms = performance.now() - t0
+    is(f(3), answer)
+    return profile.totals.analyzeFuncs / ms
+  }
+  // a share past the bound is measured once more: a stall of the machine falls in one phase
+  let s = share()
+  if (!(s <= 1 / 3)) s = Math.min(s, share())
+  ok(s <= 1 / 3, `the analysis took ${(s * 100).toFixed(0)}% of the compile, at most a third`)
 })
