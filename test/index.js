@@ -378,10 +378,10 @@ import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { cpus, loadavg } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { suiteArgs, suiteOf, inSuite, splits } from './_suites.js'
+import { suiteArgs, suiteOf, inSuite, splits, dividesLevels } from './_suites.js'
 import { plan, arcs, estimated } from './_jobs.js'
 import { runTasks, suiteJobs, legOf, formatCosts } from '../scripts/test-tasks.mjs'
-const { suite, list, files: argFilters, jobs: jobsArg, costs, slice } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
+const { suite, list, files: argFilters, jobs: jobsArg, costs, slice, legLevels } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
 // A whole core or generated run may be split over processes and machines; named files
 // and a suite whose files share artifacts run in this one (test/_suites.js).
 const splittable = !argFilters.length && splits(suite)
@@ -464,6 +464,7 @@ const listed = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
   : TESTS.filter(name => inSuite(name, suite))
 ).filter(name => argFilters.includes(name) || !((onKernelTarget && (KERNEL_EXCLUDE.has(name) || suiteOf(name) === 'bootstrap' || name === 'test-infrastructure')) || legSkips(name)))
+  .filter(name => !legLevels || dividesLevels(readFileSync(new URL(`./${name}.js`, import.meta.url), 'utf8')))
 
 if (argFilters.length && listed.length !== argFilters.length) {
   const known = new Set(TESTS)

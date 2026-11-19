@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { suiteArgs, suiteOf, splits, SUITES, QUICK } from './_suites.js'
+import { suiteArgs, suiteOf, splits, SUITES, QUICK, dividesLevels } from './_suites.js'
 import { shards, plan, arcs, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
@@ -42,7 +42,9 @@ test('quick tier: a few of core\'s files, run by --suite=quick, within its budge
 })
 
 test('test suites: explicit files and full sweeps remain available; invalid options fail', () => {
-  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined, costs: false, slice: undefined })
+  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined, costs: false, slice: undefined, legLevels: false })
+  is(suiteArgs(['--suite=generated', '--leg-levels']).legLevels, true)
+  throws(() => suiteArgs(['--leg-levels', 'limits']), /--leg-levels/)
   is(suiteArgs(['--jobs=4']).jobs, 4)
   is(suiteArgs(['--costs']).costs, true)
   is(suiteArgs(['--slice=2/3']).slice, [2, 3])
@@ -76,7 +78,7 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
     ok(names.includes('core-invariants') && !names.includes('core-opt3'), `battery ${args.join(' ')}: ${names.join(', ')}`)
   }
   ok(battery([]).includes('integration-invariants') && !battery([]).includes('integration-opt3'), 'the full battery runs integration at level 3 armed only')
-  is(battery(['landing']), ['listings', 'lint', 'audit', 'core-wasi', 'core-default', 'core-invariants', 'core-opt0', 'generated', 'integration', 'test262', 'test262-builtins', 'self', 'hosted', 'bench-bytes', 'examples'],
+  is(battery(['landing']), ['listings', 'lint', 'audit', 'core-wasi', 'core-default', 'core-invariants', 'core-opt0', 'generated', 'generated-opt0', 'generated-invariants', 'integration', 'test262', 'test262-builtins', 'self', 'hosted', 'bench-bytes', 'examples'],
     'the landing check: the listings, lint, the file audit, core on four legs, the generated suite, integration, test262, the self-compile round trip, the touched hosted files, the bench bytes, the examples')
   // the legs' names, the keys of test/native-costs.json
   is([...matrixTasks(), invariantTask()].map(t => legOf(t.env)), ['default', 'opt0', 'opt3', 'wasi', 'opt3-invariants'])
@@ -289,6 +291,13 @@ test('suite slices: arcs of the ring over machines, none far over its share, and
     return variant => out[variant] ?? {}
   }
   is(envOf(job('integration'))('opt3'), { JZ_TEST_OPTIMIZE: '3', JZ_DEBUG_INVARIANTS: '1' }, 'integration runs level 3 armed: its one armed run')
+  // the generated files that divide their levels run at the levels the default leg leaves
+  const levelsJob = job('generated-levels'), levelsEnv = envOf(levelsJob)
+  ok(/variant: \[opt0, opt3\]/.test(levelsJob) && levelsJob.includes('npm run test:generated -- --leg-levels'), 'generated-levels: at level 0 and 3, the files that divide their levels')
+  is([levelsEnv('opt0'), levelsEnv('opt3')], [{ JZ_TEST_OPTIMIZE: '0' }, { JZ_TEST_OPTIMIZE: '3' }])
+  const divided = list('generated', { JZ_TEST_OPTIMIZE: '0' }).filter(f => dividesLevels(readFileSync(join(root, 'test', `${f}.js`), 'utf8')))
+  ok(divided.length > 0, 'some generated file divides its levels')
+  is(spawnSync(process.execPath, ['test/index.js', '--list', '--suite=generated', '--leg-levels'], { cwd: root, env: clean({ JZ_TEST_OPTIMIZE: '0' }), encoding: 'utf8', timeout: 30000 }).stdout.trim().split('\n'), divided, '--leg-levels selects them')
   const { runs } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
   const head = parseInt(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.slice(0, 8), 16)
   for (const [name, suite, variants] of [['test', 'core', ['default', 'opt0', 'opt3', 'wasi']], ['generated', 'generated', ['default', 'wasi']]]) {

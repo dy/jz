@@ -170,6 +170,9 @@ export const landingTasks = ({ base = 'main' } = {}) => {
     { name: 'audit', command: 'npm', args: ['run', '-s', 'audit:files'], env: legEnv() },
     wasi, defaults, invariants, opt0,
     { name: 'generated', args: ['test/index.js', '--suite=generated'], env: legEnv() },
+    // the generated files that divide their levels, at the levels the default leg leaves
+    { name: 'generated-opt0', args: ['test/index.js', '--suite=generated', '--leg-levels'], env: legEnv({ JZ_TEST_OPTIMIZE: '0' }) },
+    { name: 'generated-invariants', args: ['test/index.js', '--suite=generated', '--leg-levels'], env: legEnv({ JZ_TEST_OPTIMIZE: '3', JZ_DEBUG_INVARIANTS: '1' }) },
     { name: 'integration', args: ['test/index.js', '--suite=integration'], env: legEnv() },
     { name: 'test262', args: ['--expose-gc', 'test/test262.js'], env: legEnv() },
     { name: 'test262-builtins', args: ['--expose-gc', 'test/test262-builtins.js'], env: legEnv() },

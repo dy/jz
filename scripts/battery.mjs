@@ -48,7 +48,7 @@ async function battery() {
 }
 
 // A leg's budget comes from its CPU seconds in the last run `--record` wrote at the same
-// JZ_TEST_JOBS (scripts/test-tasks.mjs landingVerdict): CPU seconds, not wall, so another
+// JZ_TEST_JOBS, else at the nearest count, scaled (scripts/test-tasks.mjs landingVerdict): CPU seconds, not wall, so another
 // program's load on the machine moves no leg past it. Each leg spends JZ_TEST_JOBS
 // processes, the cores less two unless it is set; the populations and the core's dear sweeps
 // run at one program in 4 (JZ_TEST_SAMPLE, unless it is set), whole on CI on every push.

@@ -56,11 +56,12 @@ export const inSuite = (name, suite) => suite === 'all' || (suite === 'quick' ? 
 export const splits = suite => suite === 'core' || suite === 'generated' || suite === 'quick'
 
 export function suiteArgs(args, kernel = false) {
-  let suite = kernel ? 'all' : 'core', list = false, costs = false, seen = false, jobs, slice
+  let suite = kernel ? 'all' : 'core', list = false, costs = false, seen = false, legLevels = false, jobs, slice
   const files = []
   for (const arg of args) {
     if (arg === '--list') list = true
     else if (arg === '--costs') costs = true
+    else if (arg === '--leg-levels') legLevels = true
     else if (arg.startsWith('--slice=')) {
       const m = /^([1-9]\d*)\/([1-9]\d*)$/.exec(arg.slice(8))
       if (slice || !m || +m[1] > +m[2]) throw new Error(`--slice=<i>/<n>, once, with i from 1 to n, not '${arg}'`)
@@ -79,5 +80,11 @@ export function suiteArgs(args, kernel = false) {
     else files.push(arg.replace(/^test\//, '').replace(/\.js$/, ''))
   }
   if (new Set(files).size !== files.length) throw new Error('A test file was selected more than once')
-  return { suite, list, files, jobs, costs, slice }
+  if (legLevels && files.length) throw new Error('--leg-levels selects of a suite; named files run as named')
+  return { suite, list, files, jobs, costs, slice, legLevels }
 }
+// A file that divides its levels over the legs (test/_matrix.js levels, ownedLevels) runs
+// on each leg the levels that leg owns, and the rest nowhere when it runs on one leg alone:
+// the generated suite's files of that kind run on CI's level-0 and level-3 jobs too
+// (--leg-levels), where every other generated file, fixing its own levels, would repeat.
+export const dividesLevels = source => /\b(?:levels|ownedLevels)\(/.test(source)

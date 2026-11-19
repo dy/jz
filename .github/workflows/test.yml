@@ -166,6 +166,35 @@ jobs:
           if [ "${{ matrix.variant }}" = wasi ]; then export JZ_TEST_HOST=wasi; fi
           npm run test:generated -- --slice=${{ matrix.slice }}/${{ matrix.slices }}
 
+  # The generated files that divide their levels over the legs (test/_suites.js dividesLevels:
+  # the limits gate, the reset, start and durable-join populations) at the levels the default
+  # leg leaves to the others: off at level 0, 3 and 'speed' at level 3. The rest fix their
+  # own levels and run whole above.
+  generated-levels:
+    name: generated (${{ matrix.variant }}), the files that divide their levels
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      JZ_TEST_JOBS: '3'
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [opt0, opt3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - name: generated (${{ matrix.variant }}), the files that divide their levels
+        run: |
+          case "${{ matrix.variant }}" in
+            opt0) export JZ_TEST_OPTIMIZE=0 ;;
+            opt3) export JZ_TEST_OPTIMIZE=3 ;;
+          esac
+          npm run test:generated -- --leg-levels
+
   # Extended differential fuzz: `npm test`'s in-suite `fuzz` test gates only seeds
   # 1..200; this runs the full 5000-seed pass (jz-wasm vs JS at opt {0,1,2,3},
   # contract-aware oracle that skips inputs exceeding jz's documented i32 range,
