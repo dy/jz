@@ -89,7 +89,7 @@ test('block present: a name compared loosely with null answers as the host does'
   if (belowOpt(2)) return
   const text = wat(guarded, { optimize: 2 })
   for (const name of ['sum', 'either', 'undef']) {
-    const f = funcWat(text, `${name}$exp`) || funcWat(text, name)
+    const f = funcWat(text, `${name}$exp`, name)
     ok(f.length > 0 && !/__throw_property_nullish/.test(f), `${name} reads the array with no missing-receiver test`)
   }
 })

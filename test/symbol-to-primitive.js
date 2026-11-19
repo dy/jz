@@ -13,7 +13,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { funcWat, oracle, run, wat } from './util.js'
+import { funcWat, hasFunc, oracle, run, wat } from './util.js'
 
 const PRELUDE = `const T = { s: '' }
 const note = (s) => { T.s += s + ';' }
@@ -117,7 +117,7 @@ test('symbol-to-primitive: a program with no [Symbol.toPrimitive] links no looku
   const lookups = (text, name) => funcWat(text, name).split('call $__dyn_get_t_hm').length - 1
   const plain = wat(`const o = { valueOf() { return 2 } }
 export let f = (x) => [x][0] + o`, { optimize: false })
-  is([lookups(plain, '__jz_tp_str'), lookups(plain, '__jz_tp_num'), funcWat(plain, '__jz_tp_dflt')], [2, 2, ''], 'valueOf alone')
+  is([lookups(plain, '__jz_tp_str'), lookups(plain, '__jz_tp_num'), hasFunc(plain, '__jz_tp_dflt')], [2, 2, false], 'valueOf alone')
   const exotic = wat(`const o = { [Symbol.toPrimitive](h) { return h.length } }
 export let f = (x) => [x][0] + o`, { optimize: false })
   is([lookups(exotic, '__jz_tp_str'), lookups(exotic, '__jz_tp_num'), lookups(exotic, '__jz_tp_dflt')], [3, 3, 3], 'a [Symbol.toPrimitive]')
