@@ -633,3 +633,18 @@ Staged behind it, each reviewed with the integrator's own probes:
 - The block fix (the limits writer, on f8ad60e53) and the tests' close-out: out.
 
 Waiting on the owner: watr's release (the encoder fix c6459c7 and the seven commits of `limits-depth` in `limits-w/r2/watr`); subscript's `nested-call-parse`; whether probe branches may be pushed.
+
+## Branches of the land-s landing (2026-11-19), tips before deletion
+
+```
+82b9008ea land-s                              the landing branch as its check ran it: main (dbf9beb10) and 11 commits; the record's commit after it
+e77e5c278 worktree-agent-a9c66c8c6d26bba8c    the audio facts, twelve commits on 9d56c891c: landed as 33b5ef3dc to 82b9008ea (8d252c743 and e77e5c278 as one)
+c8504267d land-r                              the same eleven on the landing before the record: superseded by land-s
+```
+
+Left standing, no writer at work (the owner stopped them on 2026-11-19):
+- `nanbox-rest2` (bcb69549d, 47 commits on 9d56c891c): the NaN box. Passes closret (0 of 448), the routes and the probe. Owed: a rebase onto main (conflicts in module/number.js, src/summary/index.js, test/data-forms.json), the messages' stale hashes, times on a quiet machine, the two data-forms rises.
+- `worktree-agent-a9ec23575a85c3d81` (f8ad60e53 and uncommitted work): the block fix by position (a bare block dropped whole where its first statement is no statement keyword's; `limits-w/review-2/cases-blocks2.mjs`).
+- `worktree-agent-afab4ffb7d6879342`: the tests' close-out.
+
+Waiting on the owner: `npm install` for jz's bumps (watr 5.13.8, subscript 10.8.6 with src/parse.js:461-467 deleted); the reference run; whether probe branches may be pushed.

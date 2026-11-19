@@ -3268,6 +3268,43 @@ On bd6def506 CI was red in two places of the land-o landing. The gate handed eac
 - **The bench workflow** is red on the committed Porffor evidence's age, 2 h 49 a run.
 - **A wall-time pin in the integration suite**: game-of-life's frames in a window of the clock.
 
+## The land-s landing: nullish and falsy tests decided by kind, and two wrong answers of main (2026-11-19)
+
+11 commits on dbf9beb10, tip `82b9008ea` (the facts writer's twelve, its last two folded into one; each message's hashes rewritten to this history).
+
+### What landed
+
+- **Two wrong answers, on main and in 1.0.3** (reproduced at all four levels before the fix):
+  - `33b5ef3dc`: a `?:` whose test the summary decided and whose evaluation may do something folded to a bare comma, which a call's sole argument reads as two: `h(x.isV ? 1 : 2)` answered 102 where Node answers 2; a method's and a constructor's one argument NaN where Node answers 2020.
+  - `759619390`: inside a closure, a guard's proof about a captured binding outlived a call of a sibling closure that assigns it (a default dropped: 0 where Node answers 21). Such a binding now holds no proof outside its own scope's walk.
+- **Every nullish or falsy test of a name reads the kind it has there** (`3ca152ad5`): `??`, `??=`, `||`, `||=`, `&&`, `&&=`, `x?.p`, `== null`, `=== undefined`, `!x`; the plan folds what never runs (plan/fold-kind-tests.js).
+- **A test of a field is decided by the join of its slots over every shape its object can hold** (`8796208f4`, and `82b9008ea`: a comparison whose name waits on a call decides nothing that round).
+- **A store or a method call through a name proves it an object past it** (`d2f6d147a`, narrowed to stores and method calls by `22a1c50cc`), **each part that may not run walked apart** (`49dfba1fd`): the first form was unsound, below.
+- **A parameter knows the size of the typed array every call passes** (`9b72f35e1`); **rows of different counts join by position** (`23c4378a5`); a logical test waiting on an unbound parameter walks both operands (`6d93fecc6`).
+
+### The review
+
+203 programs of mine at four levels against Node, a process a tree, then 35 more. On the first hand-back 40 rows were wrong that main had right: the store's proof held past a part that may not have run, the arguments and keys of an optional chain (`o?.m(p.x = 1)`) and the value of `??=`, `||=`, `&&=`. A proof used to arise only at a test; arising inside any expression, every construct that may skip a part is a path. The writer's fix is one pair (`apart`/`rejoin`) at every such place of the walk, with a test that reads the places from the source. On the final tip every row answers as Node (populations: `audio-c/review-facts/cases*.mjs`).
+
+### The check (fa, on `82b9008ea`)
+
+58 minutes at a load of 8 to 19. Listings and reset probe unmoved. WASI 7,535, default 7,662, armed level 3 7,444, level 0 7,422, each whole; test:self 89; integration 238 of 239 with one skipped; lint and audit clean; examples 1.69 and 1.70, 25 of 25 twice. On a fresh hosted compiler (37,728,062 bytes; main's 37,740,426): parity 19, kind-tests 17, typed-length 19, summary-queries 74, dyn-keys 171, fixed-memory 17, errors 150. The generated suite was not run on this tree.
+
+Bench bytes against main: 31 of 105 cases move, size 2,707,314 to 2,702,642, speed 5,974,536 to 5,927,502 (webaudio 34,330 less at speed, decode-qoa 8,395). Nine grow: watr 701 at speed (451 less at size: a parameter narrowed to a pointer is boxed again where it flows on into a boxed parameter, compile/narrow/), the three decode cases 12 to 40 (the price of `759619390`), async and the three* cases 18 to 24 at speed (one more site inlined in jz_async's __p_fin).
+
+Costs the writer measured and did not remove: the summary's solve on the `jz` case 8% longer (429 rounds to 442; the whole compile unchanged within its runs), watr's unchanged.
+
+The audio catalogue, by the writer's run of the audio session's tool on its own branch: 33 of 99, 26 without the store's proof, the seven it adds autowah, bitcrusher, exciter, lofi, noiseshaper, ringmod, slew. The session measures main after this landing.
+
+### Beside it, the same day
+
+- **The audio catalogue on dbf9beb10** (the audio session's run): 38 of 99 certify fixed memory, 26 before; twelve newly, none lost. The helpers writer's number held.
+- **x64 probe of dbf9beb10 against 9d56c891c** (run 44542945582, jz against the base): cam16 0.999, hct 0.995, jzazbz 0.997, jessie 1.006, watr 1.015, mapstr 0.998, stringify 0.995, webaudio 1.004, decode-qoa 1.001, async 1.006, jsonroundtrip 0.985. Nothing moved.
+- **CI on dbf9beb10**: green but the standing `claims` and one test of `test (opt3)`, test/async.js's fetch of a loopback server past its 5 s (its process took 50 minutes there); the file at level 3 here, 60 of 60 twice.
+- **watr 5.13.8** (the owner's word: both branches, a patch): the encoder's one splice and the limits writer's seven commits, on watr's main as `8f7927d`, tagged. Checked first by jz's whole landing check with it linked in (four legs whole, test:self, integration, six hosted files; one bench case moves, watr's own source) and the limits gate, 29 of 29 at the default level and 27 of 27 at the level off. The npm publish is the owner's (no login where the integrator works); jz pins 5.13.7 until its bump.
+- **subscript 10.8.6** (published by the owner): the method shorthand as a rule on `{` whose left operand is the call already read (g(g(…x)) at depth 24: 5.5 s to 0.01 ms), in place of the pull request that wrapped the lookup table by hand. jz pins 10.8.4; the bump deletes src/parse.js's wrapper of the old rule (it picks the lowest `(` rule, which is no longer the method's).
+- **By the owner's word the writers are stopped** (the limit): the integrator works alone, one thing at a time. Left where they stood: the NaN box (`nanbox-rest2`, bcb69549d, passes the review's probes; to rebase onto this landing, time, and settle two data-forms rises), the block fix (uncommitted in the limits writer's tree), the tests' close-out.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
