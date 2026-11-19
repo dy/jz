@@ -3214,12 +3214,59 @@ A module whose top level can throw has no start section: it exports `_initialize
 
 ### The audio catalogue on 5f3865889 (the audio session's run)
 
-- 99 processors compile, 90 pass the real-time gate, 26 certify fixed memory. The 73 refused, by last cause: 24 `__alloc_hdr`, 13 the recursion in `math.pow`, 2 in `__to_num`, 7 a closure entered again, 7 `__length.value_tail` (the bus sets whose slots differ in their channels lose "is an array"; `1404dfd3f` answers the standalone form, the seven keep an object literal that links the dispatcher), 5 `__alloc_hdr_n`, 3 `__durable_obj_snap`, 3 `__str_idx`, 2 `__mkstr`, 1 each `__dyn_get_t`, `__durable_arr_snap`, a kernel's own closure. Two briefs stand written for it (the helpers' self-calls and the named-key read; the facts a default no call takes needs).
+- 99 processors compile, 90 pass the real-time gate, 26 certify fixed memory. The 73 refused, by last cause: 24 `__alloc_hdr`, 13 the recursion in `math.pow`, 2 in `__to_num`, 10 a closure entered again (this line said 7 until the land-q record: the list then summed to 69), 7 `__length.value_tail` (the bus sets whose slots differ in their channels lose "is an array"; `1404dfd3f` answers the standalone form, the seven keep an object literal that links the dispatcher), 5 `__alloc_hdr_n`, 3 `__durable_obj_snap`, 3 `__str_idx`, 2 `__mkstr`, 1 each `__dyn_get_t`, `__durable_arr_snap`, a kernel's own closure, and rnnoise unresolved. Two briefs stand written for it (the helpers' self-calls and the named-key read; the facts a default no call takes needs).
 
 ### land-m on x64 (bench-probe, jz against 86df52211, ratio of times)
 
 - EPYC 9V45, 5 rounds: polytri 1.002, dispatch 0.999, decode-tta 0.994, decode-alac 0.990, decode-wav 1.002, threeanim 1.002, threegeom 0.996, mapstr 1.000, entity 1.001, decode-qoa 1.050; decode-qoa again at 9 rounds: 0.994 (EPYC 7763), 0.990 (Xeon 8370C). Nothing moved.
 - CI on 5f3865889: the WASI job green, the first since land-k; it took 2 h 33 min, the level 3 job longer: both past the owner's hour.
+
+## The land-q landing: runtime helpers that call themselves no more, and three compile times of the optimizing levels (2026-11-19)
+
+8 commits on 9d56c891c, tip `1644ad9c3`. Before it, with no record of their own: `0d14fd136` and `9d56c891c`, the fix of what CI's first Linux run of the limits gate showed (below).
+
+### What landed
+
+- **The audio helpers** (the helpers writer's, three commits; its two follow-ups folded in):
+  - **`$math.pow` takes a negative base in its own kernel** (`7d4967e76`): it called itself for |x|; the sign of an odd exponent now rides in the scale's bits. Bit for bit main's: the writer's 3,028,644 calls at six configurations, and 301,054 pairs of mine through `x ** y` and `Math.pow` at four levels, the same bytes on both trees.
+  - **`__to_num`, `__number` and `__to_str` take a user conversion's primitive first and run their steps once** (`0fb2ac173`): each called itself on it. The first form, a loop of two passes, raised test/perf-ratchet.json by 645 ops a program (the landing check stopped on it); this form holds main's counts.
+  - **A string's unit at an index key is read in `__dyn_get_t` alone** (`655c9874b`): the prehashed read no longer reaches `__str_idx`, which allocates. test/data-forms.json: 72 gather cells 18 ops fewer, 12 `seq/from` cells 4 calls and 21 ops more, the string arm now inline in the read they inline (a static count: the arm runs for a string receiver alone; timed 1.005 and 0.915 of main).
+  - The writer's run of the audio session's tool: 38 of 99 processors certify fixed memory, against 26. Not verified here: the audio session reruns its catalogue on this commit.
+- **The limits, round two, jz's side** (the limits writer's, five commits):
+  - **The f32 narrowing gives up a local past 64 writes reaching one read, and writes its env in place where one place holds it** (`5dd373663`): 10,000 switch cases ran past a 4 GB heap, the SIGABRT round one recorded.
+  - **Store forwarding finds what a store ends by sum and offset, and elsewhere by the kind of access** (`e1aecffbc`): an array of 10,000 literals took the square of its elements.
+  - **The emitter asks "is it written later" of one table of last writes a block** (`2c5a6c321`): a switch of returns took the square of its cases at the level off.
+  - **The hosted compiler names a walk's stack overflow at its host** (`513c85b8b`, test/kernel-target.js): the kernel cannot catch it, and the instance it leaves is mid-phase; the host measures the source with the native `nestingOf` and never reads the instance again. test/errors.js no longer accepts the engine's RangeError.
+  - **The gate keys its default-level rows by watr's release, and holds each row KNOWN to fail to the failure its line names** (`1644ad9c3`). On watr 5.13.7 two rows leave KNOWN: array literal at the default level, switch of returns at the level off.
+  - What the writer's watr branch adds is not here: seven commits on the unreleased encoder fix, in its own clone (`limits-w/r2/watr`, branch `limits-depth`): forwarding stops at 256 levels, deadset's scan and value numbering and CSE take a run in its size. With it 13 rows hold at the default level at 10,000 links. It waits on the owner's review and a watr release.
+
+### The check (q, on `1644ad9c3`)
+
+88 minutes at a load of 9 to 136. The four listings and the reset probe move nothing. WASI 7,522, default 7,649, armed level 3 7,431, level 0 7,409, each whole; test:self 89; lint and audit clean; examples 1.71 (24 of 25) and 1.69 (25 of 25). Integration 237 of 239 with one skipped and one failure, game-of-life's self-driven frames ("~6 frames at 16ms fallback, got 1") at a load past 100: the file alone, 38 of 38 three times. On a fresh hosted compiler (37,740,426 bytes; main's 37,646,128): parity 19, dyn-keys 171, fixed-memory 17, pow 17, to-primitive 53, errors 150, parse-list 15, float32 14, address 7. After it, the generated store, alias-fuzz, float-order, float-reduction and vector-alias populations (the store forwarding's and the f32 narrowing's): 15 tests pass in 918 s at a load of 8. The rest of the generated suite was not run on this tree.
+
+Bench bytes against main: 36 of 105 cases move, size 2,708,371 to 2,707,314, speed 5,982,860 to 5,974,536. Seven color cases grow 12 and 9 (pow's sign), three others 1 or 2 at speed; webaudio 6,133 less at speed. The limits commits move none.
+
+My own probes beside the writers': 132 rows of user conversions and keyed reads answer as main on the helpers; 790 rows of six review populations answer as main on the limits tree; the three compiler changes of the limits read against what they replace (`isReassigned` is `collectAssignedNames`; `mayAlias` across sums goes by mark, header, store and op alone; the f32 walk's shared envs are the one part held by evidence only: the 105 cases' bytes and the suite).
+
+### CI's first Linux run of the limits gate (`0d14fd136`, `9d56c891c`)
+
+On bd6def506 CI was red in two places of the land-o landing. The gate handed each source to its child in the environment, Linux bounds one environment string at 131,072 bytes, twelve kinds are longer at 10,000 links: six rows failed and six, held to fail, passed by it. Sources now ride the standard input, a child that does not start or ends unsaid fails its row, a row KNOWN as 'time' stops at two minutes, each row answers at 2,500 links. The split-bindings pin had 8 s of wall time and the runner took 8.5: held now by the share of the compile `analyzeFuncs` takes. CI on 9d56c891c: green but the standing `claims`.
+
+### Corrections of the land-o record
+
+- Its audio paragraph said "7 a closure entered again": the group is 10, and rnnoise, unresolved, was missing; the list summed to 69 of 73. Corrected in place.
+
+### Found, not fixed
+
+- **A bare block in a statement list is dropped whole where its first statement's operator is not in STMT_OPS** (src/ast.js isBlockBody): `{ { x++ } }`, a block that begins `a && f()`, `c ? f() : g()`, a labeled loop, `!f()`. On main and in 1.0.3; 198 of 960 rows of `limits-w/review-2/cases-blocks2.mjs`. The limits writer is fixing it by position.
+- **A string's `length` read by a key the program holds is typed a string** (`'str'[k]`, k 'length'): `String(v)` is the number, `v === 3` false. Two lines (src/kind/val-type-of.js:327, src/summary/index.js:4048); a patch stands in `audio-c/helpers2/string-length-key.patch`.
+- **`continue outer` out of an inner `for (;;)` does not compile at the default level and 'speed'** ("continue label 'outer' is not in scope").
+- **shareSplitSlots grows faster than the square**: 139 ms at 4,000 lines of two writes, 822 at 8,000, 5,844 at 16,000.
+- **Nested for loops double a level at the level off** (type/interval-proof.js loopFixpoint: 15 levels 2 s, 20 levels 65 s); nested `%`, arrays, trys and templates at the default level.
+- **The generated suite runs on CI at the default level and under WASI alone**: the gate's level-off rows, the only ones held, run on no CI job.
+- **CI jobs past the hour** on 9d56c891c: test (default) 1 h 59, test (opt3) 1 h 42, test (wasi) 1 h 35, generated (wasi) 1 h 11.
+- **The bench workflow** is red on the committed Porffor evidence's age, 2 h 49 a run.
+- **A wall-time pin in the integration suite**: game-of-life's frames in a window of the clock.
 
 ## Decisions taken
 

@@ -618,3 +618,18 @@ The limits follow-up, to brief: a bound on the nesting of what jz hands watr (th
 chain under WASI, the index chain of 1,000, the gate's ten rows that fail at the default
 level); the hosted entry naming a walk's overflow; the cubic time of a member chain behind
 an optional chain; test/hosted-costs.json timed again.
+
+## Branches of the land-q landing (2026-11-19), tips before deletion
+
+```
+1644ad9c3 land-q                              the landing branch as its check ran it: main (9d56c891c) and 8 commits; the record's commit after it
+dd37b29b4 worktree-agent-af522bdeb69710f9e    the audio helpers, six commits and two follow-ups on bd6def506: landed as 7d4967e76, 0fb2ac173, 655c9874b
+f8ad60e53 worktree-agent-a9ec23575a85c3d81    the limits round two, five commits on 9d56c891c: landed as 5dd373663, e1aecffbc, 2c5a6c321, 513c85b8b, 1644ad9c3 (the branch goes on: the block fix)
+```
+
+Staged behind it, each reviewed with the integrator's own probes:
+- `land-r` (c8504267d): land-q and the audio facts' eleven commits (names and fields decide nullish tests; a store proves its name an object, each part that may not run walked apart; two wrong answers of main fixed: a folded test as a call's one argument, a proof past a sibling closure's clear). 203 programs of mine and 35 more answer as Node on its tip. Its check is next.
+- The NaN box (`nanbox-rest2`, bcb69549d, 47 commits): passes closret (0 of 448), the routes and the probe; back with its writer for the rebase onto land-r, the times on a quiet machine and two data-forms rises.
+- The block fix (the limits writer, on f8ad60e53) and the tests' close-out: out.
+
+Waiting on the owner: watr's release (the encoder fix c6459c7 and the seven commits of `limits-depth` in `limits-w/r2/watr`); subscript's `nested-call-parse`; whether probe branches may be pushed.
