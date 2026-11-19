@@ -4,7 +4,7 @@
  */
 
 import {
-  handlerArgs, rewriteChildren, JZ_BLOCK_OPS, bindingOf, cloneNode, nodeEqual, descriptorProps,
+  handlerArgs, rewriteChildren, bindingOf, cloneNode, nodeEqual, descriptorProps,
   literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams, withLoc, noted,
 } from '../src/ast.js'
 
@@ -146,14 +146,6 @@ function rewriteBundlerAliasesNode(node, aliases, interopBindings) {
     }
     return out.length === 1 ? null : out.length === 2 ? out[1] : out
   }
-  if (node[0] === '{}' && node.length === 2) {
-    const wasBlock = Array.isArray(node[1]) && JZ_BLOCK_OPS.has(node[1][0])
-    const inner = rec(node[1])
-    if (!wasBlock || inner == null) return ['{}', inner]
-    const stayed = Array.isArray(inner) && JZ_BLOCK_OPS.has(inner[0])
-    return ['{}', stayed ? inner : [';', inner]]
-  }
-
   if (node[0] === '()') {
     const callee = node[1]
     const args = handlerArgs(node.slice(2))

@@ -17,7 +17,7 @@
  * @module compile/emit/fuse-probes
  */
 import { ctx } from '../../ctx.js'
-import { isReassigned } from '../../ast.js'
+import { isBlockBody, isReassigned } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { K, tagOf, core } from '../../summary/kind.js'
 import { VAL } from '../../reps.js'
@@ -70,11 +70,7 @@ const KEEPS = new Set(['===', '!==', '!', 'typeof', 'void', '&&', '||', '??', '?
 
 /** The statements of an arm, and how to put them back. */
 const armStatements = (arm) => {
-  if (isArr(arm) && arm[0] === '{}' && arm.length === 2) {
-    const inner = arm[1]
-    if (isArr(inner) && inner[0] === ';') return [inner.slice(1), (stmts) => ['{}', [';', ...stmts]]]
-    return [[inner], (stmts) => ['{}', stmts.length === 1 ? stmts[0] : [';', ...stmts]]]
-  }
+  if (isBlockBody(arm) && isArr(arm[1])) return [arm[1].slice(1), (stmts) => ['{}', [';', ...stmts]]]
   if (isArr(arm) && arm[0] === ';') return [arm.slice(1), (stmts) => [';', ...stmts]]
   return [[arm], (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]]
 }

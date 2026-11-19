@@ -39,7 +39,7 @@ function seedStartGeneratedLocals(body) {
 function analyzeStartForEmit(ast) {
   // Plan the complete emitted start body, preserving the imported AST nodes
   // that representation call/write edges are keyed by. No expression cloning.
-  const body = ctx.module.moduleInits?.length ? ['{}', ...ctx.module.moduleInits, ast] : ast
+  const body = ctx.module.moduleInits?.length ? ['{}', [';', ...ctx.module.moduleInits, ast]] : ast
   const start = { name: '__start', body }
   const previousFrame = enterActiveFunction(ctx, {
     sig: { name: '__start', params: [], results: [] },

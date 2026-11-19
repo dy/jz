@@ -40,7 +40,7 @@ test('invariant: well-known symbol lookup preserves ordinary computed keys acros
   for (const name of ['iterator', 'iterator', 'dispose', 'asyncIterator', 'iterator']) {
     const member = ['.', 'Symbol', name], prop = '@@' + name
     is(jzify(['[]', 'value', member]), ['.', 'value', prop], 'member access')
-    is(jzify(['{}', [':', ['[]', member], [null, 7]]]), ['{}', [':', prop, [null, 7]]], 'computed definition')
+    is(jzify(['()', ['{}', [':', ['[]', member], [null, 7]]]]), ['()', ['{}', [':', prop, [null, 7]]]], 'computed definition (an object literal stands in an expression\'s position: parenthesized as a statement)')
     for (const op of ['=', '||=', '??=']) is(jzify([op, member, [null, 7]]), [null], 'well-known polyfill assignment')
   }
   for (const name of ['', '__proto__', 'hasOwnProperty', 'toString', 'unknown']) {

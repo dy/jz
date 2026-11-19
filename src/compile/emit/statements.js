@@ -8,7 +8,7 @@ import { ctx, err } from '../../ctx.js'
 import {
   materializeErrorIR, applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, numberCarrierIR, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
 } from '../../ir.js'
-import { ASSIGN_OPS, REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
+import { ASSIGN_OPS, REFS_THROUGH_ARROWS, blockList, refsName } from '../../ast.js'
 import { K, bitOf, tagOf, tagsOf } from '../../summary/kind.js'
 import { hasAmbiguousBoolMerge, isPresentNumber, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -221,8 +221,7 @@ export const statementOps = {
     // WASM block IR: first arg is ['result', type] → pass through, preserve type
     if (Array.isArray(args[0]) && args[0][0] === 'result')
       return typed(['block', ...args], args[0][1])
-    const inner = args.length === 1 ? args[0] : [';', ...args]
-    return emitVoid(['{}', inner])
+    return emitVoid(['{}', args.length === 1 ? blockList(args[0]) : [';', ...args]])
   },
 
   'throw': expr => {

@@ -948,7 +948,7 @@ test('summary queries: A→A→B→A preserves bytes, retained facts, and earlie
 // carrier the kind and the callable's ABI class decide, per function name,
 // closure id and closure set.
 const contractProgram = () => {
-  const bigint = lit(7n), block = (...stmts) => ['{}', ...stmts]
+  const bigint = lit(7n), block = (...stmts) => ['{}', [';', ...stmts]]
   const funcs = [
     { name: 'direct', sig: { params: [], results: ['f64'] }, body: bigint },
     { name: 'exported', sig: { params: [], results: ['f64'] }, body: bigint },

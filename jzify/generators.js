@@ -198,7 +198,7 @@ export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) =
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, transformParams, err, isGenerator, direct, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope }) {
+export function createGeneratorLowering({ transform, transformStatement, transformParams, err, isGenerator, direct, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope }) {
   // ---- the body's bindings, resolved ----
   // The machine hoists every declaration of its body into the factory scope,
   // where all its states see it, so each takes a spelling of its own: a
@@ -973,10 +973,8 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
           }
           return cur
         }
-        // a labeled block keeps its label (a colon in an expression names no statement)
-        if (op === ':' && typeof st[1] === 'string' && Array.isArray(st[2]) && st[2][0] === '{}')
-          stmtsOf(cur).push(withLoc(['label', st[1], transform(st[2])], st))
-        else stmtsOf(cur).push(transform(st))
+        // a statement's colon labels and its braces are a block, whatever follows them
+        stmtsOf(cur).push(transformStatement(st))
         return cur
       }
 

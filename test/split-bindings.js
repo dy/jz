@@ -280,7 +280,7 @@ const s = (name, k) => `${name}${T}s${k}`
 const loop = (...stmts) => ['for', ['let', ['=', 'i', lit(0)]], ['<', 'i', 'n'], ['++', 'i'], ['{}', [';', ...stmts]]]
 const inside = {
   'a body that is a loop alone': [['n', 'y'],
-    ['{}', loop(['let', ['=', 'v', 'i']], ['=', 'v', ['+', 'v', 'y']], ['=', ['[]', 'out', 'i'], 'v'])],
+    ['{}', [';', loop(['let', ['=', 'v', 'i']], ['=', 'v', ['+', 'v', 'y']], ['=', ['[]', 'out', 'i'], 'v'])]],
     ['{}', [';', loop(['let', ['=', 'v', 'i']], ['let', ['=', s('v', 0), ['+', 'v', 'y']]], ['=', ['[]', 'out', 'i'], s('v', 0)])]]],
   'a binding declared bare ahead of the list that alone mentions it': [['n', 'y'],
     ['{}', [';', ['let', 'o'], loop(['=', 'o', ['*', 'i', 'y']], ['=', ['[]', 'out', 'i'], 'o'])]],

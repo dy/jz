@@ -24,7 +24,7 @@ import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { addSource, ctx, declGlobal, derive, emitArity, err, here, holds, setFeature, warn } from '../ctx.js'
 import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
-import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
+import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, T, TYPEOF, accessorOf, alwaysReturns, blockList, classifyParam, isBlockBody, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
 import { HOST_GLOBALS, isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -608,7 +608,7 @@ const handlers = {
       }
       pushScope(scope)
       prescanBlockDecls(cHandler)
-      caught = ['catch', tryBody, cParam, prep(cHandler)]
+      caught = ['catch', tryBody, cParam, prepStatement(cHandler)]
       popScope()
     }
     return finallyClause ? ['finally', caught, prepBlock(finallyClause[1])] : caught
@@ -1002,25 +1002,19 @@ const handlers = {
         bodyPrefix.push(prep(['let', ['=', c[PARAM_PATTERN], tmp]]))
       }
     }
-    let preparedBody = prep(body)
-    // An expression-bodied arrow returning an empty object literal — `() => ({})`
-    // — preps to a bare `['{}']`, structurally identical to an empty block body.
-    // The grouping `()` that marked it an expression is unwrapped by then, so
-    // wrap it in an explicit `return` — otherwise downstream block/expression
-    // classification (compile.js `isBlockBody`) misreads it as an empty block.
-    if (!(Array.isArray(body) && body[0] === '{}')
-        && Array.isArray(preparedBody) && preparedBody[0] === '{}' && preparedBody.length === 1)
+    // `=> {` opens a body: an object the arrow returns comes parenthesized.
+    const block = Array.isArray(body) && body[0] === '{}'
+    let preparedBody = block ? prepBraces(body) : prep(body)
+    // `() => ({})` preps to a bare `['{}']`, which is an empty block's form: the
+    // grouping that made it an expression is gone, so it is a return of it.
+    if (!block && Array.isArray(preparedBody) && preparedBody[0] === '{}' && preparedBody.length === 1)
       preparedBody = ['{}', [';', ['return', ['{}']]]]
     if (bodyPrefix.length) {
       const prefix = bodyPrefix.filter(x => x != null)
-      if (Array.isArray(preparedBody) && preparedBody[0] === '{}' && Array.isArray(preparedBody[1]) && preparedBody[1][0] === ';')
-        preparedBody = ['{}', [';', ...prefix, ...preparedBody[1].slice(1)]]
-      else if (Array.isArray(preparedBody) && preparedBody[0] === '{}')
-        preparedBody = ['{}', [';', ...prefix, preparedBody[1]]]
-      else
-        preparedBody = ['{}', [';', ...prefix, ['return', preparedBody]]]
+      preparedBody = isBlockBody(preparedBody) ? ['{}', [';', ...prefix, ...(preparedBody[1]?.slice(1) ?? [])]]
+        : ['{}', [';', ...prefix, ['return', preparedBody]]]
     }
-    preparedBody = localizeDeadParams(nextParams, preparedBody, Array.isArray(body) && body[0] === '{}', fnScope)
+    preparedBody = localizeDeadParams(nextParams, preparedBody, fnScope)
     // A function body always has a position, its own or else the nearest
     // written one around the arrow: a fault anywhere in the function falls back to it (ctx.js here).
     if (Array.isArray(preparedBody) && preparedBody.loc == null) preparedBody.loc = Array.isArray(body) && body.loc != null ? body.loc : ctx.error.loc
@@ -1275,20 +1269,10 @@ const handlers = {
     return ['[]', prep(args[0]), key != null ? staticString(key) : prep(args[1])]
   },
 
-  // Object literal - flatten comma, expand shorthand
+  // Object literal - flatten comma, expand shorthand. Braces reach here only from an
+  // expression's position: a statement's or a body's go to prepBraces.
   '{}'(...args) {
     const inner = args[0]
-    // Block body: a single statement-op child (object props always start with
-    // ':' or '...', never a statement op, so this never misfires on a literal).
-    if (args.length === 1 && Array.isArray(inner) && STMT_OPS.has(inner[0])) {
-      // Block body: push block scope for let/const shadowing
-      pushScope()
-      prescanBlockDecls(inner)
-      const result = ['{}', prep(inner)]
-      popScope()
-      return result
-    }
-
     includeForObjectLiteral()
     if (args.length === 0 || inner == null) {
       ctx.schema.register([])
@@ -1335,7 +1319,7 @@ const handlers = {
       const props = order.map(key => [':', key, ['.', staged, valueNames[last.get(key)]]])
       const values = items.map((p, i) => [':', valueNames[i], typeof p === 'string' ? p : p[2]])
       const valuesNode = ['{}', [',', ...values]]
-      return prep(['()', ['=>', ['()', staged], ['{}', [',', ...props]]], valuesNode])
+      return prep(['()', ['=>', ['()', staged], ['()', ['{}', [',', ...props]]]], valuesNode])
     }
 
     // Computed keys: fixed schemas cannot name them, so build one empty object
@@ -1385,7 +1369,9 @@ const handlers = {
       // undefined). Reject loudly — silent miscompile breaks "valid jz = valid JS".
       if (Array.isArray(p) && (p[0] === 'get' || p[0] === 'set'))
         err('object getter/setter not supported — jz objects have no accessors; use a method or a plain property + function')
-      return prep(p)
+      if (p == null || Array.isArray(p) && p[0] === '...') return prep(p)
+      // a block taken for an object would lose its statements here
+      return err(`internal: \`${Array.isArray(p) ? p[0] : p}\` is no property of an object literal`)
     }
     let prepped = items.map(prop)
     const result = ['{}', ...prepped]
@@ -1422,7 +1408,7 @@ const handlers = {
         // label so declarations are prescanned before recursive closures.
         const run = ['label', done, withLoc(['{}', [';', capturedLoopContinues(body, done, label)]], body)]
         const newBody = ['{}', [';', copyIn, next, test, run, ...copyOut]]
-        return prep(['{}', [';', head[1], decl, ['for', [';', null, null, null], newBody]]])
+        return prepStatement(['{}', [';', head[1], decl, ['for', [';', null, null, null], newBody]]])
       }
     }
     pushScope()
@@ -1442,8 +1428,9 @@ const handlers = {
     if (Array.isArray(head) && head[0] === 'in' && Array.isArray(head[2]) && head[2][0] === ',') {
       const parts = head[2].slice(1)
       head = [head[0], head[1], parts[parts.length - 1]]
+      // (a statement now: grouped, as an expression statement opening with `{` is written)
       if (parts.length > 2) forInSeqPre = [',', ...parts.slice(0, -1)]
-      else if (parts.length === 2) forInSeqPre = parts[0]
+      else if (parts.length === 2) forInSeqPre = ['()', parts[0]]
     }
     let r
     if (Array.isArray(head) && head[0] === ';') {
@@ -1983,8 +1970,23 @@ function capturedLoopContinues(node, done, label, nested = false) {
 // lexical declarations before preparing closures, as for ordinary blocks.
 function prepBlock(node) {
   pushScope()
-  try { prescanBlockDecls(node); return prep(node) }
+  try { prescanBlockDecls(node); return prepStatement(node) }
   finally { popScope() }
+}
+
+// A statement that opens with `{` is a block, whatever it holds (§14.2): an object
+// literal in a statement's position comes parenthesized, and the parse keeps the
+// `()`. Its statements leave as a `;` list however few they are: that list is how
+// every later stage tells a block from an object literal (ast.js isBlockBody).
+function prepBraces(node) {
+  const inner = node[1], outer = ctx.error.loc
+  if (node.loc != null) ctx.error.loc = node.loc
+  pushScope()
+  try {
+    prescanBlockDecls(inner)
+    const out = Array.isArray(inner) && inner[0] === ';' ? prep(inner) : prepStatement(inner)
+    return withLoc(out == null ? ['{}'] : ['{}', blockList(out)], node)
+  } finally { popScope(); ctx.error.loc = outer }
 }
 
 // A `while`'s or a `do`'s body in a scope of its own: see loopLocalNames' declaration,
@@ -1996,9 +1998,11 @@ function loopBody(body) {
   finally { popScope() }
 }
 
-// An ignored assignment can scalarize a tuple; a value-position assignment
-// must retain and return the original RHS object.
-function prepStatement(node) {
+// A node in a statement's position: a member of a list, a body, a program. An ignored
+// assignment can scalarize a tuple; a value-position assignment must retain and
+// return the original RHS object.
+export function prepStatement(node) {
+  if (Array.isArray(node) && node[0] === '{}') return prepBraces(node)
   const stmt = ungroup(node)
   if (Array.isArray(stmt) && stmt[0] === '=') {
     // Repeating a mutable namespace alias's current value has no effect.
@@ -2989,7 +2993,7 @@ function resolveCallee(callee, args) {
 // and a placeholder takes its position, so the function's length and the
 // parameters after it stay where they were. A parameter a default reads, or
 // one a read can find unassigned, keeps its argument.
-function localizeDeadParams(params, body, block, fnScope) {
+function localizeDeadParams(params, body, fnScope) {
   const names = []
   for (const p of params) if (typeof p === 'string' && refsName(body, p, REFS_THROUGH_ARROWS) &&
     !params.some(q => Array.isArray(q) && q[0] === '=' && refsName(q[2], p, REFS_THROUGH_ARROWS))) names.push(p)
@@ -3003,12 +3007,7 @@ function localizeDeadParams(params, body, block, fnScope) {
     params[params.indexOf(n)] = tmp
   }
   const decl = ['let', ...dead]
-  if (!block) return withLoc(['{}', [';', decl, ['return', body]]], body)
-  if (!Array.isArray(body) || body[0] !== '{}') return body
-  const out = body.length < 2 ? ['{}', decl]
-    : Array.isArray(body[1]) && body[1][0] === ';' ? ['{}', [';', decl, ...body[1].slice(1)]]
-    : ['{}', [';', decl, body[1]]]
-  return withLoc(out, body)
+  return withLoc(['{}', [';', decl, ...(isBlockBody(body) ? body[1]?.slice(1) ?? [] : [['return', body]])]], body)
 }
 
 function defFunc(name, node) {
@@ -3289,7 +3288,7 @@ function prepareModule(specifier, source) {
   prepState.reassignedTopLevel = scanReassignedTopLevel(ast)
   const savedAst = ctx.module.ast
   ctx.module.ast = ast
-  const moduleInit = prep(ast)
+  const moduleInit = prepStatement(ast)
   ctx.module.ast = savedAst
   prepState.reassignedTopLevel = savedReassigned
   prepState.depth = savedDepth

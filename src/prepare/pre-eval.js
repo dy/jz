@@ -81,7 +81,7 @@
  * @module prepare/pre-eval
  */
 
-import { argList, copyLoc, COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
+import { argList, copyLoc, COMPARE_OPS, MUTATE_OPS, TYPEOF, typeofPredicate, walkAst, extractParams, classifyParam, PARAM_NAME, isBlockBody } from '../ast.js'
 import { isNamedCallee } from '../autoload.js'
 import { ctx } from '../ctx.js'
 import { int32, numBinOp } from '../static.js'
@@ -693,7 +693,7 @@ function evalFunctionBodyConst(f, state) {
 }
 function evalBodyConst(body, env, state) {
   if (!Array.isArray(body)) return null
-  if (body[0] !== '{}' && body[0] !== ';') return evalConst(body, env, state)
+  if (!isBlockBody(body) && body[0] !== ';') return evalConst(body, env, state)
   return evalStmtsConst(blockToStmtArray(body), env, state)
 }
 function evalStmtsConst(stmts, env, state) {
@@ -867,10 +867,10 @@ function blockToStmtArray(node) {
   if (Array.isArray(node) && node[0] === ';') return node.slice(1)
   return [node]
 }
+// A block keeps its statements a `;` list however few remain (ast.js isBlockBody).
 function wrapBlockLike(stmts, wasBraced) {
-  if (!stmts.length) return wasBraced ? ['{}'] : [';']
-  if (stmts.length === 1) return wasBraced ? ['{}', stmts[0]] : stmts[0]
-  return wasBraced ? ['{}', [';', ...stmts]] : [';', ...stmts]
+  if (wasBraced) return stmts.length ? ['{}', [';', ...stmts]] : ['{}']
+  return stmts.length === 0 ? [';'] : stmts.length === 1 ? stmts[0] : [';', ...stmts]
 }
 const sameStmts = (a, b) => a.length === b.length && a.every((s, i) => s === b[i])
 
@@ -960,7 +960,7 @@ function foldStmts(stmts, env, state) {
 
 function foldFunctionBody(body, state) {
   if (body == null || isLiteralNode(body)) return body
-  if (!Array.isArray(body) || (body[0] !== '{}' && body[0] !== ';')) return foldNode(body, new Map(), state)
+  if (!isBlockBody(body) && !(Array.isArray(body) && body[0] === ';')) return foldNode(body, new Map(), state)
   return foldBlockLike(body, new Map(), state)
 }
 

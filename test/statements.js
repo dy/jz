@@ -1662,3 +1662,156 @@ test('calls: an optional call of a declared function is the call', () => {
     }
   }
 })
+
+// A statement that opens with `{` is a block whatever it holds, and braces in an
+// expression's position are an object literal whatever they hold: prepare tells them
+// apart by position (src/prepare/handlers.js prepBraces, jzify/transform.js
+// transformStatement) and writes a block's statements as a `;` list, which every later
+// stage reads (src/ast.js isBlockBody). A block whose first statement was no statement
+// keyword (`{ a && f() }`, `{ { n++ } }`, `{ L: for … }`) was read as an object literal
+// and its statements dropped. Each first statement in each place a block stands, each
+// kernel of a write in nested blocks, and each content an object literal can hold in
+// each expression position, against Node at the levels this leg owns. One module a
+// place: a function `t<i>` of each row, called in order, the module's counter `n` shared
+// as in Node's run of the same module.
+const LEVELS = levels(false, true, 'size', 'speed')
+const show = (v) => typeof v === 'number' ? (Object.is(v, -0) ? '-0' : String(v)) : JSON.stringify(v) ?? String(v)
+const answers = (f, calls) => calls.map(a => { try { return show(f(...a)) } catch (e) { return 'throws ' + e.name } }).join(' ')
+const C = [[3], [0]]
+const agreeRows = (label, src, rows, opts = {}) => {
+  for (const optimize of LEVELS) {
+    const got = jz(src, { optimize, ...opts }).exports, want = oracle(src)
+    rows.forEach((row, i) => is(answers(got['t' + i], C), answers(want['t' + i], C), `${label}${row ? ': ' + row : ''} @${optimize}`))
+  }
+}
+
+// Each first statement changes `n` (a module counter) or `x`.
+const PRE = `let n = 0\nconst bump = () => { n++; return 1 }\nclass K { constructor() { n += 5 } }\nconst o = { k: 1, m() { n += 7; return 1 } }\n`
+const FIRST = {
+  'a nested block': `{ n++ }`,
+  'a && call': `x >= 0 && bump()`,
+  'a || call': `x < 0 || bump()`,
+  'a ?? call': `null ?? bump()`,
+  'a ?: of calls': `x >= 0 ? bump() : 0`,
+  'a labeled loop': `L: for (;;) { n++; break L }`,
+  'a labeled expression': `L: n++`,
+  'a labeled block': `L: { n++; break L }`,
+  'a do-while': `do { n++ } while (n < 0)`,
+  'a new': `new K()`,
+  'an optional call': `o?.m()`,
+  'a parenthesized increment': `(n++)`,
+  'a comma of increments': `n++, n++`,
+  'a not of a call': `!bump()`,
+  'a void of a call': `void bump()`,
+  'a template of a call': `\`\${bump()}\``,
+  'a var': `var y = 2; n += y`,
+  'a function declaration': `function g() { n += 3 } g()`,
+  'a member call': `o.m()`,
+  'a call': `bump()`,
+  'an increment': `n++`,
+  'a prefix increment': `++n`,
+  'an assignment': `n = n + 1`,
+  'a typeof of a call': `typeof bump()`,
+  'a unary minus of a call': `-bump()`,
+  'a comparison of a call': `bump() > 0`,
+  'a sum of calls': `bump() + bump()`,
+  'an index store': `arr[0] = n + 1; n = arr[0]`,
+  'a string': `'use x'; n++`,
+  'an empty statement': `; n++`,
+  'a class': `class Q { static v = n++ }`,
+  'a name': `x; n++`,
+}
+const PLACE = {
+  'bare': (s, i) => `export let t${i} = (x) => { const arr = [0]; { ${s} } return n * 10 }`,
+  'an arrow body': (s, i) => `export let t${i} = (x) => { const arr = [0]; const g = () => { ${s} }; const r = g(); return n * 10 + (r === undefined ? 0 : 5) }`,
+  'an if body': (s, i) => `export let t${i} = (x) => { const arr = [0]; if (x >= 0) { ${s} } return n * 10 }`,
+  'an else body': (s, i) => `export let t${i} = (x) => { const arr = [0]; if (x < 0) n--; else { ${s} } return n * 10 }`,
+  'a loop body': (s, i) => `export let t${i} = (x) => { const arr = [0]; for (let i = 0; i < 2; i++) { ${s} } return n * 10 }`,
+  'a try body': (s, i) => `export let t${i} = (x) => { const arr = [0]; try { ${s} } finally { n += 100 } return n * 10 }`,
+  'a method body': (s, i) => `const H${i} = { run(x, arr) { ${s} } }\nexport let t${i} = (x) => { const arr = [0]; const r = H${i}.run(x, arr); return n * 10 + (r === undefined ? 0 : 5) }`,
+  'a block in a block': (s, i) => `export let t${i} = (x) => { const arr = [0]; { { ${s} } } return n * 10 }`,
+  'a switch arm': (s, i) => `export let t${i} = (x) => { const arr = [0]; switch (x) { case 3: { ${s} } break; default: { ${s} } } return n * 10 }`,
+  'a function declaration body': (s, i) => `function h${i}(x, arr) { ${s} }\nexport let t${i} = (x) => { const arr = [0]; h${i}(x, arr); return n * 10 }`,
+}
+const placeModule = (pre, wrap, firsts) => pre + firsts.map((first, i) => wrap(FIRST[first], i)).join('\n')
+
+test('blocks: each first statement in each place a block stands', () => {
+  for (const [place, wrap] of Object.entries(PLACE)) agreeRows(place, placeModule(PRE, wrap, Object.keys(FIRST)), Object.keys(FIRST))
+})
+
+// Strict source skips jzify: its braces reach prepare as the parse wrote them.
+const STRICT_PRE = `let n = 0\nconst bump = () => { n++; return 1 }\nconst o = { k: 1, m: () => { n += 7; return 1 } }\n`
+const STRICT_FIRST = ['a nested block', 'a && call', 'a || call', 'a ?? call', 'a ?: of calls', 'a do-while', 'an optional call',
+  'a parenthesized increment', 'a comma of increments', 'a not of a call', 'a template of a call', 'a member call',
+  'a call', 'an increment', 'an assignment', 'a typeof of a call', 'a sum of calls', 'an index store', 'an empty statement', 'a name']
+test('blocks: each first statement in each place a block stands, strict', () => {
+  for (const place of ['bare', 'an arrow body', 'an if body', 'an else body', 'a loop body', 'a try body', 'a block in a block'])
+    agreeRows(place, placeModule(STRICT_PRE, PLACE[place], STRICT_FIRST), STRICT_FIRST, { strict: true })
+})
+
+// A write inside nested blocks: `{ { x++ } }` lost the write.
+test('blocks: writes in nested blocks', () => {
+  for (const [name, src] of [
+    ['x++ in two blocks', `export let t0 = (x) => { { { x++ } }; return x }`],
+    ['x++ in three blocks', `export let t0 = (x) => { { { { x++ } } } return x }`],
+    ['x = x + 1 in two blocks', `export let t0 = (x) => { { { x = x + 1 } } return x }`],
+    ['x += 2 in two blocks', `export let t0 = (x) => { { { x += 2 } } return x }`],
+    ['a local written in two blocks', `export let t0 = (x) => { let y = 1; { { y = x + 5 } } return y }`],
+    ['two statements in the inner block', `export let t0 = (x) => { { { x++; x++ } } return x }`],
+    ['a statement beside the inner block', `export let t0 = (x) => { { x++; { x++ } } return x }`],
+    ['a store to a field in two blocks', `export let t0 = (x) => { const o = { v: x }; { { o.v++ } } return o.v }`],
+    ['a store to an element in two blocks', `export let t0 = (x) => { const a = [x]; { { a[0] += 3 } } return a[0] }`],
+    ['a module binding written in two blocks', `let M = 0\nexport let t0 = (x) => { { { M = x + 1 } } return M }`],
+    ['a let of the outer block written in the inner', `export let t0 = (x) => { { let y = x; { y++ } x = y } return x }`],
+    ['a call in two blocks', `let n = 0\nconst bump = () => { n++ }\nexport let t0 = (x) => { { { bump() } } return n + x }`],
+    ['a labeled block in a block', `export let t0 = (x) => { { L: { x++; if (x > 100) break L; x++ } } return x }`],
+    ['a try in a block in a block', `export let t0 = (x) => { { { try { x++ } finally { x++ } } } return x }`],
+    ['two blocks, then an if', `export let t0 = (x) => { { { x++ } } if (x > 0) x += 10; return x }`],
+    ['an empty block in a block beside a write', `export let t0 = (x) => { { { } x++ } return x }`],
+    // the form real code has: a switch arm's block of a guarded call
+    ['a switch arm of a guarded call, then a break', `let n = 0\nconst cb = (v) => { n += v }\nexport let t0 = (x) => { switch (x) { case 3: { cb && cb(x); break } default: { cb(1) } } return n }`],
+    ['a last switch arm of a guarded call', `let n = 0\nconst cb = (v) => { n += v }\nexport let t0 = (x) => { switch (x) { case 0: n += 50; break; case 3: { cb && cb(x) } } return n }`],
+  ]) agreeRows(name, src, [''])
+})
+
+// Braces in an expression's position hold an object literal, whatever its content would
+// read as in a statement's: a label (`{ a: 1 }`), an expression (`{ a }`, `{ a, b }`).
+const CONTENT = {
+  'nothing': ``,
+  'a shorthand': `a`,
+  'two shorthands': `a, b`,
+  'a pair': `a: 1`,
+  'a pair of a call': `L: bump()`,
+  'a pair of an increment': `k: n++`,
+  'a pair of an object': `k: { j: n++ }`,
+  'a spread': `...src`,
+  'a method': `m() { n++; return 1 }`,
+  'two pairs': `a: 1, b: bump()`,
+}
+const EXPR = {
+  'a statement in parentheses': (c) => `({ ${c} }); return n * 100`,
+  'an assignment': (c) => `let y; y = { ${c} }; return n * 100 + Object.keys(y).length`,
+  'a declaration': (c) => `let y = { ${c} }; return n * 100 + Object.keys(y).length`,
+  'an argument': (c) => `const id = (v) => v; const y = id({ ${c} }); return n * 100 + Object.keys(y).length`,
+  'an arrow body': (c) => `const g = () => ({ ${c} }); const y = g(); return n * 100 + Object.keys(y).length`,
+  'a return': (c) => `const g = () => { return { ${c} } }; const y = g(); return n * 100 + Object.keys(y).length`,
+  'an array element': (c) => `const y = [{ ${c} }][0]; return n * 100 + Object.keys(y).length`,
+  'a conditional arm': (c) => `const y = x >= 0 ? { ${c} } : { z: 1 }; return n * 100 + Object.keys(y).length`,
+}
+const OPRE = `let n = 0\nconst bump = () => { n++; return 1 }\nconst a = 1, b = 2, src = { s: 1, t: 2 }\n`
+
+test('blocks: braces in an expression are an object literal', () => {
+  const contents = Object.keys(CONTENT)
+  for (const [place, wrap] of Object.entries(EXPR))
+    agreeRows(place, OPRE + contents.map((c, i) => `export let t${i} = (x) => { ${wrap(CONTENT[c])} }`).join('\n'), contents)
+})
+
+// Strict source destructures a parameter in prepare, ahead of the body: an object the
+// arrow returns stays a value returned (its pairs were spliced in as statements).
+test('blocks: an arrow of a destructured parameter returns an object, strict', () => {
+  agreeRows('an arrow of a destructured parameter', [
+    `export let t0 = (x) => { const f = ({ a }) => ({ b: a, c: 1 }); return f({ a: x }).b }`,
+    `export let t1 = (x) => { const f = ([a]) => ({ b: a, c: 1 }); return f([x]).b + f([x]).c }`,
+    `export let t2 = (x) => { const f = ({ a }) => ({}); return typeof f({ a: x }) }`,
+  ].join('\n'), ['an object pattern', 'an array pattern', 'an empty object'], { strict: true })
+})

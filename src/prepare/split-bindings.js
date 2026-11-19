@@ -25,7 +25,7 @@
  *
  * @module prepare/split-bindings
  */
-import { T, noted, copyNode } from '../ast.js'
+import { T, noted, copyNode, isBlockBody } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { tagsOf, paramOf, UNKNOWN, NUMBER as NUMBER_KIND, K, kind as kindOfTag, isNullable as isNullableKind, core as presentKind } from '../summary/kind.js'
 import { nodeSize } from '../compile/plan/common.js'
@@ -107,10 +107,8 @@ const countMentions = (n, counts) => {
  */
 export function splitReassigned(fn, nested = false) {
   const body = sequenceBody(fn.body)
-  if (!Array.isArray(body) || body[0] !== '{}' || body.length !== 2 || !Array.isArray(body[1])) return fn.body
-  // a body of one statement (a loop alone) is a list of it: the lists inside it split
-  const top = body[1][0] === ';' ? body[1] : nested ? [';', body[1]] : null
-  if (top === null) return body
+  if (!isBlockBody(body) || !Array.isArray(body[1])) return fn.body
+  const top = body[1]
   let any = false
   const has = (n) => {
     if (any || !Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return

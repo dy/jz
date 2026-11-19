@@ -3,7 +3,7 @@
  * @module jzify/hoist-vars
  */
 
-import { JZ_BLOCK_OPS, rewriteChildren, withLoc } from '../src/ast.js'
+import { rewriteChildren, withLoc } from '../src/ast.js'
 
 // A `'[]'`-tagged node is ambiguous pre-prepare(): an array literal/destructure
 // pattern (`[a, b]` → `['[]', commaSeqOrSingleElem]`, length ≤ 2 — empty `[]`
@@ -163,14 +163,6 @@ function hoistVarsNode(node, names) {
     if (out.length === 1) return null
     if (out.length === 2) return out[1]
     return out
-  }
-  if (op === '{}' && node.length === 2) {
-    const inner = node[1]
-    const wasBlock = inner != null && Array.isArray(inner) && JZ_BLOCK_OPS.has(inner[0])
-    const t = hoistVars(inner, names)
-    if (!wasBlock || t == null) return ['{}', t]
-    const stayed = Array.isArray(t) && JZ_BLOCK_OPS.has(t[0])
-    return ['{}', stayed ? t : [';', t]]
   }
   return rewriteChildren(node, hoistVars, names)
 }

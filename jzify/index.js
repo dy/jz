@@ -21,7 +21,7 @@ import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering, closesOnReturn } from './generators.js'
 import { isResourceDecl } from './using.js'
-import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS, withLoc } from '../src/ast.js'
+import { collectParamNames, extractParams, MUTATE_OPS, withLoc } from '../src/ast.js'
 import { err } from '../src/ctx.js'
 import { hostGlobalName } from '../src/prepare/state.js'
 import { HOST_GLOBALS } from '../src/autoload.js'
@@ -295,7 +295,8 @@ const scopeBuilder = (map) => {
       for (let i = 1; i < node.length; i++) visit(node[i], here)
       return
     }
-    if (op === '{}' && (isBlockBody(node) || JZ_BLOCK_OPS.has(node[1]?.[0]))) {
+    // braces scope what they declare: a block's names, an object's none
+    if (op === '{}') {
       if (!reuseSequence) here = childScope(scope)
       declarations(node[1], here)
       map.set(node, here)
@@ -366,7 +367,7 @@ const enterMachineScope = (owners, stmts, copies = true) => {
     const op = n[0]
     if (op === 'function' || op === 'function*' || op === '=>' || op === 'class') return
     if (op === ';') declarations(n, machine)
-    else if (op === '{}' && (isBlockBody(n) || JZ_BLOCK_OPS.has(n[1]?.[0]))) declarations(n[1], machine)
+    else if (op === '{}') declarations(n[1], machine)
     else if (op === 'let' || op === 'const' || op === 'using' || op === 'await using') declarations(n, machine)
     else if (op === 'catch') addPatternNames(machine, n[1])
     for (let i = 1; i < n.length; i++) hoist(n[i])
@@ -382,9 +383,9 @@ const enterMachineScope = (owners, stmts, copies = true) => {
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
 let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses, transformSwitch
-let transform, transformScope, transformParams
+let transform, transformScope, transformStatement, transformParams
 
-;({ transform, transformScope, transformParams } = createTransform({
+;({ transform, transformScope, transformStatement, transformParams } = createTransform({
   names,
   lowerArguments,
   transformPattern,
@@ -444,9 +445,9 @@ const genErr = (msg) => err('jzify: ' + msg)
 // change first. The program's keys come from every module the witness reads.
 let census = { names: new Map(), props: new Set(), receivers: new Set(), stored: new Set() }, programProps = new Set(), programStored = new Set(), witnessed = new WeakSet()
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr, enterBody, leaveBody } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr, censusOf: () => census })
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal, frames } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, direct, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal, frames } = createGeneratorLowering({ transform, transformStatement, transformParams, err: genErr, isGenerator, direct, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal, isFrame: (name) => frames.has(name) })
-transformSwitch = createSwitchLowering(transform, names)
+transformSwitch = createSwitchLowering(transform, transformStatement, names)
 
 
 const WELL_KNOWN = new Map([['iterator', '@@iterator'], ['dispose', '@@dispose'], ['asyncDispose', '@@asyncDispose'], ['asyncIterator', '@@asyncIterator'], ['toPrimitive', '@@toPrimitive']])

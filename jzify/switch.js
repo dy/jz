@@ -71,7 +71,7 @@ function rewriteSwitchBreaksNode(node, flag) {
  * The discriminant is bound to a temp only when re-reading it isn't free/safe; a
  * bare identifier is compared directly \u2014 a synthetic temp would shed its STRING
  * val-type and mis-fold string `case`s to `false` under strict-=== folding. */
-export function createSwitchLowering(transform, names) {
+export function createSwitchLowering(transform, transformStatement, names) {
   return function transformSwitch(discriminant, cases) {
   const disc = transform(discriminant)
   const simple = typeof disc === 'string' || (Array.isArray(disc) && disc[0] == null)
@@ -83,8 +83,8 @@ export function createSwitchLowering(transform, names) {
   const n = cases.length
   let defaultIdx = -1
   const bodies = cases.map((c, i) => {
-    if (c[0] === 'default') { defaultIdx = i; return transform(c[1]) }
-    return transform(c[2])
+    if (c[0] === 'default') { defaultIdx = i; return transformStatement(c[1]) }
+    return transformStatement(c[2])
   })
 
   const stmts = []

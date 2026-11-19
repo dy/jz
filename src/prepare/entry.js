@@ -36,7 +36,7 @@ import { INTRINSIC_VARIADIC } from '../builtin-signatures.js'
 import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeModule } from '../autoload.js'
 import { T, MUTATE_OPS, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
-import { defineValueExports, prep } from './handlers.js'
+import { defineValueExports, prep, prepStatement } from './handlers.js'
 import { scanReassignedTopLevel } from './ident-purity.js'
 import { hoistIndexedConstLiterals, seedStaticGlobalAssignments } from './literals.js'
 import { validateCoalesceMixing } from './module-resolve.js'
@@ -216,7 +216,7 @@ export default function prepare(node) {
   seedStaticGlobalAssignments(node)
   node = hoistIndexedConstLiterals(node)
   prepState.reassignedTopLevel = scanReassignedTopLevel(node)
-  let ast = prep(node)
+  let ast = prepStatement(node)
   settleModules(prep)
   defineValueExports()
   // A program that makes a resizable buffer (ctx.features.resizable) cannot tell

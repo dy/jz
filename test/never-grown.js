@@ -94,7 +94,7 @@ test('binding census: only discarded indexed assignments record a word-store can
   compileInProcess('export const empty = () => 0')
   const target=['[]','a','i'], store=['=',target,'v']
   const rows=[
-    [[';',store],true], [['{}',store],true], [['if','p',store],true],
+    [[';',store],true], [['{}',[';',store]],true], [['if','p',store],true],
     [['while','p',store],true], [['for',store,'p',null,[';']],true],
     [['return',store],false], [['let',['=','x',store]],false],
     [['?:','p',store,[null,0]],false], [store,false],

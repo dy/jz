@@ -47,7 +47,7 @@ import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { mixesNumericKinds } from '../numeric-mix.js'
 import {
   callArgs, setCallArgs, some, walkAst, blockStmts, stmtList, T, CLASS_T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
-  extractParams, isBlockBody, REFS_THROUGH_ARROWS, withLoc,
+  extractParams, isBlockBody, REFS_THROUGH_ARROWS, withLoc, blockList,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
@@ -866,7 +866,7 @@ const inlineInStmt = (stmt, candidates, hot = false) => {
     // already returned a `['{}', [';', ...prefix]]` shape. Re-wrapping here
     // would yield `['{}', ['{}', …]]`, which codegen rejects ("Unknown op: {}").
     if (Array.isArray(r.node) && r.node[0] === '{}') return { node: r.node, changed: true }
-    return { node: ['{}', r.node], changed: true }
+    return { node: ['{}', blockList(r.node)], changed: true }
   }
   if (op === 'for') {
     const idx = forLoopBodyIndex(stmt)
@@ -1690,7 +1690,7 @@ const bodyStmtList = body =>
 
 const removeStmts = (body, set) => {
   if (!Array.isArray(body)) return set.has(body) ? null : body
-  if (body[0] === '{}') return ['{}', removeStmts(body[1], set) ?? [';']]
+  if (body[0] === '{}') return ['{}', blockList(removeStmts(body[1], set))]
   if (body[0] === ';') {
     const kept = body.slice(1).filter(s => !set.has(s))
     return kept.length === 0 ? null : kept.length === 1 ? kept[0] : [';', ...kept]

@@ -474,7 +474,7 @@ function canonicalize(node, parent, idx, live, captured, view) {
       return like(n, n.map((c, at) => at ? (c === k ? (s === 1 ? add(i, -startAt) : ['/', add(i, -startAt), lit(s)]) : back(c)) : c))
     }
     const ownBody = kept.map(back)
-    out = [...pre, ...setup, ['for', init, test, step, ['{}', ownBody.length === 1 ? ownBody[0] : [';', ...ownBody]]], ...post]
+    out = [...pre, ...setup, ['for', init, test, step, ['{}', [';', ...ownBody]]], ...post]
   } else {
     const M = roll ? roll.M : 1
     const counter = roll ? q : k
@@ -497,7 +497,7 @@ function canonicalize(node, parent, idx, live, captured, view) {
       ...(computed ? [['const', ['=', a, ['|', v, lit(0)]]]] : []),
       ['const', ['=', count, ['|', scale(M, trips), lit(0)]]],
       ...setup,
-      ['for', ['let', ['=', counter, lit(0)]], ['<', counter, count], ['++', counter], ['{}', run.length === 1 ? run[0] : [';', ...run]]],
+      ['for', ['let', ['=', counter, lit(0)]], ['<', counter, count], ['++', counter], ['{}', [';', ...run]]],
       ...post,
     ]
     out = [...pre, ['if', guard, ['{}', [';', ...fast]], ['{}', [';', asWritten]]]]

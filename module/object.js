@@ -166,6 +166,8 @@ export default (ctx) => {
     let brand = null   // a class instance: the schema salt, no slot (ast.js BRAND)
     for (const p of props) {
       if (Array.isArray(p) && p[0] === ':') { if (isBrand(p[1])) brand = p[1]; else { names.push(p[1]); values.push(p[2]) } }
+      // a block built without its `;` list (ast.js isBlockBody) would lose its statements here
+      else if (p != null) err(`internal: \`${Array.isArray(p) ? p[0] : p}\` is no property of an object literal`)
     }
 
     // Use the variable's planned schema if available (from declared-key planning),

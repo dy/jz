@@ -154,20 +154,17 @@ export const isI32 = (v) => Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX 
 
 // === Statement / block-body classification ===
 
-/** Statement operators — distinguish block bodies from object literals. */
-export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'while', 'break', 'continue', 'switch',
-  '=', '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
-  'throw', 'try', 'catch', 'finally', '++', '--', '()'])
-
-/** jzify superset: pre-lowered JS shapes before prepare strips them. */
-export const JZ_BLOCK_OPS = new Set([...STMT_OPS, 'var', 'do', 'function', 'class', 'import', 'export', 'label', 'case', 'default'])
-
-/** Valid labeled-statement bodies in jzify. */
-export const LABEL_BODY_OPS = new Set([':', ';', 'if', 'for', 'while', 'do', 'switch', 'try', 'throw'])
-
-/** Distinguish a function block body `{ … }` from an expression object literal `({a:1})`. */
+/** Whether `body` is a block `{ … }` rather than an object literal `({ a: 1 })`. A statement
+ *  that opens with `{` is a block whatever it holds (`{ x }`, `{ a, b }` and `{ L: f() }`
+ *  are blocks in statement position and objects in an expression's), so prepare decides by
+ *  position and writes every block's statements as a `;` list, however few
+ *  (prepare/handlers.js prepBraces); an object literal never holds one. Empty braces are
+ *  a block: an arrow's `({})` comes out of prepare as a return of it. */
 export const isBlockBody = (body) =>
-  Array.isArray(body) && body[0] === '{}' && (body.length === 1 || STMT_OPS.has(body[1]?.[0]))
+  Array.isArray(body) && body[0] === '{}' && (body.length === 1 || body[1] == null || Array.isArray(body[1]) && body[1][0] === ';')
+
+/** `stmts`, a list, a statement or null, as the `;` list a block holds (isBlockBody). */
+export const blockList = (stmts) => stmts == null ? [';'] : Array.isArray(stmts) && stmts[0] === ';' ? stmts : [';', stmts]
 
 // The operation a statement runs first: the leftmost one its operands reach
 // through reads and operators (a name or a literal runs nothing), or the

@@ -31,7 +31,7 @@
 // A plan pass ahead of the integral copies: they read the pair's loops as written loops.
 
 import { normalizeLoop, rewriteBlocks, freshLoopId, unitIncVar, loopLitVal, closureMutatedVars } from './loop-model.js'
-import { T, numberGuard, walkAst, some } from '../ast.js'
+import { T, blockList, numberGuard, walkAst, some } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { frameNode } from '../function.js'
 import { freshId } from '../ir.js'
@@ -180,7 +180,7 @@ function tryJam(stmt, cm, buffers) {
   const alone = cloneWithSubst(P.L.body, new Map())
   walkAst(alone, { enter: (x) => { if (x[0] === 'for') { x.cold = true; if (Array.isArray(x[4])) x[4].cold = true } } })
   let out = ['for', P.L.init, P.L.cond, ['=', b, ['+', b, lit(2)]],
-    [';', ['if', ['<', ['+', b, lit(1)], n], ['{}', pair], ['{}', alone]]]]
+    [';', ['if', ['<', ['+', b, lit(1)], n], ['{}', pair], ['{}', blockList(alone)]]]]
   // (a bound of no known kind is tested once: an object's valueOf would run another number of times)
   // (a module constant is a literal to the emitter)
   if (isName(n) && !ctx.scope.consts?.has(n)) out = ['if', numberGuard(n), ['{}', [';', out]], ['{}', [';', stmt]]]

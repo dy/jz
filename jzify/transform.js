@@ -3,7 +3,7 @@
  * @module jzify/transform
  */
 
-import { rewriteChildren, withLoc, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, objectLiteralEntries } from '../src/ast.js'
+import { rewriteChildren, withLoc, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, objectLiteralEntries } from '../src/ast.js'
 import { ctx, err } from '../src/ctx.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { foldPrototypeStores } from './classes.js'
@@ -224,16 +224,26 @@ export function createTransform(opts) {
     return transformScope([';', ...resourceSteps(decl, remaining, null, true, names.genTemp)])
   }
 
-  // A control body is a statement position even when it contains only one
-  // labelled statement. Object-property colons use the expression path.
+  // A statement's position: a list's member, a body, a program. Here a colon labels
+  // and braces are a block, whatever follows them (`L: f()`, `{ x }`, `{ L: f() }`);
+  // an object's colons and braces take the expression path.
   function transformStatement(node) {
     if (Array.isArray(node) && node[0] === ':' && typeof node[1] === 'string')
       return withLoc(['label', node[1], transformStatement(node[2])], node)
-    if (Array.isArray(node) && node[0] === '{}' && node.length === 2 && node[1]?.[0] === ':')
-      return transform(withLoc(['{}', [';', node[1]]], node))
+    if (Array.isArray(node) && node[0] === '{}') return transformBlock(node)
     // a block of one resource declaration, which the parser keeps as the declaration
     if (isResourceDecl(node)) return withLoc(['{}', lowerUsing(node, [])], node)
     return transform(node)
+  }
+
+  // A block's statements lower as a list in the block's scope.
+  function transformBlock(node) {
+    const prior = enterBuiltinScope(node), outer = ctx.error.loc
+    if (node.loc != null) ctx.error.loc = node.loc
+    try {
+      const inner = node[1]
+      return withLoc(['{}', inner == null ? null : transformScope(Array.isArray(inner) && inner[0] === ';' ? inner : [';', inner])], node)
+    } finally { leaveBuiltinScope(prior); ctx.error.loc = outer }
   }
 
   // A node is the current position while it lowers (ctx.js), and what it lowers to stands at its place.
@@ -295,16 +305,7 @@ export function createTransform(opts) {
           rest.push(lowerUsing(stmt, stmts.slice(i + 1)))
           break
         }
-        // Labeled BLOCK in statement position (`lbl: { … }`): unambiguous here —
-        // a ':' STATEMENT can't be an object prop. '{}' stays out of
-        // LABEL_BODY_OPS (the expression-context disambiguator), so literal
-        // props `k: {…}` never label.
-        if (Array.isArray(stmt) && stmt[0] === ':' && typeof stmt[1] === 'string' &&
-            Array.isArray(stmt[2]) && stmt[2][0] === '{}') {
-          rest.push(['label', stmt[1], transformStatement(stmt[2])])
-          continue
-        }
-        const t = transform(stmt)
+        const t = transformStatement(stmt)
         if (fnDepth === 0) rest.push(...classHoists.splice(0))   // a class expression's shared functions
         if (t == null) continue
         if (Array.isArray(t) && (t[0] === 'const' || t[0] === 'let') && t._hoisted) {
@@ -333,7 +334,7 @@ export function createTransform(opts) {
       return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
     }
 
-    const t = transform(node)
+    const t = transformStatement(node)
     return classHoists.length && fnDepth === 0 ? [';', ...classHoists.splice(0), t] : t
     } finally {
       releaseScopeArgs(args)
@@ -554,7 +555,10 @@ export function createTransform(opts) {
         }
       }
       const [p2, b2] = lowerArguments(params, b)
-      return prototypeless(['=>', transformParams(p2), inFunction(() => transform(b2))], params)
+      // `=> {` opens a body (an object the arrow returns comes parenthesized), and so
+      // do the braces lowerArguments puts around an expression it binds parameters ahead of
+      const block = Array.isArray(b2) && b2[0] === '{}' && (b2 !== b || Array.isArray(b) && b[0] === '{}')
+      return prototypeless(['=>', transformParams(p2), inFunction(() => block ? transformBlock(b2) : transform(b2))], params)
     },
 
     'class'(name, heritage, body) { return lowerClass(name, heritage, body) },
@@ -601,11 +605,6 @@ export function createTransform(opts) {
       }
       const one = rewrite(payload)
       if (one) return ['[]', one]
-    },
-
-    ':'(label, body) {
-      if (typeof label === 'string' && Array.isArray(body) && LABEL_BODY_OPS.has(body[0]))
-        return ['label', label, transformStatement(body)]
     },
 
     '='(lhs, rhs) {
@@ -803,19 +802,14 @@ export function createTransform(opts) {
     // IIFE and leave later `f()` references dangling.
     ';'(...args) { return transformScope([';', ...args]) },
 
+    // Braces in an expression's position: an object literal (a statement's go to transformBlock).
     '{}'(...args) {
       const withAccessors = opts.lowerObjectLiteralAccessors?.()(args)
       if (withAccessors) args = withAccessors
       const loweredObject = lowerObjectLiteralThis(args)
       if (loweredObject) return loweredObject
 
-      return ['{}', ...args.map((a, i) => {
-        const t = transformScope(a) ?? a
-        if (i !== 0 || a == null) return t
-        const blockIn = Array.isArray(a) && JZ_BLOCK_OPS.has(a[0])
-        if (!blockIn || t == null) return t
-        return Array.isArray(t) && t[0] === ';' ? t : [';', t]
-      })]
+      return ['{}', ...args.map(a => transform(a) ?? a)]
     },
 
     'export'(inner) {
@@ -882,5 +876,5 @@ export function createTransform(opts) {
     return rewriteChildren(node, transform)
   }
 
-  return { transform, transformScope, transformParams }
+  return { transform, transformScope, transformStatement, transformParams }
 }
