@@ -23,20 +23,21 @@ concurrency:
 #
 # The core and generated legs are cut over machines (`npm test -- --slice=<i>/<n>`,
 # test/index.js): the leg's files, a ring turned by the commit, in n contiguous arcs of
-# near-equal recorded CPU seconds (test/native-costs.json), each arc split over the
-# runner's cores as `npm test` splits the whole. test/test-infrastructure.js holds that a
-# leg's slices are disjoint and together run its every file.
+# near-equal recorded CPU seconds (test/native-costs.json), each arc split over three
+# processes. test/test-infrastructure.js holds that a leg's slices are disjoint and together
+# run its every file. The count is set: left to the busy cores a 4-core runner reads in its
+# first fifth of a second, a job took one process or two (run 44421923916: level 3 and WASI
+# in one, 173 and 153 min; the generated suite in two, 86).
 #
-# Limits, from run 44340739961 (86df52211, the whole of each leg on one 4-core runner, three
-# processes): the core took 111 min at the default level, 105 at level 3, 59 on WASI and 19 at
-# level 0 (two processes); the generated suite 56 min and on WASI 70. A process there spent
-# 1.84 wall seconds a CPU second the table records on the default leg (1.65 to 2.01 a run),
-# 1.53 at level 3 (against the armed row), 1.07 on WASI, 1.08 at level 0, 1.12 on the
-# generated suite and 1.34 on its WASI leg (against the default row). At 2 seconds a second,
-# the dearest process of a slice over every seed comes to about 43 min for each core leg cut
-# in 3 (1,290 recorded seconds), 20 for level 0 whole (609), and 52 for the generated suite
-# cut in 2 (1,568; at its own rates 29 to 35), where store-population alone holds a process
-# 1,215 s. The hour is each job's limit.
+# Limits, from runs 44340739961 (86df52211) and 44421923916 (5f3865889), each leg whole on
+# one runner: at three processes the core took 111 and 73 min at the default level, 105 at
+# level 3, 59 on WASI, the generated suite 56, on WASI 70 and 43, level 0 14 (19 in two). A
+# process spent 0.80 to 1.84 wall seconds a CPU second the table records (level 3 against
+# the armed row, the generated suite's WASI leg against its default row), and one process
+# alone about 1. At 2 seconds a second, the dearest process of a slice over every seed comes
+# to about 43 min for each core leg cut in 3 (1,290 recorded seconds), 20 for level 0 whole
+# (609), and 52 for the generated suite cut in 2 (1,568; at the rates it showed, 21 to 35),
+# where store-population alone holds a process 1,215 s. The hour is each job's limit.
 jobs:
   # The source checks, the examples' build and the public types: no suite leg.
   checks:
@@ -61,6 +62,8 @@ jobs:
     name: core (${{ matrix.variant }}) ${{ matrix.slice }}/${{ matrix.slices }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      JZ_TEST_JOBS: '3'
     strategy:
       fail-fast: false
       matrix:
@@ -138,6 +141,8 @@ jobs:
     name: generated (${{ matrix.variant }}) ${{ matrix.slice }}/${{ matrix.slices }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      JZ_TEST_JOBS: '3'
     strategy:
       fail-fast: false
       matrix:
