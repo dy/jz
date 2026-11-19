@@ -3,6 +3,7 @@ import { is, ok } from 'tst/assert.js'
 import { onWasi, onKernel, levels, ownedLevels } from './_matrix.js'
 import { run, cases, oracle, jz, compile } from './util.js'
 import { instantiate } from '../interop.js'
+import { nestingOf } from '../src/parse.js'
 
 
 const throws = (code, match, msg, opts) => {
@@ -1432,9 +1433,6 @@ test('errors: a nesting too deep names its construct and place', () => {
     const e = named(gen(5000))
     ok(e instanceof SyntaxError && /nesting too deep to (parse|compile)/.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form} 5,000 deep: ${e?.name} ${String(e?.message).split('\n')[0]}`)
   }
-  // deep enough for a walk after the parse, not for the parser: the construct in words
-  const e = named(forms['array literal'](700))
-  ok(e instanceof SyntaxError && /nesting too deep to compile: \d+ levels, array literal/.test(e.message), `${e?.name} ${String(e?.message).split('\n')[0]}`)
   is(run(forms.call(200)).f(3), 203, 'a nesting the walks hold compiles')
 })
 
@@ -1454,14 +1452,39 @@ test('errors: a nesting too deep to parse names what nests', () => {
     ['**', `export let f = (x) => ${'1 ** '.repeat(5000)}1`, /`\*\*` the most on the way in/],
     ['!', `export let f = (x) => ${'!'.repeat(5000)}x`, /unary ! the most on the way in/],
     ['typeof', `export let f = (x) => ${'typeof '.repeat(5000)}x`, /unary typeof the most on the way in/],
-    ['a sum in a class field', `class A { v = ${R(1500, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
-    ['a sum in a default', `export let f = (x, y = ${R(2000, i => `x * ${i}`).join(' + ')}) => y`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
+    ['a sum in a class field', `class A { v = ${R(20000, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
+    ['a sum in a default', `export let f = (x, y = ${R(20000, i => `x * ${i}`).join(' + ')}) => y`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
   ]
   for (const [form, src, want] of forms) {
     const e = named(src)
     ok(e instanceof SyntaxError && want.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form}: ${e?.name} ${String(e?.message).split('\n')[0]}`)
   }
   is(run(`class A { v = ${R(400, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`).f(3), 203, 'a field of 400 terms compiles')
+})
+
+// Near the stack's depth the stage that runs out goes by the frames the engine has
+// compiled by then: the reader, the early errors, a walk after the parse, or none
+// (700 array literals: a module in one process, a walk's error in another). And an
+// overflow drops those frames, so the parse that measures the nesting for a walk's
+// error ran out where the compile's own parse had held (a field's sum of 1,800
+// terms, once the walks were warm: an internal error). At each depth across the
+// band the answer is a module or a SyntaxError that names the nesting.
+test('errors: a nesting near the stack\'s depth is named by whichever stage runs out', () => {
+  const R = (n, f) => Array.from({ length: n }, (_, i) => f(i))
+  const forms = [
+    ['a sum in a class field', d => `class A { v = ${R(d, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`, /nesting too deep to (parse|compile): \d+ levels, `\+` the most of them/],
+    ['a sum in a default', d => `export let f = (x, y = ${R(d, i => `x * ${i}`).join(' + ')}) => y`, /nesting too deep to (parse|compile): \d+ levels, `\+` the most of them/],
+    ['array literal', d => `export let f = (x) => ${'['.repeat(d)}x${']'.repeat(d)}.length`, /nesting too deep to (parse|compile): \d+ (levels, array literal the most of them|brackets open, the innermost `\[`)/],
+  ]
+  for (const [form, gen, want] of forms) for (let d = 600; d <= 3000; d += 200) {
+    let e = null
+    try { compile(gen(d)) } catch (err) { e = err }
+    ok(e === null || e instanceof SyntaxError && want.test(e.message), `${form}, ${d} deep: ${e?.name} ${String(e?.message).split('\n')[0]}`)
+  }
+  // the measuring parse out of stack itself (a sum no stack holds): its own error is the answer, not "does not parse"
+  let measured = null
+  try { measured = nestingOf(forms[0][1](20000), 'jz', 0) } catch (err) { measured = err }
+  ok(measured instanceof SyntaxError && forms[0][2].test(measured.message), `the measure of a sum of 20,000: ${measured?.name ?? measured} ${String(measured?.message).split('\n')[0]}`)
 })
 
 // An error shows its source line under the message; a program a machine wrote on

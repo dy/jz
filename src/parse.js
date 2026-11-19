@@ -526,10 +526,12 @@ const constructOf = (n) => {
 }
 /** The deepest point of a source's tree: its depth, the construct that repeats
  *  most on the way to it and the position of its outermost one. Null when the
- *  source does not parse. */
+ *  source does not parse. Where this parse runs out of stack itself, its error
+ *  is the nesting named, and is thrown: the compile's own parse held, and the
+ *  engine dropped the frames it had compiled when a later walk overflowed. */
 export function nestingOf(src, sourceType, base) {
   let ast
-  try { ast = parse(src, sourceType, base) } catch { return null }
+  try { ast = parse(src, sourceType, base) } catch (e) { if (/^nesting too deep/.test(e.message)) throw e; return null }
   return deepest(ast)
 }
 // (the walk keeps its own stack)
