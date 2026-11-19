@@ -61,6 +61,25 @@ test('address: forwardStores forgets a slot a store of any width overlaps, and n
   is(run(['f64.store', 'offset=4', g('$p'), ['f64.const', 2]])[0], 'f64.load', 'a slot four bytes on shares four')
   is(run(['i32.store', 'offset=4', g('$p'), k(7)])[0], 'f64.load', 'a word inside the slot')
   is(run(['i32.store8', 'offset=7', g('$p'), k(7)])[0], 'f64.load', 'its last byte')
+  is(run(['f64.store', g('$q'), ['f64.const', 2]])[0], 'f64.load', 'a store through another name')
+})
+
+// A store forgot what it may overwrite by a walk of every slot the list held: the
+// stores of one straight list took their square (an array of 10,000 literals: 3.6
+// s of a compile). It finds them by the sum and the offset, and by the kind of
+// access elsewhere: t(4n) / t(n) at most 8, where linear is 4 and quadratic 16.
+test('address: forwardStores takes a time in a run of stores', () => {
+  const fn = (n) => ['func', '$f', ['param', '$p', 'i32'], ['param', '$q', 'i32'], ['local', '$r', 'f64'],
+    ...Array.from({ length: n }, (_, i) => ['f64.store', `offset=${8 * i}`, g('$p'), ['f64.const', i]]),
+    ['local.set', '$r', ['f64.load', 'offset=8', g('$p')]]]
+  const clock = process.threadCpuUsage ?? process.cpuUsage
+  const time = (n) => { const f = fn(n), c0 = clock(); forwardStores(f); const c = clock(c0); return [(c.user + c.system) / 1000, f] }
+  time(1000)
+  let ratio = Infinity
+  for (let i = 0; i < 3 && !(ratio <= 8); i++) ratio = Math.min(ratio, time(8000)[0] / time(2000)[0])
+  ok(ratio <= 8, `t(8,000) / t(2,000) = ${ratio.toFixed(1)}`)
+  const [, f] = time(50)
+  is(f[f.length - 1][2], ['f64.const', 1], 'the slot reads what its store left, past the stores of the other slots')
 })
 
 // D5: a load through a copy of a local reads what a load through the local read.

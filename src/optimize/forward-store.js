@@ -37,6 +37,58 @@ const STORE = /^(i32|i64|f32|f64|v128)\.store(8|16|32)?$/
 const slotOf = (a) => a.key == null ? null : `${a.key}|${a.at}`
 const isLeaf = v => isArr(v) && (v[0] === 'local.get' && typeof v[1] === 'string' || v[0] === 'f64.const')
 
+// The slots a list knows (its entries, its pending stores): slot → { acc, value?, … },
+// found by what a write ends. A store ends, of the slots on its own sum, those its
+// bytes overlap, found by their offsets; of every other, those mayAlias says it may
+// reach, which there goes by the marks and the two accesses' kinds alone (their sums
+// differ, so the bytes say nothing): one answer for a kind. A local's write ends
+// the entries whose value reads the local. Each walked whole at each store and
+// write, an array of 10,000 literals took the square of its elements.
+const kindOf = (a) => `${a.mem}|${a.header ? 1 : 0}|${a.store ? 1 : 0}|${a.op}`
+const NO_SUM = '\0'
+const slots = () => ({ m: new Map(), sums: new Map(), kinds: new Map(), reads: new Map() })
+const index = (t, slot, e, on) => {
+  const a = e.acc, sum = a.key ?? NO_SUM, kind = kindOf(a)
+  if (a.key != null) {
+    let g = t.sums.get(sum)
+    if (!g) t.sums.set(sum, g = { at: new Map(), bytes: 0, odd: new Set() })
+    const ats = Number.isInteger(a.at) ? (g.at.get(a.at) ?? (on ? g.at.set(a.at, new Set()).get(a.at) : null)) : g.odd
+    if (on) { ats.add(slot); if (a.bytes > g.bytes) g.bytes = a.bytes } else ats?.delete(slot)
+  }
+  let k = t.kinds.get(kind)
+  if (!k) { if (!on) return; t.kinds.set(kind, k = { probe: { ...a, key: null }, sums: new Map() }) }
+  let s = k.sums.get(sum)
+  if (on) { if (!s) k.sums.set(sum, s = new Set()); s.add(slot) } else s?.delete(slot)
+  const v = e.value
+  if (isArr(v) && v[0] === 'local.get') {
+    let r = t.reads.get(v[1])
+    if (on) { if (!r) t.reads.set(v[1], r = new Set()); r.add(slot) } else r?.delete(slot)
+  }
+}
+const sGet = (t, slot) => t.m.get(slot)
+const sSet = (t, slot, e) => { const old = t.m.get(slot); if (old) index(t, slot, old, false); t.m.set(slot, e); index(t, slot, e, true) }
+const sDel = (t, slot) => { const old = t.m.get(slot); if (!old) return; index(t, slot, old, false); t.m.delete(slot) }
+const sClear = (t) => { t.m.clear(); t.sums.clear(); t.kinds.clear(); t.reads.clear() }
+const sCopy = (t) => { const c = slots(); for (const [k, e] of t.m) sSet(c, k, e); return c }
+// End every slot but `keep` that the access `acc` may reach (mayAlias).
+const sForget = (t, acc, keep = null) => {
+  const gone = []
+  const g = acc.key != null ? t.sums.get(acc.key) : null
+  if (g) {
+    const look = (ats) => { if (ats) for (const sl of ats) { const e = t.m.get(sl); if (sl !== keep && mayAlias(acc, e.acc)) gone.push(sl) } }
+    if (Number.isInteger(acc.at)) for (let x = acc.at - g.bytes + 1; x < acc.at + acc.bytes; x++) look(g.at.get(x))
+    else for (const ats of g.at.values()) look(ats)
+    look(g.odd)
+  }
+  for (const k of t.kinds.values()) {
+    if (!mayAlias(acc, k.probe)) continue
+    for (const [sum, s] of k.sums) if (sum !== acc.key) for (const sl of s) if (sl !== keep) gone.push(sl)
+  }
+  for (const sl of gone) sDel(t, sl)
+}
+// End the entries whose value reads `name`.
+const sWritten = (t, name) => { const r = t.reads.get(name); if (r) for (const sl of [...r]) sDel(t, sl) }
+
 export function forwardStores(fn, fx = NO_MODULE) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -133,33 +185,33 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
   }
   if (!seeded) return
   const w = { defs: new Map(), writes: NONE, root: copies && (name => copies.root(name, path)) }
-  const entries = new Map(), pending = new Map()
+  const entries = slots(), pending = slots()
   const dead = []
   // An access at statement `at`: its address as the window resolves it, one sum (optimize/address.js).
   const accAt = (n, at, win = w) => addressOf(n, null, a => resolveAddr(a, win, at))
   // A global the statement sets (`g`, or any a call may): every slot whose address reads it
   // (its key names it), as the store left it or not.
-  const setGlobal = (g) => { for (const m of [entries, pending]) for (const k of [...m.keys()]) if (k.includes(g ? 'g:' + g : 'g:')) m.delete(k) }
+  const setGlobal = (g) => { for (const t of [entries, pending]) for (const k of [...t.m.keys()]) if (k.includes(g ? 'g:' + g : 'g:')) sDel(t, k) }
   // What a statement that writes no memory a load reads ends: its global writes the slots
   // they address; a call that may read the slot, or throw, the stores left pending.
   const callsOut = (s) => walkAst(s, { enter: n => {
     if (n[0] === 'global.set') setGlobal(n[1])
     else if (n[0] === 'call') {
       const c = n[1], kind = fx.kind(c)
-      if (!fx.returns(c) || fx.throws(c) || kind !== 'pure' && kind !== 'header') pending.clear()
+      if (!fx.returns(c) || fx.throws(c) || kind !== 'pure' && kind !== 'header') sClear(pending)
       if (fx.setsAny(c)) setGlobal(null)
     }
   } })
-  const written = (name, maps) => { for (const m of maps) for (const [k, e] of m) if (e.value && e.value[0] === 'local.get' && e.value[1] === name) m.delete(k) }
+  const written = (name, maps) => { for (const m of maps) if (m.m) sWritten(m, name); else for (const [k, e] of m) if (e.value && e.value[0] === 'local.get' && e.value[1] === name) m.delete(k) }
   // A load that reads memory: every pending store whose bytes it may reach.
-  const read = (acc) => { for (const [k, p] of pending) if (mayAlias(acc, p.acc)) pending.delete(k) }
+  const read = (acc) => sForget(pending, acc)
   // The loads of `s` at statement `at`: a tracked slot's value (forwarded where `known`
   // has it and `forward` asks), else a read
   const loads = (s, at, win, known, forward) => walkAst(s, { enter: (n, parent, idx) => {
     if (n === s || !isArr(n) || typeof n[0] !== 'string') return
     if (n[0] === 'f64.load') {
       const a = accAt(n, at, win), slot = slotOf(a)
-      const e = slot && known.get(slot)
+      const e = slot && sGet(known, slot)
       if (forward && e && e.join) join(e)
       if (forward && e && e.value) parent[idx] = clone(e.value)
       else read(a)
@@ -170,7 +222,7 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
   // A store forgets every other slot whose bytes it may reach: on its own sum the slots it
   // overlaps, through another name every slot, but where the emitter's marks or the header
   // words tell the two apart (optimize/address.js mayAlias).
-  const overwrite = (known, acc) => { const slot = slotOf(acc); for (const [k, e] of [...known]) if (k !== slot && mayAlias(acc, e.acc)) known.delete(k) }
+  const overwrite = (known, acc) => sForget(known, acc, slotOf(acc))
   for (let i = from; i < list.length; i++) {
     const s = list[i]
     if (!isArr(s)) continue
@@ -188,7 +240,7 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
     const isStore = STORE.test(s[0])
     const access = isStore ? accessOf(s) : null
     const parts = isStore ? [access.addr, access.val] : [s]
-    if (!parts.every(p => inertFor(p, NONE, false, fx))) { if (set) w.defs.set(set, { e: null, at: i }); entries.clear(); pending.clear(); continue }
+    if (!parts.every(p => inertFor(p, NONE, false, fx))) { if (set) w.defs.set(set, { e: null, at: i }); sClear(entries); sClear(pending); continue }
     // (before the loads: a call in the statement may run ahead of them)
     callsOut(s)
     loads(s, i, w, entries, true)
@@ -196,17 +248,17 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
     if (set && whole && isArr(s[2]) && s[2][0] === 'f64.load') {
       // A load into a local: a later load of the slot reads the local.
       const a = accAt(s[2], i), slot = slotOf(a)
-      if (slot && !entries.has(slot)) entries.set(slot, { value: ['local.get', set], at: i, acc: a })
+      if (slot && !entries.m.has(slot)) sSet(entries, slot, { value: ['local.get', set], at: i, acc: a })
       continue
     }
     if (!isStore) continue
     const acc = accAt(s, i), slot = slotOf(acc)
     overwrite(entries, acc)
     // (a store of another width than a slot's forgets what it overlaps, and is no slot of its own)
-    if (!slot || s[0] !== 'f64.store') { if (slot) entries.delete(slot); continue }
-    if (pending.has(slot)) dead.push(pending.get(slot).at)
-    entries.set(slot, { value: isLeaf(access.val) ? access.val : null, at: i, acc })
-    pending.set(slot, { at: i, acc })
+    if (!slot || s[0] !== 'f64.store') { if (slot) sDel(entries, slot); continue }
+    if (pending.m.has(slot)) dead.push(sGet(pending, slot).at)
+    sSet(entries, slot, { value: isLeaf(access.val) ? access.val : null, at: i, acc })
+    sSet(pending, slot, { at: i, acc })
   }
 
   // An `if` whose arms only set locals and store f64s, of operands that call and branch
@@ -231,7 +283,7 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
     loads(test, i, w, entries, true)
     const sets = new Set(), after = []
     for (const a of arms) {
-      const win = { defs: new Map(w.defs), writes: NONE, root: w.root }, known = new Map(entries), stored = new Map()
+      const win = { defs: new Map(w.defs), writes: NONE, root: w.root }, known = sCopy(entries), stored = new Map()
       for (let j = 1; j < a.length; j++) {
         const t = a[j], at = i + j / (a.length + 1)
         walkAst(t, { enter: n => {
@@ -248,14 +300,14 @@ const forwardIn = (list, from, counts, copies, path, fresh, fx) => {
       }
       after.push({ known, stored })
     }
-    if (after.length === 1) after.push({ known: new Map(entries), stored: new Map() })
+    if (after.length === 1) after.push({ known: sCopy(entries), stored: new Map() })
     const [x, y] = after
-    for (const [sl, p] of [...pending]) if (x.stored.has(sl) && y.stored.has(sl)) { dead.push(p.at); pending.delete(sl) }
-    for (const k of [...entries.keys()]) if (x.known.get(k) !== entries.get(k) || y.known.get(k) !== entries.get(k) || x.stored.has(k) || y.stored.has(k)) entries.delete(k)
+    for (const [sl, p] of [...pending.m]) if (x.stored.has(sl) && y.stored.has(sl)) { dead.push(p.at); sDel(pending, sl) }
+    for (const k of [...entries.m.keys()]) if (sGet(x.known, k) !== sGet(entries, k) || sGet(y.known, k) !== sGet(entries, k) || x.stored.has(k) || y.stored.has(k)) sDel(entries, k)
     for (const name of sets) { written(name, [entries]); w.defs.set(name, { e: null, at: i }) }
     for (const [sl, a] of x.stored) {
       const b = y.stored.get(sl)
-      if (b && a.value && b.value && fresh) entries.set(sl, { value: null, join: [a, b], at: i, acc: a.acc })
+      if (b && a.value && b.value && fresh) sSet(entries, sl, { value: null, join: [a, b], at: i, acc: a.acc })
     }
     return true
   }
