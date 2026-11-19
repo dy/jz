@@ -648,3 +648,10 @@ Left standing, no writer at work (the owner stopped them on 2026-11-19):
 - `worktree-agent-afab4ffb7d6879342`: the tests' close-out.
 
 Waiting on the owner: `npm install` for jz's bumps (watr 5.13.8, subscript 10.8.6 with src/parse.js:461-467 deleted); the reference run; whether probe branches may be pushed.
+
+## Branches of the land-t landing (2026-11-19), tips before deletion
+
+```
+fa11e4fa3 land-t                              the landing branch: main (8db0e890e) and the block fix; the record's commit after it
+f8ad60e53 worktree-agent-a9ec23575a85c3d81    the limits round two (landed in land-q) and, uncommitted in its tree, the block fix: landed as fa11e4fa3
+```

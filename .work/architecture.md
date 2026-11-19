@@ -3305,6 +3305,26 @@ The audio catalogue, by the writer's run of the audio session's tool on its own 
 - **subscript 10.8.6** (published by the owner): the method shorthand as a rule on `{` whose left operand is the call already read (g(g(…x)) at depth 24: 5.5 s to 0.01 ms), in place of the pull request that wrapped the lookup table by hand. jz pins 10.8.4; the bump deletes src/parse.js's wrapper of the old rule (it picks the lowest `(` rule, which is no longer the method's).
 - **By the owner's word the writers are stopped** (the limit): the integrator works alone, one thing at a time. Left where they stood: the NaN box (`nanbox-rest2`, bcb69549d, passes the review's probes; to rebase onto this landing, time, and settle two data-forms rises), the block fix (uncommitted in the limits writer's tree), the tests' close-out.
 
+## The land-t landing: a block by where its braces stand (2026-11-19)
+
+One commit on 8db0e890e, `fa11e4fa3` (the limits writer's work, stopped before its commit; finished by the integrator).
+
+### What landed
+
+A statement that opens with `{` is a block whatever it holds; braces in an expression's position are an object literal. Prepare decides it there (src/prepare/handlers.js `prepBraces`, `prepStatement`; jzify/transform.js `transformStatement`) and writes every block's statements as a `;` list, the one form every later stage reads (src/ast.js `isBlockBody`). The three operator lists that guessed from a block's first statement are deleted (`STMT_OPS`, `JZ_BLOCK_OPS`, `LABEL_BODY_OPS`). A block that reaches the object literal's reader is an internal error.
+
+What it fixes, on main and in 1.0.3: a bare block in a statement list was read as an object literal where its first statement's operator was in none of the lists, and dropped whole. `{ { x++ } }` lost the write; so went a block that opens with `a && f()`, `a || f()`, `a ?? f()`, `c ? f() : g()`, a labeled loop, `!f()`, `void f()`, a comma, a template. 198 of 960 rows (thirty first statements in eight places, four levels) and 61 of 88 (22 kernels of nested writes) answered otherwise than Node; all answer as Node now but the delete of a static key, the stated refusal. Beside it: a strict arrow of a destructured parameter that returns an object ended in "Unknown op: :".
+
+### The check (bl, on the commit before its three test corrections)
+
+64 minutes at a load of 5 to 24. Listings unmoved. test:self 89; integration 238 of 239 with one skipped; lint and audit clean; examples 1.67 and 1.68, 25 of 25 twice. On a fresh hosted compiler (37,727,870 bytes): parity 19, statements 196, split-bindings 19, parse-list 15, errors 150, classes 73, objects 200, destruct 93, generators 55. The four legs each failed the same three tests of their whole (WASI 7,537 of 7,540, default 7,664 of 7,667, armed level 3 7,446 of 7,449, level 0 7,424 of 7,427): tests that build a block by hand in forms prepare no longer writes (a statement as the braces' one child, statements as their children, bare braces for an object literal in a statement's place). Written as prepare writes them, the three files pass on the four legs (149 each) and hosted (64, 11, 74). The whole suite was not run again after that: the compiler did not change.
+
+Bench bytes: 3 of 105 cases move, stdlib-special 10 at speed, webaudio 4 and 4, stdlib-dists by its text alone (a few functions by 5 bytes: not traced to the instruction).
+
+### Found, not fixed
+
+- A producer after prepare that writes a block as `['{}', statement]` is read as an expression now, where it was a block before. The suite and the 105 cases' bytes found none; no armed check holds the form.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
