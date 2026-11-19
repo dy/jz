@@ -32,7 +32,7 @@
 // 10.5, else-if of assignments 10.6, ?? 10.8, ?: returned 13.3, || 13.3, else-if
 // of returns 13.4, && 14.0, member chain 14.0, call chain 14.5, string + 16.4).
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { ok, throws } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -175,17 +175,25 @@ const KNOWN = new Map([
   ['array literal at default', 'time'],
 ])
 
-// The row's child: SMALL compiled first to warm the compiler, then SRC and SMALL in
-// turn, three times where SRC takes under 20 s and twice under a minute; the least
-// of each, wall and CPU time (ms, cpu), and SRC's answer. The CPU time is the
-// compiling thread's (the process's on a Node with no thread clock): the process's
-// counts the collector's and the JIT's threads beside it.
-const RUNNER = `import { pathToFileURL } from 'node:url'
+// The row's child: SMALL compiled first to warm the compiler, its answer printed,
+// then SRC and SMALL in turn, three times where SRC takes under 20 s and twice
+// under a minute; the least of each, wall and CPU time (ms, cpu), and SRC's answer.
+// The CPU time is the compiling thread's (the process's on a Node with no thread
+// clock): the process's counts the collector's and the JIT's threads beside it.
+// The sources ride the child's standard input. In its environment a row never
+// started on Linux, which bounds one environment string at 131,072 bytes
+// (execve(2), MAX_ARG_STRLEN): twelve of the kinds are longer at 10,000 links, so
+// on CI's runner six rows failed and six, held to fail, passed by it. The child
+// says how each compile went, a module that does not run by its error: one that
+// does not start, or ends unsaid and by no signal, is the gate's own failure and
+// fails its row whatever KNOWN says of it.
+const RUNNER = `import { readFileSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 const root = pathToFileURL(process.env.JZ_ROOT).href
 const { compileInternal } = await import(root + 'src/compiler.js')
 const { default: jzify } = await import(root + 'jzify/index.js')
 const { instantiate } = await import(root + 'interop.js')
-const opts = JSON.parse(process.env.OPTS), big = process.env.SRC, small = process.env.SMALL
+const { opts, big, small } = JSON.parse(readFileSync(0, 'utf8'))
 const clock = process.threadCpuUsage ? (c) => process.threadCpuUsage(c) : (c) => process.cpuUsage(c)
 const timed = (src) => {
   const c0 = clock(), t0 = performance.now(), r = {}
@@ -194,7 +202,9 @@ const timed = (src) => {
   r.ms = performance.now() - t0; r.cpu = (c.user + c.system) / 1000
   return r
 }
+const answer = (w) => { try { return instantiate(w).exports.f(3) } catch (e) { return String(e) } }
 const warm = small ? timed(small) : null
+if (warm && !warm.e) console.log(JSON.stringify({ small: answer(warm.w) }))
 const b = timed(big)
 if (b.e) console.log(JSON.stringify({ ok: false, ms: b.ms, name: b.e.name, message: String(b.e.message).split('\\n').slice(0, 2).join(' | ') }))
 else {
@@ -204,18 +214,35 @@ else {
     const rounds = ms < 20000 ? 3 : ms < 60000 ? 2 : 1
     for (let i = 1; i < rounds; i++) { const b2 = timed(big); ms = Math.min(ms, b2.ms); cpu = Math.min(cpu, b2.cpu); smallCpu = Math.min(smallCpu, timed(small).cpu) }
   }
-  console.log(JSON.stringify({ ok: true, ms, cpu, smallCpu, answer: instantiate(b.w).exports.f(3) }))
+  console.log(JSON.stringify({ ok: true, ms, cpu, smallCpu, answer: answer(b.w) }))
 }`
 const compiled = (src, optimize, small, limit = 900000) => {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', RUNNER], {
-    env: { ...process.env, JZ_ROOT: ROOT, SRC: src, SMALL: small ?? '', OPTS: JSON.stringify({ optimize }) },
+    env: { ...process.env, JZ_ROOT: ROOT }, input: JSON.stringify({ opts: { optimize }, big: src, small: small ?? '' }),
     encoding: 'utf8', timeout: limit, killSignal: 'SIGKILL', maxBuffer: 1 << 26,
   })
-  try { return JSON.parse(r.stdout.trim().split('\n').pop()) }
-  catch { return { ok: false, ms: NaN, name: 'exit', message: r.signal === 'SIGKILL' ? 'stopped past the limit' : r.signal ? `ended by ${r.signal}` : `exit ${r.status}: ${String(r.stderr).slice(0, 200)}` } }
+  if (r.error && r.error.code !== 'ETIMEDOUT') throw r.error
+  const said = String(r.stdout).split('\n').map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+  const end = said.find(o => o.ok !== undefined)
+  if (!end && !r.signal) throw Error(`the row's child ended at ${r.status}: ${String(r.stderr).slice(0, 300)}`)
+  return { ...(end ?? { ok: false, ms: NaN, name: 'exit', message: r.signal === 'SIGKILL' ? 'stopped past the limit' : `ended by ${r.signal}` }), small: said.find(o => o.small !== undefined)?.small }
 }
+// A row KNOWN as 'time' is stopped at TARGET_LIMIT. Its time is printed where the
+// compile ends sooner and held nowhere, and run to the 15 minutes a held row has,
+// the default level's targets took minutes each here (|| 13, ?: 10, && 2.3, ?? 2.1)
+// and more on CI's runner than its suite has. What such a row holds: no failure
+// before the stop, and the answer at 2,500 links.
+const TARGET_LIMIT = 120000
 const levelName = (o) => o === false ? 'off' : o === true ? 'default' : o
 const skip = () => onKernel() || onWasi()
+
+test('limits: a child that ends without saying how its compile went fails its row', () => {
+  if (skip()) return
+  const had = process.env.NODE_OPTIONS
+  process.env.NODE_OPTIONS = '--require=./no-such-module-of-the-limits-gate'
+  try { throws(() => compiled('export let f = (x) => x', false), /the row's child ended at/) }
+  finally { if (had === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = had }
+})
 
 for (const optimize of levels(false, true, 'size', 'speed')) for (const [form, [gen, cause]] of Object.entries(DEEP)) test(`limits: ${form} at ${DEEP_N} levels, the level ${levelName(optimize)}`, () => {
   if (skip()) return
@@ -231,11 +258,15 @@ for (const optimize of levels(false, true)) {
   for (const [kind, gen] of Object.entries(KINDS)) test(`limits: ${kind} at ${N} links, the level ${lv}`, () => {
     if (skip()) return
     const row = `${kind} at ${lv}`, known = KNOWN.get(row)
-    const [src, want] = gen(N), big = compiled(src, optimize, known === 'compile' ? null : gen(SMALL)[0])
+    const [src, want] = gen(N), [small, wantSmall] = gen(SMALL)
+    const big = compiled(src, optimize, known === 'compile' ? null : small, known === 'time' ? TARGET_LIMIT : undefined)
     const answers = big.ok && big.answer === want
     if (known === 'compile') { ok(!answers, `${row}: fails as KNOWN says (${big.ok ? 'answers ' + big.answer : big.name + ' ' + big.message}); a pass takes it out of KNOWN`); return }
+    // the small one answers whatever becomes of the large (a target may be stopped before it has)
+    const stopped = !big.ok && big.message === 'stopped past the limit'
+    if (!(known === 'time' && stopped && big.small === undefined)) ok(big.small === wantSmall, `${row} at ${SMALL} links: answers ${big.small}, the generator ${wantSmall}`)
     // a target past the time limit is a target still
-    if (known === 'time' && !big.ok && big.message === 'stopped past the limit') { console.log(`  ${row}: ${big.message} (a target)`); return }
+    if (known === 'time' && stopped) { console.log(`  ${row}: ${big.message} of ${TARGET_LIMIT / 1000} s (a target)`); return }
     ok(answers, `${row}: ${big.ok ? `answers ${big.answer}, the generator ${want}` : `${big.name}: ${big.message}`}`)
     if (!answers) return
     // a ratio past the bound is measured again, in up to two processes of their
@@ -243,7 +274,7 @@ for (const optimize of levels(false, true)) {
     // same load (statements at off, three processes in a row at a load of 13 to 17:
     // 5.9, 6.6 and 4.7), each process's own rounds alike
     let ratio = big.cpu / big.smallCpu
-    for (let i = 0; i < 2 && !(ratio <= RATIO) && known !== 'time'; i++) { const again = compiled(src, optimize, gen(SMALL)[0]); if (again.ok) ratio = Math.min(ratio, again.cpu / again.smallCpu) }
+    for (let i = 0; i < 2 && !(ratio <= RATIO) && known !== 'time'; i++) { const again = compiled(src, optimize, small); if (again.ok) ratio = Math.min(ratio, again.cpu / again.smallCpu) }
     console.log(`  ${row}: ${(big.ms / N).toFixed(2)} ms a link (CPU ${(big.cpu / N).toFixed(2)}), CPU t(${N}) / t(${SMALL}) ${ratio.toFixed(1)}${known ? ' (a target)' : ''}`)
     if (known !== 'time') ok(ratio <= RATIO, `${row}: CPU t(${N}) / t(${SMALL}) = ${ratio.toFixed(1)}, at most ${RATIO}`)
   })
@@ -256,5 +287,14 @@ for (const optimize of levels(false, true)) {
       const shallow = compiled(gen(200), optimize)
       ok(shallow.ok, `${form} at 200 levels compiles: ${shallow.ok || shallow.message}`)
     }
+  })
+
+  // 2 MB of comment before a function: more than macOS takes of arguments and
+  // environment together (1 MB) and than Linux takes of one string, either of
+  // which ended the child of a row whose source rode its environment
+  test(`limits: a source of 2 MB reaches a row's child, the level ${lv}`, () => {
+    if (skip()) return
+    const r = compiled(`/*${'x'.repeat(2 << 20)}*/ export let f = (x) => x + 1`, optimize)
+    ok(r.ok && r.answer === 4, r.ok ? `answers ${r.answer}` : `${r.name}: ${r.message}`)
   })
 }
