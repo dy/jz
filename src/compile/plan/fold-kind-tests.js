@@ -8,6 +8,12 @@
  * The plan drops it. A decision leaves the test's own evaluation to run: it
  * goes with the dead arm only where evaluating it can do nothing.
  *
+ * The same holds of the tests a name's kind decides inside an expression:
+ * `p ?? e`, `p || e`, `p && e` and the assignments `p ??= e`, `p ||= e`,
+ * `p &&= e` keep their left operand alone where the right never runs, and
+ * `x?.p` is `x.p` where `x` is never nullish (summary `rightRuns`, the
+ * optional member's decision).
+ *
  * @module compile/plan/fold-kind-tests
  */
 import { ctx } from '../../ctx.js'
@@ -18,6 +24,20 @@ const isNullishLit = (e) => isArr(e) && e[0] == null && e[1] == null
 // `(a, b)` as one value: a bare comma where a call's sole argument stood
 // would read as two arguments (`h(x.isV ? 1 : 2)` passing `x.isV` and 2)
 const seq = (a, b) => ['(', [',', a, b]]
+const LOGICAL = new Set(['&&', '||', '??'])
+const LOGICAL_ASSIGN = new Set(['&&=', '||=', '??='])
+
+// What a node the summary decided by `runs` becomes, or undefined where it
+// stays: a logical operator whose right operand never runs is its left, one
+// whose right always runs the two in turn; a logical assignment whose store
+// never runs reads its target, one to a name whose store always runs is a
+// store; an optional member of a receiver never nullish is a member.
+const folded = (c, runs) => {
+  if (c[0] === '?.') return runs === false ? ['.', c[1], c[2]] : undefined
+  if (LOGICAL.has(c[0])) return runs === false ? c[1] : inert(c[1]) ? c[2] : seq(c[1], c[2])
+  if (runs === false) return c[1]
+  return typeof c[1] === 'string' ? ['=', c[1], c[2]] : undefined
+}
 
 // A test whose evaluation can do nothing: a name, a literal, typeof,
 // instanceof or Array.isArray of names, a strict comparison of such, a loose
@@ -63,6 +83,10 @@ export const foldKindTests = () => {
           j--
           continue
         }
+      }
+      if (c[0] === '?.' || LOGICAL.has(c[0]) || LOGICAL_ASSIGN.has(c[0])) {
+        const t = summary.decisionOf(c), out = t == null ? undefined : folded(c, t)
+        if (out !== undefined) { n[j] = out; changed = true; j--; continue }
       }
       walk(c)
     }

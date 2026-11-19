@@ -2806,6 +2806,28 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const paramKeys = new Set()
   // The properties a number, a boolean or a BigInt has: `x.p` of one outside them is undefined.
   const PRIMITIVE_METHODS = new Set(['toString', 'toFixed', 'toExponential', 'toPrecision', 'valueOf', 'toLocaleString', 'constructor'])
+  // The kind a test of a name reads where it stands: what a read there sees
+  // (readKey: a parameter before its first reassignment holds what its calls
+  // pass, an exported or escaped function's ANY; a path's proof narrows it).
+  // 'pending' where no call has bound the parameter yet, undefined where the
+  // summary keeps no binding of the name.
+  const testKind = (name) => {
+    const key = keyOf(name)
+    if (key === null) return undefined
+    const k = kinds[key]
+    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    if (funcByName.has(name)) return k
+    const r = readKey(key)
+    return tagOf(r) === K.NONE ? undefined : r
+  }
+  // `x == null`, of the value a name holds here: true where it is only ever
+  // nullish, false where it never is.
+  const nullishName = (name) => {
+    const k = testKind(name)
+    if (typeof k !== 'number') return k
+    if (tagOf(k) === K.ANY) return undefined
+    return !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) ? false : tagOf(k) === K.NULLISH || tagOf(k) === K.ABSENT ? true : undefined
+  }
   const decided = (c) => {
     if (typeof c === 'string') return truthyTest(c)
     if (!Array.isArray(c)) return undefined
@@ -2855,7 +2877,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (key === null) return undefined
     const row = at < 0 ? null : rowOf(kinds[key] ?? K.NONE)
     if (at >= 0 && (!row || row.min === undefined)) return row && paramKeys.has(key) ? 'pending' : undefined
-    const k = at < 0 ? kinds[key] : at < row.length ? row[at] : ABSENT
+    const k = at < 0 ? testKind(x) : at < row.length ? row[at] : ABSENT
+    if (at < 0 && typeof k !== 'number') return k
     if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
     const t = tagOf(k)
     if (t === K.ANY) return undefined
@@ -2897,16 +2920,26 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // or a BigInt may be falsy).
   const TRUTHY_TAGS = TAGS & ~(NULL_BITS | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT))
   const truthyTest = (name) => {
-    const key = keyOf(name)
-    if (key === null) return undefined
-    const k = kinds[key]
-    if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+    const k = testKind(name)
+    if (typeof k !== 'number') return k
     const tags = k & TAGS
     return (tags & ~NULL_BITS) === 0 ? false : (tags & ~TRUTHY_TAGS) === 0 ? true : undefined
   }
-  // What each `if` and `?:` test decided on every walk: its truth where all
-  // agree, null where one leaves it open (the plan drops a decided test's
-  // other arm, plan/fold-kind-tests.js).
+  // Whether the right operand of `&&`, `||` or `??` (and the store of `&&=`,
+  // `||=`, `??=`) runs, where the left is a name whose kind decides its test:
+  // a parameter every call passes an object (`states ??= coefs.map(make)`,
+  // `opts || {}`) never runs it. True where it runs on every walk.
+  const rightRuns = (op, left) => {
+    if (typeof left !== 'string') return undefined
+    if (op === '??' || op === '??=') return nullishName(left)
+    const t = truthyTest(left)
+    return typeof t === 'boolean' ? (op === '&&' || op === '&&=') === t : t
+  }
+  // What each test decided on every walk: its truth where all agree, null
+  // where one leaves it open (the plan drops what a decided test never runs,
+  // plan/fold-kind-tests.js). An `if` and a `?:` keep the truth of their
+  // test; a logical operator and a logical assignment whether their right
+  // operand runs; an optional member (`x?.p`) whether its receiver is nullish.
   const decisions = new Map()
   const decide = (n, truth) => {
     if (truth === 'pending') return   // no call has bound the test's parameter yet: a later round decides
@@ -3918,6 +3951,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const selectedExpr = (n, mask) => {
     const op = Array.isArray(n) ? n[0] : null
     const logical = logicalMask(op)
+    // `x?.p` of a name its kind decides: whether the access short-circuits
+    if (op === '?.' && typeof n[1] === 'string') decide(n, nullishName(n[1]))
     // Testing a data field uses no value from it. Visit receiver effects, but
     // do not join unrelated layouts' same-named fields into an escaping value.
     if (mask === 0 && (op === '.' || op === '?.' || op === '[]')) {
@@ -4066,6 +4101,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const callee = n[1]
       // The receiver is evaluated before arguments can reassign its binding.
       const memberCall = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string'
+      if (memberCall && callee[0] === '?.' && typeof callee[1] === 'string') decide(callee, nullishName(callee[1]))
       // (`new Array(n).fill(v)`: the construction fills before it is walked, filledSites)
       if (memberCall && countCtor(callee[1]) && fillsAll(n, callee[1])) filledSites.add(callee[1])
       const recv = memberCall ? receiver(callee[1]) : null
@@ -4130,7 +4166,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       sp = base
       return optional !== null && (hasTag(optional, K.NULLISH) || hasTag(optional, K.ABSENT)) ? join(r, NULLISH) : r
     }
-    if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2])
+    if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2], n)
     if (op === 'postfix') return expr(n[1])
     if (op === '+') return plus(expr(n[1]), expr(n[2]))
     if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? expr(n[1]) : arith(op, expr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, expr(n[i])); return k }
@@ -4145,6 +4181,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     if (logical) {
       const a = selectedExpr(n[1], mask & logical)
+      const runs = rightRuns(op, n[1])
+      decide(n, runs)
+      if (runs === 'pending') return K.NONE
+      if (runs === false) return a
       branch++; flowPath++
       const mark = rtop
       proves(n[1], op === '&&')
@@ -4211,7 +4251,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     return v
   }
-  const assign = (op, target, value) => {
+  const assign = (op, target, value, node = null) => {
     const logical = op === '||=' || op === '&&=' || op === '??='
     let v
     // A global the plan declares by its writes (a class's static field
@@ -4220,7 +4260,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) ?? dictLiteral(target, value) : null) ?? (typeof target === 'string' && (Array.isArray(value) && value[0] === '.' || typeof value === 'string') ? mixedValue(value) : expr(value))
     else if (op === '+=') v = plus(expr(target), expr(value))
     // `a ??= b` leaves a nullish `a` replaced: the binding holds the old value only when it is not nullish.
-    else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
+    // A test its kind decides stores nothing where the store never runs: the value is not walked.
+    else if (logical) {
+      const t = expr(target), runs = rightRuns(op, target)
+      if (node !== null) decide(node, runs)
+      if (runs === 'pending') return K.NONE
+      if (runs === false) return t
+      v = merge(op === '??=' ? core(t) : t, expr(value))
+    }
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
     if (typeof target === 'string') { if (hulls.size || indexBounds.size) keepHull(target, op, value); return assignName(target, v) }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {

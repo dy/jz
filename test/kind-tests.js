@@ -8,7 +8,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { oracle, jz, compile } from './util.js'
+import { oracle, jz, compile, compileInProcess } from './util.js'
+import { ctx } from '../src/ctx.js'
 
 const src = `
 let settings = (o) => ({ size: o?.frameSize ?? 2048, f: o?.factor ?? 1 })
@@ -143,6 +144,85 @@ export const run = (k) => {
     for (const optimize of levels(0, 2, 3, 'size')) {
       const mod = jz(src, { optimize }).exports, host = oracle(src)
       for (const k of [0, 1]) { let a, b; try { a = mod.run(k) } catch (e) { a = e.constructor.name } try { b = host.run(k) } catch (e) { b = e.constructor.name } is(a, b, `${use}, run(${k}) at ${optimize}`) }
+    }
+  }
+})
+
+// A nullish or falsy test of a parameter is decided by what its calls pass
+// (summary testKind, rightRuns): a parameter every call passes a typed array
+// is never nullish, so `p ??= make()` never runs `make()` and `process`
+// allocates nothing; one no call passes is undefined, so `p && make()` never
+// runs it either. Each form below folds there; each precondition broken in
+// turn keeps the test, and the answer is the host's.
+const MAKE = `const make = () => new Float64Array(2)
+const S = make()
+S[0] = 5`
+const READ = 'return p ? p[0] + d : -d'
+const NULLISH_FORMS = {
+  '??=': 'p ??= make()',
+  '??': 'p = p ?? make()',
+  '== null': 'if (p == null) p = make()',
+  '=== undefined': 'if (p === undefined) p = make()',
+  '=== null': 'if (p === null) p = make()',
+  '!': 'if (!p) p = make()',
+  '||': 'p = p || make()',
+  '||=': 'p ||= make()',
+  '?.': 'if (p?.length !== 2) p = make()',
+}
+// the forms whose right operand runs where the left is truthy
+const TRUTHY_FORMS = { '&&': 'p = p && make()', '&&=': 'p &&= make()' }
+const answer = (f, ...args) => { try { return f(...args) } catch (e) { return `throws ${e?.constructor?.name}` } }
+const refusal = (src, optimize) => { try { compile(src, { optimize, memory: { fixed: ['process'] } }); return null } catch (e) { return e.message.split('\n')[0] } }
+
+test('kind tests: a test of a parameter every call passes alike folds', () => {
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    for (const [name, form] of Object.entries(NULLISH_FORMS)) {
+      const src = `${MAKE}\nconst k = (d, p) => { ${form}; ${READ} }\nexport const process = (d) => k(d, S)`
+      if (name !== '?.') is(refusal(src, optimize), null, `${name}: process allocates nothing at ${optimize}`)
+      is(jz(src, { optimize }).exports.process(2), oracle(src).process(2), `${name} at ${optimize}`)
+    }
+    for (const [name, form] of Object.entries(TRUTHY_FORMS)) {
+      const src = `${MAKE}\nconst k = (d, p) => { ${form}; ${READ} }\nexport const process = (d) => k(d)`
+      is(refusal(src, optimize), null, `${name}: process allocates nothing at ${optimize}`)
+      is(jz(src, { optimize }).exports.process(2), oracle(src).process(2), `${name} at ${optimize}`)
+    }
+  }
+  // the optional member of a receiver never nullish is a member once planned
+  const src = `${MAKE}\nconst k = (d, p) => { ${NULLISH_FORMS['?.']}; ${READ} }\nexport const process = (d) => k(d, S)`
+  compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  ok(!JSON.stringify(ctx.funcs.map.get('k').body).includes('"?."'), 'x?.p is x.p')
+})
+
+// Each way a call can leave the parameter nullish, or a caller the summary
+// cannot see: the kernel for a form, and the run its answers are read by.
+const BROKEN = {
+  'a call passes undefined': (k, form) => `const ${k} = (d, p) => { ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d, undefined)`,
+  'a call passes null': (k, form) => `const ${k} = (d, p) => { ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d, null)`,
+  'a call leaves it out': (k, form) => `const ${k} = (d, p) => { ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d)`,
+  'a call passes an element past the end': (k, form) => `const L_${k} = [S]\nconst ${k} = (d, p) => { ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, L_${k}[d > 1 ? 1 : 0]) * 100 + ${k}(d, S)`,
+  'the function is exported': (k, form) => `export const ${k} = (d, p) => { ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d, S)`,
+  'the function is held by the host': (k, form) => `const ${k} = (d, p) => { ${form}; ${READ} }\nexport const get_${k} = () => ${k}\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d, S)`,
+  'the function is called through call()': (k, form) => `const ${k} = (d, p) => { ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}.call(null, d)`,
+  'the parameter is assigned first': (k, form) => `const ${k} = (d, p, q) => { if (d > 1) p = q; ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S, undefined) * 100 + ${k}(d, S, S)`,
+  'a closure assigns the parameter': (k, form) => `const ${k} = (d, p) => { const drop = () => { p = undefined }; if (d > 1) drop(); ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d, S)`,
+  'a closure beside assigns the binding': (k, form) => `export const run_${k} = (d) => { let p = S; const drop = () => { p = undefined }; const ${k} = () => { if (d > 1) drop(); ${form}; ${READ} }; return ${k}() * 100 + ${k}() }`,
+  'the parameter is read through arguments': (k, form) => `function ${k} (d) { let p = arguments[1]; ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d)`,
+  'the parameter is a rest element': (k, form) => `const ${k} = (d, ...ps) => { let p = ps[0]; ${form}; ${READ} }\nexport const run_${k} = (d) => ${k}(d, S) * 100 + ${k}(d)`,
+}
+
+test('kind tests: a test of a parameter some call may leave nullish stays', () => {
+  const forms = Object.entries({ ...NULLISH_FORMS, ...TRUTHY_FORMS })
+  for (const [why, kernel] of Object.entries(BROKEN)) {
+    const src = `${MAKE}\n${forms.map(([, form], i) => kernel(`k${i}`, form)).join('\n')}`
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const mod = jz(src, { optimize }).exports
+      forms.forEach(([name], i) => {
+        const k = `k${i}`
+        for (const d of [1, 2]) is(answer(mod[`run_${k}`], d), answer(host[`run_${k}`], d), `${why}, ${name}, run(${d}) at ${optimize}`)
+        if (mod[k]) for (const p of [undefined, null, 0]) is(answer(mod[k], 2, p), answer(host[k], 2, p), `${why}, ${name}, the host passes ${p} at ${optimize}`)
+        if (mod[`get_${k}`]) for (const p of [undefined, null]) is(answer(mod[`get_${k}`](), 2, p), answer(host[`get_${k}`](), 2, p), `${why}, ${name}, the held function given ${p} at ${optimize}`)
+      })
     }
   }
 })
