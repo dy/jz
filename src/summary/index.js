@@ -4100,7 +4100,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const recv = receiver(n[1])
       if (typeof prop === 'string') noteMissing(n, recv, cop)
       if (cop === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
-      if (typeof prop !== 'string') { expr(prop); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
+      if (typeof prop !== 'string') { keyExpr(prop, cop); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
       const outerMember = memberNode; memberNode = n
       const k = member(cop, recv, prop), pk = op === '.' && pathDepth ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
       memberNode = outerMember
@@ -4113,7 +4113,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const mixedArrays = typeof n[1] === 'string' && mixed.size ? mixed.get(keyOf(n[1])) : undefined
       if (mixedArrays && literalKeyOf(n[2]) === null) {
         testing++; const recv = receiver(n[1]); testing--
-        const ik = expr(n[2])
+        const ik = keyExpr(n[2], chainOp(op, n[1]))
         let k = hasTag(recv, K.STRING) ? join(STRING, ABSENT) : ABSENT
         for (const a of mixedArrays) k = merge(k, orAbsent(entryOf(a, ik)))
         return optionalResult(chainOp(op, n[1]), recv, k)
@@ -4126,7 +4126,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // `o[1]` on an object is the property "1" (ToPropertyKey of a number literal)
       if (t === K.OBJECT && (typeof idx === 'number' || Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'number'))
         return member('.', recv, String(typeof idx === 'number' ? idx : idx[1]))
-      const ik = expr(idx)
+      const ik = keyExpr(idx, cop)
       if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE
       if (primArray(recv)) {
         let k = orAbsent(entryOf(arrayPart(recv), ik))
@@ -4171,6 +4171,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return ANY
       })())
     }
+    // `o?.[k]`: its key runs only past a receiver that is not nullish
+    if (op === '?.[]' && n.length === 3) { expr(n[1]); keyExpr(n[2], '?.'); return ANY }
     if (op === '(') return expr(n[1])
     if (op === '()' || op === '?.()') {
       if (n.length === 2 && op === '()') return expr(n[1])  // a grouping `(e)`: a call always carries its argument slot
@@ -4181,6 +4183,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // (`new Array(n).fill(v)`: the construction fills before it is walked, filledSites)
       if (memberCall && countCtor(callee[1]) && fillsAll(n, callee[1])) filledSites.add(callee[1])
       const recv = memberCall ? receiver(callee[1]) : null
+      // past a `?.` (an optional call, a callee further along an optional chain) the arguments, and the call, may not run
+      const mark = op === '?.()' || continuesOptional(callee) ? apart('optional call') : -1
       // a keeping builtin (`Array.isArray(x)`) retains nothing of its arguments: a mixed binding's join stays unread
       const keeping = typeof callee === 'string' && KEEPING_BUILTINS.test(callee)
       if (keeping) testing++
@@ -4195,7 +4199,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       let optional = null
       if (op === '?.()') {
         optional = memberCall ? member(callee[0], recv, callee[2]) : expr(callee)
-        if (tagOf(optional) === K.NONE) { sp = base; return K.NONE }
+        if (tagOf(optional) === K.NONE) { sp = base; if (mark >= 0) rejoin(mark); return K.NONE }
       }
       if (memberCall) {
         // a handler receives the value untyped: what the summary tracked for it leaves its sight
@@ -4241,6 +4245,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         else { escapeArgs(base, count); r = ANY }
       }
       sp = base
+      if (mark >= 0) rejoin(mark)
       return optional !== null && (hasTag(optional, K.NULLISH) || hasTag(optional, K.ABSENT)) ? join(r, NULLISH) : r
     }
     if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2], n)
@@ -4264,12 +4269,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const runs = rightRuns(op, n[1])
       decide(n, runs)
       if (runs === false) return a
-      branch++; flowPath++
-      const mark = rtop
+      const mark = apart('logical')
       proves(n[1], op === '&&')
       const b = selectedExpr(n[2], mask)
-      unwind(mark)
-      branch--; flowPath--
+      rejoin(mark)
       return merge(a, b)
     }
     if (op === '?' || op === '?:') {
@@ -4277,15 +4280,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const truth = decided(n[1])
       decide(n, truth)
       if (truth === 'pending') return K.NONE
-      branch++; flowPath++
-      const mark = rtop
+      const mark = apart('choice')
       pathProofs = still(n[2]); proves(n[1], true); pathProofs = false
       const a = truth === false ? K.NONE : selectedExpr(n[2], mask)
       unwind(mark)
       pathProofs = still(n[3]); proves(n[1], false); pathProofs = false
       const b = truth === true ? K.NONE : selectedExpr(n[3], mask)
-      unwind(mark)
-      branch--; flowPath--
+      rejoin(mark)
       return merge(a, b)
     }
     if (op === ',') { let k = NULLISH; for (let i = 1; i < n.length; i++) k = selectedExpr(n[i], i === n.length - 1 ? mask : 0); return k }
@@ -4350,7 +4351,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const t = expr(target), runs = rightRuns(op, target)
       if (node !== null) decide(node, runs)
       if (runs === false) return t
-      v = merge(op === '??=' ? core(t) : t, expr(value))
+      const mark = apart('logical assignment'), stored = expr(value)
+      rejoin(mark)
+      v = merge(op === '??=' ? core(t) : t, stored)
     }
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
     if (typeof target === 'string') { if (hulls.size || indexBounds.size) keepHull(target, op, value); return assignName(target, v) }
@@ -5333,8 +5336,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // What the block proves holds neither in the handler (it runs where the block
     // threw, past what it proved or before) nor past the statement, which the
     // handler may complete; nor does what the handler proves.
-    if (op === 'catch') { const mark = rtop; branch++; flowPath++; stmt(n[1]); unwind(mark); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); unwind(mark); branch--; flowPath--; return }
-    if (op === 'finally') { const mark = rtop; branch++; flowPath++; stmt(n[1]); unwind(mark); stmt(n[2]); unwind(mark); branch--; flowPath--; return }
+    if (op === 'catch') { const mark = apart('try'); stmt(n[1]); unwind(mark); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); rejoin(mark); return }
+    if (op === 'finally') { const mark = apart('try'); stmt(n[1]); unwind(mark); stmt(n[2]); rejoin(mark); return }
     if (op === 'throw') { escape(expr(n[1])); return }
     if (op === 'delete') {
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
@@ -5357,7 +5360,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // already covers a break to the loop's label.
     if (op === 'label') {
       if (!labelBreaks(n)) { stmt(n[2]); return }
-      const block = loopEnter(n[2]); branch++; flowPath++; stmt(n[2]); branch--; flowPath--; loopExit(block)
+      const block = loopEnter(n[2]), mark = apart('label'); stmt(n[2]); rejoin(mark); loopExit(block)
       return
     }
     if (op === 'break' || op === 'continue') return
@@ -5454,6 +5457,22 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (key !== null && ((refined.get(key) ?? TAGS) & NULL_BITS) !== 0) refineKey(key, TAGS & ~NULL_BITS)
   }
   const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (typeof key === 'string') pathDepth--; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
+  // A part of the walk that may not run where what encloses it does: what it
+  // proves (a test, a store's or a method call's receiver) holds on no path past
+  // it, and what it assigns leaves no straight-line fact. `apart(site)` enters
+  // one, `rejoin` leaves it at the mark `apart` returned; between them a part of
+  // its own (an arm's test, the other arm) unwinds to that mark too. The sites,
+  // each a program in test/kind-tests.js where a store in it proves nothing past
+  // it: 'logical' (the right of `&&`, `||`, `??`), 'choice' (an arm of `?:`),
+  // 'logical assignment' (the value `&&=`, `||=`, `??=` store), 'optional call'
+  // (the arguments, and the call, past a `?.`), 'optional key' (a key evaluated
+  // past a `?.`), 'try' (the block, the handler, `finally`), 'label' (a block a
+  // `break` may leave), 'default' (a parameter's). A statement's own arms and a
+  // loop's body and update unwind by their marks in `stmt`.
+  const apart = (site) => { branch++; flowPath++; return rtop }
+  const rejoin = (mark) => { unwind(mark); branch--; flowPath-- }
+  // a key an access evaluates past a `?.` (`cop`, its chain operator) may not run
+  const keyExpr = (k, cop) => { if (cop !== '?.') return expr(k); const mark = apart('optional key'), r = expr(k); rejoin(mark); return r }
   // A mask's tags keep those of the kind; its own parameter, where it has one
   // (a typed array's element kind a class test proves), fills an unknown one:
   // no element kind, or a number of one of several (a Float32Array or a Float64Array).
@@ -5821,7 +5840,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // a default runs only where its argument is missing: its writes are on a
     // path, and its value reaches the parameter where some call lets it run
     // (what a default proves holds where it ran alone: the body reads none of it)
-    if (defaults) { branch++; flowPath++; for (const p of defaultNamesOf(defaults)) { const pk = paramKey(key, p), dk = expr(defaults[p]); if (defaultRuns.has(pk)) bindParam(pk, dk) } unwind(0); branch--; flowPath-- }
+    if (defaults) { const mark = apart('default'); for (const p of defaultNamesOf(defaults)) { const pk = paramKey(key, p), dk = expr(defaults[p]); if (defaultRuns.has(pk)) bindParam(pk, dk) } rejoin(mark) }
     if (params) for (const p of reassignedIn(body, params, defaults)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)

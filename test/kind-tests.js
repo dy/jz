@@ -302,6 +302,46 @@ export const again = () => { G = chP[1] }`
   }
 })
 
+// Every part of the walk that may not run where what encloses it does (summary
+// `apart`, its sites read off the source here), by every way a statement
+// proves its receiver an object: where the part does not run, `p` stays what
+// the call passed, and `(p ?? { x: 5 }).x` reads 5. A site the walk walks apart
+// that has no program here fails the test until one is listed. Each part runs
+// where `k` is truthy; `z` is a parameter whose default runs where `k` is.
+const PROVES = { 'a member store': 'p.x = 1', 'an index store': "p[['x'][0]] = 1", 'a compound store': 'p.x += 1', 'an increment': 'p.x++', 'a method call': 'p.m()' }
+const MAY_NOT_RUN = {
+  logical: [(S) => `k && (${S})`, (S) => `!k || (${S})`, (S) => `(k ? null : 1) ?? (${S})`],
+  choice: [(S) => `k ? (${S}) : 0`, (S) => `!k ? 0 : (${S})`],
+  'logical assignment': [(S) => `let q = k; q &&= (${S})`, (S) => `let q = !k; q ||= (${S})`, (S) => `let q = k ? null : 1; q ??= (${S})`,
+    (S) => `const o = { q: k ? null : 1 }; o.q ??= (${S})`, (S) => `const o = { q: k }; o.q &&= (${S})`, (S) => `const o = { q: !k }; o.q ||= (${S})`],
+  'optional call': [(S) => `const o = k ? { m(a) { return a } } : null; o?.m(${S})`, (S) => `const g = k ? ((a) => a) : null; g?.(${S})`,
+    (S) => `const o = k ? { a: { m(a) { return a } } } : null; o?.a.m(${S})`, (S) => `const o = { m: k ? ((a) => a) : null }; o.m?.(${S})`,
+    (S) => `const o = k ? { m(a) { return a } } : null; o?.m(\`\${${S}}\`)`],
+  'optional key': [(S) => `const o = k ? [1, 2] : null; const r = o?.[(${S}, 0)]`, (S) => `const o = k ? { a: [1, 2] } : null; const r = o?.a[(${S}, 0)]`],
+  try: [(S) => `try { if (!k) throw 0; ${S} } catch (e) { }`, (S) => `try { if (!k) throw 0; ${S} } catch (e) { } finally { }`],
+  label: [(S) => `l: { if (!k) break l; ${S} }`],
+  default: [(S) => ({ param: `z = (${S})`, body: '' })],
+  // a statement's arms, a loop's body and update (their own marks in `stmt`)
+  statement: [(S) => `if (k) ${S}`, (S) => `if (!k) { } else ${S}`, (S) => `for (let i = 0; i < k; i++) ${S}`, (S) => `let n = k; while (n-- > 0) ${S}`, (S) => `for (let i = 0; i < k; ${S}) i++`],
+}
+test('kind tests: a store or a call in a part that may not run proves nothing past it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const walked = new Set([...readFileSync(new URL('../src/summary/index.js', import.meta.url), 'utf8').matchAll(/\bapart\('([^']+)'\)/g)].map(m => m[1]))
+  for (const site of walked) ok(MAY_NOT_RUN[site]?.length, `the walk's site '${site}' has its programs`)
+  for (const [prover, S] of Object.entries(PROVES)) {
+    const forms = Object.entries(MAY_NOT_RUN).flatMap(([site, list]) => list.map((form, j) => [`${site} ${j}`, form(S)]))
+    const src = forms.map(([, form], i) => {
+      const { param = 'z', body = form } = typeof form === 'string' ? { body: form } : form
+      return `const f${i} = (p, k, ${param}) => { ${body}; return (p ?? { x: 5 }).x }
+export const t${i} = (c) => f${i}({ x: 0, m() { return 1 } }, 1) * 10 + f${i}(c ? { x: 2, m() { return 1 } } : undefined, c ? 1 : 0, c ? undefined : 3)`
+    }).join('\n')
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const mod = jz(src, { optimize }).exports, host = oracle(src)
+      forms.forEach(([name], i) => { for (const c of [0, 1]) is(answer(mod[`t${i}`], c), answer(host[`t${i}`], c), `${prover} in ${name}, t(${c}) at ${optimize}`) })
+    }
+  }
+})
+
 // A field every creation of its objects sets, which no store makes nullish,
 // is never nullish (summary fieldTags): `params._glide ??= make()` where every
 // object reaching `params` is made with the array never makes one, and
