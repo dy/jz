@@ -1637,9 +1637,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const unify = (a, b) => {
     a = cell(a); b = cell(b)
     if (a === b) return a
-    // Two rows of one length unify by position (`[[m, 'a'], [n, 'b']]`: the pair
-    // a destructuring reads keeps its identities); any other pair is no row.
-    const ra = tuples.get(a), rb = tuples.get(b), rows = !!(ra && rb && ra.length === rb.length)
+    // Two rows unify by position (`[[m, 'a'], [n, 'b']]`: the pair a
+    // destructuring reads keeps its identities). Of two counts only the count
+    // is lost: a position past the shorter holds what the longer has there or
+    // nothing (`[a, [mono]]` beside `[a, b]`, buses of two channels and of
+    // one: every bus holds channel 0, channel 1 may be missing), `min` the
+    // fewer. A cell without a row is no row.
+    const ra = tuples.get(a), rb = tuples.get(b), rows = !!(ra && rb)
     if (!rows) { invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b)) }
     cellUp[b] = a; changed = true
     const la = lens[a] ?? LEN_OPEN, lb = lens[b] ?? LEN_OPEN
@@ -1656,7 +1660,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     multiSite.add(a)
     if (builds.has(b)) builds.set(a, builds.has(a) ? null : builds.get(b))
     // The cells are one before the rows merge: a row that reaches itself ends here.
-    if (rows) { tuples.set(b, null); for (let i = 0; i < ra.length; i++) { const nk = merge(ra[i], rb[i]); if (nk !== ra[i]) ra[i] = nk } }
+    if (rows) {
+      tuples.set(b, null)
+      const la = ra.length, lb = rb.length, short = Math.min(la, lb)
+      for (let i = 0; i < Math.max(la, lb); i++) {
+        let nk = merge(ra[i] ?? K.NONE, rb[i] ?? K.NONE)
+        if (i >= short) nk = merge(nk, ABSENT)
+        if (nk !== ra[i]) ra[i] = nk
+      }
+      if (la !== lb || ra.min !== undefined || rb.min !== undefined) ra.min = Math.min(ra.min ?? la, rb.min ?? lb)
+    }
     if (hostArrays.has(b)) hostArrays.add(a)
     if (retainedArrays.has(b)) retainedArrays.add(a)
     raiseElem(kind(K.ARRAY, a), elems[b], rows, false, false, elemNums[b] === undefined ? NR_NONE : elemNums[b])

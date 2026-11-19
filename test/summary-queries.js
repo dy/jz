@@ -1,6 +1,6 @@
 import test from 'tst'
-import { is, throws } from 'tst/assert.js'
-import { summarize, K, kind, join, hasTag, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
+import { is, ok, throws } from 'tst/assert.js'
+import { summarize, K, kind, join, hasTag, tagOf, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
 import { VAL } from '../src/reps.js'
 import { ctx } from '../src/ctx.js'
 import { instantiate } from '../interop.js'
@@ -39,6 +39,31 @@ test('summary queries: canonical shape unions keep order, aliases and folded mem
   }
   is(summarize(null, options).sitesOfExpr('forward'), null, 'empty work has no union from the previous summary')
   is(retained.sitesOfExpr('forward'), retainedSites, 'empty work leaves the retained union unchanged')
+})
+
+// Two arrays joined share a cell and their rows join by position: of two
+// counts only the count is lost. Two Float32Arrays beside one keep channel 0
+// present and channel 1 maybe missing; beside none, every channel maybe
+// missing; the element is a Float32Array in each, and past the longer count
+// nothing (summary unify).
+test('summary queries: rows of different counts join by position', () => {
+  const f32 = ['()', 'new.Float32Array', lit(4)], decl = (name, value) => ['const', ['=', name, value]]
+  const q = summarize([';', decl('a1', ['[', f32, f32]), decl('b1', ['[', f32, f32]), decl('a2', ['[', f32, f32]), decl('one', ['[', f32]),
+    decl('a3', ['[', f32, f32]), decl('none', ['[']),
+    decl('two', ['?:', 'c', 'a1', 'b1']), decl('mixed', ['?:', 'c', 'a2', 'one']), decl('empty', ['?:', 'c', 'a3', 'none'])],
+  { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+  const at = (name, i) => q.kindOfExpr(['[]', name, lit(i)])
+  const typed = (k) => tagOf(k) === K.TYPED
+  for (const name of ['two', 'mixed', 'empty']) {
+    is(hasTag(q.kindOfExpr(name), K.ARRAY), true, `${name} is an array`)
+    ok(typed(q.kindOfExpr(['[]', name, ['|', 'i', lit(0)]])), `${name} holds Float32Arrays`)
+    is(at(name, 2), kind(K.ABSENT), `${name}[2] is past every count`)
+  }
+  is(hasTag(at('two', 0), K.ABSENT) || hasTag(at('two', 1), K.ABSENT), false, 'two of two: both channels present')
+  is(hasTag(at('mixed', 0), K.ABSENT), false, 'two beside one: channel 0 present')
+  is(hasTag(at('mixed', 1), K.ABSENT), true, 'two beside one: channel 1 may be missing')
+  ok(typed(at('mixed', 0)) && hasTag(at('mixed', 1), K.TYPED), 'two beside one: each channel a Float32Array')
+  is(hasTag(at('empty', 0), K.ABSENT) && hasTag(at('empty', 0), K.TYPED), true, 'two beside none: channel 0 a Float32Array or missing')
 })
 
 test('summary queries: internal readers leave complete cached public views across repeated summaries', () => {

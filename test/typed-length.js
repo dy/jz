@@ -143,3 +143,27 @@ test('typed length: a typed array built from an array of one count has that coun
   const src = `const T = Int32Array.from([5, 6, 7])\nexport const f = (i) => T.length * 10 + T[i % 3]`
   for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `the count and an element at ${optimize}`)
 })
+
+// Buses of two channels and of one, in slots of one cell (`[[a, mono], [a, b]]`):
+// the join loses the count alone, so channel 0 of any bus is a Float32Array and
+// its `.length` reads the header, the module linking no generic length; beside
+// an empty bus (`none = []`) channel 0 may be missing, and the read keeps the
+// dispatch (summary unify). Each answers as the host does.
+const bus = (slot) => `let sets = [], fed = 1, proc = (inputs) => 0
+export const setup = (frames) => {
+  const a = [new Float32Array(frames), new Float32Array(frames)], b = [new Float32Array(frames), new Float32Array(frames)], mono = [new Float32Array(frames)], none = []
+  sets = [[a, ${slot}], [a, b]]
+  proc = (inputs) => { const inp = inputs[1]; if (!inp.length) return -1; return inputs[0][0].length * 10 + inp.length + inp[0].length }
+}
+export const feed = (f) => { fed = f ? 1 : 0 }
+export const process = () => proc(sets[fed])`
+test('typed length: a bus beside one of another count keeps its channels', () => {
+  for (const slot of ['mono', 'none']) {
+    const src = bus(slot)
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const mod = jz(src, { optimize }).exports, host = oracle(src)
+      for (const [n, f] of [[4, 0], [4, 1], [7, 0]]) { mod.setup(n); host.setup(n); mod.feed(f); host.feed(f); is(mod.process(), host.process(), `${slot}: frames ${n}, fed ${f} at ${optimize}`) }
+      if (slot === 'mono') ok(!/\(func \$__(length|str_len)\b/.test(wat(src, { optimize })), `mono: no generic length at ${optimize}`)
+    }
+  }
+})
