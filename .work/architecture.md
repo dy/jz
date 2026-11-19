@@ -3325,6 +3325,31 @@ Bench bytes: 3 of 105 cases move, stdlib-special 10 at speed, webaudio 4 and 4, 
 
 - A producer after prepare that writes a block as `['{}', statement]` is read as an expression now, where it was a block before. The suite and the 105 cases' bytes found none; no armed check holds the form.
 
+## The land-v landing: a sole call's loop written once, and a label's early errors (2026-11-19)
+
+Two commits on 6bc58eabd, both the integrator's, both repairs of what the two landings before it broke.
+
+### What the two landings before it broke
+
+- **Speed (land-s, the facts).** Landed with "speed not verified". The x64 probe after it (run 44573135102, 8db0e890e against dbf9beb10): worley 1.144, decode-tta 1.063, the other cases within 1.5%. The cause in worley: the facts typed a loop that holds the one call of a kernel, the typed-bounds versioning wrote that loop twice, the kernel then had two call sites and watr's `inlineOnce` no longer spliced it.
+- **Conformance (land-t, the block fix).** CI's test262 on 6bc58eabd: accepted-negative ledger 12 where 0. fa11e4fa3 made a statement's colon a label whatever follows it and deleted `LABEL_BODY_OPS`; everything that list had left out had been refused by accident. The landing check had no test262 step.
+
+### What landed
+
+- `66983ee46` A loop that holds the one call of a program function is written once (src/compile/index.js `soleCalls`: called at one site, named nowhere else, not exported; src/compile/emit/control-flow.js asks it before versioning). worley at speed 12,808 bytes (13,601), 0.870 of main's time and 0.996 of the time before the facts (arm64, alternating, 16 rounds); provenance 229 bytes less, 0.993. No other of the 105 cases moves. test/advanced-index.js holds the kernel spliced at default and speed; it fails with the emitter's condition out.
+- `baa2ae55d` A label's early errors, by the code's kind (src/early-errors.js): `yield` names no label in strict code or a generator, `await` none in a module's own code, an async function or a static block, escaped spellings alike (ECMA-262 14.13.1); a label stands before a statement, not a class, a lexical declaration, a generator or an async function; a class field whose initializer runs on into a `*` on the next line is refused. A first form of it in jzify refused the two words in a sloppy script too, where they are names: test262 run locally showed 2 in-scope failures before any push. test/errors.js holds the fourteen forms refused, the two script labels accepted and six labeled statements against Node.
+
+### The check (fx, on baa2ae55d)
+
+55 minutes at a load of 5 to 15, then test262 in 30. Listings unmoved (data-forms 640 gaps of 744, spellings 42 of 470, vector-coverage 453 of 840). WASI 7,542; default 7,669; armed level 3 7,451; level 0 7,429; test:self 89; integration 238 of 239 with one skipped; lint and audit clean; examples 1.70 and 1.69, 25 of 25 twice. On a fresh hosted compiler (37,739,478 bytes): parity 19, errors 151, statements 196, classes 73, generators 55, advanced-index 3. test262: pass 4,128, refused negatives 4,045, accepted negatives 0, failures 0. Bench bytes: 2 of 105 cases move (worley 793 and provenance 229 less at speed).
+
+The landing check runs `npm run test:262` from here on, and an optimizer change is timed on the cases whose bytes it moves before it lands.
+
+### Open
+
+- decode-tta is 6% slower on x64 since the facts and this does not repair it. Bisected to d2f6d147a (1.091 on arm64); `versionTypedBounds: false` brings it to 1.050 of the time before, the rest unexplained.
+- A labelled plain function inside a function body of a sloppy script (`L: function f() {} f()`) is refused with "f is not defined".
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

@@ -655,3 +655,9 @@ Waiting on the owner: `npm install` for jz's bumps (watr 5.13.8, subscript 10.8.
 fa11e4fa3 land-t                              the landing branch: main (8db0e890e) and the block fix; the record's commit after it
 f8ad60e53 worktree-agent-a9ec23575a85c3d81    the limits round two (landed in land-q) and, uncommitted in its tree, the block fix: landed as fa11e4fa3
 ```
+
+## Branches of the land-v landing (2026-11-19), tips before deletion
+
+```
+baa2ae55d fix-v                               the landing branch: main (6bc58eabd), the sole call's loop (66983ee46) and the label's early errors; the record's commit after it
+```
