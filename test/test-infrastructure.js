@@ -8,7 +8,7 @@ import { suiteArgs, suiteOf, splits, SUITES, QUICK } from './_suites.js'
 import { shards, plan, arcs, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
-import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, timed, cpuSeconds, landingVerdict, legEnv, legOf } from '../scripts/test-tasks.mjs'
+import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, landingTasks, timed, cpuSeconds, landingVerdict, legEnv, legOf } from '../scripts/test-tasks.mjs'
 
 const root = join(import.meta.dirname, '..')
 const clean = env => Object.fromEntries(Object.entries({ ...process.env, ...legEnv(env) }).filter(([, v]) => v != null))
@@ -105,6 +105,9 @@ test('landing check: a leg fails on its tests, past its budget or with none, and
   is(wall, 3601)
   is(reasons, ['b is over its budget, 136 of 135 CPU s', 'c failed', 'd has no recorded budget (--record)', 'e left no CPU time', 'f did not run', '60.0 min, past the hour'])
   is(landingVerdict([{ name: 'a', code: 0, wall: 3600, cpu: 1 }], recorded).reasons, [], 'an hour is within the hour')
+  // every leg the check runs has the budget a recorded run gave it
+  const { landing } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
+  is(landingTasks().map(t => t.name).filter(name => !(landing?.legs[name]?.[0] > 0)), [], 'every leg has a recorded budget')
 })
 
 test('populations: JZ_TEST_SAMPLE keeps one program in n, the same ones every run, and the name says so', () => {

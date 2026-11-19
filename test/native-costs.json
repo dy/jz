@@ -1331,5 +1331,21 @@
     "examples": [205.9, 38, 498]
    }
   }
+ },
+ "landing": {
+  "measured": "2026-11-19 at 0e8dc4a4e on Apple M4 Max, JZ_TEST_JOBS=4, JZ_TEST_SAMPLE=4, load average 42 at the start and 64 at the end",
+  "legs": {
+   "lint": [7.4, 7.9],
+   "audit": [2.8, 3.1],
+   "core-default": [8737.1, 3253.3],
+   "core-opt0": [1726.3, 670.3],
+   "core-invariants": [8598.4, 2844.8],
+   "core-wasi": [6509.9, 1168.6],
+   "generated": [2380, 395.4],
+   "integration": [978.1, 817.1],
+   "test262": [7039.2, 2655.8],
+   "test262-builtins": [1528.4, 483.9],
+   "self": [470, 510.6]
+  }
  }
 }
