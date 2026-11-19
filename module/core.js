@@ -149,7 +149,7 @@ export default (ctx) => {
   const lane = collectionLaneBytes()
   // the length dispatchers' whole bodies (`__length.value` reads a property arm, `__length` its Number)
   const LENGTH_VALUE_DEPS = () => ['__str_len', '__len', '__throw_property_nullish',
-    ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])]
+    ...lengthPropDeps()]
   const LENGTH_DEPS = ['__str_len', '__len', '__throw_property_nullish', '__length_prop_num']
   deps({
     __same_ref: () => [leanRuntime() ? '__ptr_offset' : '__ptr_offset_fwd'],
@@ -202,7 +202,7 @@ export default (ctx) => {
     '__length.value': () => [...(leanRuntime() ? LENGTH_VALUE_DEPS() : ['__length.value_tail', '__ptr_offset_fwd', '__str_len']), ...VIEW_DEPS()],
     __length: () => [...(leanRuntime() ? LENGTH_DEPS : ['__length_tail', '__ptr_offset_fwd', '__str_len']), ...VIEW_DEPS()],
     __length_prop_num: () => ['__to_num',
-      ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
+      ...lengthPropDeps()],
     // the long division is its own function, the common case answered inline
     __rem: () => leanRuntime() ? [] : ['__rem_div'],
     __rem_v: ['__rem'],
@@ -2745,22 +2745,25 @@ export default (ctx) => {
   // number are always dispatched. The __len disjunction collapses to whichever of
   // ARRAY/TYPED/HASH/SET/MAP are reachable. STRING covers both heap and SSO via __str_len.
   // Can `.length` on an unproven receiver resolve to an ORDINARY own property?
-  // Only when the program can hold one: a registered object schema, the
-  // dyn-prop/hash machinery, or a function held as a value, whose `length` is its
-  // parameters (the closure table: until the nullish read's TypeError was raised by
-  // its code, that error's schema stood in for it, and without the host's dynamic
-  // operations a function's length read undefined). Otherwise the fallback arm stays plain undefined
-  // and __length pulls no dyn dispatcher. The dispatcher lives in
-  // module/collection.js — gate on its registration too, so a build whose
-  // autoload never pulled that module keeps the lean arm instead of
-  // requesting an unregistered stdlib. Consulted at pull time (factory +
+  // Only when the program can hold one: a registered object schema or the
+  // dyn-prop/hash machinery. Otherwise __length pulls no dyn dispatcher. The
+  // dispatcher lives in module/collection.js — gate on its registration too, so
+  // a build whose autoload never pulled that module keeps the lean arm instead
+  // of requesting an unregistered stdlib. Consulted at pull time (factory +
   // deps thunk), when schemas, includes, and module set are final — same
   // pattern as the old HASH-arm includes probe.
   const lengthNeedsDynArm = () =>
     ctx.core.stdlib[ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] != null &&
     (ctx.linkDemand.external || ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
-     (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) || ctx.core.includes.has('__hash_set') ||
-     ctx.closure.table?.length > 0)
+     (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) || ctx.core.includes.has('__hash_set'))
+  // A function held as a value answers its parameters' count. Where nothing else
+  // in the program can hold a `length`, the arm reads the closure's own
+  // (module/function.js `__closure_length`) and the dispatcher stays out: it
+  // costs a module of closures and arrays two kilobytes, and the fixed-memory
+  // proof stops at the dispatcher's string arm, which no `length` read enters.
+  const lengthClosureArm = () => !lengthNeedsDynArm() && ctx.closure.table?.length > 0 && ctx.core.stdlib.__closure_length != null
+  const lengthPropDeps = () => lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h']
+    : lengthClosureArm() ? ['__closure_length'] : []
 
   const lengthTagIR = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const arrayLengthIR = `(block (result f64)
@@ -2785,7 +2788,11 @@ export default (ctx) => {
 
   const rawLengthPropArm = () => lengthNeedsDynArm()
     ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
-    : `(f64.const nan:${UNDEF_NAN})`
+    : lengthClosureArm()
+      ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
+      (then (f64.convert_i32_u (call $__closure_length (local.get $v))))
+      (else (f64.const nan:${UNDEF_NAN})))`
+      : `(f64.const nan:${UNDEF_NAN})`
   ctx.core.stdlib['__length_prop_num'] = () => `(func $__length_prop_num (param $v i64) (param $t i32) (result f64)
     (call $__to_num (i64.reinterpret_f64 ${rawLengthPropArm()})))`
 

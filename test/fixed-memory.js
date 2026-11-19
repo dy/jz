@@ -247,6 +247,30 @@ test('fixed memory: a closure call is followed to the closures it can reach', ()
   throws(() => compile(cycle, options(0)), /recursive call/)
 })
 
+test('fixed memory: a length read of an unproven receiver, in a module of closures and arrays', () => {
+  // Two bus sets whose second slots differ in their channels (the shape of @audio/compile's
+  // shim over a processor with a second input): `inp.length` goes through the generic read.
+  // Only a function can hold an ordinary `length` here, so the read answers a closure's
+  // parameters itself (the WASI leg's function-length tests) and links no dynamic read,
+  // whose string arm allocates.
+  const src = `let sets = [], fed = 1, proc = (inputs) => 0
+    export function setup(frames) {
+      const a = [new Float32Array(frames), new Float32Array(frames)], b = [new Float32Array(frames), new Float32Array(frames)], none = []
+      sets = [[a, none], [a, b]]
+      proc = (inputs) => { const inp = inputs[0]; if (!inp || !inp.length) return 0; return inp[0].length + inputs[1].length }
+    }
+    export function feed(f) { fed = f ? 1 : 0 }
+    export function process() { return proc(sets[fed]) }`
+  for (const optimize of tiers) {
+    const p = jz(src, options(optimize)), ref = new Function(src.replaceAll('export ', '') + '; return { setup, feed, process }')()
+    p.exports.setup(16); ref.setup(16)
+    const used = p.memory.used
+    for (const f of [0, 1, 0]) { p.exports.feed(f); ref.feed(f); is(p.exports.process(), ref.process(), `${optimize}: fed ${f}`) }
+    is(p.memory.used, used, `${optimize}: no retained allocation`)
+    if (!onKernel()) ok(!/__dyn_get/.test(compile(src, { ...options(optimize), wat: true })), `${optimize}: no dynamic read is linked`)
+  }
+})
+
 test('fixed memory: host reentry and non-tail recursive scratch are refused', () => {
   const recurse = `export function process(n){const a=new Float64Array(128);a[0]=n;return n>0 ? process(n-1)+a[0] : a[0]}`
   throws(() => compile(recurse, options(0)), /recursive call/)
