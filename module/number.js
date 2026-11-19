@@ -14,7 +14,7 @@
 
 import print from 'watr/print'
 import { typed, asF64, asI32, asI64, toI32, toNumF64, toStrI64, TO_PRIMITIVE, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish, numberNanIR } from '../src/ir.js'
-import { ssoBitI64Hex, ptrNanHex } from '../layout.js'
+import { ssoBitI64Hex, ptrNanHex, encodePtrHi } from '../layout.js'
 import { emit, storedValue, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
 import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
@@ -44,6 +44,13 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 // confirmed string, and only pass indices proven `< $len` (`__char_at` would
 // otherwise return its OOB 0; the inline load has no such guard).
 const SSO_BIT_I64 = ssoBitI64Hex()
+// The box of an OBJECT or a HASH, the values a user conversion takes, by its top
+// 16 bits: the prefix and the tag, tags 6 and 7 apart in bit 47 alone (layout.js).
+// The test the conversions made after setting a Number's NaN apart (numberNanIR),
+// in one compare.
+const OBJECT_HI16 = encodePtrHi(PTR.OBJECT, 0) >>> 16
+if (OBJECT_HI16 !== encodePtrHi(PTR.HASH, 0) >>> 16) throw new Error('layout: an OBJECT box and a HASH box no longer share their top 16 bits')
+export const objectBoxWat = (v) => `(i64.eq (i64.shr_u ${v} (i64.const 48)) (i64.const ${OBJECT_HI16}))`
 const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
 
 // Decimal width of an unsigned i32; shared by sizing and writing.
@@ -1889,16 +1896,19 @@ export default (ctx) => {
 
   // Number() permits a BigInt primitive, including one returned by a user
   // conversion. All other parsing and primitive conversions stay in ToNumber.
+  // A user conversion's primitive is taken first and takes the steps below as
+  // any primitive does: it is no object (ToNumber, ECMA-262 7.1.4 step 9), so
+  // one pass serves, and the helper never calls itself.
   ctx.core.stdlib['__number'] = () => `(func $__number (param $v i64) (result f64)
     (local $f f64) (local $t i32)
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if ${objectBoxWat('(local.get $v)')}
+      (then (local.set $v (call $__to_prim_num (local.get $v)))))` : ''}
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
     (if ${print(numberNanIR(['local.get', '$f']))} (then (return (local.get $f))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
-    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
-      (then (return (call $__number (call $__to_prim_num (local.get $v))))))` : ''}
     (call $__to_num (local.get $v)))`
 
   ctx.core.stdlib['__to_num'] = () => `(func $__to_num (param $v i64) (result f64)
@@ -1907,6 +1917,11 @@ export default (ctx) => {
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
     (local $radix i32) (local $digit i32) (local $sbase i32)
     (local $result f64) (local $f f64) (local $mant i64)
+    ;; An object's primitive by the number hint, which shares own lookup and
+    ;; inherited Date methods (ToNumber, ECMA-262 7.1.4 steps 8-10), is taken
+    ;; first: it is no object (step 9), and the steps below convert it.
+    (if ${objectBoxWat('(local.get $v)')}
+      (then (local.set $v (call $__to_prim_num (local.get $v)))))
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     ;; RepresentationPlan boxes every BigInt that reaches a dynamic ToNumber
     ;; edge. Every non-NaN raw f64 here is therefore a genuine Number,
@@ -1945,9 +1960,6 @@ export default (ctx) => {
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_TO_NUMBER)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_TO_NUMBER)}))))
-    ;; ToPrimitive(number) shares own lookup and inherited Date methods.
-    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
-      (then (return (call $__to_num (call $__to_prim_num (local.get $v))))))
     ;; Non-string values go through ToString per JS spec, then re-check the
     ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))

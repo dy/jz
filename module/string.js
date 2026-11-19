@@ -36,6 +36,7 @@ import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { registerUri } from './string/uri.js'
 import { symbolFork } from './symbol.js'
+import { objectBoxWat } from './number.js'
 import { registerBase64 } from './string/base64.js'
 import { registerEncoding } from './string/encoding.js'
 
@@ -1131,8 +1132,13 @@ export default (ctx) => {
   // BigInt's payload through the number module's `__radix_str` (loaded for
   // the literal or the constructor); any other program has no BigInt to print
   // and links no formatter.
-  wat('__to_str', () => `(func $__to_str (param $val i64) (result i64)
+  // A user conversion's primitive (ToString, ECMA-262 7.1.19 steps 10-12) is
+  // taken first and takes the arms below: it is no object (step 11), so one
+  // pass serves, and the helper never calls itself.
+  wat('__to_str', () => { const user = ctx.funcs.runtimeRoots.has('__jz_tp_str'); return `(func $__to_str (param $val i64) (result i64)
     (local $type i32) (local $f f64)
+    ${user ? `(if ${objectBoxWat('(local.get $val)')}
+      (then (local.set $val (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val)))))))` : ''}
     (local.set $f (f64.reinterpret_i64 (local.get $val)))
     ;; Not NaN → number, convert
     (if (f64.eq (local.get $f) (local.get $f))
@@ -1168,18 +1174,15 @@ export default (ctx) => {
     ;; An object: a Date renders its time, a user toString/valueOf goes through
     ;; the ToPrimitive prelude (compile/emit/to-primitive.js), else the
     ;; inherited Object.prototype.toString tag. A dictionary is a plain object.
-    (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+    ${user ? '' : `(if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
-        ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))`
-          : ctx.module.required.has('date') && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
+        ${ctx.module.required.has('date') && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
           (then (return (i64.reinterpret_f64 (call $__date_to_string (f64.load (i32.wrap_i64 (local.get $val))))))))` : ''}
-        ${ctx.schema.regexSids.size && !ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(if (call $__is_regexp (local.get $val))
+        ${ctx.schema.regexSids.size ? `(if (call $__is_regexp (local.get $val))
           (then (return (call $__regex_string (local.get $val)))))` : ''}
         (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
-      (then ${ctx.funcs.runtimeRoots.has('__jz_tp_str')
-        ? '(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))'
-        : '(return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))'}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))`}
     (if (i32.eq (local.get $type) (i32.const ${PTR.MAP}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 13))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.SET}))
@@ -1188,7 +1191,7 @@ export default (ctx) => {
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 15))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 16))))))
-    (local.get $val))`)
+    (local.get $val))` })
 
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for
   // heap strings (single native op); unpacks SSO offset-packed bytes inline.

@@ -62,9 +62,12 @@ import { ERR, errorCodeLiteral } from '../../err-codes.js'
 // and the outermost frame's entry, which every conditional frame would carry,
 // and a loop's release that takes the flag over (module/core/reach.js
 // `__iter_take`), which a loop's cold arm calls once per 64 KiB its iterations made.
+// ToNumber (module/number.js `__to_num`, some 1,200 nodes): spliced into a
+// sole caller it grows the module (4 bytes at size, 12 at speed, in most of
+// the bench cases that link it).
 const OUT_OF_LINE = ['$__rem_div', '$__len_tail', '$__length_tail', '$__length.value_tail', '$__typed_idx_tail',
   '$__typed_idx_tagged_tail', '$__arr_typed_set_idx_tail', '$__arr_typed_obj_set_idx_tail', '$__typed_set_idx_tagged_tail',
-  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer', '$__iter_take']
+  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer', '$__iter_take', '$__to_num']
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see

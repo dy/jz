@@ -1,7 +1,7 @@
 import test from 'tst'
-import { is } from 'tst/assert.js'
-import { oracle, jz, compile } from './util.js'
-import { ownedLevels } from './_matrix.js'
+import { is, ok } from 'tst/assert.js'
+import { oracle, jz, compile, funcWat } from './util.js'
+import { ownedLevels, onKernel } from './_matrix.js'
 
 // The same receiver crosses both the known-layout and generic coercion paths.
 // Repeated calls also exercise helper state across successes and TypeErrors.
@@ -930,6 +930,49 @@ test('Date coercion: eager registration does not introduce a Date dependency', (
       const opts={optimize,_eagerStdlib:eager};
       is(jz(src,opts).exports.f(),7,`O${optimize}, eager ${eager}`)
       if(src===ordinary)is(/\b__date_/.test(compile(src,{...opts,wat:true})),false,'no undemanded Date helper')
+    }
+  }
+})
+
+// ToNumber (ECMA-262 7.1.4) and ToString (7.1.19) of an object take its primitive
+// (steps 8 and 10) and convert that: ToPrimitive returns no object (steps 9 and 11),
+// so the conversion runs twice at most, a loop in `__to_num`, `__number` and
+// `__to_str` and not a call of the helper itself, which memory.fixed refuses as
+// recursion (src/compile/fixed-memory.js). Each value against Node at every level.
+test('ToNumber and ToString of a user conversion: the primitive converted once more, no self-call', () => {
+  const src = `export function f(mode, op) {
+    const values = [
+      { valueOf() { return 7 } },                                  // 7.1.1.1 step 3: valueOf's primitive
+      { valueOf() { return {} }, toString() { return ' 12 ' } },   // step 3: an object result goes on to toString
+      { valueOf() { return {} }, toString() { return {} } },       // step 4: no primitive, TypeError
+      { valueOf() { return '  0x1f ' } },                          // 7.1.4 step 6: StringToNumber of the primitive
+      { valueOf() { return null } },                               // step 4
+      { valueOf() { return undefined } },                          // step 3
+      { valueOf() { return true } },                               // step 5
+      { valueOf() { return -0 } },                                 // step 1: -0 kept
+      { valueOf() { return 5e-324 } },                             // a subnormal kept
+      { valueOf() { return -Infinity } },
+      { valueOf() { return NaN } },
+      { valueOf() { return Symbol('s') } },                        // step 2: TypeError
+      { toString() { return '1e3' } },                             // the inherited valueOf returns the object: toString
+      { valueOf() { return { valueOf() { return 1 } } }, toString() { return 'x' } },  // one pass: the inner object is not converted
+      new (class { valueOf() { return 3.5 } })(),                  // a class's method
+      { toString() { return '-0' } },
+    ]
+    const v = values[mode]
+    try { return op === 0 ? +v : op === 1 ? Number(v) : op === 2 ? v * 1 : op === 3 ? String(v) : \`\${v}!\` }
+    catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' }
+  }`
+  for (const optimize of ownedLevels(0, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports.f, want = oracle(src).f
+    for (let mode = 0; mode < 16; mode++) for (let op = 0; op < 5; op++)
+      is(got(mode, op), want(mode, op), `O${optimize}, value ${mode}, op ${op}`)
+    if (onKernel()) continue
+    const text = compile(src, { optimize, wat: true })
+    for (const name of ['__to_num', '__number', '__to_str']) {
+      const body = funcWat(text, name)
+      if (!body && optimize) continue   // inlined into its callers past level 0
+      ok(body && !new RegExp(`call \\$${name}\\b`).test(body), `O${optimize}: $${name} does not call itself`)
     }
   }
 })
