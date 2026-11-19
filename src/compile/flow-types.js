@@ -55,9 +55,10 @@ const PRESENT = { notNullish: true }
 const isParam = (name) => { const ps = ctx.func.current?.params; if (ps) for (const p of ps) if (p.name === name) return true; return false }
 /** Whether `name` may change while `code` runs, other than by its own writes:
  *  a captured cell, or a module binding a function assigns, where `code` calls. */
+// (`code` a function of no arguments: the code, built only where the name can change)
 export const assignedOver = (name, code, view = ctx.summary?.at(ctx.func.current)) =>
   (ctx.func.boxed?.has(name) || !ctx.func.locals?.has(name) && !isParam(name) && ctx.scope.globals?.has(name) && view?.fnAssigns?.(name) === true) &&
-  runsCode(code, view)
+  runsCode(typeof code === 'function' ? code() : code, view)
 /** What a guard's `fact` about `name` is worth over `code`. A captured cell, and a
  *  module binding a function assigns, can change at any call `code` makes: the
  *  fact holds over code that runs none (`if (typeof X === 'number') { w(); X + 1 }`

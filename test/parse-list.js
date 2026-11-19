@@ -9,7 +9,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { parse } from '../src/parse.js'
 import { LEN } from '../src/list-form.js'
 import { onKernel, onWasi } from './_matrix.js'
-import { jz, run, oracle } from './util.js'
+import { compile, jz, run, oracle } from './util.js'
 
 // [source, the tree as JSON]
 const TREES = [
@@ -331,6 +331,24 @@ test('parse list: 10,000 lines of two statements each', () => {
   is(JSON.stringify(tree[20001]), '["+=","t",[null,1]]')
   const src = `export let f = (x) => { let s = 0, t = 0\n${R(700, i => `s += x * ${i}; t += 1`).join('\n')}\nreturn s + t }`
   is(run(src).f(3), oracle(src).f(3), '700 lines in a function body answer as Node')
+})
+
+// After an `if` whose arm leaves, the emitter asks of each name the test refines
+// whether a later statement of the block writes it (emit/dispatch.js
+// emitBlockBody): asked statement by statement, and the statements after copied
+// for each, a switch's run of guarded returns took the square of its cases in
+// emission (10,000 cases: 2.3 s of CPU at the level off, 1.0 s once asked of one
+// table of last writes). The emission's time in t(4n) / t(n), the least of three:
+// at most 8, where linear is 4 and quadratic 16.
+test('parse list: a run of guarded returns is emitted in a time in the run', () => {
+  if (onKernel()) return  // (a compile's phase times are the in-process compiler's)
+  const src = (n) => `export let f = (x) => { switch (x) { ${R(n, i => `case ${i}: return ${i * 3};`).join(' ')} } return -1 }`
+  const emitted = (n) => { const profile = {}; compile(src(n), { optimize: false, profile }); return profile.totals.emitFuncs }
+  emitted(500)
+  let ratio = Infinity
+  for (let k = 0; k < 3 && !(ratio <= 8); k++) ratio = Math.min(ratio, emitted(8000) / emitted(2000))
+  ok(ratio <= 8, `emission t(8,000) / t(2,000) = ${ratio.toFixed(1)}`)
+  is(run(src(300)).f(299), 897, 'the last case answers')
 })
 
 // The early errors look for a lexical name declared twice in a scope: a nested

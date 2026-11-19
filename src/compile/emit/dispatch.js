@@ -15,7 +15,7 @@ import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, onEveryPath, projectedElementInit, refsName, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, collectAssignedNames, commaList, firstRefKind, isBlockBody, isReassigned, onEveryPath, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1514,6 +1514,19 @@ export function emitBlockBody(node) {
   // (the query layer's `present` mark, as flow-types.js withRefinements sets it).
   const view = ctx.summary?.at(frame.current), presented = []
   const markPresent = (name) => { if (view?.present && !view.isPresent(name)) { view.present(name); presented.push(name) } }
+  // Whether a statement after the i-th writes `name` (isReassigned of each), and
+  // the statements after it, made once each: asked statement by statement and
+  // copied for each name a guard refines, a run of n guarded exits (a switch of
+  // returns) took the square of n.
+  let lastWrite = null, tails = null
+  const writtenAfter = (name, i) => {
+    if (!lastWrite) {
+      lastWrite = new Map()
+      for (let j = 0; j < stmts.length; j++) for (const n of collectAssignedNames(stmts[j], new Set())) lastWrite.set(n, j)
+    }
+    return (lastWrite.get(name) ?? -1) > i
+  }
+  const after = (i) => { tails ??= new Map(); let t = tails.get(i); if (!t) tails.set(i, t = stmts.slice(i + 1)); return t }
   try {
     if (saves.has(-1)) save(saves.get(-1))
     for (let i = 0; i < stmts.length; i++) {
@@ -1554,10 +1567,8 @@ export function emitBlockBody(node) {
         const declared = Array.isArray(s) && (s[0] === 'let' || s[0] === 'const')
         for (const name of frame.presentInits.splice(presentFrom)) {
           if (!declared) continue
-          let reassigned = false
-          for (let j = i + 1; j < stmts.length; j++) if (isReassigned(stmts[j], name)) { reassigned = true; break }
-          if (reassigned) continue
-          if (heldOver(name, PRESENT_INIT, [';', ...stmts.slice(i + 1)]) === null) continue
+          if (writtenAfter(name, i)) continue
+          if (heldOver(name, PRESENT_INIT, () => [';', ...after(i)]) === null) continue
           const refinements = ctx.func.refinements ??= new Map()
           const cur = refinements.get(name)
           accumulated.push([name, cur])
@@ -1607,12 +1618,9 @@ export function emitBlockBody(node) {
         let rest = null
         for (let [name, fact] of refs) {
           if (tail != null && isReassigned(tail, name)) continue
-          let reassigned = false
-          for (let j = i + 1; j < stmts.length; j++)
-            if (isReassigned(stmts[j], name)) { reassigned = true; break }
-          if (reassigned) continue
+          if (writtenAfter(name, i)) continue
           // (what the statements below run may assign a captured cell or a module binding)
-          fact = heldOver(name, fact, rest ??= [';', tail, ...stmts.slice(i + 1)])
+          fact = heldOver(name, fact, () => rest ??= [';', tail, ...after(i)])
           if (fact === null) continue
           const refinements = ctx.func.refinements ??= new Map()
           const cur = refinements.get(name)
