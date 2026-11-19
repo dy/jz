@@ -1218,7 +1218,7 @@
    }
   },
   "generated-default": {
-   "measured": "2026-11-18 at 7a53f62c0 on Apple M4 Max, 4 processes at a time, load average 17 at the start and 14 at the end; step dups re-timed vector-coverage (its own Node battery dropped) on 2026-11-18 at 177ad88a9's tree plus that change, one process beside the parent's, load 77 to 89",
+   "measured": "2026-11-18 at 7a53f62c0 on Apple M4 Max, 4 processes at a time, load average 17 at the start and 14 at the end; step dups re-timed vector-coverage (its own Node battery dropped) on 2026-11-18 at 177ad88a9's tree plus that change, one process beside the parent's, load 77 to 89; the four files main gained, timed on 2026-11-19 at load 17 to 66 (they had no entry, and limits weighed 327 s by its bytes): compare-population and constant-reads-population by --costs in one process; limits (at 9d56c891c's test) and compact-stress each alone by /usr/bin/time, the processes they start counted, since each runs its rows in processes of its own and --costs, which counts the test process's own, read them at 0.3 and 0.4 s",
    "files": {
     "wat-invariants": [57.3, 18, 34],
     "vector-dependence": [137.4, 1, 54072],
@@ -1259,7 +1259,11 @@
     "perf-ratchet": [106.3, 11, 17],
     "spellings": [111.1, 28, 64],
     "data-forms": [140.6, 12, 36],
-    "vector-coverage": [119.2, 57, 57]
+    "vector-coverage": [119.2, 57, 57],
+    "limits": [1222, 29, 52],
+    "compact-stress": [543.2, 1, 12],
+    "compare-population": [151.6, 4, 256],
+    "constant-reads-population": [5.6, 1, 1]
    }
   },
   "generated-sample4": {
