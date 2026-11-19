@@ -2,7 +2,9 @@
 // checkpoint overlay. Child processes release their entire Wasm working set.
 // --recursive adds the recursive compiler check; --full adds it and the hosted
 // suite; --hosted=<i>/<n> runs only slice i of n of the hosted suite, on a kernel of
-// its own (CI's matrix: .github/workflows/self-compile.yml).
+// its own (CI's matrix: .github/workflows/self-compile.yml); --touched=<ref> runs the
+// hosted suite's files that changed since the merge base of HEAD and <ref>, on a kernel
+// of its own (the landing check: a change to a test is seen hosted before CI sees it).
 //
 // The hosted suite is every file `node test/index.js --suite=all` runs on the
 // kernel (JZ_TEST_TARGET=jz.wasm), each in a process of its own: every compile there
@@ -27,25 +29,35 @@ import { runTasks, legEnv, suiteJobs } from '../scripts/test-tasks.mjs'
 
 const args = process.argv.slice(2), [mode] = args
 const slice = /^--hosted=([1-9]\d*)\/([1-9]\d*)$/.exec(mode ?? '')
-if (args.length > 1 || mode && !['--full', '--recursive'].includes(mode) && !(slice && +slice[1] <= +slice[2]))
-  throw new Error('Usage: node test/bootstrap.mjs [--full|--recursive|--hosted=<i>/<n>]')
+const touched = /^--touched=(.+)$/.exec(mode ?? '')?.[1]
+if (args.length > 1 || mode && !['--full', '--recursive'].includes(mode) && !(slice && +slice[1] <= +slice[2]) && !touched)
+  throw new Error('Usage: node test/bootstrap.mjs [--full|--recursive|--hosted=<i>/<n>|--touched=<ref>]')
 const root = fileURLToPath(new URL('..', import.meta.url))
 const hosted = { JZ_TEST_TARGET: 'jz.wasm' }
 
-// The files of the hosted slice, dearest first; none unless asked.
+// The files of the hosted slice, or of the change, dearest first; none unless asked.
 function hostedFiles() {
-  if (mode !== '--full' && !slice) return []
-  const [i, n] = slice ? [+slice[1], +slice[2]] : [1, 1]
+  if (mode !== '--full' && !slice && !touched) return []
   const r = spawnSync(process.execPath, ['test/index.js', '--suite=all', '--list'], { cwd: root, encoding: 'utf8', env: { ...process.env, ...legEnv(hosted) } })
   if (r.error || r.status !== 0) throw new Error(`hosted suite listing failed\n${r.error?.message || r.stderr}`)
   const all = r.stdout.trim().split('\n').filter(Boolean)
   const cost = measured(all, JSON.parse(readFileSync(new URL('./hosted-costs.json', import.meta.url), 'utf8')).seconds)
+  if (touched) {
+    const git = a => { const g = spawnSync('git', a, { cwd: root, encoding: 'utf8' }); if (g.status !== 0) throw new Error(`git ${a.join(' ')}: ${g.stderr}`); return g.stdout.trim() }
+    const base = git(['merge-base', 'HEAD', touched])
+    const names = new Set(git(['diff', '--name-only', base, '--', 'test/']).split('\n').map(p => /^test\/([^/]+)\.js$/.exec(p)?.[1]).filter(Boolean))
+    const files = all.filter(f => names.has(f))
+    console.log(`bootstrap: the hosted suite's files touched since ${base.slice(0, 9)} (${touched}): ${files.length} of ${all.length}${files.length ? ', ' + files.join(' ') : ''}`)
+    return files.toSorted((a, b) => cost(b) - cost(a))
+  }
+  const [i, n] = slice ? [+slice[1], +slice[2]] : [1, 1]
   const { files, weight } = slices(all, cost, n)[i - 1]
   console.log(`bootstrap: hosted suite slice ${i}/${n}: ${files.length} of ${all.length} files, ${Math.round(weight / 60)} min of measured file time`)
   return files.toSorted((a, b) => cost(b) - cost(a))
 }
 
 const files = hostedFiles()
+if (touched && !files.length) process.exit(0)
 const dir = mkdtempSync(join(tmpdir(), 'jz-bootstrap-'))
 let failed = false
 try {
@@ -55,9 +67,11 @@ try {
   writeFileSync(path, built.bytes)
   console.log(`bootstrap: built ${built.bytes.length} bytes in ${(built.ms / 1000).toFixed(1)}s`)
   const shared = { JZ_SELF_TEST_KERNEL: path, JZ_SELF_TEST_KERNEL_SHA256: kernelHash(built.bytes) }
-  const parts = slice ? [] : [
+  const parity = { name: 'kernel-parity', args: ['test/index.js', 'kernel-parity', 'kernel-oracle'], env: legEnv({ ...shared, JZ_TEST_SWEEP: '1' }) }
+  // (--touched: the landing check's test:self does the round trip)
+  const parts = slice ? [] : touched ? [parity] : [
     { name: 'self-roundtrip', args: ['test/index.js', 'self-compile'], env: legEnv(shared) },
-    { name: 'kernel-parity', args: ['test/index.js', 'kernel-parity', 'kernel-oracle'], env: legEnv({ ...shared, JZ_TEST_SWEEP: '1' }) },
+    parity,
     { name: 'checkpoint', args: ['test/index.js', 'self-checkpoint'], env: legEnv(shared) },
     ...(mode ? [{ name: 'recursive', args: ['scripts/kernel-gate.mjs', '--kernel', path, '--gate', 'recursive'], env: legEnv() }] : []),
   ]

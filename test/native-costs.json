@@ -1,5 +1,5 @@
 {
- "source": "CPU seconds (user plus system), tests and assertions of each test file as [seconds, tests, assertions], by run: the suite, then the leg as scripts/test-tasks.mjs legOf names it from the environment. A file's seconds are read inside the process that runs it: its import, then its tests from the end of the previous file's last test to the end of its own (test/_run.js), so a process's start-up is no file's, and a split run's files are timed in the processes it splits them over. They are the test process's own: a process a test starts (the CLI, a build, a C compiler) is not counted, which is little of core (its files sum to 11,698 s of the 11,888 CPU s its default run took in all) and most of integration (439 s of 1,353). A file's tests count its skips and todos, as a summary's total does. `measured` says when (the UTC date), at which commit, on what machine, in how many processes, at what load and with how many failing tests each run was taken. test/index.js reads only the ratios within a row: it weighs the processes of a split core or generated run, and the machines --slice cuts it over, by the seconds of the leg it runs (a leg without a row by its armed twin's, else by the suite's default leg's), and a file the row does not list by its bytes at the seconds a byte of those it does (test/_jobs.js estimated). Written only by `node test/index.js --suite=<suite> --costs` under the leg's environment, a run's whole row once every file is timed; an ordinary run never writes it. `landing` is the landing check's (npm run test:landing, scripts/battery.mjs): each leg as [CPU seconds of the leg and every process it waited for, by `time -p`, wall seconds], a leg's budget its CPU seconds a quarter over and ten seconds, written only by `npm run test:landing -- --record`. The hosted suite's seconds are another measure (wall seconds, a file to a process, on the kernel) and stay in test/hosted-costs.json.",
+ "source": "CPU seconds (user plus system), tests and assertions of each test file as [seconds, tests, assertions], by run: the suite, then the leg as scripts/test-tasks.mjs legOf names it from the environment. A file's seconds are read inside the process that runs it: its import, then its tests from the end of the previous file's last test to the end of its own (test/_run.js), so a process's start-up is no file's, and a split run's files are timed in the processes it splits them over. They are the test process's own: a process a test starts (the CLI, a build, a C compiler) is not counted, which is little of core (its files sum to 11,698 s of the 11,888 CPU s its default run took in all) and most of integration (439 s of 1,353). A file's tests count its skips and todos, as a summary's total does. `measured` says when (the UTC date), at which commit, on what machine, in how many processes, at what load and with how many failing tests each run was taken. test/index.js reads only the ratios within a row: it weighs the processes of a split core or generated run, and the machines --slice cuts it over, by the seconds of the leg it runs (a leg without a row by its armed twin's, else by the suite's default leg's), and a file the row does not list by its bytes at the seconds a byte of those it does (test/_jobs.js estimated). Written only by `node test/index.js --suite=<suite> --costs` under the leg's environment, a run's whole row once every file is timed; an ordinary run never writes it. `landing` is the landing check's (npm run test:landing, scripts/battery.mjs), a record a JZ_TEST_JOBS: each leg as [CPU seconds of the leg and every process it waited for, by `time -p`, wall seconds], a leg's budget its CPU seconds a quarter over and ten seconds at the same JZ_TEST_JOBS and JZ_TEST_SAMPLE, written only by `npm run test:landing -- --record` from a run whose every leg passed. The hosted suite's seconds are another measure (wall seconds, a file to a process, on the kernel) and stay in test/hosted-costs.json.",
  "runs": {
   "core-default": {
    "measured": "2026-11-17 at 9c4da3648 on Apple M4 Max, 4 processes at a time, load average 29 at the start and 147 at the end; the 71 files whose level lists went to test/_matrix.js levels() and ownedLevels() re-timed 2026-11-18 on 9ce508a5f with that change, in one process, load average 174 at the start and 69 at the end (guard-views alone, at 183), four unchanged files beside them taking 1.00 of their time here; the 30 files moved onto test/util.js jzWat, and wat-bytes, re-timed 2026-11-18 on that change (parent 4b907722a), in one process beside the parent's in another, load average 29 at the start and 23 at the end; step sweeps re-timed loop-forms, missing-read, missing-arith, typed-fill and test-infrastructure on 2026-11-18 at 7a53f62c0's tree, one process, load 22 to 28; step dups set the tests and assertions of the files whose count funcWat changed (presence checks it now makes, functions the module may drop), as run on 2026-11-18, keeping each file's seconds: the change does no compile work of its own; step dups set test-infrastructure's tests and assertions after its testJobs test went, keeping its seconds",
@@ -1333,19 +1333,22 @@
   }
  },
  "landing": {
-  "measured": "2026-11-19 at 0e8dc4a4e on Apple M4 Max, JZ_TEST_JOBS=4, JZ_TEST_SAMPLE=4, load average 42 at the start and 64 at the end",
-  "legs": {
-   "lint": [7.4, 7.9],
-   "audit": [2.8, 3.1],
-   "core-default": [8737.1, 3253.3],
-   "core-opt0": [1726.3, 670.3],
-   "core-invariants": [8598.4, 2844.8],
-   "core-wasi": [6509.9, 1168.6],
-   "generated": [2380, 395.4],
-   "integration": [978.1, 817.1],
-   "test262": [7039.2, 2655.8],
-   "test262-builtins": [1528.4, 483.9],
-   "self": [470, 510.6]
+  "4": {
+   "measured": "2026-11-19 at 0e8dc4a4e on Apple M4 Max, JZ_TEST_JOBS=4, JZ_TEST_SAMPLE=4, load average 42 at the start and 64 at the end",
+   "sample": 4,
+   "legs": {
+    "lint": [7.4, 7.9],
+    "audit": [2.8, 3.1],
+    "core-default": [8737.1, 3253.3],
+    "core-opt0": [1726.3, 670.3],
+    "core-invariants": [8598.4, 2844.8],
+    "core-wasi": [6509.9, 1168.6],
+    "generated": [2380, 395.4],
+    "integration": [978.1, 817.1],
+    "test262": [7039.2, 2655.8],
+    "test262-builtins": [1528.4, 483.9],
+    "self": [470, 510.6]
+   }
   }
  }
 }

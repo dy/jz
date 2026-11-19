@@ -8,7 +8,8 @@ import { suiteArgs, suiteOf, splits, SUITES, QUICK } from './_suites.js'
 import { shards, plan, arcs, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
-import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, landingTasks, timed, cpuSeconds, landingVerdict, legEnv, legOf } from '../scripts/test-tasks.mjs'
+import { compareRows } from '../scripts/bench-bytes.mjs'
+import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, landingTasks, timed, cpuSeconds, landingVerdict, landingRecord, legEnv, legOf } from '../scripts/test-tasks.mjs'
 
 const root = join(import.meta.dirname, '..')
 const clean = env => Object.fromEntries(Object.entries({ ...process.env, ...legEnv(env) }).filter(([, v]) => v != null))
@@ -75,8 +76,8 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
     ok(names.includes('core-invariants') && !names.includes('core-opt3'), `battery ${args.join(' ')}: ${names.join(', ')}`)
   }
   ok(battery([]).includes('integration-invariants') && !battery([]).includes('integration-opt3'), 'the full battery runs integration at level 3 armed only')
-  is(battery(['landing']), ['lint', 'audit', 'core-default', 'core-opt0', 'core-invariants', 'core-wasi', 'generated', 'integration', 'test262', 'test262-builtins', 'self'],
-    'the landing check: lint, the file audit, core on four legs, the generated suite, integration, test262 and the self-compile round trip')
+  is(battery(['landing']), ['listings', 'lint', 'audit', 'core-wasi', 'core-default', 'core-invariants', 'core-opt0', 'generated', 'integration', 'test262', 'test262-builtins', 'self', 'hosted', 'bench-bytes', 'examples'],
+    'the landing check: the listings, lint, the file audit, core on four legs, the generated suite, integration, test262, the self-compile round trip, the touched hosted files, the bench bytes, the examples')
   // the legs' names, the keys of test/native-costs.json
   is([...matrixTasks(), invariantTask()].map(t => legOf(t.env)), ['default', 'opt0', 'opt3', 'wasi', 'opt3-invariants'])
   is(legOf({ JZ_TEST_OPTIMIZE: '0', JZ_TEST_HOST: 'wasi', JZ_TEST_SWEEP: '1' }), 'opt0-wasi-sweep')
@@ -88,26 +89,58 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
   }
 })
 
-test('landing check: a leg fails on its tests, past its budget or with none, and the whole past an hour', () => {
+test('landing check: a leg fails on its tests, past its budget at its count of processes or with none; the hour is a target', () => {
   is(timed({ name: 'x', args: ['a.js'] }).args, ['-p', process.execPath, 'a.js'])
   is(timed({ name: 'x', command: 'npm', args: ['run', 'lint'] }), { name: 'x', command: '/usr/bin/time', args: ['-p', 'npm', 'run', 'lint'] })
   // GNU's `time -p` and macOS's, and the last report where a leg's own output holds one
   is(cpuSeconds('ok 1\nreal 9.5\nuser 1.25\nsys 0.5\n'), 1.75)
   is(cpuSeconds('real         2.00\nuser         0.90\nsys          0.10\nuser 7\nsys 1\n'), 8)
   is(cpuSeconds('not ok 1\n'), null)
-  const recorded = { a: [100, 60], b: [100, 60], c: [100, 60], e: [100, 60], g: [0, 1] }
-  const { rows, wall, reasons } = landingVerdict([
+  const legs = { a: [100, 60], b: [100, 60], c: [100, 60], e: [100, 60], g: [0, 1] }
+  const record = { 4: { sample: 4, legs }, 8: { sample: 4, legs: { a: [500, 60] } } }, at4 = { jobs: '4', sample: '4' }
+  const { rows, wall, reasons, targets } = landingVerdict([
     { name: 'a', code: 0, wall: 1000, cpu: 135 }, { name: 'b', code: 0, wall: 1000, cpu: 136 }, { name: 'c', code: 1, wall: 1000, cpu: 50 },
     { name: 'd', code: 0, wall: 300, cpu: 1 }, { name: 'e', code: 0, wall: 300, cpu: null }, { name: 'f', code: 1, wall: 0, cpu: null, skipped: true },
     { name: 'g', code: 0, wall: 1, cpu: 9 },
-  ], recorded)
+  ], record, at4)
   is(rows.map(r => r.state), ['PASS', 'OVER', 'FAIL', 'NO BUDGET', 'NO CPU', 'NOT RUN', 'PASS'], 'a quarter over the record and ten seconds is within the budget')
   is(wall, 3601)
-  is(reasons, ['b is over its budget, 136 of 135 CPU s', 'c failed', 'd has no recorded budget (--record)', 'e left no CPU time', 'f did not run', '60.0 min, past the hour'])
-  is(landingVerdict([{ name: 'a', code: 0, wall: 3600, cpu: 1 }], recorded).reasons, [], 'an hour is within the hour')
-  // every leg the check runs has the budget a recorded run gave it
+  is(reasons, ['b is over its budget, 136 of 135 CPU s', 'c failed', 'd has no recorded budget (--record)', 'e left no CPU time', 'f did not run'], 'past the hour is no reason')
+  is(targets, ['a took 1000 s, past twice the 60 s recorded', 'b took 1000 s, past twice the 60 s recorded', 'c took 1000 s, past twice the 60 s recorded',
+    'e took 300 s, past twice the 60 s recorded', '60.0 of 60 min; the longest legs: a 16.7, b 16.7, c 16.7 min'], 'a slow wall and the hour are targets')
+  is(landingVerdict([{ name: 'd', code: 0, wall: 3600, cpu: 1 }], record, at4).targets, [], 'an hour is within the hour')
+  // a leg is held to the record at its own count of processes, else the nearest count's that
+  // holds it, scaled by 2% a process; never to a record of another sample
+  const at = (jobs, leg, cpu, sample = '4') => landingVerdict([{ name: leg, code: 0, wall: 60, cpu }], record, { jobs, sample })
+  is(at('8', 'a', 635).rows[0].budget, 635, 'the record at 8 for a run at 8')
+  is(at('8', 'b', 1).rows[0].budget, 100 * 1.08 * 1.25 + 10, 'a leg the record at 8 lacks: the record at 4, scaled to 8')
+  is([at('6', 'b', 140).rows[0].state, at('6', 'b', 141).reasons], ['PASS', ['b is over its budget, 141 of 140 CPU s (the record at 4 processes, scaled to 6)']])
+  is(at('6', 'a', 1).rows[0].from, 8, 'two counts as near: the larger')
+  is(at('6', 'a', 1).rows[0].recordedWall, null, 'a wall recorded at another count is no target')
+  is(at('4', 'a', 1, '1').reasons, ['a has no budget at JZ_TEST_SAMPLE=1: the records at 4, 8 processes are of another'])
+  throws(() => landingVerdict([], record, {}), /JZ_TEST_JOBS/)
+  // --record writes a run whose every leg passed, at its count, and keeps the other counts
+  const passed = [{ name: 'a', code: 0, wall: 61.04, cpu: 99.96, whole: true }]
+  is(landingRecord(record, passed, { ...at4, jobs: '6', measured: 'm' }), { landing: { ...record, 6: { measured: 'm', sample: 4, legs: { a: [100, 61] } } }, refused: [] })
+  for (const leg of [{ code: 1, whole: true, cpu: 1 }, { code: 0, whole: false, cpu: 1 }, { code: 0, whole: true, cpu: null }, { code: 1, skipped: true, cpu: null }])
+    is(landingRecord(record, [...passed, { name: 'z', wall: 1, ...leg }], { ...at4, measured: 'm' }), { landing: record, refused: ['z'] }, `refused: ${JSON.stringify(leg)}`)
+  // the listings run first and a tree they move is not checked; WASI first of the core's legs;
+  // the hosted files and the bench bytes read against the base; the examples' timing run again
+  const tasks = landingTasks({ base: 'b' }), by = Object.fromEntries(tasks.map(t => [t.name, t]))
+  is(tasks.filter(t => t.refuses).map(t => t.name), ['listings'])
+  is(tasks.slice(0, 4).map(t => t.name), ['listings', 'lint', 'audit', 'core-wasi'])
+  is([by.hosted.args, by['bench-bytes'].args], [['test/bootstrap.mjs', '--touched=b'], ['scripts/bench-bytes.mjs', '--base=b']])
+  is(tasks.filter(t => t.rerun).map(t => t.name), ['examples'])
+  // the bench bytes read against the base: a moved case, a case that no longer compiles, a new one
+  const corpus = o => new Map(Object.entries(o).map(([id, [size, speed]]) => [id, { id, size, speed }]))
+  is(compareRows(corpus({ a: ['10:x', '20:y'], b: ['5:p', '6:q'], c: ['7:r', '8:s'] }), corpus({ a: ['10:x', '20:y'], b: ['4:p2', '6:q2'], c: ['7:r', 'ERR boom'], d: ['1:n', '2:m'] })), {
+    moved: 2, broken: 1, sum: { size: [22, 21], speed: [26, 26] },
+    lines: ['b: size -1, speed +0 (same size, other bytes)', 'c: size +0, speed 8:s -> ERR boom', 'd: a new case, size 1:n, speed 2:m'],
+  })
+  // every leg the check runs has a budget in some record of its sample
   const { landing } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
-  is(landingTasks().map(t => t.name).filter(name => !(landing?.legs[name]?.[0] > 0)), [], 'every leg has a recorded budget')
+  ok(Object.keys(landing).length > 0 && Object.keys(landing).every(k => /^\d+$/.test(k)), 'a record a count of processes')
+  is(landingTasks().map(t => t.name).filter(name => !Object.values(landing).some(r => r.sample === 4 && r.legs[name]?.[0] > 0)), [], 'every leg has a budget')
 })
 
 test('populations: JZ_TEST_SAMPLE keeps one program in n, the same ones every run, and the name says so', () => {

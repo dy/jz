@@ -151,20 +151,34 @@ export const extendedTasks = ({ armed = false } = {}) => [
 ]
 
 // The landing check (npm run test:landing, scripts/battery.mjs landing): what a change
-// passes before it lands, a leg at a time. Level 3 runs armed in place of plain, as in the
-// battery. What CI runs and this does not: integration at level 0, at level 3 armed and on WASI, the
-// generated suite on WASI and whole, the 5,000-seed fuzz (test.yml), the hosted suite and
-// recursive compilation (self-compile.yml).
-export const landingTasks = () => [
-  { name: 'lint', command: 'npm', args: ['run', '-s', 'lint:imports'], env: legEnv() },
-  { name: 'audit', command: 'npm', args: ['run', '-s', 'audit:files'], env: legEnv() },
-  ...matrixTasks('core', { armed: true }),
-  { name: 'generated', args: ['test/index.js', '--suite=generated'], env: legEnv() },
-  { name: 'integration', args: ['test/index.js', '--suite=integration'], env: legEnv() },
-  { name: 'test262', args: ['--expose-gc', 'test/test262.js'], env: legEnv() },
-  { name: 'test262-builtins', args: ['--expose-gc', 'test/test262-builtins.js'], env: legEnv() },
-  { name: 'self', args: ['test/self-compile.js'], env: legEnv() },
-]
+// passes before it lands, a leg at a time, each step one a landing once went wrong without.
+// The listings are rewritten first, and a tree they move is not checked (`refuses`). WASI
+// runs first of the core's legs, the one a writer runs least (land-k's two tests failed
+// only CI's). Level 3 runs armed in place of plain, as in the battery. The hosted suite's
+// files the change touched run on a fresh kernel, and the bench corpus's bytes are read
+// against the base's (scripts/bench-bytes.mjs), both against the merge base with `base`.
+// The examples' timing (examples/bench.mjs, V8 against jz) is a wall-time gate: a failure
+// is run again, alone, before it is believed (`rerun`). What CI runs and this does not:
+// integration at level 0, at level 3 armed and on WASI, the generated suite on WASI and
+// whole, the 5,000-seed fuzz (test.yml), the whole hosted suite and recursive compilation
+// (self-compile.yml).
+export const landingTasks = ({ base = 'main' } = {}) => {
+  const [defaults, opt0, invariants, wasi] = matrixTasks('core', { armed: true })
+  return [
+    { name: 'listings', args: ['scripts/listings.mjs'], env: legEnv(), refuses: true, report: /^listings: (none moved|the rewrite moved)/ },
+    { name: 'lint', command: 'npm', args: ['run', '-s', 'lint:imports'], env: legEnv() },
+    { name: 'audit', command: 'npm', args: ['run', '-s', 'audit:files'], env: legEnv() },
+    wasi, defaults, invariants, opt0,
+    { name: 'generated', args: ['test/index.js', '--suite=generated'], env: legEnv() },
+    { name: 'integration', args: ['test/index.js', '--suite=integration'], env: legEnv() },
+    { name: 'test262', args: ['--expose-gc', 'test/test262.js'], env: legEnv() },
+    { name: 'test262-builtins', args: ['--expose-gc', 'test/test262-builtins.js'], env: legEnv() },
+    { name: 'self', args: ['test/self-compile.js'], env: legEnv() },
+    { name: 'hosted', args: ['test/bootstrap.mjs', `--touched=${base}`], env: legEnv(), report: /^bootstrap: the hosted suite's files touched/ },
+    { name: 'bench-bytes', args: ['scripts/bench-bytes.mjs', `--base=${base}`], env: legEnv(), report: /^bench bytes against/ },
+    { name: 'examples', args: ['examples/bench.mjs'], env: legEnv(), rerun: true, report: /geomean/ },
+  ]
+}
 // A task run under the POSIX `time -p`, which writes the CPU seconds of the task and every
 // process it waited for to the end of its log; cpuSeconds reads them back.
 export const timed = task => ({ ...task, command: '/usr/bin/time', args: ['-p', task.command || process.execPath, ...task.args] })
@@ -174,22 +188,49 @@ export function cpuSeconds(log) {
   return user == null || sys == null ? null : Number(user) + Number(sys)
 }
 // A leg of the landing check passes when its tests pass and its CPU seconds stay within its
-// budget: the last recorded run's (test/native-costs.json `landing`) a quarter over and ten
-// seconds, which a leg of a few seconds needs for its start. The check passes when every leg
-// does and the legs' wall time comes to an hour or less.
+// budget: a quarter over and ten seconds (a leg of a few seconds needs them for its start)
+// past what the leg spent in the last run `--record` wrote at the same number of processes
+// (test/native-costs.json `landing`, a record a JZ_TEST_JOBS). A process more spends about 2%
+// more CPU on the same work (V8 warms up the compiler in each): level 0 spent 1,850 and 1,851
+// CPU s at 2 processes, 1,936 at 4, 2,017 and 1,990 at 6. So a run at a count with no record
+// is held to the nearest count's, scaled by 2% a process, until `--record` writes its own;
+// never to a record of another JZ_TEST_SAMPLE. Wall time is no verdict: other work on the
+// machine moves it, and a process past its limit (JZ_TEST_TIMEOUT) fails already. The hour
+// for the whole and a leg past twice its recorded wall are targets: printed, never red.
 export const LANDING_SECONDS = 3600
+export const LANDING_PER_PROCESS = 0.02
 export const landingBudget = seconds => seconds * 1.25 + 10
-export function landingVerdict(legs, recorded = {}) {
+export function landingVerdict(legs, record = {}, { jobs, sample } = {}) {
+  if (!(Number(jobs) > 0)) throw new Error('landingVerdict: the run\'s JZ_TEST_JOBS picks its record')
+  const counts = Object.keys(record).filter(k => /^\d+$/.test(k)).map(Number), J = Number(jobs)
+  const same = counts.filter(k => sample == null || String(record[k].sample) === String(sample))
+    .toSorted((a, b) => (a !== J) - (b !== J) || Math.abs(a - J) - Math.abs(b - J) || b - a)
   const rows = legs.map(leg => {
-    const budget = recorded[leg.name] ? landingBudget(recorded[leg.name][0]) : null
+    // the record of this count that holds the leg, else the nearest count's that does
+    const from = same.find(k => record[k].legs[leg.name]), rec = from == null ? null : record[from].legs[leg.name]
+    const budget = rec ? landingBudget(rec[0] * (1 + LANDING_PER_PROCESS * (J - from))) : null
     const state = leg.skipped ? 'NOT RUN' : leg.code ? 'FAIL' : leg.cpu == null ? 'NO CPU' : budget == null ? 'NO BUDGET' : leg.cpu > budget ? 'OVER' : 'PASS'
-    return { ...leg, budget, state }
+    return { ...leg, budget, from: from ?? null, recordedWall: from === J ? rec[1] : null, state }
   })
   const wall = legs.reduce((sum, leg) => sum + leg.wall, 0)
-  const why = r => ({ 'NOT RUN': 'did not run', FAIL: 'failed', 'NO CPU': 'left no CPU time', 'NO BUDGET': 'has no recorded budget (--record)' })[r.state] ?? `is over its budget, ${Math.round(r.cpu)} of ${Math.round(r.budget)} CPU s`
+  const none = !same.length && counts.length ? `has no budget at JZ_TEST_SAMPLE=${sample}: the records at ${counts.join(', ')} processes are of another`
+    : 'has no recorded budget (--record)'
+  const over = r => `is over its budget, ${Math.round(r.cpu)} of ${Math.round(r.budget)} CPU s${r.from !== J ? ` (the record at ${r.from} processes, scaled to ${J})` : ''}`
+  const why = r => ({ 'NOT RUN': 'did not run', FAIL: 'failed', 'NO CPU': 'left no CPU time', 'NO BUDGET': none })[r.state] ?? over(r)
   const reasons = rows.filter(r => r.state !== 'PASS').map(r => `${r.name} ${why(r)}`)
-  if (wall > LANDING_SECONDS) reasons.push(`${(wall / 60).toFixed(1)} min, past the hour`)
-  return { rows, wall, reasons }
+  const targets = rows.filter(r => r.recordedWall != null && r.wall > 2 * r.recordedWall + 60)
+    .map(r => `${r.name} took ${Math.round(r.wall)} s, past twice the ${Math.round(r.recordedWall)} s recorded`)
+  if (wall > LANDING_SECONDS) targets.push(`${(wall / 60).toFixed(1)} of 60 min; the longest legs: ${rows.toSorted((a, b) => b.wall - a.wall).slice(0, 3).map(r => `${r.name} ${(r.wall / 60).toFixed(1)}`).join(', ')} min`)
+  return { rows, wall, reasons, targets }
+}
+// What `--record` writes: the run's legs as the record at its JZ_TEST_JOBS, the records of
+// other counts kept. A run with a leg that failed, stopped or left no CPU time is refused
+// whole (`refused` names those legs): its figure would be a budget the next healthy run goes over.
+export function landingRecord(landing = {}, legs, { jobs, sample, measured }) {
+  const refused = legs.filter(l => l.code || l.skipped || !l.whole || l.cpu == null).map(l => l.name)
+  if (refused.length) return { landing, refused }
+  const round = x => Math.round(x * 10) / 10
+  return { landing: { ...landing, [jobs]: { measured, sample: Number(sample), legs: Object.fromEntries(legs.map(l => [l.name, [round(l.cpu), round(l.wall)]])) } }, refused }
 }
 
 // test/native-costs.json as written: one item to a line, a file's figures on its own.
