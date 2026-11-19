@@ -810,8 +810,14 @@ export const controlFlowOps = {
     // same intercept — per frame, so a REUSED AST (same source compiled twice, the
     // self-compile warm path) versions afresh in the next compile instead of silently
     // skipping, and the AST carries no frame reference.
+    // The second copy is a second site of every function the body calls. One called here
+    // alone (compile/index.js soleCalls) is spliced here by the single-caller inliner, a
+    // kernel into the loop that runs it; written twice, the loop would keep the call for
+    // the price of a bound test a round (worley: each pixel's two kernels, 15% of its time).
+    const sole = ctx.plans.soleCalls
     if (!entered && !labeledContinue && !cold && !ctx.func.versioned?.has(body) && !getFactStore().sourceVersioned.has(body)
-        && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
+        && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)
+        && !(sole?.size && some(body, n => n[0] === '()' && typeof n[1] === 'string' && sole.has(n[1])))) {
       // The scan reads the body's counter ranges (loopFacts), so an access they
       // already bound is no candidate for a runtime guard.
       const topFacts = loopFacts(init, cond, step, body)

@@ -164,6 +164,25 @@ function programPins() {
   ]
 }
 
+/** The program's functions called at one place and named nowhere else (no value of it, no
+ *  export): watr's single-caller inliner splices such a body at its call. The emitter keeps
+ *  that call the one it is: a loop it writes twice would hold two (emit/control-flow.js).
+ *  A name that is also a property's, a key's or a binding's counts as named elsewhere. */
+function soleCalls(roots) {
+  const names = ctx.funcs.names, calls = new Map(), named = new Set()
+  const walk = (n) => {
+    if (typeof n === 'string') { if (names.has(n)) named.add(n); return }
+    if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return
+    let i = 1
+    if (n[0] === '()' && typeof n[1] === 'string' && names.has(n[1])) { calls.set(n[1], (calls.get(n[1]) ?? 0) + 1); i = 2 }
+    for (; i < n.length; i++) walk(n[i])
+  }
+  for (const root of roots) walk(root)
+  const sole = new Set()
+  for (const f of ctx.funcs.list) if (calls.get(f.name) === 1 && !named.has(f.name) && !isExported(f)) sole.add(f.name)
+  return sole
+}
+
 /** Every pass before link: the module's sections in order, and link's inputs. */
 // JZ_DEBUG_INVARIANTS: every input the summary reads (the module globals by name, all it asks
 // of them), its AST nodes by identity as well as content (the summary keys its facts by node),
@@ -343,6 +362,7 @@ export function assemble(ast, profiler) {
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
+  ctx.plans.soleCalls = soleCalls([ast, ...(ctx.module.moduleInits ?? []), ...ctx.funcs.list.map(f => f.body)])
   // The record layouts of arrays' named properties, fixed before any site emits.
   planArrayRecords()
   // The arrays that keep their elements as raw Numbers (numeric-arrays.js), fixed before any site emits.

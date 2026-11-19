@@ -61,3 +61,34 @@ test('advanced index: the butterfly is versioned over both extents', () => {
   }
   ok(loops.some(l => !/i32\.lt_u/.test(l)), 'a butterfly loop with no bounds test')
 })
+
+// A loop written twice holds two calls of every function its body calls. A kernel
+// called there alone is spliced into the loop by the single-caller inliner; the
+// second copy kept its call, a bound test a round saved for a call a round
+// (worley: two kernels a pixel, 15% of its time).
+test('versioning: a loop that holds the one call of a kernel is written once, the kernel spliced into it', () => {
+  const src = `const T = new Uint8Array(256)
+for (let i = 0; i < 256; i++) T[i] = (i * 37 + 11) & 255
+const kernel = (t, x, y) => {
+  let best = 1e9
+  for (let gy = -1; gy <= 1; gy++) {
+    const py = t[(y + gy) & 255]
+    for (let gx = -1; gx <= 1; gx++) {
+      const d = t[(x + gx + py) & 255] * 0.5 + gx * gx + gy * gy
+      if (d < best) best = d
+    }
+  }
+  return best
+}
+const fill = (out) => {
+  let k = 0
+  for (let y = 0; y < 24; y++) for (let x = 0; x < 24; x++) out[k++] = kernel(T, x, y)
+}
+export const main = () => { const out = new Float64Array(576); fill(out); let s = 0; for (let i = 0; i < 576; i++) s += out[i]; return s }`
+  const want = oracle(src).main()
+  for (const optimize of levels(false, true, 'size', 'speed')) is(jz(src, { optimize }).exports.main(), want, `answers as Node at ${optimize}`)
+  for (const optimize of levels(true, 'speed')) {
+    const text = String(compile(src, { optimize, wat: true }))
+    is((text.match(/\(call \$[^\s)]*kernel/g) || []).length, 0, `the kernel is spliced into its loop at ${optimize}`)
+  }
+})
