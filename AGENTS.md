@@ -67,6 +67,7 @@ What this implies for HOW we optimize:
 
 - `npm run test:quick`: after every edit, the import lint, the file audit and 108 cheap core files (`QUICK`, test/_suites.js), under 2 minutes at 8 jobs.
   It fails on each of the 15 faults it was chosen by (10 passes off, 5 bugs by hand), on the default leg only: it never replaces `npm test` and the legs below.
+- `npm run test:landing`: the landing check, a leg at a time over the cores less two: lint, the file audit, core at the default level, level 0, level 3 armed and on WASI, the generated suite (populations and the core's dear sweeps at one program in 4), integration, test262 and `test:self`. Each leg prints its wall and CPU seconds, a table follows, and it is red on a failing leg, a leg past a quarter and ten seconds over the CPU seconds of its last recorded run (`test/native-costs.json` `landing`, which `-- --record` rewrites) or a whole past an hour.
 - `npm test` — core suite (in-process compiler), without hidden bootstrap builds
   or generated population sweeps. Run it before reporting any change. It splits the
   files over the idle cores, each process a contiguous run of them (`test/index.js`)
@@ -77,6 +78,7 @@ What this implies for HOW we optimize:
   run, CI's weekly `one-process` workflow, where the state a file leaves behind meets
   every later file. Focus with `npm test -- dyn-keys strings` (named files run in one
   process); inspect ownership with `node test/index.js --suite=all --list`.
+  `--slice=<i>/<n>` runs arc i of n of the leg's files by their recorded seconds, as each of CI's core and generated jobs does.
 - `npm run test:matrix` — core opt0/opt2/opt3/wasi matrix, a leg at a time, each
   split the same way, level 3 plain as CI runs it; the battery runs level 3 armed
   (`JZ_DEBUG_INVARIANTS=1`) in its place. Do not launch overlapping batteries.

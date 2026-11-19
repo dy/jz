@@ -379,13 +379,14 @@ import { spawnSync } from 'node:child_process'
 import { cpus, loadavg } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { suiteArgs, suiteOf, inSuite, splits } from './_suites.js'
-import { plan, estimated } from './_jobs.js'
-import { runTasks, suiteJobs, legOf } from '../scripts/test-tasks.mjs'
-const { suite, list, files: argFilters, jobs: jobsArg, costs } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
-// A whole core or generated run may be split over processes; named files and a
-// suite whose files share artifacts run in this one (test/_suites.js).
+import { plan, arcs, estimated } from './_jobs.js'
+import { runTasks, suiteJobs, legOf, formatCosts } from '../scripts/test-tasks.mjs'
+const { suite, list, files: argFilters, jobs: jobsArg, costs, slice } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
+// A whole core or generated run may be split over processes and machines; named files
+// and a suite whose files share artifacts run in this one (test/_suites.js).
 const splittable = !argFilters.length && splits(suite)
 if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core or generated run; named files and the other suites run in one process')
+if (slice && !splittable) throw new Error('--slice cuts a whole core, generated or quick run over machines; named files and the other suites run whole')
 
 // Files that are wholly host-bridge / host-runtime: their compile inputs depend
 // on host options (imports/host globals, external js objects, CLI argv, host
@@ -459,12 +460,12 @@ const target = process.env.JZ_TEST_TARGET
 if (target && target !== 'jz.wasm') throw new Error(`Unknown JZ_TEST_TARGET '${target}'; use jz.wasm and set JZ_KERNEL to the compiler file`)
 const onKernelTarget = target === 'jz.wasm'
 
-const selected = (argFilters.length
+const listed = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
   : TESTS.filter(name => inSuite(name, suite))
 ).filter(name => argFilters.includes(name) || !((onKernelTarget && (KERNEL_EXCLUDE.has(name) || suiteOf(name) === 'bootstrap' || name === 'test-infrastructure')) || legSkips(name)))
 
-if (argFilters.length && selected.length !== argFilters.length) {
+if (argFilters.length && listed.length !== argFilters.length) {
   const known = new Set(TESTS)
   const missing = argFilters.filter(name => !known.has(name))
   throw new Error(`Unknown test file(s): ${missing.join(', ')}`)
@@ -479,6 +480,31 @@ const owner = suite === 'quick' ? 'core' : suite
 const COSTS = new URL('./native-costs.json', import.meta.url), row = `${suite}-${legOf()}`, load = loadavg()[0]
 if (costs && onKernelTarget) throw new Error('--costs times the native legs; the hosted suite has test/hosted-costs.json')
 if (costs && process.env.TST_GREP) throw new Error('--costs times whole files; TST_GREP would time a part of each')
+if (costs && slice) throw new Error('--costs writes a whole suite\'s row; a slice times a part of it')
+
+// A file weighs its CPU seconds on this leg (under JZ_TEST_SAMPLE, its sampled seconds where
+// the sampled row has them, else its whole seconds). A leg the table has no row for weighs by
+// its armed twin's (level 3 plain and armed compile the same: scripts/test-tasks.mjs), else by
+// the suite's default leg's. A file no row times weighs its bytes at the seconds a byte the
+// timed files cost.
+function weigh() {
+  const runs = JSON.parse(readFileSync(COSTS, 'utf8')).runs, whole = { ...process.env, JZ_TEST_SAMPLE: undefined }
+  const rowOf = env => runs[`${owner}-${legOf(env)}`]?.files
+  const timed = { ...rowOf(whole) ?? rowOf({ ...whole, JZ_DEBUG_INVARIANTS: '1' }) ?? rowOf({}), ...rowOf(process.env) }
+  return estimated(listed, Object.fromEntries(Object.entries(timed).map(([f, [s]]) => [f, s])), name => statSync(new URL(`./${name}.js`, import.meta.url)).size)
+}
+// The seed that moves the runs' boundaries (test/_jobs.js plan, arcs): JZ_TEST_SEED, or the
+// commit checked out, so a run repeats on its commit and moves on the next.
+function seedOf() {
+  const seed = process.env.JZ_TEST_SEED ? Number(process.env.JZ_TEST_SEED)
+    : parseInt(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.slice(0, 8), 16) || 0
+  if (!Number.isSafeInteger(seed) || seed < 0) throw new Error(`JZ_TEST_SEED must be a whole number, not '${process.env.JZ_TEST_SEED}'`)
+  return seed
+}
+const cut = slice || (splittable && !list), seed = cut ? seedOf() : 0, weight = cut ? weigh() : null
+// --slice=<i>/<n>: arc i of the n the ring of the leg's files cuts into by their seconds, the
+// same on every machine that checks out the commit (CI's test.yml runs an arc a job).
+const selected = slice ? arcs(listed, weight, slice[1], seed)[slice[0] - 1] ?? [] : listed
 
 // Listing is side-effect free: do not load the compiler or any test fixtures.
 if (list) { console.log(selected.join('\n')); process.exit(0) }
@@ -492,7 +518,7 @@ function record(times, failed, processes) {
   const commit = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.trim() || 'an unknown commit'
   const measured = `${new Date().toISOString().slice(0, 10)} at ${commit} on ${cpus()[0]?.model}, ${processes === 1 ? 'one process' : `${processes} processes at a time`}, load average ${Math.round(load)} at the start and ${Math.round(loadavg()[0])} at the end${failed ? `, ${failed} test${failed > 1 ? 's' : ''} failed` : ''}`
   table.runs = Object.fromEntries(Object.entries({ ...table.runs, [row]: { measured, files } }).sort(([a], [b]) => a < b ? -1 : 1))
-  writeFileSync(COSTS, JSON.stringify(table, null, 1).replace(/\[\n\s+([^\]]*?)\n\s+\]/g, (_, items) => `[${items.split(/,\n\s+/).join(', ')}]`) + '\n')
+  writeFileSync(COSTS, formatCosts(table))
   console.log(`--costs: ${row} written: ${selected.length} files, ${Math.round(Object.values(files).reduce((sum, [s]) => sum + s, 0))} CPU seconds`)
 }
 
@@ -500,23 +526,13 @@ function record(times, failed, processes) {
 // --jobs or JZ_TEST_JOBS names: each process takes a contiguous run of files,
 // named to it, and runs them as below.
 const jobs = splittable ? suiteJobs(jobsArg ?? (process.env.JZ_TEST_JOBS || undefined), selected.length) : 1
+if (slice || jobs > 1) console.log(`# seed ${seed}: JZ_TEST_SEED=${seed} repeats these runs${slice ? `; slice ${slice.join(' of ')}: ${selected.length} of ${listed.length} files` : ''}`)
 if (jobs > 1) {
-  // A file weighs its CPU seconds on this leg (under JZ_TEST_SAMPLE, its sampled seconds
-  // where the sampled row has them, else its whole seconds); one the leg has not timed,
-  // its bytes at the seconds a byte the timed files cost.
-  const runs = JSON.parse(readFileSync(COSTS, 'utf8')).runs
-  const timed = Object.fromEntries(Object.entries({ ...runs[`${owner}-${legOf({ ...process.env, JZ_TEST_SAMPLE: undefined })}`]?.files, ...runs[`${owner}-${legOf()}`]?.files }).map(([f, [s]]) => [f, s]))
-  const weight = estimated(selected, timed, name => statSync(new URL(`./${name}.js`, import.meta.url)).size)
-  // The seed that moves the runs' boundaries (test/_jobs.js plan): JZ_TEST_SEED, or the
-  // commit checked out, so a run repeats on its commit and moves on the next.
-  const seed = process.env.JZ_TEST_SEED ? Number(process.env.JZ_TEST_SEED)
-    : parseInt(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).stdout?.slice(0, 8), 16) || 0
-  if (!Number.isSafeInteger(seed) || seed < 0) throw new Error(`JZ_TEST_SEED must be a whole number, not '${process.env.JZ_TEST_SEED}'`)
-  console.log(`# seed ${seed}: JZ_TEST_SEED=${seed} repeats these runs`)
   // A quick run's process takes under a minute; one past five is a hang (a miscompiled
   // loop that never ends), failed then rather than at an ordinary task's hour.
   const timeout = suite === 'quick' && !process.env.JZ_TEST_TIMEOUT ? 300_000 : undefined
-  const results = await runTasks(plan(selected, weight, jobs, seed).map(({ files }) => ({
+  // A slice's arc is planned as it stands: the seed has moved it already.
+  const results = await runTasks(plan(selected, weight, jobs, slice ? 0 : seed).map(({ files }) => ({
     name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...costs ? ['--costs'] : [], ...files], env: { JZ_TEST_JOBS: '1' },
   })), { jobs, timeout })
   // The totals are each run's last summary: a test may print a nested run's own.

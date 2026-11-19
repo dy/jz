@@ -57,6 +57,7 @@
     "test:extended": "node scripts/test-extended.mjs",
     "test:bootstrap": "node test/bootstrap.mjs",
     "test:battery": "node scripts/battery.mjs",
+    "test:landing": "node scripts/battery.mjs landing",
     "test:bench": "node test/bench.js && node test/ecosystem-perf.js && node test/bench-merge.js",
     "test:claims": "node test/bench-claims.js",
     "test:fuzz": "node test/fuzz.js --count=5000",

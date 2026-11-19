@@ -19,9 +19,48 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+# No job runs past an hour: a job that would is cut over more machines.
+#
+# The core and generated legs are cut over machines (`npm test -- --slice=<i>/<n>`,
+# test/index.js): the leg's files, a ring turned by the commit, in n contiguous arcs of
+# near-equal recorded CPU seconds (test/native-costs.json), each arc split over the
+# runner's cores as `npm test` splits the whole. test/test-infrastructure.js holds that a
+# leg's slices are disjoint and together run its every file.
+#
+# Limits, from run 44340739961 (86df52211, the whole of each leg on one 4-core runner, three
+# processes): the core took 111 min at the default level, 105 at level 3, 59 on WASI and 19 at
+# level 0 (two processes); the generated suite 56 min and on WASI 70. A process there spent
+# 1.84 wall seconds a CPU second the table records on the default leg (1.65 to 2.01 a run),
+# 1.53 at level 3 (against the armed row), 1.07 on WASI, 1.08 at level 0, 1.12 on the
+# generated suite and 1.34 on its WASI leg (against the default row). At 2 seconds a second,
+# the dearest process of a slice over every seed comes to about 43 min for each core leg cut
+# in 3 (1,290 recorded seconds), 20 for level 0 whole (609), and 52 for the generated suite
+# cut in 2 (1,568; at its own rates 29 to 35), where store-population alone holds a process
+# 1,215 s. The hour is each job's limit.
 jobs:
-  test:
+  # The source checks, the examples' build and the public types: no suite leg.
+  checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - name: check source cleanup
+        run: npm run lint:imports && npm run audit:files
+      # Smoke test: every example still compiles. Output wasm is built + deployed by
+      # pages.yml (not committed), so there's no drift gate — just confirm they build.
+      - run: npm run build:examples
+      # Public declarations are release code: type-check every exported subpath.
+      - run: npm run test:types
+
+  test:
+    name: core (${{ matrix.variant }}) ${{ matrix.slice }}/${{ matrix.slices }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +72,17 @@ jobs:
         # passes only) is omitted as low-signal between opt0 and opt2 — the fuzz
         # job below still exercises opt1 numerically; `npm run test:opt1` runs it
         # ad-hoc.
-        variant: [default, opt0, opt3, wasi]
+        include:
+          - { variant: default, slice: 1, slices: 3 }
+          - { variant: default, slice: 2, slices: 3 }
+          - { variant: default, slice: 3, slices: 3 }
+          - { variant: opt0, slice: 1, slices: 1 }
+          - { variant: opt3, slice: 1, slices: 3 }
+          - { variant: opt3, slice: 2, slices: 3 }
+          - { variant: opt3, slice: 3, slices: 3 }
+          - { variant: wasi, slice: 1, slices: 3 }
+          - { variant: wasi, slice: 2, slices: 3 }
+          - { variant: wasi, slice: 3, slices: 3 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,29 +90,19 @@ jobs:
           node-version: 24
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
-      - name: check source cleanup
-        if: matrix.variant == 'default'
-        run: npm run lint:imports && npm run audit:files
-      - name: core (${{ matrix.variant }})
+      - name: core (${{ matrix.variant }}), slice ${{ matrix.slice }} of ${{ matrix.slices }}
         run: |
-          # Split over the runner's cores, the runs' boundaries moved by the commit
-          # (test/index.js). The whole suite in one process runs weekly (one-process.yml).
+          # The whole suite in one process runs weekly (one-process.yml).
           case "${{ matrix.variant }}" in
             opt0) export JZ_TEST_OPTIMIZE=0 ;;
             opt3) export JZ_TEST_OPTIMIZE=3 ;;
             wasi) export JZ_TEST_HOST=wasi ;;
           esac
-          npm test
-      # Smoke test: every example still compiles. Output wasm is built + deployed by
-      # pages.yml (not committed), so there's no drift gate — just confirm they build.
-      - run: npm run build:examples
-        if: matrix.variant == 'default'
-      # Public declarations are release code: type-check every exported subpath.
-      - run: npm run test:types
-        if: matrix.variant == 'default'
+          npm test -- --slice=${{ matrix.slice }}/${{ matrix.slices }}
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -94,13 +133,19 @@ jobs:
           cd "$smoke_dir"
           node --input-type=module -e 'import jz from "jz"; import "jz/interop"; if (jz("export let f = () => 42").exports.f() !== 42) throw Error("package compile failed")'
 
-  # These files own their optimize sweeps; both hosts, split over the runner's cores.
+  # These files own their optimize sweeps; both hosts, whole, cut as the core is.
   generated:
+    name: generated (${{ matrix.variant }}) ${{ matrix.slice }}/${{ matrix.slices }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, wasi]
+        include:
+          - { variant: default, slice: 1, slices: 2 }
+          - { variant: default, slice: 2, slices: 2 }
+          - { variant: wasi, slice: 1, slices: 2 }
+          - { variant: wasi, slice: 2, slices: 2 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -108,10 +153,10 @@ jobs:
           node-version: 24
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
-      - name: generated (${{ matrix.variant }})
+      - name: generated (${{ matrix.variant }}), slice ${{ matrix.slice }} of ${{ matrix.slices }}
         run: |
           if [ "${{ matrix.variant }}" = wasi ]; then export JZ_TEST_HOST=wasi; fi
-          npm run test:generated
+          npm run test:generated -- --slice=${{ matrix.slice }}/${{ matrix.slices }}
 
   # Extended differential fuzz: `npm test`'s in-suite `fuzz` test gates only seeds
   # 1..200; this runs the full 5000-seed pass (jz-wasm vs JS at opt {0,1,2,3},
@@ -120,6 +165,7 @@ jobs:
   # caught in CI. ~4 min.
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -142,6 +188,7 @@ jobs:
   # the point: the claim cannot silently regress or silently ship.
   claims:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:

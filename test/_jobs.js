@@ -18,17 +18,25 @@ export function shards(files, weight, n) {
   return out
 }
 
+const ring = (files, seed) => {
+  const at = files.length ? seed % files.length : 0
+  return [...files.slice(at), ...files.slice(0, at)]
+}
+
 // The runs a split suite starts, dearest first: three to a process, so the light ones
 // started last level the finish (scripts/test-tasks.mjs runTasks gives each next run
 // to the first process free). The list is a ring cut from file `seed` on: a seed
 // moves every boundary, so over runs of several seeds each file starts a process
 // and each pair of neighbours meets in one, which one fixed cut never shows.
-export const plan = (files, weight, jobs, seed = 0) => {
-  const at = files.length ? seed % files.length : 0
-  return shards([...files.slice(at), ...files.slice(0, at)], weight, jobs * 3)
-    .map(run => ({ files: run, weight: run.reduce((sum, f) => sum + weight(f), 0) }))
-    .sort((a, b) => b.weight - a.weight)
-}
+export const plan = (files, weight, jobs, seed = 0) => shards(ring(files, seed), weight, jobs * 3)
+  .map(run => ({ files: run, weight: run.reduce((sum, f) => sum + weight(f), 0) }))
+  .sort((a, b) => b.weight - a.weight)
+
+// A split suite over n machines (test/index.js --slice=<i>/<n>): the ring cut from file
+// `seed` into at most n arcs of near-equal weight, none heavier than its share and one
+// file. An arc is contiguous, so a machine's processes still take neighbours together
+// (plan it with seed 0), and the cut depends on no machine's count of processes.
+export const arcs = (files, weight, n, seed = 0) => shards(ring(files, seed), weight, n)
 
 // A file list as n slices for n machines, every file in exactly one: the dearest file
 // first goes to the slice lightest so far (bench/shards.mjs packs its cases the same

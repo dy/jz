@@ -5,10 +5,10 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, statSync 
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { suiteArgs, suiteOf, splits, SUITES, QUICK } from './_suites.js'
-import { shards, plan, slices, measured, estimated } from './_jobs.js'
+import { shards, plan, arcs, slices, measured, estimated } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
-import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv, legOf } from '../scripts/test-tasks.mjs'
+import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, timed, cpuSeconds, landingVerdict, legEnv, legOf } from '../scripts/test-tasks.mjs'
 
 const root = join(import.meta.dirname, '..')
 const clean = env => Object.fromEntries(Object.entries({ ...process.env, ...legEnv(env) }).filter(([, v]) => v != null))
@@ -41,12 +41,14 @@ test('quick tier: a few of core\'s files, run by --suite=quick, within its budge
 })
 
 test('test suites: explicit files and full sweeps remain available; invalid options fail', () => {
-  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined, costs: false })
+  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined, costs: false, slice: undefined })
   is(suiteArgs(['--jobs=4']).jobs, 4)
   is(suiteArgs(['--costs']).costs, true)
+  is(suiteArgs(['--slice=2/3']).slice, [2, 3])
   is(suiteArgs([], true).suite, 'all')
   is(suiteArgs(['--suite=quick']).suite, 'quick')
-  for (const args of [['--suite=nope'], ['--suite=core', '--suite=all'], ['--unknown'], ['math', 'math.js'], ['--jobs=0'], ['--jobs='], ['--jobs=2', '--jobs=3']]) throws(() => suiteArgs(args))
+  for (const args of [['--suite=nope'], ['--suite=core', '--suite=all'], ['--unknown'], ['math', 'math.js'], ['--jobs=0'], ['--jobs='], ['--jobs=2', '--jobs=3'],
+    ['--slice=0/3'], ['--slice=4/3'], ['--slice=1'], ['--slice=1/0'], ['--slice=1/2', '--slice=2/2']]) throws(() => suiteArgs(args))
   const source = `import { ownedLevels } from './test/_matrix.js'; console.log(JSON.stringify(ownedLevels(0, 2, 'speed', 'size')))`
   const values = env => {
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
@@ -68,11 +70,13 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
     if (r.status !== 0) throw Error(r.stderr)
     return r.stdout.trim().split('\n').map(line => line.split(':')[0])
   }
-  for (const args of [['fast'], []]) {
+  for (const args of [['fast'], [], ['landing']]) {
     const names = battery(args)
     ok(names.includes('core-invariants') && !names.includes('core-opt3'), `battery ${args.join(' ')}: ${names.join(', ')}`)
   }
   ok(battery([]).includes('integration-invariants') && !battery([]).includes('integration-opt3'), 'the full battery runs integration at level 3 armed only')
+  is(battery(['landing']), ['lint', 'audit', 'core-default', 'core-opt0', 'core-invariants', 'core-wasi', 'generated', 'integration', 'test262', 'test262-builtins', 'self'],
+    'the landing check: lint, the file audit, core on four legs, the generated suite, integration, test262 and the self-compile round trip')
   // the legs' names, the keys of test/native-costs.json
   is([...matrixTasks(), invariantTask()].map(t => legOf(t.env)), ['default', 'opt0', 'opt3', 'wasi', 'opt3-invariants'])
   is(legOf({ JZ_TEST_OPTIMIZE: '0', JZ_TEST_HOST: 'wasi', JZ_TEST_SWEEP: '1' }), 'opt0-wasi-sweep')
@@ -82,6 +86,25 @@ test('test suites: explicit files and full sweeps remain available; invalid opti
     const r = spawnSync(process.execPath, ['test/index.js', '--list', '--costs'], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
     ok(r.status !== 0 && r.stderr.includes('--costs'), JSON.stringify(env))
   }
+})
+
+test('landing check: a leg fails on its tests, past its budget or with none, and the whole past an hour', () => {
+  is(timed({ name: 'x', args: ['a.js'] }).args, ['-p', process.execPath, 'a.js'])
+  is(timed({ name: 'x', command: 'npm', args: ['run', 'lint'] }), { name: 'x', command: '/usr/bin/time', args: ['-p', 'npm', 'run', 'lint'] })
+  // GNU's `time -p` and macOS's, and the last report where a leg's own output holds one
+  is(cpuSeconds('ok 1\nreal 9.5\nuser 1.25\nsys 0.5\n'), 1.75)
+  is(cpuSeconds('real         2.00\nuser         0.90\nsys          0.10\nuser 7\nsys 1\n'), 8)
+  is(cpuSeconds('not ok 1\n'), null)
+  const recorded = { a: [100, 60], b: [100, 60], c: [100, 60], e: [100, 60], g: [0, 1] }
+  const { rows, wall, reasons } = landingVerdict([
+    { name: 'a', code: 0, wall: 1000, cpu: 135 }, { name: 'b', code: 0, wall: 1000, cpu: 136 }, { name: 'c', code: 1, wall: 1000, cpu: 50 },
+    { name: 'd', code: 0, wall: 300, cpu: 1 }, { name: 'e', code: 0, wall: 300, cpu: null }, { name: 'f', code: 1, wall: 0, cpu: null, skipped: true },
+    { name: 'g', code: 0, wall: 1, cpu: 9 },
+  ], recorded)
+  is(rows.map(r => r.state), ['PASS', 'OVER', 'FAIL', 'NO BUDGET', 'NO CPU', 'NOT RUN', 'PASS'], 'a quarter over the record and ten seconds is within the budget')
+  is(wall, 3601)
+  is(reasons, ['b is over its budget, 136 of 135 CPU s', 'c failed', 'd has no recorded budget (--record)', 'e left no CPU time', 'f did not run', '60.0 min, past the hour'])
+  is(landingVerdict([{ name: 'a', code: 0, wall: 3600, cpu: 1 }], recorded).reasons, [], 'an hour is within the hour')
 })
 
 test('populations: JZ_TEST_SAMPLE keeps one program in n, the same ones every run, and the name says so', () => {
@@ -199,11 +222,57 @@ test('suite processes: a seed moves every boundary, so each file starts a proces
   }
 })
 
+test('suite slices: arcs of the ring over machines, none far over its share, and the slices CI runs together the whole leg', () => {
+  const weight = { a: 5, b: 1, c: 1, d: 1, e: 4 }, files = Object.keys(weight), w = f => weight[f]
+  is(arcs(files, w, 2), [['a', 'b'], ['c', 'd', 'e']])
+  is(arcs(files, w, 2, 2), [['c', 'd', 'e'], ['a', 'b']], 'the seed turns the ring')
+  // On each split suite's recorded costs, for 2 to 4 machines and every seed: arcs of the ring
+  // holding each file once, none heavier than its share and the dearest file.
+  for (const [run, { files }] of splitRows()) {
+    const names = Object.keys(files), cost = f => files[f][0], total = names.reduce((sum, f) => sum + cost(f), 0)
+    const dearest = Math.max(...names.map(cost))
+    for (const n of [2, 3, 4]) {
+      const bad = []
+      for (let seed = 0; seed < names.length; seed++) {
+        const parts = arcs(names, cost, n, seed), flat = parts.flat()
+        if (parts.length > n || flat.length !== names.length || flat.some((f, i) => f !== names[(seed + i) % names.length])
+          || parts.some(p => p.reduce((sum, f) => sum + cost(f), 0) > total / n + dearest)) bad.push(seed)
+      }
+      is(bad, [], `${run}, ${n} machines`)
+    }
+  }
+  // CI's matrix, through test/index.js itself: each leg's slices 1 to n, each the arc the leg's
+  // row (or, without one, its armed twin's or the default leg's) cuts, together every file once.
+  const workflow = readFileSync(join(root, '.github/workflows/test.yml'), 'utf8')
+  const job = name => workflow.split(/\n {2}(?=[\w-]+:\n)/).find(s => s.startsWith(`${name}:\n`)) ?? ''
+  const { runs } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
+  const env = { default: {}, opt0: { JZ_TEST_OPTIMIZE: '0' }, opt3: { JZ_TEST_OPTIMIZE: '3' }, wasi: { JZ_TEST_HOST: 'wasi' } }
+  for (const [name, suite, variants] of [['test', 'core', ['default', 'opt0', 'opt3', 'wasi']], ['generated', 'generated', ['default', 'wasi']]]) {
+    const text = job(name), legs = {}
+    ok(text.includes('-- --slice=${{ matrix.slice }}/${{ matrix.slices }}'), `${name}: each job runs its slice`)
+    for (const [, variant, i, n] of text.matchAll(/- \{ variant: (\w+), slice: (\d+), slices: (\d+) \}/g)) (legs[variant] ??= []).push([+i, +n])
+    is(Object.keys(legs), variants, `${name}: every leg`)
+    for (const [variant, parts] of Object.entries(legs)) {
+      const n = parts[0][1], seed = { JZ_TEST_SEED: '7', JZ_TEST_SAMPLE: undefined }
+      is(parts, Array.from({ length: n }, (_, i) => [i + 1, n]), `${name} (${variant}): slices 1 to ${n}`)
+      const whole = list(suite, { ...env[variant], ...seed })
+      const row = [env[variant], { ...env[variant], JZ_DEBUG_INVARIANTS: '1' }, {}].map(e => runs[`${suite}-${legOf(e)}`]).find(Boolean).files
+      const want = arcs(whole, estimated(whole, Object.fromEntries(Object.entries(row).map(([f, [s]]) => [f, s])), f => statSync(join(root, 'test', `${f}.js`)).size), n, 7)
+      const got = parts.map(([i]) => spawnSync(process.execPath, ['test/index.js', '--list', `--suite=${suite}`, `--slice=${i}/${n}`], { cwd: root, env: clean({ ...env[variant], ...seed }), encoding: 'utf8', timeout: 30000 }).stdout.trim().split('\n'))
+      is(got, want, `${name} (${variant}): the arcs the row cuts`)
+      is(got.flat().toSorted(), whole.toSorted(), `${name} (${variant}): together every file of the leg once`)
+    }
+  }
+  // a slice of named files, of a suite that does not split, or timed for its row, is refused
+  for (const args of [['--slice=1/2', 'math'], ['--slice=1/2', '--suite=integration'], ['--slice=1/2', '--costs']])
+    ok(spawnSync(process.execPath, ['test/index.js', '--list', ...args], { cwd: root, env: clean(), encoding: 'utf8', timeout: 30000 }).status !== 0, args.join(' '))
+})
+
 test('suite processes: a split run cuts its runs where the seed and the leg\'s costs say', () => {
   // A split generated or quick run whose grep matches no test: each run imports its files
   // and runs none of their tests (about 3 CPU seconds a run of the suite).
   const split = (seed, suite = 'generated') => spawnSync(process.execPath, ['test/index.js', `--suite=${suite}`, '--jobs=2'], {
-    cwd: root, env: clean({ TST_GREP: '^no test has this name$', JZ_TEST_SEED: seed }), encoding: 'utf8', timeout: 120000,
+    cwd: root, env: clean({ TST_GREP: '^no test has this name$', JZ_TEST_SEED: seed, JZ_TEST_SAMPLE: undefined }), encoding: 'utf8', timeout: 120000,
   })
   const ran = r => [...r.stdout.matchAll(/^PASS (\S+) /gm)].map(m => m[1]).toSorted()
   const planned = (seed, suite = 'generated', row = 'generated-default') => {

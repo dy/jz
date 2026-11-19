@@ -149,3 +149,48 @@ export const extendedTasks = ({ armed = false } = {}) => [
   { name: 'generated-default', args: ['test/index.js', '--suite=generated'], env: legEnv() },
   { name: 'generated-wasi', args: ['test/index.js', '--suite=generated'], env: legEnv({ JZ_TEST_HOST: 'wasi' }) },
 ]
+
+// The landing check (npm run test:landing, scripts/battery.mjs landing): what a change
+// passes before it lands, a leg at a time. Level 3 runs armed in place of plain, as in the
+// battery. What CI runs and this does not: integration at levels 0 and 3 and on WASI, the
+// generated suite on WASI and whole, the 5,000-seed fuzz (test.yml), the hosted suite and
+// recursive compilation (self-compile.yml).
+export const landingTasks = () => [
+  { name: 'lint', command: 'npm', args: ['run', '-s', 'lint:imports'], env: legEnv() },
+  { name: 'audit', command: 'npm', args: ['run', '-s', 'audit:files'], env: legEnv() },
+  ...matrixTasks('core', { armed: true }),
+  { name: 'generated', args: ['test/index.js', '--suite=generated'], env: legEnv() },
+  { name: 'integration', args: ['test/index.js', '--suite=integration'], env: legEnv() },
+  { name: 'test262', args: ['--expose-gc', 'test/test262.js'], env: legEnv() },
+  { name: 'test262-builtins', args: ['--expose-gc', 'test/test262-builtins.js'], env: legEnv() },
+  { name: 'self', args: ['test/self-compile.js'], env: legEnv() },
+]
+// A task run under the POSIX `time -p`, which writes the CPU seconds of the task and every
+// process it waited for to the end of its log; cpuSeconds reads them back.
+export const timed = task => ({ ...task, command: '/usr/bin/time', args: ['-p', task.command || process.execPath, ...task.args] })
+export function cpuSeconds(log) {
+  const last = key => [...log.matchAll(new RegExp(`^${key}\\s+([\\d.]+)\\s*$`, 'gm'))].at(-1)?.[1]
+  const user = last('user'), sys = last('sys')
+  return user == null || sys == null ? null : Number(user) + Number(sys)
+}
+// A leg of the landing check passes when its tests pass and its CPU seconds stay within its
+// budget: the last recorded run's (test/native-costs.json `landing`) a quarter over and ten
+// seconds, which a leg of a few seconds needs for its start. The check passes when every leg
+// does and the legs' wall time comes to an hour or less.
+export const LANDING_SECONDS = 3600
+export const landingBudget = seconds => seconds * 1.25 + 10
+export function landingVerdict(legs, recorded = {}) {
+  const rows = legs.map(leg => {
+    const budget = recorded[leg.name] ? landingBudget(recorded[leg.name][0]) : null
+    const state = leg.skipped ? 'NOT RUN' : leg.code ? 'FAIL' : leg.cpu == null ? 'NO CPU' : budget == null ? 'NO BUDGET' : leg.cpu > budget ? 'OVER' : 'PASS'
+    return { ...leg, budget, state }
+  })
+  const wall = legs.reduce((sum, leg) => sum + leg.wall, 0)
+  const why = r => ({ 'NOT RUN': 'did not run', FAIL: 'failed', 'NO CPU': 'left no CPU time', 'NO BUDGET': 'has no recorded budget (--record)' })[r.state] ?? `is over its budget, ${Math.round(r.cpu)} of ${Math.round(r.budget)} CPU s`
+  const reasons = rows.filter(r => r.state !== 'PASS').map(r => `${r.name} ${why(r)}`)
+  if (wall > LANDING_SECONDS) reasons.push(`${(wall / 60).toFixed(1)} min, past the hour`)
+  return { rows, wall, reasons }
+}
+
+// test/native-costs.json as written: one item to a line, a file's figures on its own.
+export const formatCosts = table => JSON.stringify(table, null, 1).replace(/\[\n\s+([^\]]*?)\n\s+\]/g, (_, items) => `[${items.split(/,\n\s+/).join(', ')}]`) + '\n'

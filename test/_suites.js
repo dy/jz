@@ -54,11 +54,16 @@ export const inSuite = (name, suite) => suite === 'all' || (suite === 'quick' ? 
 export const splits = suite => suite === 'core' || suite === 'generated' || suite === 'quick'
 
 export function suiteArgs(args, kernel = false) {
-  let suite = kernel ? 'all' : 'core', list = false, costs = false, seen = false, jobs
+  let suite = kernel ? 'all' : 'core', list = false, costs = false, seen = false, jobs, slice
   const files = []
   for (const arg of args) {
     if (arg === '--list') list = true
     else if (arg === '--costs') costs = true
+    else if (arg.startsWith('--slice=')) {
+      const m = /^([1-9]\d*)\/([1-9]\d*)$/.exec(arg.slice(8))
+      if (slice || !m || +m[1] > +m[2]) throw new Error(`--slice=<i>/<n>, once, with i from 1 to n, not '${arg}'`)
+      slice = [+m[1], +m[2]]
+    }
     else if (arg.startsWith('--jobs=')) {
       if (jobs != null) throw new Error('--jobs may be specified only once')
       jobs = positiveInteger(arg.slice(7), '--jobs')
@@ -72,5 +77,5 @@ export function suiteArgs(args, kernel = false) {
     else files.push(arg.replace(/^test\//, '').replace(/\.js$/, ''))
   }
   if (new Set(files).size !== files.length) throw new Error('A test file was selected more than once')
-  return { suite, list, files, jobs, costs }
+  return { suite, list, files, jobs, costs, slice }
 }
