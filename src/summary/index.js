@@ -2820,13 +2820,39 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const r = readKey(key)
     return tagOf(r) === K.NONE ? undefined : r
   }
-  // `x == null`, of the value a name holds here: true where it is only ever
-  // nullish, false where it never is.
-  const nullishName = (name) => {
-    const k = testKind(name)
+  // The tags of `x.f`, a field of a name, read as a test reads it: where every
+  // object `x` holds is of shapes the summary follows and each declares `f` as
+  // a slot of its own, the join of those slots, which every creation of such
+  // an object, every store into the field (a computed key's, an
+  // `Object.assign`'s and a `delete`'s among them) and the host's writes
+  // (bound by the field's contract, summary fieldKind) raise. Undefined where
+  // a value of `x` reads `f` otherwise (a sidecar, an accessor, a class
+  // member, a dictionary) or a slot holds nothing yet (a field only code no
+  // walk reaches sets may never hold anything, and a test left pending would
+  // leave its arms unwalked). A nullish `x` throws before the field is read:
+  // its object part decides.
+  const fieldTags = (n) => {
+    if (!Array.isArray(n) || n[0] !== '.' || typeof n[1] !== 'string' || typeof n[2] !== 'string') return undefined
+    const k = testKind(n[1])
     if (typeof k !== 'number') return k
-    if (tagOf(k) === K.ANY) return undefined
-    return !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) ? false : tagOf(k) === K.NULLISH || tagOf(k) === K.ABSENT ? true : undefined
+    const recv = core(k)
+    if (tagOf(recv) !== K.OBJECT || paramOf(recv) === UNKNOWN) return undefined
+    let tags = 0
+    for (const sid of shapesOf(paramOf(recv))) {
+      const i = schemas[sid].indexOf(n[2])
+      if (i < 0 || iterFacts(sid) || classMember(kind(K.OBJECT, sid), n[2])) return undefined
+      const s = slots(sid)[i]
+      if (tagOf(s) === K.NONE) return undefined
+      tags |= s & TAGS
+    }
+    return tags === 0 ? undefined : tags
+  }
+  // `x == null` of a name's value here, or of a name's field: true where it is
+  // only ever nullish, false where it never is.
+  const nullishTags = (tags) => (tags & TAGS) === TAGS ? undefined : (tags & NULL_BITS) === 0 ? false : (tags & ~NULL_BITS) === 0 ? true : undefined
+  const nullishName = (name) => {
+    const k = typeof name === 'string' ? testKind(name) : fieldTags(name)
+    return typeof k !== 'number' ? k : tagOf(k) === K.ANY ? undefined : nullishTags(k)
   }
   const decided = (c) => {
     if (typeof c === 'string') return truthyTest(c)
@@ -2863,10 +2889,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (key === null) return undefined
       const k = kinds[key]
       if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
-      return (k & TAGS & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS)) === 0 && !PRIMITIVE_METHODS.has(c[2]) ? false : undefined
+      if ((k & TAGS & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS)) === 0 && !PRIMITIVE_METHODS.has(c[2])) return false
+      return op === '.' ? truthyField(c) : undefined
     }
     if (op !== '===' && op !== '!==' && op !== '==' && op !== '!=') return undefined
     const x = isNullishLiteral(c[2]) ? c[1] : isNullishLiteral(c[1]) ? c[2] : null
+    // a name's field (`params._glide == null`), by its slots: loosely either
+    // way, strictly where it is never nullish (null and undefined share a tag)
+    if (Array.isArray(x) && x[0] === '.') {
+      const f = nullishName(x)
+      if (typeof f !== 'boolean') return f
+      if (f && op !== '==' && op !== '!=') return undefined
+      return op === '==' || op === '===' ? f : !f
+    }
     // An argument read by position out of a rest parameter (`arg[0] === undefined`,
     // the default of a parameter the lowering packed: jzify/arguments.js) is
     // decided by what every call passes there, the parameter's tuple: missing
@@ -2919,20 +2954,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // where it only holds objects of any kind (a number, a string, a Boolean
   // or a BigInt may be falsy).
   const TRUTHY_TAGS = TAGS & ~(NULL_BITS | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT))
-  const truthyTest = (name) => {
-    const k = testKind(name)
-    if (typeof k !== 'number') return k
-    const tags = k & TAGS
-    return (tags & ~NULL_BITS) === 0 ? false : (tags & ~TRUTHY_TAGS) === 0 ? true : undefined
-  }
+  const truthyTags = (tags) => (tags & ~NULL_BITS) === 0 ? false : (tags & ~TRUTHY_TAGS) === 0 ? true : undefined
+  const truthyTest = (name) => { const k = testKind(name); return typeof k !== 'number' ? k : truthyTags(k & TAGS) }
+  // a name's field as a test, by its slots (fieldTags)
+  const truthyField = (n) => { const k = fieldTags(n); return typeof k !== 'number' ? k : truthyTags(k) }
   // Whether the right operand of `&&`, `||` or `??` (and the store of `&&=`,
   // `||=`, `??=`) runs, where the left is a name whose kind decides its test:
   // a parameter every call passes an object (`states ??= coefs.map(make)`,
   // `opts || {}`) never runs it. True where it runs on every walk.
+  // A field decides as a name does (`params._glide ??= new Float64Array(1)`
+  // where every object `params` holds is made with the array: fieldTags).
   const rightRuns = (op, left) => {
-    if (typeof left !== 'string') return undefined
     if (op === '??' || op === '??=') return nullishName(left)
-    const t = truthyTest(left)
+    const t = typeof left === 'string' ? truthyTest(left) : truthyField(left)
     return typeof t === 'boolean' ? (op === '&&' || op === '&&=') === t : t
   }
   // What each test decided on every walk: its truth where all agree, null

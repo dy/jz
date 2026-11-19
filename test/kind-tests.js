@@ -7,7 +7,7 @@
 // the samples' path runs; the plan drops the other arm (plan/fold-kind-tests.js).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { levels } from './_matrix.js'
+import { levels, onWasi } from './_matrix.js'
 import { oracle, jz, compile, compileInProcess } from './util.js'
 import { ctx } from '../src/ctx.js'
 
@@ -300,5 +300,63 @@ export const again = () => { G = chP[1] }`
   for (const optimize of levels(0, 2, 3, 'size')) {
     const mod = jz(src, { optimize }).exports, host = oracle(src)
     for (const k of [0, 1]) { mod.again(); host.again(); is(answer(mod.run, k, 2), answer(host.run, k, 2), `run(${k}) at ${optimize}`) }
+  }
+})
+
+// A field every creation of its objects sets, which no store makes nullish,
+// is never nullish (summary fieldTags): `params._glide ??= make()` where every
+// object reaching `params` is made with the array never makes one, and
+// `process` allocates nothing. Each test of the field below folds there; each
+// way an object of the shape may hold it nullish, or a value of another
+// shape reach the test, keeps it, and the answer is the host's.
+const FIELD_FORMS = {
+  '??=': 'const e = params._glide ??= make()',
+  '??': 'const e = params._glide ?? make()',
+  '== null': 'if (params._glide == null) params._glide = make(); const e = params._glide',
+  '=== undefined': 'if (params._glide === undefined) params._glide = make(); const e = params._glide',
+  '!': 'if (!params._glide) params._glide = make(); const e = params._glide',
+  '||=': 'const e = params._glide ||= make()',
+}
+const FIELD_READ = 'e[0] += d; return e[0]'
+const fieldKernel = (k, form) => `const ${k} = (d, params) => { ${form}; ${FIELD_READ} }`
+
+test('kind tests: a field every creation sets folds its tests', () => {
+  for (const optimize of levels(0, 2, 3, 'size')) for (const [name, form] of Object.entries(FIELD_FORMS)) {
+    const src = `const make = () => new Float64Array(1)\n${fieldKernel('k', form)}\nconst P = { g: 2, _glide: make() }\nexport const process = (d) => k(d, P)`
+    is(refusal(src, optimize), null, `${name}: process allocates nothing at ${optimize}`)
+    const mod = jz(src, { optimize }).exports, host = oracle(src)
+    for (const d of [1, 2]) is(answer(mod.process, d), answer(host.process, d), `${name}, process(${d}) at ${optimize}`)
+  }
+})
+
+// the object setup and the run that read each kernel `k`: every precondition broken in turn
+const FIELD_BROKEN = {
+  'a creation leaves it out': (k) => `const P_${k} = [{ g: 2, _glide: make() }, { g: 2 }]\nexport const run_${k} = (d) => ${k}(d, P_${k}[0]) * 100 + ${k}(d, P_${k}[1])`,
+  'a creation sets it null': (k) => `const P_${k} = [{ g: 2, _glide: make() }, { g: 2, _glide: null }]\nexport const run_${k} = (d) => ${k}(d, P_${k}[0]) * 100 + ${k}(d, P_${k}[1])`,
+  'a creation sets it undefined': (k) => `const P_${k} = [{ g: 2, _glide: make() }, { g: 2, _glide: undefined }]\nexport const run_${k} = (d) => ${k}(d, P_${k}[0]) * 100 + ${k}(d, P_${k}[1])`,
+  'a store sets it null': (k) => `const P_${k} = { g: 2, _glide: make() }\nexport const run_${k} = (d) => { const a = ${k}(d, P_${k}); if (d > 1) P_${k}._glide = null; return a * 100 + ${k}(d, P_${k}) }`,
+  'a store through another name': (k) => `const P_${k} = { g: 2, _glide: make() }\nexport const run_${k} = (d) => { const a = ${k}(d, P_${k}); const q = P_${k}; if (d > 1) q._glide = undefined; return a * 100 + ${k}(d, P_${k}) }`,
+  'a store of an element past the end': (k) => `const P_${k} = { g: 2, _glide: make() }, L_${k} = [make()]\nexport const run_${k} = (d) => { const a = ${k}(d, P_${k}); P_${k}._glide = L_${k}[d - 1]; return a * 100 + ${k}(d, P_${k}) }`,
+  'a computed key stores null': (k) => `const P_${k} = { g: 2, _glide: make() }, K_${k} = ['_glide', 'g']\nexport const run_${k} = (d) => { const a = ${k}(d, P_${k}); if (d > 1) P_${k}[K_${k}[0]] = null; return a * 100 + ${k}(d, P_${k}) }`,
+  'Object.assign stores null': (k) => `const P_${k} = { g: 2, _glide: make() }\nexport const run_${k} = (d) => { const a = ${k}(d, P_${k}); if (d > 1) Object.assign(P_${k}, { _glide: null }); return a * 100 + ${k}(d, P_${k}) }`,
+  // (a fixed shape refuses `delete o.f`; a computed key may name any field)
+  'a delete': (k) => `const P_${k} = { g: 2, _glide: make() }, K_${k} = ['_glide', 'g']\nexport const run_${k} = (d) => { const a = ${k}(d, P_${k}); if (d > 1) delete P_${k}[K_${k}[0]]; return a * 100 + ${k}(d, P_${k}) }`,
+  'an accessor of the name': (k) => `class G_${k} { constructor () { this.v = null } get _glide () { return this.v } set _glide (x) { this.v = x } }\nconst P_${k} = [{ g: 2, _glide: make() }, new G_${k}()]\nexport const run_${k} = (d) => ${k}(d, P_${k}[0]) * 100 + ${k}(d, P_${k}[1])`,
+  'the object comes from the host': (k) => `export const run_${k} = (d, o) => ${k}(d, o ?? { g: 2, _glide: make() })`,
+}
+
+test('kind tests: a field some object may hold nullish keeps its tests', () => {
+  const forms = Object.entries(FIELD_FORMS)
+  for (const [why, setup] of Object.entries(FIELD_BROKEN)) {
+    const src = `const make = () => new Float64Array(1)\n${forms.map(([, form], i) => `${fieldKernel(`k${i}`, form)}\n${setup(`k${i}`)}`).join('\n')}`
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const mod = jz(src, { optimize }).exports, host = oracle(src)
+      forms.forEach(([name], i) => {
+        const run = `run_k${i}`
+        for (const d of [1, 2]) is(answer(mod[run], d), answer(host[run], d), `${why}, ${name}, run(${d}) at ${optimize}`)
+        // (an object each: a store into the field reaches the host's own; WASI passes no host object)
+        if (why === 'the object comes from the host' && !onWasi()) for (const o of ['{ "g": 2 }', '{ "g": 2, "_glide": null }']) is(answer(mod[run], 2, JSON.parse(o)), answer(host[run], 2, JSON.parse(o)), `${why}, ${name}, given ${o} at ${optimize}`)
+      })
+    }
   }
 })
