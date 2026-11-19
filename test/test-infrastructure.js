@@ -139,10 +139,11 @@ test('landing check: a leg fails on its tests, past its budget at its count of p
     moved: 2, broken: 1, sum: { size: [22, 21], speed: [26, 26] },
     lines: ['b: size -1, speed +0 (same size, other bytes)', 'c: size +0, speed 8:s -> ERR boom', 'd: a new case, size 1:n, speed 2:m'],
   })
-  // every leg the check runs has a budget in some record of its sample
+  // the record: one a count of processes, each of a sample. (A leg it lacks is the landing
+  // check's own red, "has no recorded budget", and --record writes it: held here as well, a
+  // new leg would fail the core leg the record has to pass.)
   const { landing } = JSON.parse(readFileSync(join(root, 'test/native-costs.json'), 'utf8'))
-  ok(Object.keys(landing).length > 0 && Object.keys(landing).every(k => /^\d+$/.test(k)), 'a record a count of processes')
-  is(landingTasks().map(t => t.name).filter(name => !Object.values(landing).some(r => r.sample === 4 && r.legs[name]?.[0] > 0)), [], 'every leg has a budget')
+  ok(Object.keys(landing).length > 0 && Object.entries(landing).every(([k, r]) => /^\d+$/.test(k) && r.sample > 0 && Object.keys(r.legs).length > 0), 'a record a count of processes')
 })
 
 test('populations: JZ_TEST_SAMPLE keeps one program in n, the same ones every run, and the name says so', () => {
