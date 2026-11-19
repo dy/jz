@@ -126,12 +126,21 @@ const roundingUse = (chain, read) => {
 
 const ENTRY = Symbol('entry')
 
+// The most writes one read of a local is reached by. A local past it (a flag a
+// run of n ifs writes in each arm and reads after each: n reads reached by up to
+// n writes each, the square of the run held in the relation, 10,000 cases of a
+// switch past a 4 GB heap) is given up: its reads are no exact values, its
+// writes round nothing away, it does not narrow.
+const MAX_REACHING = 64
+
 /** The reads each write of a tracked local reaches, and the writes reaching
  *  each read, from one walk in evaluation order; null when the control flow
- *  has a shape the walk does not follow. */
+ *  has a shape the walk does not follow. `over` holds the locals given up
+ *  (MAX_REACHING), of which neither map holds anything. */
 function reachingWrites(fn, bodyStart, tracked) {
   const reach = new Map()     // read node → Set of write nodes (or ENTRY)
   const readsOf = new Map()   // write node → [read node, ancestors]
+  const over = new Set()
   const labels = [], stack = []
   let abort = false
   const frameOf = name => {
@@ -139,29 +148,41 @@ function reachingWrites(fn, bodyStart, tracked) {
     abort = true
     return null
   }
-  // (the maps and the sets are written once: a side that adds nothing is the join)
+  const tracks = name => tracked.has(name) && !over.has(name)
+  // An env one place holds is written in place; one that a join, an exit or a
+  // second walk also holds is copied at its first write: a copy at every write
+  // was the square of the locals and the writes (10,000 consts in a row).
+  const shared = new WeakMap()
+  const share = env => { if (env) shared.set(env, true); return env }
+  const union = (k, t, s) => {
+    const u = new Set([...t, ...s])
+    if (u.size > MAX_REACHING) over.add(k)
+    return u
+  }
+  // (the sets are written once: a side that adds nothing is the join)
   const merge = (a, b) => {
     if (!a) return b
     if (!b || a === b) return a
     let out = null
     for (const [k, s] of b) {
+      if (over.has(k)) continue
       const t = a.get(k)
       if (t === s) continue
       let more = !t
       if (t) for (const w of s) if (!t.has(w)) { more = true; break }
       if (!more) continue
-      if (!out) out = new Map(a)
-      out.set(k, t ? new Set([...t, ...s]) : s)
+      if (!out) out = shared.has(a) ? new Map(a) : a
+      out.set(k, t ? union(k, t, s) : s)
     }
     return out ?? a
   }
-  const exit = (name, env) => { const f = frameOf(name); if (f && env) f.exits.push(env) }
+  const exit = (name, env) => { const f = frameOf(name); if (f && env) f.exits.push(share(env)) }
   // A read node an emitter placed at several points (the IR is a DAG) is reached
   // by the writes of every one of them.
   const note = (read, env) => {
     const ws = env.get(read[1]) ?? new Set([ENTRY])
     const seen = reach.get(read)
-    reach.set(read, seen ? new Set([...seen, ...ws]) : ws)
+    reach.set(read, seen ? union(read[1], seen, ws) : ws)
     const chain = stack.slice(0, -1)
     for (const w of ws) if (w !== ENTRY) (readsOf.get(w) ?? readsOf.set(w, []).get(w)).push([read, chain])
   }
@@ -173,13 +194,13 @@ function reachingWrites(fn, bodyStart, tracked) {
   const visit = (n, env) => {
     const op = n[0]
     if (op === 'local.get') {
-      if (env && tracked.has(n[1])) note(n, env)
+      if (env && tracks(n[1])) note(n, env)
       return env
     }
     if (op === 'local.set' || op === 'local.tee') {
       env = walk(n[2], env)
-      if (!env || !tracked.has(n[1])) return env
-      const e = new Map(env)
+      if (!env || !tracks(n[1])) return env
+      const e = shared.has(env) ? new Map(env) : env
       e.set(n[1], new Set([n]))
       if (op === 'local.tee') note(n, e)
       return e
@@ -192,7 +213,7 @@ function reachingWrites(fn, bodyStart, tracked) {
       labels.push(frame)
       const body = n.slice(i)
       const seq = env => { for (const s of body) { if (!env) break; env = walk(s, env) } return env }
-      let out = seq(env)
+      let out = seq(frame.loop ? share(env) : env)
       if (frame.loop) {
         // Writes late in the body reach reads early in the next iteration.
         let head = merge(env, out)
@@ -206,7 +227,7 @@ function reachingWrites(fn, bodyStart, tracked) {
     if (op === 'if') {
       // (a kernel written as text keeps its comments among its children)
       const { test, then, otherwise } = conditional(n)
-      env = walk(test, env)
+      env = share(walk(test, env))
       if (!env) return null
       const arm = a => {
         if (!isArr(a)) return env
@@ -230,7 +251,13 @@ function reachingWrites(fn, bodyStart, tracked) {
   }
   let env = new Map()
   for (let i = bodyStart; i < fn.length; i++) env = walk(fn[i], env)
-  return abort ? null : { reach, readsOf }
+  if (abort) return null
+  // a read noted before its local was given up holds a part of what reaches it
+  if (over.size) {
+    for (const r of reach.keys()) if (over.has(r[1])) reach.delete(r)
+    for (const w of readsOf.keys()) if (over.has(w[1])) readsOf.delete(w)
+  }
+  return { reach, readsOf, over }
 }
 
 export function narrowFloat32(fn) {
@@ -249,7 +276,7 @@ export function narrowFloat32(fn) {
 function narrowLocals(fn, bodyStart, decls) {
   const flow = reachingWrites(fn, bodyStart, decls)
   if (!flow) return
-  const { reach, readsOf } = flow
+  const { reach, readsOf, over } = flow
   const writes = new Map()
   const collect = n => {
     if (!isArr(n)) return
@@ -265,7 +292,7 @@ function narrowLocals(fn, bodyStart, decls) {
   // alone: code materialized after this pass writes such temps (a deferred
   // BigInt box's operands), and it holds what that code gives it.
   let good, narrow, early
-  const barred = new Set()
+  const barred = new Set(over)
   // Whether every read a write reaches only rounds the value, a copy into
   // another tracked local counting when its own reads do.
   const roundsAway = (w, seen = new Set()) => {
@@ -274,7 +301,7 @@ function narrowLocals(fn, bodyStart, decls) {
     return (readsOf.get(w) ?? []).every(([r, chain]) => {
       if (roundingUse(chain, r)) return true
       const p = chain[chain.length - 1]
-      return isArr(p) && (p[0] === 'local.set' || p[0] === 'local.tee') && p[2] === r && decls.has(p[1]) && roundsAway(p, seen)
+      return isArr(p) && (p[0] === 'local.set' || p[0] === 'local.tee') && p[2] === r && decls.has(p[1]) && !over.has(p[1]) && roundsAway(p, seen)
     })
   }
   const exactRead = r => {

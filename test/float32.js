@@ -11,6 +11,8 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, funcWat, oracle, run, wat } from './util.js'
+import parseWat from 'watr/parse'
+import { narrowFloat32 } from '../src/optimize/float32.js'
 
 const HEAD = 'var f32 = Math.fround\n'
 const kernels = {
@@ -261,6 +263,38 @@ test('float32: a local written by constants alone stays f64', () => {
     ok(!/\(local \$\S+ f32\)/.test(w), 'no local narrows')
   })
   for (const n of [0, 1, 9, 40]) for (const k of [0.25, 1.5, -3]) agree(src, 'f', [n, k])
+})
+
+// The reaching writes held a relation of reads and writes, and a copy of the
+// writes so far at every write: a flag that each arm of a run of ifs writes and
+// the test of each next arm reads (a switch's fall-through flag) is reached at
+// its nth read by n writes, and 10,000 cases ran a compile past a 4 GB heap; a
+// run of 10,000 constants took the square of the run in copies. The pass takes a
+// time in the run: t(4n) / t(n) at most 8, where linear is 4 and quadratic 16.
+test('float32: a run of arms that write one flag, and a run of locals, take a time in the run', () => {
+  const R = (n, f) => Array.from({ length: n }, (_, i) => f(i)).join('\n')
+  const forms = {
+    'a flag each arm writes': n => `(module (func $f (param $x f64) (result f64) (local $flag f64) (local $r f64)
+      ${R(n, i => `(if (f64.eq (local.get $flag) (f64.const 0)) (then (if (f64.eq (local.get $x) (f64.const ${i})) (then (local.set $r (f64.const ${i * 3})) (local.set $flag (f64.const 1))))))`)}
+      (local.get $r)))`,
+    'a run of locals': n => `(module (func $f (param $x f64) (result f64) ${R(n, i => `(local $a${i} f64)`)}
+      (local.set $a0 (local.get $x))
+      ${R(n - 1, i => `(local.set $a${i + 1} (f64.add (local.get $a${i}) (f64.const 1)))`)}
+      (local.get $a${n - 1})))`,
+  }
+  const clock = process.threadCpuUsage ?? process.cpuUsage
+  const time = (src) => {
+    const fn = parseWat(src).find(n => Array.isArray(n) && n[0] === 'func')
+    const c0 = clock(); narrowFloat32(fn); const c = clock(c0)
+    return [(c.user + c.system) / 1000, fn]
+  }
+  const N = 2000
+  for (const [form, gen] of Object.entries(forms)) {
+    time(gen(N))
+    let ratio = Infinity
+    for (let k = 0; k < 3 && !(ratio <= 8); k++) ratio = Math.min(ratio, time(gen(4 * N))[0] / time(gen(N))[0])
+    ok(ratio <= 8, `${form}: t(${4 * N}) / t(${N}) = ${ratio.toFixed(1)}`)
+  }
 })
 
 test('float32: a missing element is NaN through f32 arithmetic', () => {
