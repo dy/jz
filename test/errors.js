@@ -1532,3 +1532,35 @@ test('errors: a typeof of a typeof prepares its operand once', () => {
   is(f(3), 6)
   is(run('export let f = (x) => typeof typeof Math.sin + typeof Math.sin + typeof x').f(1), 'stringfunctionnumber')
 })
+
+// A label names a statement (ECMA-262 14.13.1): `yield` names none in strict code or a
+// generator, `await` none in a module's own code or an async function, escaped alike; and
+// what a label stands before is no class, lexical declaration, generator or async function.
+// A class field's initializer runs on into a `*` on the next line: `x = 42⏎*gen() {}` is
+// `42 * gen() {}`. test262 holds each as a negative (statements/labeled/decl-*.js,
+// value-await-module*.js, value-yield-strict*.js, expressions/async-generator/
+// early-errors-expression-label-name-*.js, class/elements/fields-asi-4.js), and holds
+// `await` and `yield` as labels of sloppy script code as valid (value-await-non-module*.js,
+// value-yield-non-strict*.js). A statement's colon labels whatever follows it, so each is
+// an early error (src/early-errors.js).
+test('errors: a label names a statement, and await and yield name one only where they are no reserved word', () => {
+  const refused = (src, opts) => { let e; try { compile(src, opts) } catch (x) { e = x } ok(e instanceof SyntaxError || e && !/internal/.test(e.message), `${src} is refused${e ? '' : ': it compiled'}`) }
+  for (const src of ['await: 1;', 'aw\\u0061it: 1;']) refused(src, { sourceType: 'module' })
+  for (const src of ['yield: 1;', 'yi\\u0065ld: 1;']) refused('"use strict";\n' + src)
+  for (const src of ['var f = async function* () { await: 1; }', 'var f = async function* () { yield: 1; }', 'var g = function* () { yield: 1; }',
+    'label: class C {};', 'label: function* g() {}', 'label: async function f() {}', 'label: async function* f() {}',
+    'label: let x = 1;', 'label: const x = 1;', 'var C = class {\n  x = 42\n  *gen() {}\n}'])
+    refused(src)
+  throws('label: class C {};', 'a label stands before a statement', 'the message names the rule')
+  // sloppy script code: the two words are names, and name labels
+  for (const src of ['aw\\u0061it: 1;', 'yi\\u0065ld: 1;']) { let e; try { compile(src, { sourceType: 'script' }) } catch (x) { e = x } ok(!e, `${src} is a labeled statement of a script${e ? ': ' + e.message.split('\n')[0] : ''}`) }
+  const valid = [
+    'export let t = (x) => { L: x++; return x }',
+    'let n = 0\nconst f = () => { n++ }\nexport let t = (x) => { L: f(); return n + x }',
+    'export let t = (x) => { L: { x++; if (x > 0) break L; x += 100 } return x }',
+    'export let t = (x) => { let s = 0; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j === 1) continue outer; s += i + j + x } } return s }',
+    'export let t = (x) => { L: if (x > 0) { x++; break L } return x }',
+    'export let t = (x) => { a: b: for (;;) { x++; break a } return x }',
+  ]
+  for (const src of valid) for (const optimize of levels(false, true, 'size', 'speed')) is(jz(src, { optimize }).exports.t(3), oracle(src).t(3), `${src} at ${optimize}`)
+})

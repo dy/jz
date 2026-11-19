@@ -1365,6 +1365,10 @@ const validateClass = (node, cx, walk, source) => {
     }
     if (m.kind === 'field' && m.value && containsDirectName(m.value, 'arguments'))
       fail("class field initializer cannot contain 'arguments'")
+    // A field's initializer is one expression, and no ASI ends it before a `*`: `x = 42⏎*gen() {}`
+    // is `42 * gen() {}`. The reader hands on the value and a member after it as one list.
+    if (m.kind === 'field' && isNode(m.value) && m.value[0] === ';')
+      fail("a class field's initializer runs on into the next line's `*`: end the field with `;`")
     if (m.value) {
       const value = sourceAsync && isNode(m.value) && m.value[0] === '=>' ? ['async', m.value] : m.value
       walk(value, { ...cx, strict: true, classBody: true, privateNames: privateSet })
@@ -1696,7 +1700,17 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
 
     if (op === ':' && statementPosition && typeof node[1] === 'string') {
       if (cx.labels.has(node[1])) fail(`duplicate label '${node[1]}'`)
+      // LabelIdentifier (§14.13.1): `yield` names no label in strict code or a generator,
+      // `await` none in a module's own code, an async function or a static block; escaped alike.
+      const name = node[1].includes('\\u') ? decodeIdentifier(node[1]) : node[1]
+      if (name === 'await' && (cx.async || cx.staticBlock || (cx.module && cx.functionDepth === 0))) fail("'await' cannot name a label in this context")
+      if (name === 'yield' && (cx.strict || cx.generator)) fail("'yield' cannot name a label in this context")
       const item = node[2]
+      // A label stands before a statement: a class, a lexical declaration, a generator or an
+      // async function is none (a plain function is one in sloppy code, below).
+      const decl = !isNode(item) ? null : item[0] === 'async' ? (isNode(item[1]) && (item[1][0] === 'function' || item[1][0] === 'function*') ? 'async function' : null)
+        : item[0] === 'class' || item[0] === 'function*' || item[0] === 'let' || item[0] === 'const' ? item[0] : null
+      if (decl) fail(`a label stands before a statement, not a ${decl} declaration (label '${name}')`)
       // LabelledItem (§14.13): a Statement, or in sloppy code a plain function
       // declaration — never as the body of another statement (IsLabelledFunction).
       if (isNode(item) && item[0] === 'function') {
