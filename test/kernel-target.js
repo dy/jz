@@ -22,6 +22,7 @@ import v8 from 'node:v8'
 import vm from 'node:vm'
 import { instantiate } from '../interop.js'
 import { foldOptions } from '../src/options.js'
+import { overflowed, nestingOf } from '../src/parse.js'
 import { selfBytes } from './_self-build.js'
 
 // Reclaim dead kernel instances. Each compile gets a FRESH 8192-page instance
@@ -136,7 +137,36 @@ const optJSONFor = (self, opts) => {
   return self.memory.String(JSON.stringify(o))
 }
 
-export const compileViaKernel = (code, opts = {}) => {
+// A walk that runs out of stack inside the kernel ends in the engine's RangeError,
+// which no code of the kernel can catch (wasm catches no stack overflow: a
+// try/catch around a runaway recursion in a compiled program does not see it,
+// on either level), and the instance it leaves is a compile cut off mid-phase:
+// its arena bumped past the phase marks, phases open, the escape and park state
+// entered with the values that end them gone with the unwound frames. So the
+// host names the nesting, once the overflow has unwound, by the measure the
+// native compiler takes (src/compiler.js nestingError, src/parse.js nestingOf):
+// the deepest tree among the sources, named past 200 levels, the measuring
+// parse's own nesting error where it runs out; nothing of the instance is read
+// again. A shallow tree that overflows stays the engine's error, a jz bug.
+const DEEP = 200
+const named = (code, opts, cause) => {
+  let best = null
+  for (const src of [code, ...Object.values(opts.modules ?? {})]) {
+    if (typeof src !== 'string') continue
+    const n = nestingOf(src, opts.sourceType || 'jz', 0)
+    if (n && (!best || n.depth > best.depth)) best = n
+  }
+  return best && best.depth >= DEEP ? new SyntaxError(`nesting too deep to compile: ${best.depth} levels, ${best.construct} the most of them`, { cause }) : null
+}
+const nesting = (code, opts, run) => {
+  try { return run() } catch (e) {
+    if (overflowed(e)) { const n = named(code, opts, e); if (n) throw n }
+    throw e
+  }
+}
+
+export const compileViaKernel = (code, opts = {}) => nesting(code, foldOptions(opts), () => kernelCompile(code, opts))
+const kernelCompile = (code, opts) => {
   opts = foldOptions(opts)
   if (opts.sourceMap)
     throw new Error('Source maps require the JavaScript compiler API or CLI; the Wasm compiler ABI does not return debug metadata')

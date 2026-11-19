@@ -1418,12 +1418,9 @@ test('errors: an early error is the SyntaxError JavaScript throws', () => {
 // brackets left open or the token where the reader stood (src/parse.js
 // readTree), past a later walk's the construct most of the deepest path is
 // (src/compiler.js nestingError). Each was an internal error, a jz bug to report.
-// The hosted compiler names a nesting where its parse runs out; a walk after the
-// parse that runs out there ends in the engine's RangeError, which its entry
-// (scripts/self.js) names nothing of. Which of the two a depth meets goes by the
-// tier its functions run at: the same 5,000 arrows are named in one test here and
-// a RangeError in the next.
-const hostedOverflow = (e) => onKernel() && e instanceof RangeError && /call stack/.test(e.message)
+// The hosted compiler's stack overflow, which no code of the kernel can catch, is
+// named by its host once the overflow has unwound (test/kernel-target.js), by the
+// same measure; the kernel's errors carry no line.
 test('errors: a nesting too deep names its construct and place', () => {
   const forms = {
     'call': d => `const g = (x) => x + 1\nexport let f = (x) => ${'g('.repeat(d)}x${')'.repeat(d)}`,
@@ -1437,7 +1434,7 @@ test('errors: a nesting too deep names its construct and place', () => {
   const named = (src) => { try { compile(src) } catch (e) { return e } return null }
   for (const [form, gen] of Object.entries(forms)) {
     const e = named(gen(5000))
-    ok(hostedOverflow(e) || e instanceof SyntaxError && /nesting too deep to (parse|compile)/.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form} 5,000 deep: ${e?.name} ${String(e?.message).split('\n')[0]}`)
+    ok(e instanceof SyntaxError && /nesting too deep to (parse|compile)/.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form} 5,000 deep: ${e?.name} ${String(e?.message).split('\n')[0]}`)
   }
   is(run(forms.call(200)).f(3), 203, 'a nesting the walks hold compiles')
 })
@@ -1452,18 +1449,22 @@ test('errors: a nesting too deep names its construct and place', () => {
 test('errors: a nesting too deep to parse names what nests', () => {
   const R = (n, f) => Array.from({ length: n }, (_, i) => f(i))
   const named = (src) => { try { compile(src) } catch (e) { return e } return null }
+  // (the hosted compiler's own parse cannot catch its overflow: where it runs out
+  // the host measures the tree, which names the same construct, `the most of them`,
+  // at the stage its own parse holds to)
   const forms = [
-    ['arrow', `export let f = (x) => { const h = ${'(y) => '.repeat(5000)}x; return x }`, /function the most on the way in/],
-    ['?: in the consequent', `export let f = (x) => ${'x ? '.repeat(5000)}0${' : 1'.repeat(5000)}`, /conditional \?: the most on the way in/],
-    ['**', `export let f = (x) => ${'1 ** '.repeat(5000)}1`, /`\*\*` the most on the way in/],
-    ['!', `export let f = (x) => ${'!'.repeat(5000)}x`, /unary ! the most on the way in/],
-    ['typeof', `export let f = (x) => ${'typeof '.repeat(5000)}x`, /unary typeof the most on the way in/],
-    ['a sum in a class field', `class A { v = ${R(20000, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
-    ['a sum in a default', `export let f = (x, y = ${R(20000, i => `x * ${i}`).join(' + ')}) => y`, /nesting too deep to parse: \d+ levels, `\+` the most of them/],
+    ['arrow', `export let f = (x) => { const h = ${'(y) => '.repeat(5000)}x; return x }`, /function the most on the way in/, 'function'],
+    ['?: in the consequent', `export let f = (x) => ${'x ? '.repeat(5000)}0${' : 1'.repeat(5000)}`, /conditional \?: the most on the way in/, 'conditional \\?:'],
+    ['**', `export let f = (x) => ${'1 ** '.repeat(5000)}1`, /`\*\*` the most on the way in/, '`\\*\\*`'],
+    ['!', `export let f = (x) => ${'!'.repeat(5000)}x`, /unary ! the most on the way in/, 'unary !'],
+    ['typeof', `export let f = (x) => ${'typeof '.repeat(5000)}x`, /unary typeof the most on the way in/, 'unary typeof'],
+    ['a sum in a class field', `class A { v = ${R(20000, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`, /nesting too deep to parse: \d+ levels, `\+` the most of them/, '`\\+`'],
+    ['a sum in a default', `export let f = (x, y = ${R(20000, i => `x * ${i}`).join(' + ')}) => y`, /nesting too deep to parse: \d+ levels, `\+` the most of them/, '`\\+`'],
   ]
-  for (const [form, src, want] of forms) {
+  for (const [form, src, want, construct] of forms) {
     const e = named(src)
-    ok(hostedOverflow(e) || e instanceof SyntaxError && want.test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form}: ${e?.name} ${String(e?.message).split('\n')[0]}`)
+    const hosted = new RegExp(`nesting too deep to (parse|compile)\\b.*${construct} the most (on the way in|of them)`)
+    ok(e instanceof SyntaxError && (onKernel() ? hosted : want).test(e.message) && (onKernel() || /at line \d+:\d+/.test(e.message)), `${form}: ${e?.name} ${String(e?.message).split('\n')[0]}`)
   }
   is(run(`class A { v = ${R(400, i => i % 2).join(' + ')} }\nexport let f = (x) => new A().v + x`).f(3), 203, 'a field of 400 terms compiles')
 })
