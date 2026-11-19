@@ -981,12 +981,21 @@ export default (ctx) => {
   // f = ehi − k·ln2/64 + elo. powExpTail reads $y, $lhi and $llo: pow's kernel
   // (powCoreBody) computes the two from x, $math.pow_b takes them from the compiler, which took log
   // of a constant x with these same operations.
+  // `signed` (pow's own kernel): the result takes the sign bit in $sign, which a negative
+  // base with an odd exponent sets. It rides in the scale's bits, as Arm's pow.c carries
+  // sign_bias into exp_inline and specialcase: every step after is symmetric under
+  // round-to-nearest, so the result is the negated |x|^y bit for bit, save a subnormal
+  // that rounds to zero, whose sign is put back as specialcase does (here by copysign:
+  // the double rounding's result of a positive scale is never below +0).
   const powSplitLog = `
     (local.set $lhi (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $lg)) (i64.const 0xfffffffff8000000))))
     (local.set $llo (f64.add (f64.sub (local.get $lg) (local.get $lhi)) (local.get $tail)))`
   const powExpLocals = `(local $k i32) (local $e i32) (local $tb i32) (local $sbits i64) (local $yhi f64) (local $ylo f64) (local $ehi f64) (local $elo f64)
     (local $ax f64) (local $f f64) (local $t f64) (local $q f64) (local $scale f64) (local $res f64) (local $one f64) (local $hi f64) (local $lo f64)`
-  const powExpTail = `
+  const powExpTail = (signed) => {
+    const sgn = (v) => signed ? `(f64.copysign ${v} (f64.reinterpret_i64 (local.get $sign)))` : v
+    const bits = '(i64.add (i64.reinterpret_f64 (local.get $t)) (i64.shl (i64.extend_i32_s (local.get $e)) (i64.const 52)))'
+    return `
     (local.set $yhi (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $y)) (i64.const 0xfffffffff8000000))))
     (local.set $ylo (f64.sub (local.get $y) (local.get $yhi)))
     (local.set $ehi (f64.mul (local.get $yhi) (local.get $lhi)))
@@ -994,15 +1003,15 @@ export default (ctx) => {
     ;; exp(ehi + elo)
     (local.set $ax (f64.abs (local.get $ehi)))
     (if (f64.lt (local.get $ax) (f64.const ${2 ** -54}))
-      (then (return (f64.add (f64.const 1.0) (local.get $ehi)))))
+      (then (return ${sgn('(f64.add (f64.const 1.0) (local.get $ehi))')})))
     (if (f64.ge (local.get $ax) (f64.const 1024.0))
-      (then (return (select (f64.const 0.0) (f64.const inf) (f64.lt (local.get $ehi) (f64.const 0.0))))))${roundK('$ehi', 64 / Math.LN2)}
+      (then (return ${sgn('(select (f64.const 0.0) (f64.const inf) (f64.lt (local.get $ehi) (f64.const 0.0)))')})))${roundK('$ehi', 64 / Math.LN2)}
     (local.set $f (f64.add (f64.sub (f64.sub (local.get $ehi) (f64.mul (local.get $t) (f64.const ${EXP_L1}))) (f64.mul (local.get $t) (f64.const ${EXP_L2}))) (local.get $elo)))
     (local.set $tb (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (local.get $k) (i32.const 63)) (i32.const 4))))
     (local.set $t (f64.load (local.get $tb)))
     (local.set $q (f64.add (f64.load offset=8 (local.get $tb)) (f64.mul (local.get $f) ${horner(EXP_Q, '$f')})))
     (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
-    (local.set $sbits (i64.add (i64.reinterpret_f64 (local.get $t)) (i64.shl (i64.extend_i32_s (local.get $e)) (i64.const 52))))
+    (local.set $sbits ${signed ? `(i64.add ${bits} (local.get $sign))` : bits})
     ;; |ehi| < 512: the scale's exponent is in range, one rounding
     (if (f64.lt (local.get $ax) (f64.const 512.0))
       (then
@@ -1022,8 +1031,9 @@ export default (ctx) => {
         (local.set $lo (f64.add (f64.sub (local.get $scale) (local.get $res)) (f64.mul (local.get $scale) (local.get $q))))
         (local.set $hi (f64.add (local.get $one) (local.get $res)))
         (local.set $lo (f64.add (f64.add (f64.sub (local.get $one) (local.get $hi)) (local.get $res)) (local.get $lo)))
-        (local.set $res (f64.sub (f64.add (local.get $hi) (local.get $lo)) (local.get $one)))))
+        (local.set $res ${sgn('(f64.sub (f64.add (local.get $hi) (local.get $lo)) (local.get $one))')})))
     (f64.mul (local.get $res) (f64.const ${2 ** -1022}))`
+  }
 
   // x**y for the case $math.pow's ladder (below) can't answer itself: x > 0 finite, y finite
   // and not an integer of magnitude ≤ 16 (the common case enters first, before the ladder).
@@ -1121,7 +1131,7 @@ export default (ctx) => {
     (local.set $lo (f64.add (f64.add (f64.add (f64.add (local.get $lo1) (local.get $lo2)) (local.get $lo3)) (local.get $lo4)) (local.get $p)))
     (local.set $lg (f64.add (local.get $hi) (local.get $lo)))
     (local.set $tail (f64.add (f64.sub (local.get $hi) (local.get $lg)) (local.get $lo)))
-    ${powSplitLog}${powExpTail}`
+    ${powSplitLog}${powExpTail(true)}`
 
   // $result = $abs_x^|y| by square-and-multiply, LSB-first (the ladder's integer path)
   const sqMul = (done, loop) => `
@@ -1136,7 +1146,7 @@ export default (ctx) => {
               (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
               (br ${loop})))`
   wat('math.pow', `(func $math.pow (param $x f64) (param $y f64) (result f64)
-    (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)${crPow ? '' : powCoreLocals}
+    (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64) (local $sign i64)${crPow ? '' : powCoreLocals}
     (block $kernel
       ;; the common case first: a positive finite x and a finite non-integer y (a NaN
       ;; fails every compare) go straight to the kernel after the block, which takes
@@ -1215,15 +1225,18 @@ export default (ctx) => {
                      (i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y))
                               (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))))))))
       ;; x < 0: a non-integer finite y -> NaN; an integer y beyond the fast path
-      ;; takes |x| (whose ladder ends in the kernel) and, for an odd y, the sign
-      ;; (every |y| ≥ 2^53 is even)
+      ;; takes the kernel of |x| and, for an odd y, the sign (every |y| ≥ 2^53 is
+      ;; even). x = −1 is the kernel's 1 (log 1 is 0 exactly), its sign as an odd y's.
       (if (f64.lt (local.get $x) (f64.const 0.0))
         (then
           (if (f64.ne (f64.nearest (local.get $y)) (local.get $y)) (then (return (f64.const nan))))
-          (local.set $result (call $math.pow (f64.neg (local.get $x)) (local.get $y)))
-          (return (select (f64.neg (local.get $result)) (local.get $result)
-            (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))))))
-      ;; Remaining case: x > 0 finite (≠1), y finite (≠0, ≠1), no integer of |y| ≤ 16.
+          (local.set $sign (i64.shl (i64.extend_i32_u
+            (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5))) (f64.mul (local.get $y) (f64.const 0.5)))) (i64.const 63)))
+          ${crPow ? `(local.set $result (call $math.pow_core (f64.neg (local.get $x)) (local.get $y)))
+          (return (select (f64.neg (local.get $result)) (local.get $result) (i64.ne (local.get $sign) (i64.const 0))))`
+          : '(local.set $x (f64.neg (local.get $x)))'}))
+      ;; Remaining case: x > 0 finite, y finite (≠0, ≠1), no integer of |y| ≤ 16,
+      ;; x ≠ 1 but where a negative base's |x| is 1.
     )
     ;; the kernel, x > 0 finite and y finite: within 0.54 ulp by default (a double-double
     ;; log, powCoreBody), or under optimize.crPow $math.pow_core, CORRECTLY ROUNDED in the
@@ -1245,7 +1258,7 @@ export default (ctx) => {
     (if (i32.eqz (i32.and
           (i32.and (f64.ge (local.get $ax) (f64.const ${2 ** -65})) (f64.lt (local.get $ax) (f64.const ${2 ** 63})))
           (i32.and (f64.ne (f64.nearest (local.get $ax)) (local.get $ax)) (f64.ne (local.get $y) (f64.const 0.5)))))
-      (then (return (call $math.pow (local.get $x) (local.get $y)))))${powExpTail})`, ['math.pow'])
+      (then (return (call $math.pow (local.get $x) (local.get $y)))))${powExpTail(false)})`, ['math.pow'])
 
 
   // $math.pow_fold — Math.pow(x, C) for a COMPILE-TIME-CONSTANT non-integer exponent C under

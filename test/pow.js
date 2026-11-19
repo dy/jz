@@ -341,6 +341,51 @@ test('Math.pow runtime — integer exponents past the fast path and signed zeros
     ok(Object.is(pow(x, y), Math.pow(x, y)), `pow(${x}, ${y}) = ${pow(x, y)}, host ${Math.pow(x, y)}`)
 })
 
+// Number::exponentiate (ECMA-262, the 2026 draft at tc39.es/ecma262: 6.1.6.1.3, which
+// Math.pow calls, 21.3.2.27 step 3, and `**`), step by step, at every level. Step 13's
+// rows are a negative base with an integer exponent past the fast path, which the kernel
+// takes for |x| with the sign of an odd exponent in its scale (module/math.js
+// powExpTail): -1, exact powers, an overflow, a subnormal and an underflow to -0.
+const EXPONENTIATE = [
+  ['1', [[2, NaN], [NaN, NaN], [-0, NaN], [-Infinity, NaN]]],
+  ['2', [[NaN, 0], [NaN, -0], [Infinity, -0], [-0, 0], [-7, -0]]],
+  ['3', [[NaN, 1], [NaN, -Infinity], [NaN, 17]]],
+  ['4.a', [[Infinity, 0.5], [Infinity, 5e-324], [Infinity, 17]]],
+  ['4.b', [[Infinity, -3], [Infinity, -5e-324]]],
+  ['5.a.i', [[-Infinity, 3], [-Infinity, 17]]],
+  ['5.a.ii', [[-Infinity, 18], [-Infinity, 0.5], [-Infinity, 2 ** 53]]],
+  ['5.b.i', [[-Infinity, -1], [-Infinity, -17]]],
+  ['5.b.ii', [[-Infinity, -18], [-Infinity, -0.5]]],
+  ['6.a', [[0, 17], [0, 0.5]]],
+  ['6.b', [[0, -17], [0, -0.5]]],
+  ['7.a.i', [[-0, 1], [-0, 17]]],
+  ['7.a.ii', [[-0, 18], [-0, 0.5]]],
+  ['7.b.i', [[-0, -17], [-0, -1]]],
+  ['7.b.ii', [[-0, -18], [-0, -0.5]]],
+  ['9.a', [[-2, Infinity], [1.0000001, Infinity]]],
+  ['9.b', [[1, Infinity], [-1, Infinity]]],
+  ['9.c', [[0.5, Infinity], [-5e-324, Infinity]]],
+  ['10.a', [[-2, -Infinity], [1.5, -Infinity]]],
+  ['10.b', [[-1, -Infinity], [1, -Infinity]]],
+  ['10.c', [[0.5, -Infinity], [-0.5, -Infinity]]],
+  ['12', [[-2, 0.5], [-8, 1 / 3], [-5e-324, 1.5], [-1, 2 ** 52 + 0.5]]],
+  ['13', [[-1, 17], [-1, -17], [-1, 2 ** 53 - 1], [-1, 2 ** 53], [-2, 17], [-2, -17], [-2, 1023], [-2, 1024], [-2, 1025],
+    [-2, -1074], [-2, -1075], [-0.5, 1073], [-0.5, 1075], [-3, -679], [-10, 21], [-10, 309], [-10, -325], [-1.5, -1839],
+    [-1.0000001, 1e9 + 1], [-5e-324, 17], [-5e-324, -17], [-1.7976931348623157e308, 17], [5e-324, 0.25], [2.5, -1000.5]]],
+]
+test('Math.pow and ** follow Number::exponentiate step by step at every level', () => {
+  const src = 'export const p = (x, y) => Math.pow(x, y); export const q = (x, y) => x ** y'
+  for (const optimize of ownedLevels(false, true, 'size', 'speed')) {
+    const { p, q } = run(src, { optimize })
+    for (const [step, rows] of EXPONENTIATE) for (const [x, y] of rows) for (const f of [p, q]) {
+      const got = f(x, y), want = Math.pow(x, y)
+      // a value step 13 approximates may differ from the host's in its last places (README)
+      const near = Number.isFinite(want) && want !== 0 && Math.sign(got) === Math.sign(want) && ulpDiff(got, want) <= TAIL_LIMIT
+      ok(Object.is(got, want) || step === '13' && near, `${optimize}: step ${step}, ${x} ** ${y} = ${got}, host ${want}`)
+    }
+  }
+})
+
 // The two-wide kernel ($math.pow2, module/math/simd.js) runs both lanes through
 // one pass of the scalar kernel's operations, so a lane-lifted loop must agree
 // with the scalar function bit for bit: over the common case, and over every

@@ -271,6 +271,33 @@ test('fixed memory: a length read of an unproven receiver, in a module of closur
   }
 })
 
+test('fixed memory: a power of runtime operands, a negative base among them, certifies', () => {
+  // $math.pow takes a negative base with an integer exponent past its fast path through
+  // its own kernel, the sign in the scale (module/math.js powExpTail), where it called
+  // itself for |x|; $math.pow_b (a constant base) and the two-wide kernel call it.
+  const srcs = [
+    `let g = 3
+    export const set = (v) => { g = v }
+    export function process(buf) { let s = 0; for (let i = 0; i < buf.length; i++) s += Math.pow(buf[i], g) + buf[i] ** (g + 0.5); return s }`,
+    `let db = -6
+    export const set = (v) => { db = v }
+    export function process(buf) { const k = 10 ** (db / 20); for (let i = 0; i < buf.length; i++) buf[i] *= k; return k }`,
+  ]
+  for (const optimize of tiers) for (const src of srcs) {
+    const p = jz(src, options(optimize)), ref = new Function(src.replaceAll('export ', '') + '; return { set, process }')()
+    const used = p.memory.used
+    for (const v of [3, 17, -25, 0.5, 1025, -1074]) {
+      p.exports.set(v); ref.set(v)
+      for (const base of [[-2, 1.5, -0.5, 3], [-1, -0, 1e-300, -1e300]]) {
+        const a = new Float64Array(base), b = new Float64Array(base)
+        is(p.exports.process(a), ref.process(b), `${optimize}: v = ${v}, ${base}`)
+        is([...a].map(String).join(), [...b].map(String).join(), `${optimize}: v = ${v}, the buffer`)
+      }
+    }
+    is(p.memory.used, used, `${optimize}: no retained allocation`)
+  }
+})
+
 test('fixed memory: host reentry and non-tail recursive scratch are refused', () => {
   const recurse = `export function process(n){const a=new Float64Array(128);a[0]=n;return n>0 ? process(n-1)+a[0] : a[0]}`
   throws(() => compile(recurse, options(0)), /recursive call/)
