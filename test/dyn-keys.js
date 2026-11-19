@@ -91,6 +91,35 @@ test('dynamic string indices keep the complete property-key domain', () => {
   }
 })
 
+// A key a site names reads through the prehashed lookup (module/collection.js
+// __dyn_get_t_h), which holds no string-index arm: a named key that is a canonical
+// index ('1') takes the run-time entry (__dyn_get_t), as a key known at run time
+// does, and there reads the string's unit. Every receiver kind beside every key,
+// named and at run time, of a proven receiver and of one the compiler cannot prove.
+test('named and run-time keys over a string, an array, a typed array, an object and a closure', () => {
+  const R = [`'ab'`, `[10, 20]`, `new Float64Array([1.5, 2.5])`, `{ 0: 'zero', 1: 'one', '01': 'zero-one', '-0': 'minus', length: 7 }`, `(a, b) => a`]
+  const K = [`'1'`, `1`, `'01'`, `'-0'`, `'length'`, `'0'`, `'2'`, `-0`, `'b'`]
+  // (the run-time keys are the program's own: a key the host passes to a parameter used as
+  // no string arrives as a Number, README "Numeric export parameters")
+  const keys = `['1', 1, '01', '-0', 'length', '0', -0, 0, 2, '2', 'b', 0.5, '1.0']`
+  const reads = (v) => `[${K.map(k => `${v}[${k}]`).join(', ')}, ${v}[k], ${v}.length]`
+  const src = `const rs = [${R.join(', ')}], ks = ${keys}
+    ${R.map((r, i) => `export const own${i} = (j) => { const v = ${r}, k = ks[j]; return ${reads('v')} }`).join('\n')}
+    export const any = (i, j) => { const v = rs[i], k = ks[j]; return ${reads('v')} }
+    class C { constructor() { this['1'] = 'c1'; this['-0'] = 'm' } at() { return [this['1'], this['01'], this['-0'], this.length] } }
+    export const cls = () => new C().at()`
+  const want = oracle(src)
+  for (const optimize of ownedLevels(false, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    // (a method's this['1'] is a named read of an index key, which takes the run-time entry)
+    is(got.cls(), want.cls(), `O${optimize}, this['1'] in a method`)
+    for (let j = 0; j < 13; j++) for (let i = 0; i < R.length; i++) {
+      is(got[`own${i}`](j), want[`own${i}`](j), `O${optimize}, ${R[i]} by key ${j}, proven`)
+      is(got.any(i, j), want.any(i, j), `O${optimize}, ${R[i]} by key ${j}, unproven`)
+    }
+  }
+})
+
 test('dynamic string indices preserve receiver, key effects and throwing coercion', () => {
   const src=`export function f(mode){let value='abcdefghijk',trace='';
     function base(){trace+='b';return value}

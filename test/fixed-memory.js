@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onKernel, ownedLevels } from './_matrix.js'
+import { onKernel, onWasi, ownedLevels } from './_matrix.js'
 import { jz, compile } from './util.js'
 
 const options = optimize => ({ optimize, memory: { fixed: ['process'] } })
@@ -268,6 +268,57 @@ test('fixed memory: a length read of an unproven receiver, in a module of closur
     for (const f of [0, 1, 0]) { p.exports.feed(f); ref.feed(f); is(p.exports.process(), ref.process(), `${optimize}: fed ${f}`) }
     is(p.memory.used, used, `${optimize}: no retained allocation`)
     if (!onKernel()) ok(!/__dyn_get/.test(compile(src, { ...options(optimize), wat: true })), `${optimize}: no dynamic read is linked`)
+  }
+})
+
+test('fixed memory: named reads of unproven receivers beside an object literal certify', () => {
+  // An object literal in the program links the generic read (module/collection.js
+  // __dyn_get_t_h), which the bus program's `inp.length` and a cascade's coefficient
+  // reads take. Its string arm for an index key ('ab'['1'], a fresh string past ASCII)
+  // is the run-time key's (__dyn_get_t) alone: no key a site names is an index there,
+  // so nothing these reads reach allocates.
+  const bus = `const cfg = { g: 2 }
+    export const gain = () => cfg.g
+    let sets = [], fed = 1, proc = (inputs) => 0
+    export function setup(frames) {
+      const a = [new Float32Array(frames), new Float32Array(frames)], b = [new Float32Array(frames), new Float32Array(frames)], none = []
+      sets = [[a, none], [a, b]]
+      proc = (inputs) => { const inp = inputs[0]; if (!inp || !inp.length) return 0; return inp[0].length }
+    }
+    export function feed(f) { fed = f ? 1 : 0 }
+    export function process() { return proc(sets[fed]) }`
+  const cascade = `const state = () => new Float64Array(2)
+    function process (data, c, s) {
+      let z1 = s[0], z2 = s[1]
+      for (let i = 0, l = data.length; i < l; i++) { let x = data[i], y = c.b0 * x + z1; z1 = c.b1 * x - c.a1 * y + z2; z2 = c.b2 * x - c.a2 * y; data[i] = y }
+      s[0] = z1; s[1] = z2
+      return data
+    }
+    function cascade (data, coefs, states) {
+      for (let i = 0; i < coefs.length; i++) process(data, coefs[i], states[i])
+      return data
+    }
+    let proc = () => 0
+    export const setup = (channels, frames) => {
+      const sos = [{ b0: 1, b1: 0.5, b2: 0.25, a1: 0.1, a2: 0.05 }, { b0: 1, b1: 0.3, b2: 0.2, a1: 0.2, a2: 0.01 }], st = [], out = []
+      for (let ch = 0; ch < channels; ch++) { st.push(sos.map(() => new Float64Array(2))); out.push(new Float32Array(frames)) }
+      proc = () => { for (let ch = 0; ch < out.length; ch++) cascade(out[ch], sos, st[ch]); return 0 }
+    }
+    export const process_ = 0
+    export { run as process }
+    function run () { return proc() }`
+  for (const optimize of [false, true, 'size', 'speed']) for (const [name, src] of [['bus', bus], ['cascade', cascade]]) {
+    // (at size `c` is a parameter of an uninlined function, which the summary cannot bound,
+    // and under the JS host such a receiver may be a host object, read through the host)
+    if (name === 'cascade' && optimize === 'size' && !onWasi()) continue
+    const p = jz(src, options(optimize)), ref = new Function(src.replace(/export \{ run as process \}/, '').replaceAll('export ', '') + `; return { setup, ${name === 'bus' ? 'feed, process' : 'process: run'} }`)()
+    p.exports.setup(...(name === 'bus' ? [16] : [2, 16])); ref.setup(...(name === 'bus' ? [16] : [2, 16]))
+    const used = p.memory.used
+    for (const f of [0, 1, 0]) {
+      if (name === 'bus') { p.exports.feed(f); ref.feed(f) }
+      is(p.exports.process(), ref.process(), `${name} at ${optimize}: call ${f}`)
+    }
+    is(p.memory.used, used, `${name} at ${optimize}: no retained allocation`)
   }
 })
 

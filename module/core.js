@@ -25,7 +25,7 @@ import print from 'watr/print'
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, isBoundName, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
 import { emit, emitReference, emitIdentitySafe, storedValue, deps, general, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
-import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
+import { ACCESSOR_GET, COMPARE_OPS, isBrand, isArrayIndexKey } from '../src/ast.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
 import { classAccessor, classMethodValue, classHasMember, noOwnProps } from '../src/compile/emit/class-dispatch.js'
 import { copyReceiverFacts, isPresentArrayElement } from '../src/compile/emit/shared.js'
@@ -2305,10 +2305,12 @@ export default (ctx) => {
   }
 
   function emitDynGetExprTyped(base, key, vt, prop) {
+    ctx.module.include('collection')
     // Constant string key: fold the FNV hash at compile time and call the
-    // prehashed body — no __str_hash on every access.
-    if (typeof prop === 'string') {
-      ctx.module.include('collection')
+    // prehashed body — no __str_hash on every access. A key that is a canonical
+    // index ('1') takes the run-time entry, the one that reads a string's unit
+    // there (module/collection.js __dyn_get_t): the prehashed read holds none.
+    if (typeof prop === 'string' && !isArrayIndexKey(prop)) {
       ctx.module.include('array')
       inc('__dyn_get_expr_t_h')
       return withReceiverTag(base, vt, (receiver, typeTag) => {
@@ -2343,7 +2345,8 @@ export default (ctx) => {
     ctx.module.include('collection')
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
-    if (typeof prop === 'string') {
+    // A canonical index key takes the run-time entry, as emitDynGetExprTyped's.
+    if (typeof prop === 'string' && !isArrayIndexKey(prop)) {
       inc('__dyn_get_any_t_h')
       return withReceiverTag(base, vt, (receiver, typeTag) => {
         const call = ['call', '$__dyn_get_any_t_h', receiver, key, typeTag, ['i32.const', strHashLiteral(prop)]]

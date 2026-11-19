@@ -394,8 +394,8 @@ export default (ctx) => {
     __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps()],
-    __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
-    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t: () => ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx', '__str_arr_idx', '__str_length'] : [])],
+    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_has_chain: ['__dyn_has', '__dyn_get_t_h', '__ptr_type'],
@@ -2293,11 +2293,19 @@ export default (ctx) => {
   // ToPropertyKey: a non-string key (number/bool/null/undefined) addresses the
   // same slot as its string form — o[97] ≡ o['97'] (JS spec). Writes stringify
   // (emit-assign's staticPropertyKey fold, __dyn_set below), so reads must too.
-  ctx.core.stdlib['__dyn_get_t'] = () => `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
-    ${ctx.core.stdlib.__str_idx ? `(local $f f64) (local $i i32)
+  // A string's code unit at a canonical index key ('ab'['1']) is read here, of a
+  // key known at run time alone: a key the site names is never an index there
+  // (module/core.js emitDynGetExprTyped routes one that is to this entry), so the
+  // prehashed read below (__dyn_get_t_h) holds no index arm of a string, whose
+  // unit past ASCII is a fresh string (__char_unit), and a named read allocates
+  // nothing for it (memory.fixed proves by call graph).
+  // (ToPropertyKey has one site, below, which the single-caller inliner takes
+  // into the read: a second would keep `__to_key` a call on every Number key.)
+  ctx.core.stdlib['__dyn_get_t'] = () => { const str = ctx.core.stdlib.__str_idx; return `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+    ${str ? `(local $f f64) (local $i i32) (local $s i32)
     ;; A primitive string's nonnegative word index is already its property key.
     ;; The exact round trip accepts -0 as 0 and rejects fractions and saturation.
-    (if ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$obj']], PTR.STRING))}
+    (if (local.tee $s ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$obj']], PTR.STRING))})
       (then
         (local.set $f (f64.reinterpret_i64 (local.get $key)))
         (local.set $i (i32.trunc_sat_f64_s (local.get $f)))
@@ -2314,7 +2322,14 @@ export default (ctx) => {
           (local.get $obj) (i32.trunc_sat_f64_s (f64.reinterpret_i64 (local.get $key))))))))` : ''}
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_key (local.get $key)))))
-    (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))`
+    ${str ? `;; a string's canonical index key, as its property key, reads the unit as the Number does
+    (if (local.get $s)
+      (then (if (call $__is_str_key (local.get $key))
+        (then
+          (local.set $i (call $__str_arr_idx (local.get $key)))
+          (if (i32.lt_u (local.get $i) (call $__str_length (local.get $obj)))
+            (then (return (i64.reinterpret_f64 (call $__str_idx (local.get $obj) (local.get $i))))))))))` : ''}
+    (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))` }
 
   // The lookup chain, written once. `__dyn_get_t_h` answers a read (a miss is
   // undefined); `__dyn_get_t_hm` answers presence for `k in o` (a miss is
@@ -2332,8 +2347,8 @@ export default (ctx) => {
     const digitLead = `(if (result i32) (call $__is_str_key (local.get $key)) (then (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
               (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
               (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))) (else (i32.const 0)))`
-    // A string's canonical index key reads its code unit ('ab'['1']).
-    const strIndex = presence || ctx.core.stdlib['__str_idx']
+    // A string's canonical index key is present ('1' in Object('ab')); its read
+    // is __dyn_get_t's, the one entry such a key reaches (above).
     let fallback = ctx.linkDemand.typedProperties ? `(if (result i64)
       (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
@@ -2412,12 +2427,12 @@ export default (ctx) => {
     ;; 1.38M reads/run, every one a guaranteed miss) made this the largest
     ;; single dyn sink after the array-index fix.
     (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-      (then${strIndex ? `
+      (then${presence ? `
         (if ${digitLead}
           (then
             (local.set $idx (call $__str_arr_idx (local.get $key)))
             (if (i32.lt_u (local.get $idx) (call $__str_length (local.get $obj)))
-              (then (return ${presence ? '(i64.const 0)' : '(i64.reinterpret_f64 (call $__str_idx (local.get $obj) (local.get $idx)))'})))))` : ''}
+              (then (return (i64.const 0))))))` : ''}
         (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${buildObjectSchemaArm(presence)}
