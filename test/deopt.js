@@ -12,6 +12,13 @@
 //        their sized kinds, so `+` skips the string-concat dispatch.
 //
 //   D2 — jagged `grid[i][j]` re-resolves `grid[i]` per inner iteration.
+//        OPEN. Where the grid never reaches the host (init returns 0), the j-loop at
+//        levels 2, 3 and 'speed' still tests grid's length, loads grid[i] and tests it
+//        for nullish every round, though the loop stores nothing. Where init returns the
+//        grid (the program below), the host may write its elements (an array the host
+//        holds has open element types), so the read is dynamic and grid is re-read as
+//        it must be. Only the answer is pinned: the two shape pins this file held passed
+//        with every hoistInvariantLoop entry off.
 //
 //   D3 — `arr[<const idx>]()` stays call_indirect (devirt miss).
 //
@@ -99,54 +106,17 @@ test('deopt D1: SOUNDNESS — untyped receiver .length stays conservative', () =
   ok(count(wat, /\$__(str_concat|add_slow)/g) >= 1, 'untyped receiver .length stays dynamic (no unsound narrow)')
 })
 
-// D2 — jagged `grid[i][j]` re-resolves `grid[i]` per inner iteration
-//
-//   Allocation/ dispatch-only calls
-//      (__str_concat/__is_str_key/__to_num/__to_str) don't modify EXISTING heap
-//      memory, so they don't block the hoist. The pin uses 50×50 bounds to avoid
-//      small-loop unrolling masking the effect.
+// D2 — jagged `grid[i][j]` re-resolves `grid[i]` per inner iteration (open: the header)
 
-const D2_SRC = (hoist) => `let grid
+const D2_SRC = `let grid
   export let init=(n)=>{grid=[];for(let i=0;i<n;i++)grid.push(new Float64Array(n));return grid}
-  export let read=()=>{let s=0;for(let i=0;i<50;i++){${hoist ? 'let row=grid[i];' : ''}for(let j=0;j<50;j++)s+=${hoist ? 'row[j]' : 'grid[i][j]'}}return s}`
+  export let read=()=>{let s=0;for(let i=0;i<50;i++){for(let j=0;j<50;j++)s+=grid[i][j]}return s}`
 
 test('deopt D2: jagged grid[i][j] read stays correct (diff vs JS)', () => {
-  const js = oracle(D2_SRC(false))
-  const { exports } = jz(D2_SRC(false))
+  const js = oracle(D2_SRC)
+  const { exports } = jz(D2_SRC)
   exports.init(50); js.init(50)
   is(exports.read(), js.read(), 'jagged read sum matches JS')
-})
-
-test('deopt D2: grid[i] is hoisted out of the inner j-loop (LICM)', () => {
-  if (belowOpt(1)) return
-  const nohoist = compile(D2_SRC(false), { wat: true })
-  const hoist = compile(D2_SRC(true), { wat: true })
-  // After the fix, the compiler hoists grid[i] itself — both forms emit the same
-  // count.
-  is(count(nohoist, /\$__typed_idx/g), count(hoist, /\$__typed_idx/g),
-    'auto-LICM matches manual hoist — grid[i] no longer re-resolved per inner iter')
-})
-
-test('deopt D2: inner j-loop contains no outer-counter $i reference', () => {
-  // Machine-independent proof: after LICM, the inner j-loop body must not
-  // reference the outer counter $i at all (grid[i] was hoisted to a snap local).
-  if (belowOpt(2)) return  // hoistInvariantLoop (LICM) is a level-2 pass; level 1 doesn't hoist
-  const wat = compile(D2_SRC(false), { wat: true })
-  // read and the loops moved out of it into functions of their own (split-funcs.js loopPasses)
-  const seg = [funcWat(wat, 'read'), ...[...wat.matchAll(/\(func \$(read(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(wat, m[1]))].join('\n')
-  const loopIdxs = []
-  const re = /\(loop/g
-  let m
-  while ((m = re.exec(seg))) loopIdxs.push(m.index)
-  ok(loopIdxs.length >= 2, 'expected nested i/j loops')
-  const innerStart = loopIdxs[loopIdxs.length - 1]
-  let depth = 0, innerEnd = innerStart
-  for (let j = innerStart; j < seg.length; j++) {
-    if (seg[j] === '(') depth++
-    else if (seg[j] === ')' && --depth === 0) { innerEnd = j; break }
-  }
-  const inner = seg.slice(innerStart, innerEnd + 1)
-  is(count(inner, /local\.get \$i\b/g), 0, 'inner j-loop has no $i reference — grid[i] hoisted')
 })
 
 // D3 — `arr[<const idx>]()` devirtualizes to a direct call   *(FIXED)*
