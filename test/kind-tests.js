@@ -226,3 +226,79 @@ test('kind tests: a test of a parameter some call may leave nullish stays', () =
     }
   }
 })
+
+// A value a statement dereferences is not nullish after it: `p.rate = 0.1`
+// throws where `p` is undefined or null, so past it `p` is an object, and a
+// call passing it lets no default run (summary deref). An element read that
+// may be past the end (`chP[c]`) then reaches `kernel(d, params = {})` as an
+// object, and `process` allocates nothing. Every way of dereferencing folds
+// alike; every path the dereference may not be on keeps the default, and the
+// answer is the host's.
+const DEREF = `const chP = [{ rate: 1, v: [2] }, { rate: 3, v: [4] }]
+const kernel = (d, params = { rate: 7 }) => d * params.rate`
+const DEREFS = {
+  'a store': 'p.rate = 0.5',
+  'a read': 'd += p.rate',
+  'an index read': 'd += p["v"][0]',
+  'a computed store': 'p[KEY] = 0.5',
+  'a method call': 'd += p.hasOwnProperty("rate") ? 1 : 0',
+  'a compound store': 'p.rate += 1',
+  'an update': 'p.rate++',
+}
+const derefSrc = (body) => `${DEREF}\nconst KEY = 'rate'\nexport const process = (c, d) => { let p = chP[c | 0]; ${body}; return kernel(d, p) }`
+// an index read or store of a typed array an element read may leave missing
+const ROWS = `const rows = [new Float64Array(2), new Float64Array(2)]
+const kern = (d, s = new Float64Array(2)) => d + s[0] + s[1]`
+const INDEXED = { 'an index store': 's[1] = d', 'an index read': 'd += s[1]', 'an index update': 's[0]++' }
+
+test('kind tests: a dereferenced value reaches a call as an object', () => {
+  const cases = [...Object.entries(DEREFS).map(([name, body]) => [name, derefSrc(body)]),
+    ...Object.entries(INDEXED).map(([name, body]) => [name, `${ROWS}\nexport const process = (c, d) => { const s = rows[c | 0]; ${body}; return kern(d, s) }`])]
+  for (const optimize of levels(0, 2, 3, 'size')) for (const [name, src] of cases) {
+    is(refusal(src, optimize), null, `${name}: process allocates nothing at ${optimize}`)
+    const mod = jz(src, { optimize }).exports, host = oracle(src)
+    for (const c of [0, 1, 2]) is(answer(mod.process, c, 2), answer(host.process, c, 2), `${name}, process(${c}) at ${optimize}`)
+  }
+})
+
+// the dereference on no path to the call, or one the value may not keep
+const OFF_PATH = {
+  'an optional read': 'd += p?.rate ?? 0',
+  'a branch': 'if (d > 1) p.rate = 0.5',
+  'a loop that may not run': 'for (let i = 0; i < d - 2; i++) p.rate = 0.5',
+  "a loop's update": 'for (let i = 0; i < d - 2; p.rate++) i++',
+  'a logical operand': 'd > 1 && (p.rate = 0.5)',
+  'a choice': 'd = d > 1 ? p.rate : d',
+  'an assignment after': 'p.rate = 0.5; p = chP[c + 2]',
+  'a closure that assigns it': 'const drop = () => { p = undefined }; p.rate = 0.5; if (d > 1) drop()',
+  'a closure beside it assigns it': 'const drop = () => { p = undefined }; const f = () => { p.rate = 0.5; if (d > 1) drop(); return kernel(d, p) }; return f()',
+  'a try whose catch goes on': 'try { p.rate = 0.5 } catch (e) { d = -d }',
+  'a try whose catch calls': 'try { p.rate = 0.5 } catch (e) { return kernel(d, p) + 1000 }',
+  'a finally': 'try { if (d > 1) throw 1; p.rate = 0.5 } catch (e) {} finally { d += 1 }',
+  'a default': 'const f = (q, r = p.rate) => q + r; d = f(d, 1)',
+  'the read after the call': 'd = kernel(d, p); p.rate',
+}
+
+test('kind tests: a value dereferenced off the path to the call stays nullish', () => {
+  const src = `${DEREF}\n${Object.values(OFF_PATH).map((body, i) => `export const run${i} = (c, d) => { let p = chP[c | 0]; ${body}; return kernel(d, p) }`).join('\n')}`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    // (the runs store into chP's objects: each compile meets a host of its own)
+    const mod = jz(src, { optimize }).exports, host = oracle(src)
+    Object.keys(OFF_PATH).forEach((name, i) => {
+      for (const c of [0, 2]) for (const d of [1, 3]) is(answer(mod[`run${i}`], c, d), answer(host[`run${i}`], c, d), `${name}, run(${c}, ${d}) at ${optimize}`)
+    })
+  }
+})
+
+// A module binding a function assigns holds no fact past a call: `reset()` may store undefined.
+test('kind tests: a dereferenced module binding a call may reassign stays nullish', () => {
+  const src = `${DEREF}
+let G = chP[0]
+const reset = () => { G = undefined }
+export const run = (k, d) => { G.rate = 0.5; if (k) reset(); return kernel(d, G) }
+export const again = () => { G = chP[1] }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const mod = jz(src, { optimize }).exports, host = oracle(src)
+    for (const k of [0, 1]) { mod.again(); host.again(); is(answer(mod.run, k, 2), answer(host.run, k, 2), `run(${k}) at ${optimize}`) }
+  }
+})
