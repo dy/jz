@@ -200,6 +200,23 @@ export const f = (n) => { let acc = 0; for (let i = 0; i < n; i++) acc += dot(a[
   for (const n of [0, 1, 3, 64]) agree(built, 'f', [n])
 })
 
+// Of this file's programs, this one is where the pass alone decides the shape: with it off,
+// the specialized copy keeps its two guards in the round; the other shapes here hold with
+// it off. A last round tested one short reads a[64] as an element and answers f(65) wrong.
+test('guards: the counter\'s reads tested ahead of the loop, a round past the arrays', () => {
+  const src = `const a = [], b = [], out = [0, 0, 0]
+for (let i = 0; i < 64; i++) { a.push([i, i + 1, i + 2, i + 3]); b.push([i * 2, 1, 2, 3]) }
+const dot = (p, q) => { let s = 0; for (let k = 0; k < 4; k++) { s += p[k] * q[k]; s += p[3 - k] - q[3 - k] } out[0] = s; return s + out[0] }
+export const f = (n) => { let acc = 0; for (let i = 0; i < n; i++) { const p = a[i], q = b[i]; acc += p === undefined || q === undefined ? -1 : dot(p, q) } return acc }`
+  const built = jzWat(src)
+  if (!belowOpt(3)) {
+    const w = built.wat
+    ok(/br_if \$__sp\.f\d+s\b/.test(w), 'the specialized loop is tested ahead of it')
+    ok(!/br_if \$__sp\.f\d+a\d+/.test(w), 'and keeps no guard in the round')
+  }
+  for (const n of [0, 1, 3, 63, 64, 65, 66, 100]) agree(built, 'f', [n])
+})
+
 test('guards: a counter bounded beside a flag, read through a temp, past a test that bounds nothing', () => {
   const src = `export function f(n, len, flag) {
   const a = new Float64Array(len), m = new Uint8Array(32)
