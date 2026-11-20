@@ -242,7 +242,7 @@ const hasNewlineInQuote = src => {
   return false
 }
 
-const previousSourceToken = (src, from) => {
+export const previousSourceToken = (src, from) => {
   let i = from - 1, newline = false
   for (;;) {
     while (i >= 0 && isWhitespaceCode(src.charCodeAt(i))) {

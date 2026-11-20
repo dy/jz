@@ -2896,7 +2896,7 @@ export default (ctx) => {
         ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ARRAY_WITH_INDEX)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ARRAY_WITH_INDEX)]]]],
       ['f64.store',
         ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]],
-        storedValue(value)],
+        value == null ? undefExpr() : storedValue(value)],
       ['local.get', `$${c}`]], 'f64')
   }
 

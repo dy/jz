@@ -1213,3 +1213,78 @@ test('new: a callee that is no constructor throws a TypeError, a constructor con
     for (const name of Object.keys(cases)) is(mod[name](), host[name](), `${name} at ${optimize}`)
   }
 })
+
+// A class element's name is any IdentifierName (ECMA-262 15.7 ClassElementName), a
+// reserved word too. subscript read each such word by its own rule (a statement's, an
+// operator's, a literal's): `delete(k) {}`, `return() {}`, `typeof() {}`, `with(e) {}`
+// were refused. The parser entry reads the word at a member's head as the method's
+// name (src/parse.js memberName). Each word, after each thing a member follows, answers
+// as Node; REFUSED holds what is still refused, and fails where one starts to compile.
+const MEMBER_WORDS = ['break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with',
+  'let', 'static', 'yield', 'await', 'async', 'get', 'set', 'of', 'as', 'from', 'implements', 'interface', 'package', 'private', 'protected', 'public', 'arguments', 'eval', 'undefined', 'NaN', 'Infinity', 'using']
+const MEMBER_PLACES = {
+  'the first member': (w, i) => `class C${i} {\n  ${w}(e) { return e + 1 }\n}\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'after a method, on the next line': (w, i) => `class C${i} {\n  constructor() { this.k = 1 }\n  ${w}(e) { return this.k + e }\n}\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'after a field with a value, on the next line': (w, i) => `class C${i} {\n  k = 2\n  ${w}(e) { return this.k + e }\n}\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'after a field whose value ends in a brace': (w, i) => `class C${i} {\n  k = { v: 2 }\n  ${w}(e) { return this.k.v + e }\n}\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'after a bare field, on the next line': (w, i) => `class C${i} {\n  k\n  ${w}(e) { this.k = 3; return this.k + e }\n}\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'after a field and a semicolon': (w, i) => `class C${i} { k = 2; ${w}(e) { return this.k + e } }\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'after comments': (w, i) => `class C${i} {\n  k = 2\n  // names the member\n  /** doc */\n  ${w}(e) { return this.k + e }\n}\nexport let t${i} = (x) => new C${i}().${w}(x)`,
+  'static': (w, i) => `class C${i} { static ${w}(e) { return e + 2 } }\nexport let t${i} = (x) => C${i}.${w}(x)`,
+  'a generator': (w, i) => `class C${i} { *${w}(e) { yield e + 3 } }\nexport let t${i} = (x) => new C${i}().${w}(x).next().value`,
+  'called on this': (w, i) => `class C${i} { ${w}(e) { return e + 5 }\n  run(e) { return this.${w}(e) } }\nexport let t${i} = (x) => new C${i}().run(x)`,
+  'in a class a function makes': (w, i) => `const mk${i} = () => { class K { constructor() { this.k = 1 }\n    ${w}(e) { return this.k + e }\n    static ${w}(e) { return e + 5 } }\n  return K }\nconst C${i} = mk${i}()\nexport let t${i} = (x) => new C${i}().${w}(x) + C${i}.${w}(x)`,
+}
+// `for` meets the source's own reading of a loop's header (early-errors.js), `else` its
+// reading of an if's arms; `in` and `instanceof` go on with the member before them.
+const MEMBER_REFUSED = { for: () => true, else: (place) => place === 'a generator',
+  in: (place) => /^after a (method|bare field)/.test(place) || place === 'in a class a function makes', instanceof: (place) => /^after a (method|bare field)/.test(place) || place === 'in a class a function makes' }
+test('classes: a method named by a reserved word, after each thing a member follows', () => {
+  for (const [place, mk] of Object.entries(MEMBER_PLACES)) {
+    // Node is the judge of the form: `in` on the line after a field's value goes on with the value
+    const valid = MEMBER_WORDS.filter(w => { try { oracle(mk(w, 0)); return true } catch { return false } })
+    ok(valid.length >= MEMBER_WORDS.length - 2, `${place}: Node takes ${valid.length} of ${MEMBER_WORDS.length} words`)
+    const words = valid.filter(w => !MEMBER_REFUSED[w]?.(place)), src = words.map(mk).join('\n'), want = oracle(src)
+    for (const optimize of levels(false, true, 'size', 'speed')) {
+      const got = jz(src, { optimize }).exports
+      words.forEach((w, i) => is(got['t' + i](3), want['t' + i](3), `${w}, ${place} @${optimize}`))
+    }
+    for (const w of valid.filter(w => MEMBER_REFUSED[w]?.(place))) {
+      let e; try { jz(mk(w, 0)) } catch (x) { e = x }
+      ok(e && !/internal/.test(e.message), `${w}, ${place}: still refused${e ? '' : ' (it compiles: take it out of MEMBER_REFUSED)'}`)
+    }
+  }
+})
+
+// What stands in a member's value keeps its own reading: an operator's word there is no name.
+test('classes: a word in a field\'s value is the operator, the keyword or the function it was', () => {
+  const src = [
+    `class A { k = [1]\n  m = typeof(this.k)\n  n = void(0)\n  len() { return this.m.length + (this.n === undefined ? 1 : 0) } }\nexport let t0 = (x) => new A().len() + x`,
+    `class B { k = 3\n  p = this.k * typeof(this.k).length\n  get v() { return this.p } }\nexport let t1 = (x) => new B().v + x`,
+    `class D { #m = function() { return 4 };\n  f = async function() { return 1 }\n  run() { return this.#m() } }\nexport let t2 = (x) => new D().run() + x`,
+  ].join('\n'), want = oracle(src)
+  for (const optimize of levels(false, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (let i = 0; i < 3; i++) is(got['t' + i](3), want['t' + i](3), `t${i} @${optimize}`)
+  }
+})
+
+// An array's `with` short of its value stores undefined (ECMA-262 23.1.3.39: the value is
+// the second argument, absent undefined); the emitter read the absent argument's type.
+// A method a class names `with` answers as its own, on a receiver known or not.
+test('classes: with, an array\'s short of an argument and a class\'s own', () => {
+  const src = [
+    `export let t0 = (x) => { const a = [1, 2, 3].with(1); return String(a[1]) + a.length + x }`,
+    `export let t1 = (x) => { const a = [1, 2, 3].with(); return String(a[0]) + a[1] + x }`,
+    `export let t2 = (x) => [1, 2, 3].with(1, x)[1]`,
+    `const mk = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }\nexport let t3 = (x) => { const a = mk(4).with(2); return String(a[2]) + a[3] + x }`,
+    `const mkV = () => { class V { constructor() { this.n = 0 } static with(e) { const v = new V(); v.n = e; return v } }\n return V }\nconst V = mkV()\nexport let t4 = (x) => V.with(x).n`,
+    `class W { constructor() { this.n = 1 } with(e) { return this.n + e } }\nexport let t5 = (x) => new W().with(x)`,
+    `const pick = (k) => k > 0 ? new W() : [5, 6]\nexport let t6 = (x) => { const r = pick(x).with(1); return typeof r === 'number' ? r : r.length }`,
+    `export let t7 = (x) => { const r = pick(-x).with(1, 9); return typeof r === 'number' ? r : r[1] }`,
+  ].join('\n'), want = oracle(src)
+  for (const optimize of levels(false, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (let i = 0; i < 8; i++) is(got['t' + i](3), want['t' + i](3), `t${i} @${optimize}`)
+  }
+})

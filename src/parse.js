@@ -13,10 +13,10 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err, prec, seek, expr, word, keyword, next, parens } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec, seek, expr, word, keyword, next, parens, peek } from 'subscript/parse'
 import { body as armBody, follows } from 'subscript/feature/if.js'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
-import { validateEarlyErrors } from './early-errors.js'
+import { validateEarlyErrors, previousSourceToken } from './early-errors.js'
 import { here, where, registerResetHook } from './ctx.js'
 import { listForm, restartNames } from './list-form.js'
 import { asciiPart, idStart, idPart, lineEnd, isSpace } from './unicode.js'
@@ -315,6 +315,28 @@ const endsInArrow = a => {
 }
 const bareDeclarator = (a, p) => declDepth === groupDepth && (p === prec[','] - 1 || p === prec[',']) &&
   typeof (Array.isArray(a) && a[0] === ',' ? a[a.length - 1] : a) === 'string'
+// A class element's name is any IdentifierName (§15.7 ClassElementName), a
+// reserved word too: `delete(k) {}`, `return() {}`, `with(e) {}`, `typeof() {}`.
+// subscript reads a word by its own rule first, a statement's or an operator's.
+// Where a member starts in a class body the word before a `(` is read as the
+// method's name. A member starts after the body's `{`, a `;` or a member's `}`;
+// on a new line after what ends an expression; and after a modifier or a
+// generator's `*` that starts one (a `*` on a new line may be a product's).
+const MODIFIER = /(?:^|[^\w$])(static|async|get|set)$/
+const memberHead = (from, star) => {
+  const [at, line] = previousSourceToken(cur, from), c = cur.charCodeAt(at)
+  if (c === 123 || c === 59 || c === 125) return true
+  if (c === 42) return memberHead(at, true)
+  if (line) return !star && (idPart(c) || c === 41 || c === 93 || c === 34 || c === 39 || c === 96)
+  const m = MODIFIER.exec(cur.slice(Math.max(0, at - 6), at + 1))
+  return !!m && memberHead(at + 1 - m[1].length, star)
+}
+const memberName = (cc) => {
+  if (groupDepth !== classDepth || !idStart(cc)) return
+  const from = idx, name = next(jessieParse.id)
+  if (name && peek() === 40 && memberHead(from, false)) return name
+  seek(from)
+}
 let more = false
 const asi = (a, p, expr) => {
   if (p >= LVL) return
@@ -348,7 +370,7 @@ jessieParse.step = (a, p, cc, expr) => {
       return asi(a, p, expr) ?? null
   }
   const nl = jessieParse.newline
-  return baseStep(a, p, cc, expr) ?? (isNode(a) && nl ? asi(a, p, expr) ?? null : null)
+  return (a == null ? memberName(cc) : null) ?? baseStep(a, p, cc, expr) ?? (isNode(a) && nl ? asi(a, p, expr) ?? null : null)
 }
 
 const lvl = prec.asi ?? prec[';'], body = lvl + .5
