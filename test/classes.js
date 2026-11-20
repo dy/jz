@@ -1353,3 +1353,32 @@ test('vars: a var of an arrow or a class read before its statement is undefined'
     for (let i = 0; i < 7; i++) is(got['t' + i](3), want['t' + i](3), `t${i} @${optimize}`)
   }
 })
+
+// A function that reads or writes its `this` and is only ever constructed is a class's
+// constructor (the form before `class`: `function Body(x) { this.x = x }`, `new Body(1)`):
+// folded to the class with its prototype's methods at the module level, it is folded now
+// with none, and in a function's statements as in the module's (jzify/classes.js
+// foldPseudoClassical). Each was refused: "`this` not supported: use explicit parameter",
+// which three programs of the held-out lane ended in.
+test('classes: a constructor function that is only constructed is a class', () => {
+  const BODY = `function Body(x, v) { this.x = x; this.v = v }`
+  const PROTO = `Body.prototype.step = function (dt) { this.x += this.v * dt; return this }`
+  const src = [
+    [`${BODY}\n${PROTO}\nexport let t0 = (n) => new Body(1, n).step(0.5).x`],
+    [`function Point(x, v) { this.x = x; this.v = v }\nconst step = (b, dt) => { b.x += b.v * dt; return b }\nexport let t1 = (n) => step(new Point(1, n), 0.5).x`],
+    [`export let t2 = (n) => { ${BODY}\n${PROTO}\nreturn new Body(1, n).step(0.5).x }`],
+    [`export let t3 = (n) => { ${BODY}\nconst step = (b, dt) => { b.x += b.v * dt; return b }\nreturn step(new Body(1, n), 0.5).x }`],
+    [`function program(n) { ${BODY}\n${PROTO}\nreturn new Body(1, n).step(0.5).x }\nexport let t4 = (n) => program(n)`],
+    [`export let t5 = (n) => { ${BODY}\nconst bodies = [new Body(1, n), new Body(2, n)]\nlet s = 0; for (let i = 0; i < bodies.length; i++) s += bodies[i].x * bodies[i].v\nreturn s }`],
+    [`function Tag(k) { this.k = k }\nexport let t6 = (n) => { const a = new Tag(n); return (a instanceof Tag ? 10 : 0) + a.k }`],
+  ]
+  for (const [one] of src) {
+    const name = /export let (t\d)/.exec(one)[1], want = oracle(one)[name](3)
+    for (const optimize of levels(false, true, 'size', 'speed')) is(jz(one, { optimize }).exports[name](3), want, `${name} @${optimize}`)
+  }
+  // one called as a function, or handed on as a value, stays a function: its `this` is refused, as it was
+  for (const kept of [
+    `function Base(x) { this.x = x }\nfunction Derived(x) { Base.call(this, x); this.y = 1 }\nexport let t = (n) => new Derived(n).x`,
+    `function P(x) { this.x = x }\nconst mk = (C, v) => new C(v)\nexport let t = (n) => mk(P, n).x + new P(1).x`,
+  ]) throws(() => jz(kept), /`this` not supported/, kept.split('\n')[0])
+})

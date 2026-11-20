@@ -6,7 +6,7 @@
 import { rewriteChildren, withLoc, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, objectLiteralEntries } from '../src/ast.js'
 import { ctx, err } from '../src/ctx.js'
 import { isDestructurePat } from './hoist-vars.js'
-import { foldPrototypeStores } from './classes.js'
+import { foldPrototypeStores, foldPseudoClassical } from './classes.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { TYPED_ELEM_NAMES, PTR } from '../layout.js'
@@ -290,7 +290,8 @@ export function createTransform(opts) {
     if (op === ';') {
       const hoisted = [], rest = []
       // a function's statements fold their classes' prototype stores as the module's do (jzify/index.js)
-      const stmts = fnDepth > 0 ? foldPrototypeStores(args) : args
+      // (and their constructor functions fold to classes first, as the module's)
+      const stmts = fnDepth > 0 ? foldPrototypeStores(foldPseudoClassical(args)) : args
       for (let i = 0; i < stmts.length; i++) {
         const stmt = stmts[i]
         if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {

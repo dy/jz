@@ -10,8 +10,19 @@
 import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, STATIC_BASE, T, withLoc, cloneNode, collectParamNames, collectAllBoundNames } from '../src/ast.js'
 import { ctx, err, here, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
+import { occurs } from './rename.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { JZIFY_CLASS_ERRORS } from '../src/op-policy.js'
+
+// Whether a body reads its own `this`: a nested function or class has its own.
+function usesThis(node) {
+  if (node === 'this') return true
+  if (!Array.isArray(node)) return false
+  if (node[0] === 'function' || node[0] === 'function*' || node[0] === 'class') return false
+  if (node[0] === '.' || node[0] === '?.') return usesThis(node[1])
+  if (node[0] === ':') return usesThis(node[2])
+  return node.some(usesThis)
+}
 
 export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, aliasOf, lowerArguments, readsConstructor, inherits, storedOn, written, shadowsBuiltin, classBindingScope }) {
 // === class lowering ===
@@ -148,15 +159,6 @@ function normalizeClassIdiomsNode(node, base) {
     }
   }
   return node.map((n, i) => i === 0 ? n : normalizeClassIdioms(n, base))
-}
-
-function usesThis(node) {
-  if (node === 'this') return true
-  if (!Array.isArray(node)) return false
-  if (node[0] === 'function' || node[0] === 'function*' || node[0] === 'class') return false
-  if (node[0] === '.' || node[0] === '?.') return usesThis(node[1])
-  if (node[0] === ':') return usesThis(node[2])
-  return node.some(usesThis)
 }
 
 // The names a constructor binds in the scope its body runs in: its parameters
@@ -1110,6 +1112,20 @@ export function foldPseudoClassical(stmts) {
     const pa = matchProto(st)
     if (pa) { const l = methods.get(pa.ctor); l ? l.push(...pa.methods) : methods.set(pa.ctor, [...pa.methods]) }
   }
+  // A function that reads or writes its `this` and is only ever constructed (`new P(…)`,
+  // `x instanceof P`) is the constructor of a class with no method, the same fold: one
+  // called as a function, or handed on as a value, stays a function.
+  const constructions = (n, name) => !Array.isArray(n) ? 0
+    : (n[0] === 'new' && (Array.isArray(n[1]) && n[1][0] === '()' ? n[1][1] : n[1]) === name || n[0] === 'instanceof' && n[2] === name ? 1 : 0) +
+      n.reduce((s, c, i) => i ? s + constructions(c, name) : s, 0)
+  const spelled = (n, name) => n === name ? 1 : Array.isArray(n) ? n.reduce((s, c, i) => i ? s + spelled(c, name) : s, 0) : 0
+  // (a statement of a module's export or import form is counted by its spellings: no fewer)
+  const named = (st, name) => { try { return occurs(st, name) } catch { return spelled(st, name) } }
+  for (const st of stmts) {
+    if (!Array.isArray(st) || st[0] !== 'function' || typeof st[1] !== 'string' || methods.has(st[1]) || !usesThis(st[3])) continue
+    const made = stmts.reduce((s, x) => s + constructions(x, st[1]), 0)
+    if (made > 0 && stmts.reduce((s, x) => s + named(x, st[1]), 0) === made + 1) methods.set(st[1], [])
+  }
   if (!methods.size) return stmts
 
   const reassigned = (name) => stmts.some(st =>
@@ -1129,10 +1145,8 @@ export function foldPseudoClassical(stmts) {
   for (const st of stmts) {
     if (Array.isArray(st) && st[0] === 'function' && typeof st[1] === 'string' && foldable.has(st[1])) {
       const ms = methods.get(st[1])
-      out.push(['class', st[1], null, [';',
-        [':', 'constructor', ['function', null, st[2] ?? null, st[3]]],
-        ...ms.map(m => [':', m.method, ['function', null, m.params ?? null, m.body]]),
-      ]])
+      const ctor = [':', 'constructor', ['function', null, st[2] ?? null, st[3]]]
+      out.push(['class', st[1], null, ms.length ? [';', ctor, ...ms.map(m => [':', m.method, ['function', null, m.params ?? null, m.body]])] : ctor])
       continue
     }
     const pa = matchProto(st)
