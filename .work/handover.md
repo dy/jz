@@ -661,3 +661,12 @@ f8ad60e53 worktree-agent-a9ec23575a85c3d81    the limits round two (landed in la
 ```
 baa2ae55d fix-v                               the landing branch: main (6bc58eabd), the sole call's loop (66983ee46) and the label's early errors; the record's commit after it
 ```
+
+## Branches of the land-x landing (2026-11-20), tips before deletion
+
+```
+2b73d089f bump-x      the landing branch: main (f0a5956e8), the two dependencies (56324e3e3) and the member gate; the record's commit after it
+dca908186 bump-w      the first build of it, the method's node at its `{`: failed its check, superseded
+2e0b2fb57 oo-w        on bump-x: the reserved-word method names and the array's `with` (1ca15361d), the bound class expressions (2e0b2fb57); not checked on the legs
+0c430196a fix-v       the reserved-word commit as first written, on f0a5956e8: superseded by 1ca15361d
+```

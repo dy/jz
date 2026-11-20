@@ -3350,6 +3350,75 @@ The landing check runs `npm run test:262` from here on, and an optimizer change 
 - decode-tta is 6% slower on x64 since the facts and this does not repair it. Bisected to d2f6d147a (1.091 on arm64); `versionTypedBounds: false` brings it to 1.050 of the time before, the rest unexplained.
 - A labelled plain function inside a function body of a sloppy script (`L: function f() {} f()`) is refused with "f is not defined".
 
+## The held-out lane's first contact (2026-11-20)
+
+Run 44642830405 on 45e512a8a (the programs registered again by that commit: compiler source had changed since their first registration, and no one had run one with jz). The record job committed `bench/heldout.json` (731886e18, f0a5956e8). One runner, Xeon 6975P-C, paired rounds.
+
+### The figures
+
+25 programs registered, 2 marked not measurable beforehand, 23 run by V8, Deno, Bun, JSC and Porffor.
+
+- jz answers 18 of the 23, the same with JavaScript's floats. Refused: havlak, clbg-nbody and clbg-nbody-node-4 ("`this` not supported: use explicit parameter"); deltablue (an internal error at `Vector.with(editC)`). cd traps at run time.
+- Time over V8's, geomean of the 18: 4.72 (the lane's figure 0.21×). Are We Fast Yet, 11 programs: 9 times V8's time; the Benchmarks Game, 7: 1.6 times.
+- At or ahead of V8: nbody-node-5 0.92, spectralnorm-node-2 0.95, mandelbrot 1.00. Behind: richards 74, permute 40, queens 33, towers 30, storage 11, list 6.6, json 5.3, sieve 4.3, bounce 3.5, fannkuch 2.7 and 3.0, the class-written nbody 2.8, three spectralnorms 1.3 to 1.8.
+- Peak RSS over V8's: json 13.7, sieve 12.6, storage 16.2; the rest 1.0 to 2.4.
+- Against Porffor's native build: faster on 13 of 18 (geomean 0.69 of its time), slower on richards 5.7, queens 3.8, permute 3.6, towers 2.7, storage 1.65.
+
+The claims of AGENTS.md hold on the bench corpus, where jz was tuned. On programs it was never tuned on they do not: object-written programs are 3 to 74 times V8's time.
+
+### Where the time goes
+
+Measured on a kernel of the integrator's own in that style (a class deriving a harness class, methods on `this`, an array in a field), nothing fetched; under load, so the ratios are rough.
+
+| The form | jz time over Node's |
+|---|---|
+| class declarations at the module level | 2.4 |
+| one class in a function | 4.5 |
+| a class deriving another, in a function | 30 |
+| a class deriving a module's class, itself in a function | 30 |
+| `var X = class`, `const X = class`, `let X = class` at the module level | 27 to 35 |
+| a class deriving through `const A = B` | 35 |
+| the lane's own build: CommonJS modules bundled by esbuild | 23 |
+
+- **A class that is no declaration at the module level is a class of closures** (jzify/classes.js: the schema lowering asks `atModuleScope()` and a base that is a schema). One deriving a base it cannot name builds its instance from the base's factory and adds each member at run time (`__dyn_set`, `__hide_member`), and every member read and call goes through the runtime (`__dyn_get_expr`, `__ext_method`, `__ext_invoke`).
+- **esbuild writes every class as `var X = class {}`** and wraps each CommonJS module in a function it calls once (`__commonJS`), a module's classes reaching another through `require_x().Name`.
+- **A plain array in a field** costs a durable-store test at every element store and, where the field is assigned in a method, the generic element helpers (`__ptr_offset_fwd`, `__arr_prop`, `__arr_set_num`, `__esc_elem`): 2.3 to 2.7 times Node's time where a `Float64Array` in the same field takes 1.2.
+
+### The work it sets
+
+1. A binding of a class expression declares the class; a const alias of a class denotes it (branch oo-w, 2e0b2fb57).
+2. esbuild's CommonJS modules linked at compile time where their requires are static: the wrapper's bindings the module's own, an export read the exporter's binding (jzify/bundler.js, beside the helper folds it has).
+3. A function that runs once (an IIFE, a function of one call at the module level): its declarations the module's.
+4. Element access on a plain array a field holds.
+5. `this` in a plain function in a function body (the module level folds it to a class already: foldPseudoClassical), the cd trap.
+
+## The land-x landing: watr 5.13.8 and subscript 10.8.6, a method only where a member stands (2026-11-20)
+
+Two commits on f0a5956e8 (main with the held-out record), the integrator's.
+
+### What landed
+
+- `56324e3e3` The two dependencies. watr 5.13.8 bounds its walks, so the limits rows keyed by its version turn. subscript 10.8.6 reads a method shorthand as the `{` after the call it has read. In the parser entry the rule held to braces is the `{` rule's, and a method's node is put back where its head's `(` stands: subscript places it at the `{`, and the early errors read a method's modifiers off the source from the `(`.
+- `2b73d089f` A method is read only where a member stands, an object literal's braces or a class body's. A call and a block on the line after it (`f(x)⏎{ n += 10 }`) were read as a method inside any braces: of 24 places a statement stands, 14 answered without the call and the block and 8 were refused. The silence in a body was fa11e4fa3's (the block fix of land-t), which let a label stand before any statement; 1.0.3 refused 20 of the 24 and lost the call in five. Directly in a bare block the form is an early error now.
+
+### The first check failed, and what it showed
+
+The bump was first built with the method's node left at its `{` (branch bump-w), the integrator calling the position's move harmless. The check (bw) failed one test on each of four legs: `field method() {}` in a class body was refused by another message, the early errors having gone silent. Rebuilt as bump-x.
+
+A parser change is now compared over 25,208 files (the repository's sources and test262's language tests, every node with its position: scratch `own/parse-hashes.mjs`, `own/parse-diff.mjs`). The bump changes 4 (`static get⏎*a() {}` a static field and a generator, where `static` stood over both; `x = 42⏎*gen() {}` refused by the parser, the early error that refused it gone with its input). The gate changes 6 more: four of the repository's own test files, each a call and a bare block in an arrow's body, and two negatives by their message.
+
+### The check (bx, on 2b73d089f)
+
+76 minutes at a load of 9 to 62, then test262. Listings unmoved (data-forms 640 gaps of 744, spellings 42 of 470, vector-coverage 453 of 840). WASI 7,545; default 7,672; armed level 3 7,454; level 0 7,432; test:self 89; integration 238 of 239 with one skipped; lint and audit clean; examples 1.70 and 1.67, 25 of 25 twice. On a fresh hosted compiler (37,879,018 bytes, 139,540 more than before the bump: the two dependencies' own source): parity 19, statements 199, parse-list 15, errors 151, classes 73, objects 200, generators 55, parser-bugs 64. test262: pass 4,128, refused negatives 4,045, accepted negatives 0, failures 0. Bench bytes: 2 of 105 cases move, jessie and watr, whose inputs are the two dependencies.
+
+CI on 45e512a8a (the compiler before this landing): test262 green, the label regression of land-t closed there; self-compile green; test green but claims.
+
+### Found, not fixed
+
+- Directly in a bare, a labelled or a case's block a call and a block on the next line are refused, where Node runs them: the literal's rule reads a bare block too.
+- `new(F)` (a parenthesized callee, no arguments) answers NaN at every level.
+- A class declaration's name assigned another class is still the first class to an `extends` or an `instanceof` after it.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
