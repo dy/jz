@@ -220,6 +220,7 @@ const TESTS = [
   'unread-globals',
   'parse-list',
   'rename',
+  'link-cjs',
   'alias',
   'float32',
   'constants',

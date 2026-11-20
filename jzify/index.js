@@ -13,6 +13,7 @@ import { STD_GLOBALS } from '../src/std/index.js'
 import { TYPED_CTORS, TYPED_BYTES } from '../src/std/typed.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
+import { linkCommonJS } from './link-cjs.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
 import { createClassLowering, foldPseudoClassical, foldPrototypeStores } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
@@ -769,6 +770,9 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   ast = settleVars(ast)
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)
+  // esbuild's CommonJS modules stand at the module level where they can (link-cjs.js): ahead of
+  // every lowering, which then reads their classes and functions as the module's own
+  ast = linkCommonJS(ast)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
   if (Array.isArray(ast)) { const stmts = foldPrototypeStores(ast[0] === ';' ? ast.slice(1) : [ast]); ast = stmts.length === 1 ? stmts[0] : [';', ...stmts] }
   ;({ ast, direct: directAsync } = splitDirectAsync(ast, (t) => names.genTemp(t), declarationCounts))

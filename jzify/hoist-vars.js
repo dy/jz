@@ -33,6 +33,8 @@ const valueRead = (n, name, held) => {
   if (n === name) return !held
   if (!Array.isArray(n)) return false
   const op = n[0]
+  // a declaration reads what it is given, not what it declares
+  if (op === 'let' || op === 'const' || op === 'var') return n.some((d, i) => i > 0 && Array.isArray(d) && (d[0] === '=' ? valueRead(d[2], name, false) : valueRead(d, name, false)))
   if (op === '()' && n.length === 3) return valueRead(n[1], name, true) || valueRead(n[2], name, false)
   if (op === 'new') return valueRead(n[1], name, true)
   if (op === '.' || op === '[]' && n.length === 3) return valueRead(n[1], name, true) || op === '[]' && valueRead(n[2], name, false)
@@ -44,7 +46,7 @@ const valueRead = (n, name, held) => {
 }
 const isFnDecl = (n) => Array.isArray(n) && ((n[0] === 'function' || n[0] === 'function*') && typeof n[1] === 'string' ||
   n[0] === 'async' && isFnDecl(n[1]) || n[0] === 'export' && isFnDecl(n[1]))
-const readUndefined = (list, at, name) => {
+export const readUndefined = (list, at, name) => {
   for (let i = 1; i < list.length; i++) if (i < at ? valueRead(list[i], name, false) : i > at && isFnDecl(list[i]) && valueRead(list[i], name, false)) return true
   return false
 }

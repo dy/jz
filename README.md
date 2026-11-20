@@ -457,7 +457,8 @@ over the <!-- fig:as-size-cases -->57<!-- /fig --> cases both compile) while kee
   unreclaimed and each fixed-count array's checks in place (`array-open`);
   `warnings` collects the same advisories from the API, with each
   property read left dynamic (`deopt-prop-read`), each class kept as closures
-  (`class-generic`) and the first cause an object shape is lost by (`shape-lost`).
+  (`class-generic`), each CommonJS module of an esbuild bundle kept as a function
+  (`module-kept`) and the first cause an object shape is lost by (`shape-lost`).
 - Float loop counters, plain arrays and loop-carried dependencies are the common
   reasons a kernel stays scalar.
 
