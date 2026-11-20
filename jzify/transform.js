@@ -13,6 +13,7 @@ import { TYPED_ELEM_NAMES, PTR } from '../layout.js'
 import { hostGlobalName } from '../src/prepare/state.js'
 import { HOST_GLOBALS } from '../src/autoload.js'
 import { isResourceDecl, resourceSteps } from './using.js'
+import { rename, spells } from './rename.js'
 
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray',
@@ -129,13 +130,18 @@ export function createTransform(opts) {
   }
   // A binding of a class expression that nothing assigns again declares the class:
   // `const C = class {}`, `var C = class {}` (the form bundlers and compilers to
-  // JS write), the expression unnamed or named as its binding. The class is then
-  // the one its binding's name denotes, as a declaration's is: one a class can extend.
+  // JS write). The class is then the one its binding's name denotes, as a
+  // declaration's is: one a class can extend. An expression with a name of its own
+  // (`var C = class _C {}`, which a bundler writes for a class that names itself)
+  // takes its binding's name for it, where the class spells that name nowhere.
   const classBinding = (stmt) => {
     if (!Array.isArray(stmt) || stmt.length !== 2 || (stmt[0] !== 'let' && stmt[0] !== 'const' && stmt[0] !== 'var')) return null
     const d = stmt[1]
     if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !Array.isArray(d[2]) || d[2][0] !== 'class') return null
-    return (d[2][1] == null || d[2][1] === d[1]) && !opts.assigned?.(d[1]) ? d : null
+    if (opts.assigned?.(d[1])) return null
+    const own = d[2][1]
+    if (own == null || own === d[1]) return d
+    return spells(d[2], d[1]) ? null : ['=', d[1], rename(d[2], new Map([[own, d[1]]]), false)]
   }
   const lowerObjectLiteralThis = (...a) => opts.lowerObjectLiteralThis()(...a)
   const shadowsBuiltin = opts.shadowsBuiltin

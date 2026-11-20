@@ -219,6 +219,7 @@ const TESTS = [
   'module-scratch',
   'unread-globals',
   'parse-list',
+  'rename',
   'alias',
   'float32',
   'constants',

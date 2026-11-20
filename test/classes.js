@@ -1295,7 +1295,8 @@ test('classes: with, an array\'s short of an argument and a class\'s own', () =>
 // class of closures, and a class deriving one built its instance from the base's
 // factory and added every member at run time: 22 to 35 times Node's time on a
 // kernel of two classes, where the declarations took 2 to 3 (jzify/transform.js
-// classBinding, jzify/hoist-vars.js, jzify/classes.js resolveClass).
+// classBinding, jzify/hoist-vars.js, jzify/classes.js resolveClass). An expression
+// with a name of its own takes its binding's (jzify/rename.js).
 const BOUND_CLASSES = {
   'const, derived by const': `const B = class { constructor(a) { this.a = a } get() { return this.a } }\nconst D = class extends B { get() { return super.get() + 2 } }\nexport let t0 = (x) => new D(x).get()`,
   'var, derived by var': `var B = class { constructor(a) { this.a = a } get() { return this.a } }\nvar D = class extends B { get() { return super.get() + 2 } }\nexport let t0 = (x) => new D(x).get()`,
@@ -1304,6 +1305,8 @@ const BOUND_CLASSES = {
   'a const alias of the base': `class B { get() { return 4 } }\nconst A = B\nconst D = class extends A { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
   'an alias of an alias': `class B { get() { return 4 } }\nconst A1 = B\nconst A2 = A1\nclass D extends A2 { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
   'instanceof through the bindings': `const C = class {}\nconst D = class extends C {}\nexport let t0 = (x) => (new D() instanceof C ? 10 : 0) + (new C() instanceof D ? 1 : 0) + x`,
+  'a name of its own': `const C = class Inner { static make(a) { const c = new Inner(); c.a = a; return c } get() { return this.a } }\nexport let t0 = (x) => C.make(x).get()`,
+  'a name of its own, derived': `var B = class _B { static of(a) { const b = new _B(); b.a = a; return b } get() { return this.a } }\nvar D = class _D extends B { get() { return super.get() + (this instanceof _D ? 1 : 0) } }\nexport let t0 = (x) => { const d = new D(); d.a = x; return d.get() + B.of(x).get() }`,
   'statics of a bound class': `const C = class { static n = 5; static inc() { return ++C.n } }\nexport let t0 = (x) => C.inc() + C.n + x`,
 }
 // What keeps the binding a variable: each answers as Node, as a class of closures.
@@ -1312,7 +1315,7 @@ const UNBOUND_CLASSES = {
   'assigned in a function': `let C = class { get() { return 1 } }\nconst swap = () => { C = class { get() { return 5 } } }\nexport let t0 = (x) => { const a = new C().get(); swap(); return a * 10 + new C().get() + x }`,
   'assigned another, then derived': `let C = class { get() { return 1 } }\nclass Z { get() { return 9 } }\nC = Z\nclass D extends C { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
   'assigned another, then its static read': `let C = class { static n = 1 }\nclass Z { static n = 9 }\nC = Z\nexport let t0 = (x) => C.n + x`,
-  'an inner name of its own': `const C = class Inner { static make(a) { const c = new Inner(); c.a = a; return c } get() { return this.a } }\nexport let t0 = (x) => C.make(x).get()`,
+  'a name of its own, and its binding\'s spelled in it': `const C = class Inner { static make(a) { const c = new Inner(); c.a = a; return c } get() { return this.a + { C: 1 }.C } }\nexport let t0 = (x) => C.make(x).get()`,
   'an alias another scope shadows': `class B { get() { return 4 } }\nclass Z { get() { return 9 } }\nconst A = B\nexport let t0 = (x) => { const A = Z; class D extends A { get() { return super.get() + 1 } }\n return new D().get() + x }`,
   'a let alias assigned later': `class B { get() { return 4 } }\nclass Z { get() { return 9 } }\nlet A = B\nA = Z\nclass D extends A { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
   'two vars of one name': `var C = class { get() { return 1 } }\nvar C = class { get() { return 2 } }\nexport let t0 = (x) => new C().get() + x`,
