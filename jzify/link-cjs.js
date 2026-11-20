@@ -14,8 +14,11 @@
  * stand at the module level, at its first require; each export is a const of
  * the value it was given (`exports.k = v`, `module.exports = { k: v }`,
  * `module.exports = v`); what a requirer takes from it is a const of that
- * export. A name its body declares that is spelled anywhere else in the bundle
- * takes a new one (rename.js).
+ * export, or the exporter's own binding where the export is one the body
+ * never assigns again (the requirer's name for it renamed to it: a class one
+ * module declares is then the class another extends and constructs, with no
+ * binding between). A name its body declares that is spelled anywhere else in
+ * the bundle takes a new one (rename.js).
  *
  * A module anything else is done with stays as esbuild wrote it: one required
  * inside a function or under a condition (it runs when that does), one in a
@@ -27,7 +30,7 @@
 
 import { bindingOf, moduleStmts, nodeEqual, literalString, withLoc, collectParamNames, MUTATE_OPS } from '../src/ast.js'
 import { warn } from '../src/ctx.js'
-import { rename, occurs, free, spells } from './rename.js'
+import { rename, occurs, free, spells, binds } from './rename.js'
 import { readUndefined } from './hoist-vars.js'
 
 const LIT0 = [, 0]
@@ -151,15 +154,15 @@ const readsMembersOnly = (list, name) => {
 export function linkCommonJS(ast) {
   const top = moduleStmts(ast)
   if (!top || top.length < 3) return ast
-  const binds = top.map(bindingOf)
-  const nameFns = binds.filter(b => b && nodeEqual(b[1], OWN_NAMES)).map(b => b[0])
-  const helpers = new Set(binds.filter(b => b && isRequireHelper(b[1], nameFns)).map(b => b[0]))
+  const tops = top.map(bindingOf)
+  const nameFns = tops.filter(b => b && nodeEqual(b[1], OWN_NAMES)).map(b => b[0])
+  const helpers = new Set(tops.filter(b => b && isRequireHelper(b[1], nameFns)).map(b => b[0]))
   if (!helpers.size) return ast
 
   // The modules: `require_x = __commonJS({ "x.js"(exports, module) { … } })`.
   const mods = new Map(), wrapperAt = new Map()
   top.forEach((s, at) => {
-    const b = binds[at]
+    const b = tops[at]
     if (!b || !Array.isArray(b[1]) || b[1][0] !== '()' || b[1].length !== 3 || !helpers.has(b[1][1]) || mods.has(b[0])) return
     const lit = b[1][2], m = Array.isArray(lit) && lit[0] === '{}' && lit.length === 2 ? lit[1] : null
     if (!Array.isArray(m) || m[0] !== ':' || !Array.isArray(m[2]) || m[2][0] !== 'function' || m[2][1] != null) return
@@ -235,6 +238,35 @@ export function linkCommonJS(ast) {
     const own = tally([';', ...m.list], new Map())
     for (const n of m.declares) if (spellings.get(n) > own.get(n)) m.names.set(n, fresh(n))
   }
+  // An export whose value is a binding its body declares with a value and never assigns again
+  // is that binding: what a requirer takes of it, under a name its own body binds nowhere
+  // else, is renamed to it there (no const between, so none for a function above to read early).
+  // (a declaration's `=` gives the binding its value: no assignment of it)
+  const assigns = (n, name) => !Array.isArray(n) ? 0
+    : n[0] === 'let' || n[0] === 'const' ? n.reduce((s, d, i) => i ? s + assigns(Array.isArray(d) && d[0] === '=' ? d[2] : d, name) : s, 0)
+    : (MUTATE_OPS.has(n[0]) && n[1] === name ? 1 : 0) + n.reduce((s, c, i) => i ? s + assigns(c, name) : s, 0)
+  const bindingOfExport = (m, k) => {
+    if (m.one) return null
+    const at = m.pairs ? m.exports.value : m.exports.names.get(k)
+    const v = m.pairs ? m.pairs.find(p => p[0] === k)?.[1] : m.list[at]?.[2]
+    if (typeof v !== 'string' || !m.declares.has(v)) return null
+    const given = m.list.findIndex(s => Array.isArray(s) && (((isFn(s) || s[0] === 'class') && s[1] === v) || (s[0] === 'let' || s[0] === 'const') && s.some((d, i) => i > 0 && Array.isArray(d) && d[0] === '=' && d[1] === v)))
+    const writes = m.list.reduce((n, s) => n + assigns(s, v), 0)
+    if (given >= 0 ? writes !== 0 : !(writes === 1 && m.list.findIndex(s => Array.isArray(s) && s[0] === '=' && s[1] === v) >= 0 && m.list.findIndex(s => Array.isArray(s) && s[0] === '=' && s[1] === v) < at)) return null
+    return m.names.get(v) ?? v
+  }
+  for (const m of all) {
+    if (m.keep) continue
+    m.direct = new Set()
+    m.sites.forEach((site, at) => {
+      if (!site || site.kind !== 'picks' || mods.get(site.req).keep) return
+      for (const [k, n] of site.picks) {
+        const to = bindingOfExport(mods.get(site.req), k)
+        if (to == null || m.list.some((s, i) => i !== at && !(Array.isArray(s) && s[0] === 'let' && s.slice(1).every(d => typeof d === 'string')) && spells(s, n) && binds(s, n))) continue
+        m.names.set(n, to); m.direct.add(n)
+      }
+    })
+  }
   // what a requirer's const holds: an export's const, the one value's member, or an object of the exports
   const pick = (m, k) => m.one ? ['.', m.valueVar, k] : m.vars.get(k)
   const wholeOf = (m) => m.one ? m.valueVar
@@ -254,7 +286,7 @@ export function linkCommonJS(ast) {
       if (dep && !dep.keep) {
         if (!emitted.has(dep)) { emitted.add(dep); here.push(...emit(dep.list, dep.sites, dep)) }
         if (site.kind === 'whole') here.push(withLoc(['const', ['=', local(site.names[0]), wholeOf(dep)]], s))
-        else if (site.kind === 'picks') for (const [k, n] of site.picks) here.push(withLoc(['const', ['=', local(n), pick(dep, k)]], s))
+        else if (site.kind === 'picks') for (const [k, n] of site.picks) if (!self?.direct.has(n)) here.push(withLoc(['const', ['=', local(n), pick(dep, k)]], s))
         return
       }
       if (self && i === self.exports.value) {

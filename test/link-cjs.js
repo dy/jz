@@ -65,6 +65,24 @@ const PROGRAMS = {
   'keys that are no names: the object is the module\'s one value': { mods: {
     m: `module.exports = { 'a-b': 3, 7: 4, c: 5 };` },
     tail: `var m = require_m();\nexport let t0 = (x) => m['a-b'] + m[7] + m.c + x;` },
+  // the held-out lane's deltablue: a function declared in the requirer makes the class it took, and a class's static calls it
+  'a function declaration that constructs what its module required': { direct: true, mods: {
+    coll: `var Dict = class _Dict { constructor() { this.n = 0; } put(k) { this.n += k; return this; } static of(k) { return new _Dict().put(k); } };\n    exports.Dict = Dict;`,
+    main: `var { Dict } = require_coll();\n    function table() { const d = new Dict(); d.put(3); d.put(4); return d; }\n    var Strength = class { static made() { return table().n + Dict.of(5).n; } };\n    exports.get = () => Strength.made() + table().n;` },
+    tail: `var { get } = require_main();\nexport let t0 = (x) => get() + x;` },
+  // (renamed to the exporter's binding with the other name for it, the parameter would take that name's calls)
+  'a requirer\'s name for an export bound again inside it, beside another name for the same': { mods: {
+    m: `var inc = (a) => a + 1;\n    exports.inc = inc;`,
+    main: `var { inc } = require_m();\n    var { inc: up } = require_m();\n    exports.get = (x) => { const f = (inc) => up(inc) * 100; return f(x) + inc(x); };` },
+    tail: `var { get } = require_main();\nexport let t0 = (x) => get(x);` },
+  'an export whose binding is assigned again after it': { mods: {
+    m: `var k = 5;\n    exports.k = k;\n    k = 9;\n    exports.now = () => k;`,
+    main: `var { k, now } = require_m();\n    exports.get = () => k * 10 + now();` },
+    tail: `var { get } = require_main();\nexport let t0 = (x) => get() + x;` },
+  'two names for one export in one requirer': { mods: {
+    m: `var inc = (a) => a + 1;\n    exports.inc = inc;`,
+    main: `var { inc } = require_m();\n    var { inc: up } = require_m();\n    exports.get = (x) => inc(x) * 10 + up(x);` },
+    tail: `var { get } = require_main();\nexport let t0 = (x) => get(x);` },
   'one export picked off the require': { mods: {
     util: `exports.inc = (a) => a + 1;\n    exports.dec = (a) => a - 1;` },
     tail: `var inc = require_util().inc;\nvar dec = require_util().dec;\nexport let t0 = (x) => inc(inc(x)) * 10 + dec(x);` },
@@ -151,7 +169,7 @@ const KEPT = {
     tail: `var { get } = require_main();\nexport let t0 = (x) => get() + x;` },
 }
 
-const run = (name, { mods, tail, helper, kept = [] }) => {
+const run = (name, { mods, tail, helper, kept = [], direct = false }) => {
   // two calls of a fresh instance: a module's state is its own
   const src = bundle(mods, tail, helper), node = oracle(src).t0, want = `${node(3)} ${node(4)}`
   for (const optimize of levels(false, true, 'size', 'speed')) {
@@ -162,6 +180,9 @@ const run = (name, { mods, tail, helper, kept = [] }) => {
   compileWat(src, { warnings: w => warnings.push(w), optimize: 2 })
   const named = warnings.filter(e => e.code === 'module-kept').map(e => /module src\/(\w+)\.js/.exec(e.message)?.[1]).sort()
   is(named.join(' '), [...kept].sort().join(' '), `${name}: the modules kept`)
+  // what a requirer took is the exporter's binding itself: a function that constructs it calls it by name
+  // (a const between them is a variable to the function declared above it: its calls go through a value)
+  if (direct) ok(!/call_indirect/.test(String(compileWat(src, { wat: true, optimize: 2 }))), `${name}: nothing is called through a value`)
   return warnings
 }
 

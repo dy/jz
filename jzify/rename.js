@@ -90,10 +90,10 @@ export const occurs = (node, name, stmt = true) => {
 // asked of the tree with the name's identifiers marked (the walk above tells an identifier
 // from a property, a key or a label), where what is left to know is what declares.
 const MARK = '\u0000free'
-const binds = (pattern) => collectParamNames([pattern]).has(MARK)
+const bindsMark = (pattern) => collectParamNames([pattern]).has(MARK)
 const takes = (params) => collectParamNames(extractParams(params)).has(MARK)
 const declaresMark = (s) => Array.isArray(s) && (
-  (s[0] === 'let' || s[0] === 'const' || s[0] === 'var') && s.some((d, i) => i > 0 && binds(d)) ||
+  (s[0] === 'let' || s[0] === 'const' || s[0] === 'var') && s.some((d, i) => i > 0 && bindsMark(d)) ||
   (FN.has(s[0]) || s[0] === 'class') && s[1] === MARK || s[0] === 'async' && declaresMark(s[1]))
 const freeMark = (n) => {
   if (n === MARK) return true
@@ -102,12 +102,18 @@ const freeMark = (n) => {
   if (FN.has(op)) return n[1] !== MARK && !takes(n[2]) && (freeMark(n[2]) || freeMark(n[3]))
   if (op === '=>') return !takes(n[1]) && (freeMark(n[1]) || freeMark(n[2]))
   if (op === 'class' && n[1] === MARK) return false
-  if (op === 'catch' && n[1] != null && binds(n[1])) return false
+  if (op === 'catch' && n[1] != null && bindsMark(n[1])) return false
   // a list's declaration binds the name through the list; a loop's head through its body
   if ((op === ';' || op === '{}') && n.some((s, i) => i > 0 && (declaresMark(s) || Array.isArray(s) && s[0] === ';' && s.some((d, k) => k > 0 && declaresMark(d))))) return false
   if (op === 'for' && Array.isArray(n[1]) && n[1].some((h, i) => i > 0 && declaresMark(h))) return false
   return n.some((c, i) => i > 0 && freeMark(c))
 }
+const bindsIn = (n) => Array.isArray(n) && (
+  FN.has(n[0]) && (n[1] === MARK || takes(n[2])) || n[0] === '=>' && takes(n[1]) || n[0] === 'class' && n[1] === MARK ||
+  n[0] === 'catch' && n[1] != null && bindsMark(n[1]) || declaresMark(n) || n.some((c, i) => i > 0 && bindsIn(c)))
+/** Whether the tree binds `name` anywhere in it: a declaration, a parameter, a function's or a class's own name, a catch's. */
+export const binds = (node, name, stmt = true) => bindsIn(renameNode(node, new Map([[name, MARK]]), stmt))
+
 /** Whether the tree reads or writes a binding of `name` that it does not declare. */
 export const free = (node, name, stmt = true) => freeMark(renameNode(node, new Map([[name, MARK]]), stmt))
 
