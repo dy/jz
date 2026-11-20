@@ -459,12 +459,21 @@ jessieParse.step = (a, p, cc, expr) => {
   return listStep(a, p, cc, expr)
 }
 // A method shorthand `m(p) { … }` stands directly in the braces of an object
-// literal or a class body. subscript's reader of it (feature/accessor.js) reads a
-// call's arguments as its parameters, finds no `{` and rewinds for the call to
-// read them again: at every level of nested calls, so the time of a parse
-// doubled with each level. Outside braces it does not try.
-const methodRule = lookup[40].ops.reduce((m, d) => d.p < m.p ? d : m), readMethod = methodRule.map
+// literal or a class body. subscript reads a `{` after any call as that call's
+// method body (feature/accessor.js); outside braces a call and a `{` on the
+// line after it are two statements, a call and a block.
+const methodRule = lookup[123].ops.reduce((m, d) => d.p < m.p ? d : m), readMethod = methodRule.map
 methodRule.map = a => groups.length && groups[groups.length - 1] === 125 ? readMethod(a) : undefined
+// A method stands where its head's `(` does, the place of the call it was read
+// from: the early errors read its modifiers, and what stands before them, off
+// the source from there (early-errors.js methodSourceInfo). The `{` rule that
+// takes a left operand is the method's alone.
+const readBrace = lookup[123]
+lookup[123] = (a, p, op) => {
+  const r = readBrace(a, p, op)
+  if (r && r !== a && Array.isArray(a) && a[0] === '()') r.loc = a.loc
+  return r
+}
 
 // Positions (ctx.js): a bundled module's shift past the sources before it;
 // a source the compiler writes (base null) keeps none.

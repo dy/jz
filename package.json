@@ -100,8 +100,8 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "10.8.4",
-    "watr": "5.13.7"
+    "subscript": "10.8.6",
+    "watr": "5.13.8"
   },
   "keywords": [
     "javascript",

@@ -1365,10 +1365,6 @@ const validateClass = (node, cx, walk, source) => {
     }
     if (m.kind === 'field' && m.value && containsDirectName(m.value, 'arguments'))
       fail("class field initializer cannot contain 'arguments'")
-    // A field's initializer is one expression, and no ASI ends it before a `*`: `x = 42⏎*gen() {}`
-    // is `42 * gen() {}`. The reader hands on the value and a member after it as one list.
-    if (m.kind === 'field' && isNode(m.value) && m.value[0] === ';')
-      fail("a class field's initializer runs on into the next line's `*`: end the field with `;`")
     if (m.value) {
       const value = sourceAsync && isNode(m.value) && m.value[0] === '=>' ? ['async', m.value] : m.value
       walk(value, { ...cx, strict: true, classBody: true, privateNames: privateSet })

@@ -1536,13 +1536,13 @@ test('errors: a typeof of a typeof prepares its operand once', () => {
 // A label names a statement (ECMA-262 14.13.1): `yield` names none in strict code or a
 // generator, `await` none in a module's own code or an async function, escaped alike; and
 // what a label stands before is no class, lexical declaration, generator or async function.
-// A class field's initializer runs on into a `*` on the next line: `x = 42⏎*gen() {}` is
-// `42 * gen() {}`. test262 holds each as a negative (statements/labeled/decl-*.js,
-// value-await-module*.js, value-yield-strict*.js, expressions/async-generator/
-// early-errors-expression-label-name-*.js, class/elements/fields-asi-4.js), and holds
-// `await` and `yield` as labels of sloppy script code as valid (value-await-non-module*.js,
-// value-yield-non-strict*.js). A statement's colon labels whatever follows it, so each is
-// an early error (src/early-errors.js).
+// test262 holds each as a negative (statements/labeled/decl-*.js, value-await-module*.js,
+// value-yield-strict*.js, expressions/async-generator/early-errors-expression-label-name-*.js),
+// and holds `await` and `yield` as labels of sloppy script code as valid
+// (value-await-non-module*.js, value-yield-non-strict*.js). A statement's colon labels
+// whatever follows it, so each is an early error (src/early-errors.js). A class field's
+// initializer runs on into a `*` on the next line (`x = 42⏎*gen() {}` is `42 * gen() {}`,
+// class/elements/fields-asi-4.js): the parser refuses the `{` after it.
 test('errors: a label names a statement, and await and yield name one only where they are no reserved word', () => {
   const refused = (src, opts) => { let e; try { compile(src, opts) } catch (x) { e = x } ok(e instanceof SyntaxError || e && !/internal/.test(e.message), `${src} is refused${e ? '' : ': it compiled'}`) }
   for (const src of ['await: 1;', 'aw\\u0061it: 1;']) refused(src, { sourceType: 'module' })
