@@ -523,6 +523,9 @@ export function reset(proto, globals, bridge) {
     chain: derive(globals),
     globals: new Map(), // name → { type, mut, init, export } records (see declGlobal)
     userGlobals: new Set(),
+    // the names a body read before the module declared them (prepare: a hoisted function's
+    // body is prepared ahead of the statements it stands above)
+    early: new Set(),
     globalTypes: new Map(),
     globalValTypes: null,
     globalTypedElem: null,

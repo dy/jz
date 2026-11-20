@@ -1878,3 +1878,33 @@ test('blocks: a call, then a block, directly in a bare block is refused', () => 
     `export let t0 = (x) => { switch (x) { case 3: { ${CB} } }\nreturn n }`,
   ]) throws(() => jz(CB_PRE + src), /read as a method in a bare block: end the call with `;`/)
 })
+
+// A const that holds a function's or a class's name is that function to what is prepared
+// after it, and holds no value (prepare/handlers.js registerFnAlias). A function declaration
+// stands above the module's statements and its body is prepared first: one that reads such
+// a const read a name with no storage, "'A' is not in scope". Read early, the const keeps
+// its storage (ctx.scope.early).
+test('aliases: a function declaration reads a const that holds a class or a function', () => {
+  const B = `class B { constructor() { this.n = 0 } get() { return 4 } put(k) { this.n += k } }\n`
+  const src = [
+    `function mk0() { return new A0() }\nconst A0 = B\nexport let t0 = (x) => mk0().get() + x`,
+    `function mk1() { return new A2() }\nconst A1 = B\nconst A2 = A1\nexport let t1 = (x) => mk1().get() + x`,
+    `const A3 = B\nfunction mk3() { return new A3() }\nclass S3 { static made = mk3() }\nexport let t2 = (x) => S3.made.get() + x`,
+    `const A4 = B\nfunction table4() { const d = new A4(); d.put(3); d.put(4); return d }\nclass S4 { static t = table4() }\nexport let t3 = (x) => S4.t.n + x`,
+    `function table5() { const d = new A5(); d.put(3); d.put(4); return d }\nconst A5 = B\nclass S5 { static t = table5() }\nexport let t4 = (x) => S5.t.n + x`,
+    `function mk6() { return new A6() }\nlet A6\nA6 = B\nexport let t5 = (x) => mk6().get() + x`,
+    `function g7() { return 4 }\nconst A7 = g7\nfunction f7() { return A7() }\nexport let t6 = (x) => f7() + x`,
+    `const A8 = B\nconst f8 = () => new A8().get()\nexport let t7 = (x) => f8() + x`,
+    // read as a member's object and as a value, not called: a static of the class, a local that holds it
+    `class S9 { static of() { return 8 } }\nconst A9 = S9\nfunction mk9() { return A9.of() }\nexport let t8 = (x) => mk9() + x`,
+    `const A10 = B\nfunction mk10() { const K = A10; return new K() }\nexport let t9 = (x) => mk10().get() + x`,
+    // of a const arrow, which its own statement lifts after the function declared beside it is prepared
+    `const g11 = () => 4\nconst A11 = g11\nfunction f11() { return A11() }\nexport let t10 = (x) => f11() + x`,
+    `function f12() { return A12() + B12() }\nconst g12 = (k) => 4\nconst A12 = g12\nconst B12 = A12\nexport let t11 = (x) => f12() + x`,
+  ].join('\n')
+  const whole = B + src, want = oracle(whole)
+  for (const optimize of LEVELS) {
+    const got = jz(whole, { optimize }).exports
+    for (let i = 0; i < 12; i++) is(got['t' + i](3), want['t' + i](3), `t${i} @${optimize}`)
+  }
+})

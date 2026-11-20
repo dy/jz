@@ -287,6 +287,9 @@ function prepNode(node) {
       if (resolved && resolved !== node) return resolved
       // A name nothing of the program declares: the host's global of that name
       if (!resolved && hostFree(node)) return hostGlobalNode(node)
+      // a name the module may declare further on, read as a variable here: a declaration
+      // that would give it no storage has to know of it (prepDecl's alias)
+      ctx.scope.early.add(node)
       // Block scope: resolve renames
       if (scopes.length) return resolveScope(node)
     }
@@ -2491,8 +2494,11 @@ function prepDecl(op, ...inits) {
       // call an indirect one. Module level only: a function's own alias of a
       // function is a closure value its scope already handles.
       // A `const` only: a hoisted function prepped before a `let` alias reads
-      // the name as a variable, and the variable then needs its storage.
-      if (op === 'const' && prepState.depth === 0 && typeof normed === 'string' && normed !== name && hasFunc(normed)) {
+      // the name as a variable, and the variable then needs its storage. So does
+      // a `const` such a function read (a function declaration stands above the
+      // module's statements, its body prepared first: `ctx.scope.early`): it
+      // keeps its storage and is no alias.
+      if (op === 'const' && prepState.depth === 0 && typeof normed === 'string' && normed !== name && hasFunc(normed) && !ctx.scope.early.has(name)) {
         if (name in ctx.funcs.exports) ctx.funcs.exports[name] = normed
         registerFnAlias(name, normed); continue
       }
@@ -2942,6 +2948,10 @@ function resolveCallee(callee, args) {
     }
     if (resolved && !resolved.includes('.')) {
       if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
+      // (an alias the declaration scan bound to a function its own statement has not lifted
+      // yet, `const g = () => …; const A = g` called in a function declared beside them: the
+      // name is called as a variable here, an early read as below)
+      if (resolved !== callee && !hasModule(resolved)) { ctx.scope.early.add(callee); if (prepState.depth > 0) includeForCallableValue() }
       return callee
     }
     // the host's global function, called with no receiver
@@ -2949,6 +2959,8 @@ function resolveCallee(callee, args) {
     if (callee.startsWith('__host_') && INTRINSIC_CALLEES.has(callee)) { includeModule('web'); if (callee === '__host_new') includeForArrayLiteral() }
     if (prepState.depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.funcs.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
       includeForCallableValue()
+    // (a name the module may declare further on, called as a variable here: prepNode's early reads)
+    if (!resolved && !hasFunc(callee)) ctx.scope.early.add(callee)
     return sourceBuiltin(callee)
   }
   if (Array.isArray(callee) && callee[0] === '.') {
