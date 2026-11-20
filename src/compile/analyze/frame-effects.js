@@ -1052,6 +1052,9 @@ function census(scopeView, roots, declRoots, params, typedParams = NO_NAMES, con
   // heap, and the protocol is no cost of it (compile/index.js `keeps`).
   if (conditional && !out.keeps && !out.allocates && !out.callsUnknown && !youngGrowth && out.callees.size === 0 && out.closures.size === 0 &&
       out.sites.size > 0 && [...out.sites].every(n => out.siteGrown.has(n))) { out.keeps = true; out.keepsWhy = 'grows only storage older than the frame' }
+  // (the same of a frame that calls is settled over the call graph, transitiveFrameEffects: there
+  // a store through a member grows older storage too, the frame and its callees making nothing)
+  out.growsOnly = conditional && !out.allocates && !out.callsUnknown && out.closures.size === 0 && [...out.sites].every(n => out.siteGrown.has(n))
   return out
   } finally {
     releaseScratchSet(nestedDecl); releaseScratchSet(writtenNested); releaseScratchSet(scanned); releaseScratchSet(assigned)
@@ -1348,6 +1351,22 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
       }
     }
   }
+  // A frame that calls gives nothing back either where its own ways to allocate and its
+  // callees' are all the growth of storage older than the frame (the leaf's rule, census):
+  // making nothing, what it hands a callee is older than itself; where a store grew the
+  // flag stands below its mark, and the frame around that reads it keeps the heap. It
+  // keeps its heap and pays no protocol. The largest set of such frames each of whose
+  // callees is one: a recursion holds itself.
+  const growers = new Set()
+  for (const [name, o] of own) {
+    const f = facts.get(name)
+    if (o.growsOnly && !f.allocates && !f.callsUnknown && !f.arenaUnsafe && !f.unsited && !o.closureCalls?.length) growers.add(name)
+  }
+  for (let changed = true; changed;) {
+    changed = false
+    for (const name of growers) for (const c of own.get(name).callees) if (!growers.has(c)) { growers.delete(name); changed = true; break }
+  }
+  for (const name of growers) { const f = facts.get(name); if (f.flagged && !f.keeps) { f.keeps = true; f.keepsWhy = 'grows only storage older than the frame' } }
   // A function literal a builtin calls in place: its sites are those of the scope around it.
   const inline = new Set()
   for (const [, o] of nodes) { for (const a of o.inline ?? []) inline.add(a); for (const l of o.loops ?? []) for (const a of l.own.inline ?? []) inline.add(a) }

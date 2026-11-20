@@ -1602,6 +1602,32 @@ test('frame effects: a frame that only grows storage older than itself pays no p
   }
 })
 
+// The same of a frame that calls: one whose ways to allocate, and its callees', are all the
+// growth of storage older than itself. A store through a member (`o.v[i] = x`) grows older
+// storage there too, the frame and its callees making nothing; a recursion holds itself.
+// The frame around them that makes the storage reads the flag and gives it back.
+test('frame effects: a frame whose callees only grow older storage pays no protocol either', () => {
+  if (onKernel()) return
+  const src = `const put = (o, i, x) => { o.v[i] = x * 2 }
+    const fill = (o, n) => { for (let i = 0; i < n; i++) put(o, i, i) }
+    const down = (o, n) => { put(o, n, n); if (n > 0) down(o, n - 1) }
+    const made = (o, n) => { const t = [n, o, n]; put(o, 0, t.length); return t }
+    export function f(n) { const o = { v: [] }; fill(o, n); down(o, n + 3); return o.v.length + o.v[n - 1] + made(o, n).length }
+    export function g(n) { const o = { v: [1, 2] }; let s = 0; for (let k = 0; k < n; k++) { fill(o, 40); s += o.v.length } return s }`
+  const opts = { ...TAPE, optimize: { watr: false, sourceInline: false, inlineFns: false } }
+  const why = new Map()
+  const text = compile(src, { ...opts, wat: true, whyNotRewind: (n, r) => why.set(n, r) })
+  for (const name of ['$put', '$fill', '$down']) is(why.get(name), 'escape: grows only storage older than the frame', name)
+  ok(why.get('$made') !== 'escape: grows only storage older than the frame', `a frame that makes storage of its own keeps its verdict: ${why.get('$made')}`)
+  for (const name of ['fill', 'down']) ok(!/heap_save|esc_save/.test(bodyOf(text, name)), `${name}: no save at entry, no restore at return`)
+  const host = oracle(src)
+  for (const optimize of levels(2, 3, 'size')) {
+    const { exports: m, memory } = jz(src, { optimize })
+    is([m.f(6), m.f(40), m.g(5)], [host.f(6), host.f(40), host.g(5)], `results at ${optimize}`)
+    is(growth(memory, () => m.g(5)), 0, `the export gives back what the growths took at ${optimize}`)
+  }
+})
+
 // A union of scalars is a scalar to the census (`tagOf` reads any union as
 // ANY): a module counter stepped by a number, a boolean or null holds no heap
 // value, and the step logs nothing.
