@@ -21,6 +21,34 @@ import { rewriteChildren, withLoc } from '../src/ast.js'
 export const isDestructurePat = p =>
   Array.isArray(p) && ((p[0] === '[]' && p.length !== 3) || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
 
+// A `var` of an arrow or a class expression stays one declaration where it stands
+// (the compiler then sees a function or a class of that name, not a value some
+// variable holds), which binds it from there on, where a `var` is undefined from
+// the start of its function. The two differ only for a read that takes the
+// undefined: one not as a callee, a constructor, a member's object, a base or
+// the right of `instanceof`, each of which throws on undefined. Such a read can
+// run first where it stands before the statement, or in a function declaration
+// of the list (hoisted, callable from the start).
+const valueRead = (n, name, held) => {
+  if (n === name) return !held
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === '()' && n.length === 3) return valueRead(n[1], name, true) || valueRead(n[2], name, false)
+  if (op === 'new') return valueRead(n[1], name, true)
+  if (op === '.' || op === '[]' && n.length === 3) return valueRead(n[1], name, true) || op === '[]' && valueRead(n[2], name, false)
+  if (op === 'instanceof') return valueRead(n[1], name, false) || valueRead(n[2], name, true)
+  if (op === 'class') return valueRead(n[2], name, true) || valueRead(n[3], name, false)
+  if (op === ':' || op === '?.') return valueRead(n[op === ':' ? 2 : 1], name, false)
+  for (let i = 1; i < n.length; i++) if (valueRead(n[i], name, false)) return true
+  return false
+}
+const isFnDecl = (n) => Array.isArray(n) && ((n[0] === 'function' || n[0] === 'function*') && typeof n[1] === 'string' ||
+  n[0] === 'async' && isFnDecl(n[1]) || n[0] === 'export' && isFnDecl(n[1]))
+const readUndefined = (list, at, name) => {
+  for (let i = 1; i < list.length; i++) if (i < at ? valueRead(list[i], name, false) : i > at && isFnDecl(list[i]) && valueRead(list[i], name, false)) return true
+  return false
+}
+
 // What a node rewrites to stands at its source position (ast.js withLoc).
 export function hoistVars(node, names) { return withLoc(hoistVarsNode(node, names), node) }
 function hoistVarsNode(node, names) {
@@ -153,7 +181,7 @@ function hoistVarsNode(node, names) {
       const child = node[i]
       if (Array.isArray(child) && child[0] === 'var' && child.length === 2 &&
           Array.isArray(child[1]) && child[1][0] === '=' && typeof child[1][1] === 'string' &&
-          Array.isArray(child[1][2]) && child[1][2][0] === '=>') {
+          Array.isArray(child[1][2]) && (child[1][2][0] === '=>' || child[1][2][0] === 'class') && !readUndefined(node, i, child[1][1])) {
         out.push(['let', ['=', child[1][1], hoistVars(child[1][2], names)]])
         continue
       }

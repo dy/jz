@@ -127,6 +127,16 @@ export function createTransform(opts) {
     const value = lowerClass(name, heritage, body, trailers)
     return [';', ...classHoists.splice(0), ['let', ['=', name, value]], ...trailers]
   }
+  // A binding of a class expression that nothing assigns again declares the class:
+  // `const C = class {}`, `var C = class {}` (the form bundlers and compilers to
+  // JS write), the expression unnamed or named as its binding. The class is then
+  // the one its binding's name denotes, as a declaration's is: one a class can extend.
+  const classBinding = (stmt) => {
+    if (!Array.isArray(stmt) || stmt.length !== 2 || (stmt[0] !== 'let' && stmt[0] !== 'const' && stmt[0] !== 'var')) return null
+    const d = stmt[1]
+    if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !Array.isArray(d[2]) || d[2][0] !== 'class') return null
+    return (d[2][1] == null || d[2][1] === d[1]) && !opts.assigned?.(d[1]) ? d : null
+  }
   const lowerObjectLiteralThis = (...a) => opts.lowerObjectLiteralThis()(...a)
   const shadowsBuiltin = opts.shadowsBuiltin
   const { enterBuiltinScope, leaveBuiltinScope } = opts
@@ -268,6 +278,8 @@ export function createTransform(opts) {
       return bindFn(args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3])), node)
     if (op === 'class' && args[0]) return lowerClassDecl(...args)
     if (op === 'using' || op === 'await using') return lowerUsing([op, ...args], [])
+    const bound = classBinding(node)
+    if (bound) return lowerClassDecl(bound[1], bound[2][2], bound[2][3])
 
     if (op === ';') {
       const hoisted = [], rest = []
@@ -297,6 +309,11 @@ export function createTransform(opts) {
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
           rest.push(...lowerClassDecl(stmt[1], stmt[2], stmt[3]).slice(1))
+          continue
+        }
+        const bound = classBinding(stmt)
+        if (bound) {
+          rest.push(...lowerClassDecl(bound[1], bound[2][2], bound[2][3]).slice(1))
           continue
         }
         // `using` consumes the REST of the scope into its try body (disposal

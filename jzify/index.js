@@ -120,6 +120,16 @@ const scopeHasBuiltin = (scope, name) => {
 const shadowsJzifyBuiltin = name => SHADOW_SENSITIVE.has(name) && scopeHasBuiltin(activeBuiltinScope, name)
 const classBindingScope = name => { for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s; return null }
 const atModuleScope = () => activeBuiltinScope != null && activeBuiltinScope.parent == null
+// The name a const holds the value of (`const B = A`), where nothing assigns the
+// const's name: what `A` denotes there, `B` denotes.
+const aliasOf = (name) => {
+  if (census.names.has(name)) return null
+  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) {
+    const value = s.consts.get(name)
+    return typeof value === 'string' && value !== name ? value : null
+  }
+  return null
+}
 // The nearest declaration of `name` from the active scope is a class.
 const declaredClass = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.classes.has(name)
@@ -409,7 +419,7 @@ let transform, transformScope, transformStatement, transformParams
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on, inherits: (name) => inherits(name), storedOn: (name) => census.receivers.has(name), written: (prop) => census.stored.has(prop) }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, aliasOf, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on, inherits: (name) => inherits(name), storedOn: (name) => census.receivers.has(name), written: (prop) => census.stored.has(prop) }))
 const generatorNames = new Set()
 // the ones whose return() runs code (closesOnReturn): loops over them close
 const generatorCloses = new Set()

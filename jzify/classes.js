@@ -13,7 +13,7 @@ import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { JZIFY_CLASS_ERRORS } from '../src/op-policy.js'
 
-export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor, inherits, storedOn, written, shadowsBuiltin, classBindingScope }) {
+export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, aliasOf, lowerArguments, readsConstructor, inherits, storedOn, written, shadowsBuiltin, classBindingScope }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -484,11 +484,15 @@ let moduleImports = null          // the module's imports and the binding resolv
 /** The class a name of this module denotes: one lowered here, or one imported
  *  from a module lowered before it (the imports prepared in source order, as
  *  ES evaluates them, up to the one that binds the name); null otherwise. */
-const resolveClass = (name) => {
+const resolveClass = (name, depth = 0) => {
   const scope = classBindingScope(name)
   if (scope?.parent) return localClasses.get(scope)?.get(name) ?? null
   const own = structClasses.get(name)
-  if (own || !moduleImports) return own ?? null
+  if (own) return own
+  // a const of another name's value denotes that name's class (`const B = A; class C extends B`)
+  const held = depth < 8 ? aliasOf(name) : null
+  if (held) return resolveClass(held, depth + 1)
+  if (!moduleImports) return null
   let mangled = null
   for (const { spec, names } of moduleImports.list) {
     const exported = names.get(name)

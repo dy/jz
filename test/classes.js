@@ -1288,3 +1288,65 @@ test('classes: with, an array\'s short of an argument and a class\'s own', () =>
     for (let i = 0; i < 8; i++) is(got['t' + i](3), want['t' + i](3), `t${i} @${optimize}`)
   }
 })
+
+// A binding of a class expression that nothing assigns again declares the class:
+// `const C = class {}`, `var C = class {}` (the form bundlers and compilers to JS
+// write), and a const that holds a class's name denotes that class. Each was a
+// class of closures, and a class deriving one built its instance from the base's
+// factory and added every member at run time: 22 to 35 times Node's time on a
+// kernel of two classes, where the declarations took 2 to 3 (jzify/transform.js
+// classBinding, jzify/hoist-vars.js, jzify/classes.js resolveClass).
+const BOUND_CLASSES = {
+  'const, derived by const': `const B = class { constructor(a) { this.a = a } get() { return this.a } }\nconst D = class extends B { get() { return super.get() + 2 } }\nexport let t0 = (x) => new D(x).get()`,
+  'var, derived by var': `var B = class { constructor(a) { this.a = a } get() { return this.a } }\nvar D = class extends B { get() { return super.get() + 2 } }\nexport let t0 = (x) => new D(x).get()`,
+  'let, derived by a declaration': `let B = class { constructor(a) { this.a = a } get() { return this.a } }\nclass D extends B { get() { return super.get() + 3 } }\nexport let t0 = (x) => new D(x).get()`,
+  'named as its binding': `const C = class C { static make(a) { const c = new C(); c.a = a; return c } get() { return this.a } }\nexport let t0 = (x) => C.make(x).get()`,
+  'a const alias of the base': `class B { get() { return 4 } }\nconst A = B\nconst D = class extends A { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
+  'an alias of an alias': `class B { get() { return 4 } }\nconst A1 = B\nconst A2 = A1\nclass D extends A2 { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
+  'instanceof through the bindings': `const C = class {}\nconst D = class extends C {}\nexport let t0 = (x) => (new D() instanceof C ? 10 : 0) + (new C() instanceof D ? 1 : 0) + x`,
+  'statics of a bound class': `const C = class { static n = 5; static inc() { return ++C.n } }\nexport let t0 = (x) => C.inc() + C.n + x`,
+}
+// What keeps the binding a variable: each answers as Node, as a class of closures.
+const UNBOUND_CLASSES = {
+  'assigned another class': `let C = class { get() { return 1 } }\nC = class { get() { return 2 } }\nexport let t0 = (x) => new C().get() + x`,
+  'assigned in a function': `let C = class { get() { return 1 } }\nconst swap = () => { C = class { get() { return 5 } } }\nexport let t0 = (x) => { const a = new C().get(); swap(); return a * 10 + new C().get() + x }`,
+  'assigned another, then derived': `let C = class { get() { return 1 } }\nclass Z { get() { return 9 } }\nC = Z\nclass D extends C { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
+  'assigned another, then its static read': `let C = class { static n = 1 }\nclass Z { static n = 9 }\nC = Z\nexport let t0 = (x) => C.n + x`,
+  'an inner name of its own': `const C = class Inner { static make(a) { const c = new Inner(); c.a = a; return c } get() { return this.a } }\nexport let t0 = (x) => C.make(x).get()`,
+  'an alias another scope shadows': `class B { get() { return 4 } }\nclass Z { get() { return 9 } }\nconst A = B\nexport let t0 = (x) => { const A = Z; class D extends A { get() { return super.get() + 1 } }\n return new D().get() + x }`,
+  'a let alias assigned later': `class B { get() { return 4 } }\nclass Z { get() { return 9 } }\nlet A = B\nA = Z\nclass D extends A { get() { return super.get() + 1 } }\nexport let t0 = (x) => new D().get() + x`,
+  'two vars of one name': `var C = class { get() { return 1 } }\nvar C = class { get() { return 2 } }\nexport let t0 = (x) => new C().get() + x`,
+  'in a function': `export let t0 = (x) => { const C = class { constructor(a) { this.a = a } get() { return this.a + 1 } }; return new C(x).get() }`,
+  'a var in a block, used after it': `export let t0 = (x) => { if (x > 0) { var C = class { get() { return 7 } } }\n return new C().get() + x }`,
+  'as an argument': `const mk = (K) => new K()\nexport let t0 = (x) => mk(class { get() { return 8 } }).get() + x`,
+}
+test('classes: a binding of a class expression declares the class', () => {
+  for (const [name, src] of Object.entries({ ...BOUND_CLASSES, ...UNBOUND_CLASSES })) {
+    const want = oracle(src).t0(3)
+    for (const optimize of levels(false, true, 'size', 'speed')) is(jz(src, { optimize }).exports.t0(3), want, `${name} @${optimize}`)
+  }
+  for (const [name, src] of Object.entries(BOUND_CLASSES)) {
+    const warnings = []
+    compileWat(src, { warnings: w => warnings.push(w), optimize: 2 })
+    is(warnings.filter(e => e.code === 'class-generic').length, 0, `${name}: every class a schema`)
+  }
+})
+
+// A var is undefined until its statement runs. One of an arrow or a class stays a
+// declaration where it stands, which binds it from there, only where no read can take
+// the undefined: `typeof f` ahead of `var f = () => 1` answered 'function'.
+test('vars: a var of an arrow or a class read before its statement is undefined', () => {
+  const src = [
+    `export let t0 = (x) => { const b = typeof f; var f = () => 1; return b.length + x }`,
+    `export let t1 = (x) => { const b = typeof C; var C = class {}; return b.length + x }`,
+    `export let t2 = (x) => { const b = k(); var C = class {}; function k() { return typeof C }\n return b.length + x }`,
+    `export let t3 = (x) => { const b = k(); var f = () => 1; function k() { return typeof f }\n return b.length + x }`,
+    `export let t4 = (x) => { const b = [g].length; var g = () => 2; return b + g() + x }`,
+    `export let t5 = (x) => { const h = () => new K().v; var K = class { v = 6 }; return h() + x }`,
+    `export let t6 = (x) => { const b = f2 === undefined ? 1 : 0; var f2 = () => 3; return b + f2() + x }`,
+  ].join('\n'), want = oracle(src)
+  for (const optimize of levels(false, true, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (let i = 0; i < 7; i++) is(got['t' + i](3), want['t' + i](3), `t${i} @${optimize}`)
+  }
+})
