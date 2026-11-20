@@ -337,3 +337,64 @@ test('array scan: a descending counter stays inside the length', () => {
     ok(grows.test(funcWat(wat(downOpen['starts past the end'], { optimize: { level, ...shape } }), 'f')), `a start past the end keeps the growth at ${level}`)
   }
 })
+
+// A descent from below an array's length to zero or above (`for (let i = a.length - 1;
+// i >= 0; i--)`) keeps its counter inside the length, as `i < a.length` does upward:
+// the counter starts below the length and only falls, while the body shrinks no
+// receiver (type/canonical-bounds.js scanBoundedArrIdx). An index above the counter is
+// inside too, short of the start's distance from the length.
+const BUILD = `const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }\n`
+const sum = `const sum = (a) => { let s = a.length; for (let i = 0; i < a.length; i++) s = s * 31 + (a[i] === undefined ? 7 : a[i]) | 0; return s }\n`
+const descentKept = BUILD + sum + `const rev = (a, x) => { for (let i = a.length - 1; i >= 0; i--) a[i] = a[i] + x; return a }
+  const suffix = (a) => { for (let i = a.length - 2; i >= 0; i--) a[i] = a[i] + a[i + 1]; return a }
+  const above = (a, x) => { for (let i = a.length - 1; i > -1; i--) a[i] = x - i; return a }
+  export const go = (n) => sum(rev(build(n), 2)) + sum(suffix(build(n + 1))) * 3 + sum(above(build(n), 9)) * 5`
+const descentOpen = {
+  'a start at the length': `const f = (a, x) => { for (let i = a.length; i >= 0; i--) a[i] = x; return a }`,
+  'a start at the length less zero': `const f = (a, x) => { for (let i = a.length - 0; i >= 0; i--) a[i] = x; return a }`,
+  'a start no lower than zero, on an empty array': `const f = (a, x) => { for (let i = Math.max(a.length - 1, 0); i >= 0; i--) a[i] = x; return a }`,
+  'a body that shrinks the array': `const f = (a, x) => { let once = true; for (let i = a.length - 1; i >= 0; i--) { a[i] = x; if (once) { once = false; a.pop(); a.pop() } } return a }`,
+  'a body that binds the name again': `const f = (a, x) => { let b = a; for (let i = b.length - 1; i >= 0; i--) { b[i] = x; if (i === 3) b = [] } return b.length ? b : a }`,
+  'a test that admits minus one': `const f = (a, x) => { for (let i = a.length - 1; i >= -1; i--) a[i] = x; a[0] = a[-1] === x ? 50 : 60; return a }`,
+  'an index above the counter': `const f = (a, x) => { for (let i = a.length - 1; i >= 0; i--) a[i + 1] = x; return a }`,
+  'an index two above, the start two below': `const f = (a, x) => { for (let i = a.length - 2; i >= 0; i--) a[i + 2] = x; return a }`,
+  'a counter stepping up from below the length': `const f = (a, x) => { let n = 0; for (let i = a.length - 1; i >= 0; i++) { a[i] = x; if (++n > 2) break } return a }`,
+  'a callee that shrinks it': `const cut = (a) => { a.length = 1 }\nconst f = (a, x) => { for (let i = a.length - 1; i >= 0; i--) { a[i] = x; if (i === 4) cut(a) } return a }`,
+}
+// (reads that must miss, each marked: one held inside the length would load what lies beside the elements)
+const MISS = `a[i] === undefined ? 1000 : a[i]`
+const descentMisses = {
+  'a start at the length less zero': `const f = (a) => { let s = 0; for (let i = a.length - 0; i >= 0; i--) s += ${MISS}; return s }`,
+  'a test that admits minus one': `const f = (a) => { let s = 0; for (let i = a.length - 1; i >= -1; i--) s += ${MISS}; return s }`,
+  'a name bound again': `const f = (b) => { let a = b, s = 0; for (let i = a.length - 1; i >= 0; i--) { s += ${MISS}; if (i === 3) a = [] } return s }`,
+  'a body that shrinks the array': `const f = (a) => { let s = 0, once = true; for (let i = a.length - 1; i >= 0; i--) { s += ${MISS}; if (once) { once = false; a.pop(); a.pop() } } return s }`,
+}
+// A module's array stored into by a descent keeps the length it was built with: another function's read of it is a direct one.
+const descentFixed = `const a = [0, 0, 0, 0, 0, 0, 0, 0]
+  const down = (x) => { for (let i = a.length - 1; i >= 0; i--) a[i] = x + i }
+  const at = (k) => a[k & 7]
+  export const go = (x) => { down(x); return at(x) + at(x + 3) * 10 + a.length * 100 }`
+
+test('array scan: a descent from the length stays inside it', () => {
+  const grows = /\$__arr_set/   // (a parameter's array resolves its forwarding once at entry, either way)
+  const want = [0, 1, 2, 7].map(oracle(descentKept).go)
+  for (const optimize of levels(0, 2, 3, 'size')) is([0, 1, 2, 7].map(run(descentKept, { optimize }).go), want, `the kept descents at ${optimize}`)
+  const open = (body) => BUILD + sum + body + `\nexport const go = (n) => sum(f(build(n), 5)) + sum(f(build(n + 3), 6)) * 3`
+  for (const [name, body] of Object.entries(descentOpen)) {
+    const answer = [0, 1, 6].map(oracle(open(body)).go)
+    for (const optimize of levels(0, 2, 3, 'size')) is([0, 1, 6].map(run(open(body), { optimize }).go), answer, `${name} at ${optimize}`)
+  }
+  for (const [name, body] of Object.entries(descentMisses)) {
+    const src = BUILD + body + `\nexport const go = (n) => f(build(n)) + f(build(n + 5)) * 3`, answer = [0, 1, 6].map(oracle(src).go)
+    for (const optimize of levels(0, 2, 3, 'size')) is([0, 1, 6].map(run(src, { optimize }).go), answer, `reads, ${name} at ${optimize}`)
+  }
+  const fixed = [3, 6].map(oracle(descentFixed).go)
+  for (const optimize of levels(0, 2, 3, 'size')) is([3, 6].map(run(descentFixed, { optimize }).go), fixed, `a module's array at ${optimize}`)
+  if (belowOpt(2)) return
+  for (const level of ownedLevels(2, 'speed')) {
+    const text = wat(descentKept, { optimize: { level, ...shape } })
+    ok(!/\$__ptr_offset_fwd|\$__arr_value|\$__arr_set/.test(funcWat(wat(descentFixed, { optimize: { level, ...shape } }), 'at')), `a module's array keeps its length at ${level}: another function reads it directly`)
+    for (const name of ['rev', 'suffix', 'above']) ok(/f64\.store/.test(funcWat(text, name)) && !grows.test(funcWat(text, name)), `${name} at ${level}: stores in place, nothing grows`)
+    ok(grows.test(funcWat(wat(open(descentOpen['a start at the length']), { optimize: { level, ...shape } }), 'f')), `a start at the length keeps the growth at ${level}`)
+  }
+})

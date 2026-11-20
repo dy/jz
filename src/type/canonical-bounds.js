@@ -331,6 +331,24 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
           (boundVar == null || preservesLoopHead(init, view, bindings, callees, idx, boundVar)))
         for (const f of forms) collectBoundedArrIdx(body, f, idx, set, nodes)
     }
+    // The descent `for (let i = recv.length - k; i >= C; i--)`, k at least 1 and the test
+    // admitting no index below zero: the counter starts below the length and only falls,
+    // so `recv[i]` (and `recv[i + d]`, d below k) is inside the length while the body
+    // shrinks no receiver, as the ascending loop's is.
+    // (The start is read as written, `recv.length - k`: a least of several lengths would
+    // do, a greatest with zero would not, which starts at 0 on an empty array.)
+    if (Array.isArray(cond) && (cond[0] === '>=' || cond[0] === '>') && typeof cond[1] === 'string') {
+      const decls = new Map()
+      collectDecls(init, decls)
+      const down = cond[1], floor = constIntExpr(cond[2])
+      let start = decls.has(down) && floor != null && floor >= (cond[0] === '>' ? -1 : 0) ? counterInit(init, down) : null
+      if (Array.isArray(start) && start[0] === '|' && intLiteralValue(start[2]) === 0) start = start[1]
+      const k = Array.isArray(start) && start[0] === '-' && start.length === 3 ? constIntExpr(start[2]) : null
+      const of = k != null && k >= 1 && Array.isArray(start[1]) && start[1][0] === '.' && start[1][2] === 'length' && typeof start[1][1] === 'string' ? start[1][1] : null
+      if (of != null && of !== down && isUnitDecrement(step, down) && !redeclaresName(body, down) &&
+          preservesLoopBounds(body, view, [of, down], new Map()))
+        collectBoundedArrIdx(body, { recv: of, c: 1, d: k - 1 }, down, set, nodes)
+    }
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
     // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
     // consults litSet's recorded bound vs ctx.func.typedLen). Collected for every
