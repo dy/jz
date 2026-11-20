@@ -3419,6 +3419,39 @@ CI on 45e512a8a (the compiler before this landing): test262 green, the label reg
 - `new(F)` (a parenthesized callee, no arguments) answers NaN at every level.
 - A class declaration's name assigned another class is still the first class to an `extends` or an `instanceof` after it.
 
+## The land-y landing: classes a bundler writes, and esbuild's CommonJS modules linked (2026-11-20)
+
+Five commits on 41ea18ca2, the integrator's: the first work the held-out lane's first contact set.
+
+### What landed
+
+- `7b27962af` A reserved word at a class member's head is the method's name (`delete(k) {}`, `return() {}`, `with(e) {}`): of 870 forms 365 were refused, 26 are. An array's `with` short of its value stores undefined, where the compile ended in the internal error of the lane's deltablue.
+- `82f4c810f` A binding of a class expression nothing assigns again declares the class (`const C = class {}`, `var C = class {}`), and a const of a class's name denotes the class. Each was a class of closures, a class deriving one 22 to 35 times Node's time on the two-class kernel; 2 to 4 now. A `var` of an arrow or a class stays one declaration only where no read can take the undefined it holds until its statement: `typeof f` ahead of `var f = () => 1` answered 'function' on main and in 1.0.3.
+- `caed352bd` A renamer of names through a tree (jzify/rename.js: every identifier of a name, nothing that only spells it; `free`, `occurs`), by which a bound class expression's own name takes its binding's (`var C = class _C {}`, esbuild's form for a class that names itself).
+- `d378bd002` esbuild's CommonJS modules linked at compile time (jzify/link-cjs.js): a module required only as its requirers start stands at the module level, its exports consts, what a requirer takes a const of the export; a module anything else is done with stays a function, named by the advisory `module-kept` with its reason. A bundle of two modules in the lane's style: 26.9 times Node's time, 2.7 now; one of three, which ended in deltablue's internal error: 3.4.
+- `1d1a497a4` The renamed-program test off the hosted compiler, which does not take a test's jzify.
+
+### The check (ow, on d378bd002)
+
+58 minutes at a load of 22 to 60, then test262 in 29. Listings unmoved. WASI 7,557; default 7,684; armed level 3 7,466; level 0 7,444; test:self 89; integration 238 of 239 with one skipped; lint and audit clean; examples 1.68 twice, 25 of 25. test262: pass 4,128, refused negatives 4,045, accepted negatives 0, failures 0. Bench bytes: none of the 105 cases moves (none binds a class expression or bundles CommonJS). On a fresh hosted compiler (38,038,894 bytes, 159,876 more than main's: the linker and the renamer): parity 19, classes 78, statements 199, parser-bugs 64, parse-list 15, errors 151, link-cjs 4, objects 200. rename failed one of three there (the test, corrected in 1d1a497a4 and run again: 3 of 3 hosted and on the four legs). imports fails 6 of 100 there, as it does on main's hosted compiler (bx): not this landing's.
+
+The renamer outside the suite: every bench case compiled with every top-level name of its modules renamed. 97 of 106 give the binary of the source as written, byte for byte; of the others async, polytri, threeanim, threecull, threegeom and threescene run to the same checksum (their bytes differ: the output depends on the names' order somewhere); jz and webaudio hold a nested import form the driver does not rename around; stdlib-special does not run under that runner either way.
+
+CI on 41ea18ca2 (the compiler before): test262, self-compile and examples-perf green, test green but claims.
+
+### What the first contact's figures need next
+
+- **A store at an index not proven inside the length.** The swap kernel takes 2.42 times Node's time with its indexes as they come and 1.01 with them masked to the array's length (`i & 7`): a store that may grow the array is an allocation and an escape, so every function above it carries the frame protocol (optimize/arena-rewind.js), and `permute` is 1,777 nodes where it is 244. A frame whose only allocations grow storage older than itself has nothing of its own to free.
+- **A class in a function that runs more than once** stays a class of closures (4.5 times Node's time; a class deriving another there, 30).
+- **A constructor function** (`this` in a plain function) folds to a class only at the module level and only with a prototype method: branch ctor-w folds one that is only constructed, in a function's statements too.
+- The lane's `contact` mode run again records each program beside its first contact, marked tuned.
+
+### Found, not fixed
+
+- `new(F)` answers NaN; a class declaration's name assigned another class is still the first to `extends` and `instanceof`; a method named `for`, `in`, `instanceof`, `else` (a generator) or `catch` (an accessor) in a class, and 15 reserved words as an object literal's method, are refused.
+- test/imports.js fails 6 on a hosted compiler (`import.meta.url` needs its option there).
+- The bytes jz writes depend on the names a program gives its bindings (six of 106 cases, by up to 881 bytes).
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

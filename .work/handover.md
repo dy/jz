@@ -670,3 +670,10 @@ dca908186 bump-w      the first build of it, the method's node at its `{`: faile
 2e0b2fb57 oo-w        on bump-x: the reserved-word method names and the array's `with` (1ca15361d), the bound class expressions (2e0b2fb57); not checked on the legs
 0c430196a fix-v       the reserved-word commit as first written, on f0a5956e8: superseded by 1ca15361d
 ```
+
+## Branches of the land-y landing (2026-11-20), tips before deletion
+
+```
+1d1a497a4 oo-w        the landing branch: main (41ea18ca2), the reserved-word method names, the bound class expressions, the renamer, the CommonJS linker; the record's commit after it
+d378bd002 ctor-w      on oo-w: a constructor function that is only constructed folds to a class (uncommitted in its tree, unfinished)
+```
