@@ -2529,6 +2529,28 @@ test('devirtGlobalCalls: the site calls the function; a global nothing reads dro
   }
 })
 
+// The function such a global held is then no value, and a namespace that escaped
+// through the global alone is closed: it flattens, its dead write gone. Kept, the
+// write took the function's address and its member's, which the call graph, reading
+// the program without the global, knew of neither: under a closure table the member's
+// trampoline called a function nothing emitted ("'f$two' is not a known function"),
+// without one the dynamic-property runtime came for a store nothing reads.
+test('devirtGlobalCalls: a namespace that escaped through a dropped global alone flattens', () => {
+  const F = `function f() { return 4 }\nf.two = () => 2\nlet A = f\n`
+  const shapes = {
+    'a closure elsewhere': F + `const h = (g) => g()\nexport let t = (x) => { const k = x; return A() + h(() => k) }`,
+    'the member called': F + `export let t = (x) => A() + x + f.two()`,
+    'no other use': F + `export let t = (x) => A() + x`,
+    // a class's statics are its function's members; the const is one a function above it constructs
+    'a class': `class C { constructor() { this.n = 4 } get() { return this.n } static two() { return 2 } }\nconst A = C\nfunction mk() { return new A().get() }\nexport let t = (x) => mk() + x`,
+  }
+  for (const [name, src] of Object.entries(shapes)) {
+    const want = oracle(src).t(3)
+    for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.t(3), want, `${name} at ${optimize}`)
+    ok(!/\$__dyn_set/.test(wat(src, { optimize: 0 })), `${name}: no member of the function is stored`)
+  }
+})
+
 // A global bound once to a builtin holds the builtin's value wrapper
 // (prepare/entry.js).
 test('devirtGlobalCalls: a call through a global that holds a builtin is the builtin\'s call', () => {

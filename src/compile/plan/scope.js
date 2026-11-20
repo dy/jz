@@ -537,6 +537,8 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
  * Devirt then only swaps an indirect call for a direct call to the very same
  * callee: it cannot change behavior, only drop dispatch overhead. The result is
  * recorded in `ctx.funcs.globalDevirt` (`Map<global, fn>`) and consumed by emit.
+ * Returns whether it changed the program: 'init' where a global's init dropped
+ * (the function it held may be no value now), true for rewritten calls alone.
  */
 /** A member access on a receiver the summary names as one class's instance is
  *  the call of the class's function (jzify/classes.js): `p.len()` → `P⟨len⟩(p)`,
@@ -910,7 +912,7 @@ export const devirtGlobalCalls = (ast) => {
   for (const r of roots) if (Array.isArray(r) && r[0] === ';') compact(r)
 
   if (devirt.size) ctx.funcs.globalDevirt = devirt
-  return changed
+  return dropped.size ? 'init' : changed
 }
 
 // A builtin a program holds in a name: a method of a prototype the target dispatches by the

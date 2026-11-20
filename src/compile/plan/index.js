@@ -170,7 +170,16 @@ export default function plan(ast, profiler, summarize) {
   if (t('declareUnseenKeys', () => declareUnseenKeys(ast))) { _dirty = true; getFactStore().revision++; ctx.summary = summarize() }
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
-  sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))
+  // A global whose every read was a call loses its init ('init'), and the function it
+  // held is then no value: a namespace that escaped through that global alone is closed,
+  // and flattens (kept, its writes took the function's address and its members',
+  // which the call graph, reading the program without the global, knew of neither).
+  // Its slots are globals then, which may be called in turn.
+  for (let again = true; again;) {
+    let ran
+    sweep('devirtGlobalCalls', () => ran = devirtGlobalCalls(ast))
+    again = ran === 'init' && sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast, facts().propMap)) === true
+  }
   // A method call on a receiver the summary names calls the class's function directly.
   sweep('devirtClassCalls', () => devirtClassCalls(ast, facts))
   // An array pattern over a proven array reads it by index, no cursor.
