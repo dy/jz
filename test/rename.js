@@ -5,7 +5,7 @@
 // the identifiers.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 import { parse } from '../src/parse.js'
 import { rename, free, occurs, spells } from '../jzify/rename.js'
 import { oracle } from './util.js'
@@ -80,7 +80,9 @@ const PROGRAMS = [
   `const table = [1, 2, 3]\nconst total = (table) => table.reduce((s, v) => s + v, 0)\nconst label = \`n\${table.length}\`\nexport let t = (x) => total(table) + total([x]) + label.length + (/table/.test('table') ? 1 : 0)`,
 ]
 test('rename: a program with its names renamed answers as it did', () => {
-  // the compile's own tree, renamed before anything lowers it
+  // the compile's own tree, renamed before anything lowers it: by the jzify the test hands
+  // the compile, which the hosted compiler (its own jzify inside it) does not take
+  if (onKernel()) return
   let count = 0
   const renamed = (ast) => {
     const stmts = ast[0] === ';' ? ast.slice(1) : [ast], names = new Map()
