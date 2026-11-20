@@ -1707,6 +1707,10 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
       const decl = !isNode(item) ? null : item[0] === 'async' ? (isNode(item[1]) && (item[1][0] === 'function' || item[1][0] === 'function*') ? 'async function' : null)
         : item[0] === 'class' || item[0] === 'function*' || item[0] === 'let' || item[0] === 'const' ? item[0] : null
       if (decl) fail(`a label stands before a statement, not a ${decl} declaration (label '${name}')`)
+      // A function no `function` keyword opens is a method shorthand: a call and a `{` on the line
+      // after it, read as one member where the braces around are a bare block (src/parse.js methodRule).
+      if (isNode(item) && item[0] === 'function' && item.loc == null)
+        fail(`the call '${name}(…)' and the block on the line after it read as a method in a bare block: end the call with \`;\``)
       // LabelledItem (§14.13): a Statement, or in sloppy code a plain function
       // declaration — never as the body of another statement (IsLabelledFunction).
       if (isNode(item) && item[0] === 'function') {

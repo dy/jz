@@ -1815,3 +1815,66 @@ test('blocks: an arrow of a destructured parameter returns an object, strict', (
     `export let t2 = (x) => { const f = ({ a }) => ({}); return typeof f({ a: x }) }`,
   ].join('\n'), ['an object pattern', 'an array pattern', 'an empty object'], { strict: true })
 })
+
+// A call, then a block on the line after it, is two statements wherever a statement
+// stands. subscript reads a `{` after a call as that call's method body; the parser
+// entry holds that to an object literal's braces and a class body's (src/parse.js
+// methodRule). It held it to any braces: every place below but the module's lost the
+// call and the block, or was refused as a labelled function.
+const CB_PRE = `let n = 0\nconst f = (a) => { n += a }\n`, CB = `f(x)\n{ n += 10 }`
+const CALL_THEN_BLOCK = {
+  'an arrow body': `export let t0 = (x) => { ${CB}\nreturn n }`,
+  'an arrow body, after a let': `export let t0 = (x) => { let y = x\n${CB}\nreturn n + y }`,
+  'a function declaration body': `function g(x) { ${CB}\nreturn n }\nexport let t0 = (x) => g(x)`,
+  'a function expression body': `const g = function (x) { ${CB}\nreturn n }\nexport let t0 = (x) => g(x)`,
+  'an object method body': `const o = { g(x) { ${CB}\nreturn n } }\nexport let t0 = (x) => o.g(x)`,
+  'a class method body': `class K { g(x) { ${CB}\nreturn n } }\nexport let t0 = (x) => new K().g(x)`,
+  'a getter body': `let x = 4\nconst o = { get g() { ${CB}\nreturn n } }\nexport let t0 = (y) => o.g + y`,
+  'an if arm': `export let t0 = (x) => { if (x > 0) { ${CB} }\nreturn n }`,
+  'an else arm': `export let t0 = (x) => { if (x < 0) n = 1; else { ${CB} }\nreturn n }`,
+  'a for body': `export let t0 = (x) => { for (let i = 0; i < 2; i++) { ${CB} }\nreturn n }`,
+  'a while body': `export let t0 = (x) => { let i = 0; while (i++ < 2) { ${CB} }\nreturn n }`,
+  'a do body': `export let t0 = (x) => { let i = 0; do { ${CB} } while (++i < 2)\nreturn n }`,
+  'a try block': `export let t0 = (x) => { try { ${CB} } catch (e) { n = -1 }\nreturn n }`,
+  'a catch block': `export let t0 = (x) => { try { throw 1 } catch (e) { ${CB} }\nreturn n }`,
+  'a finally block': `export let t0 = (x) => { try { n++ } finally { ${CB} }\nreturn n }`,
+  'a case clause': `export let t0 = (x) => { switch (x) { case 3: ${CB}\nbreak\ndefault: n = -1 }\nreturn n }`,
+  'the module': `let x = 5\n${CB}\nexport let t0 = (y) => n + y`,
+  'a generator body': `function* g(x) { ${CB}\nyield n }\nexport let t0 = (x) => g(x).next().value`,
+  'an arrow in an object literal': `const o = { k: (x) => { ${CB}\nreturn n } }\nexport let t0 = (x) => o.k(x)`,
+  'an arrow in a call argument': `const ap = (g, x) => g(x)\nexport let t0 = (x) => ap((x) => { ${CB}\nreturn n }, x)`,
+  'an if without braces before the block': `export let t0 = (x) => { if (x > 0) f(x)\n{ n += 10 }\nreturn n }`,
+  'a return of the call, the block never reached': `export let t0 = (x) => { if (x > 100) { return f(x)\n{ n += 10 } }\nreturn n + x }`,
+  'a member call': `const o = { f }\nexport let t0 = (x) => { o.f(x)\n{ n += 10 }\nreturn n }`,
+  'two calls and two blocks': `export let t0 = (x) => { f(x)\n{ n += 10 }\nf(x)\n{ n *= 2 }\nreturn n }`,
+}
+test('blocks: a call, then a block on the line after it, is two statements', () => {
+  for (const [place, src] of Object.entries(CALL_THEN_BLOCK)) agreeRows(place, CB_PRE + src, [''])
+})
+
+// A member's body may open on the line after its head: there the `{` is the method's.
+test('blocks: a method whose body opens on the line after its head is a method', () => {
+  for (const [place, src] of Object.entries({
+    'an object method': `const o = { m(a)\n{ return a + 2 } }\nexport let t0 = (x) => o.m(x)`,
+    'a second object method': `const o = { k: 1, m(a)\n{ return a + o.k } }\nexport let t0 = (x) => o.m(x)`,
+    'a class method': `class K { m(a)\n{ return a + 1 } }\nexport let t0 = (x) => new K().m(x)`,
+    'a class method after a field': `class K { k = 5\nm(a)\n{ return a + this.k } }\nexport let t0 = (x) => new K().m(x)`,
+    'a static method': `class K { static m(a)\n{ return a + 7 } }\nexport let t0 = (x) => K.m(x)`,
+    'a constructor': `class K { constructor(a)\n{ this.a = a } }\nexport let t0 = (x) => new K(x).a`,
+    'an object literal in an arrow body': `export let t0 = (x) => { const o = { m(a)\n{ return a + 3 } }\nreturn o.m(x) }`,
+    'an object literal returned': `const mk = () => { return { m(a)\n{ return a + 4 } } }\nexport let t0 = (x) => mk().m(x)`,
+    'an object literal an arrow answers': `const mk = () => ({ m(a)\n{ return a + 5 } })\nexport let t0 = (x) => mk().m(x)`,
+    'an object literal as an argument': `const ap = (o, x) => o.m(x)\nexport let t0 = (x) => ap({ m(a)\n{ return a + 6 } }, x)`,
+    'an object literal in an object literal': `const o = { p: { m(a)\n{ return a + 8 } } }\nexport let t0 = (x) => o.p.m(x)`,
+  })) agreeRows(place, src, [''])
+})
+
+// A bare block is read by the literal's rule and told from a literal in prepare, after
+// the method is read: there the call and its block are refused, not lost.
+test('blocks: a call, then a block, directly in a bare block is refused', () => {
+  for (const src of [
+    `export let t0 = (x) => { { ${CB} }\nreturn n }`,
+    `export let t0 = (x) => { L: { ${CB} }\nreturn n }`,
+    `export let t0 = (x) => { switch (x) { case 3: { ${CB} } }\nreturn n }`,
+  ]) throws(() => jz(CB_PRE + src), /read as a method in a bare block: end the call with `;`/)
+})

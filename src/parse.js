@@ -124,12 +124,12 @@ jessieParse.space = () => {
 // the enter/exit hooks keep where the brace group closed last opened: a body
 // lying past it was braced.
 const opens = [], groups = []
-let closedOpen = -1, closedAt = -1, groupDepth = 0, declDepth = -1, arrowDepth = -1, classDepth = -1
+let closedOpen = -1, closedAt = -1, groupDepth = 0, declDepth = -1, arrowDepth = -1, classDepth = -1, literalDepth = -1
 const asiEnter = jessieParse.enter, asiExit = jessieParse.exit
 jessieParse.enter = (p, end) => {
   asiEnter()
   if (end) { groups.push(end); groupDepth++ }
-  else { groups.length = 0; groupDepth = 0; declDepth = arrowDepth = classDepth = -1 }
+  else { groups.length = 0; groupDepth = 0; declDepth = arrowDepth = classDepth = literalDepth = -1 }
   if (end === 125) opens.push(idx - 1)
 }
 jessieParse.exit = (p, end) => {
@@ -460,10 +460,20 @@ jessieParse.step = (a, p, cc, expr) => {
 }
 // A method shorthand `m(p) { … }` stands directly in the braces of an object
 // literal or a class body. subscript reads a `{` after any call as that call's
-// method body (feature/accessor.js); outside braces a call and a `{` on the
-// line after it are two statements, a call and a block.
+// method body (feature/accessor.js); anywhere else a call and a `{` on the line
+// after it are two statements, a call and a block. The braces the literal's rule
+// opens are a literal's but where they are an arrow's body; a bare block is read
+// by that rule too and told from a literal only in prepare, so a method read
+// directly in one is an early error.
+const literalRule = lookup[123].ops.reduce((m, d) => d.p > m.p ? d : m), readLiteral = literalRule.map
+literalRule.map = a => {
+  if (a) return readLiteral(a)
+  const outer = literalDepth
+  literalDepth = arrowDepth === groupDepth ? -1 : groupDepth + 1
+  try { return readLiteral(a) } finally { literalDepth = outer }
+}
 const methodRule = lookup[123].ops.reduce((m, d) => d.p < m.p ? d : m), readMethod = methodRule.map
-methodRule.map = a => groups.length && groups[groups.length - 1] === 125 ? readMethod(a) : undefined
+methodRule.map = a => groupDepth === literalDepth || groupDepth === classDepth ? readMethod(a) : undefined
 // A method stands where its head's `(` does, the place of the call it was read
 // from: the early errors read its modifiers, and what stands before them, off
 // the source from there (early-errors.js methodSourceInfo). The `{` rule that
