@@ -1412,6 +1412,8 @@ test('classes: a constructor that returns gives the instance, or the object it n
     'a function': `return () => a`,
     'a value only the run knows: an object or a number': `return pick(a)`,
     'in a loop': `for (let i = 0; i < 3; i++) if (i === a) return { foo: i * 9 }`,
+    // (returns of an object literal's accessors and methods and of a function declared in the constructor: none the constructor's)
+    'in functions and accessors of its own only': `this.s = { get v() { return 9 }, set v(x) { return }, read() { return [a] } }; function inner() { return { foo: 2 } }\n this.foo = a + this.s.v * 10 + this.s.read().length + inner().foo`,
   }
   const PICK = `const pick = (a) => a > 1 ? { foo: 70 + a } : a\n`
   const all = [], reason = []
@@ -1435,7 +1437,7 @@ test('classes: a constructor that returns gives the instance, or the object it n
   // a constructor whose returns name no object keeps its schema; one that may name one is told why it does not
   const why = (src) => { const w = []; compileWat(src, { warnings: e => w.push(e), optimize: 2 }); return w.filter(e => e.code === 'class-generic').map(e => e.message).join(' ') }
   if (!onKernel()) {
-    for (const name of ['true, then a store never run', 'nothing, under a test', 'a number, under a test', 'a string', 'null', 'the instance', 'a truth test of a call'])
+    for (const name of ['true, then a store never run', 'nothing, under a test', 'a number, under a test', 'a string', 'null', 'the instance', 'a truth test of a call', 'in functions and accessors of its own only'])
       is(why(PICK + C(bodies[name]) + `\nexport let t = (n) => new C(n).get()`), '', `a return of no object, ${name}: a schema`)
     ok(/its constructor returns a value that may be an object/.test(why(PICK + C(bodies['a value only the run knows: an object or a number']) + `\nexport let t = (n) => new C(n).foo`)), 'a return that may name an object: closures, and the advisory says so')
   }

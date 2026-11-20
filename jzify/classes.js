@@ -120,9 +120,10 @@ function renameThisNode(node, to) {
 
 // A constructor's `return` ends it with the instance, unless the value it names is an
 // Object, which is then what `new` gives (ECMA-262 10.2.2 [[Construct]], steps 9 to 11).
-// A nested function's returns are its own. `noObject`: a value that is certainly none
-// (nothing, the instance, a literal, or an operator whose result is a primitive).
-const OWN_RETURN = new Set(['function', 'function*', 'class', '=>'])
+// A nested function's returns are its own, an object literal's accessor among them.
+// `noObject`: a value that is certainly none (nothing, the instance, a literal, or an
+// operator whose result is a primitive).
+const OWN_RETURN = new Set(['function', 'function*', 'class', '=>', 'get', 'set'])
 const LITERALS = new Set(['bool', 'nan', 'bigint'])
 const PRIMITIVE_OPS = new Set(['`', 'void', '!', 'typeof', 'delete', 'in', 'instanceof', '+', '-', '*', '/', '%', '**', '~', '&', '|', '^', '<<', '>>', '>>>', '<', '>', '<=', '>=', '==', '!=', '===', '!=='])
 const literal = (v) => Array.isArray(v) ? v[0] == null || LITERALS.has(v[0]) : v != null && typeof v !== 'string'
