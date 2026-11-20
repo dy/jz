@@ -294,3 +294,46 @@ test('array scan: a receiver an init call sets splits where it holds an array', 
       `at ${level}: a loop stores in place, with no growth call, forward test, missing-receiver test or snapshot test`)
   }
 })
+
+// A descending counted loop gives its counter the integers it takes, from its bound up
+// to where it starts (summary/index.js descendingCounter): a store by it inside a length
+// the array keeps grows nothing and tests no forwarding, as an ascending loop's does. It
+// was an open array's store: `for (let i = 7; i >= 0; i--) a[i] = x` kept the growth arm.
+const A8 = `const a = [0, 0, 0, 0, 0, 0, 0, 0]\n`
+const downKept = A8 + `const put = (i, x) => { a[i] = x }
+  export const dec = (x) => { for (let i = 7; i >= 0; i--) a[i] = i + x; return a[3] + a[0] * 10 }
+  export const step = (x) => { for (let i = 7; i > 0; i -= 2) a[i] = i * x; return a[7] + a[1] + a[0] }
+  export const viaParam = (x) => { for (let i = 7; i >= 0; i -= 1) put(i, x + i); return a[5] + a[2] }
+  export const frac = (x) => { let n = 0; for (let i = 7; i >= 0.5; i--) { a[i] = x; n++ } return n + a[1] }`
+const downOpen = {
+  'starts past the end': A8 + `export const f = (x) => { for (let i = 8; i >= 0; i--) a[i] = x; return a.length + a[8] }`,
+  'runs below zero': A8 + `export const f = (x) => { let s = 0; for (let i = 3; i >= -2; i--) { a[i] = x; s += a[i] === x ? 1 : 0 } return s * 100 + a.length }`,
+  'the body moves the counter': A8 + `export const f = (x) => { let n = 0; for (let i = 7; i >= 0; i--) { a[i] = x; n++; if (x > 2) i -= 1 } return n * 100 + a[4] + a[5] }`,
+  // (counted, the array would keep its first length: a read past it would miss, a loop to it stop short)
+  'the body moves it up past the end': A8 + `export const f = (x) => { let n = 0; for (let i = 7; i >= 0; i--) { if (n++ === 0) i += 4; a[i] = x } let s = 0; for (let k = 0; k < 12; k++) s += a[k] === x ? 1 : 0; return a.length * 1000 + s * 10 + (a[10] === x ? 1 : 0) }`,
+  'a start an outer counter puts past the end': A8 + `export const f = (x) => { for (let j = 0; j < 6; j++) for (let i = j + 4; i >= 0; i--) a[i] = x + j; let s = 0; for (let k = 0; k < 10; k++) s += a[k] === undefined ? 0 : 1; return a.length * 1000 + s * 10 + (a[9] === x + 5 ? 1 : 0) }`,
+  'a bound some call puts below zero': A8 + `const fill = (k, x) => { for (let i = 7; i >= k; i--) a[i] = x }
+    export const f = (x) => { fill(3, x); fill(-2, x + 1); return a.length * 1000 + a[4] * 10 + a[0] + (a[-1] === x + 1 ? 500 : 0) }`,
+  'a start some call puts past the end': A8 + `const fill = (k, x) => { for (let i = k; i >= 0; i--) a[i] = x }
+    export const f = (x) => { fill(3, x); fill(9, x + 1); return a.length * 1000 + a[9] * 10 + a[0] }`,
+  'a counter stepping up under a test from below': A8 + `export const f = (x) => { for (let i = 5; i >= 0; i++) { a[i] = x; if (i > 9) break } let s = 0; for (let k = 0; k < 11; k++) s += a[k] === x ? 1 : 0; return a.length * 100 + s }`,
+  'an index one below the counter': A8 + `export const f = (x) => { for (let i = 7; i >= 0; i--) a[i - 1] = x; return a.length * 1000 + a[6] * 10 + (a[-1] === x ? 5 : 0) }`,
+  'a bound that is no number': A8 + `export const f = (x) => { let n = 0; for (let i = 7; i >= undefined; i--) { a[i] = x; n++ } return n + a[7] }`,
+}
+
+test('array scan: a descending counter stays inside the length', () => {
+  // (each program's calls run once on the host, in the order jz runs them on a fresh instance: the array keeps what a call left)
+  const calls = (m) => ['dec', 'step', 'viaParam', 'frac'].flatMap(name => [3, -1.5].map(x => m[name](x)))
+  const want = calls(oracle(downKept)), grows = /\$__arr_set|\$__ptr_offset_fwd/
+  for (const optimize of levels(0, 2, 3, 'size')) is(calls(run(downKept, { optimize })), want, `the kept loops at ${optimize}`)
+  for (const [name, one] of Object.entries(downOpen)) {
+    const host = oracle(one).f, answer = [host(3), host(1)]
+    for (const optimize of levels(0, 2, 3, 'size')) { const got = run(one, { optimize }).f; is([got(3), got(1)], answer, `${name} at ${optimize}`) }
+  }
+  if (belowOpt(2)) return
+  for (const level of ownedLevels(2, 'speed')) {
+    const text = wat(downKept, { optimize: { level, ...shape } })
+    for (const name of ['dec', 'step', 'put', 'frac']) ok(!grows.test(funcWat(text, name)), `${name} at ${level}: stores in place, nothing grows`)
+    ok(grows.test(funcWat(wat(downOpen['starts past the end'], { optimize: { level, ...shape } }), 'f')), `a start past the end keeps the growth at ${level}`)
+  }
+})

@@ -1310,6 +1310,21 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const hi = c.test[0] === '<' ? Math.ceil(to[1]) - 1 : Math.floor(to[1])
     return hi >= c.from[0] && hi <= Number.MAX_SAFE_INTEGER ? [c.name, c.from[0], hi] : null
   }
+  /** A loop `for (let i = a; i >= b; i -= c)` (`i > b`, `i--`) whose body leaves `i` alone:
+   *  the counter and the integers it takes in the body, from its bound up to where it
+   *  starts; a span alone, no trip count. null for any other loop. */
+  const descendingCounter = (n) => {
+    const init = n[1], test = n[2], step = n[3]
+    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(test) || (test[0] !== '>' && test[0] !== '>=') || typeof test[1] !== 'string') return null
+    const decl = init[1]
+    if (!Array.isArray(decl) || decl[0] !== '=' || decl[1] !== test[1] || !Array.isArray(step) || step[1] !== decl[1]) return null
+    const name = decl[1], from = spanOf(decl[2], current, true), to = from && rangeOf(test[2])
+    if (!to) return null
+    const by = step[0] === '--' ? 1 : step[0] === '-=' ? spanOf(step[2], current, true)?.[0] : null
+    if (!(by > 0) || assignedIn(n[4]).includes(name)) return null
+    const lo = Math.floor(to[0]) + (test[0] === '>' ? 1 : 0)   // (a fractional bound's floor is at most the least integer the test admits)
+    return lo <= from[1] && lo >= -Number.MAX_SAFE_INTEGER ? [name, lo, from[1]] : null
+  }
   // The trips a counted loop runs on every entry: -1 where its start or its end
   // may be several values, it strides, or its body may leave or skip a pass.
   const exactTrip = (n) => {
@@ -5290,7 +5305,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       stmt(n[1]); const loop = loopEnter(n); loopAssigns(n); branch++; flowPath++; selectedExpr(n[2], 0)
       // (a split loop's main steps are counted by its bound's hull and bounded by each length it is the least of, leastAliases)
       const mark = rtop, counted = countedLoop(n), bounded = !counted || typeof wordOf(n[2]?.[2]) === 'string' && leastAliasesOf(wordOf(n[2][2])) ? lengthBoundedLoop(n) : null
-      const ranged = counted || bounded ? null : boundedCounter(n), appending = appendReceivers(n), counter = appending && loopCounter(n).name
+      const ranged = counted || bounded ? null : boundedCounter(n) ?? descendingCounter(n), appending = appendReceivers(n), counter = appending && loopCounter(n).name
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); exactTrips.push(exactTrip(n)); countedDepth++ }
       if (ranged) spans.set(ranged[0], [ranged[1], ranged[2]])
