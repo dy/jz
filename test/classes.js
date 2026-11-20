@@ -1371,6 +1371,11 @@ test('classes: a constructor function that is only constructed is a class', () =
     [`function program(n) { ${BODY}\n${PROTO}\nreturn new Body(1, n).step(0.5).x }\nexport let t4 = (n) => program(n)`],
     [`export let t5 = (n) => { ${BODY}\nconst bodies = [new Body(1, n), new Body(2, n)]\nlet s = 0; for (let i = 0; i < bodies.length; i++) s += bodies[i].x * bodies[i].v\nreturn s }`],
     [`function Tag(k) { this.k = k }\nexport let t6 = (n) => { const a = new Tag(n); return (a instanceof Tag ? 10 : 0) + a.k }`],
+    // constructed ahead of its declaration, as a function declaration may be: in a function's statements and in the module's
+    [`export let t7 = (n) => { const b = new Body(1, n); ${BODY}\nreturn b.x + b.v * 10 }`],
+    [`const made = new Late(4)\nfunction Late(k) { this.k = k }\nexport let t8 = (n) => made.k + n`],
+    // (test262 S13.2.2_A15_T2: its constructor returns an object that holds the instance)
+    [`export let t9 = (n) => { var obj; var o = new F(); function F() { this.prop = n; obj = {}; obj.prop = 7; obj.slot = this; return obj }\nreturn (o === obj ? 100 : 0) + o.prop * 10 + o.slot.prop }`],
   ]
   for (const [one] of src) {
     const name = /export let (t\d)/.exec(one)[1], want = oracle(one)[name](3)
@@ -1381,4 +1386,57 @@ test('classes: a constructor function that is only constructed is a class', () =
     `function Base(x) { this.x = x }\nfunction Derived(x) { Base.call(this, x); this.y = 1 }\nexport let t = (n) => new Derived(n).x`,
     `function P(x) { this.x = x }\nconst mk = (C, v) => new C(v)\nexport let t = (n) => mk(P, n).x + new P(1).x`,
   ]) throws(() => jz(kept), /`this` not supported/, kept.split('\n')[0])
+})
+
+// A constructor's `return` ends it with the instance, unless the value it names is an
+// Object, which is then what `new` gives (ECMA-262 10.2.2 [[Construct]], steps 9 to 11;
+// the answers are Node's). A class of closures ran the body in its factory, whose
+// `return true` gave `true` for the instance and whose bare `return` gave undefined; a
+// schema class gave the instance where the constructor named an object. One that may
+// name an Object is a class of closures, its factory testing the value.
+test('classes: a constructor that returns gives the instance, or the object it names', () => {
+  const C = (body) => `class C { constructor(a) { this.foo = a; ${body} } get() { return this.foo } }`
+  const F = (body) => `function C(a) { this.foo = a; ${body} }`
+  const TAIL = `const o = new C(n), p = new C(0); return o.foo * 100 + p.foo + (o.bar === undefined ? 1000 : 2000)`
+  const bodies = {
+    'true, then a store never run': `return true; this.bar = 1`,
+    'nothing, under a test': `if (a > 1) return; this.foo = -1`,
+    'a number, under a test': `if (a > 1) return 7; this.foo = -1`,
+    'a string': `return 'q'`,
+    'null': `return null`,
+    'the instance': `return this`,
+    'a truth test of a call': `return !pick(a)`,
+    'an object literal': `return { foo: 40 + a }`,
+    'an object literal, under a test': `if (a > 1) return { foo: 40 + a }`,
+    'an array': `return [a, a]`,
+    'a function': `return () => a`,
+    'a value only the run knows: an object or a number': `return pick(a)`,
+    'in a loop': `for (let i = 0; i < 3; i++) if (i === a) return { foo: i * 9 }`,
+  }
+  const PICK = `const pick = (a) => a > 1 ? { foo: 70 + a } : a\n`
+  const all = [], reason = []
+  for (const [name, body] of Object.entries(bodies)) {
+    const forms = {
+      'a class': PICK + C(body) + `\nexport let t = (n) => { ${TAIL} }`,
+      'a class in a function': PICK + `export let t = (n) => { ${C(body)}\n${TAIL} }`,
+      'a constructor function': PICK + F(body) + `\nexport let t = (n) => { ${TAIL} }`,
+      'a constructor function in a function': PICK + `export let t = (n) => { ${F(body)}\n${TAIL} }`,
+      'a class deriving it': PICK + C(body) + `\nclass D extends C { constructor(a) { super(a); this.own = 1 } }\nexport let t = (n) => { const o = new D(n), p = new D(0); return o.foo * 100 + p.foo + (o.own === 1 ? 5000 : 0) }`,
+    }
+    for (const [form, src] of Object.entries(forms)) all.push([`${name}, ${form}`, src])
+  }
+  for (const [name, src] of all) {
+    const host = oracle(src).t, want = [host(3), host(1)]
+    for (const optimize of levels(false, true, 'size', 'speed')) {
+      const got = jz(src, { optimize }).exports.t
+      is([got(3), got(1)], want, `${name} @${optimize}`)
+    }
+  }
+  // a constructor whose returns name no object keeps its schema; one that may name one is told why it does not
+  const why = (src) => { const w = []; compileWat(src, { warnings: e => w.push(e), optimize: 2 }); return w.filter(e => e.code === 'class-generic').map(e => e.message).join(' ') }
+  if (!onKernel()) {
+    for (const name of ['true, then a store never run', 'nothing, under a test', 'a number, under a test', 'a string', 'null', 'the instance', 'a truth test of a call'])
+      is(why(PICK + C(bodies[name]) + `\nexport let t = (n) => new C(n).get()`), '', `a return of no object, ${name}: a schema`)
+    ok(/its constructor returns a value that may be an object/.test(why(PICK + C(bodies['a value only the run knows: an object or a number']) + `\nexport let t = (n) => new C(n).foo`)), 'a return that may name an object: closures, and the advisory says so')
+  }
 })

@@ -292,6 +292,10 @@ export function createTransform(opts) {
       // a function's statements fold their classes' prototype stores as the module's do (jzify/index.js)
       // (and their constructor functions fold to classes first, as the module's)
       const stmts = fnDepth > 0 ? foldPrototypeStores(foldPseudoClassical(args)) : args
+      // A class folded from a function declaration is declared where the function was, above
+      // the list's statements: a `new` of it ahead of its declaration finds it. (The module's
+      // is a schema, declared above already, or a function prepare lifts.)
+      const wasFn = fnDepth > 0 ? new Set(args.filter(s => Array.isArray(s) && s[0] === 'function' && s[1]).map(s => s[1])) : null
       for (let i = 0; i < stmts.length; i++) {
         const stmt = stmts[i]
         if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
@@ -315,7 +319,7 @@ export function createTransform(opts) {
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
-          rest.push(...lowerClassDecl(stmt[1], stmt[2], stmt[3]).slice(1))
+          (wasFn?.has(stmt[1]) ? hoisted : rest).push(...lowerClassDecl(stmt[1], stmt[2], stmt[3]).slice(1))
           continue
         }
         const bound = classBinding(stmt)

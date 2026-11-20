@@ -118,6 +118,18 @@ function renameThisNode(node, to) {
   return node.map(n => renameThis(n, to))
 }
 
+// A constructor's `return` ends it with the instance, unless the value it names is an
+// Object, which is then what `new` gives (ECMA-262 10.2.2 [[Construct]], steps 9 to 11).
+// A nested function's returns are its own. `noObject`: a value that is certainly none
+// (nothing, the instance, a literal, or an operator whose result is a primitive).
+const OWN_RETURN = new Set(['function', 'function*', 'class', '=>'])
+const LITERALS = new Set(['bool', 'nan', 'bigint'])
+const PRIMITIVE_OPS = new Set(['`', 'void', '!', 'typeof', 'delete', 'in', 'instanceof', '+', '-', '*', '/', '%', '**', '~', '&', '|', '^', '<<', '>>', '>>>', '<', '>', '<=', '>=', '==', '!=', '===', '!=='])
+const literal = (v) => Array.isArray(v) ? v[0] == null || LITERALS.has(v[0]) : v != null && typeof v !== 'string'
+const noObject = (v) => v == null || v === 'this' || literal(v) || Array.isArray(v) && PRIMITIVE_OPS.has(v[0])
+const mayReturnObject = (n) => Array.isArray(n) && !OWN_RETURN.has(n[0]) &&
+  (n[0] === 'return' ? !noObject(n[1]) : n.some((c, i) => i > 0 && mayReturnObject(c)))
+
 // The instance fields a body assigns through `this.name = …` (any assignment
 // or update operator), in first-assignment order; nested `function`/`class`
 // rebind `this` and are not crossed. A constructor that assigns `this.buf`
@@ -851,12 +863,14 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   const staticsPlaced = statics.length === 0 && !base?.chainStatics || trailers
   if (nativeCollection && hoists && staticsPlaced)
     return lowerStruct({ name, heritage, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
-  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && staticsPlaced && !computed)
+  // (a constructor that may return an Object makes instances no schema names: its factory tests the value)
+  const returnsValue = mayReturnObject(ctorBody)
+  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && staticsPlaced && !computed && !returnsValue)
     return lowerStruct({ name, heritage, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   // The advisory names what kept the class from its schema lowering (`why`):
   // a class of closures reads and calls its members through the runtime.
   if (structsOn) warn('class-generic', `class ${name ?? '(anonymous)'} is lowered to closures, not a schema: ${
-    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members, or its base\'s, need a declaration, not an expression'}`, { fn: name ?? undefined }, here())
+    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : returnsValue ? 'its constructor returns a value that may be an object' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members, or its base\'s, need a declaration, not an expression'}`, { fn: name ?? undefined }, here())
   const self = names.classSelf()
   const UNDEF = []                                  // jessie's node for `undefined`
   const memberRef = (obj, key) => typeof key === 'string' ? ['.', obj, key] : ['[]', obj, key.computed]
@@ -999,7 +1013,18 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     stmts.push(['()', '__hide_member', [',', self, ['str', nominal]]])
   }
   if (ctorBody != null) {
-    let cb = transform(renameThis(ctorBody, self))
+    // The body stands in the factory: each `return` of its own gives the instance, or the
+    // Object it names, tested at run time.
+    const isObject = (r) => ['||', ['&&', ['===', ['typeof', r], [null, 'object']], ['!==', r, [null, null]]], ['===', ['typeof', r], [null, 'function']]]
+    const ends = (n) => {
+      if (!Array.isArray(n) || OWN_RETURN.has(n[0])) return n
+      if (n[0] !== 'return') return withLoc(n.map((c, i) => i ? ends(c) : c), n)
+      const v = n[1]
+      if (v == null || v === self || literal(v)) return withLoc(['return', self], n)
+      const r = names.genTemp('cr')
+      return withLoc(['{}', [';', ['let', ['=', r, v]], ['if', isObject(r), ['return', r]], ['return', self]]], n)
+    }
+    let cb = transform(ends(renameThis(ctorBody, self)))
     if (Array.isArray(cb) && cb[0] === '{}') cb = cb[1]
     if (Array.isArray(cb) && cb[0] === ';') stmts.push(...cb.slice(1).filter(s => s != null))
     else if (cb != null) stmts.push(cb)
