@@ -215,9 +215,12 @@ const OPERAND_VALUE = new Set(['||', '&&', '??', '||=', '&&=', '??=', '?:'])
 
 function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null, conversions = true, byCalls = true }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
-  // not the discarded unknown-parameter solve's intermediate escapes.
+  // not the discarded unknown-parameter solve's intermediate escapes, and the
+  // arrays its final lengths open.
   const reportLose = onLose, losses = onLose ? [] : null
   if (onLose) onLose = (...loss) => losses.push(loss)
+  const reportOpen = onOpen, opens = onOpen ? [] : null
+  if (onOpen) onOpen = (...open) => opens.push(open)
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -6763,6 +6766,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     if (losses) losses.length = 0
+    if (opens) opens.length = 0
     kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); presentStores.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); jumped.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
     wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
@@ -6848,6 +6852,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   queryFacts.scalarValues = scalarValues
   queryFacts.scalarFields = scalarFields
   if (reportLose) for (const loss of losses) reportLose(...loss)
+  if (reportOpen) for (const open of opens) reportOpen(...open)
   // Each member call the proof took for a builtin's has a receiver that holds
   // none of the program's functions: no object, dictionary or function.
   const byCallsBuiltins = () => {

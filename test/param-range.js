@@ -157,6 +157,10 @@ test('parameter hull: a class\'s method keeps the hull its calls give', () => {
   is(/\$__arr_set|\$__esc_elem/.test(funcWat(text, method('Permute', 'swap'))), false, 'the swap stores in place: nothing grows, nothing is asked of the heap after')
   // (with the swap written into the recursion and its indexes integers, level 3: no forwarding either)
   if (!belowOpt(3)) is(/\$__arr_set|\$__ptr_offset_fwd|\$__esc_elem/.test(funcWat(wat(src, { optimize: 3 }), method('Permute', 'permute'))), false, 'the recursion with the swap in it')
+  // (the advisory is the emitted program's: a summary taken while the calls were still accesses opened the array)
+  const ws = []
+  compile(src, { optimize: 2, why: true, warnings: w => ws.push(w) })
+  is(ws.filter(w => w.code === 'array-open').map(w => w.message), [], 'no array is reported open')
 })
 
 // An access that may meet another receiver cannot align its arguments with one function's

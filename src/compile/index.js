@@ -243,6 +243,7 @@ export function assemble(ast, profiler) {
   // here. Warnings keep the solve in place: their sinks write outside it.
   const phaseCheckpoint = () => ctx.warnings ? null : ctx.transform.phaseCheckpoint ?? (DBG_INVARIANTS ? phaseCheckpointEmulation([ast, ctx]) : null)
   const summaryOf = (discover = true, losses = ctx.warnings ? [] : null) => {
+    const opens = ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? [] : null
     const summary = summarize(ast, {
       checkpoint: phaseCheckpoint(),
       inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
@@ -259,12 +260,12 @@ export function assemble(ast, profiler) {
       // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
       onLose: losses && ((...loss) => losses.push(loss)),
       // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
-      onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }, site?.loc) : null,
+      onOpen: opens && ((...open) => opens.push(open)),
       moduleGlobals: ctx.scope.globals,
       constStrings: jsonShapeStrings,
       constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
     })
-    return summary && Object.assign(summary, { losses })
+    return summary && Object.assign(summary, { losses, opens })
   }
   let built = null
   const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
@@ -369,7 +370,10 @@ export function assemble(ast, profiler) {
   planNumericArrays([ast, ...(ctx.module.moduleInits ?? [])],
     ctx.funcs.list.filter(f => !f.raw && f.body && programFacts.programIndex.reachableForLowering(f)))
   // The advisory reports what this summary loses: an earlier one, taken before
-  // the plan dropped an arm a test never takes, may lose a shape the program keeps.
+  // the plan dropped an arm a test never takes, may lose a shape the program keeps,
+  // and open an array whose length the program as emitted never changes.
+  for (const [count, why, fn, site] of ctx.summary.opens ?? [])
+    warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }, site?.loc)
   for (const [sid, why, fn, site] of ctx.summary.losses ?? [])
     warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }, site?.loc)
   // A layout's view runs only where the code the program lowers builds an
