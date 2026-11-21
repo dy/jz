@@ -235,6 +235,10 @@ test('link: the throw runtime goes when nothing can catch; a catch anywhere keep
   ok(same(keep, caught), 'a catch in another function keeps every throw')
   const [user] = onTape(m, root => pruneUnusedThrowRuntime(root, { throws: true, userThrows: true, noEhAbort: false, rawAbi: false }))
   ok(same(user, m), 'a user throw keeps the runtime')
+  // (a module with a source throw and a host import exports the tag: asked to trap, it keeps neither)
+  const handed = ['module', m[1], ['export', '"__jz_err"', ['tag', '$__jz_err']], ...m.slice(2)]
+  const [trap] = onTape(handed, root => pruneUnusedThrowRuntime(root, { throws: true, userThrows: true, noEhAbort: true, rawAbi: false }))
+  ok(same(trap, ['module', ['func', '$f', ['global.set', '$__jz_last_err_bits', ['i64.const', 7]], ['unreachable']]]), 'a user throw asked to trap: the tag and its export go')
 })
 
 test('link: scope suffixes strip when the bare name is unambiguous in its function', () => {

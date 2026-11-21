@@ -76,6 +76,7 @@ export function pruneUnusedThrowRuntime(root, { throws, userThrows, noEhAbort, r
   }
   for (let c = T.a[root], next; c !== NONE; c = next) {
     next = T.next[c]
-    if (T.op[c] === TAG && text(T.a[c]) === '$__jz_err') remove(root, c)
+    // (and its export: a module with a source throw and a host import hands the host the tag, compile/throw-runtime.js)
+    if (T.op[c] === TAG && text(T.a[c]) === '$__jz_err' || T.op[c] === EXPORT && text(T.a[c]) === '"__jz_err"') remove(root, c)
   }
 }

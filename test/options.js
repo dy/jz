@@ -175,6 +175,13 @@ test('options: optimize object — exceptions:false drops the exceptions tag', (
   ok(/\(tag /.test(compile(THROW, { wat: true })), 'a bare throw keeps the tag by default')
   const wat = compile(THROW, { wat: true, optimize: { exceptions: false } })
   ok(!/\(tag /.test(wat) && /unreachable/.test(wat), 'exceptions:false traps instead')
+  // (a throw beside a host import hands the host the tag: the tag's export goes with the tag)
+  const hosted = 'export let f = (x) => { if (x < 0) throw new RangeError("neg"); console.log(x); return x }'
+  for (const level of [false, true, 'size', 'speed']) {
+    const text = compile(hosted, { wat: true, optimize: { level, exceptions: false } })
+    ok(!/\(tag |__jz_err"/.test(text), `a throw beside a host import keeps no tag and no export of one at ${level}`)
+    ok(WebAssembly.validate(compile(hosted, { optimize: { level, exceptions: false } })), `and its module is valid at ${level}`)
+  }
 })
 
 test('options: optimize object — alloc:false omits the allocator exports', () => {
