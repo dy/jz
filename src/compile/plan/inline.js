@@ -929,7 +929,13 @@ const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
 // `let t; if (c) t = a; else t = f(x)` and then `t`, `a && f(x)` is `let t = a; if (t)
 // t = f(x)`, and the call is a statement's whole value, which splices. The conditional
 // moves as a call does: only past what it commutes with.
-const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
+//
+// `tuple`: the body of a function of tuple results, whose every return is the literal of
+// its lanes or a conditional of such. There the conditional a return is leaves as a
+// conditional of returns (`return c ? [a, f(x)] : [b, 1]` is `if (c) return [a, f(x)]`,
+// `else return [b, 1]`), each then hoisting from its own lanes: lifted to a name, the
+// return was one value where the signature has a result a lane.
+const hoistNestedCalls = (body, bodies, anywhere = bodies, tuple = false) => {
   if (!bodies.size || !Array.isArray(body)) return { node: body, changed: false }
   let changed = false
   const seq = (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]
@@ -1111,7 +1117,17 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
       }
       case '=': return directCall(s[2]) ? [s] : hAssign(s, false)
       case '+=': case '-=': case '*=': case '|=': case '&=': case '^=': case '<<=': case '>>=': case '>>>=': return hAssign(s, true)
-      case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, effState()); return pre.length ? [...pre, ['return', v]] : [s] }
+      case 'return': {
+        if (s.length < 2 || directCall(s[1])) return [s]
+        const pre = []
+        if (tuple && s[1][0] === '?:' && s[1].slice(2).some(holdsLift)) {
+          const test = hExpr(s[1][1], pre, false, effState())
+          changed = true
+          return [...pre, ['if', test, seq(hStmt(['return', s[1][2]])), seq(hStmt(['return', s[1][3]]))]]
+        }
+        const v = hExpr(s[1], pre, false, effState())
+        return pre.length ? [...pre, ['return', v]] : [s]
+      }
       default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
     }
   }
@@ -1545,7 +1561,7 @@ const inlineHot = (programFacts, ast) => {
   // a kernel called in a cold expression position (a 2-site `reduce`) stays
   // outlined for V8 tier-up, and hoisting it would pull the loop into the caller.
   // The body with its candidate calls spliced, or null where none was.
-  const splice = (body, isExprBody, activeCandidates, exprActive) => {
+  const splice = (body, isExprBody, activeCandidates, exprActive, tuple = false) => {
     const blockBodies = new Map(), anywhere = new Set()
     if (speedTier && !isExprBody) for (const f of activeCandidates.values()) {
       if (exprActive.has(f.name)) continue
@@ -1560,7 +1576,7 @@ const inlineHot = (programFacts, ast) => {
       callerSize = nodeSize(body)
       if (fnSites.size) boundFunctions(body)
       if (blockBodies.size) {
-        const h = hoistNestedCalls(body, blockBodies, anywhere)
+        const h = hoistNestedCalls(body, blockBodies, anywhere, tuple)
         if (h.changed) { body = h.node; iterChanged = true }
       }
       if (isExprBody) {
@@ -1638,7 +1654,7 @@ const inlineHot = (programFacts, ast) => {
     // loop-only candidate hoist inside a loop only (`if (fr.intersectsSphere(s))`):
     // a kernel called in a cold expression position (a 2-site `reduce`) stays
     // outlined for V8 tier-up, and hoisting it would pull the loop into the caller.
-    const spliced = isExported(func) && !activeCandidates.size ? null : splice(func.body, isExprBody, activeCandidates, exprActive)
+    const spliced = isExported(func) && !activeCandidates.size ? null : splice(func.body, isExprBody, activeCandidates, exprActive, func.sig?.results?.length > 1)
     // A closure is a caller of its own: the callback a factory returns
     // (`makeProcess(t)` → `(mag, phase, state) => …`) runs the per-frame loops
     // a leaf it calls sits in. Its body takes the splices a function's does.

@@ -150,6 +150,57 @@ test('multi: incompatible conditional arrays retain array results', () => {
   }
 })
 
+// A function of tuple results returns the literal of its lanes at every return, or a
+// conditional of such. A leaf the speed tier splices into an arm needs statements there,
+// and the conditional left its return as a name: one value where the signature has a
+// result a lane, a module no engine takes ("not enough arguments on the stack for
+// local.set"), at level 3 and 'speed'. The conditional leaves as a conditional of returns.
+test('multi: a conditional of tuples stays a tuple where a leaf is spliced into an arm', () => {
+  const pick = `function pick(k) { if (k > 5) return 1; let t = k * 2; t += 1; return t }`
+  const programs = {
+    'a leaf in each arm': `${pick}
+      export function f(n) { return n ? [pick(n), 2] : [pick(n + 9), 3] }`,
+    'a leaf in one arm': `${pick}
+      export function f(n) { return n ? [1, 2] : [pick(n + 9), 3] }`,
+    'a chain of conditionals': `${pick}
+      export function f(n) { return n === 1 ? [pick(n), 2] : n === 3 ? [pick(n + 1), 4] : [pick(n + 9), 3] }`,
+    'a test that calls the leaf': `${pick}
+      export function f(n) { return pick(n) > 2 ? [pick(n), 2] : [pick(n + 9), 3] }`,
+    'a conditional inside a lane': `${pick}
+      export function f(n) { return n > 2 ? [pick(n), n > 5 ? pick(n + 1) : 4, 2] : [1, pick(n), 3] }`,
+    'under an if, with a return after': `${pick}
+      export function f(n) { if (n > 2) { return n > 5 ? [pick(n), 2] : [pick(n + 9), 3] } return [0, pick(n)] }`,
+    'in a loop of the function': `${pick}
+      export function f(n) { for (let i = 0; i < 4; i++) { if (i === n) return i ? [pick(i), 2] : [pick(i + 9), 3] } return [0, 0] }`,
+    'a body that only throws': `function fail(k) { throw new RangeError('at ' + k) }
+      export function f(n) { return n ? [1, 2] : [fail(n), 3] }`,
+    'a throw in a middle lane': `function fail(k) { throw new RangeError('at ' + k) }
+      ${pick}
+      export function f(n) { return n > 2 ? [pick(n), n > 5 ? fail(n) : 4, 2] : [1, pick(n), 3] }`,
+    'a kept tuple callee, destructured in a loop': `${pick}
+      function pair(n) { return n ? [pick(n), 2] : [pick(n + 9), 3] }
+      export function f(n) { let s = 0; for (let i = 0; i < n + 2; i++) { const [a, b] = pair(i); s = s * 7 + a * 10 + b } return s }`,
+    'effects in order, under try and finally': `let trace = 0
+      function mark(n) { trace = trace * 10 + n; return n }
+      function fail() { throw new Error('selected') }
+      function pair(n) { try { if (n >= 0) return mark(n) === 1 ? [mark(2), mark(3)] : [n === 3 ? fail() : mark(4), mark(5)] } finally { mark(6) } return [mark(7), mark(8)] }
+      export function f(n) { trace = 0; let r; try { r = pair(n) } catch (e) { r = [e.message] } return [...r, trace] }`,
+  }
+  const caught = (f) => { try { return { value: f() } } catch (e) { return { error: e.constructor.name, message: e.message } } }
+  for (const [label, src] of Object.entries(programs)) {
+    const host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const ex = run(src, { optimize })
+      for (const n of [1, 0, 3, 7, -1]) is(caught(() => ex.f(n)), caught(() => host.f(n)), `${label}, f(${n}) at ${optimize}`)
+    }
+  }
+  if (belowOpt(3)) return
+  // the leaf is in its caller, and the caller still answers a result a lane
+  const body = funcWat(wat(programs['a leaf in each arm'], { optimize: 3 }), 'f')
+  is(parseWat(body).filter(n => n[0] === 'result').length, 2, 'two result lanes with the leaf spliced')
+  ok(!/\(call \$pick\b/.test(body), 'the leaf is spliced into the arm')
+})
+
 // A pattern over a call to a tuple helper that stays a function (called from
 // several sites, too large to splice) takes the call's results into its names:
 // `const [x, y] = cell(…)` is the call and two sets, no array between, and a
