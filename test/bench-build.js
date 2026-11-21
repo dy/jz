@@ -88,7 +88,9 @@ test('bench host: missing entry points and unsupported host calls fail visibly',
 // A bench build keeps the raw ABI, which exports neither the error's tag nor its bits: a
 // case that throws ends its lane in a WebAssembly.Exception of no content (the held-out
 // lane's deltablue, run 44846077427). The diagnosis builds the case with the host ABI at
-// the lane's flags and says what `main` threw (bench/_lib/why-jz.mjs, bench.mjs `[why]`).
+// the lane's flags and says what `main` threw (bench/_lib/why-jz.mjs, bench.mjs `[why]`), and
+// where: the functions of the module on the trap's frames, at the lane's level and at level 1,
+// where each function of the source is one of the module's.
 test('bench host: a case that throws is named by what it threw', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-bench-why-'))
   const why = (name, source) => {
@@ -98,16 +100,17 @@ test('bench host: a case that throws is named by what it threw', () => {
     return r.stdout.trim()
   }
   try {
-    is(why('error', `const check = (k) => { if (k > 3) throw new Error('incorrect result'); return k }
-      export let main = () => { let s = 0; for (let i = 0; i < 6; i++) s += check(i); return s }`), 'threw: Error: incorrect result', 'the program\'s own Error')
+    const like = (got, re, label) => ok(re.test(got), `${label}: ${got}`)
+    like(why('error', `const check = (k) => { if (k > 3) throw new Error('incorrect result'); return k }
+      export let main = () => { let s = 0; for (let i = 0; i < 6; i++) s += check(i); return s }`), /^threw: Error: incorrect result; raised in (check < )?main; at level 1: raised in check < main$/, 'the program\'s own Error')
     is(why('string', `const check = (k) => { if (k > 3) throw 'should not reach'; return k }
       export let main = () => { let s = 0; for (let i = 0; i < 6; i++) s += check(i); return s }`), 'threw: "should not reach"', 'a thrown string')
-    is(why('missing', `class Node { constructor(v) { this.v = v; this.next = null } }
+    like(why('missing', `class Node { constructor(v) { this.v = v; this.next = null } }
       const walk = (n, k) => { let s = 0; for (let i = 0; i < k; i++) { s += n.v; n = n.next } return s }
-      export let main = () => { const a = new Node(1); a.next = new Node(2); return walk(a, 5) }`), 'threw: TypeError: Cannot read properties of undefined', 'the runtime\'s own TypeError')
-    is(why('init', `class A { foo() { throw new RangeError('at module level') } }
+      export let main = () => { const a = new Node(1); a.next = new Node(2); return walk(a, 5) }`), /^threw: TypeError: Cannot read properties of undefined; raised in (walk < )?main; at level 1: raised in walk( < main)?$/, 'the runtime\'s own TypeError')
+    like(why('init', `class A { foo() { throw new RangeError('at module level') } }
       const r = new A().foo()
-      export let main = () => r`), 'threw: RangeError: at module level', 'a throw as the module starts')
+      export let main = () => r`), /^threw: RangeError: at module level(; raised in A\.foo)?; at level 1: raised in A\.foo$/, 'a throw as the module starts')
     is(why('fine', `export let main = () => 4`), 'returned', 'a case that throws nothing')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
