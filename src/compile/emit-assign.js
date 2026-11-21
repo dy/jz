@@ -864,10 +864,13 @@ function emitElementStore(arr, idx, val, node) {
   if (typeof arr === 'string' && valTypeOf(arr) == null && numericKey && ctx.func.localReps?.get(arr)?.presentVal === VAL.ARRAY && !ctx.func.boxed?.has(arr) && !ctx.transform.optimize?.leanRuntime) {
     const held = ctx.func.refinements?.get(arr), recv = temp('pr')
     const ptr = typed(['local.get', `$${recv}`], 'f64')
+    // (the key's kind as a known array takes it, case 7: a Number that names no element names a property)
+    const key = indexOnly ? 'index' : arrayIndex ? 'wide' : 'num'
+    if (key === 'num') { ensureDynSetAllowed(arr, false); ctx.module.include('collection'); ctx.module.include('string') }
     return block64(
       ['local.set', `$${recv}`, asF64(emit(arr))],
       ...(held?.notNullish ? [] : [['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]]),
-      storeArrayPayload(ptr, keyExpr, valueExpr, persistBinding(arr)))
+      storeArrayPayload(ptr, keyExpr, valueExpr, persistBinding(arr), false, null, null, key))
   }
   // 7. Known-ARRAY receiver. A Number key stores in place where it names an
   //    element inside the length; the rest is one call (storeArrayPayload's

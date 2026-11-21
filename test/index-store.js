@@ -302,3 +302,23 @@ export let nan = () => { const L = [1, 2]; L[NaN] = 5; return L.length }`
     for (const name of ['frac', 'nan']) is(wasm[name](), host[name](), `${name}() at ${optimize}`)
   }
 })
+
+// A receiver that is an array where it is present (a local or a field holding null until
+// it is given one) takes its store's key as a known array does: a Number that names no
+// element (-1, 1.5, one past 2^32) names a property. The store there took every Number for
+// an index, and the property was lost (emit-assign.js, case 6b).
+test('index store: a Number that names no element is a property of an array that may be missing', () => {
+  const head = `const side = (v) => v === undefined ? 0 : v\nconst X = [-1, 1.5, 0, 4294967297, 2, 5, 7]\n`
+  const programs = {
+    'a local': head + `const put = (v, i) => { let w = null; if (i !== 3) w = v; w[i] = 50 }
+      export const go = (p) => { const a = [10, 20, 30]; put(a, X[p] * 1); return side(a[-1]) + side(a[1.5]) * 3 + side(a[0]) * 7 + side(a[4294967297]) * 11 + side(a[2]) * 13 + a.length * 1000 + side(a[5]) * 17 }`,
+    'a field': head + `class Late { constructor() { this.v = null } fill(v) { this.v = v } put(i, x) { this.v[i] = x } get(i) { return this.v[i] } }
+      export const go = (p) => { const a = [10, 20, 30]; const o = new Late(); if (p !== 9) o.fill(a); o.put(X[p] * 1, 50); return side(o.get(-1)) + side(o.get(1.5)) * 3 + side(o.get(0)) * 7 + side(a[4294967297]) * 11 + a.length * 1000 + side(o.get(X[p] * 1)) * 19 }`,
+    'the receiver missing': head + `const put = (v, i) => { let w = null; if (i === 77) w = v; w[i] = 50 }
+      export const go = (p) => { const a = [10, 20, 30]; let h = 0; try { put(a, X[p] * 1) } catch (e) { h += 1 } return h + a.length * 10 }`,
+  }
+  for (const [name, source] of Object.entries(programs)) {
+    const want = [0, 1, 2, 3, 4, 5, 6].map(oracle(source).go)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is([0, 1, 2, 3, 4, 5, 6].map(run(source, { optimize }).go), want, `${name} at ${optimize}`)
+  }
+})
