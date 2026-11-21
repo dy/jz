@@ -1145,6 +1145,9 @@ const NO_NODES = new Set()
 const boundedElements = (body, view) => {
   const nodes = new Set()
   scanBoundedArrIdx(body, null, null, nodes, view)
+  // (and an index a guard holds below its array's length, summary/index.js noteHull: the emitter stores there in place too)
+  const bounds = view?.indexBounds?.()
+  if (bounds?.size) walkAst(body, { enter: n => { if (n[0] === '[]' && n.length === 3 && typeof n[2] === 'string' && bounds.get(n[2]) === n[1]) nodes.add(n) } })
   return nodes.size ? nodes : NO_NODES
 }
 

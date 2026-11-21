@@ -69,6 +69,7 @@ import { specializeCalledArgs, splitByClosureArgs } from './called-args.js'
 import { markReadBuffers } from './read-buffers.js'
 import { hoistObjectReads } from './object-reads.js'
 import { hoistSiteReceivers } from './site-receivers.js'
+import { elementRunCandidates, guardElementRuns } from './element-runs.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
 import { joinExitTests, exitTestCandidates } from './exit-tests.js'
 import { foldKindTests } from './fold-kind-tests.js'
@@ -305,6 +306,10 @@ export default function plan(ast, profiler, summarize) {
     sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
     // A DP recurrence's pairs, of the copy: its tests of a sum's wide side go with the cell they precede.
     sweep('unrollRecurrences', () => { if (!unrollRecurrences()) return false; ctx.summary = summarize(); return true })
+    // A run of accesses of one array at indexes no range holds: under one test of the indexes, in place.
+    // Last of the sweeps, so no loop pass copies its arms; the loops' copies name what they copied
+    // anew, so the summary is taken again where a run may be.
+    if (elementRunCandidates()) { ctx.summary = summarize(); sweep('guardElementRuns', guardElementRuns) }
   }
   const programFacts = facts()
   // A module global's declaration-time literal length holds only while nothing

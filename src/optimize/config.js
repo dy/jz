@@ -153,6 +153,7 @@ const LEVEL_PRESETS = Object.freeze({
     versionArrayPatterns: false, // a positional read beside each pull of the protocol: speed-for-size
     staticLocals: false,      // a static block's header segment and wide address constants outweigh the allocator call it saves (29 of the bench corpus larger, none smaller) — speed-for-size
     versionIntegralLoops: false, // an integral copy of a loop beside it: speed-for-size
+    elementRuns: false,       // a run of element accesses written twice, under its guard and as written: speed-for-size
     unswitchLoops: false,     // a copy of a loop for each answer of a test it reads: speed-for-size
     reciprocalDivisors: false, // a copy of a loop for a power-of-two divisor: speed-for-size
     pairIterations: false,    // a second copy of a pixel loop's body, its inner loop beside the first's: speed-for-size

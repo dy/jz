@@ -201,6 +201,7 @@ const TESTS = [
   'number-eq',
   'index-store',
   'array-scan',
+  'element-runs',
   'present-receiver',
   'block-present',
   'header-hoist',
