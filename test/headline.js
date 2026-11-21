@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is, almost, ok } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, pairedUs, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, pairedUs, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, TARGET_VERSIONS } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -197,7 +197,7 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
       addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v },
     } }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, TARGET_VERSIONS,
       document, URLSearchParams, location: { search }, navigator: { userAgent: 'test' },
       fetch: async path => {
         fetched.push(path)
@@ -327,7 +327,7 @@ test('bench page: an unchecked contender leaves the corpus and the cards; JZ sta
       innerHTML: '', textContent: '', attrs: {}, addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v } } }
     const localStorage = { getItem: () => JSON.stringify(off), setItem() {} }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, document, localStorage,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, TARGET_VERSIONS, document, localStorage,
       URLSearchParams, location: { search: '' }, navigator: { userAgent: 'test' },
       fetch: async () => ({ ok: true, json: async () => data }),
     })
@@ -345,6 +345,32 @@ test('bench page: an unchecked contender leaves the corpus and the cards; JZ sta
   ok(/<div class="row strong"[^>]*data-tid="jz"/.test(some.cards.innerHTML), 'JZ is lit until another row takes its place')
 })
 
+test('bench page: a lane\'s tooltips name the versions its dataset recorded, and none it did not', async () => {
+  const html = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
+  const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].replace(/^import .*$/m, '')
+  const row = medianUs => ({ medianUs, bytes: 10, parity: 'ok' })
+  const versions = { jz: '1.0.3', watr: '5.13.5', node: 'v24.22.2', perry: 'perry 0.5.1665', asc: 'Version 0.28.20',
+    rust: 'rustc 1.100.0 (0ef1bc386 2026-11-09)', shermes: 'shermes static_h 310f6090bcddc297d8cc6510ad8670d2fe954aec' }
+  const data = { meta: { host: { cpu: 'cpu' }, date: 'd', commit: null, versions },
+    cases: { alpha: C(row(100), { perry: row(200), as: row(250), rust: row(150), shermes: row(400), scriptc: { status: 'fail', reason: 'unsupported fixture' } }) } }
+  const nodes = {}
+  const document = { getElementById: id => nodes[id] ||= {
+    innerHTML: '', textContent: '', attrs: {}, addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v } } }
+  await runInNewContext(`(async () => {${script}\n})()`, {
+    benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, TARGET_VERSIONS, document,
+    URLSearchParams, location: { search: '' }, navigator: { userAgent: 'test' },
+    fetch: async () => ({ ok: true, json: async () => data }),
+  })
+  const tip = (where, tid) => nodes[where].innerHTML.match(new RegExp(`data-tid="${tid}" data-tip="([^"]*)"`))?.[1]
+  const pick = tid => nodes.picks.innerHTML.match(new RegExp(`data-tip="([^"]*)"><input type="checkbox" data-pick="${tid}"`))?.[1]
+  is(tip('geomean', 'jz').split('\n')[1], 'JZ 1.0.3 · watr 5.13.5 · Node v24.22.2', 'a lane built by several tools names each')
+  is(tip('geomean', 'perry').split('\n')[1], 'Perry 0.5.1665', 'the tool\'s own name is not repeated')
+  ok(tip('geomean', 'shermes').includes('\nStatic Hermes static_h 310f609'), 'a full commit hash is cut to seven')
+  ok(tip('cards', 'rust').includes('\nRust 1.100.0 (0ef1bc386, 2026-11-09)\n'), 'a card row names it too, its commit and date apart')
+  ok(pick('as').includes('\nAssemblyScript 0.28.20 · Node v24.22.2\n'), 'so does the contender\'s tip, without the word "Version"')
+  is(tip('cards', 'scriptc'), 'unsupported fixture\n\n→ scriptc issue tracker', 'a lane with no recorded version adds nothing')
+})
+
 test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory sorts last', () => {
   const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
   const render = page.match(/const renderGeomean = \(\) => \{[\s\S]*?\n\}/)[0]
@@ -358,7 +384,7 @@ test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory s
     CORPUS: [{ targets: { jz: row(1000), missing: row(null), large: row(2000), small: row(500), native: row(1) } }],
     benchmarkRatio, sortBy: 'mem', BREAK: 12, OFF: new Set(), hl: null, ABOUT: {},
     BANDS: [['wasm', 'WASM'], ['native', 'native']], CLS_ICO: {}, DESC: {},
-    localGeo: () => null, coverage: () => ({ ran: 1, attempted: 1 }),
+    localGeo: () => null, coverage: () => ({ ran: 1, attempted: 1 }), versionTip: () => '',
     nCases: n => `${n} cases`, esc: String, fmtX: String, stripClassSub: label => label,
     $: () => ({}), rowHtml: r => { rendered.push(r); return '' },
   })

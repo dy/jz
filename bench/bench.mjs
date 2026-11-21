@@ -14,7 +14,7 @@ import { resolveModuleGraph } from '../src/resolve.js'
 import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
 import { writeWasm } from '../scripts/portable.mjs'
-import { classifyBenchmarkChecksum, NO_WEB, pairedUs, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
+import { classifyBenchmarkChecksum, NO_WEB, pairedUs, TARGET_VERSIONS, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
 import { contenders, LANE_CMDS, LANE_FLAGS } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 import { releaseBytes } from './_lib/release-bytes.js'
@@ -1565,19 +1565,6 @@ const TARGET_CMDS = {
   ...LANE_CMDS,
 }
 
-// A partial refresh must not relabel untouched artifacts with whichever
-// compiler versions happen to be installed today. Same-name tools use their id.
-const TARGET_VERSIONS = {
-  v8: ['node'], as: ['asc', 'node'], 'porf-native': ['porffor'], nat: ['clang'],
-  jz: ['jz', 'watr', 'node'], 'jz-base': ['node'], 'jz-wasmtime': ['jz', 'watr', 'wasmtime'],
-  'qjs-wasi': ['quickjs-ng', 'node'], 'componentize-qjs': ['componentize-qjs', 'wasmtime'],
-  'componentize-js': ['componentize-js', 'wasmtime'], js2wasm: ['js2wasm', 'node'],
-  'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'], 'jz-exact': ['jz', 'watr', 'node'],
-  'c-wasm': ['zig', 'node'], 'c-wasm-fast': ['zig', 'node'], 'rust-wasm': ['rust', 'node'], 'go-wasm': ['go', 'node'], 'zig-wasm': ['zig', 'node'],
-  wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['tinygo', 'node'],
-  tslang: ['tslang', 'clang'], tov: ['tov', 'clang'],
-}
-
 const allCases = discoverCases()
 const caseById = Object.fromEntries(allCases.map(c => [c.id, c]))
 const targetIds = Object.keys(targets)
@@ -2340,6 +2327,8 @@ if (JSON_PATH) {
     // from usedTargets, i.e. only the cases/targets this run touched)
     // silently drop every other target's invocation string.
     const mergedInvocations = { ...PREV.meta?.invocations, ...jsonOut.meta.invocations }
+    // A partial refresh must not relabel untouched artifacts with whichever
+    // compiler versions happen to be installed today.
     const versionKeys = new Set([...usedTargets].flatMap(id => TARGET_VERSIONS[id] || [id]))
     const versions = { ...PREV.meta?.versions, ...Object.fromEntries(
       Object.entries(jsonOut.meta.versions).filter(([key]) => versionKeys.has(key))) }

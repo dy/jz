@@ -300,7 +300,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript – the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset } from '../assets/headline.js'
+import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, TARGET_VERSIONS } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 // The view the URL names, else the newer of the reference and CI datasets by the date each
 // was measured (headline.js `newerDataset`, the rule the landing's figures read by): until a
@@ -496,10 +496,22 @@ const rowTip = (tid, parity, note) => {
     : parity === 'DIFF' ? '⚠ different result; not ranked'
     : '? unclassified result; not ranked'
   return [
-    [DESC[tid], status].filter(Boolean).join('\n'),
+    [DESC[tid], versionTip(tid), status].filter(Boolean).join('\n'),
     note || null,
   ].filter(Boolean).join('\n\n')
 }
+// The tools a lane was built and run by, at the versions the dataset recorded (meta.versions, keyed
+// per lane by TARGET_VERSIONS): 'Porffor alpha 25 (c9af40c, 2026-11-17)', 'JZ 1.0.3 · watr 5.13.5 ·
+// Node v24.22.2'. Empty where the dataset names none. A tool's name is its lane's label unless listed.
+const TOOL = { node: 'Node', asc: 'AssemblyScript', porffor: 'Porffor', 'quickjs-ng': 'QuickJS-NG', wasmtime: 'Wasmtime', jsc: 'JSC build' }
+const tidyVersion = (key, v) => String(v)
+  .replace(new RegExp(`^${key}\\S* `), '')                 // the tool's own name: 'perry 0.5.1665', 'rustc 1.100.0'
+  .replace(/^(?:\S+ ){0,2}?version /i, '')                 // 'go version go1.27.4', 'Ubuntu clang version 18.1.3'
+  .replace(new RegExp(`^${key}(?=\\d)`), '')               // the name once more, joined to its number: 'go1.27.4'
+  .replace(/\b([0-9a-f]{7})[0-9a-f]{33}\b/g, '$1')          // a full commit hash to its first seven
+  .replace(/\(([0-9a-f]{7,}) (\d{4}-\d\d-\d\d)\)/, '($1, $2)')
+const versionTip = tid => (TARGET_VERSIONS[tid] || [tid]).filter(k => DATA.meta.versions?.[k])
+  .map(k => `${TOOL[k] ?? TARGETS[k]?.label ?? k} ${tidyVersion(k, DATA.meta.versions[k])}`).join(' · ')
 const BREAK = 12      // linear bars; rows past this are cut, number printed
 // Every case runs in the page but the self-compile (NO_WEB, assets/headline.js), whose
 // wasm is the multi-megabyte compiler. A case with a module graph (WEB_BUNDLED) runs its
@@ -783,7 +795,7 @@ const failKind = reason => {
 const failRow = (tid, label, sub, cls, reason, href) => {
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   const why = reason || 'did not compile/run'
-  const tip = [why, href ? `→ ${label} issue tracker` : null].filter(Boolean).join('\n\n')
+  const tip = [why, versionTip(tid), href ? `→ ${label} issue tracker` : null].filter(Boolean).join('\n\n')
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
   const lab = href
     ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
@@ -856,7 +868,7 @@ const renderGeomean = () => {
       const sub = partial ? `${cov.ran} / ${cov.attempted} valid cases` : nCases(r.n)
       // Corpus tooltip: engine line, then — when it didn't cover the whole corpus — why (two lines,
       // terse). The geomean averages only the cases it ran correctly; the misses show as muted cards.
-      const tip = [DESC[r.tid], partial
+      const tip = [DESC[r.tid], versionTip(r.tid), partial
         ? `valid on ${cov.ran} of ${cov.attempted}; remaining cases failed, are missing, or returned an unaccepted checksum (see the cards)`
         : null].filter(Boolean).join('\n')
       // All three multipliers per row (vs JZ itself, so JZ = 1× in every column and
@@ -895,7 +907,7 @@ $('cards').addEventListener('click', lightRow)
 const contenders = () => Object.keys(TARGETS).filter(tid => !TARGETS[tid].strong && CASES.some(c => c.targets[tid]))
 const pickTip = tid => {
   const [io, how] = ABOUT[tid] || [], cov = coverage(tid)
-  return [io, how, `${cov.ran} / ${cov.attempted} cases valid`].filter(Boolean).join('\n')
+  return [io, how, versionTip(tid), `${cov.ran} / ${cov.attempted} cases valid`].filter(Boolean).join('\n')
 }
 const renderPicks = () => {
   const ids = contenders()

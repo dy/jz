@@ -13,6 +13,20 @@ export const WEB_BUNDLED = new Set(['watr', 'jessie', 'webaudio', 'polytri', 'wo
   'threescene', 'threeanim', 'threecull', 'threegeom'])
 export const NO_WEB = new Set(['jz'])
 
+// The tools a lane's rows were built and run by, as the dataset's `meta.versions` keys them;
+// a lane not listed is one tool of its own name. bench/bench.mjs keeps a partial refresh from
+// relabelling rows it did not measure; the bench page names each lane's versions.
+export const TARGET_VERSIONS = {
+  v8: ['node'], as: ['asc', 'node'], 'porf-native': ['porffor'], nat: ['clang'],
+  jz: ['jz', 'watr', 'node'], 'jz-base': ['node'], 'jz-wasmtime': ['jz', 'watr', 'wasmtime'],
+  'qjs-wasi': ['quickjs-ng', 'node'], 'componentize-qjs': ['componentize-qjs', 'wasmtime'],
+  'componentize-js': ['componentize-js', 'wasmtime'], js2wasm: ['js2wasm', 'node'],
+  'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'], 'jz-exact': ['jz', 'watr', 'node'],
+  'c-wasm': ['zig', 'node'], 'c-wasm-fast': ['zig', 'node'], 'rust-wasm': ['rust', 'node'], 'go-wasm': ['go', 'node'], 'zig-wasm': ['zig', 'node'],
+  wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['tinygo', 'node'],
+  tslang: ['tslang', 'clang'], tov: ['tov', 'clang'],
+}
+
 export const classifyBenchmarkChecksum = (checksum, reference, fma) =>
   (Array.isArray(fma) ? fma.some(value => value != null && checksum === value) : fma != null && checksum === fma) ? 'fma'
     : reference == null ? 'unclassified'
