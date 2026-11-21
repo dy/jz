@@ -177,16 +177,16 @@ pub fn main() !void {
     const comp: *[CAP]u8 = comp_buf[0..CAP];
     const dec: *[IMG_LEN]u8 = dec_buf[0..IMG_LEN];
 
-    var ir = [_]u8{0} ** 64;
-    var ig = [_]u8{0} ** 64;
-    var ib = [_]u8{0} ** 64;
-    var ia = [_]u8{0} ** 64;
+    var ir: [64]u8 = @splat(0);
+    var ig: [64]u8 = @splat(0);
+    var ib: [64]u8 = @splat(0);
+    var ia: [64]u8 = @splat(0);
 
     mkImage(img);
     var cs: u32 = 0;
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) cs = runKernel(img, &ir, &ig, &ib, &ia, comp, dec);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

@@ -266,7 +266,7 @@ test('goose bench: ported source only, release identity, cached build, parity an
     writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs'), args = process.argv.slice(2)
 const mode = fs.readFileSync(${JSON.stringify(mode)}, 'utf8')
-if (args[0] === 'version') { console.log('goose runtime ' + mode); process.exit(0) }
+if (args[0] === 'version') { console.log(mode === 'named' ? 'goose v2026.4 (runtime ok)' : 'goose runtime ' + mode); process.exit(0) }
 if (args[0] === 'toolchain') { console.log('C compiler:   cc-test 1.0, found on PATH\\nstyle:        cc'); process.exit(0) }
 if (args[0] !== 'build' || args[1] !== ${JSON.stringify(join(ROOT, 'bench/mandelbrot/mandelbrot.goose'))}) process.exit(2)
 if (process.env.GOOSE_HOME !== ${JSON.stringify(join(build, 'goose-home'))}) process.exit(4)
@@ -310,6 +310,9 @@ fs.chmodSync(out, 0o755)
     copyFileSync(bin, loose)
     run(loose)
     is(read().meta.versions.goose, 'runtime ok, C compiler cc-test 1.0', 'outside its release directory the tag is not guessed')
+    writeFileSync(mode, 'named')
+    run()
+    is(read().meta.versions.goose, 'goose v2026.4 (runtime ok), C compiler cc-test 1.0', 'a version that names its release is taken as it reads')
     ok(run(join(dir, 'missing')).includes('[skip] goose'), 'missing compiler skips')
   } finally {
     rmSync(dir, { recursive: true, force: true })

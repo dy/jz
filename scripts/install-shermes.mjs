@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import { join, resolve } from 'node:path'
 
-const rev = 'c37388faf49933400d2ddf0f0d8913bc3d1ba32f'
+const rev = '310f6090bcddc297d8cc6510ad8670d2fe954aec'
 if (!process.argv[2]) throw new Error('usage: node scripts/install-shermes.mjs <directory>')
 const root = resolve(process.argv[2]), src = join(root, 'src'), build = join(root, 'build')
 mkdirSync(src, { recursive: true })

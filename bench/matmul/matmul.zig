@@ -69,7 +69,7 @@ pub fn main() !void {
     defer allocator.free(c);
     init(a, bt);
 
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) matmul(a, bt, c);
     i = 0;

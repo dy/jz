@@ -60,14 +60,14 @@ fn runKernel(buf: *[N]u8, table: *const [256]u32) u32 {
 
 pub fn main() !void {
 
-    var buf = [_]u8{0} ** N;
-    var table = [_]u32{0} ** 256;
+    var buf: [N]u8 = @splat(0);
+    var table: [256]u32 = @splat(0);
     buildTable(&table);
     initBuf(&buf);
     var cs: u32 = 0;
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) cs = runKernel(&buf, &table);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

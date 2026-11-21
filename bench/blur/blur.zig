@@ -112,7 +112,7 @@ pub fn main() !void {
     defer allocator.free(tmp);
     const out = try allocator.alloc(u8, N);
     defer allocator.free(out);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
 
     mkImage(img);
     var i: usize = 0;

@@ -80,12 +80,12 @@ fn runKernel(a: *[N]f64, src: *const [N]f64) void {
 
 pub fn main() !void {
 
-    var src = [_]f64{0} ** N;
-    var a = [_]f64{0} ** N;
+    var src: [N]f64 = @splat(0);
+    var a: [N]f64 = @splat(0);
     fill(&src);
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) runKernel(&a, &src);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

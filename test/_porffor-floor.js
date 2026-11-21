@@ -1,11 +1,11 @@
 import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
 
-// The Porffor the bench's `porf-native` lane measures: release alpha 23, the
+// The Porffor the bench's `porf-native` lane measures: release alpha 25, the
 // binary porffor.dev/install.sh installs (.github/workflows/bench.yml pins the
 // same release). Its version text names the commit by its first seven
 // characters; the evidence's `meta.versions.porffor` must carry them.
-export const PORFFOR_REV = 'a97a0ae8e296009aee482dff11b150528098a9b7'
-export const PORFFOR_RELEASE = 'alpha 23'
+export const PORFFOR_REV = 'c9af40c8c6913e04d491412ae9fe0f34b97b51df'
+export const PORFFOR_RELEASE = 'alpha 25'
 export const porfforEvidenceMatches = version => !!version && version.includes(PORFFOR_REV.slice(0, 7))
 
 const positive = value => value > 0 && Number.isFinite(value)

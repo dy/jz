@@ -72,7 +72,7 @@ pub fn main() !void {
     defer allocator.free(ps);
     defer allocator.free(px);
     defer allocator.free(py);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
 
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) {

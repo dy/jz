@@ -103,11 +103,11 @@ fn runKernel(src: *[N]u8, enc: *const [64]u8, dec: *const [256]u8, b64: *[ENC_LE
 
 pub fn main() !void {
 
-    var src = [_]u8{0} ** N;
-    var enc_tab = [_]u8{0} ** 64;
-    var dec_tab = [_]u8{0} ** 256;
-    var b64 = [_]u8{0} ** ENC_LEN;
-    var back = [_]u8{0} ** N;
+    var src: [N]u8 = @splat(0);
+    var enc_tab: [64]u8 = @splat(0);
+    var dec_tab: [256]u8 = @splat(0);
+    var b64: [ENC_LEN]u8 = @splat(0);
+    var back: [N]u8 = @splat(0);
 
     buildEnc(&enc_tab);
     buildDec(&enc_tab, &dec_tab);
@@ -117,7 +117,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) cs = runKernel(&src, &enc_tab, &dec_tab, &b64, &back);
 
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

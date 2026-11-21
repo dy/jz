@@ -36,7 +36,7 @@ fn step() void {
     i = 0; while (i < N) : (i += 1) { px[i]+=vx[i]*DT; py[i]+=vy[i]*DT; pz[i]+=vz[i]*DT; }
 }
 pub fn main() !void {
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     var i: usize = 0; while (i < N_WARMUP) : (i += 1) { seed(); var s: usize = 0; while (s < STEPS) : (s += 1) step(); }
     i = 0; while (i < N_RUNS) : (i += 1) { seed(); const t0 = bench.nowMs(); var s: usize = 0; while (s < STEPS) : (s += 1) step(); samples[i] = bench.nowMs() - t0; }
     bench.printResult(medianUs(&samples), checksumF64(&px) ^ checksumF64(&vx), N*N*STEPS, STEPS, N_RUNS);

@@ -57,7 +57,7 @@ pub fn main() !void {
     defer allocator.free(src);
     defer allocator.free(dst);
     defer allocator.free(out);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
 
     mkImage(src, 0x1234abcd);
     mkImage(dst, 0x7e1f93b5);

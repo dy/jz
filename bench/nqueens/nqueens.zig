@@ -84,7 +84,7 @@ fn runKernel(sizes: []const i32) u32 {
 
 pub fn main() !void {
 
-    var sizes_arr = [_]i32{0} ** NQ;
+    var sizes_arr: [NQ]i32 = @splat(0);
     const sizes: []i32 = &sizes_arr;
     fillSizes(sizes);
 
@@ -98,7 +98,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) cs = runKernel(sizes);
 
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

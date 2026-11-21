@@ -55,7 +55,7 @@ jobs:
           echo "$HOME/.jsvu/bin" >> "$GITHUB_PATH"
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
       # the bench workflow's rustc (bench.yml pins the same release)
       - run: rustup toolchain install 1.100.0 --profile minimal --target wasm32-wasip1 && rustup default 1.100.0 && rustc --version
       - run: npm install --ignore-scripts --no-save assemblyscript@~0.28.0 binaryen

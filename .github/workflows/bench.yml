@@ -193,9 +193,9 @@ jobs:
           echo "SIMDE_DIR=$RUNNER_TEMP/simde" >> "$GITHUB_ENV"
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
       # Pinned: shards installing minutes apart must run one wasmtime.
-      - name: install wasmtime 50.0.1
+      - name: install wasmtime 51.0.0
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v50.0.1 || test -z "$BENCH_STRICT"
+          curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v51.0.0 || test -z "$BENCH_STRICT"
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
       # Pin zig: the runner's preinstalled zig (0.13) fails every bench zig/
       # zig-wasm build (API churn) — 0/43 rows made those rivals silently
@@ -204,18 +204,18 @@ jobs:
       - name: pin zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
       # TinyGo (the lean go→wasm rival — a separate row from go-wasm's stock
       # toolchain). Match PLAN's pinned release and smoke-build wasip1 so a
       # Go-version mismatch fails here instead of removing a required rival.
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27'
           cache: false
       - name: install tinygo
         run: |
-          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.42.0/tinygo_0.42.0_amd64.deb
-          echo '2082c4762fea6d5cc4cd1f4a243eaacf07b12f576717d4c6b74828bd163cb563  /tmp/tinygo.deb' | sha256sum -c -
+          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.44.0/tinygo_0.44.0_amd64.deb
+          echo '8810b20d88236a1353e35641a6a56df1720a7db97006aacc2c6656a3bb090b74  /tmp/tinygo.deb' | sha256sum -c -
           sudo dpkg -i /tmp/tinygo.deb
           tinygo version
           printf 'package main\nfunc main() {}\n' > /tmp/tg.go
@@ -235,17 +235,17 @@ jobs:
       # second --no-save install would prune this one's packages. jco builds the
       # ComponentizeJS lane, componentize-qjs its QuickJS twin; js2wasm is
       # @loopdive/js2 (its wasm-opt pass takes binaryen ^132).
-      - run: npm install --ignore-scripts --no-save assemblyscript@${{ needs.plan.outputs.asc || '~0.28.0' }} binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
+      - run: npm install --ignore-scripts --no-save assemblyscript@${{ needs.plan.outputs.asc || '~0.28.0' }} binaryen @bytecodealliance/jco@1.42.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.6.0 @loopdive/js2@0.71.0
       # Porffor's npm 0.61.x is the frozen pre-rewrite engine (npm's
       # 0.0.0-alpha.N are these releases, by the commit each names). The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
-      # release, alpha 23 (a97a0ae, 2026-11-10), by its tag so the comparison is
+      # release, alpha 25 (c9af40c, 2026-11-17), by its tag so the comparison is
       # reproducible; a failed rival install is fatal rather than silently
       # weakening coverage.
-      - name: porffor alpha 23 (release, pinned)
+      - name: porffor alpha 25 (release, pinned)
         env:
-          PORFFOR_RELEASE: alpha-23
-          PORFFOR_REV: a97a0ae8e296009aee482dff11b150528098a9b7
+          PORFFOR_RELEASE: alpha-25
+          PORFFOR_REV: c9af40c8c6913e04d491412ae9fe0f34b97b51df
         run: |
           curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
           test -x "$HOME/.local/bin/porf"
@@ -253,23 +253,23 @@ jobs:
           echo "PORF_BIN=$HOME/.local/bin/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: install Perry 0.5.1520
+      - name: install Perry 0.5.1665
         run: |
-          npm install --global @perryts/perry@0.5.1520
+          npm install --global @perryts/perry@0.5.1665
           echo "PERRY_BIN=$(command -v perry)" >> "$GITHUB_ENV"
           echo "PERRY_NO_UPDATE_CHECK=1" >> "$GITHUB_ENV"
           echo "PERRY_UPDATE_MODE=off" >> "$GITHUB_ENV"
           perry --version
-      - name: install scriptc 0.4.6
+      - name: install scriptc 0.4.14
         run: |
-          npm install --global scriptc@0.4.6
+          npm install --global scriptc@0.4.14
           echo "SCRIPTC_BIN=$(command -v scriptc)" >> "$GITHUB_ENV"
           scriptc --version
-      - name: install TypeScriptCompiler pre-alpha113
+      - name: install TypeScriptCompiler pre-alpha133
         run: |
           sudo apt-get install -y clang libcurl4-openssl-dev
-          curl -fsSL -o "$RUNNER_TEMP/tslang.tar.gz" https://github.com/ASDAlexander77/TypeScriptCompiler/releases/download/v0.0-pre-alpha113/tslang-v0.0-pre-alpha113-ubuntu-24.04-x64.tar.gz
-          echo "ddabe81b8bc0b1edaf81bd06742433ac7df7055d59d53ede9e50f59807f3633b  $RUNNER_TEMP/tslang.tar.gz" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/tslang.tar.gz" https://github.com/ASDAlexander77/TypeScriptCompiler/releases/download/v0.0-pre-alpha133/tslang-v0.0-pre-alpha133-ubuntu-24.04-x64.tar.gz
+          echo "7b4dde4a44486b2abab815c6b0047cb2dc584667aea932a705e2bf85b3c0597a  $RUNNER_TEMP/tslang.tar.gz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/tslang"
           tar xzf "$RUNNER_TEMP/tslang.tar.gz" -C "$RUNNER_TEMP/tslang"
           for var in GC_LIB_PATH TSLANG_LIB_PATH DEFAULT_LIB_PATH; do
@@ -278,22 +278,22 @@ jobs:
           echo "TSLANG_BIN=$RUNNER_TEMP/tslang/tslang" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/tslang/tslang" --version
       # QuickJS-NG's WASI build, the engine module the qjs-wasi lane runs under node.
-      - name: install QuickJS-NG v0.17.0 (qjs-wasi.wasm)
+      - name: install QuickJS-NG v0.18.0 (qjs-wasi.wasm)
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/qjs-wasi.wasm" https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-wasi.wasm
-          echo "42a732a676ec2d93488c19411e0fad283bf72658fdad746f089914b523c783b1  $RUNNER_TEMP/qjs-wasi.wasm" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/qjs-wasi.wasm" https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-wasi.wasm
+          echo "2c218412cb8b17e46ee91bea7556ec38f5b9b6bd6312fddd3ceeed14aa71eaaa  $RUNNER_TEMP/qjs-wasi.wasm" | sha256sum -c -
           echo "QJS_WASI=$RUNNER_TEMP/qjs-wasi.wasm" >> "$GITHUB_ENV"
       # MoonBit, a wasm rival of the chart (bench/bench.svg). Measurement jobs only:
       # the gate's test/bench.js does not time it. The release tarball is checked
       # by its published SHA-256; the core library is pinned by the same version.
-      - name: install MoonBit 0.10.19
+      - name: install MoonBit 0.10.22
         if: matrix.kind == 'shard'
         env:
-          MOONBIT: 0.10.19+97801ee1b
+          MOONBIT: 0.10.22+124d61d05
         run: |
           v="${MOONBIT//+/%2B}" moon="$HOME/.moon"
           curl -fsSL -o "$RUNNER_TEMP/moonbit.tar.gz" "https://cli.moonbitlang.com/binaries/$v/moonbit-linux-x86_64.tar.gz"
-          echo "b0feaf5b4a8d9f85b177e6cd7eee22aafc426dd72e84c021b75c8fff703da17f  $RUNNER_TEMP/moonbit.tar.gz" | sha256sum -c -
+          echo "aeb78ded1d5e25185ed788328cacef5e843a9ab923145523b7652e8d082f74fb  $RUNNER_TEMP/moonbit.tar.gz" | sha256sum -c -
           curl -fsSL -o "$RUNNER_TEMP/moonbit-core.tar.gz" "https://cli.moonbitlang.com/cores/core-$v.tar.gz"
           mkdir -p "$moon/lib"
           tar xzf "$RUNNER_TEMP/moonbit.tar.gz" -C "$moon"
@@ -304,16 +304,16 @@ jobs:
           "$moon/bin/moonc" -v | grep -q "v${MOONBIT}"
       # Goose, a native contender run on hand ports (bench/<case>/<case>.goose).
       # Measurement jobs only, like MoonBit. The release archive is checked by its
-      # published SHA-256; bench.mjs records its tag from the directory it unpacks
-      # to. `goose build` compiles the C it emits with the first C compiler it
-      # finds (`goose toolchain` prints which) at -O2; the smoke proves that path.
-      - name: install Goose v2026.3
+      # published SHA-256; `goose version` names its tag. `goose build` compiles the
+      # C it emits with the first C compiler it finds (`goose toolchain` prints
+      # which) at -O2; the smoke proves that path.
+      - name: install Goose v2026.4
         if: matrix.kind == 'shard'
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/goose.tar.gz" https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz
-          echo "06ac30284338269d3996d457412bf4f2b47c1f9a5601de65b6317187fe78d5c9  $RUNNER_TEMP/goose.tar.gz" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/goose.tar.gz" https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz
+          echo "559ad7572df89fcd1273512d8679528bcdf876c252ec1f31608d3808b24125b3  $RUNNER_TEMP/goose.tar.gz" | sha256sum -c -
           tar xzf "$RUNNER_TEMP/goose.tar.gz" -C "$RUNNER_TEMP"
-          goose="$RUNNER_TEMP/goose-v2026.3-linux-x64/goose"
+          goose="$RUNNER_TEMP/goose-v2026.4-linux-x64/goose"
           echo "GOOSE_BIN=$goose" >> "$GITHUB_ENV"
           "$goose" version
           "$goose" toolchain

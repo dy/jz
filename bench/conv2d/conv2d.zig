@@ -121,7 +121,7 @@ pub fn main() !void {
     var cs: u32 = 0;
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) cs = runKernel(inp, wt, bias, out);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

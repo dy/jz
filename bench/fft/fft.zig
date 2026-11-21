@@ -119,7 +119,7 @@ pub fn main() !void {
     defer allocator.free(wre);
     const wim = try allocator.alloc(f64, N >> 1);
     defer allocator.free(wim);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
 
     mkSignal(sig);
     buildTwiddles(wre, wim, N);

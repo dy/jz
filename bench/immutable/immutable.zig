@@ -90,7 +90,7 @@ pub fn main() !void {
         cs = runKernel();
     }
 
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         initParticles();

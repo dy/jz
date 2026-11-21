@@ -92,7 +92,7 @@ pub fn main() !void {
     const allocator = std.heap.page_allocator;
     const out = try allocator.alloc(f64, N);
     defer allocator.free(out);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
 
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) render(out);

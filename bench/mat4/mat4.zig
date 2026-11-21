@@ -62,10 +62,10 @@ fn multiplyMany(a: *[16]f64, b: *[16]f64, out: *[16]f64, iters: usize) void {
 
 pub fn main() !void {
 
-    var a = [_]f64{0} ** 16;
-    var b = [_]f64{0} ** 16;
-    var out = [_]f64{0} ** 16;
-    var samples = [_]f64{0} ** N_RUNS;
+    var a: [16]f64 = @splat(0);
+    var b: [16]f64 = @splat(0);
+    var out: [16]f64 = @splat(0);
+    var samples: [N_RUNS]f64 = @splat(0);
     init(&a, &b);
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) multiplyMany(&a, &b, &out, N_ITERS);

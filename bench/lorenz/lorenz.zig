@@ -28,7 +28,7 @@ fn integrate() void {
   }
 }
 pub fn main() !void {
-  var samples=[_]f64{0}**N_RUNS;
+  var samples: [N_RUNS]f64=@splat(0);
   var i: usize=0; while(i<N_WARMUP):(i+=1)integrate();
   i=0; while(i<N_RUNS):(i+=1){const t0=bench.nowMs();integrate();samples[i]=bench.nowMs()-t0;}
   bench.printResult(medianUs(&samples),checksumF64(&xs),N_SAMPLES*SUBSTEPS,SUBSTEPS,N_RUNS);

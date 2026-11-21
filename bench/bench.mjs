@@ -79,7 +79,7 @@ const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 // scriptc (vercel-labs): TS/JS → native AOT (TypeScript-checker typing + LLVM,
-// no embedded engine). npm: `npm i -g scriptc@0.4.6`.
+// no embedded engine). npm: `npm i -g scriptc@0.4.14`.
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
 // JS engines shipped inside wasm, fenced references beside Javy: QuickJS-NG's
 // WASI build (the release's qjs-wasi.wasm, a file), and the component builders
@@ -111,7 +111,7 @@ const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
 // Porffor: the release binary its installer puts under ~/.local/bin
 // (`curl -fsSL https://porffor.dev/install.sh | sh`, the install the author
-// asks for; CI pins alpha 23, test/_porffor-floor.js), else a git checkout of the
+// asks for; CI pins alpha 25, test/_porffor-floor.js), else a git checkout of the
 // same line, else PATH; npm's 0.61.x is the frozen pre-rewrite engine. Same
 // committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
 const PORF_RELEASE = join(process.env.PORFFOR_INSTALL || join(homedir(), '.local/bin'), 'porf')
@@ -359,15 +359,18 @@ const tovIdentity = () => {
     return `${version} [git ${head}]`
   } catch { return version }
 }
-// Goose identity: `goose version` names only its runtime's hash, so the release
-// tag comes from the directory the archive unpacks to, and the C compiler is the
-// one `goose toolchain` reports, which compiles every build.
+// Goose identity: `goose version` names the release and its runtime's hash from
+// v2026.4 (`goose v2026.4 (runtime <hash>)`); before, only the hash (`goose runtime
+// <hash>`), so the release tag comes from the directory the archive unpacks to. The
+// C compiler is the one `goose toolchain` reports, which compiles every build.
 let _gooseIdentity
 const gooseIdentity = () => _gooseIdentity ??= (() => {
   const out = args => spawnSync(GOOSE_BIN, args, { encoding: 'utf8', env: gooseEnv }).stdout || ''
-  const runtime = out(['version']).trim().split('\n')[0].replace(/^goose /, '')
-  if (!runtime) return null
+  const version = out(['version']).trim().split('\n')[0]
+  if (!version) return null
   const cc = out(['toolchain']).match(/C compiler:\s*([^,\n]+)/)?.[1].trim()
+  if (/^goose v/.test(version)) return [version, cc && `C compiler ${cc}`].filter(Boolean).join(', ')
+  const runtime = version.replace(/^goose /, '')
   let release = null
   try { release = basename(dirname(whichPath(GOOSE_BIN))).match(/^goose-(v[^-]+)-/)?.[1] ?? null } catch {}
   return [release && `goose ${release}`, runtime, cc && `C compiler ${cc}`].filter(Boolean).join(', ')

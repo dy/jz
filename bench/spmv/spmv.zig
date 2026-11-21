@@ -138,7 +138,7 @@ pub fn main() !void {
         runKernel(rowPtr, colIdx, values, x, y);
     }
 
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     var i: usize = 0;
     while (i < N_RUNS) : (i += 1) {
         build(rowPtr, colIdx, values, x);

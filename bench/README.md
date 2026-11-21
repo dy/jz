@@ -621,7 +621,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `bun` | raw JavaScript on Bun/JavaScriptCore |
 | `jsc` | raw JavaScript on the standalone JavaScriptCore shell — Safari's engine (`jsc`; install via `jsvu --engines=javascriptcore`, or set `JSC_BIN`) |
 | `spidermonkey` | raw JavaScript on SpiderMonkey shell (`spidermonkey`, `sm`, `js128`, `js115`, `js102`, or `js`) |
-| `shermes` | Static Hermes `static_h` `c37388f`: JS compiled through C to a native executable linked with the Hermes VM and GC (`shermes -O <case>-flat.js`). The VM is a shared library, which the size column adds. Hermes has no `performance`, so the shim falls back to `Date.now` (millisecond steps, as Javy). Set `SHERMES_BIN` to override. |
+| `shermes` | Static Hermes `static_h` `310f609`: JS compiled through C to a native executable linked with the Hermes VM and GC (`shermes -O <case>-flat.js`). The VM is a shared library, which the size column adds. Hermes has no `performance`, so the shim falls back to `Date.now` (millisecond steps, as Javy). Set `SHERMES_BIN` to override. |
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | JZ output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
@@ -633,14 +633,14 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only; unsupported SIMD and multi-value cases record build failures. Set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, <!-- fig:porffor-release -->alpha 19 (`0c135ce`, 2026-10-21)<!-- /fig -->; a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
-| `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) 0.4.6: JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime, no embedded engine. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations are added, so untyped values compile to its dynamic tier (native code that checks types at run time). Set `SCRIPTC_BIN` to override. |
-| `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha113: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
+| `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) 0.4.14: JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime, no embedded engine. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations are added, so untyped values compile to its dynamic tier (native code that checks types at run time). Set `SCRIPTC_BIN` to override. |
+| `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha133: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
 | `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
-| `qjs-wasi` | [QuickJS-NG](https://github.com/quickjs-ng/quickjs) 0.17.0's WASI build (the release's `qjs-wasi.wasm`), run under node's WASI with the case's directory preopened: the interpreter reads `<case>-flat.js` at run time. The size column is the engine module. Set `QJS_WASI` to the `.wasm`. Fenced like Javy |
-| `componentize-qjs` | [componentize-qjs](https://github.com/andreiltd/componentize-qjs) 0.5.0: QuickJS embedded in a WebAssembly component, initialized by Wizer at build time, run by `wasmtime run`. The flat script stores its entry instead of calling it (Wizer would run the benchmark at build time) and exports it as `wasi:cli/run` (`_lib/bench.wit`); this QuickJS has no `console` or `performance`, so `_lib/qjs-host.js` binds them to WASI stdout and the monotonic clock. `--sync` embeds the runtime without component-model async. Fenced like Javy |
-| `componentize-js` | [ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS) 0.23.0 through `jco componentize` (jco 1.40.0): StarlingMonkey (SpiderMonkey) embedded in a component, the same deferred entry and world, its own console and clocks; `--disable http fetch-event` drops the `wasi:http` imports a command never uses. Default build: `--aot` (weval) ran mandelbrot slower here, 735 ms against 351 ms. Fenced like Javy |
+| `qjs-wasi` | [QuickJS-NG](https://github.com/quickjs-ng/quickjs) 0.18.0's WASI build (the release's `qjs-wasi.wasm`), run under node's WASI with the case's directory preopened: the interpreter reads `<case>-flat.js` at run time. The size column is the engine module. Set `QJS_WASI` to the `.wasm`. Fenced like Javy |
+| `componentize-qjs` | [componentize-qjs](https://github.com/andreiltd/componentize-qjs) 0.6.0: QuickJS embedded in a WebAssembly component, initialized by Wizer at build time, run by `wasmtime run`. The flat script stores its entry instead of calling it (Wizer would run the benchmark at build time) and exports it as `wasi:cli/run` (`_lib/bench.wit`); this QuickJS has no `console` or `performance`, so `_lib/qjs-host.js` binds them to WASI stdout and the monotonic clock. `--sync` embeds the runtime without component-model async. Fenced like Javy |
+| `componentize-js` | [ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS) 0.23.0 through `jco componentize` (jco 1.42.0): StarlingMonkey (SpiderMonkey) embedded in a component, the same deferred entry and world, its own console and clocks; `--disable http fetch-event` drops the `wasi:http` imports a command never uses. Default build: `--aot` (weval) ran mandelbrot slower here, 735 ms against 351 ms. Fenced like Javy |
 | `js2wasm` | [js2wasm](https://github.com/loopdive/js2) 0.71.0 (`@loopdive/js2`): JS compiled ahead of time to WasmGC, no engine inside. `js2wasm <case>-flat.js --target node` (wasm-opt where binaryen ^132 is installed), run in node through its generated imports helper, which supplies `console` and `performance`. Set `JS2WASM_BIN` to override |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run in node's V8 with the imports moonrun gives it (WASI's `fd_write` and MoonBit's monotonic clock, `_lib/run-moonbit.mjs`) — a wasm-first-language rival, when `moon` is installed |
@@ -658,12 +658,14 @@ overflow, so JS's 32-bit arithmetic (FNV mix, XorShift32, `Math.imul`) runs on
 u32 values in 64-bit `int`, masked. Tov has no f64 bit cast, so the f64 checksum
 reads each low word by exact power-of-two scaling.
 
-Install Goose from its [v2026.3 release](https://github.com/aardappel/goose/releases/tag/v2026.3)
+Install Goose from its [v2026.4 release](https://github.com/aardappel/goose/releases/tag/v2026.4)
 (CI checks the Linux archive's SHA-256) and put `goose` on PATH or set
-`GOOSE_BIN`; `goose build` needs a C compiler. `goose version` names only its
-runtime's hash, so the run records the release tag from the directory the
-archive unpacks to and the C compiler `goose toolchain` reports: `goose
-v2026.3, runtime 4d3da949e563, C compiler clang 21.0.0` on an Apple M4 Max. The
+`GOOSE_BIN`; `goose build` needs a C compiler. The run records what `goose
+version` prints, the release and its runtime's hash from v2026.4 on, and the C
+compiler `goose toolchain` reports. Before v2026.4 `goose version` named only
+the runtime's hash, so the release tag came from the directory the archive
+unpacks to: `goose v2026.3, runtime 4d3da949e563, C compiler clang 21.0.0` on
+an Apple M4 Max. The
 harness keeps Goose's intermediates in the bench build directory (`GOOSE_HOME`)
 and adds no flags. Goose's emitted C turns floating-point contraction off
 itself (`#pragma clang fp contract(off)` and the GCC equivalent), so its float
@@ -831,7 +833,7 @@ is a native contender like Goose: it
 enters no claim, and the chart leaves it out as it leaves out the other native
 ports, while the bench page shows it per case and in the corpus.
 
-Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1520`,
+Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1665`,
 then run `node bench/bench.mjs --targets=perry`. CI uses the same package.
 The native lane uses the package's prebuilt runtime libraries; a source checkout
 can produce smaller feature-pruned runtime builds. Compile attempts have a
@@ -841,7 +843,7 @@ calls Perry again (its own object cache remains enabled), while paired rounds
 reuse the binary. Perry's browser/WASM backend is a separate target and is not
 measured by this native lane.
 
-Install the pinned scriptc release with `npm install -g scriptc@0.4.6` (Node 24+;
+Install the pinned scriptc release with `npm install -g scriptc@0.4.14` (Node 24+;
 prebuilt for macOS arm64 and Linux x64), then run
 `node bench/bench.mjs --targets=scriptc`. CI uses the same package. Source main
 `a37abcc` (2026-10-30), built the way the previous installer built `6d1907a`,
@@ -857,9 +859,9 @@ build. shermes runs the C compiler CMake found when it was built, which on
 macOS needs the SDK the harness passes as `SDKROOT`.
 
 The engine-in-wasm lanes: download QuickJS-NG's
-[`qjs-wasi.wasm`](https://github.com/quickjs-ng/quickjs/releases/tag/v0.17.0)
-and set `QJS_WASI` to it; `npm install @bytecodealliance/jco@1.40.0
-@bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0` supplies `jco`
+[`qjs-wasi.wasm`](https://github.com/quickjs-ng/quickjs/releases/tag/v0.18.0)
+and set `QJS_WASI` to it; `npm install @bytecodealliance/jco@1.42.0
+@bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.6.0` supplies `jco`
 and `componentize-qjs`, whose components run on `wasmtime` (`WASMTIME_BIN`; the
 lanes need a current release: wasmtime 25 ran QuickJS's mandelbrot 5–8× slower
 than 50 does). js2wasm is `npm install @loopdive/js2@0.71.0 binaryen`.
@@ -879,7 +881,7 @@ CI installs all of them. Not wired:
   cannot read `--wit`; `jco componentize` drives the same package.
 
 For TypeScriptCompiler, extract the
-[pre-alpha113 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha113),
+[pre-alpha133 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha133),
 set `TSLANG_BIN` to its `tslang` executable, and set `GC_LIB_PATH`,
 `TSLANG_LIB_PATH`, and `DEFAULT_LIB_PATH` to the extracted directory.
 Install `clang` and `libcurl4-openssl-dev`, then run

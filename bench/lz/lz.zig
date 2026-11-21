@@ -132,14 +132,14 @@ fn runKernel(src: *[N]u8, comp: *[CAP]u8, dec: *[N]u8) u32 {
 
 pub fn main() !void {
 
-    var src = [_]u8{0} ** N;
-    var comp = [_]u8{0} ** CAP;
-    var dec = [_]u8{0} ** N;
+    var src: [N]u8 = @splat(0);
+    var comp: [CAP]u8 = @splat(0);
+    var dec: [N]u8 = @splat(0);
     initBuf(&src);
     var cs: u32 = 0;
     var i: usize = 0;
     while (i < N_WARMUP) : (i += 1) cs = runKernel(&src, &comp, &dec);
-    var samples = [_]f64{0} ** N_RUNS;
+    var samples: [N_RUNS]f64 = @splat(0);
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = bench.nowMs();

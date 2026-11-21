@@ -101,12 +101,12 @@ jobs:
           npx --yes jsvu --os=linux64 "javascriptcore@$JSC"
           "$HOME/.jsvu/bin/jsc-$JSC" -e 'print("jsc ready")' | grep -q 'jsc ready'
           echo "JSC_BIN=$HOME/.jsvu/bin/jsc-$JSC" >> "$GITHUB_ENV"
-      # The release bench.yml measures (alpha 23, a97a0ae).
-      - name: porffor alpha 23 (release, pinned)
+      # The release bench.yml measures (alpha 25, c9af40c).
+      - name: porffor alpha 25 (release, pinned)
         if: inputs.mode == 'contact'
         env:
-          PORFFOR_RELEASE: alpha-23
-          PORFFOR_REV: a97a0ae8e296009aee482dff11b150528098a9b7
+          PORFFOR_RELEASE: alpha-25
+          PORFFOR_REV: c9af40c8c6913e04d491412ae9fe0f34b97b51df
         run: |
           curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
           test -x "$HOME/.local/bin/porf"
