@@ -1,7 +1,8 @@
 // A run of straight-line statements reading or storing elements of one array at
 // indexes held in bindings is written under one guard that every index is an integer
 // inside the array's length (src/compile/plan/element-runs.js): the arm reads and
-// stores in place, the statements as written run where the guard fails. Every program
+// stores in place, the statements as written run where the guard fails. A run stores:
+// reads alone pay their own tests, which cost what a guard's do. Every program
 // here answers what the host answers over indexes inside the length, at it, past it,
 // negative, fractional, NaN, -0 and past 2^32, an array with holes, and the same array
 // under two names; the runs the pass must leave are marked by the guards it made.
@@ -39,8 +40,6 @@ const kept = {
     const late = (v, i, j) => { const o = new Late(); if (i !== 3) o.fill(v); try { o.swap(i, j) } catch (e) { v[0] = -5 } }`, `late(a, X[p] * 1, Y[p] * 1); late(b, Y[p] * 1, X[p] * 1)`],
   'a sum stored back': [`const add = (a, i, j) => { a[i] = a[i] + a[j] }`, `add(a, X[p] * 1, Y[p] * 1); add(b, Y[p] * 1, X[p] * 1)`],
   'a rotation of three': [`const rot = (a, i, j, k) => { const t = a[i]; a[i] = a[j]; a[j] = a[k]; a[k] = t }`, `rot(a, X[p] * 1, Y[p] * 1, X[(p + 3) % X.length] * 1); rot(b, Y[p] * 1, X[p] * 1, 2)`],
-  'three reads': [`const sum3 = (a, o, i, j) => { o.s = a[i] + a[j] * 2 + a[i] * 4 }
-    const tally = { s: 0 }`, `sum3(a, tally, X[p] * 1, Y[p] * 1); a[0] = tally.s; sum3(b, tally, Y[p] * 1, X[p] * 1); b[0] = tally.s`],
   'a member stored between': [`const via = (a, o, i, j) => { o.s = a[i]; a[i] = a[j]; a[j] = o.s }
     const hold = { s: 0 }`, `via(a, hold, X[p] * 1, Y[p] * 1); via(b, hold, Y[p] * 1, X[p] * 1)`],
   'a store through another name of the same array': [`const move = (a, c, i, j) => { c[j] = a[i]; a[i] = c[i]; a[j] = 77 }`, `move(a, a, X[p] * 1, Y[p] * 1); move(b, a, Y[p] * 1, X[p] * 1); move(a, b, 2, 9)`],
@@ -60,34 +59,36 @@ const left = {
     const one = new Box(null), two = new Box(null)
     const f = (o, c, i, j) => { const t = o.v[i]; o.v = c; o.v[j] = t; o.v[i] = 3 }`, `one.v = a; f(one, b, X[p] * 1, Y[p] * 1); two.v = b; f(two, a, Y[p] * 1, X[p] * 1)`],
   'a name of the run read after it': [`const f = (a, i, j) => { const t = a[i]; a[i] = a[j]; a[j] = t; return t }`, `a[0] = side(f(a, X[p] * 1, Y[p] * 1)); b[0] = side(f(b, Y[p] * 1, X[p] * 1))`],
+  // (a BigInt names the element its digits do; a guard that asked `k | 0` of it would throw)
+  'a key that may be a BigInt': [`const K = [1n, 2, 0n, 3]
+    const f = (a, k, j) => { const t = a[k]; a[k] = a[j]; a[j] = t }`, `f(a, K[p % 4], Y[p] * 1); f(b, K[(p + 1) % 4], X[p] * 1)`],
   'a key that may be a string': [`const K = ['y', 1, 'x', 2]
     const f = (a, k, j) => { const t = a[k]; a[k] = a[j]; a[j] = t }`, `f(a, K[p % 4], Y[p] * 1); f(b, K[(p + 1) % 4], X[p] * 1); a[1] = side(a.x) + side(a.y) * 2; b[1] = side(b.x) + side(b.y) * 2`],
-  'two reads': [`const f = (a, o, i, j) => { o.s = a[i] + a[j] * 2 }
+  'reads alone': [`const f = (a, o, i, j) => { o.s = a[i] + a[j] * 2 + a[i] * 4 }
     const tally = { s: 0 }`, `f(a, tally, X[p] * 1, Y[p] * 1); a[0] = tally.s; f(b, tally, Y[p] * 1, X[p] * 1); b[0] = tally.s`],
   'a run past the size a guard copies': [`const f = (a, i, j) => { ${Array.from({ length: 30 }, (_, k) => `a[i] = (a[i] + a[j] * ${k + 1}) % 997`).join('; ')} }`, `f(a, X[p] * 1, Y[p] * 1); f(b, Y[p] * 1, X[p] * 1)`],
-  'three reads under a key that may be a string': [`const K = ['y', 1, 'x', 2]
-    const f = (a, o, k, j) => { o.s = side(a[k]) + side(a[j]) * 2 + side(a[k]) * 4 }
-    const g = (a, o, k, j) => { o.s = a[k] + a[j] * 2 + a[k] * 4 }
-    const tally = { s: 0 }`, `a.x = 5; f(a, tally, K[p % 4], Y[p] * 1); a[0] = tally.s; g(b, tally, K[(p + 1) % 4], X[p] * 1); b[0] = tally.s`],
   'a run a canonical loop holds inside the length': [`const f = (a, x) => { for (let i = 0; i < a.length; i++) { const t = a[i]; a[i] = t + x } }`, `f(a, X[p] * 1); f(b, Y[p] * 1)`],
-  'an array of a length that never changes': [`const FIXED = [1, 2, 3, 4, 5, 6]
-    const f = (o, i, j) => { o.s = FIXED[i] + FIXED[j] * 2 + FIXED[i] * 4 }
-    const tally = { s: 0 }`, `f(tally, X[p] * 1, Y[p] * 1); a[0] = tally.s; f(tally, Y[p] * 1, X[p] * 1); b[0] = tally.s`],
+  'an array of a length that never changes': [`const FIXED = [1, 2, 3, 4, 5, 6, 7, 8]
+    const f = (o, i, j) => { const m = i & 7, n = j & 7; const t = FIXED[m]; FIXED[m] = FIXED[n]; FIXED[n] = t; o.s = FIXED[0] + FIXED[7] * 3 }
+    const tally = { s: 0 }`, `f(tally, p, p * 3); a[0] = tally.s; f(tally, p + 2, 5); b[0] = tally.s`],
   'a typed array': [`const T = new Float64Array(6)
     const f = (a, i, j) => { const t = a[i]; a[i] = a[j]; a[j] = t }`, `T[1] = p; f(T, (X[p] * 1) & 7, (Y[p] * 1) & 7); a[0] = T[0] + T[2]; b[0] = T[1]`],
 }
 // (a path read ahead of the run throws where its object is missing, and so does the length of an array that is:
-// a first access under a condition must throw neither; `there` takes an object that is always there, its array not)
+// a first access under a condition throws neither, and the member stored after it is stored before the run's
+// store throws; `there` takes an object that is always there, its array not)
 const conditional = `class Box { constructor(v) { this.v = v } }
   const f = (o, c, i, j) => c ? side(o.v[i]) + side(o.v[j]) * 2 + side(o.v[i]) * 4 : 0
   const g = (o, c, i, j) => { let r = 0; r = c ? side(o.v[i]) + side(o.v[j]) * 2 + side(o.v[i]) * 4 : 0; return r }
-  const held = (o, q, c, i, j) => { q.s = c ? o.v[i] + o.v[j] * 2 + o.v[i] * 4 : 7 }
-  const there = (o, q, c, i, j) => { q.s = c ? o.v[i] + o.v[j] * 2 + o.v[i] * 4 : 7 }
+  const held = (o, q, c, i, j) => { const t = c ? o.v[i] : 7; q.s = t; o.v[j] = t; o.v[i] = 1 }
+  const there = (o, q, c, i, j) => { const t = c ? o.v[i] : 7; q.s = t; o.v[j] = t; o.v[i] = 1 }
   const tally = { s: 0 }, none = new Box(null), some = new Box([4, 5, 6]), boxes = [none, some, null]
   export const go = () => { let h = 0
     for (let p = 0; p < 6; p++) { const o = p % 3 === 0 ? null : new Box(p % 3 === 1 ? null : [1, 2, 3]); try { h = h * 7 + f(o, p > 3, p % 3, 1) + g(o, p > 3, 1, p % 3) } catch (e) { h = h * 7 + 1000 } }
-    for (let p = 0; p < 6; p++) { try { there(p % 2 === 0 ? none : some, tally, p > 2, p % 3, Y[p] * 1); h = (h * 7 + (tally.s !== tally.s ? 13 : tally.s)) | 0 } catch (e) { h = (h * 7 + 2000) | 0 } }
-    for (let p = 0; p < 6; p++) { try { held(boxes[p % 3], tally, p > 2, p % 3, Y[p] * 1); h = (h * 7 + (tally.s !== tally.s ? 13 : tally.s)) | 0 } catch (e) { h = (h * 7 + 3000) | 0 } }
+    // (the member is stored ahead of the store that throws: read after the throw, it says how far the run got)
+    const seen = () => { const s = tally.s; tally.s = -1; return s === undefined ? 11 : s !== s ? 13 : s }
+    for (let p = 0; p < 6; p++) { try { there(p % 2 === 0 ? none : some, tally, p > 2, p % 3, Y[p] * 1); h = (h * 7 + seen()) | 0 } catch (e) { h = (h * 7 + 2000 + seen()) | 0 } }
+    for (let p = 0; p < 6; p++) { try { held(boxes[p % 3], tally, p > 2, p % 3, Y[p] * 1); h = (h * 7 + seen()) | 0 } catch (e) { h = (h * 7 + 3000 + seen()) | 0 } }
     return h }`
 
 // (the guards the pass made, each function compiled as written: a call spliced in would be no call)
@@ -128,7 +129,7 @@ test('element runs: a run that may shrink, bind again or run code stays as writt
     for (const optimize of levels(0, 2, 3, 'size', 'speed')) is(run(src, { optimize }).go(), want, `${name} at ${optimize}`)
   }
   // (a run no guard pays for or holds: counted, where an earlier pass leaves the statements as they are)
-  if (!belowOpt(2)) for (const name of ['a typed array', 'a key that may be a string', 'a length stored', 'a name of the run read after it', 'two reads', 'a run past the size a guard copies', 'three reads under a key that may be a string',
+  if (!belowOpt(2)) for (const name of ['a typed array', 'a key that may be a string', 'a length stored', 'a name of the run read after it', 'reads alone', 'a run past the size a guard copies',
     'a run a canonical loop holds inside the length', 'an array of a length that never changes'])
     is(guards(HEAD + left[name][0] + '\n' + OVER(left[name][1])), 0, `${name}: no guard`)
   const want = oracle(HEAD + conditional).go()

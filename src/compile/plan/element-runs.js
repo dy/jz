@@ -29,7 +29,8 @@
  * holds present, read once for the arm; an index of -0 is 0 as a key.
  *
  * The run is the statements from the first access of the array to the last, where one
- * of them stores or there are three (the guard costs what two accesses' own tests do)
+ * of them stores (a read's own tests cost what the guard's do; a store's growth arm, its
+ * test of the heap after and the frame's protocol above it are what the guard spares)
  * and the names the run declares are read nowhere after it (each arm is a block). An
  * access a proof already holds inside the length is none of the run's: one a canonical
  * loop bounds, one at a versioned cursor, any of an array whose length never changes.
@@ -125,8 +126,8 @@ const runIn = (list, from, to, view, held) => {
         if (stored) stores++
       }
     }
-    // the guard costs what two accesses' own tests do: it pays where it spares a store its growth arm, or a third test
-    if (size > MAX_RUN_NODES || !stores && nodes.size < 3) continue
+    // (a read's own tests cost what the guard's do: the guard pays where it spares a store its growth arm)
+    if (size > MAX_RUN_NODES || !stores) continue
     const root = rootOf(recv), props = propsOf(recv), declared = new Set()
     for (let i = first; i <= last; i++) declaredBy(list[i], declared)
     const span = list.slice(first, last + 1)
