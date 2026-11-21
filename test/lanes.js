@@ -4,7 +4,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, onWasi } from './_matrix.js'
-import { jz, compile } from './util.js'
+import { jz, compile, oracle } from './util.js'
 
 const NO_INLINE = { optimize: { sourceInline: false } }   // keep the callee a call, so the ABI shows
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
@@ -75,6 +75,28 @@ test('lanes: a callee that writes a field, passes the record on, or is exported 
   for (const [name, src] of Object.entries(cases)) {
     ok(!/\$lanes/.test(wat(src)), `${name}: no lane sibling`)
     for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), 2, `${name} O${optimize}`)
+  }
+})
+
+// The fields are read at the call only of a record that is there: read of one that may
+// be missing, they threw where the callee read nothing (a read under a condition, an
+// optional one) or before what the callee did first.
+test('lanes: a record that may be missing is read where the callee reads it', () => {
+  const programs = {
+    'a read under a condition': `class Box { constructor(v) { this.v = v } }
+      const g = (o, c) => { let r = 0; r = c ? o.v + 1 : 0; return r }
+      export const f = (p) => { const o = p % 3 === 0 ? null : new Box(p); try { return g(o, p > 3) } catch (e) { return 1000 } }`,
+    'an optional read': `class Box { constructor(v) { this.v = v } }
+      const g = (o, c) => { const x = o?.v; return x === undefined ? -1 : x + c }
+      export const f = (p) => { const o = p % 3 === 0 ? null : new Box(p); try { return g(o, 1) } catch (e) { return 1000 } }`,
+    'a read after the callee\'s own answer': `class Box { constructor(v) { this.v = v } }
+      const g = (o, c) => { if (c < 2) return 7; return o.v * 2 }
+      export const f = (p) => { const o = p % 3 === 0 ? null : new Box(p); try { return g(o, p) } catch (e) { return 1000 } }`,
+  }
+  for (const [name, src] of Object.entries(programs)) {
+    const want = [0, 1, 2, 3, 4, 5, 6].map(oracle(src).f)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) is([0, 1, 2, 3, 4, 5, 6].map(jz(src, { optimize }).exports.f), want, `${name} at ${optimize}`)
+    for (const optimize of levels(2)) is([0, 1, 2, 3, 4, 5, 6].map(jz(src, { optimize: { level: optimize, sourceInline: false } }).exports.f), want, `${name}, the callee a call`)
   }
 })
 

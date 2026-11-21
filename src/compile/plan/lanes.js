@@ -109,10 +109,13 @@ function laneArgs(site, arg, keys, mayLoadFields) {
     return keys.map(k => lit.values[lit.names.indexOf(k)])
   }
   // A name of one object shape: the field reads move from the callee to the
-  // call. With every other argument effect-free, nothing observes the move.
+  // call. With every other argument effect-free, nothing observes the move
+  // where the name holds an object: one that may be missing throws at the call
+  // what the callee threw only where it read it (under a condition, or not at
+  // all through `p?.k`), so that site keeps the record.
   if (!isName(arg) || !mayLoadFields || !site.argList.every(a => a === arg || effectFree(a))) return null
   const view = ctx.summary?.at(site.callerFunc ?? '')
-  if (view?.objectSidOfExpr(arg) == null) return null
+  if (view?.objectSidOfExpr(arg) == null || view.mayBeNullishExpr(arg) !== false) return null
   return keys.map(k => ['.', arg, k])
 }
 
