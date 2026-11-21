@@ -491,6 +491,60 @@ test('narrowI32: f64 edges (NaN/±Inf/fraction) keep exact ToInt32 semantics', (
   }
 })
 
+// An element of a plain array whose numbers the summary bounds to words (module/array.js
+// numHullOf) is a leaf of the ring, as an integer typed array's element is: `s += v[i]` in a
+// loop's integer copy and `(s + v[i]) | 0` as written add words. With the sum's own truncation
+// between one trip and the next (a conversion each way, the addition, a rounding and its test)
+// such a loop ran at fifteen times Node's time.
+test('narrowI32: an integer element of a plain array adds as a word', () => {
+  // (the function's first loop, whole: the integer copy where the loop is versioned)
+  const loopOf = (src, optimize) => {
+    const body = funcWat(compile(src, { wat: true, optimize }), 'f'), at = body.indexOf('(loop')
+    let depth = 0, end = at
+    for (; end < body.length; end++) { if (body[end] === '(') depth++; else if (body[end] === ')' && --depth === 0) break }
+    return body.slice(at, end + 1)
+  }
+  const sum = (table, stmt) => `const v = ${table}\nexport let f = (n) => { let s = 0; for (let i = 0; i < n; i++) ${stmt}; return s }`
+  // (a count of flags: a sum the loop's integer copy holds as a word, plan/integral-loops.js)
+  const WORDS = '[3, -1, 4, 1, -5, 9, 2, -6]', FLAGS = '[0, 1, 0, 1, 1, 0, 1, 1]'
+  for (const [label, table, stmt] of [
+    ['a compound count of flags', FLAGS, 's += v[i & 7]'],
+    ['a sum under | 0', WORDS, 's = (s + v[i & 7]) | 0'],
+    ['a difference of a product', WORDS, 's = (s + v[i & 7] * 3 - v[(i + 3) & 7]) | 0'],
+    ['a sum under a mask', WORDS, 's = (s + v[i & 7]) & 0xffff'],
+  ]) {
+    const src = sum(table, stmt), host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 8, 1000]) is(f(n), host.f(n), `${label}, f(${n}) at ${optimize}`) }
+    if (belowOpt(2)) continue
+    for (const optimize of ownedLevels(2, 3)) {
+      const loop = loopOf(src, optimize)
+      ok(/i32\.add/.test(loop) && !/f64\.convert_i32_s|f64\.trunc\b/.test(loop), `${label} at ${optimize}: the sum adds words, with no conversion of it and no rounding`)
+    }
+  }
+  // what is no word, or no exact sum, answers as Node: a fraction under a sum that goes below zero
+  // (`(-3 + 0.5) | 0` is -2), a hole (`(s + undefined) | 0` is 0), words at the ends, integers
+  // past a word, a product of three integers past 2^53, where the float product has rounded
+  // (and below 2^63, where `| 0` is exact: README, "Bitwise operands under 2^63")
+  for (const [label, table, stmt] of [
+    ['a fraction among the elements', '[-7.5, 0.5, 2, 0.25, -3, 0.75, 1, -0.5]', 's = (s + v[i & 7]) | 0'],
+    ['a hole among the elements', '[1, 2, , 4, 5, 6, 7, 8]', 's = (s + v[i & 7]) | 0'],
+    ['words at their ends', '[2147483647, -2147483648, 2147483647, 1, -1, 2147483647, 5, -2147483648]', 's = (s + v[i & 7]) | 0'],
+    ['integers past a word', '[2147483648, 4294967301, -8589934592, 1, 2, 3, 4, 9007199254740991]', 's = (s + v[i & 7]) | 0'],
+    ['a product of three integers', '[1048573, -1048571, 1048559, 65537, -99991, 1048549, 3, -7]', 's = (s + v[i & 7] * v[(i + 1) & 7] * v[(i + 2) & 7]) | 0'],
+    ['a compound sum of fractions', '[-7.5, 0.5, 2, 0.25, -3, 0.75, 1, -0.5]', 's += v[i & 7]'],
+  ]) {
+    const src = sum(table, stmt), host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) { const f = run(src, { optimize }).f; for (const n of [1, 2, 3, 8, 9, 100]) is(f(n), host.f(n), `${label}, f(${n}) at ${optimize}`) }
+  }
+  // an array a store elsewhere gives a fraction is no array of words
+  const stored = `const v = ${WORDS}\nexport let put = (k, x) => { v[k & 7] = x }\nexport let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s = (s + v[i & 7]) | 0; return s }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const a = run(stored, { optimize }), b = oracle(stored)
+    a.put(1, -0.5); b.put(1, -0.5); a.put(4, 2.75); b.put(4, 2.75)
+    for (const n of [1, 2, 5, 16, 100]) is(a.f(n), b.f(n), `an element stored a fraction, f(${n}) at ${optimize}`)
+  }
+})
+
 // A signed division or remainder of a value the intervals prove non-negative by a positive one is
 // the unsigned one: an engine divides an unsigned word by a constant with a multiply-high and a
 // shift, the signed one adds a negative quotient's correction.

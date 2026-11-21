@@ -288,6 +288,14 @@ export const narrowI32 = (x, isRoot) => {
   // unlike `mulFitsI32`, which guards a value that may escape as a
   // plain f64 number with no further truncation to absorb the wrap.
   if (x.type === 'i32') return { node: x, maxAbs: maskBound(x), faithful: true }
+  // An element load the summary bounds to the integers of one signed word, never missing
+  // (module/array.js numHullOf): a leaf by its truncation, of the hull's own magnitude.
+  // `s += a[i]` under ToInt32 then adds words, where the sum's own truncation is a
+  // conversion each way, an addition and a rounding between one trip's sum and the next.
+  if (x.numHull) {
+    const word = hullWord(x, true)
+    if (word) return { node: word, maxAbs: Math.max(Math.abs(x.numHull.lo), Math.abs(x.numHull.hi)), faithful: true }
+  }
   const op = x[0]
   // A signed remainder already has its dividend's sign except at zero. The
   // copysign restores -0 for Number consumers; ToInt32 erases that distinction.

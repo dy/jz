@@ -1555,7 +1555,7 @@ export default (ctx) => {
         // an integer of one signed word, never -0, which the truncation keeps exactly.
         // A float consumer reads the load itself (ir/numeric.js exactWord, `wordOf`).
         const nums = dense ? ctx.summary?.at(ctx.func.current)?.elemNumsOfExpr(arr) : null
-        if (nums && nums.int && nums.nz && nums.lo >= -0x80000000 && nums.hi <= 0x7fffffff) return exactWord(rd)
+        if (nums && nums.int && nums.nz && nums.lo >= -0x80000000 && nums.hi <= 0x7fffffff) return exactWord(numHullOf(rd, nums))
         numHullOf(rd, nums ?? elemHull(arr, false), nums ? null : load)
         return holeNumberRead(rd, holeNumber)
       }
