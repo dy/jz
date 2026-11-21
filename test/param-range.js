@@ -11,6 +11,7 @@ import { is } from 'tst/assert.js'
 
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
+import { CLASS_T, ACCESSOR_SET } from '../src/ast.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, funcWat, wat, compileInProcess as compile } from './util.js'
 
@@ -134,6 +135,55 @@ test('parameter hull: a callee of a recursion stores inside the array\'s length'
     const put = (i, x) => { v[i] = x }
     export const run = () => { put(1, 5); put(1.5, 6); put(2, 7); return v[1] * 100 + v[2] * 10 + (v[1.5] === 6 ? 1 : 0) + v.length * 1000 }`
   for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) agree(fraction, 'run', [], { optimize })
+})
+
+// A class member's dispatcher forwards its callers' arguments and notes none of its own: with
+// every call of a method turned into a call of the class's own function, the method's parameters
+// keep the hull those calls give.
+const method = (cls, name) => cls + CLASS_T + name
+test('parameter hull: a class\'s method keeps the hull its calls give', () => {
+  const src = `class Permute {
+      constructor() { this.count = 0; this.v = [0, 0, 0, 0, 0, 0] }
+      benchmark() { this.count = 0; this.permute(6); return this.count }
+      permute(n) { this.count += 1; if (n !== 0) { const n1 = n - 1; this.permute(n1); for (let i = n1; i >= 0; i -= 1) { this.swap(n1, i); this.permute(n1); this.swap(n1, i) } } }
+      swap(i, j) { const tmp = this.v[i]; this.v[i] = this.v[j]; this.v[j] = tmp }
+      loop(n) { for (let i = 0; i < n; i += 1) { if (this.benchmark() !== 8660) return false } return true }
+    }
+    export let run = (inner) => new Permute().loop(inner) ? 1 : 0`
+  is(hulls(src, [method('Permute', 'permute'), method('Permute', 'swap')]), '[null,[0,6]] [null,[0,5],[0,5]]', 'the recursion\'s argument and the indexes it hands on')
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) agree(src, 'run', [2], { optimize })
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: { level: 2, sourceInline: false, inlineFns: false } })
+  is(/\$__arr_set|\$__esc_elem/.test(funcWat(text, method('Permute', 'swap'))), false, 'the swap stores in place: nothing grows, nothing is asked of the heap after')
+  // (with the swap written into the recursion and its indexes integers, level 3: no forwarding either)
+  if (!belowOpt(3)) is(/\$__arr_set|\$__ptr_offset_fwd|\$__esc_elem/.test(funcWat(wat(src, { optimize: 3 }), method('Permute', 'permute'))), false, 'the recursion with the swap in it')
+})
+
+// An access that may meet another receiver cannot align its arguments with one function's
+// parameters, and opens the member's of each class it may reach: a call, a literal key, an optional
+// call, a read of the method, a store through a setter. A receiver of one known class is a call
+// of the class's function, and joins the hull.
+test('parameter hull: an access through a receiver of two classes opens the member\'s parameters', () => {
+  const apart = (access) => `class A { constructor() { this.v = [0, 0, 0, 0] } put(i, x) { this.v[i] = x } go(x) { this.put(1, x); return this.v.length } }
+    class B { constructor() { this.n = 0 } put(i, x) { this.n = i + x } }
+    const pick = (k) => k ? new A() : new B()
+    export const run = (k) => { const a = new A(), o = pick(k); const n = a.go(5); ${access}; return n * 100 + (k ? o.v.length * 10 + (o.v[9] === 7 ? 1 : 0) : o.n) }`
+  const check = (label, src, name, want) => {
+    is(hulls(src, [name]), want, label)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) for (const k of [0, 1]) agree(src, 'run', [k], { optimize }, `${label}, run(${k}) at ${optimize}`)
+  }
+  check('no access apart', apart('0'), method('A', 'put'), '[null,[1,1],[5,5]]')
+  check('a receiver of one class', apart('a.put(3, 7)'), method('A', 'put'), '[null,[1,3],[5,7]]')
+  check('a call', apart('o.put(9, 7)'), method('A', 'put'), '[null,null,null]')
+  check('a literal key', apart(`o['put'](9, 7)`), method('A', 'put'), '[null,null,null]')
+  check('an optional call', apart('o?.put(9, 7)'), method('A', 'put'), '[null,null,null]')
+  check('a read of the method', apart('const m = o.put; m.call(o, 9, 7)'), method('A', 'put'), '[null,null,null]')
+  const setter = (access) => `class A { constructor() { this.v = [0, 0, 0, 0] } set at(i) { this.v[i] = 7 } go() { this.at = 1; return this.v.length } }
+    class B { constructor() { this.n = 0 } set at(i) { this.n = i } }
+    const pick = (k) => k ? new A() : new B()
+    export const run = (k) => { const a = new A(), o = pick(k); const n = a.go(); ${access}; return n * 100 + (k ? o.v.length * 10 + (o.v[9] === 7 ? 1 : 0) : o.n) }`
+  check('a setter, no store apart', setter('0'), method('A', 'at') + ACCESSOR_SET, '[null,[1,1]]')
+  check('a setter, a store apart', setter('o.at = 9'), method('A', 'at') + ACCESSOR_SET, '[null,null]')
 })
 
 // Every channel that binds a function's parameters notes the call's arguments

@@ -1251,9 +1251,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // called with its receiver), which opens each position. A channel that
   // skipped this would leave the hull to the direct calls alone, and a store
   // the hull bounds would land past the count the other channel's arguments reach.
+  // A dispatcher forwards what its callers pass (class-dispatch.js: one function a member, called
+  // where an access meets a receiver the summary cannot name): the access that calls it has noted
+  // its arguments at each function it may reach, as it bound their kinds (`bind`: "an argument of
+  // no kind yet"). Its own calls note nothing, or the parameters no call has bound, of any number,
+  // would open every member's hull for good.
   const noteArgs = (name, names, args, n, base) => {
     const f = funcByName.get(name)
-    if (!f || openCaller(name, f) || !runs(current)) return
+    if (!f || openCaller(name, f) || !runs(current) || typeof current === 'string' && funcByName.get(current)?.sig.dispatcher === true) return
     let entry = roundArgs.get(name)
     if (!entry) {
       entry = { name, ranges: names.map(() => undefined), ints: names.map(() => true), shapes: names.map(() => undefined), round: argumentRound }

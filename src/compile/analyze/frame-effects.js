@@ -974,8 +974,9 @@ function census(scopeView, roots, declRoots, params, typedParams = NO_NAMES, con
         // An integer literal inside the length the receiver holds for good writes a cell
         // the array has (the emitter's raw store, emit-assign.js storeFixedElement), and
         // so does an index a canonical loop holds below the length (`inBounds`: the
-        // emitter's in-place store, emit-assign.js storeArrayPayload).
-        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]) && !inBounds.has(target), !lit, false, asked)
+        // emitter's in-place store, emit-assign.js storeArrayPayload), and one the summary
+        // found a span of integers the fixed length holds (presentArrayStore).
+        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]) && !inBounds.has(target) && !view?.presentArrayStore?.(target), !lit, false, asked)
         if (op === '=' && mayBeTyped(view, recv)) convert(val)   // a typed element store converts its value
       } else if (isArr(target) && target[0] === '{}') {
         escape('destructuring assignment')   // targets may be member paths
