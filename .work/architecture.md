@@ -3530,6 +3530,38 @@ CI on eb0406f43 (the compiler before): test262, self-compile and examples-perf g
 
 With its indexes masked the kernel's array has a length that never changes, and its function is a tenth the size. The same should hold unmasked once the recursion's argument has its range (not shown yet): `permute(n)` is called with 6 and with `n - 1` under `n !== 0`, so n is 0 to 6 and every index 0 to 5, inside the literal's six. The walk gives the argument up after four moves of its hull (settleArgs). A hull that keeps moving one way should jump to the constant the function tests it against (0 here) and be asked whether it holds there: one more round where it does, as open as today where it does not.
 
+## The land-ab landing: a descending fill's miscompile undone, a property and a record that may be missing, and a run of element accesses under one test (2026-11-21)
+
+Five commits on 2b01e3aba, the integrator's (branch vec-w).
+
+### A miscompile the land-z landing put on main
+
+`49d12e7bb` (land-z) gave a descending counter its span, so a store of an array of fixed length in a descending loop became a store in place, and the vectorizer's map lift took that store's base local for lane data: `for (let i = k & 63; i >= 0; i--) v[i] = x` stored through address zero, or through the base an earlier call left, at levels 2, 3 and 'speed'. Wrong answers and writes outside the array. It stood on main from eb0406f43 (pushed 00:46Z) through 2b01e3aba until this landing, close to fourteen hours. No npm release carries it; the site's REPL, built from main at each push, did. The landing's test held loops over a parameter's array and none over an array of fixed length, which is why its check was green. `8d1a45ba9` refuses the lift; its test runs eight forms over arrays of fixed length, down and up.
+
+### What landed
+
+- `acfd946e9` A store under a Number that names no element (-1, 1.5, one past 2^32), through a local or a field that holds null until it is given an array, stores the property. It was lost at every level but 'size' for a local, at 2, 3 and 'speed' for a field (emit-assign.js case 6b), on main before this work.
+- `7dd738037` A record that may be missing keeps its record at the call: its fields were read there as lanes, so the call threw where the callee reads the field under a condition, through `?.`, or after it has answered (plan/lanes.js laneArgs; levels 2, 3 and 'speed' where the callee stays a call), on main before this work.
+- `d44103f68` A run of element accesses of one array at indexes held in names goes under one test of the indexes (plan/element-runs.js guardElementRuns, the plan's last sweep; `elementRuns`, off at 'size'): in the arm each index is an integer inside the length and the accesses are in place; the statements as written run where the test fails. The arm's indexes carry the proof as a versioned cursor's do.
+- `8d1a45ba9` A map lift is refused where its body reads the scalar of a local it lifted to lanes (optimize/vectorize/map.js readsLaneScalar). The vectorizer's coverage listing is unmoved, 453 of 840 marks.
+- `194576713` A run is guarded only where it stores: a run of reads alone gave back nothing and cost a loop the numbers its reads gave its index (found by the WASI and armed level 3 legs of the first check, on branch run-w, which failed there and was not landed).
+
+The swap kernel (a class swapping two elements of an array field through a method, called by a recursion): 2.07 times Node's time on main, 1.73 here, 1.00 with its indexes masked (119.7, 99.4 and 57.6 ms against Node's 57.5; timed on this tree at a load of 3.4).
+
+### The check (vw, on 411fc3cb0: the tree of 194576713)
+
+The check ran before the message of the vector fix was rewritten: it said five hours where the miscompile stood close to fourteen. 997a3f419 and 411fc3cb0 became 8d1a45ba9 and 194576713 with the same trees.
+
+54 minutes at a load of 5 to 21, then test262 in 29. Listings unmoved. WASI 7,571; default 7,698; armed level 3 7,480; level 0 7,458; test:self 89; integration 239 of 240 with one skipped; lint and audit clean; examples 1.70 and 1.71, 25 of 25 twice. test262: pass 4,137, refused negatives 4,045, accepted negatives 0, failures 0. On a fresh hosted compiler (38,140,347 bytes, 50,872 more than land-aa's): parity 19, element-runs 3, lanes 8, index-store 15, frame-effects 76, optimizer-cursors 3, array-scan 14, element-numbers 14.
+
+Bench bytes: 6 of the 105 cases move. mapint +26, mapobj -3 and mapstr -37 at 'size' and watr -1 at 'speed' by the two fixes; movavg -38 at 'size' and -58 at 'speed' and polytri +123 at 'speed' by the runs. Timed against main in six paired rounds on the tree that first held the pass (its bench bytes are this tree's for every case): movavg 0.993, polytri 1.003. The three map cases, whose 'speed' builds do not move, read 0.995, 1.022 and 1.011, which is that measurement's noise.
+
+CI on 2b01e3aba (the compiler before): test262, self-compile, examples-perf and pages green; test green but claims; the bench workflow red on the Porffor evidence (alpha 13 recorded, alpha 23 required) and on the examples gate (lenia 0.78 on its runner).
+
+### Next, on branch hull-w, not in this landing
+
+A range for a recursion's argument (summary/index.js): a hull that keeps moving one way jumps to the constant the function tests the parameter against and is asked whether it holds there; a test narrows a name of integers for its arm; a function no call has bound passes nothing on. Over plain functions the swap kernel's `permute(n)` settles at 0 to 6 and `swap(i, j)` at 0 to 5, inside the literal's six, and the stores are in place with no guard. A class's methods got nothing: every method's dispatcher counted as reached and called the method with open arguments. With a dispatcher reached only where an access spells its member, the class kernel's `permute` is 827 lines where it was 3,150, with no call that grows the array, follows a forwarding or tests an escape. Not committed, its time not measured, the full suite not run on it.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

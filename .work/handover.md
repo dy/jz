@@ -694,3 +694,12 @@ bcbec7004 land-aa     the landing branch: main (094bd1072), the descent from the
 1b0a89c56 run-w       on land-aa: the store of a property through an array that may be missing, the lanes of a record that may be missing, the guarded element runs: checked next
 cf8956215 grow-w      the descent as first committed (land-aa's 5c40977eb)
 ```
+
+## Branches of the land-ab landing (2026-11-21), tips before deletion
+
+```
+194576713 vec-w       the landing branch: main (2b01e3aba), the store of a property through an array that may be missing, the lanes of a record that may be missing, the guarded element runs, the refused lift, a run that stores; the record's commit after it
+411fc3cb0 (no ref)    the tree the check ran on: vec-w before the vector fix's message was rewritten
+d44103f68 run-w       the first three commits; its check failed on WASI and armed level 3 (a run of reads alone)
+          hull-w      on 411fc3cb0: a recursion's argument range, one commit marked not for landing, and the dispatcher's reachability uncommitted
+```
