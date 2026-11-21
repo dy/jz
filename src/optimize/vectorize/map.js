@@ -44,6 +44,17 @@ function splatScalar(name, scalarType, laneType) {
   return null
 }
 
+// A local the lift took for lane data is set in the strip through its v128 shadow alone: a read
+// of its scalar the lifted body still holds is of whatever the function left there. The lift
+// rewrites a value's reads and keeps an address as it stands, so a local a pass sets to the
+// array's base (`fb = base; store(fb + (i << 3), x)`, an in-place store of a fixed-length array)
+// and reads in the store's address was one: the strip stored through the base of an earlier
+// call, or through zero. Such a loop stays as written.
+const readsLaneScalar = (lifted, localKind) => {
+  const reads = (n) => isArr(n) && (n[0] === 'local.get' && localKind.get(n[1]) === 'lane' || n.some((c, i) => i > 0 && reads(c)))
+  return lifted.some(reads)
+}
+
 // A lane-local every pass writes at the body's top level, before any read (laneAccess
 // 'write'), and nothing in the pass writes again under a condition: what the loop leaves in
 // it is the last pass's value. A strip leaving that pass to the loop as written (an
@@ -442,7 +453,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
       else lifted.push(r)
     }
   }
-  if (lifted.length === 0) return null
+  if (lifted.length === 0 || readsLaneScalar(lifted, localKind)) return null
 
   // Generate fresh names
   const id = freshIdRef.next++
@@ -678,7 +689,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
     if (ctx.fail) return null
     if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
   }
-  if (!lifted.length) return null
+  if (!lifted.length || readsLaneScalar(lifted, localKind)) return null
   // Cost model (Part 2 — see the header doc right before tryGeneralMap): decline
   // when the vector step costs at least as much per lane as the scalar iteration it replaces.
   if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes))

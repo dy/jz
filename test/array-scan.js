@@ -338,6 +338,41 @@ test('array scan: a descending counter stays inside the length', () => {
   }
 })
 
+// A loop over an array of fixed length stores at the array's base read into a local of its
+// own (emit-assign.js storeFixedElement), and the vectorizer took that local for lane data: a
+// strip then stored through the local's scalar, which only the loop as written sets (through
+// zero, or an earlier call's base). The descending counter's span made such stores of every
+// descending fill (optimize/vectorize/map.js readsLaneScalar refuses the lift). Each form
+// answers what Node answers from every start, counting down and up.
+test('array scan: a counted loop over an array of fixed length stores where the array is, either way', () => {
+  const zeros = Array.from({ length: 64 }, () => 0).join(', ')
+  const forms = (head) => `const v = [${zeros}], w = [${zeros}]
+    const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s = (s * 31 + a[i]) | 0; return s }
+    const fillConst = (k) => { ${head('k & 63', 0)} v[i] = 4 }
+    const fillParam = (k, x) => { ${head('k & 63', 0)} v[i] = x }
+    const fillExpr = (k, x) => { ${head('k & 63', 0)} v[i] = x * 2 + i }
+    const bump = (k, x) => { ${head('k & 63', 0)} v[i] = v[i] + x }
+    const copy = (k) => { ${head('k & 63', 0)} w[i] = v[i] }
+    const scale = (k, x) => { ${head('k & 63', 0)} w[i] = v[i] * x + 1 }
+    const total = (k) => { let s = 0; ${head('k & 63', 0)} s += v[i]; return s }
+    const above = (k, x) => { ${head('k & 63', 1)} v[i] = x }
+    export const run = (k) => { let h = 0
+      fillConst(k); h = (h * 7 + sum(v)) | 0
+      fillParam(k + 3, 9); h = (h * 7 + sum(v)) | 0
+      fillExpr(k + 5, 3); h = (h * 7 + sum(v)) | 0
+      bump(k + 9, 2); h = (h * 7 + sum(v)) | 0
+      copy(k + 11); h = (h * 7 + sum(w)) | 0
+      scale(k + 13, 3); h = (h * 7 + sum(w)) | 0
+      h = (h * 7 + total(k + 17)) | 0
+      above(k + 23, 8); h = (h * 7 + sum(v)) | 0
+      return h }`
+  const down = forms((start, low) => `for (let i = ${start}; i >= ${low}; i--)`), up = forms((start, low) => `for (let i = ${low}; i <= (${start}); i++)`)
+  for (const [name, src] of [['down', down], ['up', up]]) {
+    const want = [0, 1, 2, 30, 62, 63].map(oracle(src).run)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is([0, 1, 2, 30, 62, 63].map(run(src, { optimize }).run), want, `counting ${name} at ${optimize}`)
+  }
+})
+
 // A descent from below an array's length to zero or above (`for (let i = a.length - 1;
 // i >= 0; i--)`) keeps its counter inside the length, as `i < a.length` does upward:
 // the counter starts below the length and only falls, while the body shrinks no
