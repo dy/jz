@@ -413,6 +413,46 @@ test('split bindings: an array that may be missing is read as written, in one lo
   for (const level of levels(2, 'size')) is(loops(level), loops({ level, splitBindings: false }), `O${level}: no loop is copied for a row that may be missing`)
 })
 
+// A cursor the guard tests below an array's length is bounded by that array (its
+// reads and stores there are inside the length, summary/index.js noteHull) only while
+// the arm's statements cannot shrink the array or bind its name to another: the test
+// held at the guard, and a `pop` after it left the cursor at or past the end. Each
+// read there loaded what lies beside the elements (42 where Node answers 414), and a
+// store there left the length as it was.
+test('split bindings: a versioned cursor is bounded by an array its arm cannot shrink', () => {
+  const head = `let ptr = p.ptr, mem = p.memory
+    if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(7); ptr = p.ptr = 3; p.memory = mem }
+    let s = 0`
+  const MISS = `(x === undefined ? 100 : x)`
+  const arms = {
+    'a pop, then a read at the cursor': `for (let i = 0; i < data.length; i++) { if (i === 2) mem.pop(); const x = mem[ptr]; s += ${MISS} }
+      return s`,
+    'a length stored, then a read': `for (let i = 0; i < data.length; i++) { if (i === 2) mem.length = 1; const x = mem[ptr]; s += ${MISS} }
+      return s`,
+    'a length stored under a key, then a read': `for (let i = 0; i < data.length; i++) { if (i === 2) mem[key] = 1; const x = mem[ptr]; s += ${MISS} }
+      return s`,
+    'two pops, then a store at the cursor': `for (let i = 0; i < data.length; i++) { if (i === 1) { mem.pop(); mem.pop() } mem[ptr] = data[i] }
+      return mem.length * 1000 + (mem[2] === undefined ? 500 : mem[2])`,
+    'a splice, then a read': `for (let i = 0; i < data.length; i++) { if (i === 2) mem.splice(0, 2); const x = mem[ptr]; s += ${MISS} }
+      return s`,
+    'a callee that pops, then a read': `for (let i = 0; i < data.length; i++) { if (i === 2) drop(mem); const x = mem[ptr]; s += ${MISS} }
+      return s`,
+    'another array bound again, then a read of it': `for (let i = 0; i < data.length; i++) { if (i === 2) other = [1]; const x = other[ptr]; s += ${MISS} + mem[ptr] }
+      return s`,
+    'nothing shrinks (the control)': `for (let i = 0; i < data.length; i++) { const x = mem[ptr]; s += ${MISS}; mem[ptr] = data[i] }
+      return s`,
+  }
+  const program = (arm) => `const drop = (a) => { a.pop() }
+    const avg = (data, p, key, other) => { ${head}
+      ${arm} }
+    export const go = () => { const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6])
+      const first = avg(d, p, 'length', [1, 2, 3, 4, 5]); return first * 100000 + avg(d, p, 'length', [1, 2, 3, 4, 5]) }`
+  for (const [name, arm] of Object.entries(arms)) {
+    const src = program(arm), want = oracle(src).go()
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) is(run(src, { optimize }).go(), want, `${name} at ${optimize}`)
+  }
+})
+
 // A list keeps an empty statement where an earlier pass folded one away: a
 // conditional whose test the argument's kind decides, in a function spliced into
 // its caller (`if (typeof v === 'object') v.x = 'str'` called with a closure).

@@ -17,7 +17,7 @@
 import { isReassigned, some, walkAst, hasOptionalChain, MUTATE_OPS, callArgs, refsName, REFS_THROUGH_ARROWS, nodeKey, nodeEqual } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue, constIntExpr, intExprRange, counterInit, affineIn } from '../static.js'
-import { NUMBER, STRING } from '../summary/kind.js'
+import { STRING, K, bitOf, tagsOf, NULL_BITS } from '../summary/kind.js'
 import { runsAccessor, runsConversion, primitiveKind } from '../evaluation-effects.js'
 import { frameNode } from '../function.js'
 
@@ -287,9 +287,12 @@ export function preservesLoopBounds(root, view, bindings, callees = new Map(), m
     if (lhs[0] !== '[]') return false
     const key = lhs[2]
     if (Array.isArray(key) && (key[0] == null || key[0] === 'str')) return key[1] === 'length'
-    return view?.kindOfExpr(key) !== NUMBER
+    // (a key that is a Number, a boolean, a BigInt or missing names no `length`: its string is another)
+    const kind = view?.kindOfExpr(key)
+    return !kind || (tagsOf(kind) & ~NEVER_LENGTH) !== 0
   })
 }
+const NEVER_LENGTH = bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
 
 // The canonical head declares the induction variable and possibly its bound.
 // Inspect their initializers without treating the declarations as later writes.

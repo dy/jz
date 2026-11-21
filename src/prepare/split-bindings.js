@@ -29,6 +29,7 @@ import { T, noted, copyNode, isBlockBody } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { tagsOf, paramOf, UNKNOWN, NUMBER as NUMBER_KIND, K, kind as kindOfTag, isNullable as isNullableKind, core as presentKind } from '../summary/kind.js'
 import { nodeSize } from '../compile/plan/common.js'
+import { preservesLoopBounds } from '../type/canonical-bounds.js'
 const ARRAY_KIND = kindOfTag(K.ARRAY)
 const MAX_VERSION_SIZE = 2400   // nodes a version copies at most (three of plan/integral-loops.js's loop budget)
 
@@ -373,12 +374,16 @@ export function splitReassigned(fn, nested = false) {
     // the arm's binding is bounded by that array (its hull by the element
     // count any array can hold), kept while each assignment stays below.
     const ARRAY_TOP = 0x1ffffffe
+    const armSource = [';', ...list.slice(k + 1, k + 2 + end)], extents = new Map()
+    const keepsExtent = (a) => { if (!extents.has(a)) extents.set(a, preservesLoopBounds(armSource, view, [rootOf(a)])); return extents.get(a) }
     for (const name of cursors) {
       const arrays = new Set()
       const scan = (n) => { if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return; if (n[0] === '[]' && n[2] === name && typeof n[1] === 'string' && (picked.includes(n[1]) || isArrayName(n[1]))) arrays.add(n[1]); for (let i = 1; i < n.length; i++) scan(n[i]) }
       for (const st of rest) scan(st)
       const decl = cursorDecls.get(name)
-      for (const a of arrays) { and(['<', name, ['.', a, 'length']]); decl.hi = ARRAY_TOP; if (decl.bound == null) decl.bound = a }
+      // (the binding is bounded by an array the arm's statements cannot shrink or rebind, as the
+      // summary read them: one a statement of the arm may shrink leaves the test its value at the guard alone)
+      for (const a of arrays) { and(['<', name, ['.', a, 'length']]); decl.hi = ARRAY_TOP; if (decl.bound == null && keepsExtent(a)) decl.bound = a }
     }
     // a divisor declared as a picked array's length is positive under the guard
     const positiveLengths = []
