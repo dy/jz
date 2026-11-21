@@ -3500,6 +3500,36 @@ Still open from land-y's list: a class in a function that runs more than once st
 - A derived class's constructor that returns a primitive gives the instance where JS throws a TypeError.
 - land-y's list stands: `new(F)` answers NaN; a class declaration's name assigned another class; reserved words as method names; test/imports.js fails 6 on a hosted compiler; the bytes depend on the names a program gives its bindings.
 
+## The land-aa landing: a cursor's array that may shrink, a descent from the length, and what a bench case threw (2026-11-21)
+
+Three commits on 094bd1072, the integrator's.
+
+### The tuned run before it (44846077427, on eb0406f43)
+
+22 of 23 programs run (19 before land-z). havlak, clbg-nbody and clbg-nbody-node-4 compile and answer; deltablue compiles and throws as it runs, with nothing in the log to say what (below). The recorded geomean of jz's time over V8's is 1.50 (Are We Fast Yet 2.35 over 13, the Benchmarks Game 0.79 over 9), but two programs carry it: on clbg-nbody and clbg-nbody-node-4 V8 itself takes 686 ms where JavaScriptCore takes 48 and jz 50, so jz's 0.07 there is V8's time, not jz's lead. Over the other 20 the geomean is 2.03. The slowest: havlak 5.46, richards 4.83, towers 4.73, cd 3.04, permute 2.87, sieve 2.79, queens 2.30, storage 2.25.
+
+### What landed
+
+- `5c40977eb` A descent from below an array's length stays inside it (`for (let i = a.length - 1; i >= 0; i--)`), as the same loop upward does: the emitter's canonical loop (type/canonical-bounds.js scanBoundedArrIdx).
+- `227b6da17` A versioned cursor is bounded by an array only where its arm cannot shrink or rebind the array. A miscompile on main at levels 2, 3 and 'speed': a `pop`, a `splice`, a stored `length` or a callee that shrinks, in a loop versioned under the cursor's guard, left the cursor past the end, where a read loaded what lies beside the elements (42 where Node answers 414) and a store left the length as it was. The canonical loop's question (preservesLoopBounds) is asked of the arm; its rule for a computed key is now a key that may be a string or an object, where it was any key not exactly a Number.
+- `bcbec7004` A jz lane that fails its warm round says what the case threw (`[why] jz threw: Error: …`, bench/_lib/why-jz.mjs): the bench build exports no error transport, and a throw ended a lane in "WebAssembly.Exception {}".
+
+### The check (aa, on bcbec7004)
+
+61 minutes at a load of 5 to 30, then test262 in 30. Listings unmoved. WASI 7,565; default 7,692; armed level 3 7,474; level 0 7,452; test:self 89; integration 239 of 240 with one skipped; lint and audit clean; examples 1.69 and 1.68, 25 of 25 twice. test262: pass 4,137, refused negatives 4,045, accepted negatives 0, failures 0. Bench bytes: none of the 105 cases moves. On a fresh hosted compiler (38,089,475 bytes, 4,100 more than land-z's): parity 19, array-scan 13, split-bindings 20, summary 89.
+
+CI on eb0406f43 (the compiler before): test262, self-compile and examples-perf green, test green but claims; the bench workflow red with its three standing causes (land-z's record).
+
+### Found by the work after it, on branch run-w, not in this landing
+
+- A store under a Number that names no element (-1, 1.5), through a local or a field that holds null until it is given an array, is lost at every level but 'size' (emit-assign.js case 6b). Fixed there.
+- A record that may be missing, passed to a callee that reads its field under a condition, through `?.`, or after it has answered, throws at the call at levels 2, 3 and 'speed' where the callee stays a call (plan/lanes.js). Fixed there.
+- The guarded element runs (plan/element-runs.js): a run of accesses of one array at indexes held in names, under one test of the indexes. The swap kernel takes 1.70 times Node's time with it, 2.08 without, 1.00 with its indexes masked.
+
+### What the swap kernel says is next
+
+With its indexes masked the kernel's array has a length that never changes, and its function is a tenth the size. The same should hold unmasked once the recursion's argument has its range (not shown yet): `permute(n)` is called with 6 and with `n - 1` under `n !== 0`, so n is 0 to 6 and every index 0 to 5, inside the literal's six. The walk gives the argument up after four moves of its hull (settleArgs). A hull that keeps moving one way should jump to the constant the function tests it against (0 here) and be asked whether it holds there: one more round where it does, as open as today where it does not.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

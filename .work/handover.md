@@ -686,3 +686,11 @@ d378bd002 ctor-w      on oo-w: a constructor function that is only constructed f
 84ba1ae6c alias-w     on ctor-w's 4b002a1e6: the early reads, the second flattening, the linker's direct binding (land-z's 54083a3a5, 74f7cc1d9, 35c77c380)
 cf8956215 grow-w      on 4b002a1e6: the transitive keeps and the descending counter (land-z's ac8db0ef5, 49d12e7bb), then the descent from the length (cf8956215): not landed, the next landing
 ```
+
+## Branches of the land-aa landing (2026-11-21), tips before deletion
+
+```
+bcbec7004 land-aa     the landing branch: main (094bd1072), the descent from the length, the cursor's extent, the bench driver's `[why]` line; the record's commit after it
+1b0a89c56 run-w       on land-aa: the store of a property through an array that may be missing, the lanes of a record that may be missing, the guarded element runs: checked next
+cf8956215 grow-w      the descent as first committed (land-aa's 5c40977eb)
+```
