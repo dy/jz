@@ -39,7 +39,8 @@ export const watrModuleSources = () => ({
 // row's timed/run build; `level: 'size'` is the -Os build the size column reads.
 // Both offload formatting via env.logResult (the benchlibHostSource patch), so
 // the comparison to AS — which offloads via @external logLine — is like-for-like.
-export const compileJzAt = (c, optimize, compiler = compile) => {
+// `hostAbi`: the build a host reads values from (why-jz.mjs), the allocator and the error transport exported.
+export const compileJzAt = (c, optimize, compiler = compile, hostAbi = false) => {
   const isWatr = c.id === 'watr'
   // Graph cases resolve their whole import graph (GRAPH_CASES), then swap the
   // real benchlib for the env.logResult-patched host build.
@@ -64,7 +65,7 @@ export const compileJzAt = (c, optimize, compiler = compile) => {
       performance: { now: { params: 0, returns: 'number' } },
     },
     optimize,
-    alloc: false,
+    ...(hostAbi ? {} : { alloc: false }),
     // Preserve the self-benchmark's standalone runtime memory contract.
     ...(c.id === 'jz' ? { memory: 65536 } : {}),
   })

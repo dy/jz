@@ -85,6 +85,33 @@ test('bench host: missing entry points and unsupported host calls fail visibly',
   is(unsupported.stdout, '', 'a failure cannot report benchmark results')
 })
 
+// A bench build keeps the raw ABI, which exports neither the error's tag nor its bits: a
+// case that throws ends its lane in a WebAssembly.Exception of no content (the held-out
+// lane's deltablue, run 44846077427). The diagnosis builds the case with the host ABI at
+// the lane's flags and says what `main` threw (bench/_lib/why-jz.mjs, bench.mjs `[why]`).
+test('bench host: a case that throws is named by what it threw', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-bench-why-'))
+  const why = (name, source) => {
+    const file = join(dir, name + '.js')
+    writeFileSync(file, source)
+    const r = spawnSync(process.execPath, [join(ROOT, 'bench/_lib/why-jz.mjs'), name, file, JSON.stringify({ level: 'speed' })], { encoding: 'utf8' })
+    return r.stdout.trim()
+  }
+  try {
+    is(why('error', `const check = (k) => { if (k > 3) throw new Error('incorrect result'); return k }
+      export let main = () => { let s = 0; for (let i = 0; i < 6; i++) s += check(i); return s }`), 'threw: Error: incorrect result', 'the program\'s own Error')
+    is(why('string', `const check = (k) => { if (k > 3) throw 'should not reach'; return k }
+      export let main = () => { let s = 0; for (let i = 0; i < 6; i++) s += check(i); return s }`), 'threw: "should not reach"', 'a thrown string')
+    is(why('missing', `class Node { constructor(v) { this.v = v; this.next = null } }
+      const walk = (n, k) => { let s = 0; for (let i = 0; i < k; i++) { s += n.v; n = n.next } return s }
+      export let main = () => { const a = new Node(1); a.next = new Node(2); return walk(a, 5) }`), 'threw: TypeError: Cannot read properties of undefined', 'the runtime\'s own TypeError')
+    is(why('init', `class A { foo() { throw new RangeError('at module level') } }
+      const r = new A().foo()
+      export let main = () => r`), 'threw: RangeError: at module level', 'a throw as the module starts')
+    is(why('fine', `export let main = () => 4`), 'returned', 'a case that throws nothing')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 // The pass rule (bench/_lib/passes.js) on a fake clock: a pass of `ms` each, the start of
 // every pass, and the count the rule answers, which must be the passes it ran.
 const settled = async (ms, n) => {

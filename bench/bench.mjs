@@ -717,6 +717,11 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 // The exact lane's build: the speed build at JavaScript's float results (LANE_FLAGS['jz-exact']).
 const jzExactWasmPath = c => join(caseBuild(c), `${c.id}-exact.wasm`)
+// What a jz lane's case throws (bench/_lib/why-jz.mjs): one line, null where the diagnosis itself fails.
+const whyJz = (c, tid) => {
+  const r = spawnSync(process.execPath, [join(LIB, 'why-jz.mjs'), c.id, c.js, JSON.stringify(LANE_FLAGS[tid])], { encoding: 'utf8', timeout: 120000 })
+  return (r.stdout || '').trim().split('\n').pop() || null
+}
 const jzBaseWasmPath = c => join(caseBuild(c), `${c.id}-base-host.wasm`)
 const jzBaseSizeWasmPath = c => join(caseBuild(c), `${c.id}-base-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
@@ -1861,6 +1866,9 @@ for (const cid of selectedCases) {
         // a build that failed or a run past the limit will not recover in a counted round
         if (r.buildFailed || r.timedOut) recordFailure(tid, r.error, r)
         console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}${r.buildFailed || r.timedOut ? '' : '; retrying in counted rounds'}`)
+        // (a jz lane's build exports no error transport: the case built with the host ABI says what it threw)
+        const why = !r.buildFailed && !r.timedOut && LANE_FLAGS[tid] ? whyJz(c, tid) : null
+        if (why) console.log(`[why]  ${tid.padEnd(targetIdWidth)} ${why}`)
       }
     }
     PAIRED_WARM = false
