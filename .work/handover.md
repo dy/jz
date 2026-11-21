@@ -677,3 +677,12 @@ dca908186 bump-w      the first build of it, the method's node at its `{`: faile
 1d1a497a4 oo-w        the landing branch: main (41ea18ca2), the reserved-word method names, the bound class expressions, the renamer, the CommonJS linker; the record's commit after it
 d378bd002 ctor-w      on oo-w: a constructor function that is only constructed folds to a class (uncommitted in its tree, unfinished)
 ```
+
+## Branches of the land-z landing (2026-11-21), tips before deletion
+
+```
+7b0538909 land-z      the landing branch: main (e7fa2008f) and eight commits; the record's commit after it
+913bb0735 ctor-w      on e25c3b4ad: the constructor-function fold and a constructor's return as first written (land-z's 75b271efa, 5b4cde057)
+84ba1ae6c alias-w     on ctor-w's 4b002a1e6: the early reads, the second flattening, the linker's direct binding (land-z's 54083a3a5, 74f7cc1d9, 35c77c380)
+cf8956215 grow-w      on 4b002a1e6: the transitive keeps and the descending counter (land-z's ac8db0ef5, 49d12e7bb), then the descent from the length (cf8956215): not landed, the next landing
+```

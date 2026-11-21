@@ -3452,6 +3452,54 @@ CI on 41ea18ca2 (the compiler before): test262, self-compile and examples-perf g
 - test/imports.js fails 6 on a hosted compiler (`import.meta.url` needs its option there).
 - The bytes jz writes depend on the names a program gives its bindings (six of 106 cases, by up to 881 bytes).
 
+## The land-z landing: constructor functions, a constructor's return, and the frame above a growth (2026-11-21)
+
+Eight commits on e7fa2008f, the integrator's: what the held-out lane's tuned run still failed on, and the first part of the store that may grow an array.
+
+### The tuned run before it (44739230492, on e25c3b4ad)
+
+19 of 23 programs run. Geomean of jz's time over V8's: 4.72 at first contact, 1.89 (Are We Fast Yet 9.34 to 2.12, the Benchmarks Game 1.61 to 1.56). Four did not compile: deltablue ("'IdentityDictionary_3' is not in scope"), havlak, clbg-nbody and clbg-nbody-node-4 ("`this` not supported"). This landing aims at all four; none is shown to compile until the lane's `contact` mode runs again.
+
+### What landed
+
+- `75b271efa` A function that is only constructed is a class, in a function's statements as in the module's (`function Body(x) { this.x = x }` with `new Body(1)`). The fold took a constructor function with prototype methods at the module level alone. One called as a function, through `call`, or handed on as a value stays a function and is refused as before, as is `var P = function () { this.x = 1 }`.
+- `5b4cde057` A constructor's `return` gives the instance, or the Object it names (ECMA-262 10.2.2 [[Construct]], steps 9 to 11). A class of closures answered `true` for `return true`, undefined for a bare `return`; a schema class answered the instance where the constructor named an object: all three on main too. A constructor that may return an Object makes a class of closures (the advisory says why); a value that is certainly none keeps the schema. A class folded from a function declaration in a function's statements is hoisted as its function was. The first check of the fold failed test262's S13.2.2_A6_T2 on this, then S13.2.2_A15_T2 on the hoist.
+- `7b0538909` An object literal's `get` and `set` in a constructor keep their own returns. Without it webaudio's MediaStreamAudioDestinationNode lost its schema (10,099 bytes more at size), found by the bench bytes before the check.
+- `54083a3a5` A const that holds a function keeps its storage where a function declared beside it read the name first (`const A = B` above `function mk() { return new A() }`): "'A' is not in scope", the CommonJS linker's own const and deltablue's error.
+- `74f7cc1d9` A function's namespace is flattened again once the global it escaped through is dropped: "'f$two' is not a known function or built-in", an internal error on main too.
+- `35c77c380` What a linked module requires is the exporter's own binding where that binding is never assigned again and the requirer binds the name nowhere else: no const between them, so `new Dict()` in a requirer's function declaration is a direct construction.
+- `ac8db0ef5` A frame whose callees only grow storage older than itself keeps its heap and pays no frame protocol; the rule held of a frame with no calls alone. Settled over the call graph (frame-effects.js `transitiveFrameEffects`). The class swapping two elements of an array field through a method: 2.41 times Node's time, 2.13 now.
+- `49d12e7bb` A descending counted loop's counter takes the integers from its bound up to its start (summary/index.js `descendingCounter`), so `for (let i = 7; i >= 0; i--) a[i] = x` stores in place as the loop upward does. Of fifteen shapes of an in-bounds store four were held; seven are.
+
+### The check (lz, on 7b0538909)
+
+73 minutes at a load of 11 to 30, then test262 in 30. Listings unmoved. WASI 7,563; default 7,690; armed level 3 7,472; level 0 7,450; test:self 89; integration 238 of 239 with one skipped; lint and audit clean. test262: pass 4,137 (nine more than land-y's), refused negatives 4,045, accepted negatives 0, failures 0. On a fresh hosted compiler (38,085,375 bytes, 46,481 more than land-y's): parity 19, classes 80, statements 200, closures 187, link-cjs 4, frame-effects 76, array-scan 12.
+
+Examples: the first run 1.69 with 24 of 25 (blackhole 0.99); the second failed its floor on rfft (0.84, a kernel of 10 µs whose V8 time went from 9.9 to 13.6 µs in that run). All 25 examples compile to main's bytes on this branch, so no example's code moved; two runs after the check gave 1.69 and 1.71, 25 of 25.
+
+Bench bytes: 5 of 105 cases move, all smaller, all by `ac8db0ef5` (built without it they are main's; `49d12e7bb` moves none): fabrik 26,343 to 26,138 at size and 53,630 to 51,000 at speed; polytri 23,261 to 23,142 and 51,081 to 50,927; stdlib-dists 259,863 to 234,333 and 442,017 to 434,335; stdlib-gamma 24,730 to 24,007 and 62,540 to 59,691; stdlib-special 233,464 to 216,259 and 498,100 to 485,965. Their time against main's compiler, paired over 6 rounds on the M4: fabrik 1.000, polytri 0.990, stdlib-dists 0.989, stdlib-gamma 1.001, stdlib-special 0.993.
+
+CI on e25c3b4ad (the compiler before): test262, self-compile, examples-perf and pages green; test green but claims. The bench workflow is red there as on every push since 2026-11-19 at least, with the same three causes each time: the Porffor evidence older than the gate requires (alpha 13 against 23), the perf-fuzz gate's mixed maximum (4.34 times against a bound of 2.25), and three examples under their floor on that runner (ulam 0.87, lenia 0.76, rfft 0.60). Phase 11's, not this landing's.
+
+### The store that may grow an array: what is measured, and what follows
+
+The swap kernel takes 2.08 times Node's time as written (in the run that measured the rest), 1.07 with its indexes masked to the array's length and 1.25 over a Float64Array: the cost is the open array (a forwarding test, the bounds, the hole, and on a store the durable test, the growth arm and the escape), not the index's conversion. Over the 100 bench cases the `array-open` advisory names 84 arrays opened by `push`, 19 joined with a growing one, 5 by `splice`, 4 stored past the count at a bounded index, 2 by `pop`, 1 by a stored length, and 2 stored at an index the walk cannot bound: the corpus hardly holds the shape, the held-out programs do (an index that is a method's parameter or a recursion's).
+
+Such an index often has no range to prove, so more proofs do not close it: the checked path has to be cheap. Next, in order:
+
+1. A descent from the length (`for (let i = a.length - 1; i >= 0; i--)`), the emitter's canonical loop: done on branch grow-w (`cf8956215`), not landed.
+2. A store under its own bounds test (`if (i >= 0 && i < a.length) a[i] = x`) is no growth in the summary; the emitter already takes it.
+3. One index conversion, one forwarding resolve and one length for the accesses of one array in straight-line code (the swap does four conversions and four forwarding tests where two and one do).
+4. A straight-line block of several accesses under one guard: plain loads and stores in the arm the guard admits, the code as written in the other.
+5. A while loop's counter, and a recursion's argument counting under a guard (its hull opens after four moves).
+
+Still open from land-y's list: a class in a function that runs more than once stays a class of closures; a class in a function that runs once outside the CommonJS linker.
+
+### Found, not fixed
+
+- A derived class's constructor that returns a primitive gives the instance where JS throws a TypeError.
+- land-y's list stands: `new(F)` answers NaN; a class declaration's name assigned another class; reserved words as method names; test/imports.js fails 6 on a hosted compiler; the bytes depend on the names a program gives its bindings.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
