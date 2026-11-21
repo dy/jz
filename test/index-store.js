@@ -322,3 +322,24 @@ test('index store: a Number that names no element is a property of an array that
     for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is([0, 1, 2, 3, 4, 5, 6].map(run(source, { optimize }).go), want, `${name} at ${optimize}`)
   }
 })
+
+// A binding's hull is of integers: its readers take it for an element's index (summary spanOf)
+// and for the binding's integer range (query.js hullOf). A `let` whose value may be a fraction
+// entered it by its interval alone (`let x = i / 2` over 2 to 4: 1 to 2), and a store under it
+// was a store at an index: the property under 1.5 was never stored, at every level.
+test('index store: a name that may hold a fraction names a property, whatever interval holds it', () => {
+  const tail = `return v[1] * 100 + v[2] * 10 + (v[1.5] === 7 ? 1 : 0) + v.length * 1000`
+  const programs = {
+    'a let of a fraction': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; let x = 1.5; v[x] = 7; ${tail} }`,
+    'a let of half a counter': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; for (let i = 2; i < 5; i++) { let x = i / 2; v[x] = 7 } ${tail} }`,
+    'a let of a counter by a half': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; for (let i = 1; i < 4; i++) { let x = i * 0.5; v[x] = 7 } ${tail} }`,
+    'a let of 1 or 1.5': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; let x = k ? 1 : 1.5; v[x] = 7; ${tail} }`,
+    'a let of integers assigned a fraction inside their interval': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; let x = k ? 1 : 2; if (k > 1) x = 1.5; v[x] = 7; ${tail} }`,
+    'a let of integers stepped by a half': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; let x = k ? 0 : 1; x += 0.5; v[x] = 7; v[x * 2] = 7; ${tail} }`,
+    'a let of integers, an index as before': `export const run = (k) => { const v = [0, 0, 0, 0, 0, 0]; let x = k ? 1 : 2; v[x] = 7; ${tail} }`,
+  }
+  for (const [name, source] of Object.entries(programs)) {
+    const want = [0, 1, 2].map(oracle(source).run)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is([0, 1, 2].map(run(source, { optimize }).run), want, `${name} at ${optimize}`)
+  }
+})

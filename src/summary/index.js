@@ -1351,6 +1351,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     hulls.set(name, [nlo, nhi]); changed = true
   }
   const hulls = new Map(), hullLost = new Set()   // name → [lo, hi]; the names whose hull an assignment lost
+  // A hull is of integers: its readers take it for a span (spanOf: an element's index) and for
+  // the binding's integer range (query.js hullOf). A name declared or assigned a value that may
+  // be a fraction (`let x = i / 2`, `x = k ? 1 : 1.5`) has none, whatever interval holds it.
+  const wholeValued = (e) => spanOf(e) !== null || numRangeOf(e)?.int === true
   // An index the guard proves below an array's length (`decl.bound`): the
   // binding stays below it while each assignment is a remainder by that
   // array's length of a non-negative dividend (`ptr = (ptr + 1) % m`).
@@ -1371,8 +1375,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     const hull = hulls.get(name)
     if (!hull) return
-    const r = op === '=' ? rangeOf(value) : op === '++' || op === '--' ? rangeOf([op === '++' ? '+' : '-', name, 1]) : op === '+=' || op === '-=' || op === '*=' ? rangeOf([op[0], name, value]) : null
-    if (r && r[0] >= hull[0] && r[1] <= hull[1]) return
+    const e = op === '=' ? value : op === '++' || op === '--' ? [op === '++' ? '+' : '-', name, 1] : op === '+=' || op === '-=' || op === '*=' ? [op[0], name, value] : null
+    const r = e === null ? null : rangeOf(e)
+    if (r && r[0] >= hull[0] && r[1] <= hull[1] && wholeValued(e)) return
     hullLost.add(name); hulls.delete(name); changed = true
   }
   const lengthAliases = new Map()   // binding id → the array binding whose length it holds
@@ -4703,7 +4708,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           else if (key !== null) constSpans.delete(key)
         }
         if (d.lo != null) noteHull(d)
-        else if (n[0] === 'let' && !hullLost.has(d[1])) { const r = rangeOf(d[2]); if (r) widenHull(d[1], r[0], r[1]); else if (hulls.has(d[1])) { hulls.delete(d[1]); hullLost.add(d[1]) } }
+        else if (n[0] === 'let' && !hullLost.has(d[1])) { const r = wholeValued(d[2]) ? rangeOf(d[2]) : null; if (r) widenHull(d[1], r[0], r[1]); else if (hulls.has(d[1])) { hulls.delete(d[1]); hullLost.add(d[1]) } }
         { const dk = cursorOpen(d[1], d[2]) ?? (Array.isArray(d[2]) && d[2][0] === '.' || typeof d[2] === 'string' ? mixedValue(d[2]) : literalInto(d[1], d[2])); declare(d[1], dk); bindMixed(d[1], dk); noteLengthAlias(d[1], d[2]) }
       }
     }
