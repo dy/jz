@@ -857,6 +857,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // length (a counter's span), by node: the query has no loop in view and
   // reads them present through this set.
   const presentReads = new Set()
+  // and the element stores whose index it found a span of integers (a counter's, a parameter's whose every
+  // argument is one): where the array's length is fixed, which holds the span, the cell's own store
+  const presentStores = new Set()
   // A read of an element or a member through a receiver the walk holds only
   // undefined or null throws, and so does a statement that makes one on every
   // path through it (ast.js onEveryPath): what follows it in its list never
@@ -919,6 +922,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
   const moduleConstRanges = new Map()  // module binding id → its const initializer's interval, for every frame
   const constSpans = new Map()   // binding id → the integer span of a const initializer (spanOf)
+  const constNums = new Map()    // binding id → the numbers of this frame's const initializer, where they are integers of a finite hull
   // Bounds are immutable. Repeated literal/constant reads share their point
   // interval, within this summary alone; mutable expression facts stay live.
   const points = new Map(), negativeZero = [-0, -0]
@@ -938,6 +942,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (v !== undefined) return pointRange(v)
       const span = scope === current ? spans.get(e) : undefined
       if (span) return span
+      const left = scope === current && tested.size ? tested.get(keyOf(e)) : undefined
+      if (left) return left
       const noted = hulls.get(e)
       if (noted) return noted
       const constant = constSpans.size ? constSpans.get(keyOf(e)) : undefined
@@ -947,7 +953,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // An integer-ended hull can contain fractional arguments; an element-key
       // proof needs a singleton unless syntax already established integrality.
       const hull = typeof scope === 'string' ? paramRangeOf(scope, e) : null
-      return hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]) && (!integral || hull[0] === hull[1]) ? hull : null
+      return hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]) && (!integral || hull[0] === hull[1] || integerArgs(scope, e)) ? hull : null
     }
     if (!Array.isArray(e)) return null
     const op = e[0]
@@ -1064,6 +1070,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (span) return nrInts(span[0], span[1])
       const key = keyOf(e, scope ?? MODULE)
       if (key === null) return null
+      if (scope === current) {
+        const left = tested.size ? tested.get(key) : undefined
+        if (left) return nrInts(left[0], left[1])
+        // (a frame's const of an integer expression: `n1 = n - 1`)
+        const held = constNums.size ? constNums.get(key) : undefined
+        if (held) return held
+      }
       const s = bindingScope[key]
       if (typeof s === 'number' && closureParams[s]?.includes(e)) return paramNumsOf(key)
       return typeof scope === 'string' && key === keyIn(scope, e) ? argNumsOf(scope, e) : null
@@ -1157,6 +1170,33 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const argumentEntries = []     // same entries, in insertion order, without per-round Map iterator pairs
   let argumentRound = 0
   const moved = new Map()        // function name → each position's bound-change count; four opens it
+  const jumped = new Map()       // function name → the positions whose hull jumped to a tested constant: two more moves open those
+  const JUMP_AT = 3
+  const opened = (name, i) => (moved.get(name)?.[i] ?? 0) >= (jumped.get(name)?.[i] ? JUMP_AT + 3 : 4)
+  // The constants a function's own tests compare a parameter with, ascending: where a moving
+  // hull may stop. A hull that ends at an equality's constant is left one short of it by the
+  // test, and an order's arm clamps the hull at its constant or one past it, which the round
+  // after the jump records as a step of its own.
+  const stops = new Map()
+  const FLIPPED = { '<': '>', '>': '<', '<=': '>=', '>=': '<=' }
+  const NEGATED = { '<': '>=', '>=': '<', '>': '<=', '<=': '>', '===': '!==', '!==': '===', '==': '!=', '!=': '==' }
+  const literalInt = (e) => Array.isArray(e) && e[0] == null && Number.isInteger(e[1]) ? e[1] : Array.isArray(e) && e[0] === 'u-' && e.length === 2 && Array.isArray(e[1]) && e[1][0] == null && Number.isInteger(e[1][1]) ? -e[1][1] : null
+  const stopsOf = (name, i) => {
+    let per = stops.get(name)
+    if (!per) stops.set(name, per = [])
+    if (per[i]) return per[i]
+    const f = funcByName.get(name), param = paramNamesOf(f)[i], out = new Set()
+    const walk = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+      if (n.length === 3 && NEGATED[n[0]] !== undefined) {
+        const k = n[1] === param ? literalInt(n[2]) : n[2] === param ? literalInt(n[1]) : null
+        if (k !== null) out.add(k)
+      }
+      for (let j = 1; j < n.length; j++) walk(n[j])
+    }
+    walk(f.body)
+    return per[i] = [...out].sort((a, b) => a - b)
+  }
   const shapeMoves = new Map()   // the same for the sizes of the typed arrays a position takes
   // A function the host, a dispatcher or a caller the walk never sees may
   // call receives anything: it has no hull.
@@ -1169,6 +1209,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (reassignedIn(f.body, paramNamesOf(f), f.defaults).includes(name)) return null
     const i = paramNamesOf(f).indexOf(name)
     return i < 0 ? null : argRanges.get(fn)?.ranges[i] ?? null
+  }
+  // A function whose parameters no call has bound yet has not run, for all the walk knows: the calls
+  // from outside reach a recursion a round before its own (`f(n - 1)` in `f`), and a callee's hull
+  // settles a round after its caller's. What its body would decide for good waits for the round
+  // that binds it: the arguments it passes on (noteArgs) and a store that would open an array
+  // (storeAt). One no call ever binds is no part of the program. A function of no parameter, a
+  // closure and the module's own statements have no such record: they run.
+  const runs = (scope) => {
+    if (typeof scope !== 'string' || argRanges.has(scope)) return true
+    const f = funcByName.get(scope)
+    return !f || openCaller(scope, f) || paramNamesOf(f).length === 0
   }
   // The size of the typed array a named function's parameter holds, where every
   // call passes one of that size and nothing assigns the parameter (a record's
@@ -1184,6 +1235,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // arguments' hull over every call, the integers of it where every argument is
   // an integer; NR_NONE before a round has bound it, null where a call or the
   // body leaves it unbounded.
+  /** Whether every argument a named function's parameter takes is an integer (noteArgs). */
+  const integerArgs = (fn, name) => { const f = funcByName.get(fn), i = f ? paramNamesOf(f).indexOf(name) : -1; return i >= 0 && argRanges.get(fn)?.ints[i] !== false }
   const argNumsOf = (fn, name) => {
     const f = funcByName.get(fn)
     if (!f || !paramNamesOf(f).includes(name)) return null
@@ -1200,7 +1253,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // the hull bounds would land past the count the other channel's arguments reach.
   const noteArgs = (name, names, args, n, base) => {
     const f = funcByName.get(name)
-    if (!f || openCaller(name, f)) return
+    if (!f || openCaller(name, f) || !runs(current)) return
     let entry = roundArgs.get(name)
     if (!entry) {
       entry = { name, ranges: names.map(() => undefined), ints: names.map(() => true), shapes: names.map(() => undefined), round: argumentRound }
@@ -1220,7 +1273,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // An unbounded argument already opens this position for the round.
       // Later bounds cannot narrow it, so do not build and discard their hulls.
       if (prev === null) continue
-      const r = spread || i >= n || args === null || moved.get(name)?.[i] >= 4 ? null : rangeOf(argAt(args, i))
+      const r = spread || i >= n || args === null || opened(name, i) ? null : rangeOf(argAt(args, i))
       // (every argument at the position an integer: the parameter's numbers are the hull's integers)
       if (r !== null && entry.ints[i] !== false && numRangeOf(argAt(args, i))?.int !== true) entry.ints[i] = false
       if (prev === undefined || r === null) entry.ranges[i] = r
@@ -1253,7 +1306,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (!moves) moved.set(name, moves = [])
         const m = (moves[i] ?? 0) + 1
         moves[i] = m
-        if (m >= 4) entry.ranges[i] = null
+        // A hull still moving at its third round is a recursion feeding its own argument
+        // (`f(n - 1)` under `n !== 0`): the end that moved jumps to the constant the function
+        // tests the parameter against, and the rounds after say whether it holds there (up to
+        // three more moves: the step an order's test admits past its constant, and back); a
+        // hull with no such test, or one that moves on, opens as before.
+        if (m === JUMP_AT && r && p) {
+          const at = stopsOf(name, i), lo = r[0] < p[0] ? at.filter(v => v <= r[0]).pop() : undefined, hi = r[1] > p[1] ? at.find(v => v >= r[1]) : undefined
+          if (lo !== undefined || hi !== undefined) { entry.ranges[i] = [lo ?? r[0], hi ?? r[1]]; (jumped.get(name) ?? jumped.set(name, []).get(name))[i] = true }
+        }
+        if (opened(name, i)) entry.ranges[i] = null
       }
       // (a size that changes changes the summary; one that has changed four rounds over opens)
       for (let i = 0; i < entry.shapes.length; i++) {
@@ -1468,9 +1530,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // An array holds fewer than 2^32 elements: a counter its length bounds is an index.
   const LENGTH_BOUND = 0xfffffffe
   /** A store at `idx`: an index the count holds leaves the length alone; any other may extend it. */
-  const storeAt = (arr, idx, recvName = null) => {
+  const storeAt = (arr, idx, recvName = null, node = null) => {
     const c = lenCell(arr)
     if (c < 0) return
+    if (node !== null) { if (spanOf(idx, current, true)) presentStores.add(node); else presentStores.delete(node) }
     // (an index the guard keeps below this array's length, index.js keepHull: inside the count, no hole, no growth)
     if (recvName !== null && typeof idx === 'string' && indexBounds.get(idx) === recvName) return
     // (a counter the loop bounds by the length the cell's count aliases: `new Array(n)` under `i < n`, `n = coefs.length`)
@@ -1478,6 +1541,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // (a counter the loop bounds by this array's own length, which it leaves alone: a cell the array has, as a read there is present)
     if (recvName !== null && typeof idx === 'string' && lenStable.get(idx)?.has(keyOf(recvName))) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
+    // (in a function no call has bound yet the store has not run: the round that binds it decides)
+    if ((!span || span[0] < 0) && !runs(current)) return
     // (a counter whose every round stores here at it, from 0: each store lands at the length at most)
     const appends = recvName !== null && typeof idx === 'string' && appendCounters.get(idx)?.has(recvName) === true
     // A store can skip positions beyond the constructed count. Those cells
@@ -4427,7 +4492,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (literalKeyOf(idx) !== null) return assign(op, ['.', target[1], literalKeyOf(idx)], value)
       const ik = expr(idx)
       if (ik !== K.NONE && hasTag(recv, K.TYPED) && !typedElementKey(idx, ik === NUMBER)) raise(elems, typedPropsCellOf(recv), v)
-      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx, typeof target[1] === 'string' ? target[1] : null); raiseEntry(recv, ik, v, idx, hasTag(v, K.NUMBER) ? nums() : NR_NONE) } else escape(v) }
+      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx, typeof target[1] === 'string' ? target[1] : null, target); raiseEntry(recv, ik, v, idx, hasTag(v, K.NUMBER) ? nums() : NR_NONE) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseWild(recv, v); else escape(v) }
       else if (dictOrObject(recv)) { const c = cell(paramOf(recv)); raiseWild(recv, v); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, v); raiseSideWild(sid, v) } if (cellLostObject.has(c)) poisonAll(recv, ik, v) }
       // a function's property under a computed name: any of its names may hold it
@@ -4696,6 +4761,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           const r = rangeOf(d[2]), key = keyOf(d[1])
           if (r) constRanges.set(key, r)
           else constRanges.delete(key)
+          if (current !== null && key !== null) { const nums = r ? numRangeOf(d[2]) : null; if (nums && nums.int && Number.isFinite(nums.lo) && Number.isFinite(nums.hi)) constNums.set(key, nums); else constNums.delete(key) }
           // (a module's constant holds its initializer's interval in every function: a frame's reset keeps it)
           if (current === null && key !== null) {
             const was = moduleConstRanges.get(key)
@@ -5457,6 +5523,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // pushed on one stack and unwound to the mark taken before it, restoring
   // the prior masks in reverse.
   const refined = new Map() // binding id or member path → the tag bits its kind is read within
+  // The integers a test leaves a name of integers on the path it guards (`n !== 0` of 0 to 6: 1 to 6;
+  // `c < 6`: 5 down), by binding. Pushed on the kinds' stack under the key's complement and unwound
+  // with it. Nothing assigns a name that has such numbers: a parameter with a hull, a frame's const,
+  // a counter in its loop's body.
+  const tested = new Map()
   const rKeys = [], rPriors = []
   let rtop = 0, pathDepth = 0
   const refineName = (name, mask) => refineKey(keyOf(name), mask)
@@ -5473,6 +5544,29 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // before (`if (o == null) return; if (typeof o === 'number') o = null`: the second
   // test's arm ends by restoring "not nullish").
   const endProofs = (key) => { refined.delete(key); for (let i = 0; i < rtop; i++) if (rKeys[i] === key) rPriors[i] = undefined }
+  const narrows = (c, when) => {
+    let op = c[0], x = c[1], k = c[2]
+    if (typeof x !== 'string') { if (typeof k !== 'string') return; x = c[2]; k = c[1]; op = FLIPPED[op] ?? op }
+    const key = keyOf(x), at = key === null || callAssigned(key) ? null : spanOf(k)
+    if (!at || at[0] !== at[1]) return
+    const nums = numRangeOf(x)
+    if (!nums || !nums.int || !Number.isFinite(nums.lo) || !Number.isFinite(nums.hi)) return
+    if (!when) op = NEGATED[op]
+    const K = at[0]
+    let lo = nums.lo, hi = nums.hi
+    if (op === '<') hi = Math.min(hi, K - 1)
+    else if (op === '<=') hi = Math.min(hi, K)
+    else if (op === '>') lo = Math.max(lo, K + 1)
+    else if (op === '>=') lo = Math.max(lo, K)
+    else if (op === '===' || op === '==') { lo = Math.max(lo, K); hi = Math.min(hi, K) }
+    else if (lo === K) lo = K + 1
+    else if (hi === K) hi = K - 1
+    if (lo > hi || lo === nums.lo && hi === nums.hi) return
+    const prior = tested.get(key)
+    if (rtop === rKeys.length) { rKeys.push(~key); rPriors.push(prior) } else { rKeys[rtop] = ~key; rPriors[rtop] = prior }
+    rtop++
+    tested.set(key, [lo, hi])
+  }
   // A name a store (`p.rate = 0.1`, `p[i] += v`) or a method call (`p.m()`)
   // went through holds no nullish value after it: either throws where `p` is
   // undefined or null, so what follows on its path reads `p` as an object,
@@ -5486,7 +5580,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const key = keyOf(recv)
     if (key !== null && ((refined.get(key) ?? TAGS) & NULL_BITS) !== 0) refineKey(key, TAGS & ~NULL_BITS)
   }
-  const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (typeof key === 'string') pathDepth--; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
+  const unwind = (mark) => {
+    while (rtop > mark) {
+      rtop--
+      const key = rKeys[rtop], prior = rPriors[rtop]
+      if (typeof key === 'number' && key < 0) { if (prior === undefined) tested.delete(~key); else tested.set(~key, prior); continue }
+      if (typeof key === 'string') pathDepth--
+      if (prior === undefined) refined.delete(key); else refined.set(key, prior)
+    }
+  }
   // A part of the walk that may not run where what encloses it does: what it
   // proves (a test, a store's or a method call's receiver) holds on no path past
   // it, and what it assigns leaves no straight-line fact. `apart(site)` enters
@@ -5631,6 +5733,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     const numeric = numericProofs(c, when, isNumberHere)
     if (numeric.size) for (const name of numeric) refineName(name, bitOf(K.NUMBER))
+    if (c.length === 3 && NEGATED[op] !== undefined) narrows(c, when)
     // `Array.isArray(x)`: an array where it holds, anything else where it fails
     if (op === '()' && c[1] === 'Array.isArray' && c.length === 3) {
       const mask = when ? bitOf(K.ARRAY) : TAGS & ~bitOf(K.ARRAY)
@@ -5862,7 +5965,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); constSpans.clear(); lengthAliases.clear(); leastAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
+  const reset = () => { pre.clear(); refined.clear(); tested.clear(); constNums.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); constSpans.clear(); lengthAliases.clear(); leastAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
@@ -5932,7 +6035,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const queryFacts = {
     kinds, incoming, internalIncoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
@@ -6656,7 +6759,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
+    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); presentStores.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); jumped.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
     wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

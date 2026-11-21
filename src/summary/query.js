@@ -23,7 +23,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, internalIncoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildStore, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, fnAssigned, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -790,6 +790,9 @@ export function summaryQueries(facts, internal = false) {
       // counter its loop bounds by that length, the length left alone or grown):
       // no bounds test, no miss.
       presentArrayRead: n => presentReads.has(n),
+      // an element store at an index the walk found a span of integers, where the receiver keeps its length: by the
+      // walk every store of such an array is inside it (one at 7 into an array of three opens it, and is no such store)
+      presentArrayStore: n => presentStores.has(n) && fixedLen(kindOfExpr(n[1])) != null,
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayDenseOfExpr: node => {

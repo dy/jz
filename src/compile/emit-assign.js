@@ -796,7 +796,8 @@ function emitElementStore(arr, idx, val, node) {
     //     `out[offset + stride]` once its arguments' constants flow in): the
     //     cell's own store at the computed offset, no length test.
     const view = ctx.summary?.at(ctx.func.current), len = view?.fixedLenOfExpr(arr)
-    if (len > 0) { const r = intExprRange(idx); if (r && r[0] >= 0 && r[1] < len) return storeFixedElement(arr, asI32(emit(idx)), valueExpr, view.mayBeNullishExpr(arr)) }
+    // (or one the summary's walk holds there: a parameter whose every argument is an integer of the length, query.js presentArrayStore)
+    if (len > 0) { const r = intExprRange(idx); if (r && r[0] >= 0 && r[1] < len || node != null && view.presentArrayStore(node)) return storeFixedElement(arr, asI32(emit(idx)), valueExpr, view.mayBeNullishExpr(arr)) }
   }
   // 3b. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {

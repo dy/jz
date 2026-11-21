@@ -1,9 +1,10 @@
 // The hull of the arguments a parameter receives over the function's direct
 // calls (src/summary `argRanges`, `paramRangesOf`): a counter's span, the
 // arithmetic on it, a caller's own hull through a chain of calls. A position
-// some call leaves unbounded is null; a hull that keeps widening (a recursion
-// feeding its own argument) opens; a function the host or a closure table may
-// call has none. The emitter starts a parameter's flow interval from it, so a
+// some call leaves unbounded is null; a recursion feeding its own argument
+// settles at the value its own test of the parameter stops it at, and opens
+// where it tests none or moves past it; a function the host or a closure table
+// may call has none. The emitter starts a parameter's flow interval from it, so a
 // ToInt32 of `floor(y) + gy` inside a sampler needs no infinity guard.
 import test from 'tst'
 import { is } from 'tst/assert.js'
@@ -32,8 +33,8 @@ test('parameter hull: counters, arithmetic and a caller\'s hull flow into the ca
 test('parameter hull: an unbounded call, a widening recursion, an escaped function', () => {
   is(JSON.stringify(ranges(`function f(x, y) { return x + y }
     export const w = (v) => f(v, 2) + f(1, 3)`, 'f')), JSON.stringify([null, [2, 3]]), 'a host value leaves x open, y keeps its hull')
-  is(JSON.stringify(ranges(`function r(k) { return k > 5 ? 0 : r(k + 1) }
-    export const t = () => r(0)`, 'r')), JSON.stringify([null]), 'a recursion widening its own argument opens')
+  is(JSON.stringify(ranges(`function r(k, n) { return n ? r(k + 1, n - 1) : k }
+    export const t = () => r(0, 3)`, 'r')), JSON.stringify([null, null]), 'a recursion widening an argument it never tests opens')
   is(JSON.stringify(ranges(`function f(x) { return x }
     export const s = () => f(1) + f(...[2, 3])`, 'f')), JSON.stringify([null]), 'a spread argument leaves the position open')
   is(JSON.stringify(ranges(`function nz(v, out, o) { out[o] = v; return out }
@@ -52,15 +53,87 @@ test('parameter hull: widening is independent for each function and argument pos
      function g(x, y) { return x > 8 ? y : g(x + 1, y) }
      export function t() { return f(2, 0) + g(0, 3) }`,
   ]
+  // (each recursion counts to the 9 its own test stops it at: test below, 'a recursion counting to a constant it tests')
   const expected = [
-    [[null, [2, 2]], [[3, 3], null]],
-    [[[2, 2], null], [null, [3, 3]]],
+    [[[0, 9], [2, 2]], [[3, 3], [0, 9]]],
+    [[[2, 2], [0, 9]], [[0, 9], [3, 3]]],
   ]
   for (const i of [0, 0, 1, 0]) {
     is(ranges(sources[i], 'f'), expected[i][0], `f in program ${i}`)
     is(ranges(sources[i], 'g'), expected[i][1], `g in program ${i}`)
     for (const optimize of levels(0, 1, 2, 3, 'size')) agree(sources[i], 't', [], { optimize })
   }
+})
+
+// A recursion's argument: the calls from outside start its hull (a function no call has bound
+// yet has not run, so its own call of itself bounds nothing then), each round moves it a step,
+// and at the third the end that moved jumps to the constant the function tests the parameter
+// against. The test's own narrowing in the round after (`n !== 0` of 0 to 6 leaves 1 to 6) says
+// whether the hull holds there; one that moves on opens.
+const hulls = (src, names) => { compile(src, { optimize: 0 }); return names.map(n => JSON.stringify(ctx.summary.paramRangesOf(n))).join(' ') }
+test('parameter hull: a recursion counting to a constant it tests settles there', () => {
+  const src = `const v = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    const down = (n) => { if (n !== 0) { v[n - 1] = n; down(n - 1) } }
+    const up = (c) => { if (c === 6) return; v[c] = c; up(c + 1) }
+    const a = (k) => k > 5 ? 0 : a(k + 1)
+    const b = (k) => { if (k >= 6) return 0; v[k] = k; return b(k + 1) }
+    const c = (k) => { if (k <= 0) return 0; v[k] = k; return c(k - 1) }
+    const d = (k) => { if (k < 1) return 0; v[k - 1] = k; return d(k - 1) }
+    const by2 = (k) => { if (k < 10) { v[k] = k; by2(k + 2) } }
+    const by3 = (k) => { if (k <= 0) return 0; v[k] = k; return by3(k - 3) }
+    const flipped = (k) => { if (6 > k) { v[k] = 1; flipped(k + 1) } }
+    const even = (n) => n === 0 ? 1 : odd(n - 1), odd = (n) => n === 0 ? 0 : even(n - 1)
+    export const run = () => { down(6); up(0); by2(0); flipped(0); return a(0) + b(0) + c(6) + d(6) + by3(7) + even(6) * 50 + v[5] + v[10] * 3 + v.length * 100 }`
+  is(hulls(src, ['down', 'up', 'a', 'b', 'c', 'd', 'flipped']), '[[0,6]] [[0,6]] [[0,6]] [[0,6]] [[0,6]] [[0,6]] [[0,6]]', 'a step of one, to the constant either arm of the test stops it at')
+  is(hulls(src, ['by2', 'by3']), '[[0,11]] [[-2,7]]', 'a step past the constant: the hull a round after the jump records')
+  is(hulls(src, ['even', 'odd']), '[[0,6]] [[0,5]]', 'two functions feeding each other')
+  agree(src, 'run')
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) agree(src, 'run', [], { optimize })
+})
+
+test('parameter hull: a recursion past its test, of fractions, or with no test opens', () => {
+  // (6, 4, 2, 0 by the source, but an interval under `!== 0` cannot say the step lands on 0)
+  is(hulls(`const v = [0, 0, 0, 0, 0, 0, 0, 0]
+    const f = (k) => { if (k !== 0) { v[k] = 1; f(k - 2) } }
+    export const run = () => { f(6); return v[2] }`, ['f']), '[null]', 'a step of two under an equality')
+  // (0.5, 1.5, 2.5, 3.5: the test leaves no integers, so it narrows nothing)
+  is(hulls(`const q = (k) => { if (k < 3) q(k + 1) }
+    export const run = () => { q(0.5); return 1 }`, ['q']), '[null]', 'fractions under an order test')
+})
+
+test('parameter hull: what a test leaves a name ends with its arm', () => {
+  // (past the arm the name is 0 to 3 again; a hull the arm's 1 to 3 left would miss the call with 0)
+  is(hulls(`const v = [0, 0, 0, 0]
+    const w = (k) => v[k]
+    const p = (k) => { if (k !== 0) { v[k] = 1 } return w(k) }
+    export const run = () => p(0) + p(3)`, ['p', 'w']), '[[0,3]] [[0,3]]', 'the name past its arm')
+})
+
+// A function's stores decide nothing before a call has bound its parameters: the callee's hull
+// settles a round after its caller's, and a store read before it would open the array for good.
+// With the recursion's hull the swap's indexes are 0 to 5 and the literal keeps its six.
+test('parameter hull: a callee of a recursion stores inside the array\'s length', () => {
+  const src = `const v = [0, 0, 0, 0, 0, 0]
+    let count = 0
+    const swap = (i, j) => { const tmp = v[i]; v[i] = v[j]; v[j] = tmp }
+    const permute = (n) => { count += 1; if (n !== 0) { const n1 = n - 1; permute(n1); for (let i = n1; i >= 0; i -= 1) { swap(n1, i); permute(n1); swap(n1, i) } } }
+    export let run = (inner) => { let ok = 1; for (let k = 0; k < inner; k++) { count = 0; permute(6); if (count !== 8660) ok = 0 } return ok }`
+  is(hulls(src, ['permute', 'swap']), '[[0,6]] [[0,5],[0,5]]', 'the recursion\'s argument and the indexes it hands on')
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) agree(src, 'run', [2], { optimize })
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: { level: 2, sourceInline: false, inlineFns: false } })
+  is(/\$__arr_set|\$__ptr_offset_fwd|\$__esc_elem/.test(funcWat(text, 'swap')), false, 'the swap stores in place: nothing grows, nothing forwards, nothing is asked of the heap after')
+  // (a counter from a parameter of integers down to zero: `fill`'s start is 3 to 5)
+  const fill = `const v = [0, 0, 0, 0, 0, 0]
+    const fill = (n) => { for (let i = n; i >= 0; i--) v[i] = n }
+    export const run = () => { fill(3); fill(5); return v[4] * 10 + v[0] + v.length * 100 }`
+  agree(fill, 'run')
+  is(/\$__arr_set/.test(funcWat(wat(fill, { optimize: { level: 2, sourceInline: false, inlineFns: false } }), 'fill')), false, 'a descent from a parameter of integers stores in place')
+  // (a hull of 1 to 2 with 1.5 in it bounds the store, a property's there, and is no index: the cell's own store would take 1.5 for 1)
+  const fraction = `const v = [0, 0, 0, 0, 0, 0]
+    const put = (i, x) => { v[i] = x }
+    export const run = () => { put(1, 5); put(1.5, 6); put(2, 7); return v[1] * 100 + v[2] * 10 + (v[1.5] === 6 ? 1 : 0) + v.length * 1000 }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) agree(fraction, 'run', [], { optimize })
 })
 
 // Every channel that binds a function's parameters notes the call's arguments
