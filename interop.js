@@ -1085,6 +1085,16 @@ export const wrap = (src, state) => {
   // host Error of that class (hostError). A module without exception handling
   // traps where it throws, having marked the value: a trap with no mark is a
   // foreign one (bounds, stack), as it is.
+  // An error a trap delivers (a module nothing in which can catch throws by `unreachable`,
+  // link/throw-runtime.js) was raised where the trap is: its stack is the trap's frames, the
+  // function of the module that raised it first, in place of this decoder's own.
+  const raisedAt = (e, trap) => {
+    if (e instanceof Error && trap instanceof WebAssembly.RuntimeError && typeof trap.stack === 'string') {
+      const frames = trap.stack.startsWith(trap.name) ? trap.stack.slice(trap.stack.indexOf('\n') + 1) : trap.stack
+      e.stack = `${e.name}: ${e.message}\n${frames}`
+    }
+    return e
+  }
   const decodeThrown = error => {
     const isException = error instanceof WebAssembly.Exception
     if (!lastErrBits || !isException && !(error instanceof WebAssembly.RuntimeError && lastErrBits.value !== 0n)) throw error
@@ -1092,9 +1102,9 @@ export const wrap = (src, state) => {
     if (lastErrBitsWritable) lastErrBits.value = 0n
     // An error the runtime raises crosses as its code (err-codes.js), which only
     // the private transport tag marks: a user's number stays a thrown number.
-    if (Number(errBits >> 32n) === ERROR_CODE_HI) throw runtimeError(Number(errBits & 0xffffffffn))
+    if (Number(errBits >> 32n) === ERROR_CODE_HI) throw raisedAt(runtimeError(Number(errBits & 0xffffffffn)), error)
     const value = mem.read(errBits, fnOf), cls = value != null ? errorSidClassOf(errBits) : null
-    const thrown = cls != null ? hostError(cls, value) : value
+    const thrown = cls != null ? raisedAt(hostError(cls, value), error) : value
     // a rethrow through a host import keeps the value's bits (catchingImport)
     if (state?.inHost && thrown !== null && (typeof thrown === 'object' || typeof thrown === 'function')) (state.caught ??= new WeakMap()).set(thrown, errBits)
     throw thrown

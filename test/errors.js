@@ -1404,6 +1404,30 @@ test('errors: a thrown value reaches the host as Node delivers it', () => {
   ok(e.error === 'TypeError' && e.message.length > 0 && !e.private, `a runtime TypeError, no code: ${JSON.stringify(e)}`)
 })
 
+// An error a trap delivers (a module nothing in which can catch throws by `unreachable`) was
+// raised where the trap is: its stack is the module's frames, the function that raised it
+// first, in place of the host decoder's own. The runtime's error and the program's alike.
+test('errors: an error a trap delivers has the module\'s frames', () => {
+  if (onWasi()) return
+  const stackOf = (f) => { try { f() } catch (e) { return String(e.stack) } return 'returned' }
+  const frames = (stack) => stack.split('\n').slice(1).filter(l => /wasm/.test(l)).length
+  // (a module with no throw of its own and nothing that catches raises its runtime errors by a trap)
+  const lone = jz(`const pick = (o, k) => k > 1 ? o.x.y : 0\nexport let f = (k) => pick({ x: null }, k)`).exports
+  const runtime = stackOf(() => lone.f(2))
+  ok(/^TypeError: Cannot read properties/.test(runtime) && frames(runtime) >= 1, `the runtime's TypeError: ${runtime.slice(0, 160)}`)
+  is(lone.f(1), 0, 'and a call that throws nothing answers')
+  // (one with a throw of its own keeps its exceptions unless asked to trap: an option the hosted compiler is not given)
+  if (onKernel()) return
+  const src = `const pick = (o, k) => k > 1 ? o.x.y : 0
+    const check = (k) => { if (k < 0) throw new RangeError('neg'); return k }
+    export let f = (k) => check(k) + pick({ x: null }, k)`
+  const m = jz(src, { optimize: { level: 1, exceptions: false } }).exports
+  const own = stackOf(() => m.f(-1)), beside = stackOf(() => m.f(2))
+  ok(/^RangeError: neg\n/.test(own) && frames(own) >= 1, `the program's RangeError: ${own.slice(0, 160)}`)
+  ok(/^TypeError: Cannot read properties/.test(beside) && frames(beside) >= 1, `the runtime's TypeError beside it: ${beside.slice(0, 160)}`)
+  is(m.f(1), 1, 'and a call that throws nothing answers')
+})
+
 test('errors: an early error is the SyntaxError JavaScript throws', () => {
   for (const src of ['let a = 1; let a = 2', 'export let f = (x => x', 'let a = {}; a.1']) {
     let error
