@@ -3940,7 +3940,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // a slot under a member's name reads as its value, or as the member bound where it holds none
       const shadowed = i >= 0 ? classMember(recv, prop) : null
       if (shadowed) return optionalResult(op, recv, shadowedBy(slots(paramOf(recv))[i], callWith(binderOf(shadowed), core(recv))))
-      if (i >= 0) return optionalResult(op, recv, mixedReadIn(mixedSlots.get(paramOf(recv)) ?? NO_MIX, i, slots(paramOf(recv))[i]))
+      if (i >= 0) {
+        // (a slot under a getter's name: what the instance holds there, or what the class's getter answers where it holds nothing)
+        const own = mixedReadIn(mixedSlots.get(paramOf(recv)) ?? NO_MIX, i, slots(paramOf(recv))[i]), got = classMember(recv, getterOf(prop))
+        return optionalResult(op, recv, got ? merge(own, callWith(got, core(recv))) : own)
+      }
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
       if (gi >= 0) {
         const g = slots(paramOf(recv))[gi]
@@ -4323,7 +4327,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
    *  sidecar (a name outside the shape: the shape is open, its fields keep
    *  their kinds). */
   const storeMember = (sid, prop, v, lit) => {
-    const i = schemas[sid].indexOf(prop), setter = i < 0 ? classOfSid(sid)?.methods.get(setterOf(prop)) ?? null : null
+    const i = schemas[sid].indexOf(prop), setter = classOfSid(sid)?.methods.get(setterOf(prop)) ?? null
     const si = schemas[sid].indexOf(setterOf(prop))
     // a slot under a member's name is called in the member's place, by callers the summary does not pair with it
     if (i >= 0) { raiseSlot(sid, i, v, null, lit); if (classOfSid(sid)?.methods.has(prop)) escape(v) }
@@ -4334,8 +4338,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       else if (tagOf(s) !== K.NONE) escape(v)
       sp = b
     }
-    else if (setter) { const b = sp; pushK(kind(K.OBJECT, sid)); pushK(v); call(setter, b, 2); sp = b }
-    else { openSchema(sid); dynamicProps.add(prop); raiseSide(sid, prop, v) }
+    else if (!setter) { openSchema(sid); dynamicProps.add(prop); raiseSide(sid, prop, v) }
+    // The class's setter runs where the instance holds no property of the name. A slot under the
+    // name does not say it holds one: the class assigns to the name through `this` (jzify's field),
+    // which calls the setter, its own or a derived class's.
+    if (setter && (i >= 0 || si < 0)) { const b = sp; pushK(kind(K.OBJECT, sid)); pushK(v); call(setter, b, 2); sp = b }
   }
   /** `target op= value`: the stored kind reaches the binding or the slot; returns the expression's kind. */
   const assignName = (name, v) => {

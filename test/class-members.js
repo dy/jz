@@ -127,6 +127,34 @@ test('class members: a field stored under another class\'s accessor name keeps i
   is((body.match(/__hash_set/g) || []).length, 0, 'every store of f is a slot store')
 })
 
+// A class that assigns to a name through `this` has a slot of the name in its layout, and a
+// setter of the name, its own or a derived class's, takes the assignment all the same: the
+// instance never holds the property. A store or a read through a receiver the plan cannot
+// turn into a call of the accessor (two classes, a base's method on a derived instance) runs
+// the accessor, and what its body does counts: here it grows an array past the literal's four.
+test('class members: an accessor runs under a name the class also assigns to', () => {
+  const B = `class B { constructor() { this.n = 0 } set at(i) { this.n = i } get at() { return this.n } }`
+  const pick = `const pick = (k) => k ? new A() : new B()`
+  const rows = [
+    ['a setter that grows an array, stored through a receiver of two classes', `class A { constructor() { this.v = [0, 0, 0, 0] } set at(i) { this.v[i] = 7 } go() { this.at = 1; return this.v.length } }\n${B}\n${pick}
+      export const run = (k) => { const a = new A(), o = pick(k); const n = a.go(); o.at = 9; return n * 100 + (k ? o.v.length * 10 + (o.v[9] === 7 ? 1 : 0) : o.n) }`],
+    ['the same setter with no slot under its name', `class A { constructor() { this.v = [0, 0, 0, 0] } set at(i) { this.v[i] = 7 } }\n${B}\n${pick}
+      export const run = (k) => { const o = pick(k); o.at = 9; return k ? o.v.length * 10 + (o.v[9] === 7 ? 1 : 0) : o.n }`],
+    ['a derived class\'s setter under a name its base assigns to', `class P { constructor() { this.v = [0, 0, 0, 0] } go(i) { this.at = i; return this.v.length } }
+      class D extends P { set at(i) { this.v[i] = 7 } }
+      export const run = (k) => { const p = new P(), d = new D(); const n = p.go(2) + d.go(k + 8); return n * 100 + d.v.length * 10 + (d.v[9] === 7 ? 1 : 0) + (p.at === 2 ? 1000 : 0) }`],
+    ['a derived class\'s getter under a name its base reads', `class P { constructor() { this.v = [0, 0, 0, 0] } put(i) { this.at = i } get() { return this.at } }
+      class D extends P { get at() { this.v[9] = 7; return 'd' } set at(i) { this.v[0] = i } }
+      export const run = (k) => { const p = new P(), d = new D(); p.put(3); d.put(k + 5); const x = p.get(), y = d.get(); return '' + x + y + d.v.length + (d.v[9] === 7 ? 'y' : 'n') + d.v[0] }`],
+    ['a getter that counts its reads, through a receiver of two classes', `class A { constructor() { this.n = 0 } get at() { this.n += 1; return this.n } set at(i) { this.n = i } go() { this.at = 10; return 0 } }
+      class B { constructor() { this.n = 0 } get at() { this.n += 2; return this.n } set at(i) { this.n = i } }\n${pick}
+      export const run = (k) => { const a = new A(), o = pick(k); a.go(); o.at = 20; const x = o.at + o.at; return x * 100 + o.n }`],
+    ['a compound store, read by the getter and stored by the setter', `class A { constructor() { this.n = 0 } get at() { return this.n * 2 } set at(i) { this.n = i + 1 } go() { this.at = 3; return 0 } }
+      export const run = (k) => { const a = new A(); a.go(); a.at += k; a.at++; return a.n * 10 + a.at }`],
+  ]
+  for (const [label, src] of rows) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) for (const k of [0, 1]) agree(src, 'run', [k], { optimize }, `${label}, run(${k}) at ${optimize}`)
+})
+
 test('class members: a compound store through a spliced receiver keeps its class', () => {
   // `target.copy(o).addScaledVector(d, t)` splices into the loop; addScaledVector's `this.x += …`
   // stages its receiver in a temp, and the temp keeps the class: no accessor probe, no hash store

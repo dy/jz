@@ -495,7 +495,11 @@ export function summaryQueries(facts, internal = false) {
         if (paramOf(r) >= SET_BASE) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) k = merge(k, memberOf(kind(K.OBJECT, sid), prop)); return k }
         if (iterRecord(paramOf(r))) return ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH
         const i = schemas[paramOf(r)].indexOf(prop)
-        if (i >= 0) return slotKind(paramOf(r), i)
+        if (i >= 0) {
+          // (a slot under a getter's name: what the instance holds there, or what the class's getter answers)
+          const got = classMember(r, getterOf(prop))
+          return got ? merge(slotKind(paramOf(r), i), results.has(got) ? resultOfId(got) : ANY) : slotKind(paramOf(r), i)
+        }
         const gi = schemas[paramOf(r)].indexOf(getterOf(prop))
         if (gi >= 0) {
           if (facts.deletable?.has(paramOf(r))) return ANY
