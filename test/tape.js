@@ -260,6 +260,33 @@ test('link: the schema section lists only surviving schemas, by tag or by named 
   is(out.find(n => n[0] === '@custom' && n[1] === '"jz:errcls"')[2].join(','), [1, 1, 10, 82, 97, 110, 103, 101, 69, 114, 114, 111, 114].join(','), 'only the surviving error class')
 })
 
+// A pass that rebuilds a node loses its mark (a loop's copy, optimize/wide-accumulator.js), and a
+// schema whose only construction lost it had no layout for the host to read an Error by. The node
+// still says what it makes: each form of an object's pointer names its schema.
+test('link: a schema is live where a node makes its pointer, marked or not', () => {
+  const OBJECT = 6, ARRAY = 1
+  const hi = (type, sid) => (((0x7FF8 << 16) | (type << 15) | sid) >>> 0).toString(16).toUpperCase().padStart(8, '0')
+  const facts = (n) => ({ schemas: Array.from({ length: n }, (_, i) => ['p' + i]), namedUses: [], errorSids: [] })
+  const live = (body) => {
+    const [out] = onTape(['module', ['func', '$f', ['export', '"f"'], ...body]], root => schemaSections(root, facts(5)))
+    const schema = out.find(n => n[0] === '@custom' && n[1] === '"jz:schema"')?.[2]
+    if (!schema) return ''
+    // (a dead schema is its id as text, one character here; a live one its property, two)
+    const ids = []
+    for (let at = 1, id = 0; id < 5; id++) { const len = schema[at + 2]; if (len === 2) ids.push(id); at += 3 + len }
+    return ids.join(',')
+  }
+  is(live([['drop', ['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', 2], ['local.get', '$o']]]]), '2', 'the call of a literal type and schema')
+  is(live([['drop', ['call', `$__mkptr_${OBJECT}_3_d`, ['local.get', '$o']]]]), '3', 'the helper specialized for the pair')
+  is(live([['drop', ['f64.const', `nan:0x${hi(OBJECT, 1)}00000410`]]]), '1', 'the folded pointer')
+  is(live([['drop', ['f64.reinterpret_i64', ['i64.or', ['i64.const', `0x${hi(OBJECT, 4)}00000000`], ['i64.extend_i32_u', ['local.get', '$o']]]]]]), '4', 'a re-boxing\'s prefix')
+  is(live([['drop', ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 2], ['local.get', '$o']]], ['drop', ['f64.const', `nan:0x${hi(ARRAY, 3)}00000410`]],
+    ['drop', ['call', '$__mkptr', ['local.get', '$t'], ['i32.const', 1], ['local.get', '$o']]], ['drop', ['call', `$__mkptr_${ARRAY}_4_d`, ['local.get', '$o']]],
+    ['drop', ['i64.or', ['i64.const', '0x0000000100000002'], ['i64.const', '0x0003000300000000']]], ['drop', ['f64.const', 1.5]], ['drop', ['i64.const', 7]],
+    ['drop', ['i64.eq', ['i64.and', ['local.get', '$x'], ['i64.const', '0xFFFFFFFF00000000']], ['i64.const', `0x${hi(OBJECT, 2)}00000000`]]]]), '',
+    'a pointer of another type, a type no literal names, a constant that is no pointer (its tag bits an object\'s, under no NaN prefix) and a test of a value\'s schema make none')
+})
+
 test('arena rewind on the tape: save at entry, restore around every return and the fall-through; unsafe callees veto', () => {
   const alloc = ['call', '$__alloc', ['i32.const', 8]]
   const m = ['module',

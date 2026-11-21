@@ -9,7 +9,8 @@
  *
  * @module link/sections
  */
-import { T, NONE, intern, text, walk, push, node, str, num, bytes } from '../ir/tape.js'
+import { T, NONE, OP_NUM, intern, text, walk, push, node, str, num, bytes } from '../ir/tape.js'
+import { PTR, LAYOUT, decodePtrType, decodePtrAux } from '../../layout.js'
 
 const utf8 = new TextEncoder()
 const varint = (out, n) => { while (n >= 0x80) { out.push((n & 0x7F) | 0x80); n >>>= 7 } out.push(n) }
@@ -23,10 +24,43 @@ const encProp = (out, p) => {
   else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
+// The high word of a 64-bit constant written in hex (`0x…`, `nan:0x…`, sixteen digits), -1 for any other text.
+const hiWord = (s) => {
+  if (s === null) return -1
+  const at = s.startsWith('nan:') ? 4 : 0
+  if (s.length !== at + 18 || s[at] !== '0' || (s[at + 1] !== 'x' && s[at + 1] !== 'X')) return -1
+  const hi = parseInt(s.slice(at + 2, at + 10), 16)
+  return hi === hi ? hi : -1
+}
+// A literal i32 operand's number, -1 where the node is none.
+const literal = (n, I32) => n === NONE || T.op[n] !== I32 || T.a[n] === NONE ? -1 : T.op[T.a[n]] === OP_NUM ? T.imm[T.a[n]] : +(text(T.a[n]) ?? -1)
+// The schema an object's pointer is made with, read off the node that makes it (ir/pointers.js
+// mkPtrIR and boxPtrIR, the two places one is made): `$__mkptr` of a literal OBJECT type and
+// schema, the helper specialized for the pair (optimize/specialize-mkptr.js,
+// `$__mkptr_<type>_<schema>…`), and a constant whose high word is an object pointer's: the
+// folded pointer, and a re-boxing's prefix, the i64 an `i64.or` joins with the offset (the same
+// i64 under a comparison is a test of a value's schema, which makes nothing). The emitter also
+// marks such a node (`sid`), and a pass that rebuilds one loses the mark (a loop's copy,
+// optimize/wide-accumulator.js): its operands stay. -1 where the node makes none.
+const madeSid = (id, parent, CALL, I32, I64, F64, OR) => {
+  const op = T.op[id], a = T.a[id]
+  if (op === I64 || op === F64) {
+    if (op === I64 && (parent === NONE || T.op[parent] !== OR)) return -1
+    const hi = a === NONE ? -1 : hiWord(text(a))
+    return hi >= 0 && hi >>> 19 === LAYOUT.NAN_PREFIX >>> 3 && decodePtrType(hi) === PTR.OBJECT ? decodePtrAux(hi) : -1
+  }
+  if (op !== CALL || a === NONE) return -1
+  const callee = text(a)
+  if (callee === null || !callee.startsWith('$__mkptr')) return -1
+  if (callee === '$__mkptr') { const type = T.next[a]; return literal(type, I32) === PTR.OBJECT ? literal(T.next[type], I32) : -1 }
+  const parts = callee.split('_')   // ['$', '', 'mkptr', type, schema, …]
+  return parts.length > 4 && +parts[3] === PTR.OBJECT && +parts[4] === +parts[4] ? +parts[4] : -1
+}
+
 export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids, regexSids, viewSids, hostObjects = true }) {
-  const FUNC = intern('func')
+  const FUNC = intern('func'), CALL = intern('call'), I32 = intern('i32.const'), I64 = intern('i64.const'), F64 = intern('f64.const'), OR = intern('i64.or')
   const used = new Set()
-  walk(root, (id) => { if (T.sid[id] !== NONE) used.add(T.sid[id]) })
+  walk(root, (id, parent) => { const sid = T.sid[id] !== NONE ? T.sid[id] : madeSid(id, parent, CALL, I32, I64, F64, OR); if (sid >= 0) used.add(sid) })
   if (namedUses.length) {
     const names = new Set()
     for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === FUNC) { const name = text(T.a[c]); if (name !== null) names.add(name) }

@@ -1404,6 +1404,25 @@ test('errors: a thrown value reaches the host as Node delivers it', () => {
   ok(e.error === 'TypeError' && e.message.length > 0 && !e.private, `a runtime TypeError, no code: ${JSON.stringify(e)}`)
 })
 
+// An Error made inside a loop reaches the host as one. The loop's integer copy (optimize/
+// wide-accumulator.js) rebuilt the node that makes the Error's pointer without its mark, the
+// copy was the loop that survived, and the module then named no layout for the host to read
+// the Error by: it received the pointer's bits, a BigInt, at levels 2 and above.
+test('errors: an Error thrown from inside a loop reaches the host as one', () => {
+  const show = (v) => typeof v === 'bigint' ? 'a BigInt' : v instanceof Error ? `${v.constructor.name}(${v.message})` : JSON.stringify(v)
+  const caught = (f) => { try { return show(f()) } catch (e) { return 'threw ' + show(e) } }
+  const programs = {
+    'an Error from a counted loop': `export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { if (i > 5) throw new Error('past ' + i); s += 10 + i } return s }`,
+    'a RangeError from a counted loop': `export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { if (i > 5) throw new RangeError('past ' + i); s += i * 2 } return s }`,
+    'an Error from a while': `export const f = (n) => { let s = 0, i = 0; while (i < n) { if (i > 5) throw new Error('past ' + i); s += 10 + i; i++ } return s }`,
+    'an object thrown from a loop': `export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { if (i > 5) throw { at: i, sum: s }; s += 10 + i } return s }`,
+    'an object returned from a loop': `export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { if (i > 5) return { at: i, twice: i * 2, sum: s }; s += 10 + i } return null }`,
+    'a class instance made in a loop': `class P { constructor(x) { this.x = x; this.y = x * 2 } }\nexport const f = (n) => { let p = null, s = 0; for (let i = 0; i < n; i++) { if (i > 5) { p = new P(s); break } s += 10 + i } return p }`,
+  }
+  for (const [label, src] of Object.entries(programs)) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) for (const n of [3, 9])
+    is(caught(() => jz(src, { optimize }).exports.f(n)), caught(() => oracle(src).f(n)), `${label}, f(${n}) at ${optimize}`)
+})
+
 // An error a trap delivers (a module nothing in which can catch throws by `unreachable`) was
 // raised where the trap is: its stack is the module's frames, the function that raised it
 // first, in place of the host decoder's own. The runtime's error and the program's alike.
