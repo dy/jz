@@ -646,9 +646,17 @@ const boundFunctions = (body) => {
 }
 const isFunctionArg = isFunctionValue
 
+// In an arrow's body a callee that throws stays a call. The arrow's own splice into the
+// function around it takes no body with a `throw` (inlinableLambdaBody), and that splice
+// is what makes the arrow's loop the function's: a binding the loop assigns is then the
+// function's own, where in a closure it is a captured cell and no iteration's memory is
+// given back (test/iteration-release.js).
+const keptInClosure = (func) => inClosure && some(func.body, n => n[0] === 'throw')
+
 // `hot`: the call sits in a loop, where a loop-only candidate splices too.
 const isCandidateCall = (node, candidates, hot = false) => {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !candidates.has(node[1])) return false
+  if (keptInClosure(candidates.get(node[1]))) return false
   if (callerSize > SOURCE_FULL && sharedBodies.has(node[1])) return false
   if (keepsDispatch(node)) return false
   if (lifted.has(node[1])) { if (!hot || callerSize > SOURCE_FULL || !liftsAt(node)) return false }
@@ -1417,8 +1425,11 @@ const inlineHot = (programFacts, ast) => {
     // a closure's own `return` is no return of the body
     if (some(func.body, n => n[0] === '=>') && !closureSpliceable(func)) continue
     // A `break` or `continue` targets a loop or switch of this body and moves
-    // with it; only a `throw` leaves the spliced body unsupported.
-    if (some(func.body, n => n[0] === 'throw')) continue
+    // with it, and a `throw` is a statement like any other: it leaves the caller
+    // as it left the callee. Below the speed tier a body that throws stays a call:
+    // each site would carry the error's construction, bytes for a path that seldom
+    // runs (webaudio: 5 KB at 'size').
+    if (!speedTier && some(func.body, n => n[0] === 'throw')) continue
     // Either a kernel (has a loop) or a tiny leaf (no loop, no calls, small body).
     // The leaf branch catches helpers like `isAlpha(c) => (c>=65 && c<=90) || …`
     // that get hammered from a hot caller's loop — replacing the call with its

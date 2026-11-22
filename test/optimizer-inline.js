@@ -133,6 +133,54 @@ test('inline: returns inside a loop and in nested arms lower to one exit, and th
   for (const name of ['$hit', '$first', '$inside']) is(callsInLoop(SRC, name, 3), 0, `${name} is spliced into the loop`)
 })
 
+// A `throw` is a statement of a spliced body like any other: it leaves the caller as it left
+// the callee. A function that checks its arguments and throws was never spliced, so every
+// validating helper stayed a call with a frame of its own (a stack's `push` and `pop` that
+// throw on misuse: 5.6 times Node's time where the same pair without the checks took 3.2).
+test('inline: a body that throws splices, and throws where the callee threw', () => {
+  const caught = (f) => { try { return { value: f() } } catch (e) { return e instanceof Error ? { error: e.constructor.name, message: e.message } : { thrown: e } } }
+  const programs = {
+    'a guard before the work': `const check = (k) => { if (k > 5) throw new RangeError('past ' + k); return k * 2 }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += check(i); return s }`,
+    'a throw in one arm, a value in the other': `const pick = (o, k) => { if (k < 3) return o.a + k; throw new Error('no arm for ' + k) }
+      export const f = (n) => { const o = { a: 10 }; let s = 0; for (let i = 0; i < n; i++) s += pick(o, i); return s }`,
+    'a body that only throws': `const fail = (what) => { throw new TypeError(what) }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i < 4 ? i : fail('at ' + i); return s }`,
+    'a throw inside the callee\'s loop': `const total = (a, n) => { let t = 0; for (let j = 0; j < n; j++) { if (a[j] < 0) throw new Error('negative at ' + j); t += a[j] } return t }
+      export const f = (n) => { const a = [3, 1, 4, -1, 5]; let s = 0; for (let i = 0; i < 3; i++) s += total(a, n); return s }`,
+    'a throw before the callee\'s effect': `const put = (o, k) => { if (k === 3) throw new Error('refused'); o.n += k; return o.n }
+      const state = { n: 0 }
+      export const f = (n) => { let s = 0; try { for (let i = 0; i < n; i++) s += put(state, i) } catch (e) { s += 1000 } return s * 100 + state.n }`,
+    'caught in the caller': `const check = (k) => { if (k > 2) throw new RangeError('past'); return k }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { try { s += check(i) } catch (e) { s += 100 } } return s }`,
+    'a finally around the spliced call': `const check = (k) => { if (k > 2) throw new RangeError('past'); return k }
+      let seen = 0
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { try { s += check(i) } catch (e) { s += 100 } finally { seen += 1 } } return s * 10 + seen }`,
+    'a thrown string and a thrown number': `const check = (k) => { if (k === 2) throw 'two'; if (k === 4) throw 4; return k }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += check(i); return s }`,
+    'a method that throws on misuse': `class Stack { constructor() { this.items = [0, 0, 0, 0]; this.n = 0 }
+        push(x) { if (this.n === 4) throw new Error('full'); this.items[this.n] = x; this.n += 1 }
+        pop() { if (this.n === 0) throw new Error('empty'); this.n -= 1; return this.items[this.n] } }
+      export const f = (n) => { const st = new Stack(); let s = 0; for (let i = 0; i < n; i++) { st.push(i); if (i & 1) s += st.pop() + st.pop() } return s + st.n }`,
+    'arguments evaluated before the throw': `let calls = 0
+      const next = () => { calls += 1; return calls }
+      const check = (a, b) => { if (a + b > 6) throw new Error('sum ' + (a + b)); return a + b }
+      export const f = (n) => { let s = 0; try { for (let i = 0; i < n; i++) s += check(next(), next()) } catch (e) { s += 500 } return s * 100 + calls }`,
+  }
+  for (const [label, src] of Object.entries(programs)) {
+    // (a module with state is asked once at each count, a fresh instance each)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) for (const n of [0, 3, 5, 9])
+      is(caught(() => run(src, { optimize }).f(n)), caught(() => oracle(src).f(n)), `${label}, f(${n}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // at the speed tier, where a helper of this size splices into the loop that calls it, the
+  // guard's callee is no call there
+  const text = compile(programs['a guard before the work'], { wat: true, optimize: 'speed' })
+  ok(!/\(call \$check\b/.test(funcWat(text, 'f')), 'the checking helper is spliced into its loop')
+  const stack = compile(programs['a method that throws on misuse'], { wat: true, optimize: 'speed' })
+  ok(!/\(call \$Stack.(push|pop)\b/.test(funcWat(stack, 'f')), 'and so are a stack\'s push and pop')
+})
+
 test('inline: a tuple result keeps a value per lane at every return', () => {
   // prepare types `return [x, y]` at every exit as two results; one lowered
   // exit returning a binding pushed one (the STFT's spectrum(), stretch-pvoc-lock)
@@ -717,6 +765,30 @@ test('let-declared local arrows inline like const ones', () => {
   const w = compile(src, { optimize: 'speed', wat: true })
   ok(!/closure|__alloc/.test(funcWat(w, 'beat')), 'no closure, no environment allocation')
   is(run(src).beat(1234.5), oracle(src).beat(1234.5))
+})
+
+test('a callee that throws stays a call in an arrow, which still splices into the function around it', () => {
+  // The speed tier splices a body that throws into its caller. Into a local arrow it would
+  // write a `throw`, and the arrow's own splice takes no body with one: the arrow would
+  // stay a closure, its loop's bindings captured cells (test/iteration-release.js).
+  const progs = {
+    'a check called at a statement': `const check = (v) => { if (v > 50) throw new RangeError('past ' + v); return v + 1 }
+      export let f = (n) => { let s = 0; const add = (k) => { s += check(k * 2) }; for (let i = 0; i < n; i++) add(i); return s }`,
+    'a check called in the arrow\'s loop': `const check = (v) => { if (v > 50) throw new RangeError('past ' + v); return v + 1 }
+      export let f = (n) => { let s = 0; const sum = (m) => { for (let k = 0; k < m; k++) s += check(k + m) }; for (let i = 0; i < n; i++) sum(i & 7); sum(n >> 1); return s }`,
+    'through a callee that calls the one that throws': `const check = (v) => { if (v > 50) throw new RangeError('past ' + v); return v + 1 }
+      const twice = (v) => check(v) + check(v + 1)
+      export let f = (n) => { let s = 0; const add = (k) => { s += twice(k) }; for (let i = 0; i < n; i++) add(i); return s }`,
+  }
+  const outcome = (f, n) => { try { return f(n) } catch (e) { return `${e.constructor.name}: ${e.message}` } }
+  for (const [name, src] of Object.entries(progs)) {
+    const host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const m = run(src, { optimize })
+      for (const n of [0, 1, 6, 30, 60]) is(outcome(m.f, n), outcome(host.f, n), `${name}, ${optimize}: f(${n})`)
+    }
+    ok(!/\(func \$(?!__)\S*closure\d/.test(compile(src, { optimize: 'speed', wat: true })), `${name}: no closure of the program is left at the speed tier`)
+  }
 })
 
 test('a call carried into a spliced closure reads its arguments as the caller binds them', () => {

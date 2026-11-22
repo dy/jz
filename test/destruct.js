@@ -770,10 +770,14 @@ test('for-in destructuring head: key string destructures with per-iteration bind
   is(exports.t(), 'i:i')
 })
 
+// The lowering as the emitter leaves it, before either inliner: a protocol's helpers
+// are functions like any other, and the speed tier splices their calls away.
+const LOWERED = { wat: true, optimize: { level: 3, sourceInline: false, watr: false } }
+
 // An array pattern over a value the summary proves an array reads it by index:
 // no cursor record, no protocol calls, no unwinding.
 test('destruct: a pattern over a proven array reads by index', () => {
-  const opener = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(open|pull|step)/g) || []).length
+  const opener = (src) => (compile(src, LOWERED).match(/__it_(open|pull|step)/g) || []).length
   ok(opener(`export let f = (p) => { const [a, b, ...r] = p; return a + b + r.length }`) > 0, 'an export\'s untyped parameter keeps the protocol')
   const proven = `let pair = (i) => [i, i * 2]
     export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) { const [a, b] = pair(i); s += a + b } return s }`
@@ -804,7 +808,7 @@ test('destruct: a pattern over a proven array reads by index', () => {
   is(jz(set, { optimize: 'speed' }).exports.f(), 45)
   const maybe = `let src = (w) => w ? [1, 2] : null
     export let f = (w) => { const [a, b] = src(w); return a + b }`
-  const steps = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(pull|step)/g) || []).length
+  const steps = (src) => (compile(src, LOWERED).match(/__it_(pull|step)/g) || []).length
   is(steps(maybe), 0, 'an array that may be nullish reads by index behind the open\'s test')
   const inst = jz(maybe, { optimize: 'speed' })
   is(inst.exports.f(1), 3)
@@ -817,11 +821,11 @@ test('destruct: a pattern over a proven array reads by index', () => {
 // between two steps keeps the protocol, and JS semantics with it.
 test('destruct: a default that runs code between two steps keeps the protocol', () => {
   const impure = `export let f = () => { const a = []; const [x = (a.push(1, 2), 0), y] = a; return [x, y, a.length] }`
-  ok(/__it_(open|pull|step)/.test(compile(impure, { wat: true, optimize: 'speed' })), 'the protocol stays')
+  ok(/__it_(open|pull|step)/.test(compile(impure, LOWERED)), 'the protocol stays')
   const r = jz(impure, { optimize: 'speed' })
   is(r.memory.read(r.exports.f()), [0, undefined, 2], 'the iterator finished before the push: y stays undefined')
   const pure = `export let f = (w) => { const a = w ? [] : [5]; const [x = w ? 0 : 1, y = 7] = a; return x * 10 + y }`
-  ok(!/__it_(open|pull|step)/.test(compile(pure, { wat: true, optimize: 'speed' })), 'a default that runs no code reads by index')
+  ok(!/__it_(open|pull|step)/.test(compile(pure, LOWERED)), 'a default that runs no code reads by index')
   const p = jz(pure, { optimize: 'speed' })
   is(p.exports.f(1), 7); is(p.exports.f(0), 57)
 })
@@ -830,12 +834,10 @@ test('destruct: a default that runs code between two steps keeps the protocol', 
 // own `slice` stored on an array keeps the protocol, which never calls it.
 test('destruct: a rest never calls an array\'s own slice', () => {
   const own = `export let f = () => { let calls = 0; const a = [1, 2]; a.slice = () => { calls++; return [9] }; const [...r] = a; return r[0] * 10 + r.length + calls * 100 }`
-  // Inspect the lowering before either inliner removes its protocol calls.
-  const shape = { wat: true, optimize: { level: 3, sourceInline: false, watr: false } }
-  ok(/__it_(open|pull|step|rest|close)/.test(compile(own, shape)), 'the protocol stays where slice may be the array\'s own')
+  ok(/__it_(open|pull|step|rest|close)/.test(compile(own, LOWERED)), 'the protocol stays where slice may be the array\'s own')
   is(jz(own, { optimize: 'speed' }).exports.f(), 12)
   const plain = `export let f = () => { const a = [1, 2, 3]; const [, ...r] = a; return r[0] * 10 + r.length }`
-  ok(!/__it_(open|pull|step|rest|close)/.test(compile(plain, shape)), 'a program without an own slice reads the rest by index')
+  ok(!/__it_(open|pull|step|rest|close)/.test(compile(plain, LOWERED)), 'a program without an own slice reads the rest by index')
   is(jz(plain, { optimize: 'speed' }).exports.f(), 22)
 })
 

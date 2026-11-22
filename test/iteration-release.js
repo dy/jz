@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { instantiate } from '../index.js'
-import { levels, onKernel, stressed } from './_matrix.js'
+import { levels, onKernel, onWasi, stressed } from './_matrix.js'
 import { oracle, run, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
 
@@ -167,6 +167,42 @@ test('iteration release: a loop calling a function of the program stays a loop t
   agree(src, [1, 8, 3000])
   const grown = grownBy(src)
   ok(grown(20000) <= 4 * 2 * 20000 * 8, `eleven iterations of 320 KB grow ${grown(20000)} bytes, not eleven times that`)
+})
+
+test('iteration release: a loop in a local arrow calling a function that throws is still the function\'s own', () => {
+  // A harness's shape: `const once = () => { for (…) out = decode(src) }`. Spliced where it
+  // is called, the arrow's loop assigns a binding of the function, and the memory of a
+  // decode goes as the next begins; kept a closure, the binding is a captured cell and
+  // every decode stays. The speed tier's splice of a body that throws would have written
+  // a `throw` into the arrow, which then stays a closure (plan/inline.js keptInClosure).
+  // 64 KB a decode.
+  const DEC = `const decoder = () => { let buf = new Uint8Array(0); return { decode(chunk) { buf = buf.length ? chunk : chunk; const out = []
+      for (let k = 0; k < 4; k++) { const d = new Float32Array(4096); d[0] = chunk[k] + k; out.push(d) }
+      buf = buf.subarray(1); return { channelData: out, rate: 44100 } } } }
+    const decode = (src) => { const out = decoder().decode(src); if (!out.channelData.length) throw new Error('no frame'); return out }\n`
+  const HEAD = `const src = new Uint8Array(64); for (let i = 0; i < 64; i++) src[i] = i\n      let out = null`
+  const TAIL = `return out.channelData[3][0] + out.channelData.length + out.rate`
+  // called from two loops, two decodes a call: the loop around the calls gives a call's
+  // last decode back by compaction, which is the JS host's alone (module/core/stub-log.js
+  // compactOn): under WASI it keeps one a call, with an arrow or with the loops written out
+  const looped = DEC + `export let f = (n) => { ${HEAD}
+      const once = () => { for (let r = 0; r < 2; r++) out = decode(src) }
+      for (let i = 0; i < 3; i++) once()
+      let t = 0
+      for (let i = 0; i < n; i++) { const t0 = i; once(); t += i - t0 }
+      ${TAIL} + t }`
+  // called twice in a row: each call a loop of the function's own, which its release gives back on any host
+  const twice = DEC + `export let f = (n) => { ${HEAD}
+      const pass = (m) => { for (let r = 0; r < m; r++) out = decode(src) }
+      pass(2); pass(n)
+      ${TAIL} }`
+  for (const [shape, src] of [['called in two loops', looped], ['called twice', twice]]) {
+    agree(src, [0, 1, 7])
+    if (stressed() || (src === looped && onWasi())) continue
+    // (kept, a thousand calls are 128 MB, or 64; released, a few decodes and what the memory's doubling adds)
+    const many = grownBy(src)(1000)
+    ok(many <= 128 * 2 * 65536, `${shape}: a thousand calls grow ${many} bytes, not what they made`)
+  }
 })
 
 test('iteration release: a module binding keeps what it was given, the rest goes', () => {
