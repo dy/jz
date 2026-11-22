@@ -144,8 +144,6 @@ test('inline: a body that throws splices, and throws where the callee threw', ()
       export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += check(i); return s }`,
     'a throw in one arm, a value in the other': `const pick = (o, k) => { if (k < 3) return o.a + k; throw new Error('no arm for ' + k) }
       export const f = (n) => { const o = { a: 10 }; let s = 0; for (let i = 0; i < n; i++) s += pick(o, i); return s }`,
-    'a body that only throws': `const fail = (what) => { throw new TypeError(what) }
-      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i < 4 ? i : fail('at ' + i); return s }`,
     'a throw inside the callee\'s loop': `const total = (a, n) => { let t = 0; for (let j = 0; j < n; j++) { if (a[j] < 0) throw new Error('negative at ' + j); t += a[j] } return t }
       export const f = (n) => { const a = [3, 1, 4, -1, 5]; let s = 0; for (let i = 0; i < 3; i++) s += total(a, n); return s }`,
     'a throw before the callee\'s effect': `const put = (o, k) => { if (k === 3) throw new Error('refused'); o.n += k; return o.n }
@@ -179,6 +177,41 @@ test('inline: a body that throws splices, and throws where the callee threw', ()
   ok(!/\(call \$check\b/.test(funcWat(text, 'f')), 'the checking helper is spliced into its loop')
   const stack = compile(programs['a method that throws on misuse'], { wat: true, optimize: 'speed' })
   ok(!/\(call \$Stack.(push|pop)\b/.test(funcWat(stack, 'f')), 'and so are a stack\'s push and pop')
+  const arm = compile(programs['a throw in one arm, a value in the other'], { wat: true, optimize: 'speed' })
+  ok(!/\(call \$pick\b/.test(funcWat(arm, 'f')), 'and a body that ends in a throw and returns before it')
+})
+
+// A function that cannot return is called only where the program fails. Spliced, each site
+// carried its body, the error's construction, into the code that runs (a parser's `err`,
+// 1.3 KB: the two functions that read a template and a switch grew from 3.5 KB to 7.7,
+// and the parser took 1.5% longer).
+test('inline: a body that never returns stays a call', () => {
+  const caught = (f) => { try { return { value: f() } } catch (e) { return e instanceof Error ? { error: e.constructor.name, message: e.message } : { thrown: e } } }
+  const programs = {
+    'called in an expression': `const fail = (what) => { throw new TypeError(what) }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i < 4 ? i : fail('at ' + i); return s }`,
+    'called at a statement, after work of its own': `const fail = (text, at) => { let line = 1; for (let k = 0; k < at; k++) if (text.charCodeAt(k) === 10) line += 1; throw new SyntaxError('line ' + line) }
+      export const f = (n) => { const text = 'a\\nb\\nc\\nd\\ne\\nf'; let s = 0; for (let i = 0; i < n; i++) { if (text.charCodeAt(i) === 100) fail(text, i); s += text.charCodeAt(i) } return s }`,
+    'two throws and no return': `const fail = (k) => { if (k & 1) throw new RangeError('odd ' + k); throw new Error('even ' + k) }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { if (i > 3) fail(i + n); s += i } return s }`,
+    'through a check that returns': `const fail = (what) => { throw new Error(what) }
+      const expect = (c, what) => { if (!c) fail(what); return 1 }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += expect(i < 5, 'not ' + i); return s }`,
+    'caught, with the caller\'s effects before it kept': `let seen = 0
+      const fail = (k) => { seen += 10; throw k }
+      export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { try { seen += 1; if (i > 2) fail(i); s += i } catch (e) { s += e * 100 } } return s * 1000 + seen }`,
+  }
+  for (const [label, src] of Object.entries(programs))
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) for (const n of [0, 3, 5, 9])
+      is(caught(() => run(src, { optimize }).f(n)), caught(() => oracle(src).f(n)), `${label}, f(${n}) at ${optimize}`)
+  if (belowOpt(2)) return
+  for (const label of ['called at a statement, after work of its own', 'two throws and no return']) {
+    const text = compile(programs[label], { wat: true, optimize: 'speed' })
+    ok(/\(call \$fail\b/.test(funcWat(text, 'f')), `${label}: the loop calls it`)
+  }
+  // the check between is spliced, and what it calls is still a call
+  const through = funcWat(compile(programs['through a check that returns'], { wat: true, optimize: 'speed' }), 'f')
+  ok(!/\(call \$expect\b/.test(through) && /\(call \$fail\b/.test(through), 'a check that returns splices, the function it fails through stays a call')
 })
 
 test('inline: a tuple result keeps a value per lane at every return', () => {

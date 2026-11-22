@@ -316,6 +316,11 @@ const inlinedBody = (func, args) => {
 }
 
 const hasReturn = (n) => some(n, x => x[0] === 'return')
+// Every path through the body ends at its last statement, a `throw`.
+const neverReturns = (func) => {
+  const stmts = funcStmts(func.body), last = stmts?.[stmts.length - 1]
+  return Array.isArray(last) && last[0] === 'throw' && !hasReturn(func.body)
+}
 // Returns other than one that ends the body: what `lowerReturns` removes.
 const strayReturns = (func) => {
   let n = 0
@@ -1430,6 +1435,11 @@ const inlineHot = (programFacts, ast) => {
     // each site would carry the error's construction, bytes for a path that seldom
     // runs (webaudio: 5 KB at 'size').
     if (!speedTier && some(func.body, n => n[0] === 'throw')) continue
+    // A body that never returns runs only where the program fails: no site of it is on
+    // a path a splice is for, and a copy at each is the error's construction in its
+    // caller's code (a parser's `err`, 1.3 KB, in the functions that read a template
+    // and a switch: 3.5 KB to 7.7).
+    if (neverReturns(func)) continue
     // Either a kernel (has a loop) or a tiny leaf (no loop, no calls, small body).
     // The leaf branch catches helpers like `isAlpha(c) => (c>=65 && c<=90) || …`
     // that get hammered from a hot caller's loop — replacing the call with its
