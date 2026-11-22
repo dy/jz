@@ -3738,6 +3738,52 @@ CI on c59c3a568 (main before): test262, self-compile, examples-perf, pages and t
 
 The key's fix (branch key-w), alone, with its bench bytes and the time and memory of the dictionary cases. Then the probe of the new toolchains and the reference run. Then the `while` and the dispatchers against their listings.
 
+## The land-al landing: a key a store inserts is kept (2026-11-22)
+
+Three commits on aa8b6ac86, the integrator's. The wrong read is described in the record before this one (a string a running call made, stored as a key, freed under the table that holds it; on 1.0.3 as on main).
+
+### What landed
+
+- `466757bbe` A key new to its receiver is growth that allocates nothing, and is read as growth. The kernels that insert a key note it (module/core.js `__ink_note`, called on the insertion arm of the slot kernel and of the growing one, kept out of line: `$__ink`, the highest address among the inserted keys that name heap storage). The census marks the growth sites whose key may be such a string (analyze/frame-effects.js `siteKeyed`: a key that is no literal and no proven scalar). The growth's check asks the note beside the heap's top, at or above `$__base` a key a running call made, and clears it (emit/dispatch.js keyNoted), where the check stands: after the store, or after the quiet loop it stands around. A key the table holds already is noted by no kernel and keeps nothing.
+- `a6dd030ef` The data forms' listing and the loop-ops baselines rewritten for the note's call.
+- `dd8ee9ca5` One assertion of the new test held to the levels where it is true (below: the check).
+
+### How it came to this form
+
+- First tried: every store whose key may carry heap lowers the flag. Two tests of the census failed (a store at an export's parameter; a helper that "grows only storage older than the frame"): a frame that inserts nothing would keep everything.
+- The first form committed (7c758d0eb): the kernel kept the key it inserted and each keyed store's site asked it. Its check (ak) stopped at the listings: the bar of the string-keyed counters (`m[k] = (m[k] | 0) + 1` on a module's dictionary) took 66 ops and a call per pass, the question having pulled the loop's hoisted growth check back inside. The best form got worse, so it was not landed.
+- As landed: the note rides the growth check, wherever the census already placed it. The bar takes one call and two ops, on the insertion arm of its probe alone.
+
+### Mutations
+
+Twelve (own/mutant-key.sh under the tools directory), each against test/frame-effects.js and the tests beside it on the default and WASI legs. Eleven fail: the census's mark, the kernels' note and each kernel's alone, the note unasked by a growth's check and by a stored value's, the note not cleared, a loop's check asking none, a key held in its pointer noted, the note a global like any other to the rewind, the note not declared. One passes: the note keeping the last key in place of the highest. Only a check around a loop can tell the two apart, and no program written here makes a frame give back keys such a loop stored (five answered as Node before the fix too). The comparison that keeps the highest stays in the kernel, untested.
+
+### What it costs
+
+- Listings: the data forms 640 gaps of 744 as before; six cells move by the bar's one call and two ops, no form cheaper. Spellings 42 of 470, vector coverage 453 of 840, unmoved. Loop ops of the ratchet's corpus 22,590 to 22,654 on the JS host, 22,038 to 22,102 under WASI.
+- Bench bytes: 20 of 105 cases move, by 84 to 509 bytes; 'size' builds 2,660,237 to 2,662,333 in all, 'speed' 5,912,166 to 5,915,233.
+- Time and memory, the 19 cases whose 'speed' build moves, six paired rounds against main: medians 0.958 (fabrik) to 1.028. The two above 1.02 (jsontransform 1.026, threegeom 1.028) read 1.000 and 0.995 over twelve rounds. threecull, 1.026 under the first form, reads 0.988. Peak memory within 0.2 MB on every case but webaudio (79.3 MB against 78.7).
+- The hosted compiler: 38,201,118 bytes, 11,934 more.
+
+### The check (al, on a6dd030ef; the armed level 3 leg again on dd8ee9ca5)
+
+56 minutes at a load of 6 to 20, then test262 in 29. Listings unmoved. WASI 7,590; default 7,717; level 0 7,477; test:self 89; integration 240 of 241 with one skipped; lint and audit clean; examples 1.70 and 1.68, 25 of 25 both passes. test262: pass 4,137, refused negatives 4,045, accepted negatives 0, failures 0. On a fresh hosted compiler: parity 19, frame-effects 77, iteration-release 17, data 247, errors 153, index-store 16, dyn-keys 171, class-members 11, element-numbers 14.
+
+The armed level 3 leg failed, 7,498 of 7,499, on an assertion of the new test: two hundred thousand counts in a helper were to run in the memory of the first at every level. At level 3 they do not, on main either: the helper is spliced into the loop and has no frame to restore, and the loop's compaction bounds its strings instead (17 pages to 34 on the JS host, 1 to 4 under WASI, at a hundred thousand passes as at a million). The test had been run on the default and WASI legs before its commit, not at level 3. `dd8ee9ca5` holds the assertion at level 2 and at 'size'. The armed level 3 leg in full on it: 7,499 of 7,499. The other legs were not run again on it: none runs level 3, and the file alone passes on each (77 on the default, WASI, level 0 and plain level 3 legs).
+
+CI on aa8b6ac86 (main before): test262, self-compile, examples-perf and pages green; test green but claims. The bench workflow red on the Porffor evidence (alpha 13 recorded where the pins now require alpha 25) and the examples gate (ulam 0.85, lenia 0.76 on its runner). The probe of the new pins (44998381943, six cases) green: every lane ran; two lane failures, both older than the pins (the tslang lane on json, a js2wasm timeout).
+
+### Found, not fixed
+
+- A helper spliced into a loop gives up its frame's release for the loop's compaction: zero growth at level 2, a bounded 17 pages on the JS host and 3 under WASI at level 3, for the same source. Main's behaviour; the faster level takes more memory here.
+- The note's question stands at every growth check whose key no pass proves a number. A cheaper place, the dynamic arm alone, was not tried.
+- A host's string argument stored as a key by an export answers as Node on main and on 1.0.3: why it is safe was not looked into.
+- The bench job on aa8b6ac86 lists, on its runner and in single runs, fourteen cases behind a wasm rival past the 8% band (polytri 2.60, entity 2.04, aos 1.48, mapobj 1.34, arraynumeric 1.32, fabrik 1.28, threescene 1.23, gainclass 1.19, quatmul 1.19, mapint 1.18, radixsort 1.17, stdlib-pow 1.12, hwb 1.12, dict 1.09). Ten of them were behind on c59c3a568 too, before the rivals' current releases (gainclass, stdlib-pow, aos, entity, mapint, arraynumeric, polytri, fabrik, quatmul, threescene); hwb, radixsort, dict and mapobj are new to the list, and trace, stdlib-gamma, sosfilter, tokenizer, heat and spmv left it, on another runner. None is measured in paired rounds until the reference run.
+
+### Next
+
+The held-out run on this commit, where deltablue is expected to run. Then the reference run on the new pins. Then the `while` and the dispatchers against their listings. Whether the key's fix also goes out as a patch of 1.0 is the owner's call.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

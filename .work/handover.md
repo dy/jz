@@ -733,3 +733,15 @@ c59c3a568 land-ac     the landing before
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/pass-bisect.mjs` (a program at a level with each pass off alone: which one makes a wrong answer), `probe/levels-of.mjs` (a program's `run(n)` at every level against Node), `probe/spell-abs.mjs` (the loop ops of each spelling of a corpus program, absolute), `probe/k-static*.js` and `probe/k-keyfresh-*.js` (the key's analogs), `probe/k-release-g.js` (the cut's), `keep/ad-listings/` (the two listings as the six commits moved them).
+
+## Branches of the land-al landing (2026-11-22), tips before deletion
+
+```
+dd8ee9ca5 key-w       the landing branch: 3 commits on aa8b6ac86 (the fix 466757bbe, its listings a6dd030ef, the level 3 assertion dd8ee9ca5); the record's commit after it
+7c758d0eb (no branch, an object the next collection may drop) the fix's first form, the kernel keeping the key and every keyed site asking it: its check stopped at the listings (the string-keyed counters' bar 66 ops and a call dearer)
+d3a226f74 next-y      as in the record before: the while and the dispatchers, held at their listings
+339744bec next-x      where their rework starts
+aa8b6ac86 land-ae     the landing before
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-key.sh` (the twelve mutations; `ONLY=Yn` runs one), `probe/key-mem.mjs` (the counting helper's memory at each level and whether the helper stays a function) and `probe/key-mem-wat.mjs` (the lines of its loop that touch the heap's top, the flag, the note or the compaction), `probe/loop-keys.mjs` (where a loop's check reads the note), `probe/k-static*.js` and `probe/k-keyfresh-*.js` (the analogs), `time-key2.out` and `time-key2b.out` (the timing against main).
