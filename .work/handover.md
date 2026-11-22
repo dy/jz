@@ -703,3 +703,19 @@ cf8956215 grow-w      the descent as first committed (land-aa's 5c40977eb)
 d44103f68 run-w       the first three commits; its check failed on WASI and armed level 3 (a run of reads alone)
           hull-w      on 411fc3cb0: a recursion's argument range, one commit marked not for landing, and the dispatcher's reachability uncommitted
 ```
+
+## Branches of the land-ac landing (2026-11-22), tips before deletion
+
+```
+5a0100e84 land-ac     the landing branch: 14 commits on a107b46e0 (main 66812d093 and the held-out lane's two records); the record's commit after it
+f4c0762f4 (no ref)    land-ac as its sixth check ran it and passed: before a body that never returns was kept a call (jessie 1.015 to 1.019 times main's time)
+1ba0a244f (no ref)    land-ac as its fifth check ran it: the splice of bodies that throw without its rule for arrows (decode-qoa 130 MB)
+2d1d22256 (no ref)    land-ac as its fourth check ran it: before the tuple return's fix and the destructuring tests' correction
+a7aa01249 rng-w       the branch as first built and twice checked: the listing's commit that claimed a gain, the frame census's miscount
+190d7bd83 acc-w       the accessor's fix as first committed (land-ac's fed47c0d8)
+54e0f1275 hull-w      a recursion's argument range before it was split into land-ac's commits
+          next-w      on the land-ac of the fourth check: a while that spells a for, the retired dispatchers and binders; the next landing, to be rebuilt on main
+39d0962be bench-versions  on a107b46e0: the rivals' current releases pinned, each lane's versions in the bench page's tooltips; lands after this
+```
+
+State kept outside the repository: `/Users/div/projects/jz/.claude/worktrees/tools/` (the landing scripts under `own/`, the bench bytes of each landing `bh-*.jsonl`, the probes, `notes.md`). There too, for phase 12: `keep/arrow-rule.patch` (a local arrow's splice taking a body with a `throw`, a `break` or a `continue`, with its two tests), `own/mutant-arrow.sh`, and the analogs `probe/k-release-a.js` to `-f.js` with `probe/heap-growth.mjs`. The session's scratchpad was emptied by a cleanup on 2026-11-21 and holds nothing that is needed.
