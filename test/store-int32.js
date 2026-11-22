@@ -101,6 +101,24 @@ test('store-int32: finite constant steps have a floating magnitude enclosure', (
   }
 })
 
+// The count of a loop bounds a local the loop steps once from a literal. Where it does not
+// (the local enters at another value, or the loop steps it twice) the local still has the
+// enclosure a loop of unknown count gives it, and its `| 0` tests for no infinity: a loop
+// that says how often it runs is told no less than one that does not.
+test('store-int32: a counted loop the count does not bound keeps the magnitude enclosure', () => {
+  const sources = {
+    'entered at a value no literal names': `export function f(n, x) { let v = x > 0 ? 1.5 : 2.5; let s = 0; for (let i = 0; i < 1000; i++) { s += v | 0; v += 0.25 } return s + n }`,
+    'stepped twice': `export function f(n, x) { let v = 1.5; let s = 0; for (let i = 0; i < 1000; i++) { s += v | 0; v += 0.25; if (i === n) v += 0.25 } return s + x }`,
+  }
+  for (const [label, src] of Object.entries(sources)) {
+    shapes(src, w => ok(!/f64\.ne\b|f64\.const inf/.test(w), `${label}: the truncation tests for no infinity`))
+    for (const n of [0, 1, 7, 999]) for (const x of [-1, 0, 2.5]) agree(src, 'f', [n, x])
+  }
+  // (entered at a parameter the local has no hull, counted or not: the test stays, and infinity reads zero)
+  const open = `export function f(n, x) { let v = x; let s = 0; for (let i = 0; i < 1000; i++) { s += v | 0; v += 0.25 } return s + n }`
+  for (const x of [0, 0.5, 2 ** 31, -(2 ** 31) - 1, Infinity, -Infinity, NaN]) agree(open, 'f', [3, x])
+})
+
 test('store-int32: unknown steps and other writes keep the conversion fallback', () => {
   const sources = [
     `export function f(n, x) { const a = new Int32Array(1); let v = x; for (let i=0;i<n;i++) v++; a[0]=v; return [v,a[0]] }`,

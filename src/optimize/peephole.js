@@ -557,6 +557,19 @@ function boundedFloatLocal(name, writes, owners, params, links, range = null) {
     }
     return 0 // a non-parameter Wasm local's implicit entry value
   }
+  // The ends a counted loop holds its one step of the local within, from the literal it enters at.
+  const counted = (w, delta, trips) => {
+    const info = owners.get(w)
+    let valueWrites = 0
+    walkAst(info.node, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) valueWrites++ } })
+    if (valueWrites !== 1) return null
+    const start = initial(name, info)
+    if (start == null) return null
+    const down = trips * Math.min(0, Math.floor(delta)), up = trips * Math.max(0, Math.ceil(delta))
+    if (!Number.isSafeInteger(down) || !Number.isSafeInteger(up)) return null
+    const low = Math.floor(start) + down, high = Math.ceil(start) + up
+    return Number.isSafeInteger(low) && Number.isSafeInteger(high) ? [low, high] : null
+  }
   for (const w of writes) {
     const v = w[2]
     // a value the stack feeds (a multi-value result taken apart): unbounded here
@@ -574,32 +587,21 @@ function boundedFloatLocal(name, writes, owners, params, links, range = null) {
       continue
     }
     const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
-    const info = owners.get(w), loop = info?.node, block = info?.parent?.node
-    const facts = block && links?.get(block)?.plan
-    if (facts?.trips == null) {
-      // Repeated finite additions eventually stop changing an f64. Choose
-      // endpoints beyond the step's rounding threshold, then verify the
-      // complete all-writes enclosure below. This bounds magnitude only;
-      // it says nothing about integer storage or how many iterations run.
-      const end = delta === 0 ? 0 : 2 ** (Math.ceil(Math.log2(Math.abs(delta))) + 54)
-      if (!Number.isFinite(end)) return null
-      if (delta < 0) lo = Math.min(lo, -end)
-      else hi = Math.max(hi, end)
-      ;(steps ||= []).push(delta)
-      continue
-    }
-    let valueWrites = 0
-    walkAst(loop, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) valueWrites++ } })
-    if (valueWrites !== 1) return null
-    const start = initial(name, info)
-    if (start == null) return null
-    const count = facts.trips
-    const down = count * Math.min(0, Math.floor(delta)), up = count * Math.max(0, Math.ceil(delta))
-    if (!Number.isSafeInteger(down) || !Number.isSafeInteger(up)) return null
-    const low = Math.floor(start) + down
-    const high = Math.ceil(start) + up
-    if (!Number.isSafeInteger(low) || !Number.isSafeInteger(high)) return null
-    lo = Math.min(lo, low); hi = Math.max(hi, high)
+    const block = owners.get(w)?.parent?.node
+    const trips = block && links?.get(block)?.plan?.trips
+    const ends = trips == null ? null : counted(w, delta, trips)
+    if (ends) { lo = Math.min(lo, ends[0]); hi = Math.max(hi, ends[1]); continue }
+    // Repeated finite additions eventually stop changing an f64. Choose
+    // endpoints beyond the step's rounding threshold, then verify the
+    // complete all-writes enclosure below. This bounds magnitude only;
+    // it says nothing about integer storage or how many iterations run:
+    // it holds for a counted loop the count does not bound too (one entered
+    // at a value no literal names, or stepping the local twice).
+    const end = delta === 0 ? 0 : 2 ** (Math.ceil(Math.log2(Math.abs(delta))) + 54)
+    if (!Number.isFinite(end)) return null
+    if (delta < 0) lo = Math.min(lo, -end)
+    else hi = Math.max(hi, end)
+    ;(steps ||= []).push(delta)
   }
   // Addition is monotone over finite f64 values. If both rounded endpoints
   // stay inside, every interior value does too, including under cancellation.
