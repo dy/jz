@@ -1901,11 +1901,17 @@ test('perf: spread + destructure', () => {
   // node 22) show: destruct swap (10k×5): jz 0.6ms, porf 96.4ms — jz 160×
   // faster spread concat (1k×5): jz 0.9ms, porf 45.6ms — jz 51× faster rest sum
   // (10k×5): jz 2.7ms, porf 98.7ms — jz 37× faster object spread (1k×5): jz
-  // 0.1ms, porf OOM — jz wins by default Pins are 4× headroom over recorded jz
-  // times; tightens future regression catch without making CI flaky on slow
-  // runners.
+  // 0.1ms, porf OOM — jz wins by default. Each pin is over the least of five
+  // single calls, at four times the recorded call or more (0.12, 0.18, 0.54 and
+  // 0.02 ms): a pause of the machine lengthens one call, and a total over five
+  // failed on it (an object spread at 2.2 ms against 2 under a load of 14).
   const N = 5
-  const jsBench = (fn, k) => bench(() => fn(k), N)
+  const jsBench = (fn, k) => {
+    for (let i = 0; i < N; i++) fn(k)
+    let least = Infinity
+    for (let i = 0; i < N; i++) { const t = performance.now(); fn(k); least = Math.min(least, performance.now() - t) }
+    return least
+  }
 
   // 1) Array destructure swap: [a, b] = [b, a]
   const swap = jz(`export let run = (n) => {
@@ -1917,8 +1923,8 @@ test('perf: spread + destructure', () => {
   is(swap(10000), swapJs(10000), 'destruct swap parity')
   const swapJsT = jsBench(swapJs, 10000)
   const swapWT = jsBench(swap, 10000)
-  console.log(`  destruct swap (10k) x${N}: JS ${swapJsT.toFixed(1)}ms, WASM ${swapWT.toFixed(1)}ms, ratio ${(swapJsT / swapWT).toFixed(2)}x`)
-  ok(swapWT < 5, `destruct swap: jz ${swapWT.toFixed(1)}ms should be < 5ms (porf baseline ~96ms)`)
+  console.log(`  destruct swap (10k), least of ${N}: JS ${swapJsT.toFixed(2)}ms, WASM ${swapWT.toFixed(2)}ms, ratio ${(swapJsT / swapWT).toFixed(2)}x`)
+  ok(swapWT < 1, `destruct swap: jz ${swapWT.toFixed(2)}ms a call should be < 1ms`)
 
   // 2) Array spread concat: [...a, x, ...b]
   const concat = jz(`export let run = (n) => {
@@ -1943,8 +1949,8 @@ test('perf: spread + destructure', () => {
   is(concat(1000), concatJs(1000), 'spread concat parity')
   const concatJsT = jsBench(concatJs, 1000)
   const concatWT = jsBench(concat, 1000)
-  console.log(`  spread concat (1k) x${N}: JS ${concatJsT.toFixed(1)}ms, WASM ${concatWT.toFixed(1)}ms, ratio ${(concatJsT / concatWT).toFixed(2)}x`)
-  ok(concatWT < 5, `spread concat: jz ${concatWT.toFixed(1)}ms should be < 5ms (porf baseline ~46ms)`)
+  console.log(`  spread concat (1k), least of ${N}: JS ${concatJsT.toFixed(2)}ms, WASM ${concatWT.toFixed(2)}ms, ratio ${(concatJsT / concatWT).toFixed(2)}x`)
+  ok(concatWT < 1, `spread concat: jz ${concatWT.toFixed(2)}ms a call should be < 1ms`)
 
   // 3) Rest param sum: (...nums) => sum
   const rest = jz(`
@@ -1956,8 +1962,8 @@ test('perf: spread + destructure', () => {
   is(rest(10000), restJs(10000), 'rest sum parity')
   const restJsT = jsBench(restJs, 10000)
   const restWT = jsBench(rest, 10000)
-  console.log(`  rest sum (10k) x${N}: JS ${restJsT.toFixed(1)}ms, WASM ${restWT.toFixed(1)}ms, ratio ${(restJsT / restWT).toFixed(2)}x`)
-  ok(restWT < 12, `rest sum: jz ${restWT.toFixed(1)}ms should be < 12ms (porf baseline ~99ms)`)
+  console.log(`  rest sum (10k), least of ${N}: JS ${restJsT.toFixed(2)}ms, WASM ${restWT.toFixed(2)}ms, ratio ${(restJsT / restWT).toFixed(2)}x`)
+  ok(restWT < 2.4, `rest sum: jz ${restWT.toFixed(2)}ms a call should be < 2.4ms`)
 
   // 4) Object spread: { ...base, k: v }
   const obj = jz(`
@@ -1977,8 +1983,8 @@ test('perf: spread + destructure', () => {
   is(obj(1000), objJs(1000), 'object spread parity')
   const objJsT = jsBench(objJs, 1000)
   const objWT = jsBench(obj, 1000)
-  console.log(`  object spread (1k) x${N}: JS ${objJsT.toFixed(1)}ms, WASM ${objWT.toFixed(1)}ms, ratio ${(objJsT / objWT).toFixed(2)}x`)
-  ok(objWT < 2, `object spread: jz ${objWT.toFixed(1)}ms should be < 2ms (porf OOMs at this size)`)
+  console.log(`  object spread (1k), least of ${N}: JS ${objJsT.toFixed(2)}ms, WASM ${objWT.toFixed(2)}ms, ratio ${(objJsT / objWT).toFixed(2)}x`)
+  ok(objWT < 0.4, `object spread: jz ${objWT.toFixed(2)}ms a call should be < 0.4ms`)
 })
 
 test('codegen: .length hoisted out of for-loop', () => {
