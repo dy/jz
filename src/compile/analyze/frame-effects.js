@@ -1102,12 +1102,17 @@ function ownBindings(func) {
 }
 
 /** Whether a statement may end its iteration early (a jump, a return), suspend
- *  it, or catch what it throws: what follows it may not run on every iteration. */
-function mayCutIteration(n) {
+ *  it, or catch what it throws: what follows it may not run on every iteration.
+ *  A `break` or `continue` of a loop inside the statement ends that loop's round
+ *  and not this one's (`own` false), unless it names a label, which may be any
+ *  loop's. */
+function mayCutIteration(n, own = true) {
   if (!isArr(n) || isFunctionNode(n)) return false
   const op = n[0]
-  if (op === 'break' || op === 'continue' || op === 'return' || op === 'yield' || op === 'await' || op === 'catch' || op === 'finally' || op === 'label') return true
-  for (let i = 1; i < n.length; i++) if (mayCutIteration(n[i])) return true
+  if (op === 'break' || op === 'continue') return own || typeof n[1] === 'string'
+  if (op === 'return' || op === 'yield' || op === 'await' || op === 'catch' || op === 'finally' || op === 'label') return true
+  if (op === 'for' || op === 'while') own = false
+  for (let i = 1; i < n.length; i++) if (mayCutIteration(n[i], own)) return true
   return false
 }
 

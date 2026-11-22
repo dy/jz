@@ -169,19 +169,21 @@ test('iteration release: a loop calling a function of the program stays a loop t
   ok(grown(20000) <= 4 * 2 * 20000 * 8, `eleven iterations of 320 KB grow ${grown(20000)} bytes, not eleven times that`)
 })
 
+// A decoder made per call, its method filing a cell of its own, and a wrapper that tests
+// what it made: 64 KB a decode, and a loop that keeps only its last one.
+const DEC = `const decoder = () => { let buf = new Uint8Array(0); return { decode(chunk) { buf = buf.length ? chunk : chunk; const out = []
+    for (let k = 0; k < 4; k++) { const d = new Float32Array(4096); d[0] = chunk[k] + k; out.push(d) }
+    buf = buf.subarray(1); return { channelData: out, rate: 44100 } } } }
+  const decode = (src) => { const out = decoder().decode(src); if (!out.channelData.length) throw new Error('no frame'); return out }\n`
+const HEAD = `const src = new Uint8Array(64); for (let i = 0; i < 64; i++) src[i] = i\n      let out = null`
+const TAIL = `return out.channelData[3][0] + out.channelData.length + out.rate`
+
 test('iteration release: a loop in a local arrow calling a function that throws is still the function\'s own', () => {
   // A harness's shape: `const once = () => { for (…) out = decode(src) }`. Spliced where it
   // is called, the arrow's loop assigns a binding of the function, and the memory of a
   // decode goes as the next begins; kept a closure, the binding is a captured cell and
   // every decode stays. The speed tier's splice of a body that throws would have written
   // a `throw` into the arrow, which then stays a closure (plan/inline.js keptInClosure).
-  // 64 KB a decode.
-  const DEC = `const decoder = () => { let buf = new Uint8Array(0); return { decode(chunk) { buf = buf.length ? chunk : chunk; const out = []
-      for (let k = 0; k < 4; k++) { const d = new Float32Array(4096); d[0] = chunk[k] + k; out.push(d) }
-      buf = buf.subarray(1); return { channelData: out, rate: 44100 } } } }
-    const decode = (src) => { const out = decoder().decode(src); if (!out.channelData.length) throw new Error('no frame'); return out }\n`
-  const HEAD = `const src = new Uint8Array(64); for (let i = 0; i < 64; i++) src[i] = i\n      let out = null`
-  const TAIL = `return out.channelData[3][0] + out.channelData.length + out.rate`
   // called from two loops, two decodes a call: the loop around the calls gives a call's
   // last decode back by compaction, which is the JS host's alone (module/core/stub-log.js
   // compactOn): under WASI it keeps one a call, with an arrow or with the loops written out
@@ -203,6 +205,36 @@ test('iteration release: a loop in a local arrow calling a function that throws 
     const many = grownBy(src)(1000)
     ok(many <= 128 * 2 * 65536, `${shape}: a thousand calls grow ${many} bytes, not what they made`)
   }
+})
+
+test('iteration release: a jump of a loop inside the body is that loop\'s, and the iteration still releases', () => {
+  // A callee that leaves a loop of its own by `break`, spliced before the assignment that
+  // carries the result: the walk that finds a carried binding stopped at any jump
+  // (frame-effects.js mayCutIteration), the loop gave nothing back, and under WASI, where
+  // nothing compacts, a thousand decodes stayed (2,048 pages where 2).
+  const inner = {
+    'a break of an inner for': `let k = 0; for (let i = 0; i < 4; i++) { if (d.channelData[i][0] > 2) break; k++ }`,
+    'a continue of an inner for': `let k = 0; for (let i = 0; i < 4; i++) { if (d.channelData[i][0] > 2) continue; k++ }`,
+    'a break of an inner while': `let k = 0; while (k < 4) { if (d.channelData[k][0] > 2) break; k++ }`,
+    'a jump two loops in': `let k = 0; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) { if (d.channelData[i * 2 + j][0] > 2) break; k++ }`,
+  }
+  for (const [shape, loop] of Object.entries(inner)) {
+    const src = DEC + `export let f = (n) => { ${HEAD}
+      for (let r = 0; r < n; r++) { const d = decode(src); ${loop}; d.rate = k; out = d }
+      ${TAIL} }`
+    agree(src, [1, 7])
+    if (stressed()) continue
+    const grown = grownBy(src)
+    is(grown(1000), grown(10), `${shape}: a thousand decodes grow what ten do`)
+  }
+  // a jump that names a label is the labelled loop's, and a `continue` of the loop itself ends
+  // its round: the last iteration assigns nothing, and what the one before stored is read after
+  const ends = [
+    `let ast = null; outer: for (let r = 0; r < n; r++) { for (let i = 0; i < 3; i++) { if (r === n - 1 && n > 2) break outer } ast = parse(s) } ${CHURN}; return hash(ast)`,
+    `let ast = null; outer: for (let r = 0; r < n; r++) { for (let i = 0; i < 3; i++) { if (r === n - 1 && n > 2) continue outer } ast = parse(s) } ${CHURN}; return hash(ast)`,
+    `let ast = null; for (let r = 0; r < n; r++) { if (r === n - 1 && n > 2) continue; ast = parse(s) } ${CHURN}; return hash(ast)`,
+  ]
+  for (const body of ends) agree(PARSE + `export let f = (n) => { let s = ''; for (let i = 0; i < 4000; i++) s += String.fromCharCode(97 + i % 26); ${body} }`, [1, 3, 9])
 })
 
 test('iteration release: a module binding keeps what it was given, the rest goes', () => {
