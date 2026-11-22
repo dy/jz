@@ -37,8 +37,8 @@
       "entered": 2272
     },
     "fgather": {
-      "total": 18800,
-      "entered": 5920
+      "total": 18000,
+      "entered": 5520
     }
   },
   "wasi": {
@@ -79,8 +79,8 @@
       "entered": 2272
     },
     "fgather": {
-      "total": 18800,
-      "entered": 5920
+      "total": 18000,
+      "entered": 5520
     }
   }
 }
