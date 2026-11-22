@@ -140,7 +140,7 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
   '$__jbuf', '$__jstack', '$__jscap', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
-  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch', '$__esc_held',
+  '$__roots', '$__rootn', '$__rootl', '$__ink', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch', '$__esc_held',
   // the reset's log (module/core/durable-log.js; who lowers the flag for each writer, CENSUS_SITED) and the table it saved last
   '$__durable_arr_seen', '$__durable_arr_log', '$__durable_tbl_last',
   // the park lane's cursors (module/core.js): scratch above the heap a phase checkpoint writes and reads back at once

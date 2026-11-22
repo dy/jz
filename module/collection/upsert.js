@@ -270,6 +270,14 @@ function genRehash() {
       (br $rl))))`
 }
 
+// A key a table takes as a new entry is the table's from here on. The store's site asks whether
+// a running call made it (emit/dispatch.js keyNoted, the census's `siteKeyed`): a table with room
+// for the entry allocates nothing the site could tell an insertion by. Noted only where some site
+// reads the note (module/core.js `__ink_note`).
+export const notesKeys = () => ctx.scope.globals.has('__ink')
+const noteKey = () => notesKeys() ? `
+          (call $__ink_note (local.get $key))` : ''
+
 /** Generate upsert (add/set) probe for a growable collection (Set/Map). hasVal: store
  *  value at slot+16. hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching
  *  type). Gated off → type mismatch just returns coll unchanged.
@@ -345,7 +353,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         ${restoreZombieProbe()}))
           ${seqStore()}
           ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))${storeVal}
+          (i64.store offset=8 (local.get $slot) (local.get $key))${noteKey()}${storeVal}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
     (br $done))
@@ -549,7 +557,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
         ${restoreZombieProbe()}))
           ${seqStore()}
           ${probeHashStore()}
-          (i64.store offset=8 (local.get $slot) (local.get $key))
+          (i64.store offset=8 (local.get $slot) (local.get $key))${noteKey()}
           (i64.store offset=16 (local.get $slot) (local.get $val))
           (i32.store (i32.sub (local.get $off) (i32.const 8))
             (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))

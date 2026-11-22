@@ -65,9 +65,12 @@ import { ERR, errorCodeLiteral } from '../../err-codes.js'
 // ToNumber (module/number.js `__to_num`, some 1,200 nodes): spliced into a
 // sole caller it grows the module (4 bytes at size, 12 at speed, in most of
 // the bench cases that link it).
+// The note of a key a table takes as a new entry (module/core.js `__ink_note`):
+// the insertion arm of a table's kernel calls it, and spliced there a loop that
+// only counts carries its body.
 const OUT_OF_LINE = ['$__rem_div', '$__len_tail', '$__length_tail', '$__length.value_tail', '$__typed_idx_tail',
   '$__typed_idx_tagged_tail', '$__arr_typed_set_idx_tail', '$__arr_typed_obj_set_idx_tail', '$__typed_set_idx_tagged_tail',
-  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer', '$__iter_take', '$__to_num']
+  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer', '$__iter_take', '$__to_num', '$__ink_note']
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see

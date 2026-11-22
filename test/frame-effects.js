@@ -523,6 +523,101 @@ test('frame effects: a store that holds no heap value escapes only where it allo
   }
 })
 
+// A property new to a receiver keeps its key's string. Where the key was made by a call
+// still running and the table had room for the entry, the store allocated nothing, its
+// site lowered no flag, the frame gave the string back and the table named memory the
+// next call wrote over: a class's static stored through a bundler's helpers read
+// undefined at level 2 and above, a dictionary keyed by a slice or a concatenation made
+// in a helper at 'size' (1.0.3 as well). A key new to the receiver is growth that
+// allocates nothing: the kernels note the keys they insert, and the check of the store's
+// growth asks the note (module/core.js __ink_note, emit/dispatch.js keyNoted).
+test('frame effects: a key a store inserts is the receiver\'s, and a frame that made it keeps it', () => {
+  const CHURN = `const junk = []; for (let k = 0; k < 2000; k++) junk.push('filler' + k)`
+  const programs = {
+    // static fields as esbuild writes them below ES2022: the class, the key as a string, the value
+    'a class\'s static through a bundler\'s helpers': `var __defProp = Object.defineProperty
+      var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value
+      var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== 'symbol' ? key + '' : key, value)
+      var Strength = class _Strength { constructor(v) { this.v = v } static of(i) { return _Strength.constants[i] } }
+      __publicField(Strength, 'constants', [new Strength(7), new Strength(11)])
+      __publicField(Strength, 'absoluteWeakest', Strength.of(1))
+      export function f(n) { ${CHURN}; return Strength.absoluteWeakest.v + Strength.of(0).v + n + junk.length }`,
+    'a static of a class that has a static method': `const inner = (obj, key, value) => { obj[key] = value }
+      const put = (obj, key, value) => inner(obj, key + '', value)
+      class A { static twice() { return A.absoluteWeakest * 2 } }
+      put(A, 'absoluteWeakest', 5)
+      export function f(n) { ${CHURN}; return A.absoluteWeakest + A.twice() + n + junk.length }`,
+    'a slice of a text, counted in a helper': `const add = (counts, text, a, b) => { const w = text.slice(a, b); counts[w] = (counts[w] || 0) + 1 }
+      export function f(n) { const counts = { first: 0 }, text = 'alphabetical betatesting gammaradiation deltablueness'
+        for (let r = 0; r < n; r++) { add(counts, text, 0, 12); add(counts, text, 13, 24); add(counts, text, 25, 39) }
+        ${CHURN}; return counts.alphabetical * 100 + counts.betatesting * 10 + counts.gammaradiation + junk.length }`,
+    // (one read and one store of the slot, fused into one probe: compile/slot-update.js)
+    'the word count\'s own form': `const counts = {}
+      const count = (text, a, b) => { const w = text.slice(a, b); counts[w] = (counts[w] | 0) + 1 }
+      export function f(n) { const text = 'alphabetical betatesting gammaradiation deltablueness'
+        for (let r = 0; r < n; r++) { count(text, 0, 12); count(text, 13, 24); count(text, 25, 39); count(text, 0, 12) }
+        ${CHURN}; return counts.alphabetical * 100 + counts.betatesting * 10 + counts.gammaradiation + junk.length }`,
+    'a concatenation, into a module\'s dictionary': `const table = {}
+      const put = (name, value) => { const k = name + 'Strength'; table[k] = value }
+      export function f(n) { for (let r = 0; r < n; r++) { put('weakest', 1 + r); put('strongest', 2 + r) }
+        ${CHURN}; return table.weakestStrength * 10 + table.strongestStrength + junk.length }`,
+    'a key the caller made, stored by a callee': `const table = { first: 0 }
+      const file = (key, value) => { table[key] = value }
+      const put = (name, value) => { file(name + 'Strength', value) }
+      export function f(n) { for (let r = 0; r < n; r++) { put('weakest', 1 + r); put('strongest', 2 + r) }
+        ${CHURN}; return table.weakestStrength * 10 + table.strongestStrength + junk.length }`,
+    'a compound store and a logical one': `const table = { first: 0 }
+      const bump = (name) => { const k = name + 'Count'; table[k] ??= 0; table[k] += 2 }
+      export function f(n) { for (let r = 0; r < n; r++) { bump('weakest'); bump('strongest'); bump('weakest') }
+        ${CHURN}; return table.weakestCount * 10 + table.strongestCount + junk.length }`,
+    // (several keys before one check; the one inserted last is the module's own, at an address below those the frame made)
+    'keys an array holds, stored by a loop': `const table = { first: 0 }
+      const put = (text, base) => { const names = text.split(' '); names.push('requiredStrength'); for (let i = 0; i < names.length; i++) table[names[i]] = base + i }
+      export function f(n) { for (let r = 0; r < n; r++) { put('weakestStrength alphaStrength', r); put('strongestStrength betaStrength', r * 10) }
+        ${CHURN}; return table.weakestStrength * 100 + table.strongestStrength * 10 + table.requiredStrength + table.alphaStrength + table.betaStrength + junk.length }`,
+    // (the value is asked whether a running call made it, and none did)
+    'a key the frame made, for a value older than it': `const table = { first: 0 }, shared = { v: 7 }
+      const put = (name) => { const k = name + 'Strength'; table[k] = shared }
+      export function f(n) { for (let r = 0; r < n; r++) { put('weakest'); put('strongest') }
+        ${CHURN}; return table.weakestStrength.v * 10 + table.strongestStrength.v + junk.length }`,
+  }
+  // (a module with a dictionary is asked once at each count, a fresh instance each)
+  for (const [label, src] of Object.entries(programs))
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) for (const n of [1, 3])
+      is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${label}, f(${n}) at ${optimize}`)
+  // a key the table holds already is not kept again: a call that only counts gives its string back
+  const counted = `const counts = { first: 0 }
+    const add = (text, a, b) => { const w = text.slice(a, b); counts[w] = (counts[w] || 0) + 1; return counts[w] }
+    export function f(n) { const text = 'alphabetical betatesting gammaradiation'; let s = 0; for (let r = 0; r < n; r++) s += add(text, 0, 12) + add(text, 13, 24); return s }`
+  for (const optimize of levels(2, 3, 'size')) {
+    const { exports: m, memory } = jz(counted, { optimize })
+    is(m.f(4), oracle(counted).f(4), `the counts at ${optimize}`)
+    is(growth(memory, () => m.f(50)), 0, `a call that inserts no key keeps nothing at ${optimize}`)
+    // (and within one call: the note of the two insertions is read once, so the counts after them give their strings back)
+    if (stressed()) continue
+    const one = jz(counted, { optimize }), size = one.memory.buffer.byteLength
+    one.exports.f(100000)
+    is(one.memory.buffer.byteLength, size, `two hundred thousand counts in the memory of the first at ${optimize}`)
+  }
+  // where a growth's check stands around a quiet loop, the note is asked there, once
+  if (!onKernel()) {
+    const quiet = `const table = {}
+      export function f(names, base) { for (let i = 0; i < names.length; i++) table[names[i]] = base + i; return 0 }`
+    const body = bodyOf(compile(quiet, { wat: true, ...TAPE }), 'f')
+    ok(/\$__ink/.test(body) && loopSpans(body).length > 0 && !loopSpans(body).some(l => /\$__ink/.test(l)), 'a quiet loop\'s check asks the note after the loop')
+  }
+  // a key short enough to live in its pointer names no memory: a call that inserts one gives its 4 KB back
+  const short = `const table = {}
+    const tag = (i) => { const tmp = new Array(512).fill(i); const k = 'k' + i; table[k] = tmp.length + i; return table[k] }
+    export function f(n) { let s = 0; for (let i = 0; i < n; i++) s += tag(i); return s }`
+  for (const optimize of levels(2, 3, 'size')) {
+    const { exports: m, memory } = jz(short, { optimize }), size = memory.buffer.byteLength
+    is(m.f(1000), oracle(short).f(1000), `a thousand short keys at ${optimize}`)
+    // (the JS host's memory doubles once for the table, 17 pages)
+    if (!stressed()) ok(memory.buffer.byteLength - size <= 2 << 20, `a thousand calls of 4 KB grow ${memory.buffer.byteLength - size} bytes at ${optimize}, not the 4 MB they made`)
+  }
+})
+
 test('frame effects: a growth\'s check stands around the loop that holds its receiver and allocates nothing else', () => {
   // `t` may be an array the store grows: one check per call, outside the loop
   const once = 'export function f(a, b, k, n) { const s = new Array(4).fill(0); const t = k === 1 ? a : b; for (let i = 0; i < n; i = i + 1) t[i] = i + s[0]; return s.length }'

@@ -252,7 +252,7 @@ const keyEq = (fullEq) =>
         (then (i32.const 1))
         (else ${fullEq}))`
 
-import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed, notesKeys } from './collection/upsert.js'
 import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordInitCap, ordStride, ordStrideWat, ordBytesWat, genHashBits, genHashStr, genEqBits, genEqStr, genOrdProbe, genOrdProbeForm, genOrdInsert, genOrdFull } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
@@ -297,6 +297,8 @@ export default (ctx) => {
   const needsDurableFwdLog = hasDurableReset
   // A Set's or a Map's table, saved whole for the reset at its round's first write (collection/ordered.js)
   const tblSnapDeps = () => needsDurableFwdLog() ? ['__durable_tbl_snap'] : []
+  // the note of a key a table takes as a new entry (collection/upsert.js noteKey)
+  const noteDeps = () => notesKeys() ? ['__ink_note'] : []
   // the holder's stub a growth retargets, whose words the relocation log keeps (collection/ordered.js genOrdUpsert)
   const holderDeps = () => needsDurableFwdLog() && !lean ? ['__durable_fwd_log'] : []
   // A Set's or Map's insertion: the key's hash and equality, the one-hop
@@ -359,7 +361,7 @@ export default (ctx) => {
     __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
       ...(ctx.linkDemand.external ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__key_eq', '__ptr_type', '__dyn_set']),
-      '__zomb_scan', '__coll_rehash', ...tblSnapDeps(),
+      '__zomb_scan', '__coll_rehash', ...tblSnapDeps(), ...noteDeps(),
     ],
     __hash_get: () => ctx.linkDemand.external
       ? ['__str_hash', '__key_eq', '__ptr_type', '__ext_get']
@@ -372,7 +374,7 @@ export default (ctx) => {
     __hash_get_local: ['__str_hash', '__key_eq'],
     __hash_get_local_h: ['__key_eq'],
     __hash_set_local_h: () => ['__key_eq', '__zomb_scan', ...tblSnapDeps()],
-    __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps()],
+    __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps(), ...noteDeps()],
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
     __map_slot: () => ordUpsertDeps(),
     __coll_step: ['__ptr_offset_fwd', '__coll_seek'],
@@ -385,7 +387,7 @@ export default (ctx) => {
     __ord_rebuild: ['__alloc_hdr_n', '__ord_live', '__ord_index'],
     __ord_copy: ['__ord_rebuild', '__alloc_hdr_n'],
     __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check', '__ord_cap'],
-    __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...tblSnapDeps()],
+    __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...tblSnapDeps(), ...noteDeps()],
     __hash_lookup_slot: ['__str_hash', '__key_eq', '__ptr_offset_fwd'],
     __hash_hide: ['__hash_lookup_slot'],
     __hide_member: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__ihash_get_local', '__hash_hide'],
@@ -393,7 +395,7 @@ export default (ctx) => {
     __hash_slot_eph_fixed: ['__str_hash', '__key_eq'],
     __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
     __ihash_get_local: ['__map_hash'],
-    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps()],
+    __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...tblSnapDeps(), ...noteDeps()],
     __dyn_get_t: () => ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx', '__str_arr_idx', '__str_length'] : [])],
     __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
