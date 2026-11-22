@@ -719,3 +719,17 @@ a7aa01249 rng-w       the branch as first built and twice checked: the listing's
 ```
 
 State kept outside the repository: `/Users/div/projects/jz/.claude/worktrees/tools/` (the landing scripts under `own/`, the bench bytes of each landing `bh-*.jsonl`, the probes, `notes.md`). There too, for phase 12: `keep/arrow-rule.patch` (a local arrow's splice taking a body with a `throw`, a `break` or a `continue`, with its two tests), `own/mutant-arrow.sh`, and the analogs `probe/k-release-a.js` to `-f.js` with `probe/heap-growth.mjs`. The session's scratchpad was emptied by a cleanup on 2026-11-21 and holds nothing that is needed.
+
+## Branches of the land-ae landing (2026-11-22), tips before deletion
+
+```
+9d5e7a75d land-ae     the landing branch: 4 commits on 0a9e1b801 (main c59c3a568 and the held-out lane's two records); the record's commit after it
+d3a226f74 next-y      the six commits first built for this landing: the two of the rivals' releases, the while that spells a for, the retired dispatchers, the iteration's cut, the perf bars. Its check stopped at the listings (spellings 42 gaps to 82, the data forms' `@this` cells)
+339744bec next-x      the while and the dispatchers on c59c3a568 (worktree next-x, its working files the cut and the perf bars as landed, and test/perf.js with the three assertions the while needs): where their rework starts
+          key-w       on 9d5e7a75d, uncommitted in its worktree at this record: a key a store inserts is kept (the note `$__ink`, the census's `siteKeyed`); its message msg/key.txt, its mutations own/mutant-key.sh. The next landing
+a8cbbf12f bench-v2    bench-versions' two commits on c59c3a568, the tooltip's one line added (landed as fb250ac96 and 793ee2a54)
+39d0962be bench-versions  the agent's branch as it left it, on a107b46e0
+c59c3a568 land-ac     the landing before
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/pass-bisect.mjs` (a program at a level with each pass off alone: which one makes a wrong answer), `probe/levels-of.mjs` (a program's `run(n)` at every level against Node), `probe/spell-abs.mjs` (the loop ops of each spelling of a corpus program, absolute), `probe/k-static*.js` and `probe/k-keyfresh-*.js` (the key's analogs), `probe/k-release-g.js` (the cut's), `keep/ad-listings/` (the two listings as the six commits moved them).

@@ -3687,6 +3687,57 @@ Order: 12 first, since it is the largest measured gap and 13's member-access pop
 
 1.1 does not wait for a figure against V8 on object programs. It is released when guarantees 1 to 4 are gated (the done column of 13, 14 and 15), every held-out program past 1.5 times V8 has a named cause (12), and guarantee 5 is stated as measured (16, 11). A bar such as "none past twice V8" has no date that can be promised today: havlak and richards are not diagnosed. The towers analog shows what the rules of 12 are worth where they apply: 5.6 times Node as written, 0.77 with its array known present, its index bounded and its checks spliced.
 
+## The land-ae landing: an iteration released past an inner loop's jump, the rivals' current releases; two commits held at their listings, and a key freed under its table found (2026-11-22)
+
+Four commits on 0a9e1b801 (main c59c3a568 and the held-out lane's two records), the integrator's; the two of the rivals' releases by an agent on branch bench-versions, replayed here.
+
+### The tuned run before it (44985445736, on c59c3a568)
+
+22 of 23 programs run. The recorded geomean of jz's time over V8's is 1.48 (Are We Fast Yet 2.30 over 13, the Benchmarks Game 0.79 over 9); 1.59, 2.59 and 0.79 on 66812d093. The Are We Fast Yet shard ran on an EPYC 9V74 where the run before had an EPYC 9V45, so its ratios are two measurements; the Benchmarks Game ran on a Xeon 6975P-C both times. The slowest: havlak 7.39 (7.89 before), richards 4.95 (5.69), towers 3.80 (5.94: its analog went 5.56 to 3.78 by the splice of bodies that throw), cd 3.63 (3.92), sieve 3.44 (3.15), permute 2.11 (2.90), queens 2.06 (2.51). deltablue says where it throws, by the bench case's new line: `TypeError: Cannot read properties of undefined; raised in BinaryConstraint.chooseMethod < AbstractConstraint.satisfy < run; at level 1: returned`.
+
+### What landed
+
+- `fb250ac96` The bench rivals pinned to their current releases (Porffor alpha 25, Perry 0.5.1665, scriptc 0.4.14, TinyGo 0.44.0 with Go 1.27, Zig 0.17.1, MoonBit 0.10.22, Goose v2026.4, Wasmtime 51.0.0, jco 1.42.0, componentize-qjs 0.6.0, TypeScriptCompiler pre-alpha133, QuickJS-NG 0.18.0, Static Hermes 310f609). Zig 0.17 removes `a ** b`: 65 zero-filled arrays of 44 .zig ports are `@splat(0)`. Checked here: eight of those ports build and answer under the local Zig 0.16.0; the pins and their hashes are proven only when CI installs them.
+- `793ee2a54` Each lane's toolchain versions in the bench page's tooltips, as the dataset recorded them. Looked at in a browser: a row's tooltip stands over the rows, unclipped, no console message. One line added in the replay: a tool's name joined to its number is taken off (`Go go1.25.14` read twice; `Go 1.25.14` now).
+- `0ebca23a9` A `break` or a `continue` of a loop inside a statement ends that loop's round, not the iteration: the walk that finds a carried binding goes on past it (analyze/frame-effects.js mayCutIteration). A loop keeping only its last result, the callee's loop with a `break` spliced before the assignment: 2,048 pages for a thousand decodes under WASI to 2, 68 to 34 on the JS host. No bench case's bytes move.
+- `9d5e7a75d` test/perf.js 'perf: spread + destructure' holds its four bars over the least of five single calls: the total over five failed a level 0 leg on one pause of the machine.
+
+### Held at their listings: the while that spells a for, the retired dispatchers
+
+Both were on branch next-w with tests and mutations of their own and no full check. Built with this landing (branch next-y, d3a226f74), the check stopped where the listings moved, and the listings say both make programs worse.
+
+- The `while` (plan/counted-loops.js adoptWhileCounter): spelling gaps 42 to 82 of 470. A loop spelled `let k = 0; while (true) { if (k >= n) break; …; k++ }` is adopted in that form, its test `true`, before the exit tests are joined into it: a buffer loop loses its vector form, an integer kernel takes 64 loop ops at 'speed' where 24, a nested one 108 where 81. And the float gather (`out[k] = a[idx] + (a[idx + 1] - a[idx]) * fr`, `idx = ph | 0`): on main the `while` and `do-while` spellings are the best, 203 loop ops against the `for`'s 218, because the `for` computes `ph | 0` with a test for infinity the `while` does not carry. Adopted, they join the `for`: the 28 gaps listed for that kernel close by the best spelling getting worse. The sieve analog's gain (2.6 times Node's time to 1.17) is real and is that of one spelling.
+- The retired dispatchers (emit/class-dispatch.js retireClassDispatchers): the data forms of an array held in a class's field read more calls and more ops (a gather 31 calls and 1,044 ops to 36 and 1,139 at level 2; a prefix sum 250 ops to 257). Attributed by elimination (the `while` alone leaves that listing unmoved); the cause not looked into.
+
+They come back with the two listings as their bar: no new gap, the `while (true)` form one with the others, the `for`'s lost fact about `ph` found so the float gather's gaps close by the `for` getting better.
+
+### deltablue's wrong read: a key freed under its table (found; its fix is the next landing)
+
+A string a running call made, stored as the key of a receiver older than the call (`obj[key] = v`), was given back by the frame's rewind where the receiver's table had room for the entry: the store allocated nothing, so its site lowered no flag (the site lowers it for a value a running call made, or where the store allocated), and the table named memory the next call wrote over. Wrong on main and on the tag v1.0.3 (run with watr 5.13.8):
+
+- A class's static stored through a bundler's helpers reads undefined at levels 2, 3, 'size' and 'speed'. esbuild below ES2022 writes `static x = v` as `__publicField(Class, 'x', v)`, which hands `key + ''` to a second helper that stores `obj[key] = value`. Where the class has a static method (its table exists) and the name is past the length a pointer holds in itself, `Class.x` is undefined. deltablue's `Strength.absoluteWeakest` is this, read in `chooseMethod`.
+- A dictionary keyed by a slice or a concatenation made in a helper reads undefined at 'size': the word count's own form (`const w = text.slice(a, b); counts[w] = (counts[w] | 0) + 1`) among them.
+
+With `arenaRewind` off alone each answers as Node (`probe/pass-bisect.mjs` under the tools directory turns each pass of a level off in turn). Found by reading the outline of the held-out program's source (its `static` fields) and writing analogs of the shape; the program itself is not run here. The fix is on branch key-w: the kernels note the key they insert, the store's site asks it.
+
+### The check (aj, on 9d5e7a75d)
+
+57 minutes at a load of 7 to 30, then test262 in 29. Listings unmoved. WASI 7,589; default 7,716; armed level 3 7,498; level 0 7,476; test:self 89; integration 240 of 241 with one skipped; lint and audit clean; examples 1.68 and 1.67, 24 and then 25 of 25: the first pass ran beside a mutation run of mine, at a load of 22 to 30, and which example read slower there was not looked at. test262: pass 4,137, refused negatives 4,045, accepted negatives 0, failures 0. On a fresh hosted compiler (38,189,184 bytes, 253 more than the landing before): parity 19, iteration-release 17, frame-effects 76, data 247, errors 153, index-store 16, element-numbers 14, class-members 11, param-range 12.
+
+Bench bytes: no case of the 105 moves, so none is timed.
+
+CI on c59c3a568 (main before): test262, self-compile, examples-perf, pages and the held-out lane green; test green but claims; the weekly one-process run green (on a107b46e0); the bench workflow red as before, on the Porffor evidence (alpha 13 recorded, alpha 23 required), the examples gate (ulam 0.86, lenia 0.75, rfft 0.61 on its runner) and the perf-fuzz gate (4.36 against a bar of 2.25).
+
+### Found, not fixed
+
+- Three test files on main hold a raw U+E000 where a `` escape is meant (test/integral-loops.js, test/optimizer-unroll.js, test/warnings.js: four lines): the character is invisible in an editor.
+- A labelled jump out of an inner loop, or a loop's own `continue`, taken for no cut of the iteration (two mutations of the cut) answers as Node on the JS host and wrong under WASI alone: what covers it on the JS host was not looked into.
+- webaudio's 1.4% against 66812d093, from the landing before: no cause found, a target still.
+
+### Next
+
+The key's fix (branch key-w), alone, with its bench bytes and the time and memory of the dictionary cases. Then the probe of the new toolchains and the reference run. Then the `while` and the dispatchers against their listings.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
