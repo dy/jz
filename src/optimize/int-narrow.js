@@ -396,20 +396,41 @@ export function narrowBoxedLocals(fn) {
   }
   census(fn, null, null)
   const chosen = new Set([...tags.keys()].filter(l => !bad.has(l)))
-  // (the bits: every read of the local is through `i64.reinterpret_f64`, its writes any Number)
+  // (the bits: every read of the local is through `i64.reinterpret_f64`, its writes any Number; or is the
+  // whole value written to a local held so too, a receiver's copy for a compound store among them, where
+  // some write of the local is a load or a box's bits, an integer's once the local holds bits: a copy of
+  // a call's result held so only moves the one reinterpretation from the copy to the write)
   const reads = new Map(), bits = new Set()
+  const open = (l) => typeof l === 'string' && decls.get(l)?.[2] === 'f64' && !params.has(l) && !chosen.has(l)
+  const of = (l) => reads.get(l) ?? reads.set(l, { bits: 0, other: 0, into: null, written: false, loaded: false }).get(l)
   const walkReads = (n, parent) => {
     if (!Array.isArray(n)) return
-    if (n[0] === 'local.get' && typeof n[1] === 'string' && decls.get(n[1])?.[2] === 'f64' && !params.has(n[1]) && !chosen.has(n[1])) {
-      const r = reads.get(n[1]) ?? reads.set(n[1], { bits: 0, other: 0 }).get(n[1])
-      if (parent?.[0] === 'i64.reinterpret_f64') r.bits++; else r.other++
+    if (n[0] === 'local.get' && open(n[1])) {
+      const r = of(n[1])
+      if (parent?.[0] === 'i64.reinterpret_f64') r.bits++
+      else if ((parent?.[0] === 'local.set' || parent?.[0] === 'local.tee') && parent[2] === n && open(parent[1]) && parent[1] !== n[1]) (r.into ||= new Set()).add(parent[1])
+      else r.other++
     }
     // (a write of a value on the stack, `(local.set $x)` after its value: no value to hold as bits)
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && decls.get(n[1])?.[2] === 'f64' && !params.has(n[1]) && !chosen.has(n[1])) { const r = reads.get(n[1]) ?? reads.set(n[1], { bits: 0, other: 0 }).get(n[1]); if (n.length < 3) r.other++; else r.written = true }
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && open(n[1])) {
+      const r = of(n[1])
+      if (n.length < 3) r.other++
+      else { r.written = true; if (n[2]?.[0] === 'f64.load' || n[2]?.[0] === 'f64.reinterpret_i64') r.loaded = true }
+    }
     for (let i = 1; i < n.length; i++) walkReads(n[i], n)
   }
   walkReads(fn, null)
-  for (const [l, r] of reads) if (r.written && r.bits && !r.other) bits.add(l)
+  // (a copy is free where its target is held as bits, and worth holding where some copy of it is read as bits)
+  const held = new Set()
+  for (const [l, r] of reads) if (r.written && !r.other && (r.into ? r.loaded : r.bits)) held.add(l)
+  for (let moved = true; moved;) {
+    moved = false
+    for (const l of [...held]) { const r = reads.get(l); if (r.into && [...r.into].some(t => !held.has(t))) { held.delete(l); moved = true } }
+  }
+  for (let moved = true; moved;) {
+    moved = false
+    for (const l of held) if (!bits.has(l)) { const r = reads.get(l); if (r.bits || (r.into && [...r.into].some(t => bits.has(t)))) { bits.add(l); moved = true } }
+  }
   if (!chosen.size && !bits.size) return false
   const box = (l, inner) => ['f64.reinterpret_i64', ['i64.or', ['i64.const', tags.get(l)], ['i64.extend_i32_u', inner]]]
   const asBits = (v) => v?.[0] === 'f64.reinterpret_i64' ? v[1] : v?.[0] === 'f64.load' ? ['i64.load', ...v.slice(1)] : ['i64.reinterpret_f64', v]

@@ -9,7 +9,7 @@ import { agree, oracle, run, wat } from './util.js'
 import { belowOpt, ownedLevels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
-import { narrowInts, narrowWrappedWords } from '../src/optimize/int-narrow.js'
+import { narrowInts, narrowWrappedWords, narrowBoxedLocals } from '../src/optimize/int-narrow.js'
 import { intRanges } from '../src/optimize/int-range.js'
 import { guardDefinitions } from '../src/optimize/guard-defs.js'
 
@@ -1010,4 +1010,51 @@ test('int-narrow: a NaN written to a local every read truncates is its zero', ()
     for (const o of [m, host]) { const a = o.words(); for (let i = 0; i < 64; i++) a[i] = Math.imul(i + 1, 2654435761) >>> 0 }
     for (const n of [0, 1, 5, 64, 70]) is(m.f(n), host.f(n), `f(${n}) at ${JSON.stringify(optimize)}`)
   }
+})
+
+// The copies a box takes decide with its reads: into a local read as bits it is held as bits, a local
+// with no other read of its own too; into one read as a Number it stays the Number it is copied as.
+test('int-narrow: a box copied into a local read as bits is held as bits, one copied into a Number is not', () => {
+  const build = (use, from = '(f64.load (local.get $a))') => parseWat(`(module (memory (export "mem") 1) (func $f (export "f") (param $a i32) (result f64) (local $x f64) (local $y f64)
+    (local.set $x ${from})
+    (local.set $y (local.get $x))
+    ${use}))`)
+  const typeOf = (ir, name) => ir.find(n => n[0] === 'func').find(n => Array.isArray(n) && n[0] === 'local' && n[1] === name)[2]
+  const run = (ir, v) => { const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports; new Float64Array(m.mem.buffer)[1] = v; return m.f(8) }
+  const cases = [
+    ['bits', '(f64.convert_i64_s (i64.shr_u (i64.reinterpret_f64 (local.get $y)) (i64.const 52)))', 'i64', 'i64'],
+    ['both', '(f64.convert_i64_s (i64.add (i64.shr_u (i64.reinterpret_f64 (local.get $y)) (i64.const 52)) (i64.shr_u (i64.reinterpret_f64 (local.get $x)) (i64.const 60))))', 'i64', 'i64'],
+    ['a Number', '(f64.add (local.get $y) (f64.convert_i64_s (i64.shr_u (i64.reinterpret_f64 (local.get $x)) (i64.const 52))))', 'f64', 'f64'],
+    // (a copy written by a tee whose value a Number reads: the locals are held as bits, the tee's value boxed again)
+    ['bits, its tee as a Number', '(f64.add (local.tee $y (local.get $x)) (f64.convert_i64_s (i64.shr_u (i64.reinterpret_f64 (local.get $y)) (i64.const 52))))', 'i64', 'i64'],
+    // (a source no write of which is a load: held as bits it would only move the reinterpretation to its write)
+    ['bits, its source computed', '(f64.convert_i64_s (i64.shr_u (i64.reinterpret_f64 (local.get $y)) (i64.const 52)))', 'f64', 'i64', '(f64.neg (f64.load (local.get $a)))'],
+  ]
+  for (const [label, use, x, y, from] of cases) {
+    const want = [1.5, -2, 1e300].map(v => run(build(use, from), v))
+    const ir = build(use, from)
+    narrowBoxedLocals(ir.find(n => n[0] === 'func'))
+    is(typeOf(ir, '$x') + ' ' + typeOf(ir, '$y'), x + ' ' + y, `the copy read as ${label}: the source and the copy`)
+    ;[1.5, -2, 1e300].forEach((v, i) => is(run(ir, v), want[i], `the copy read as ${label}: f at ${v}`))
+  }
+})
+
+// A box the function reads only as bits is held as its bits (narrowBoxedLocals): a copy of it into a
+// local held so too is no other read. A loop that follows a pointer and stores through it copies the
+// pointer into the store's receiver: the pointer stayed a float, and each hop loaded it into a float
+// register and moved it to an integer one, where the loop that only reads loaded the integer.
+test('int-narrow: a pointer a loop follows and stores through is held as its bits', () => {
+  const src = `class P { constructor(x, vx) { this.x = x; this.vx = vx; this.next = null } }
+    let head = null; for (let i = 15; i >= 0; i--) { const p = new P(i * 0.5, i % 7 - 3); p.next = head; head = p }
+    export const step = () => { for (let p = head; p !== null; p = p.next) { p.x += p.vx }; return head.x }
+    export const sum = () => { let s = 0; for (let p = head; p !== null; p = p.next) s += p.x; return s }
+    export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += step(); return s + sum() }`
+  for (const optimize of ownedLevels(false, 1, 2, 3, { level: 'speed' }, { level: 'size' })) agree(src, 'f', [3], { optimize }, `the list at ${JSON.stringify(optimize)}`)
+  shapes(src, text => {
+    for (const name of ['step', 'sum']) {
+      const at = text.indexOf(`(func $${name}`), body = text.slice(at, text.indexOf('\n  (func ', at + 1))
+      ok(/\(local \$p i64\)/.test(body) && !/\(local \$p f64\)/.test(body), `${name} holds the pointer as its bits`)
+      ok(/local\.(set|tee) \$p\s*\(i64\.load/.test(body), `${name} loads the next pointer as an integer`)
+    }
+  })
 })
