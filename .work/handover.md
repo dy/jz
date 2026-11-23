@@ -745,3 +745,18 @@ aa8b6ac86 land-ae     the landing before
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-key.sh` (the twelve mutations; `ONLY=Yn` runs one), `probe/key-mem.mjs` (the counting helper's memory at each level and whether the helper stays a function) and `probe/key-mem-wat.mjs` (the lines of its loop that touch the heap's top, the flag, the note or the compaction), `probe/loop-keys.mjs` (where a loop's check reads the note), `probe/k-static*.js` and `probe/k-keyfresh-*.js` (the analogs), `time-key2.out` and `time-key2b.out` (the timing against main).
+
+## Branches of the land-aq landing (2026-11-23), tips before deletion
+
+```
+714676b57 land-aq     the landing branch: 8 commits on d0d5ae5b1; the record's commit after it
+132508cee land-ap     the same tree, its seventh commit's message stating the spellings as 42 of 470 where the branch has 14: replayed as land-aq
+0e0766e4e spell-w     the accumulator's bound, its listings, the atoms' path and the nest's test, on 9e7dd971b
+098622809 forms-w     the object cells and the getter's fix, on d0d5ae5b1 (37f9f03e6's message calls static counts "each pass")
+bd67ac5b0 release-1.0 1.0.4: three commits on the tag v1.0.3, pushed
+9e7dd971b key-w       the landing before
+d3a226f74 next-y      the while and the dispatchers, held at their listings
+339744bec next-x      where their rework starts
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-acc.sh`, `own/mutant-recv.sh` and `own/mutant-obj.sh` (the mutations; `ONLY=On` runs one of the last), `probe/call-time.mjs` (the object programs against Node), `probe/who-retypes.mjs` (who retypes a local after emit) and `probe/who-types.mjs`, `probe/guards-of.mjs` (the missing-receiver tests a function keeps), `probe/count-of.mjs` (a module's lines, bytes and matches, one tree a process), `probe/levels-of.mjs` (a kernel at every level against Node), the kernels `probe/k-list.js`, `k-over2.js`, `k-field.js`, `k-closed-a.js`, `k-held-a.js`, `k-held-b.js`, `k-big-a.js`, `k-big-b.js`, `k-big-c.js`, `k-list-guards.js`.

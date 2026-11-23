@@ -3784,6 +3784,77 @@ CI on aa8b6ac86 (main before): test262, self-compile, examples-perf and pages gr
 
 The held-out run on this commit, where deltablue is expected to run. Then the reference run on the new pins. Then the `while` and the dispatchers against their listings. Whether the key's fix also goes out as a patch of 1.0 is the owner's call.
 
+## The land-aq landing: a float accumulator's bound, a spliced getter's field, cells for object programs; 1.0.4 (2026-11-23)
+
+Eight commits on d0d5ae5b1, the integrator's, and the changelog's. Beside them, on its own branch from the tag, the key's fix as 1.0.4.
+
+### What landed
+
+- `e3f28443a` A float accumulator in a counted loop the count does not bound takes the enclosure every loop has (optimize/peephole.js boundedFloatLocal). The counted ends are tried first, where the loop steps the local once from a literal; where they fail (the local enters at a copy, is stepped twice, would pass 2^53) the local had no bound at all, and its `| 0` kept the test for infinity the same loop written as a `while` had lost.
+- `cc8c5b297` Its listings: spellings 14 gaps of 470 where 42 (the float gather's seven `for` forms at two seeds and two levels, 15 loop ops each); the ratchet's float gather group enters 5,520 loop ops where 5,920.
+- `a4282210b` test/optimizer-induction.js read for what the enclosure proves (below: the first check).
+- `6b8dea026` bench/_audiojs/atoms.mjs reaches the VST entry in its renamed folder (`@audio/plugin`, packages/plugin-vst). The files exist and the script parses; the atoms were not run.
+- `6ee8855ed` Two groups of the data-forms gate for object programs, `call` (the work in the loop, a function, a method, an inherited method, a method of two and of three classes, a closure in a field, getters and setters, a container's `each`, forEach) and `link` (the next record by index, by iterator, through a `next` field, through a container's `at(i)`), each with a kernel that updates every record and one that reads every record: 56 cells, 44 short of their best form; 684 gaps of 800 where 640 of 744. No compiler source.
+- `91bb88b73` A spliced getter reads its field by the receiver's class (plan/scope.js settleTestedReceivers): at the speed tier the splice left the receiver's test, a call (`__present(p).x`), where the body read `this`, and the field was looked up by name.
+- `0c06c5aa6` Its listing: the getter and setter form at 'speed' from 251 and 970 loop ops with 9 and 23 calls to 45 and 38 with none.
+- `714676b57` The sweep's name in the kernel's phase table (below: the second check).
+- `85cc53b2f` The changelog: a `1.0.4` section, and the two compiler changes above under Unreleased. The 120 commits to src/ and module/ between 82d1e0216, its entry before these, and d0d5ae5b1 have none: owed with the 1.1.0 notes.
+
+### What the new cells showed
+
+Timed beside another battery, so to the nearest tenth, as multiples of Node's time for the update and the read: the work in the loop 0.4 and 0.8; a method 0.7 and 0.8; a container's `each` 0.4 and 0.3; forEach 0.4 and 0.2; a container's `at(i)` 0.6 and 0.8. Slower than Node: a method of two classes 1.7 and 2.2, of three 1.9 and 2.3; a closure in a field 1.8 and 2.0; a list 2.9 and 1.6; getters and setters at 'speed' 21 and 17, which `91bb88b73` brings to 0.7 and 0.7.
+
+The counts are of a pass's code, taken or not. The arm for a receiver of neither class holds a lookup by name, an indirect call and an allocation that no run of these programs takes, and no memory grows over the calls. The first message of `6ee8855ed` called them "each pass"; the commit was replayed with the claim corrected.
+
+### The checks
+
+- an (the accumulator's bound alone): failed on test/optimizer-induction.js, which held that a nest entering its inner loop without a reset keeps the infinity guard. The enclosure removes the guard there too, and soundly. Both nests now assert no guard. What the old assertion stood for, that the count of one entry is not the count overall, no test tells apart any more: with the rule taken out of `initial`, the nests and three programs written to cross a boundary through the wrong bound answer as Node at every level. The rule stays. The machine was at a load of 223 from another session and the check was stopped.
+- ap (the branch): failed on its default leg and on test:self, one cause: the new sweep `plan:settleTestedReceivers` was not in scripts/phase-marks.js, which names every phase compileAst times (test/kernel-marks.js; test:self's heap marks). Not run before the check: `npm test -- kernel-marks`. `714676b57` adds the name.
+- aq (on `132508cee`, the tree of `714676b57`): 63 minutes at a load of 5 to 32, then test262 in 28. Listings unmoved. WASI 7,592; default 7,719; armed level 3 7,501; level 0 7,479; test:self 89; integration 240 of 241 with one skipped; lint and audit clean; examples 1.71 and 1.70, 25 of 25 both passes. test262: pass 4,137, refused negatives 4,045, accepted negatives 0, failures 0. On a fresh hosted compiler: parity 19, store-int32 6, optimizer-induction 33, class-members 12, int-narrow 47, bytebeat 29, data 247, classes 80.
+
+### Mutations
+
+- The accumulator: the fallback taken out fails its test on the default, level 3 and WASI legs. The counted path's own rules were moved into a function and not changed; no mutation of them was run.
+- The getter: of four, the two that matter fail at level 3 (the pass not run; a member read keeping its marker). Two pass, their guards reached by no program written here: a store's target keeping its marker, a computed member of the marker.
+
+### What it costs
+
+- Bench bytes: 9 of 105 cases move, all smaller, all from the accumulator's bound: 'speed' builds 5,915,233 to 5,914,971 (decode-alac -16, decode-qoa -8, decode-wav -24, fftplan -72, stdlib-ddot -40, threecull -18, tokenizer -8, webaudio -76), 'size' builds 2,662,333 to 2,662,322 (qoi -11). The getter's fix moves none.
+- Time and memory, the eight whose 'speed' build moves, six paired rounds against main: decode-alac 0.971, decode-qoa 0.991, decode-wav 0.997, tokenizer 1.000, stdlib-ddot 1.000, fftplan 1.002, webaudio 1.003, threecull 1.023. Peak memory within 0.3 MB on every case.
+- threecull is slower, and why is not found. Twelve rounds: 1.023, twelve of twelve above 1. Its two builds side by side (probe/pair-wasm.mjs, eight rounds): 1.026; 1.032 with liftoff off; 1.026 with wasm inlining off. The builds differ in two functions, `cull` and `raycast`, 9 bytes each: the infinity test gone from the arm a truncation takes where its operand is not within 2^51 of zero, and the constant pool's order after it. The arm the kernels take is the same wasm. With a trapping truncation written into the other arm by hand, which no engine may run ahead of its test, the time is the same 1.026, so it is not the arm folded into a select. Measured on the M4 alone.
+- The hosted compiler: 38,205,916 bytes, 4,798 more.
+
+### 1.0.4
+
+Branch `release-1.0` from the tag v1.0.3: `2cb91891b` the key's fix (five files resolved by hand; on 1.0.3 the slot kernel also builds a Map's and a Set's insertion, so the note is called only for a dictionary's), `110882fd0` the ratchet's baseline (the slice group 64 loop ops more), `bd67ac5b0` the release. The wrong read is in 1.0.0, 1.0.1, 1.0.2 and 1.0.3, each run here with the local watr and subscript, not its pins. Local legs on the tree: default 6,894 of 6,897, WASI 6,787 of 6,790, level 3 6,730 of 6,733, level 0 6,716 of 6,719, each one failure and two skips; test:self 89. The failure is test/parser-bugs.js on an error's text, and pristine v1.0.3 fails it the same way with the local subscript 10.8.6 where the lockfile pins 10.8.1. CI on the branch, with the lockfile (run 45235700851): the default, WASI, level 3 and level 0 legs and the fuzz green, the default leg in 2 hours 44; self-compile, test262 and examples-perf green; `claims` red on a reference dataset older than the compiler's source, 58 rows, the assertion and the count the v1.0.3 release commit's own run failed on. Tagged v1.0.4 at `bd67ac5b0`, released on GitHub, `jz.wasm` attached by the release workflow (33,993,574 bytes). The npm publish is the owner's.
+
+### The reference run on 9e7dd971b (45019560394)
+
+Eleven shards green; `publish` failed on the claims gate and committed nothing. Past the 8% band, in paired rounds:
+
+- against the wasm class: entity 1.607, spmv 1.411, aos 1.345, threescene 1.234, immutable 1.211, munsell 1.190, stdlib-pow 1.131, tokenizer 1.088;
+- jz at exact arithmetic against the strict wasm class: entity 1.630, aos 1.342, threescene 1.236, spmv 1.220, immutable 1.211, stdlib-pow 1.127, alpha 1.126, tokenizer 1.088;
+- against V8: decode-dsd 1.325 (Deno), crc32 1.111;
+- against bun/JSC: decode-dsd 1.432, decode-tta 1.209, decode-alac 1.208, webaudio 1.126;
+- an exception past its band: watr against JSC 1.553, the band 1.45;
+- to promote out of the pending cases: mapstr, setops.
+
+### The held-out run on 9e7dd971b (45019536487)
+
+23 of 23 programs run, deltablue among them (1.59 of V8's time). Geomean 1.48 over 23: AWFY 2.19 over 14, CLBG 0.81 over 9. Both shards ran on other CPUs than the run before, so the ratios do not compare run to run. Slowest: havlak 5.46, richards 4.83, towers 3.88, fannkuchredux 2.99, sieve 2.85, cd 2.77, permute 2.45, queens 2.12, storage 2.06. Memory over V8's: storage 5.79, cd 4.19.
+
+### Found, not fixed here
+
+- A wrong answer of main and of 1.0.x: a BigInt a method returns, called on a receiver of several classes through the dispatcher (an override among them, or a class without the method) and read by BigInt arithmetic, is read as its box's pointer. `t += x.big()` over an array of two classes gave -12384898975253024 where Node gives 36028797018964128, at every level, on main and on the tree of 1.0.4. The dispatcher returns into a tagged slot (emit-func.js boxedResult) and a reader of an access the kind proves a BigInt takes the raw word. A fix is on `obj-w` with the object work, not yet through a full check. 1.0.4 does not hold it; whether it goes out as a patch is the owner's call.
+- Two shells of an agent of this session waited 18.6 hours on `pgrep -f` of a text their own command lines held. Killed by PID. A wait is on a PID or on the task's notification.
+- `initial` in boundedFloatLocal takes a literal `local.set` only and walks out of no `if` arm, so the integral copy's `phint = ph` gets the 2^54 enclosure where [1, 2^31] is provable; with it the `for` forms would drop the near-test at 'speed'.
+- The object cliffs the new cells time: a list, a method of several classes, a closure in a field. Work on them is on the branch `obj-w` (below).
+- Published 1.0.3 fails `@audio/plugin-vst`'s native lane at `wasm2c` ("invalid section code: 13") where main builds (the audio session's report). Not looked into.
+
+### Next
+
+The object cliffs, each as a general rule pinned by a kernel and the new cells: a pointer a loop follows and stores through held as its bits; a receiver of several classes dispatched over those classes alone; a field that holds one function called as that function; a receiver a truth test guards read without a second test. Then memory beside the ops in the gate, the `while` and the dispatchers against their listings, plain arrays proven numeric.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
