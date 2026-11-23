@@ -71,7 +71,11 @@ test('bounded fractional recurrences preserve rounding, zero work and i32 bounda
   }
 })
 
-test('fractional recurrence proofs require a reset on every nested-loop entry', () => {
+// The count of a loop bounds a recurrence from the literal a reset gives it on every entry. A nest
+// that enters the inner loop without one has no such bound: the count of one entry is not the count
+// overall. The recurrence then has the enclosure repeated addition gives it (p += 0.3 stops at 2^53),
+// which takes the infinity guard away as the count does: both nests convert without one.
+test('a fractional recurrence loses its infinity guard by the count under a reset, by its enclosure without', () => {
   for (const reset of [false, true]) {
     const src = `export function f(flag){let p=1,s=0;
       for(let j=0;j<3;j++){${reset ? 'p=1;' : ''}
@@ -86,7 +90,7 @@ test('fractional recurrence proofs require a reset on every nested-loop entry', 
       const wat = compile(src, { wat: true, optimize: { level: 2, watr: false, wideAccumulator: false } })
       const body = findFunc(parseWat(wat), '$f')
       const guards = count(body, n => n[0] === 'f64.ne' && n[2]?.[0] === 'f64.const' && n[2][1] === 'inf')
-      is(guards === 0, reset, 'only a dominating reset permits removal of the infinity guard')
+      is(guards, 0, `no infinity guard, reset=${reset}`)
     }
   }
 })
