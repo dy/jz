@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+
+- Keep the key a store inserts (src/compile/analyze/frame-effects.js `siteKeyed`; src/compile/emit/dispatch.js `keyNoted`; module/core.js `__ink_note`): a string a running call made, stored as the key of an object older than the call (`obj[key] = v`), was freed as the call returned where the object's table had room for the entry, and the table then named memory the next call wrote over. In 1.0.0 to 1.0.3 at the default level, level 3, `'size'` and `'speed'`, a class's static field stored through a bundler's helpers read undefined (esbuild below ES2022 writes `static x = v` as `__publicField(Class, 'x', v)`, which stores `obj[key + ''] = value`), where the class had a static method and the name was too long to be held in its pointer; and at `'size'` a dictionary keyed by a slice or a concatenation made in a helper read undefined, a word count among them (`const w = text.slice(a, b); counts[w] = (counts[w] | 0) + 1`). A Map's and a Set's keys were kept and are. test/frame-effects.js pins it.
+
 ## 1.0.3
 
 - Yield from an assignment what it stored (src/kind/val-type-of.js `VT['=']`): where the right side is a Boolean on one path and a Number on another (`x === 3 || x & 1`) and the target keeps the Boolean as itself, the assignment expression was called a Number while it carried the Boolean. In 1.0.0 to 1.0.2 at every level, `if (t = x === 3 || x & 1)` took the false arm at x = 3, `(t = x === 3 || x & 1) + 10` gave NaN where Node gives 11, and `=== true`, `&&`, `!` and a `while` test of the assignment read a number, for a local, a module binding, a captured variable, a field, an element and a chained assignment. test/bool-number.js pins it.
