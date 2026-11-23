@@ -1837,7 +1837,7 @@ function emitSite(node, expect) {
     const t = Array.isArray(ir) ? ir.type : undefined
     if (ir?.inPlace) return expect === 'void' && t !== 'void' ? typed(['drop', ir], 'void') : ir
     if (t === 'f64' || t === 'i32') {
-      const out = whereNew(ir, flag, held.pre, mark)
+      const out = whereNew(ir, flag, held.pre, mark, ctx.plans.siteKeyed?.has(origin) === true)
       return expect === 'void' ? typed(['drop', out], 'void') : out
     }
     return recv === null ? withEscapeFlag(ir, ['block', ...held.pre, flag]) : around(ir, held.pre, [flag])
@@ -1854,18 +1854,21 @@ function emitSite(node, expect) {
 /** A value about to be stored, with the flag lowered by `flag` after it is
  *  made when a running call may have allocated it (`__esc_new`), or when the
  *  heap moved since `mark` kept its top; `pre`: what `flag` reads, taken
- *  before the value is made. */
-export function whereNew(ir, flag, pre = [], mark = null) {
+ *  before the value is made. `keyed`: the store's key may be a string a running
+ *  call made, which the receiver holds where the key is new to it: the note of
+ *  the keys inserted is asked too (`keyNoted`), and cleared. */
+export function whereNew(ir, flag, pre = [], mark = null, keyed = false) {
   if (flag === null) return ir
   if (flag === ROOT) return rooted(ir)
   // a number is no pointer: only the store's own allocation is left to ask
   const number = ir.valKind === VAL.NUMBER || (ir.type === 'i32' && ir.ptrKind == null)
-  if (number && mark === null) return ir
+  keyed = keyed && ctx.scope.globals.has('__ink')
+  if (number && mark === null && !keyed) return ir
   if (!number) inc('__esc_new')
   const kept = escLocal('f64', ESC_VALUE)
   const made = ['call', '$__esc_new', ['local.get', kept]], moved = mark === null ? null : ['i32.ne', heapTop(), ['local.get', mark]]
-  const out = typed(['block', ['result', 'f64'], ...pre, ['local.set', kept, asF64(ir)],
-    ['if', number ? moved : moved === null ? made : ['i32.or', moved, made], ['then', flag]], ['local.get', kept]], 'f64')
+  const ask = [moved, number ? null : made, keyed ? keyNoted() : null].filter(c => c !== null).reduce((a, c) => ['i32.or', a, c])
+  const out = typed(['block', ['result', 'f64'], ...pre, ['local.set', kept, asF64(ir)], ['if', ask, ['then', flag]], ...(keyed ? [clearNote()] : []), ['local.get', kept]], 'f64')
   if (ir.type === 'f64') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
   return out
 }
@@ -1948,6 +1951,12 @@ function rooted(ir, name = null, node = null) {
 // apart from the frame's other names: a site changes no label and no temp
 // of the code around it.
 const ESC_MARK = 'esch', ESC_VALUE = 'escv', ESC_NOTE = 'escd'
+// The note of the keys the tables took as new entries since a site last asked (module/core.js
+// `__ink_note`: the highest address among them): at or above `$__base` a running call made one,
+// and the receiver that took it holds memory younger than itself though the store allocated
+// nothing. Read after the store and cleared, by the sites the census marks (`siteKeyed`).
+const keyNoted = () => ['i32.ge_u', ['global.get', '$__ink'], ['global.get', '$__base']]
+const clearNote = () => ['global.set', '$__ink', ['i32.const', 0]]
 const escLocal = (type, tag) => {
   let name, n = 0
   do { name = `${T}${tag}${n++}` } while (ctx.func.locals.has(name))
@@ -2082,14 +2091,18 @@ function whereGrown(node, origin, expect, recv = null) {
   const flags = kept ? null : (names ? [...names].map(([name, kind]) => noted(holderFlag(name, kind, held), node)) : [siteFlag(node, undefined, held)]).filter(f => f !== null)
   if (!kept && !flags.length) return emitNode(node, expect)
   const mark = escLocal('i32', ESC_MARK)
-  const save = [...held.pre, ['local.set', mark, heapTop()]], moved = ['i32.ne', heapTop(), ['local.get', mark]]
+  const save = [...held.pre, ['local.set', mark, heapTop()]]
+  // (a key new to the receiver is growth that allocates nothing: the check asks the note too)
+  const keyed = ctx.plans.siteKeyed?.has(origin) === true && ctx.scope.globals.has('__ink')
+  const heapMoved = ['i32.ne', heapTop(), ['local.get', mark]], moved = keyed ? ['i32.or', heapMoved, keyNoted()] : heapMoved
+  const after = keyed ? [clearNote()] : []
   // a kept receiver: the check lowers the flag to what the node evaluated it to
   if (kept) {
     const k = keep(node, recv, () => pastOperands(node, mark, () => emitNode(node, expect)))
-    return k.ir?.inPlace ? k.ir : around(k.ir, save, [['if', moved, ['then', k.flag]]])
+    return k.ir?.inPlace ? k.ir : around(k.ir, save, [['if', moved, ['then', k.flag]], ...after])
   }
   const ir = names ? emitNode(node, expect) : pastOperands(node, mark, () => emitNode(node, expect))
-  return ir?.inPlace ? ir : around(ir, save, [['if', moved, ['then', ...flags]]])
+  return ir?.inPlace ? ir : around(ir, save, [['if', moved, ['then', ...flags]], ...after])
 }
 // The mark of a site that waits for an allocation stands past its operands:
 // what a store's value or a call's argument allocates as it is evaluated (a

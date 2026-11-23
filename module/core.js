@@ -742,6 +742,19 @@ export default (ctx) => {
           (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
       (then (return (i32.const 0))))
     (i32.ge_u (i32.wrap_i64 (local.get $b)) (global.get $__base)))`
+  // The note of the keys the tables take as new entries (module/collection/upsert.js noteKey): the
+  // highest address among those that name heap storage, as `__esc_new` reads a value. A store's
+  // site reads it against `__base` and clears it (emit/dispatch.js keyNoted).
+  ctx.core.stdlib['__ink_note'] = `(func $__ink_note (param $b i64)
+    (local $t i32) (local $a i32)
+    (if (f64.eq (f64.reinterpret_i64 (local.get $b)) (f64.reinterpret_i64 (local.get $b))) (then (return)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${(1 << PTR.ATOM) | (1 << PTR.EXTERNAL)})) (then (return)))
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+          (i64.ne (i64.and (local.get $b) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
+      (then (return)))
+    (if (i32.gt_u (local.tee $a (i32.wrap_i64 (local.get $b))) (global.get $__ink))
+      (then (global.set $__ink (local.get $a)))))`
   // Whether a frame's result names memory the frame made, at or above its
   // mark: the caller's then, and the frame gives back nothing
   // (optimize/arena-rewind.js). What `__esc_new` asks, of one frame.

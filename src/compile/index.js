@@ -341,7 +341,8 @@ export function assemble(ast, profiler) {
     const sites = ctx.plans.escapeSites = new WeakSet(), kinds = ctx.plans.siteKinds = new WeakMap()
     const grown = ctx.plans.siteGrown = new WeakSet(), names = ctx.plans.siteNames = new WeakMap(), whys = ctx.plans.siteWhys = new WeakMap()
     const grows = ctx.plans.siteGrows = new WeakSet(), asked = ctx.plans.siteAsked = new WeakSet(), kept = ctx.plans.siteKept = new WeakSet()
-    let any = false
+    const keyed = ctx.plans.siteKeyed = new WeakSet()
+    let any = false, anyKeyed = false
     // A site two censuses name (a named arrow's body, also a closure's): read
     // differently it has no one address and lowers the flag to zero; it waits
     // for an allocation, or asks its value, only where both do; it keeps its
@@ -352,6 +353,7 @@ export function assemble(ast, profiler) {
         if (o.siteGrown.has(n) ? !seen : true) { if (o.siteGrown.has(n)) grown.add(n); else grown.delete(n) }
         if (o.siteGrows.has(n)) grows.add(n)
         if (o.siteKept.has(n)) kept.add(n)
+        if (o.siteKeyed?.has(n)) { keyed.add(n); anyKeyed = true }
         if (!o.siteGrown.has(n)) { if (o.siteAsked.has(n) && (!seen || asked.has(n) || grown.has(n))) asked.add(n); else asked.delete(n) }
         if (k !== undefined) kinds.set(n, prev === undefined || prev === k ? k : SITE.ZERO)
         if (!whys.has(n)) whys.set(n, o.siteWhys.get(n))
@@ -401,6 +403,10 @@ export function assemble(ast, profiler) {
     // none took anything), which the loop's end puts back (module/core/reach.js
     // `__iter_take`, `__iter_leave`).
     if (released) { declGlobal('__ibase', 'i32', 0); declGlobal('__gc_epoch', 'i32', 0); declGlobal('__esc_held', 'i32', -1) }
+    // The highest address among the keys the tables took as new entries (module/core.js `__ink_note`)
+    // since a site last asked: a store whose key may be a string a running call made reads it against
+    // `__base` and clears it (emit/dispatch.js keyNoted).
+    if (anyKeyed) declGlobal('__ink', 'i32', 0)
     ctx.plans.escapeFlag = true
     ctx.plans.hasSites = any
     ctx.plans.instrumented = new WeakSet()

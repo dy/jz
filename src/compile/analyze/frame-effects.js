@@ -467,10 +467,11 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // `siteGrows`: the sites whose store may make its receiver grow, `siteGrown`
   // those that escape no other way; `siteNames`: per loop that is one, the
   // receivers its stores may grow; `siteAsked`: the assignments that ask
-  // their value whether a running call made it; `siteKept`: the sites whose
+  // their value whether a running call made it; `siteKeyed`: the sites whose check
+  // asks the key a store inserted too; `siteKept`: the sites whose
   // receiver the emitter keeps as it is evaluated, where it cannot read it again.
   const out = { writesOuter: false, arenaUnsafe: false, keeps: false, flagged: false, unsited: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, keepsWhy: null,
-    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], carriedStores: false, sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
+    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], carriedStores: false, sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKeyed: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
   // The node the walk stands on: an escape found there is a site of it.
   let at = null
   // Branches and early returns around it: nonzero where it may not run on a call.
@@ -483,7 +484,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   const loops = [], opaque = { node: null, pending: null }
   let noise = 0
   // A growth's check: around `best`, a loop, or after the store itself.
-  const settle = ({ name, kind, at, why, best, kept }) => {
+  const settle = ({ name, kind, at, why, best, kept, keyed }) => {
+    if (keyed) out.siteKeyed.add(best ?? at)
     if (best !== null) {
       const names = out.siteNames.get(best) ?? out.siteNames.set(best, new Map()).get(best)
       names.set(name, names.has(name) && names.get(name) !== kind ? SITE.RECV : kind)
@@ -601,7 +603,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // into storage older than the frame (`older`), none of this function's does
   // (`keeps`). A growth (`grows`) is a site of no node: the runtime lowers the
   // flag where the storage relocates, and only then.
-  const escape = (why, kind = SITE.ZERO, { older = false, suspends = false, grows = null, asked = false, kept = false } = {}) => {
+  const escape = (why, kind = SITE.ZERO, { older = false, suspends = false, grows = null, asked = false, kept = false, keyed = false } = {}) => {
     out.writesOuter = true
     if (!conditional) return verdict(why)
     out.flagged = true
@@ -609,7 +611,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     if (suspends) verdict(why)
     if (at === null) { out.unsited = true; return verdict(why) }
     if (grows !== null) {
-      const g = { name: grows, kind, at, why, best: null, kept }, loop = loops[loops.length - 1]
+      const g = { name: grows, kind, at, why, best: null, kept, keyed }, loop = loops[loops.length - 1]
       if (isName(grows) && loop !== undefined && loop !== opaque) loop.pending.push(g); else settle(g)
       return
     }
@@ -688,15 +690,17 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // method of it); a named property of one is a store like any other. `arg`:
   // the receiver is the call's first argument.
   // `asked`: the site asks the stored value whether a running call made it.
+  // `keyed`: the key may be a string a running call made, which a receiver it is new to holds, a
+  // growth that allocates nothing: the growth's check asks the key the store inserted (`siteKeyed`).
   // A receiver the emitter cannot read again it keeps as it is evaluated (`kept`, emit/dispatch.js).
-  const store = (recv, heap, grows, numeric = false, arg = false, asked = false) => {
+  const store = (recv, heap, grows, numeric = false, arg = false, asked = false, keyed = false) => {
     recv = receiverOf(recv)
     if (freshLocal(recv) || freshInit(recv) || madeHere(recv)) return
     outer()
     // a typed array takes numbers in place: nothing grows, nothing is held
     if (numeric && typedRecv(recv)) return
     const kind = arg ? SITE.ARG : numeric ? SITE.ELEM : SITE.RECV, kept = !readable(recv)
-    if (grows) { if (!olderName(recv)) youngGrowth = true; escape('grows ' + spell(recv), kind, { grows: arg ? false : recv, kept }) }
+    if (grows) { if (!olderName(recv)) youngGrowth = true; escape('grows ' + spell(recv), kind, { grows: arg ? false : recv, kept, keyed }) }
     if (heap) escape('heap value into ' + spell(recv), kind, { asked, kept, older: olderName(recv) && !(numeric && mayBeTyped(view, recv)) })
   }
   const anyHeap = (list) => list.some(v => mayCarryFreshHeap(view, v))
@@ -940,7 +944,12 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         if (fns === null) unknownCall('accessor ' + target[2][1]); else reaches(fns)
         // An integer literal inside the length the receiver holds for good writes a cell
         // the array has (the emitter's raw store, emit-assign.js storeFixedElement).
-        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]), !lit, false, asked)
+        // A key that is no number names a property, and a property new to the receiver
+        // keeps the key's string itself: one a running call made is held as a value it
+        // stored is, whatever the value, and a table with room for the entry allocates
+        // nothing to tell the growth by (`keyed`: its check asks the key the store inserted).
+        const keyed = !lit && mayCarryFreshHeap(view, target[2])
+        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]), !lit, false, asked, keyed)
         if (op === '=' && mayBeTyped(view, recv)) convert(val)   // a typed element store converts its value
       } else if (isArr(target) && target[0] === '{}') {
         escape('destructuring assignment')   // targets may be member paths
@@ -1105,7 +1114,7 @@ function frameEffectsOf(func, loops) {
   const body = func.body
   // the function's own view (keyed by its signature, as the emitter's), not the module's
   const view = ctx.summary?.at(func.sig ?? func.body)
-  if (body == null) return { ...UNKNOWN_FRAME, why: 'no body', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), loops: [] }
+  if (body == null) return { ...UNKNOWN_FRAME, why: 'no body', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKeyed: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), loops: [] }
   const params = new Set(), typedParams = new Set()
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
@@ -1138,7 +1147,7 @@ const UNKNOWN_FRAME = { writesOuter: true, arenaUnsafe: true, keeps: false, flag
  *  outer bindings. Unknown when the summary has no arrow for it. */
 function closureEffectsOf(id) {
   const arrow = ctx.summary?.closureArrow?.(id)
-  if (!isArr(arrow) || arrow[0] !== '=>') return { ...UNKNOWN_FRAME, why: 'closure ' + id + ' unknown', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set() }
+  if (!isArr(arrow) || arrow[0] !== '=>') return { ...UNKNOWN_FRAME, why: 'closure ' + id + ' unknown', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKeyed: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set() }
   const body = arrow[2], params = new Set()
   let defaults = null
   for (const p of extractParams(arrow[1])) {
@@ -1284,7 +1293,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   for (const [, o] of nodes) { for (const a of o.inline ?? []) inline.add(a); for (const l of o.loops ?? []) for (const a of l.own.inline ?? []) inline.add(a) }
   const called = (id) => inline.has(ctx.summary?.closureArrow?.(id))
   for (const key of closureOwn.keys()) facts.delete(key)
-  for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteKinds = o.siteKinds; f.siteGrows = o.siteGrows; f.siteGrown = o.siteGrown; f.siteAsked = o.siteAsked; f.siteKept = o.siteKept; f.siteNames = o.siteNames; f.siteWhys = o.siteWhys }
+  for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteKinds = o.siteKinds; f.siteGrows = o.siteGrows; f.siteGrown = o.siteGrown; f.siteAsked = o.siteAsked; f.siteKeyed = o.siteKeyed; f.siteKept = o.siteKept; f.siteNames = o.siteNames; f.siteWhys = o.siteWhys }
   facts.closureCalls = new Map([...closureOwn].map(([id, o]) => [id, o.closures]))
   facts.closureSites = new Map([...closureOwn].map(([id, o]) => [id, called(id) ? new Set() : o.sites]))
   // what a closure's sites write into, as a function's: `{ siteKinds, siteGrows, siteGrown, siteAsked, siteKept, siteNames }`
