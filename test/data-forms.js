@@ -1,5 +1,5 @@
-// Data-form gate: how the data is held does not matter, so every form of the
-// same data compiles as well as its best form.
+// Data-form gate: how the data is held does not matter, nor how the work on it
+// is reached, so every form of the same data compiles as well as its best form.
 //
 // The same work over the same data, held in each form the bench cases and the
 // gallery hold it: a sequence of numbers (made by a typed array or a view of
@@ -10,7 +10,11 @@
 // Object.assign, a factory's result, one of two literals, a tuple, a typed
 // array, a record of arrays, a nullable holder), a keyed collection (a Map by
 // integer, string or object keys, a Set, an object as a dictionary, in each
-// counter spelling). The program of a form holds its group's kernels, each an
+// counter spelling); and over the records of a class, each way an object
+// program reaches the work (in the loop, a function, a method, an inherited or
+// an overridden one, a closure a field holds, getters and setters, a callback)
+// and the next record (an index, the iterator, a `next` field, a container's
+// `at(i)`). The program of a form holds its group's kernels, each an
 // export; a cell is one kernel of one form at level 2 or at 'speed'.
 //  (a) Every call answers what Node answers. A difference is a miscompile,
 //      never listed.
@@ -224,12 +228,77 @@ const keyPrograms = kind => {
   })
 }
 
+// ── Reaching the work, reaching the next record ──────────────────────────────
+// N records of a class, and two kernels over them: `step` updates each in place,
+// `sum` reads each. A program is made of how the kernel reaches the next record
+// (`walk`) and how it reaches the work on it (`step`, `sum`); `check` reads every
+// field of every record through the same walk.
+//  call: the work written in the loop, in a function, in a method, in a method a
+//  base class defines, in a method each of two or of three classes of the array
+//  defines (the same sums, their terms in another order), in a closure a field
+//  holds, by getter and setter methods, in a callback a container's `each` calls
+//  and in one the array's own `forEach` calls.
+//  link: the next record by an index into the array, by the array's iterator,
+//  through a `next` field (a list in the array's order), and through a container's
+//  `at(i)` and `size()`.
+const vals = i => Object.values(V).map(f => f(i)).join(', ')
+const ctor = (more = '') => `constructor(x, y, vx, vy) { this.x = x; this.y = y; this.vx = vx; this.vy = vy${more} }`
+const cls = (...members) => `class P { ${[ctor(), ...members].join(' ')} }`
+const moved = p => `${p}.x += ${p}.vx; ${p}.y += ${p}.vy`
+const weighed = p => `${p}.x + 2 * ${p}.y + 3 * ${p}.vx + 5 * ${p}.vy`
+const MOVE = `move() { ${moved('this')} }`, WEIGH = `weigh() { return ${weighed('this')} }`
+const Q = 'class Q extends P { move() { this.y += this.vy; this.x += this.vx } weigh() { return 5 * this.vy + 3 * this.vx + 2 * this.y + this.x } }'
+const R = 'class R extends P { move() { this.x = this.x + this.vx; this.y = this.y + this.vy } weigh() { return 3 * this.vx + this.x + 5 * this.vy + 2 * this.y } }'
+const vec = (...members) => `class Vec { constructor() { this.items = [] } add(p) { this.items.push(p) } ${members.join(' ')} }`
+const inVec = `const ps = new Vec(); for (let i = 0; i < N; i++) ps.add(new P(${vals('i')}))`
+const pushed = (make = i => `new P(${vals(i)})`) => `const ps = []; for (let i = 0; i < N; i++) ps.push(${make('i')})`
+const byIndex = body => `for (let i = 0; i < ps.length; i++) { const p = ps[i]; ${body} }`
+const objProgram = (form, { pre, build = pushed(), walk = byIndex, step = moved('p'), sum = `s += ${weighed('p')}`, first = 'ps[0]' }) => ({
+  form, kernels: ['step', 'sum'], calls: ['step', 'sum', 'check'],
+  src: lines(`const N = ${N}`, pre, build,
+    `export let step = () => { ${walk(step)}; return ${first}.x }`,
+    `export let sum = () => { let s = 0; ${walk(sum)}; return s }`,
+    `export let check = () => { let s = 0; ${walk(`s += ${weighed('p')} + 7 * p.x`)}; return s }`),
+})
+const viaMethod = { step: 'p.move()', sum: 's += p.weigh()' }
+const CALL = {
+  inline: { pre: cls() },
+  fn: { pre: [cls(), `const move = p => { ${moved('p')} }`, `const weigh = p => ${weighed('p')}`], step: 'move(p)', sum: 's += weigh(p)' },
+  method: { pre: cls(MOVE, WEIGH), ...viaMethod },
+  inherit: { pre: [cls(MOVE, WEIGH), 'class Q extends P {}'], build: pushed(i => `new Q(${vals(i)})`), ...viaMethod },
+  override2: { pre: [cls(MOVE, WEIGH), Q], build: pushed(i => `${i} & 1 ? new Q(${vals(i)}) : new P(${vals(i)})`), ...viaMethod },
+  override3: { pre: [cls(MOVE, WEIGH), Q, R], build: pushed(i => `${i} % 3 === 1 ? new Q(${vals(i)}) : ${i} % 3 === 2 ? new R(${vals(i)}) : new P(${vals(i)})`), ...viaMethod },
+  field: { pre: [`const move = p => { ${moved('p')} }`, `const weigh = p => ${weighed('p')}`, `class P { ${ctor('; this.move = move; this.weigh = weigh')} }`], step: 'p.move(p)', sum: 's += p.weigh(p)' },
+  getset: {
+    pre: cls('getX() { return this.x }', 'getY() { return this.y }', 'getVx() { return this.vx }', 'getVy() { return this.vy }', 'setX(v) { this.x = v }', 'setY(v) { this.y = v }'),
+    step: 'p.setX(p.getX() + p.getVx()); p.setY(p.getY() + p.getVy())', sum: 's += p.getX() + 2 * p.getY() + 3 * p.getVx() + 5 * p.getVy()',
+  },
+  each: { pre: [cls(), vec('each(f) { for (let i = 0; i < this.items.length; i++) f(this.items[i]) }')], build: inVec, walk: body => `ps.each(p => { ${body} })`, first: 'ps.items[0]' },
+  forEach: { pre: cls(), walk: body => `ps.forEach(p => { ${body} })` },
+}
+const LINK = {
+  index: { pre: cls() },
+  of: { pre: cls(), walk: body => `for (const p of ps) { ${body} }` },
+  list: {
+    pre: `class P { ${ctor('; this.next = null')} }`, first: 'head',
+    build: `let head = null; for (let i = N - 1; i >= 0; i--) { const p = new P(${vals('i')}); p.next = head; head = p }`,
+    walk: body => `for (let p = head; p !== null; p = p.next) { ${body} }`,
+  },
+  vector: {
+    pre: [cls(), vec('at(i) { return this.items[i] }', 'size() { return this.items.length }')], build: inVec, first: 'ps.at(0)',
+    walk: body => `for (let i = 0; i < ps.size(); i++) { const p = ps.at(i); ${body} }`,
+  },
+}
+const objPrograms = forms => () => Object.entries(forms).map(([form, o]) => objProgram(form, o))
+
 const GROUPS = {
   seq: seqPrograms,
   rec: recPrograms,
   'key-int': () => keyPrograms('int'),
   'key-str': () => keyPrograms('str'),
   'key-obj': () => keyPrograms('obj'),
+  call: objPrograms(CALL),
+  link: objPrograms(LINK),
 }
 
 // ── The measure ──────────────────────────────────────────────────────────────
