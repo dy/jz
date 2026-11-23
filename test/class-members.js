@@ -207,6 +207,99 @@ test('class members: a getter and a setter spliced over a receiver that may be m
   }
 })
 
+// A receiver the summary names several classes for, an override among them, is one of those classes
+// and no other value (emit/class-dispatch.js closedArms): a compare of its schema id per function and
+// the class's function called directly, where it took the dispatcher of every class of the program,
+// whose last arm looks the member up by name and may allocate.
+test('class members: an override among the receiver\'s classes is a test per function, with no lookup by name', () => {
+  const src = `let log = ''
+    const note = (s) => { log += s; return s.length }
+    class A { constructor(v) { this.v = v } area() { return this.v * 2 } name() { return 'A' } get twice() { return this.v * 2 } set twice(x) { this.v = x / 2 }
+      scale(k, m) { this.v = this.v * k + m; return this } tag() { return this.v > 2 } }
+    class B extends A { area() { return this.v * 3 } name() { return 'B' } get twice() { return this.v * 20 } set twice(x) { this.v = x / 20 } tag() { return 'b' + this.v } }
+    class C extends A { name() { return 'C' } scale(k, m) { this.v = this.v + k - m; return this } }
+    class D extends B { area() { return super.area() + 1 } tag() { return this.v } }
+    class U { constructor(v) { this.w = v } area() { return this.w + 100 } name() { return 'U' } }
+    const mk = (i) => i % 4 === 0 ? new A(i + 1) : i % 4 === 1 ? new B(i + 1) : i % 4 === 2 ? new C(i + 1) : new D(i + 1)
+    const xs = []; for (let i = 0; i < 12; i++) xs.push(mk(i))
+    const ys = []; for (let i = 0; i < 8; i++) ys.push(i & 1 ? new U(i) : new A(i))
+    const pair = []; for (let i = 0; i < 6; i++) pair.push(i % 3 === 0 ? new B(i) : new D(i))
+    export const f = (n) => { let s = 0, names = ''
+      for (let i = 0; i < xs.length; i++) { const x = xs[i]; s += x.area(); names += x.name() }
+      for (let i = 0; i < ys.length; i++) { s += ys[i].area() * 1000; names += ys[i].name() }
+      for (let i = 0; i < pair.length; i++) { const p = pair[i]; s += p.area() * 7 + p.twice; p.twice = p.twice + 20; s += p.v; names += typeof p.tag() + p.tag() }
+      for (let i = 0; i < xs.length; i++) { const x = xs[i]; x.scale(note('k' + i), note('m')); s += x.v + x.twice }
+      for (let i = 0; i < xs.length; i++) names += typeof xs[i].tag()
+      let threw = ''
+      try { for (let i = 0; i < n; i++) s += xs[xs.length - 2 + i].scale(note('!'), 1).v } catch (e) { threw = e instanceof TypeError ? 'TypeError' : 'other' }
+      try { for (let i = 0; i < n; i++) s += pair[pair.length - 2 + i].area() } catch (e) { threw += e instanceof TypeError ? '+TypeError' : '+other' }
+      const g = xs[n % xs.length].area, h = ys[n % ys.length].name
+      return s + '|' + names + '|' + log.length + log.slice(-6) + '|' + threw + '|' + typeof g + typeof h }`
+  // (a receiver past the array's end throws the read's TypeError before the arguments run: n = 4)
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const n of [1, 2, 4]) agree(src, 'f', [n], { optimize }, `five classes, ${n}, at ${optimize}`)
+  const two = `class P { constructor(x, y) { this.x = x; this.y = y } weigh() { return this.x + 2 * this.y } move() { this.x += this.y } }
+    class Q extends P { weigh() { return 2 * this.y + this.x + 1 } move() { this.y += this.x } }
+    const ps = []; for (let i = 0; i < 64; i++) ps.push(i & 1 ? new Q(i * 0.5, i + 1) : new P(i * 0.5, i + 1))
+    export const f = (n) => { let s = 0
+      for (let r = 0; r < n; r++) for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.move(); s += p.weigh() }
+      return s }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(two, 'f', [3], { optimize }, `two classes at ${optimize}`)
+  // A BigInt each class's function returns in its raw word joins as one; through the dispatcher
+  // (a class of the receiver without the member) it comes back boxed, and its reader takes the
+  // word: read raw, the sum was of the boxes' pointers (36028797018964128 read -12384898975253024).
+  const big = `class A { constructor(v) { this.v = v } big() { return 9007199254740993n + BigInt(this.v) } get wide() { return 9007199254740993n + BigInt(this.v) } mix() { return this.v } }
+    class B extends A { big() { return 7n * BigInt(this.v) } get wide() { return 7n * BigInt(this.v) } mix() { return BigInt(this.v) + 1n } }
+    class U { constructor(v) { this.v = -v } }
+    const xs = [], ys = []
+    for (let i = 0; i < 8; i++) { xs.push(i & 1 ? new B(i + 1) : new A(i + 1)); ys.push(i & 1 ? new U(i + 1) : new A(i + 1)) }
+    export const f = (n) => { let t = 0n, u = 0n, w = 0n, s = ''
+      for (let i = 0; i < xs.length; i++) { const x = xs[i]; t += x.big() * BigInt(n); w += x.wide; s += typeof x.mix() + String(x.mix()) }
+      for (let i = 0; i < ys.length; i++) { const y = ys[i]; if (y.v > 0) u += y.big() * BigInt(n) }
+      return String(t) + '|' + String(u) + '|' + String(w) + '|' + s }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(big, 'f', [3], { optimize }, `BigInt results at ${optimize}`)
+  // an own property stored under the member's name shadows it on the instance that stores one
+  const own = `class A { constructor(v) { this.v = v } area() { return this.v * 2 } }
+    class B extends A { area() { return this.v * 3 } }
+    const xs = []; for (let i = 0; i < 6; i++) xs.push(i & 1 ? new B(i + 1) : new A(i + 1))
+    xs[2].area = () => -5
+    xs[3].area = () => -7
+    export const f = () => { let s = 0; for (let i = 0; i < xs.length; i++) s = s * 10 + xs[i].area(); return s }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(own, 'f', [], { optimize }, `an own property over the member at ${optimize}`)
+  // a Boolean each class's function returns, to every reader of one; a call with a spread and with
+  // fewer and more arguments than parameters; a receiver with an effect, run once; an accessor read
+  // and stored on a missing receiver
+  const more = `class A { constructor(v) { this.v = v } ok() { return this.v > 2 } get on() { return this.v > 2 } set on(x) { this.v = x ? 9 : 0 }
+      scale(k, m) { return this.v * k + (m === undefined ? 100 : m) } }
+    class B extends A { ok() { return this.v < 2 } get on() { return this.v < 2 } set on(x) { this.v = x ? 0 : 9 } scale(k, m) { return this.v + k - (m === undefined ? 100 : m) } }
+    class U { constructor(v) { this.v = -v } }
+    const xs = [], ys = []
+    for (let i = 0; i < 6; i++) { xs.push(i & 1 ? new B(i) : new A(i)); ys.push(i & 1 ? new U(i + 1) : new A(i + 1)) }
+    let ran = 0, picks = 0
+    const arg = () => { ran++; return true }
+    const pick = (i) => { picks++; return xs[i] }
+    export const f = (n) => { let s = '', c = 0, kept = []
+      const pair = [n, 3], three = [n, 3, 9]
+      for (let i = 0; i < xs.length; i++) c += pick(i).scale(3) + (pick(i).on ? 1 : 0)
+      for (let i = 0; i < xs.length; i++) { const x = xs[i]
+        if (x.ok()) c += 1
+        if (x.ok() === true) c += 10
+        if (x.on) c += 100
+        c += x.ok() + 1000 * (x.on ? 1 : 0) + x.scale(2) + x.scale(2, 1, 77) + x.scale(...pair) + x.scale(...three)
+        s += typeof x.ok() + String(x.ok()) + (x.on === false ? 'f' : 't')
+        kept.push(x.ok(), x.on) }
+      for (let i = 0; i < ys.length; i++) { const y = ys[i]; if (y.v > 0) { if (y.ok()) c += 100000; s += String(y.ok()) + (y.ok() === false); kept.push(y.ok()) } }
+      let threw = ''
+      try { for (let i = 0; i < n; i++) c += xs[xs.length - 2 + i].on ? 7 : 5 } catch (e) { threw += e instanceof TypeError ? 'R' : 'r' }
+      try { for (let i = 0; i < n; i++) xs[xs.length - 2 + i].on = arg() } catch (e) { threw += e instanceof TypeError ? 'W' : 'w' }
+      return c + '|' + s + '|' + JSON.stringify(kept) + '|' + threw + ran + '|' + xs[xs.length - 1].v + '|' + picks }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const n of [1, 4]) agree(more, 'f', [n], { optimize }, `Booleans, argument counts and a missing receiver's accessor, ${n}, at ${optimize}`)
+  // (where the module keeps only what its program reaches: the runtime that looks a member up by name is not in it)
+  for (const optimize of levels(2, 3, 'size', 'speed')) {
+    const w = compile(two, { wat: true, optimize })
+    is((w.match(/call \$__(ext_method|ext_invoke|dyn_get_expr)\w*|call_indirect/g) || []).join(' '), '', `no lookup by name and no indirect call at ${optimize}`)
+  }
+})
+
 test('class members: a prototype store the class cannot take is rejected at compile time', () => {
   rejects(`class V {}\nconst patch = () => { V.prototype.k = 1 }\nexport const f = () => { patch(); return new V().k }`, /prototype/, 'inside a function')
   rejects(`class V {}\nV.prototype.k = function () { return 1 }\nV.prototype.k = 5\nexport const f = () => new V().k`, /prototype/, 'a function and a value under one name')

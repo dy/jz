@@ -18,7 +18,7 @@ import { TYPED_CTORS } from '../../std/typed.js'
 import { createFunction } from '../../function.js'
 import { memberUses } from '../../member-uses.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, T, argList } from '../../ast.js'
-import { asF64, asI64, boolBoxIR, boxedPtrTypeEq, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, tempI32, throwErrorIR, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
+import { asF64, asI64, fromI64, boolBoxIR, boxedPtrTypeEq, isNullish, isUndef, ptrOffsetIR, rawBigInt, unboxBigInt, temp, tempI32, throwErrorIR, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
 import { hasDurableReset } from '../../../module/collection/durable.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -123,8 +123,15 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
   if (!known) return notAnObject(obj) || knownNonInstance(obj) || !ctx.funcs.names.has(dispatcher) ? undefined : dispatcher
   const fns = known.entries.map(fnOf), fn = fns[0]
   if (fns.every(f => f == null)) return rest(held ?? obj)
-  // the classes resolve the member to different functions (an override among them): the dispatcher tests each
-  if (fns.some(f => f !== fn)) return ctx.funcs.names.has(dispatcher) ? dispatcher : undefined
+  // The classes resolve the member to different functions (an override among them). They are all the
+  // receiver's classes: a compare of its schema id per function but the last, each arm the class's
+  // function called directly, and no arm for any other receiver. A class without the member, an own
+  // property that may shadow it, or a BigInt result (raw in one arm, boxed in another) keeps the
+  // dispatcher, which tests every class of the program and then takes the access as it is.
+  if (fns.some(f => f !== fn)) {
+    const closed = fns.every(f => f != null) && !ctx.summary.memberMayBeOwn(name) ? closedArms(known, fns, build, held, obj) : null
+    return closed ?? (ctx.funcs.names.has(dispatcher) ? dispatcher : undefined)
+  }
   // An own property stored under the member's name shadows it: probe it
   // first and take the ordinary path on a hit (the class contract).
   const slot = own && ctx.summary.memberMayBeOwn(name) ? ownSlot(known.entries, name) : -1
@@ -159,6 +166,24 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
       : member(t)], 'f64')
 }
 
+/** The member through each of the receiver's classes, `fns[i]` the function of `known.entries[i]`:
+ *  the receiver held once, a missing one the read's TypeError, then a test of its schema id per
+ *  function, the last function's classes untested. Null where a BigInt is raw in one arm and not in another. */
+function closedArms(known, fns, build, held, obj) {
+  const t = held ?? temp('cls'), groups = new Map()
+  known.entries.forEach((e, i) => { const g = groups.get(fns[i]); if (g) g.push(sidOf(e)); else groups.set(fns[i], [sidOf(e)]) })
+  const arms = [...groups].map(([f, sids]) => [build(f, t), sids])
+  // (a BigInt each function returns in its raw word joins as one; raw in one arm and boxed in another has no one carrier)
+  const raw = arms.filter(([ir]) => ir.bigintRaw === true).length
+  if (raw && raw < arms.length) return null
+  let chain = asF64(arms[arms.length - 1][0])
+  for (let i = arms.length - 2; i >= 0; i--)
+    chain = ['if', ['result', 'f64'], arms[i][1].map(sid => tagEq(t, sid)).reduce((a, b) => ['i32.or', a, b]), ['then', asF64(arms[i][0])], ['else', chain]]
+  const out = typed(['block', ['result', 'f64'], ...(held ? [] : [['local.set', `$${t}`, asF64(emit(obj))]]),
+    known.nullable ? ['if', ['result', 'f64'], isNullish(['local.get', `$${t}`]), ['then', throwTypeErrorIR('read')], ['else', chain]] : chain], 'f64')
+  return raw ? rawBigInt(out) : out
+}
+
 const withReceiver = (recv, args) => args.length === 0 ? recv : [',', recv, ...args]
 
 /** The class function's result in the representation the access `node` has
@@ -175,6 +200,13 @@ const carried = (node, call) => {
   return ir
 }
 
+/** The access through its dispatcher, which returns into a tagged slot (emit-func.js boxedResult): a
+ *  BigInt comes back boxed, and an access the kind proves a BigInt is read as its raw word. */
+const viaDispatcher = (node, call) => {
+  const ir = emit(call)
+  return valTypeOf(node) === VAL.BIGINT ? rawBigInt(fromI64(unboxBigInt(asF64(ir)))) : ir
+}
+
 /** `obj.method(args)` through the class's function; `rest(recv)` dispatches any other receiver. */
 export function classMethodCall(obj, method, args, rest) {
   if (!classes()) return undefined
@@ -183,7 +215,7 @@ export function classMethodCall(obj, method, args, rest) {
   const own = ctx.closure.call && !args.some(a => Array.isArray(a) && a[0] === '...')
     ? (v, recv) => ctx.closure.call(local(v), args, false, true, local(recv)) : (v, recv) => rest(recv)
   const r = dispatch(obj, method, e => e.methods.get(method) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'), undefined, own)
-  return typeof r === 'string' ? emit(['()', r, withReceiver(obj, args)]) : r
+  return typeof r === 'string' ? viaDispatcher(node, ['()', r, withReceiver(obj, args)]) : r
 }
 
 /** `obj.method` read as a value: the method bound to the receiver. */
@@ -200,7 +232,7 @@ export function classAccessor(obj, slot, args, rest, held) {
   const prop = slot.endsWith(ACCESSOR_GET) ? slot.slice(0, -ACCESSOR_GET.length) : slot.slice(0, -ACCESSOR_SET.length)
   const node = args.length ? ['=', ['.', obj, prop], args[0]] : ['.', obj, prop]
   const r = dispatch(obj, prop, e => e.methods.get(slot) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(slot, 'call'), held)
-  return typeof r === 'string' ? emit(['()', r, withReceiver(held ?? obj, args)]) : r
+  return typeof r === 'string' ? viaDispatcher(node, ['()', r, withReceiver(held ?? obj, args)]) : r
 }
 
 /** `'name' in o` for a class member `name` (a method or an accessor): true of
