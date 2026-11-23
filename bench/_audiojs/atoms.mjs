@@ -1,10 +1,10 @@
-// Every atom of the @audio families through the entry @audio/compile-vst generates for it
+// Every atom of the @audio families through the entry @audio/plugin-vst generates for it
 // (module-owned buffers, setup/start/process), run as JavaScript under V8 and as jz wasm.
 // Per atom: does it compile, does processing agree with JavaScript, does it allocate while
 // processing (heapGrowth: over all blocks, a state made on the first block included;
 // heapPerBlock: per block over the second half of them, what a long run keeps growing by),
 // how fast is it. Streaming atoms process 256 blocks of 512 frames at their default
-// parameters. Whole-render atoms (streaming: false, which compile-vst itself declines) render
+// parameters. Whole-render atoms (streaming: false, which plugin-vst itself declines) render
 // four blocks of 0.5 s with every number parameter halfway from its default to its maximum:
 // their defaults are often the identity (stretch factor 1), which would time a copy.
 //
@@ -30,8 +30,8 @@ const manifestOf = dir => { try { return JSON.parse(readFileSync(join(dir, 'pack
 
 // ── one atom ────────────────────────────────────────────────────────────────────────────
 async function one(fam, pkg, key) {
-  const { toVst3 } = await import(pathToFileURL(join(FAMILY, 'compile/packages/compile-vst/vst3.js')))
-  const { buildShim } = await import(pathToFileURL(join(FAMILY, 'compile/packages/compile-vst/shim.js')))
+  const { toVst3 } = await import(pathToFileURL(join(FAMILY, 'compile/packages/plugin-vst/vst3.js')))
+  const { buildShim } = await import(pathToFileURL(join(FAMILY, 'compile/packages/plugin-vst/shim.js')))
   const dir = join(FAMILY, fam, 'packages', pkg), rec = { atom: `${fam}/${pkg}:${key}` }
   const done = extra => { console.log(JSON.stringify({ ...rec, ...extra })); process.exit(0) }
   const at = stage => process.stderr.write(`stage ${stage}\n`)   // a run killed by the timeout is charged to its last stage
