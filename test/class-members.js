@@ -379,6 +379,29 @@ test('class members: a call through a field that holds one function for good is 
   }
 })
 
+// A name tested for its truth holds neither undefined nor null on the arm the test guards
+// (compile/flow-types.js extractRefinements): a member read there makes no test of its own.
+test('class members: a receiver tested for its truth is read without a second test', () => {
+  const src = `class N { constructor(v) { this.v = v; this.next = null } }
+    let head = null; for (let i = 5; i >= 0; i--) { const n = new N(i + 1); n.next = head; head = n }
+    let none = null
+    export const first = () => { const p = head; if (p) return p.v; return -1 }
+    export const second = () => { const p = head; return p && p.next ? p.next.v : -1 }
+    export const empty = () => { const p = none; if (p) return p.v; return -1 }
+    export const not = () => { const p = none; if (!p) return -2; return p.v }
+    export const falsy = (k) => { const p = k > 0 ? head : none; if (!p) { try { return p.v } catch (e) { return e instanceof TypeError ? -3 : -4 } } return p.v }
+    export const other = (k) => { const p = k > 0 ? head : none; if (!p) return -5; else return p.v }
+    export const loop = (k) => { let s = 0; for (let p = k > 0 ? head : none; p; p = p.next) s += p.v; return s }
+    export const walk = (k) => { let s = 0, p = k > 0 ? head : none; while (p) { s += p.v; p = p.next } return s }
+    export const f = (k) => first() + 10 * second() + 100 * empty() + 1000 * not() + 10000 * falsy(k) + 100000 * other(k) + 1000000 * loop(k) + 100000000 * walk(k)`
+  // (the false arm proves nothing: a read of the name there, null on that arm, throws as it did)
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const k of [0, 1]) agree(src, 'f', [k], { optimize }, `${k} at ${optimize}`)
+  for (const optimize of levels(2, 3, 'speed')) {
+    const w = compile(src, { wat: true, optimize })
+    ok(!/throw_property_nullish|__throw/.test(funcWat(w, 'first')), `the guarded read throws nothing at ${optimize}`)
+  }
+})
+
 test('class members: a prototype store the class cannot take is rejected at compile time', () => {
   rejects(`class V {}\nconst patch = () => { V.prototype.k = 1 }\nexport const f = () => { patch(); return new V().k }`, /prototype/, 'inside a function')
   rejects(`class V {}\nV.prototype.k = function () { return 1 }\nV.prototype.k = 5\nexport const f = () => new V().k`, /prototype/, 'a function and a value under one name')

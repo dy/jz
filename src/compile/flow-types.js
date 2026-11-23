@@ -83,6 +83,8 @@ const moved = (n, out) => {
   for (const [name, fact] of out) { const held = heldOver(name, fact, n); if (held === null) out.delete(name); else if (held !== fact) out.set(name, held) }
 }
 export function extractRefinements(cond, out, sense = true) {
+  // a name tested for its truth: on the arm it holds neither undefined nor null
+  if (typeof cond === 'string') { if (sense) mergeRefinement(out, cond, { notNullish: true }); return out }
   if (!Array.isArray(cond)) return out
   const op = cond[0]
   // ! flips sense
