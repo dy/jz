@@ -300,6 +300,85 @@ test('class members: an override among the receiver\'s classes is a test per fun
   }
 })
 
+// A field every constructor sets to one function of the module, or a property every literal of a
+// shape gives it, holds that function wherever it is read (the summary's heldCallee): the call
+// through it is the call of the function, past the test the member read makes of its receiver
+// (plan/scope.js devirtHeldCalls), where it was an indirect call through the closure ABI. A field
+// of two functions, one a later store replaces, a closure with an environment and a field read
+// before its constructor stores it keep the call they had.
+test('class members: a call through a field that holds one function for good is the call of that function', () => {
+  const src = `let log = ''
+    const note = (s) => { log += s; return s.length }
+    const double = (p, k) => p.v * 2 + (k | 0)
+    const triple = (p, k) => p.v * 3 + (k | 0)
+    const early = []
+    class One { constructor(v) { this.v = v; this.f = double } }
+    class Two { constructor(v) { this.v = v; this.f = v & 1 ? double : triple } }
+    class Late { constructor(v) { this.v = v; this.f = double } }
+    class Env { constructor(v, bias) { this.v = v; this.f = (p, k) => p.v + bias + (k | 0) } }
+    class Seen { constructor(v) { this.v = v; early.push(this); if (v === 3) { try { log += early[early.length - 1].f(this) } catch (e) { log += e instanceof TypeError ? 'T' : 'o' } } this.f = triple } }
+    const ones = [], twos = [], lates = [], envs = [], seens = []
+    for (let i = 0; i < 6; i++) { ones.push(new One(i + 1)); twos.push(new Two(i + 1)); lates.push(new Late(i + 1)); envs.push(new Env(i + 1, i * 10)); seens.push(new Seen(i + 1)) }
+    lates[3].f = triple
+    export const f = (n) => { let s = 0
+      for (let i = 0; i < ones.length; i++) { const p = ones[i]; s += p.f(p, note('a')) }
+      for (let i = 0; i < twos.length; i++) s += twos[i].f(twos[i], 1) * 10
+      for (let i = 0; i < lates.length; i++) { const p = lates[i]; s += p.f(p) * 100 }
+      for (let i = 0; i < envs.length; i++) { const p = envs[i]; s += p.f(p, 2) * 1000 }
+      for (let i = 0; i < seens.length; i++) s += seens[i].f(seens[i]) * 7
+      let threw = ''
+      try { for (let i = 0; i < n; i++) { const p = ones[ones.length - 2 + i]; s += p.f(p, note('!')) } } catch (e) { threw = e instanceof TypeError ? 'TypeError' : 'other' }
+      const fresh = new One(n)
+      return s + '|' + log.length + log.slice(-3) + '|' + threw + '|' + fresh.f(fresh, 5) + '|' + (typeof ones[0].f) + (ones[0].f === double) + (lates[3].f === triple) }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const n of [1, 2, 4]) agree(src, 'f', [n], { optimize }, `the held functions, ${n}, at ${optimize}`)
+  // object literals: a property that holds a function of the module, beside a method that reads `this`
+  const lit = `const inc = (x) => x + 1
+    const o = { w: 3, h: 4, m() { return this.w + this.h }, arrow: (x) => x + 1, inc, grow(k) { this.w += k; return this } }
+    const api = { twice: (x) => x * 2, inc, name: 'api' }
+    const mk = (w) => ({ w, m() { return this.w * 2 }, inc })
+    const os = []; for (let i = 0; i < 4; i++) os.push(mk(i + 1))
+    export const f = (n) => { let s = o.m() + 1000 * o.arrow(n) + api.twice(n) + 7 * api.inc(n) + o.inc(n) + o.grow(n).m()
+      for (let i = 0; i < os.length; i++) { const q = os[i]; s += q.m() * 100 + q.inc(i) }
+      let threw = 0
+      try { for (let i = 0; i < n; i++) s += os[os.length - 1 + i].inc(i) } catch (e) { threw = e instanceof TypeError ? 1 : 2 }
+      return s + threw * 0.5 }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const n of [1, 5]) agree(lit, 'f', [n], { optimize }, `object literals, ${n}, at ${optimize}`)
+  // what is no slot holding one function: a getter that answers it (the getter runs), alone and as
+  // one shape of a receiver whose other shape holds the function, a field that is the function or
+  // null, a slot a computed key deletes; and a held call's spread, its argument counts, and its
+  // receiver's effect, run once
+  const not = `let reads = 0
+    const add = (a, b) => (a | 0) + (b | 0)
+    const double = (p) => p.v * 2
+    const o = { get f() { reads += 10; return add }, v: 1 }
+    class H { constructor(v) { this.v = v; this.f = add } }
+    class O { constructor(v) { this.v = v; this.f = v & 1 ? double : null } }
+    const hs = [], os = []
+    for (let i = 0; i < 4; i++) { hs.push(new H(i)); os.push(new O(i + 1)) }
+    const gone = { v: 7, f: double }
+    const mixed = [{ v: 1, f: add }, { v: 2, get f() { reads += 100; return add } }, { v: 3, f: add }]
+    let picks = 0
+    const pick = (i) => { picks++; return hs[i] }
+    export const f = (n) => { let s = 0, threw = 0
+      const pair = [n, 3]
+      for (let i = 0; i < 4; i++) s += o.f(i, 2) + pick(i).f(i, 1) + mixed[i % 3].f(i, 4)
+      for (let i = 0; i < hs.length; i++) { const h = hs[i]; s += h.f(i) * 10 + h.f(i, 2, 99) * 100 + h.f(...pair) * 1000 }
+      for (let i = 0; i < os.length; i++) { const q = os[i]; try { s += q.f(q) * 7 } catch (e) { threw += e instanceof TypeError ? 10 : 1000 } }
+      const key = n > 2 ? 'f' : 'zz'
+      delete gone[key]
+      try { s += gone.f(gone) } catch (e) { threw += e instanceof TypeError ? 1 : 100 }
+      return s + '|' + reads + '|' + threw + '|' + picks }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const n of [1, 4]) agree(not, 'f', [n], { optimize }, `a getter, a null and a deleted slot, ${n}, at ${optimize}`)
+  const one = `const weigh = (p) => p.x + 2 * p.y
+    class P { constructor(x, y) { this.x = x; this.y = y; this.weigh = weigh } }
+    const ps = []; for (let i = 0; i < 64; i++) ps.push(new P(i * 0.5, i + 1))
+    export const f = (n) => { let s = 0; for (let r = 0; r < n; r++) for (let i = 0; i < ps.length; i++) { const p = ps[i]; s += p.weigh(p) }; return s }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    agree(one, 'f', [3], { optimize }, `one function at ${optimize}`)
+    ok(!/call_indirect/.test(funcWat(compile(one, { wat: true, optimize }), 'f')), `no indirect call at ${optimize}`)
+  }
+})
+
 test('class members: a prototype store the class cannot take is rejected at compile time', () => {
   rejects(`class V {}\nconst patch = () => { V.prototype.k = 1 }\nexport const f = () => { patch(); return new V().k }`, /prototype/, 'inside a function')
   rejects(`class V {}\nV.prototype.k = function () { return 1 }\nV.prototype.k = 5\nexport const f = () => new V().k`, /prototype/, 'a function and a value under one name')

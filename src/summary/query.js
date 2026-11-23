@@ -879,6 +879,23 @@ export function summaryQueries(facts, internal = false) {
         const prop = name.endsWith(ACCESSOR_GET) ? name.slice(0, -ACCESSOR_GET.length) : null
         return prop !== null && memberMayBeOwn(prop) && !classMember(r, prop + ACCESSOR_SET) ? null : fn
       },
+      // The one function of the module the slot `name` holds in every shape of the receiver, never
+      // missing and no closure with an environment (a field every constructor sets to it, a property
+      // every literal gives it): its name. A shape without the slot answers the read some other way
+      // (an accessor, a class's method, undefined), and the read is then no slot's.
+      heldCallee: (recv, name) => {
+        const r = core(kindOfExpr(recv))
+        if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN) return null
+        let k = K.NONE
+        for (const sid of shapesOf(paramOf(r))) {
+          const i = schemas[sid]?.indexOf(name) ?? -1
+          if (i < 0) return null
+          k = merge(k, slotKind(sid, i))
+        }
+        if (tagOf(k) !== K.CLOSURE || k !== core(k) || paramOf(k) === UNKNOWN) return null
+        const members = membersOf(paramOf(k))
+        return members.length === 1 && typeof members[0] === 'string' ? members[0] : null
+      },
       // valOf deliberately declines nullable kinds; payload queries do not.
       valOfExpr: e => valOf(kindOfExpr(e)),
       arrayNumericPropertiesAbsent: e => { const k = core(kindOfExpr(e)); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN && numericPropsOf(k) === K.NONE },

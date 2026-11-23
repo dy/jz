@@ -617,6 +617,28 @@ export const devirtClassCalls = (ast = null, facts = null) => {
   return changed
 }
 
+/** A call through a member that holds one function of the module wherever it is read (a field every
+ *  constructor sets to it, a property every literal of the shape gives it; the summary's heldCallee)
+ *  is the call of that function, past the test the member read makes of its receiver:
+ *  `p.step(p)` → `(__present(p), step(p))`. The call splices and types like any other, where it
+ *  was an indirect call through the closure ABI. */
+export const devirtHeldCalls = () => {
+  let changed = false
+  const rewrite = (n, view) => {
+    if (!Array.isArray(n)) return n
+    if (n[0] === '=>') { const body = rewrite(n[2], ctx.summary.at(n[1])); return body === n[2] ? n : [n[0], n[1], body] }
+    let out = n
+    for (let i = 1; i < n.length; i++) { const c = rewrite(n[i], view); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    if (out[0] !== '()' || out.length !== 3 || !Array.isArray(out[1]) || out[1][0] !== '.' || typeof out[1][2] !== 'string') return out
+    const held = view.heldCallee(out[1][1], out[1][2])
+    if (!held) return out
+    changed = true
+    return [',', ['()', '__present', out[1][1]], ['()', held, out[2]]]
+  }
+  for (const f of ctx.funcs.list) if (f.body && !f.raw) f.body = rewrite(f.body, ctx.summary.at(f.sig))
+  return changed
+}
+
 /** The test of a spliced method's receiver settles where the body used the receiver.
  *  A tested call passes `__present(recv)` (devirtClassCalls), and a spliced body holds
  *  that marker wherever it read `this`: a call, where every reader of a receiver's

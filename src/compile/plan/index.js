@@ -47,7 +47,7 @@ import { scanInplaceStores } from '../inplace-store.js'
 import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals, dropUnreachedStaticLinks,
-  flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, settleTestedReceivers, classifyHashDictGlobals,
+  flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, devirtHeldCalls, settleTestedReceivers, classifyHashDictGlobals,
   resolveClosureWidth, canSkipWholeProgramNarrowing,
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
@@ -183,6 +183,8 @@ export default function plan(ast, profiler, summarize) {
   }
   // A method call on a receiver the summary names calls the class's function directly.
   sweep('devirtClassCalls', () => devirtClassCalls(ast, facts))
+  // A call through a member that holds one function for good calls that function.
+  sweep('devirtHeldCalls', devirtHeldCalls)
   // An array pattern over a proven array reads it by index, no cursor.
   sweep('indexArrayPatterns', indexArrayPatterns)
   // Storage reads of a guarded typed array use a view of its constructor;
