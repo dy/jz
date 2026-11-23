@@ -617,6 +617,31 @@ export const devirtClassCalls = (ast = null, facts = null) => {
   return changed
 }
 
+/** The test of a spliced method's receiver settles where the body used the receiver.
+ *  A tested call passes `__present(recv)` (devirtClassCalls), and a spliced body holds
+ *  that marker wherever it read `this`: a call, where every reader of a receiver's
+ *  class asks a name or an expression the summary shapes. A member read of the marker
+ *  is the member read of the receiver, which makes the same test and throws the same
+ *  error (`__present(p).x` → `p.x`: a getter's field is then read as the loop's own
+ *  code reads it). The splice binds a receiver it stores through to a local, so no
+ *  store's target holds the marker; one that did keeps it, since an assignment runs
+ *  its value before it tests its receiver. A computed member keeps it too: its key
+ *  runs between the test and the read. */
+export const settleTestedReceivers = () => {
+  let changed = false
+  const ofMarked = (n) => Array.isArray(n) && n[0] === '.' && n.length === 3 && typeof n[2] === 'string' &&
+    Array.isArray(n[1]) && n[1][0] === '()' && n[1][1] === '__present' && n[1].length === 3
+  const rewrite = (n) => {
+    if (!Array.isArray(n)) return n
+    if (ofMarked(n)) { changed = true; return rewrite(withLoc(['.', n[1][2], n[2]], n)) }
+    let out = n
+    for (let i = MUTATE_OPS.has(n[0]) && ofMarked(n[1]) ? 2 : 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
+    return out
+  }
+  for (const f of ctx.funcs.list) if (f.body && !f.raw) f.body = rewrite(f.body)
+  return changed
+}
+
 export const devirtGlobalCalls = (ast) => {
   const fnNames = ctx.funcs.names
   if (!fnNames?.size || !ctx.scope.globals?.size) return

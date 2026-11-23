@@ -173,6 +173,40 @@ test('class members: a compound store through a spliced receiver keeps its class
   is((body.match(/dispatch|__hash_set|__dyn_set|__add_slow/g) || []).length, 0, 'the stores of f are slot stores, the adds numeric')
 })
 
+// At the speed tier a method called on a receiver that may be missing takes the receiver past its
+// test (plan/scope.js devirtClassCalls), and a spliced getter leaves its read on that test, a call:
+// the read is the receiver's own (settleTestedReceivers), a slot load by its class, where it was a
+// lookup by name whose sum went through `__add_slow` and a string concatenation.
+test('class members: a getter and a setter spliced over a receiver that may be missing read and store by its class', () => {
+  const cls = `class P { constructor(x, y) { this.x = x; this.y = y } getX() { return this.x } getY() { return this.y } setX(v) { this.x = v } bump() { this.y += 1 } pick() { return this[sel()] } }
+    let picked = 0
+    const sel = () => { picked++; return 'x' }`
+  const src = `${cls}
+    const ps = []; for (let i = 0; i < 64; i++) ps.push(new P(i * 0.5, i + 1))
+    export const f = (n) => { let s = 0
+      for (let r = 0; r < n; r++) for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.setX(p.getX() + p.getY()); p.bump(); s += p.getX() + 2 * p.getY() }
+      return s }`
+  // a loop that runs past the array reads a missing receiver: the read's TypeError, a setter's before its argument runs
+  const missing = `${cls}
+    const qs = []; for (let i = 0; i < 4; i++) qs.push(new P(i + 1, i + 2))
+    let ran = 0
+    const arg = () => { ran++; return 5 }
+    const read = (n) => { let s = 0; for (let k = 0; k < n; k++) { const p = qs[k]; s += p.getX() + 2 * p.getY() + p.pick() } return s }
+    const write = (n) => { let s = 0; for (let k = 0; k < n; k++) { const p = qs[k]; p.setX(arg()); p.bump(); s += p.getY() } return s }
+    export const f = (n) => { let a = 0, b = 0
+      try { a = read(n) } catch (e) { a = e instanceof TypeError ? -1 : -2 }
+      try { b = write(n) } catch (e) { b = e instanceof TypeError ? -10 : -20 }
+      return a + 1000 * b + 1000000 * ran + 100000000 * picked }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    agree(src, 'f', [3], { optimize }, `the getters and the setter at ${optimize}`)
+    for (const n of [3, 4, 6]) agree(missing, 'f', [n], { optimize }, `${n} of four receivers at ${optimize}`)
+  }
+  for (const optimize of levels(3, 'speed')) {
+    const w = compile(src, { wat: true, optimize })
+    is((w.match(/call \$__(dyn_get|dyn_set|add_slow|str_concat|hash_set)\w*/g) || []).join(' '), '', `no lookup by name and no untyped sum at ${optimize}`)
+  }
+})
+
 test('class members: a prototype store the class cannot take is rejected at compile time', () => {
   rejects(`class V {}\nconst patch = () => { V.prototype.k = 1 }\nexport const f = () => { patch(); return new V().k }`, /prototype/, 'inside a function')
   rejects(`class V {}\nV.prototype.k = function () { return 1 }\nV.prototype.k = 5\nexport const f = () => new V().k`, /prototype/, 'a function and a value under one name')

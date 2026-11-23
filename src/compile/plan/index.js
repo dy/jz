@@ -47,7 +47,7 @@ import { scanInplaceStores } from '../inplace-store.js'
 import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals, dropUnreachedStaticLinks,
-  flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
+  flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, settleTestedReceivers, classifyHashDictGlobals,
   resolveClosureWidth, canSkipWholeProgramNarrowing,
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
 } from './scope.js'
@@ -231,6 +231,9 @@ export default function plan(ast, profiler, summarize) {
     if (optimizing() && ctx.transform.optimize.constants === true) sweep('propagateConstants', propagateConstants)
     if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
   }
+  // A spliced method's body reads its tested receiver as the marker of the test: a member of
+  // it is the receiver's own, read by the receiver's class as the caller's code reads one.
+  if (spliced || lambdas) sweep('settleTestedReceivers', settleTestedReceivers)
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
   // Private entry pairs lower to column snapshots, like array patterns lower
   // to indexed reads. No observable pair identity is removed.
