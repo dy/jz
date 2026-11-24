@@ -4055,6 +4055,87 @@ The held-out run: 23 of 23, geomean 1.45 (AWFY 2.16 over 14, CLBG 0.78 over 9). 
 
 The exam: the lane's sieve and storage after this landing (the analogs say 15 to 30% each; the lane's noise on storage is 8%). Then the gather. Then the gate of 'speed' against level 2.
 
+## The land-ax landing: a pass of a loop is a call only where every run of it meets a loop, and what the exam said of the landing before (2026-11-24)
+
+Three commits on a48dd5501, the integrator's.
+
+### What landed
+
+- `de29d8528` The speed tier makes a pass of a short loop a call only where every run of the pass meets a loop (optimize/split-funcs.js `runsLoop`, in `loopPasses`' choice of the run).
+- `8984b50d9` The data forms' listing for it: 684 gaps of 800 as before, 48 cells moved, all at 'speed' and all smaller.
+- `fbff92eb2` Its changelog entry.
+
+### The exam of the landing before (held-out run 45371847588 on bbe185b2a)
+
+23 of 23. AWFY and CLBG both ran on the Xeon 6975P-C, as in the run before it (45336802598), so the two compare. Geomean jz/V8 1.41 where 1.45 (AWFY 2.05 where 2.16 over 14, CLBG 0.78 over 9, unmoved).
+
+| program | jz ms before | after | jz/V8 before | after |
+|---|---|---|---|---|
+| awfy-sieve | 133.6 | 80.0 | 2.79 | 1.72 |
+| awfy-storage | 105.2 | 81.5 | 2.04 | 1.71 |
+| awfy-json | 66.1 | 58.0 | 1.50 | 1.33 |
+
+Every other program's time is within 3% of the run before (awfy-nbody 19.1 ms where 19.6 the widest), but spectralnorm at 4% more (70.9 ms where 68.2). The prediction was 15 to 30% on sieve and storage: sieve came in at 40% less, storage at 23%; json's 12% was not predicted. The analogs written from the benchmarks' descriptions named the right two programs and the right causes (the hop asked at every store past a bound the loop is handed; the splice of tiny helpers that spends the engine's inlining budget).
+
+The worst five stand as before: havlak 5.42, richards 4.82, towers 3.88, fannkuchredux-node-4 2.92, cd 2.79.
+
+### A correction to the last two records: which row holds the timed build's bytes
+
+The record's `jz` row holds the size build's bytes (bench/bench.mjs, the `jz` lane: "Size column = the -Os build (jz's smallest); timing = the speed build"). The bytes of a build timed at 'speed' are in the `jz-exact` row: the speed build at JavaScript's float results, the nearest the record has to the timed one. Read by that row:
+
+- The land-aw landing changed all 23 timed builds (14 to 4,971 bytes smaller, spectralnorm 13 more) and none of the size builds.
+- The land-at record said the landing before it (land-ar) changed "eight builds". That was the size row. By `jz-exact`, 12 of 23 differ. Its conclusion, that no time moved beyond the lane's noise, stands.
+- The land-aw record read the lane's noise from runs 45320430778 and 45336802598 as two runs of the same builds. Checked by both rows: 0 of 23 differ. It stands as written.
+
+`own/heldout-two.mjs` under the tools directory now counts a program changed when either row's bytes differ.
+
+### The pass that meets its loop on every run
+
+'speed' was still the slower tier on the data forms' prefix sum (`s += a[i]; c[i] = s` over 256 elements): 4.57 of Node's time over module arrays where level 2 takes 2.70, and 2.78 where 1.53 with the arrays in an instance (M4). The speed tier makes each pass of a loop of at most 256 passes that holds a loop a call, in a function that runs once, so the passes after the first run as optimized code: V8 has no on-stack replacement for wasm. "Holds a loop" took any loop under the pass. A store at an index not proven inside the length keeps its growing arm, and the runtime's store spliced there holds the loop that fills a gap. So the kernel was a loop of 256 passes holding a loop, and its body went out as a function: a call an element.
+
+The run of statements a pass gives up is now one in which every run meets a loop (`runsLoop`): a loop under one arm of an `if` is the arm's; one in each arm, or outside any, is the pass's. After: the prefix sum 2.74 at 'speed' over module arrays and 1.31 over an instance's; a gather with its arrays in an instance 3.05 where 3.54. No bench case's bytes move, of 105: the bench corpus has no loop of this shape, which is why the tier's rule was never seen to cost.
+
+Two mutations each fail a test (own/mutant-passes.sh under the tools directory). A third passed and its code went: the nest itself found by the same rule, which the run's choice already decides.
+
+### The check (ax, on 2d8d6cb3f before the rebase)
+
+Run on 2d8d6cb3f, the three commits on bbe185b2a. The landing is those commits moved onto a48dd5501 (de29d8528, 8984b50d9, fbff92eb2), which differs from bbe185b2a in bench/heldout.json alone, the lane's record of the run above: no file the check reads.
+
+Every step exit 0, in 52 minutes at a load of 5 to 38, and test262 in 29. WASI 7,603, default 7,730, armed level 3 7,512, level 0 7,490, each with one skipped and none failed; test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's 344 cells with none differing; two test files on a fresh hosted compiler (parity, split-funcs), the hosted compiler 38,072,249 bytes where main's is 38,070,430; the examples 25 of 25 twice at a geomean of 1.69; the bench bytes main's, 105 cases of 105; test262 4,137 passed and 4,045 refused as they should be, with no accepted negative and no failure.
+
+### CI on bbe185b2a
+
+test262, self-compile, examples-perf and pages green. test: every job green, `test (opt3)` among them at the first run, but `claims`, on its standing lines (25 passed and 19 failed, under the four headings of the landing before). The held-out run is the exam above.
+
+### The gather, traced to the fact it lacks
+
+`s += a[idx[i]]` over arrays the module builds by `push` in counted loops takes 6.3 of Node's time at both levels, the largest ratio in the gate's own programs; `b[idx[i] & 255]` takes 1.39. The summary holds `idx`'s elements as integers of 0 to 255, but reads `idx[i]` as a Number or nothing: an array built by `push` has no fixed length in the summary (`lens`: a literal's count, `new Array(n)`), and the kernel's loop is bounded by the constant, not by `idx.length`. A key that may be undefined makes `a[…]` the fully dynamic read (a test for a string key, the hash probes), and its value of no known kind, so the `+` tests for a string.
+
+What closes it: the summary's own reads taking the length an array keeps after module init (query.js `frozenLenOf`, which today only the plan reads, for the representation). 42 cells of the listing are this kernel.
+
+### Found while reading for it: a wrong answer in 1.0.4 and on main, by a rule every release holds
+
+That length is given to every function, and a function can run before the array has it. A module `const` array grown by counted top-level pushes reads, in a function the initializers run before the last push, with no bounds test against what is pushed so far:
+
+```js
+const memo = []
+const get = (k) => { const v = memo[k]; return v === undefined ? -1 : v }
+const early = get(3)                       // Node: -1. jz: 0, or what memory holds there
+for (let i = 0; i < 10; i++) memo.push(i * 2)
+```
+
+So does one called by the pushing statement itself (`memo.push(get(9 - i) + i)`), a closure an array or an object holds, a method, a constructor, a static method, a getter, and at level 0 a conversion (`valueOf` read 5.67e281 there). The module's own statements read right. Thirty such programs, run on 1.0.4's tree and on main at four levels: 1.0.4 answers 28 wrong (26 at each of levels 2, 3 and 'size'), main 27. The rule came with 6ef2aa75a, which every tag from v1.0.0 holds; 1.0.0 to 1.0.3 were not run. The fix is written and under test on a branch of its own (the record after this one).
+
+### Found, not fixed
+
+- A method under a computed name on an instance (`p[names[1]](4)`) is refused at compile time: "'P.at.bind' is not a known function or built-in".
+- `yield v === undefined ? 1000 : v` is refused ("a yield expression as an operand must stand in parentheses"). JavaScript reads it as `yield (v === undefined ? 1000 : v)`.
+- The list of the record before this one, unchanged: the other settings of the speed tier that lose to level 2, the second subclass that makes a method's swap generic, the costs of a method on an instance made at module start, the loop's length word, the six trig calls of `setFromEuler`, the list's hop.
+
+### Next
+
+The wrong answer first. Then the gather through that same fact, read by the summary. Then the gate of 'speed' against level 2 on the data forms' programs.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

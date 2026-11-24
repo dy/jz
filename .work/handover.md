@@ -796,3 +796,13 @@ fd5fbc2d7 arr-y       the hop rule's first form, two commits on bf57cb248: super
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/tier-bisect.mjs` (each setting 'speed' and level 2 differ in, taken alone on one export), `probe/tier-order.mjs` (every export at level 2 and at 'speed'), `probe/opt-times.mjs` (one export under given optimize settings), `probe/run-one.mjs` (one export called many times, for `node --trace-wasm-inlining`), `probe/pad-variants.mjs` and `probe/asm.mjs` (hand-edited copies of a bench case's module; `bench/_lib/run-jz-host.mjs <wasm>` times one), `probe/case-funcs.mjs`, `probe/funcs-diff.mjs`, `probe/case-wat.mjs` (a bench case's functions, their bytes and their text), `probe/forms-delta.mjs` (two data-forms listings compared), `probe/hop-count.mjs`, `probe/loop-calls.mjs`, `own/time-k2.sh` (the one-class analogs against main), `own/mutant-hops.sh`; the timings `time-tiny.out` (the 44 cases, the splice at none against 16), `time-awhop.out` (the hop rule's cases against main), `keep/ta/` (threeanim's builds, their edited copies and V8's inlining traces).
+
+## Branches of the land-ax landing (2026-11-24), tips before deletion
+
+```
+fbff92eb2 gather-w    the landing branch: 3 commits on a48dd5501; the record's commit after it
+46bc590a4 land-aw     the landing before
+frozen-w             (uncommitted at this record) the array a function reads before the init pushes end: summary/index.js `short`, query.js frozenLenOf, test/fixed-length.js
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/try.mjs <tree> <level>` (programs on stdin, separated by a line of `----`, each `f()` beside Node's), `probe/sum-index.mjs` (each indexed read of a function: the summary's kinds of receiver, key and read, whether it is a present read, its word range), `probe/form-src.mjs` (one of the data forms' programs written out), `probe/tier-order.mjs`, `own/mutant-passes.sh`, `own/mutant-frozen.sh`, `own/heldout-two.mjs` (two runs of the held-out record side by side, a program counted changed by either row's bytes); the held-out records `heldout-31e.json`, `heldout-bbe.json`; the early-read programs `keep/frozen/*.txt`, of which test/fixed-length.js on frozen-w holds every one that matters.
