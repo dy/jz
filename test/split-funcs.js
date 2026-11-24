@@ -381,6 +381,77 @@ test('loop passes: a nest in an export gives its outer loop\'s pass, carried loc
   ok(piece && piece.some(n => Array.isArray(n) && n[0] === 'result'), 'the piece returns what the loop carries')
 })
 
+// The pass is long where every run of it meets a loop. A loop under one arm of an `if` is the arm's:
+// a store that kept its growing arm holds the loop that fills its gap, spliced from the runtime, and
+// a kernel of 256 elements is no nest for it (the passes that stay in bounds would pay a call each).
+const ARMED = (other) => `(func $f (export "f") (param $n i32) (result i32)
+    (local $i i32) (local $j i32) (local $acc i32)
+    (block $done (loop $rows
+      (br_if $done (i32.ge_s (local.get $i) (i32.const 40)))
+      (local.set $acc (i32.add (local.get $acc) (i32.mul (local.get $i) (i32.const 3))))
+      (if (i32.gt_s (local.get $i) (local.get $n))
+        (then
+          (local.set $j (i32.const 0))
+          (block $cols (loop $col
+            (br_if $cols (i32.ge_s (local.get $j) (local.get $i)))
+            (local.set $acc (i32.add (local.get $acc) (local.get $j)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $col))))
+        (else ${other}))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $rows)))
+    (local.get $acc))`
+test('loop passes: a loop under one arm of an `if` is the arm\'s, and its passes stay; one in each arm is the pass\'s', () => {
+  const one = `(module ${ARMED('(local.set $acc (i32.xor (local.get $acc) (i32.const 5)))')})`
+  const both = `(module ${ARMED(`(local.set $j (local.get $i))
+          (block $back (loop $down
+            (br_if $back (i32.le_s (local.get $j) (i32.const 0)))
+            (local.set $acc (i32.sub (local.get $acc) (local.get $j)))
+            (local.set $j (i32.sub (local.get $j) (i32.const 2)))
+            (br $down)))`)})`
+  is(passes(one).made, 0, 'a loop one arm holds: no pass moves')
+  is(passes(both).made, 1, 'a loop in each arm: the pass moves')
+  // two runs of statements with an exit between them: the arm's loop, the larger, and a loop every pass meets
+  const two = `(module (func $f (export "f") (param $n i32) (result i32)
+    (local $i i32) (local $j i32) (local $acc i32)
+    (block $done (loop $rows
+      (br_if $done (i32.ge_s (local.get $i) (i32.const 40)))
+      (if (i32.gt_s (local.get $i) (local.get $n))
+        (then
+          (local.set $j (i32.const 0))
+          (block $cols (loop $col
+            (br_if $cols (i32.ge_s (local.get $j) (local.get $i)))
+            (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 3)) (i32.xor (local.get $j) (i32.shl (local.get $i) (i32.const 2)))))
+            (local.set $acc (i32.and (i32.add (local.get $acc) (i32.mul (local.get $j) (local.get $j))) (i32.const 0xFFFFF)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $col)))))
+      (br_if $done (i32.gt_s (local.get $acc) (i32.const 2000000000)))
+      (local.set $j (i32.const 0))
+      (block $back (loop $down
+        (br_if $back (i32.ge_s (local.get $j) (i32.const 4)))
+        (local.set $acc (i32.add (local.get $acc) (local.get $j)))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $down)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $rows)))
+    (local.get $acc)))`
+  const split = passes(two), text = (name) => JSON.stringify(split.mod.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === name) ?? null)
+  is(split.made, 1, 'the run every pass meets a loop in moves')
+  ok(/"if"/.test(text('$f')) && !/"if"/.test(text('$f$s0')), 'the arm stays where it was')
+  for (const wat of [one, both, two]) for (const n of [-1, 0, 7, 39, 50]) is(passes(wat).exports.f(n), plain(wat).f(n), `f(${n})`)
+})
+
+test('loop passes: a kernel whose store keeps its growing arm calls nothing per element at the speed tier', () => {
+  const src = `const N = 256
+    const a = []; for (let i = 0; i < N; i++) a.push(i * 0.5)
+    const c = []; for (let i = 0; i < N; i++) c.push(0)
+    export let prefix = () => { let s = 0; for (let i = 0; i < N; i++) { s += a[i]; c[i] = s } return c[N - 1] }`
+  const want = oracle(src).prefix()
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', loopPasses: false })) is(jz(src, { optimize }).exports.prefix(), want, JSON.stringify(optimize))
+  if (onKernel()) return
+  ok(!/\(func \$prefix[^\s)]*\$s\d/.test(compile(src, { optimize: { level: 'speed' }, wat: true })), 'no pass of the kernel\'s loop is a function')
+})
+
 test('loop passes: a loop of passes a runtime value counts, of many passes, or entered at an unknown count keeps them', () => {
   // its passes may be short (a frame's loop over its rows): a call each would cost
   const kept = {

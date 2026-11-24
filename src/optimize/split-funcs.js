@@ -267,6 +267,20 @@ const callsAlways = (list) => {
 }
 
 const holdsLoop = (n) => isArr(n) && (n[0] === 'loop' || n.some(holdsLoop))
+// A loop every run of `n` meets: none under one arm of an `if` alone. A store's growing arm holds
+// the loop that fills its gap and a logged root's the probe of its table, a helper's loops spliced
+// where the arm was; the runs that stay in bounds meet neither.
+const runsLoop = (n) => {
+  if (!isArr(n)) return false
+  if (n[0] === 'loop') return true
+  if (n[0] !== 'if') return n.some(runsLoop)
+  let arms = 0, looped = 0
+  for (const c of n) if (isArr(c)) {
+    if (c[0] === 'then' || c[0] === 'else') { arms++; if (runsLoop(c)) looped++ }
+    else if (runsLoop(c)) return true
+  }
+  return arms === 2 && looped === 2
+}
 const STORE = /^(?:i32|i64|f32|f64|v128)\.store/
 /** Whether statement `n` takes no value from the stack and leaves none, its operands folded in:
  *  only a run of such statements can become a call (a stack-style operand, or a value a later
@@ -378,7 +392,10 @@ const COMPACTS = new Set(['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thre
  * is outside every loop of a function that runs once. A loop of it holding a loop, of a few passes
  * over the function's call (`fewPasses`: a counter stepped by one from zero or above to a bound of
  * at most PASS_MAX, which no loop around starts over, so each of the passes a long call makes is
- * long), gives up the longest run of its statements that holds the inner loop: whole statements
+ * long), gives up the longest run of its statements that holds the inner loop: one every pass
+ * meets (`runsLoop`; a loop under one arm of an `if` is the arm's, and a kernel of 256 elements
+ * whose store kept its growing arm, the arm's gap fill a loop, paid a call an element, 1.7 times
+ * the time level 2 took). Whole statements
  * (`whole`), between the loop's tests, branching only inside the run, whatever its size (a call
  * per pass is nothing beside the loop it runs once the pass is optimized code, and baseline code
  * is slower by more); its locals go in and come back by liveness as an arm's do. The loop may sit
@@ -536,7 +553,7 @@ export function loopPasses(module, { user = () => true } = {}) {
         const fits = (s) => { if (!whole(s, ctx.sigs) || compacts(s)) return false; const a = scan([s]); return !a.returns && !a.opaque && [...a.refs].every(r => a.defs.has(r)) }
         if (!fits(loop[i])) { i++; continue }
         let j = i, s = 0, inner = false
-        while (j < loop.length && fits(loop[j])) { s += size(loop[j]); inner ||= holdsLoop(loop[j]); j++ }
+        while (j < loop.length && fits(loop[j])) { s += size(loop[j]); inner ||= runsLoop(loop[j]); j++ }
         if (inner && (!best || s > best.s)) best = { from: i, end: j, s }
         i = j
       }
