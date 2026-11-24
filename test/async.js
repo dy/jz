@@ -248,7 +248,11 @@ test('async: host imports returning promises are awaitable', async () => {
   is(await out2.exports.f(), 'caught:nope')
 })
 
-test('async: bare fetch binds from the JS host — Response methods await in turn', async () => {
+// (the limit is the compile's, not the network's: at level 3 these seven lines take 2 to 4 seconds
+// to compile on a loaded machine, the two fetches 5 to 50 ms, and the suite's limit is a race with a
+// timer that a synchronous compile outlasts. CI's plain level 3 leg timed out here at the default 5
+// seconds on two of three landings.)
+test('async: bare fetch binds from the JS host — Response methods await in turn', { timeout: 60000 }, async () => {
   if (onWasi() || onKernel()) return
   const { createServer } = await import('node:http')
   const srv = createServer((req, res) => res.end('pong:' + req.url)).listen(0)
