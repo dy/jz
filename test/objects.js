@@ -7,6 +7,8 @@ import { is, ok, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, belowOpt, levels, ownedLevels } from './_matrix.js'
 import { run, oracle, cases, jz, compile } from './util.js'
+import { parse } from '../src/parse.js'
+import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 
 // A class's methods and accessors are its prototype's, its private names no
 // property, an Error's `name` its class's: hasOwnProperty, Object.hasOwn and
@@ -1631,6 +1633,76 @@ test('jzify: Object.prototype.hasOwnProperty.call canonicalizes to instance hasO
   `, { jzify: true }).exports
   is(f('a'), 1)
   is(f('z'), 0)
+})
+
+// An object built by stores is the literal of what they store (jzify/bundler.js builtLiterals):
+// `const p = {}; p.x = a; p.y = b` is `const p = { x: a, y: b }`, the stores that follow the
+// declaration at once, each under a name of its own and of a value that does not mention the
+// object. An empty literal is otherwise a dictionary, and a record built so probed a hash table
+// at every field. Every program answers as the host does, however far the stores were folded.
+const BUILT = [
+  ['two stores', `export const f = () => { const p = {}; p.x = 1; p.y = 2; return JSON.stringify(p) + Object.keys(p).join() }`],
+  ['a value that reads the object ends the run', `export const f = () => { const q = {}; q.a = 1; q.b = q.a + 1; q.c = 3; return JSON.stringify(q) + Object.keys(q).join() }`],
+  ['a store under a computed key further on', `export const f = () => { const d = {}; d.n = 0; const k = 'z' + 1; d[k] = 1; d.m = 2; return JSON.stringify(d) + Object.keys(d).join() }`],
+  ['a key stored twice', `export const f = () => { const p = {}; p.x = 1; p.x = 2; p.y = 3; return JSON.stringify(p) }`],
+  ['the values in their order', `let seen = ''\nconst note = (s, v) => { seen += s; return v }\nexport const f = () => { seen = ''; const p = {}; p.b = note('b', 1); p.a = note('a', 2); return seen + JSON.stringify(p) }`],
+  ['a value that throws', `export const f = () => { let out = 'none'; try { const p = {}; p.x = 1; p.y = (() => { throw new Error('mid') })(); out = JSON.stringify(p) } catch (e) { out = 'caught ' + e.message } return out }`],
+  ['a closure of the object as a value', `export const f = () => { const p = {}; p.self = () => p; p.x = 1; return typeof p.self + JSON.stringify(Object.keys(p)) }`],
+  ['a store of length', `export const f = () => { const p = {}; p.length = 3; p.x = 1; return JSON.stringify(p) + Object.keys(p).length }`],
+  ['a let given another object', `export const f = () => { let p = {}; p.x = 1; p.y = 2; p = { z: 3 }; return JSON.stringify(p) }`],
+  ['two declarators', `export const f = () => { const a = {}, b = 2; a.x = b; return JSON.stringify(a) }`],
+  ['a key deleted by a computed name', `export const f = () => { const p = {}; p.x = 1; p.y = 2; const k = 'x'; delete p[k]; p.z = 3; return JSON.stringify(p) + ('x' in p) + Object.keys(p).join() }`],
+  ['a key a function deletes', `const drop = (o, k) => { delete o[k] }\nexport const f = () => { const p = {}; p.x = 1; p.y = 2; drop(p, 'x'); return JSON.stringify(p) + ('x' in p) + Object.keys(p).join() }`],
+  ['keys a function stores', `const put = (o, k, v) => { o[k] = v }\nexport const f = () => { const p = {}; p.x = 1; p.y = 2; put(p, 'k' + 1, 5); put(p, 'x', 9); return JSON.stringify(p) + Object.keys(p).join() }`],
+  ['Object.assign into it', `export const f = () => { const p = {}; p.x = 1; p.y = 2; Object.assign(p, { z: 3, x: 7 }); return JSON.stringify(p) + Object.keys(p).join() }`],
+  ['spread, entries, in and hasOwnProperty', `export const f = () => { const p = {}; p.x = 1; p.y = 2; const q = { ...p, w: 4 }; const r = Object.entries(p).length + Object.values(q).length; return JSON.stringify(q) + r + ('y' in p) + p.hasOwnProperty('x') }`],
+  ['enumerated', `export const f = () => { const p = {}; p.x = 1; p.y = 2; let s = ''; for (const k in p) s += k + p[k]; return s }`],
+  ['fields written in a loop', `export const f = () => { const p = {}; p.count = 0; p.items = []; for (let i = 0; i < 3; i++) { p.count++; p.items.push(i * 2) } return JSON.stringify(p) }`],
+  ['two shapes through one name', `export const f = () => { const a = {}; a.v = 1; const b = {}; b.v = 2; b.w = 3; const pick = (c) => c ? a : b; return JSON.stringify([pick(true), pick(false)]) + (pick(false).w | 0) }`],
+  ['undefined and null values', `export const f = () => { const p = {}; p.x = 1; p.y = undefined; p.z = null; return JSON.stringify(p) + Object.keys(p).length + (p.y === undefined) }`],
+  ['a function as a value', `export const f = () => { const p = {}; p.fn = (a) => a * 2; p.n = 21; return p.fn(p.n) }`],
+  ['a store under a condition past the run', `export const f = () => { const p = {}; p.x = 1; if (p.x > 0) p.extra = 5; return JSON.stringify(p) + Object.keys(p).join() }`],
+  ['a store under a quoted key', `export const f = () => { const p = {}; p['quoted key'] = 1; p.x = 2; return JSON.stringify(p) }`],
+  ['a factory', `const mk = (i) => { const o = {}; o.id = i; o.name = 'n' + i; o.tags = []; return o }\nexport const f = () => { const a = mk(1), b = mk(2); a.tags.push('t'); return JSON.stringify([a, b]) }`],
+  ['a block of the declaration alone', `export const f = () => { let n = 0; for (let i = 0; i < 3; i++) { const p = {}; p.x = i } { const q = {}; q.y = 2; q.z = 3 } return n + 7 }`],
+  ['records in a loop, read and written', `export const f = () => { const ps = []; for (let i = 0; i < 5; i++) { const p = {}; p.x = i * 0.5; p.v = i - 2; ps.push(p) } let s = 0; for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x += p.v; s += p.x } return s }`],
+]
+test('jzify: an object built by stores answers as its literal does, as the host does', () => {
+  for (const [name, src] of BUILT) {
+    const want = oracle(src).f()
+    for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(), want, `${name} at ${optimize}`)
+  }
+})
+
+test('jzify: the stores that follow an empty literal at once are its properties, and no others', () => {
+  const text = (tree) => JSON.stringify(tree)
+  // what the stores become: the tree of the literal as written
+  const becomes = (a, b, why) => is(text(canonicalizeObjectIdioms(parse(a))), text(parse(b)), why)
+  // what is left alone: the tree itself, no copy
+  const stays = (a, why) => { const tree = parse(a); ok(canonicalizeObjectIdioms(tree) === tree, why) }
+  becomes(`const p = {}; p.x = a; p.y = b; use(p)`, `const p = { x: a, y: b }; use(p)`, 'two stores are the literal')
+  becomes(`let p = {}; p.x = a; use(p)`, `let p = { x: a }; use(p)`, 'a let as a const')
+  is(text(canonicalizeObjectIdioms(parse(`const p = {}; p.x = a`))), text([';', parse(`const p = { x: a }`)]), 'a list of the declaration alone stays a list')
+  becomes(`for (;;) { const p = {}; p.x = i; ps.push(p) }`, `for (;;) { const p = { x: i }; ps.push(p) }`, 'in a loop\'s body')
+  becomes(`const f = () => { const o = {}; o.id = 1; o.tags = []; return o }`, `const f = () => { const o = { id: 1, tags: [] }; return o }`, 'in a function\'s')
+  becomes(`const q = {}; q.a = 1; q.b = q.a + 1; q.c = 3`, `const q = { a: 1 }; q.b = q.a + 1; q.c = 3`, 'a value that mentions the object ends the run')
+  becomes(`const p = {}; p.x = 1; p.x = 2; p.y = 3`, `const p = { x: 1 }; p.x = 2; p.y = 3`, 'a key stored again ends it')
+  becomes(`const p = {}; p.x = 1; p.length = 3; p.y = 2`, `const p = { x: 1 }; p.length = 3; p.y = 2`, 'so does length')
+  becomes(`const p = {}; p.x = 1; p.y += 2`, `const p = { x: 1 }; p.y += 2`, 'and a compound store')
+  becomes(`const d = {}; d.n = 0; d['m'] = 1`, `const d = { n: 0 }; d['m'] = 1`, 'a quoted key further on is no computed one')
+  becomes(`const p = {}; p.x = 1; other[k] = 2; rest[k] += 1`, `const p = { x: 1 }; other[k] = 2; rest[k] += 1`, 'nor is a computed key through another name')
+  stays(`const p = {}; p.f = () => p; p.x = 1`, 'a closure of the object is a mention')
+  stays(`const p = {}; p.__proto__ = q; p.y = 2`, '__proto__ is no property')
+  stays(`const p = {}; p.x += 1`, 'a compound store is none')
+  stays(`const p = {}; p['x'] = 1; p.y = 2`, 'nor one under a quoted key')
+  stays(`const p = {}; use(p); p.x = 1`, 'nor one past another statement')
+  stays(`const d = {}; d.n = 0; d[k] = 1`, 'a store under a computed key further on: a dictionary')
+  stays(`const d = {}; d.n = 0; if (c) { d[k] += 1 }`, 'the same in a block, compounded')
+  stays(`const d = {}; d.n = 0; const g = () => { d[k]++ }`, 'the same in a closure, stepped')
+  stays(`const a = {}, b = 2; a.x = b`, 'two declarators stay')
+  stays(`let p; p = {}; p.x = 1`, 'an assignment is no declaration')
+  stays(`const p = { a: 1 }; p.x = 1`, 'a literal with a property is not empty')
+  stays(`const p = {}; use(p)`, 'nothing built')
 })
 
 test('jzify: Object.prototype.toString.call canonicalizes to object tag helper', () => {

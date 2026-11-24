@@ -292,6 +292,8 @@ export function canonicalizeObjectIdioms(node) {
 
   const out = rewriteChildren(node, canonicalizeObjectIdioms)
 
+  if (out[0] === ';') return builtLiterals(out)
+
   const toStringCall = objectPrototypeToStringCall(out)
   if (toStringCall) return ['()', '__object_toString', toStringCall.obj]
 
@@ -312,6 +314,53 @@ export function canonicalizeObjectIdioms(node) {
   }
 
   return out
+}
+
+// An object built by stores is the literal of what they store: `const p = {}; p.x = a; p.y = b`
+// is `const p = { x: a, y: b }`. The stores that follow the declaration at once, each under a
+// name of its own and of a value that does not mention the object, are the literal's properties
+// in their order: the values are computed in that order either way, and nothing can see the
+// object between them (a declaration's name is no one's until its statement ends, so a value
+// that throws leaves no half-built object to anyone). An empty literal is otherwise a dictionary
+// (module/object.js): every read and store of a built record probed a hash table, and 256 of them
+// weighed five times what their literal does. The object stays a dictionary where its name takes
+// a store under a computed key further on, and a store past the run is a store as before.
+const STRUCTURAL_KEYS = new Set(['length', '__proto__'])
+const mentions = (node, name) => node === name || (Array.isArray(node) && node.some(c => mentions(c, name)))
+const emptyObject = (n) => Array.isArray(n) && n[0] === '{}' && n.length === 2 && n[1] == null
+/** The object a declaration of one name makes empty: the name, or null. */
+const builtName = (st) => Array.isArray(st) && (st[0] === 'const' || st[0] === 'let') && st.length === 2 && Array.isArray(st[1])
+  && st[1][0] === '=' && typeof st[1][1] === 'string' && emptyObject(st[1][2]) ? st[1][1] : null
+/** A store under a computed key through `name`, anywhere in `node`: the mark of a dictionary. */
+const keyedStore = (node, name) => Array.isArray(node) && ((ASSIGNS.has(node[0]) && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name
+  && !(Array.isArray(node[1][2]) && node[1][2][0] == null && typeof node[1][2][1] === 'string')) || node.some(c => keyedStore(c, name)))
+const ASSIGNS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '&&=', '||=', '??=', '++', '--'])
+function builtLiterals(list) {
+  let out = null
+  for (let i = 1; i < list.length; i++) {
+    const name = builtName(list[i])
+    if (name === null) continue
+    const props = [], keys = new Set()
+    let j = i + 1
+    for (; j < list.length; j++) {
+      const st = list[j]
+      if (!Array.isArray(st) || st[0] !== '=' || st.length !== 3 || !Array.isArray(st[1]) || st[1][0] !== '.' || st[1][1] !== name) break
+      const key = st[1][2]
+      if (typeof key !== 'string' || keys.has(key) || STRUCTURAL_KEYS.has(key) || mentions(st[2], name)) break
+      keys.add(key)
+      props.push(withLoc([':', key, st[2]], st))
+    }
+    if (!props.length) continue
+    let keyed = false
+    for (let k = j; k < list.length && !keyed; k++) keyed = keyedStore(list[k], name)
+    if (keyed) continue
+    out ??= list.slice()
+    const decl = list[i], literal = withLoc(['{}', props.length === 1 ? props[0] : [',', ...props]], decl[1][2])
+    out[i] = withLoc([decl[0], withLoc(['=', name, literal], decl[1])], decl)
+    for (let k = i + 1; k < j; k++) out[k] = undefined
+    i = j - 1
+  }
+  return out === null ? list : noted(list, out.filter(st => st !== undefined))
 }
 
 function arrayMapStringCallback(node) {

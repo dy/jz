@@ -1115,16 +1115,19 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
   // module/object.js `{}`: a declared `{}` takes its binding's schema (`o.a = 1` merges `a` into it),
   // an empty `{}` declared into a computed-key binding with no schema is a HASH, an argument or a
   // spread literal is not a HASH for certain (the runtime builds an OBJECT with a dyn sidecar, or a
-  // dictionary when a spread source's key set is unknown).
+  // dictionary when a spread source's key set is unknown). Stores that follow the declaration
+  // are its literal (jzify/bundler.js builtLiterals): `r` below is declared `{ a: 2, b: 3 }`.
   summarize(`const rd = (o) => o.kk
     export const f = (k, x) => {
-      let d = {}; d[k] = 1
-      let s = {}; s.a = 2; s.b = 3
+      let s = {}, d = {}; d[k] = 1
+      s.a = 2; s.b = 3
+      let r = {}; r.a = 2; r.b = 3
       const w = rd({ ...(x && { kk: 4 }) })
-      return d[k] + s.a + s.b + w + rd(((t) => (t[k] = 5, t))({}))
+      return d[k] + s.a + s.b + rd(r) + w + rd(((t) => (t[k] = 5, t))({}))
     }`)
   is(tagOf(kindOf('f', 'd')), K.HASH, 'an empty literal declared into a computed-key binding is a dictionary')
   is(tagOf(kindOf('f', 's')), K.HASH, 'a written empty literal without a materialized schema is a dictionary')
+  is(tagOf(kindOf('f', 'r')), K.OBJECT, 'one whose stores follow its declaration is the literal of them, an object')
   ok(!isNullable(kindOf('rd', 'o')) && tagOf(kindOf('rd', 'o')) === K.ANY && hasTag(kindOf('rd', 'o'), K.OBJECT) && hasTag(kindOf('rd', 'o'), K.HASH), 'a spread literal or an argument literal is an object or a dictionary')
   for (const optimize of levels(false, 2)) is(jz(`export const f = (k, x) => { let o = {}; o.a = 1; o.b = 2; const t = { [k]: 3 }; return o.a + o.b + t[k] + (new Set([1]).length === undefined ? 10 : 0) }`, { optimize }).exports.f('z', 1), 16, `O${optimize || 0}: the literal reads through the summary's kind`)
 })
