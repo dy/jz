@@ -820,3 +820,17 @@ c503b1845 gate-w      the next landing's base: da64bf084 the data forms' gate me
 Left standing by the owner's silence, not by a ruling: the superseded worktrees and the held branches listed to the owner on 2026-11-24 (the NaN box `nanbox-rest2`; `next-x` and `next-y`; `tests-time` and `worktree-agent-afab4ffb7d6879342`; `decoders-ada0`; `worktree-agent-a4519a2dc39ff972e`; `worktree-agent-a5f89d0c0c9d7eb2f`). The ten worktrees whose tips main held are removed, with their sixteen branches.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/frozen-len.mjs` and `probe/frozen-cases.mjs` (a program's frozen length; the test file's programs on another tree), `own/mutant-frozen.sh`, `own/mutant-passes2.sh`, `own/mutant-built.sh`, `keep/frozen/*.txt` (the early-read programs), `keep/pass-rule.patch`, `forms-gate-show.txt` (every cell of the gate: ops, calls, calls run, bytes a call), `heldout-526.json`.
+
+## Branches of the land-az landing (2026-11-24), tips before deletion
+
+```
+72db55e2a rule-w      the branch the check ran on: seven commits on ca9b379a4, its fold's commit (0189c2a84) failing test/summary.js
+af31a913d rule-x      the landing branch: the same seven with the fold's commit carrying its test (f278a6cf1); the record's commit after it
+          len-w       (uncommitted, on 72db55e2a) the length an array is built to, for the solver's read rule (summary/index.js `steady`, `steadyOf`, `solve`)
+```
+
+Removed since the last record, their content on the landing branch: `gate-w`, `built-w`, `mem-w`, `pass-w`, `frozen-w`, `frozen-x`.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/try.mjs` (programs from stdin against Node at a level), `probe/present.mjs` (which element reads the summary holds inside a length, per function), `probe/solves.mjs` (the summary's solves per bench case, on a tree patched to record them), `own/mutant-passes2.sh` and `own/mutant-built.sh`, `forms-gate-show.txt` and `forms-len-seq.txt` (every cell of the gate before and after the built length: ops, calls, calls run, bytes a call), `keep/pass-rule.patch`, `keep/built-fold.patch`.
+
+A suite started beside a battery runs in one process unless `JZ_TEST_JOBS` is set (test/index.js splits over the idle cores): three hours where 25 minutes.

@@ -4204,6 +4204,60 @@ Begun on it, on branches after this landing: the data forms' gate measures what 
 
 The loop-pass rule the tier cells name (timed first: what a call a pass costs a kernel called again and again, and what it saves a nest entered once). Then the gather through the frozen length, now safe to read. Then the record forms' memory.
 
+## The land-az landing: the gate measures memory and holds 'speed' to level 2; a loop's pass moves for the program's own loop; an object built by stores is its literal (2026-11-24)
+
+Seven commits on ca9b379a4, the integrator's.
+
+### What landed
+
+- `704602464` The data forms' gate measures what a kernel's steady call takes from the heap (`mem`) and holds 'speed' to level 2 by calls run, SIMD and memory (`tier`) (test/data-forms.js, test/_loop-ops.js).
+- `b431ff2e4` The fetch test has 60 seconds: its limit was its compile's (the record before this one).
+- `c96fb1c52` A loop's pass becomes a function for a loop of the program's own, or a helper's that counts its passes, that every run of the pass meets (optimize/split-funcs.js `runsOwn`, `runsSweep`).
+- `1e0c72ba6` The listing after it: 684 gaps of 800.
+- `f278a6cf1` Dot stores that follow `const|let name = {}` are that literal's properties (jzify/bundler.js `builtLiterals`).
+- `c86c6ddb6` The listing after it: 680 gaps of 800.
+- `af31a913d` The changelog's two entries.
+
+### The gate's new cells, and their first reading
+
+A cell now counts, in a steady call (the middle of eight after one), the bytes the kernel takes from the heap and the functions it enters. `mem` is the bytes past the lightest form's; `tier` is what 'speed' costs past level 2 in the same cell. The cells' first form counted a first call and named a compaction that was that call's work; it was replaced before it landed.
+
+On main's compiler: 685 gaps of 800. 756 cells take nothing from the heap. 26 are short by memory: a record renewed 256 times takes 12,288 bytes as a literal, 61,440 as `{}` then stores, 20,480 as a spread, 90,024 as an open spread (147,400 at 'speed'). Nine cells were worse at 'speed' than at level 2, eight of them one cause: a keyed read of 256 elements entered 257 functions where level 2 entered one.
+
+### A loop's pass, and the rule's first form that was wrong
+
+'speed' makes each pass of a loop of at most 256 passes a function where the function holding it is entered once (V8 has no on-stack replacement for wasm). It did so for any loop in the pass, the hash probe's among them, which a keyed read splices in. Timed on a quiet machine (jz's time over Node's at level 2, at 'speed', at 'speed' with the pass off): a Map's lookup by integer key 1.47, 1.85, 1.39; its membership 1.44, 1.88, 1.51; a Set's 1.21, 1.71, 1.22; a dictionary's count by string key 0.64, 0.79, 0.57. A kernel called again and again paid 26 to 41% for a call a pass.
+
+The first rule written was "a loop that counts its passes". Timing a nest entered once showed it wrong: with an inner `while (x > 1e-9)` the first call takes 43 ms with the pass a function and 86 to 108 without. So the rule is by whose loop it is: the program's own, of any form, as before; a helper's only where it counts its passes and no branch leaves ahead of it. After it: 1.41, 1.49, 1.11 and 0.59 for the four above, the nest unmoved (44 ms). The eight cells close; no bench case's bytes move; 13 mutations each fail a test.
+
+### An object built by stores
+
+`const p = {}; p.x = a; p.y = b` compiled as a hash table: an empty literal is the dictionary idiom. Twenty calls in a loop where the literal has none and vectorizes, and five times the literal's memory. The stores that follow the declaration at once, each under a key of its own, a value that does not name the object, are now its properties; a name that takes a store under a computed key further on stays a dictionary. The record's step and renewal close at both levels. One bench case changes, stdlib-dists: 118 bytes less at 'size', 2,415 more at 'speed', 1.001 of main's time over six paired rounds (0.995 to 1.024). Ten mutations each fail a test. Stores a statement parts from the declaration stay a dictionary: the next form of this class.
+
+### The check (az, on 72db55e2a), its one failure, and what was not rerun
+
+The verdict was FAILED: one test in each of the four core legs, the same one. test/summary.js pinned the kind of `let s = {}; s.a = 2; s.b = 3` as a dictionary's, which the fold makes the literal's. The integrator's miss: the fold went to the check with four test files run on it and not the whole leg, for a rewrite every program takes.
+
+Everything else exit 0, in 68 minutes beside a run of the integrator's that should not have overlapped it: WASI 7,610 of 7,611, default 7,737 of 7,738, armed level 3 7,519 of 7,520, level 0 7,497 of 7,498 (the one test, and one skipped on each); test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's 344 cells with none differing; four test files on a fresh hosted compiler (parity, split-funcs, objects, fixed-length), the hosted compiler 38,139,357 bytes where main's is 38,102,052; the examples 25 of 25 twice at a geomean of 1.68; the bench bytes as above; test262 4,137 passed and 4,045 refused, with no accepted negative.
+
+The test now keeps the dictionary for stores parted from the declaration and reads an object where they follow it (it fails with the fold taken out). The fold's commit was replayed with it, so no commit of the landing fails its suite: the tree landed differs from the tree checked by test/summary.js alone. That file passes on the five legs, 89 each, and the whole default leg passes on the landed tree: 7,738 of 7,738, one skipped. The check was not run again whole: the compiler's source is the checked tree's, byte for byte.
+
+### CI on ca9b379a4
+
+test262, self-compile and examples-perf green. test: every job green, `test (opt3)` among them, but `claims`: 19 of 44 failed, as it stands on main: among them the cases the reference evidence lacks, its rows older than the compiler, the swap bound of the machine that recorded it, and size against AssemblyScript on eight cases.
+
+### Found, not fixed
+
+- Lookups by string key are slower at 'speed' than at level 2 by time (0.74 of Node against 0.63; 1.18 against 1.08): another cause than the pass.
+- A nest whose inner loop walks a list is never split: its first call takes three times its steady one.
+- `p[names[1]](4)` on an instance is refused at compile ("'P.at.bind' is not a known function"); `yield a === b ? c : d` is refused without parentheses.
+- The seven-line async program of the fetch test compiles to 154 to 166 functions and 39 to 53 KB: its seconds at level 3 are the runtime's it pulls in, optimized anew at each compile (the wasm optimizer and the module's function pass are seven tenths of the compile, 164 ms at level 0 where 1,249 at level 3, at a load of 26).
+- An open spread (`{ x, y, ...pv }` where `pv` sometimes holds one more key) is a hash table: 283 calls and 212,848 bytes over six cells, and the one `tier` cell left.
+
+### Next
+
+The length an array has once it is built by counted pushes, for the solver's own read rule: the largest block of the 680 gaps (a gather through a pushed index array makes a call an element). Begun on a branch of this landing.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
