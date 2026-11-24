@@ -189,8 +189,8 @@ export const TUNING_KEYS = [
   'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
   'maskOperands',             // a byte or halfword mask over `^`/`|` moves onto the operand it narrows (optimize/mask-operands.js, speed tier)
   'carryKeys',                // a loop whose scalar reads a table at a key of itself and the next input carries the key, the input mixed off the chain (compile/loop-recurrence.js, speed tier)
-  'inlineTiny', 'tinyNodes',  // a function of at most tinyNodes instructions joins every caller (optimize/inline-tiny.js, speed tier)
-  'loopNodes',                // and one of at most loopNodes, loop-free, joins the calls a loop makes (the same pass)
+  'inlineTiny', 'tinyNodes',  // a function of at most tinyNodes instructions joins every caller (optimize/inline-tiny.js; none by default: the engine's to inline)
+  'loopNodes',                // one of at most loopNodes, loop-free, joins the calls a loop makes (the same pass, speed tier)
   'kernelNodes',              // and a math kernel of at most kernelNodes each call a kernel loop makes, through a copy of its own (the same pass)
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
   'leadGathers',              // a loop over items that searches from a slot it gathers reads the next item's slot a round ahead (optimize/lead-gathers.js, speed tier)

@@ -1,6 +1,7 @@
 /**
- * A function whose body is a few instructions is spliced into every caller
- * (speed tier).
+ * The calls a loop makes are spliced where the engine's inliner cannot reach
+ * them (speed tier); a function of a few instructions joins every caller only
+ * where `max` asks.
  *
  * V8 runs a module's functions as baseline code until each has run long
  * enough on its own: its optimizing compiler inlines a small callee, its
@@ -11,8 +12,22 @@
  * few dozen instructions, most of them to such helpers, and runs as baseline
  * code for most of a short run: watr makes 12,000 calls a module it assembles,
  * and on an EPYC 7763 the frame setup stub alone took 8.5% of the samples in
- * its code (perf, main thread). A spliced helper also no longer waits for a
- * tier-up of its own: it runs as its callers run.
+ * its code (perf, main thread). `max` splices such a helper into every caller,
+ * and was the speed tier's at 16 nodes until the splice was timed on code that
+ * runs long enough to be optimized. There the engine inlines by how often a
+ * call ran, within the budget below, and the splice spends that budget for
+ * it: a copy at every site, the ones that never run among them, and the small
+ * functions gone from the module's share. A recursive builder of 1,305 wire
+ * bytes came to 1,520, with room for 152 more where it had 411, and V8 inlined
+ * two of its callees where it had inlined eight, a pointer's box and the
+ * frame's test of its result refused at 3,086 calls each
+ * (`--trace-wasm-inlining`: "not enough inlining budget"): 1.45 times its time
+ * on an M4, a sieve's loops 1.2 times theirs. Over the 44 bench cases whose
+ * builds the bound changes the two forms time alike (geomean 1.002 of six
+ * paired rounds each, 1.003 at the first pass; without the splice fabrik 1.04,
+ * fftplan 1.03 and watr 1.02, stringify and decode-alac 0.97), and the builds
+ * without it are 108 KB smaller in all. So `max` is 0 unless `tinyNodes` sets
+ * it, and a helper of a few instructions is the engine's to inline.
  *
  * A call the program's own loop makes runs as often as the loop, and V8's
  * optimizing compiler, which inlines, does so within a budget its caller's

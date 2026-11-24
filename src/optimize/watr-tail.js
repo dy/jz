@@ -759,9 +759,10 @@ export const TAIL = [
   ['skipLatches', (t) => { t.time('skipLatches', () => skipLatches(t.m)) }],
   ['guardExtremes', (t) => { t.time('guardExtremes', () => guardExtremes(t.m)) }],
   ['pairTests', (t, cfg, x) => { t.time('pairTests', () => pairTests(t.m, { simd: !x.noSimd })) }],
-  // (a helper of a few instructions joins its callers, a larger one the program's loops)
+  // (a loop-free helper joins the kernel loops that call it, a math kernel its loop; one of a few
+  // instructions is the engine's to inline everywhere else, by how often its call runs: `tinyNodes` 0)
   ['inlineTiny', (t, cfg) => {
-    if (t.watrOpts) t.time('inlineTiny', () => inlineTiny(t.m, { pin: t.watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, kernel: cfg.kernelNodes ?? 300, user: t.user }))
+    if (t.watrOpts) t.time('inlineTiny', () => inlineTiny(t.m, { pin: t.watrOpts.pin, max: cfg.tinyNodes ?? 0, loop: cfg.loopNodes ?? 90, kernel: cfg.kernelNodes ?? 300, user: t.user }))
   }],
   ['unsignedDivision', (t) => { t.time('unsignedDivision', () => unsignedDivision(t.m)) }],
   ['constBases', (t) => { t.time('constBases', () => constBases(t.m)) }],

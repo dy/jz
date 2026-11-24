@@ -58,16 +58,21 @@ export let main = (n) => {
 }
 `
 
-test('inline tiny: the speed tier answers as the source does, with the helpers spliced', () => {
+// A helper of a few instructions joins every caller only where `tinyNodes` gives the bound. The
+// speed tier gives none: the engine inlines such a helper by how often its call runs, within a
+// budget the caller's size sets, and a copy at every site spends that budget on the sites that
+// never run (optimize/inline-tiny.js, its header).
+test('inline tiny: a helper of a few instructions joins every caller where `tinyNodes` asks, and the speed tier does not ask', () => {
   const native = oracle(SRC).main
-  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', inlineTiny: false })) {
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', tinyNodes: 16 }, { level: 'speed', inlineTiny: false })) {
     const main = jz(SRC, { optimize }).exports.main
     for (const n of [0, 1, 9, 100]) is(main(n), native(n), `${JSON.stringify(optimize)}: main(${n})`)
   }
   if (onKernel()) return
   const calls = (wat) => (wat.match(/\(call \$__arr_value\b/g) || []).length
   ok(calls(compile(SRC, { optimize: { level: 'speed', inlineTiny: false }, wat: true })) > 0, 'the helper is called without the pass')
-  is(calls(compile(SRC, { optimize: { level: 'speed' }, wat: true })), 0, 'the speed tier splices it')
+  is(calls(compile(SRC, { optimize: { level: 'speed', tinyNodes: 16 }, wat: true })), 0, 'the bound splices it into every caller')
+  ok(calls(compile(SRC, { optimize: { level: 'speed' }, wat: true })) > 0, 'the speed tier leaves it a call')
 })
 
 test('inline tiny: the default tier keeps its calls', () => {
