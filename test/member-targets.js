@@ -5,6 +5,8 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels, onWasi, ownedLevels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
+import parseWat from 'watr/parse'
+import { runEntered } from './_loop-ops.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 const agree = (cases) => {
@@ -288,4 +290,32 @@ export const f = () => { const a = set(rec, 5); const m = new Map(); const b = s
   const wat = compile(src, { wat: true, optimize: false })
   const at = wat.indexOf('(func $set\n'), set = wat.slice(at, wat.indexOf('\n  (func ', at + 1))
   ok(/\(i64\.const 0x7FFB0+\)\s*\)\s*\(then[\s\S]*?\(f64\.store[\s\S]*?\(else\s*\(drop\s*\(call \$__(rec|dyn)_set/.test(set), 'guarded slot store')
+})
+
+// A store through a receiver of a few known shapes (the literals of a condition,
+// their keys in another order, or one with a key more) takes the slot of the
+// shape a guard proves, at every level that links the guards. A read of such a
+// receiver is a jump table (optimize/devirt.js); a store has no such pass, and
+// it was the dynamic store, a call a store, wherever that pass ran.
+test('member store: a receiver of a few shapes stores the slot of the shape a guard proves', () => {
+  const records = (other) => `const ps = []\nfor (let i = 0; i < 16; i++) { const p = i & 1 ? { x: i * 0.5, y: i + 1, v: i % 7 - 3 } : ${other}; ps.push(p) }`
+  const shapes = { 'keys in another order': `{ v: i % 7 - 3, y: i + 1, x: i * 0.5 }`, 'a key more': `{ m: 1, x: i * 0.5, y: i + 1, v: i % 7 - 3 }` }
+  // [what, the kernel, whether every store names a key each shape holds]
+  const kernels = [
+    ['a compound store', `for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x += p.v; p.y -= p.v }`, true],
+    ['a plain store', `for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x = p.y * 2; p.v = i }`, true],
+    ['a store straight off the element', `for (let i = 0; i < ps.length; i++) { ps[i].x = ps[i].y + 1; ps[i].y++ }`, true],
+    ['a store of a string, and of the record itself', `for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x = i & 2 ? 'k' + i : i; p.v = p }`, false],
+    ['a store under a key one shape lacks', `for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.m = i; p.x = p.m + 1 }`, false],
+  ]
+  const check = `let s = ''; for (let i = 0; i < ps.length; i++) { const p = ps[i]; s += [p.x, p.y, typeof p.v, p.m].join() + ';' } return s`
+  const program = (other, kernel) => `${records(other)}\nexport const step = () => { ${kernel} }\nexport const f = () => { step(); step(); ${check} }`
+  // the functions a steady call of `step` enters (test/_loop-ops.js)
+  const entered = (src, optimize) => runEntered(parseWat(compile(src, { optimize, wat: true })), [['step', []]], true, ['step']).kept.get('step').ran
+  for (const [shape, other] of Object.entries(shapes)) for (const [name, kernel, held] of kernels) {
+    const src = program(other, kernel)
+    for (const optimize of levels(0, 2, 3, 'speed', 'size')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name}, ${shape}, at ${optimize}`)
+    // (no call a store: a steady run enters fewer functions than it has records, sixteen)
+    if (held && !onWasi()) for (const optimize of levels(2, 'speed')) { const n = entered(src, optimize); ok(n < 16, `${name}, ${shape}: ${n} functions entered a run at ${optimize}`) }
+  }
 })

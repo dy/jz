@@ -97,6 +97,8 @@ function stagedReference(name, update = true, rhs) {
     const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
     // the transient channel ctx.schema.idOf and class dispatch read first: a class instance held here keeps its class
     if (sid != null) (ctx.func.refinements ??= new Map()).set(h, { schemaId: sid, notNullish: ctx.summary.at(ctx.func.current).mayBeNullishExpr(node) === false })
+    // (one of a few shapes: the store through the temp takes the slot of the shape a guard proves, emit-assign.js shapesOf)
+    else if (vt === VAL.OBJECT) { const shapes = ctx.summary?.at(ctx.func.current).shapesOfExpr(node); if (shapes?.length) (ctx.func.refinements ??= new Map()).set(h, { shapes }) }
     let range = vt === VAL.NUMBER ? intExprRange(node) : null
     const len = tag === 'key' && valTypeOf(recv) === VAL.TYPED
       ? ctx.func.typedLen?.get(name[1]) ?? ctx.scope.globalTypedLen?.get(name[1]) ?? repOf(name[1])?.arrayLen : null

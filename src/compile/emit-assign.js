@@ -764,8 +764,8 @@ function emitElementStore(arr, idx, val, node) {
   // core.js emitSchemaSlotGuardedMulti): the slot of the shape a masked compare
   // proves, else the dynamic store. The receiver is a pure read, emitted per
   // use (no frame temp); the value is evaluated once, after it.
-  if (litKey != null && ctx.schema.guardsFor && ctx.schema.shapeGuardsOn?.() && isPureChain(arr) && !(ctx.types.anyDelete && mayBeDeleted(arr))) {
-    const guards = ctx.schema.guardsFor(ctx.summary?.at(ctx.func.current).shapesOfExpr(arr), litKey)
+  if (litKey != null && ctx.schema.guardsFor && !ctx.transform.optimize?.leanRuntime && isPureChain(arr) && !(ctx.types.anyDelete && mayBeDeleted(arr))) {
+    const guards = ctx.schema.guardsFor(shapesOf(arr), litKey)
     if (guards) {
       ensureDynSetAllowed(arr)
       inc('__dyn_set')
@@ -1071,10 +1071,13 @@ function recordStore(obj, prop, val) {
  *  the dynamic store does. The receiver is read once, before the value. Null
  *  where no layout holds the name, the receiver may meet a delete (the
  *  presence mask is the dynamic store's), or the size tier links no guards. */
+// The shapes a store's receiver may be: the summary's of the expression, or those a
+// compound assignment's temp was staged with (emit/assignment.js stagedReference).
+const shapesOf = (obj) => (typeof obj === 'string' ? ctx.func.refinements?.get(obj)?.shapes : null) ?? ctx.summary?.at(ctx.func.current).shapesOfExpr(obj)
 function guardedFieldStore(obj, prop, val, slow) {
   if (ctx.transform.optimize?.leanRuntime || ctx.types.anyDelete && mayBeDeleted(obj)) return null
   const one = ctx.schema.guardedSlotOf?.(prop)
-  const all = one ? [one] : ctx.schema.shapeGuardsOn?.() ? ctx.schema.guardsFor(ctx.summary?.at(ctx.func.current).shapesOfExpr(obj), prop) : null
+  const all = one ? [one] : ctx.schema.guardsFor(shapesOf(obj), prop)
   // a slot holding a raw BigInt carrier takes its value through the dynamic store's conversion
   const guards = all?.filter(({ sid, slot }) => !ctx.schema.slotRawBigint?.get(sid)?.has(slot))
   if (!guards?.length) return null
