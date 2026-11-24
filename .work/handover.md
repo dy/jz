@@ -784,3 +784,15 @@ fd5fbc2d7 arr-y       the array branch: 2 commits on bf57cb248 (a growing store'
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: the analog kernels `probe/k-shapes.js` (plain forms), `probe/k-shapes2.js` (five classes under one base) and `probe/k2-sieve.js`, `k2-permute.js`, `k2-queens.js`, `k2-towers.js`, `k2-storage.js` (one class under its base, the lane's shape); `probe/k-list2.js`, `k-list3.js` (walks, in allocation order and shuffled); `probe/chase-floor.mjs` (hand-written wasm walks), `probe/wat-variants.mjs` (hand edits of an emitted function, timed); `probe/loop-calls.mjs` (each innermost loop's hops, header loads and calls), `probe/fn-calls.mjs` (a function's calls), `probe/params.mjs` and `probe/sum-params.mjs` (parameters as the emitter and as the summary settled them), `probe/sum-field.mjs` (the summary's kind of a field), `probe/why.mjs` (the compiler's own `why`), `probe/agree-all.mjs` (every export against Node at each level), `probe/try.mjs` (programs from stdin against Node), `probe/mod-wat.mjs`, `probe/fn-wat.mjs`; `own/heldout-two.mjs` (two runs of the lane side by side), `own/mutant-getter.sh`, `own/mutant-hops.sh`, `own/ar-legs.sh` (named test files on the five legs).
+
+## Branches of the land-aw landing (2026-11-24), tips before deletion
+
+```
+46bc590a4 land-aw     the landing branch: 5 commits on 9d2fb7882; the record's commit after it
+52e68b85c aw-hop      (detached) the hop rule and its listing alone: what its bench bytes and its timing against main were taken on
+484082b23 land-av     the first assembly, the hop rule in its first form: superseded
+fd5fbc2d7 arr-y       the hop rule's first form, two commits on bf57cb248: superseded
+31e838229 list-w      the landing before
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/tier-bisect.mjs` (each setting 'speed' and level 2 differ in, taken alone on one export), `probe/tier-order.mjs` (every export at level 2 and at 'speed'), `probe/opt-times.mjs` (one export under given optimize settings), `probe/run-one.mjs` (one export called many times, for `node --trace-wasm-inlining`), `probe/pad-variants.mjs` and `probe/asm.mjs` (hand-edited copies of a bench case's module; `bench/_lib/run-jz-host.mjs <wasm>` times one), `probe/case-funcs.mjs`, `probe/funcs-diff.mjs`, `probe/case-wat.mjs` (a bench case's functions, their bytes and their text), `probe/forms-delta.mjs` (two data-forms listings compared), `probe/hop-count.mjs`, `probe/loop-calls.mjs`, `own/time-k2.sh` (the one-class analogs against main), `own/mutant-hops.sh`; the timings `time-tiny.out` (the 44 cases, the splice at none against 16), `time-awhop.out` (the hop rule's cases against main), `keep/ta/` (threeanim's builds, their edited copies and V8's inlining traces).

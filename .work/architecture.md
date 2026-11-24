@@ -3991,6 +3991,70 @@ Hand-written wasm walks, no jz (probe/chase-floor.mjs under the tools directory;
 
 The array branch: quiet timings, then the length, then its landing. Then, each measured alone on the one-class analogs: the reset's barrier on a hot store to a module-lifetime object, the truth test of a boolean element, a recursive method's frame. Then the second subclass's lost fact. The list's representation after those.
 
+## The land-aw landing: a loop's hop past a growing store, and the helpers of a few instructions left to the engine (2026-11-24)
+
+Five commits on 9d2fb7882, the integrator's. Both changes come from the exam of the landing before last (the record above this one): kernels of the held-out shapes, written from the benchmarks' public descriptions, read 2 to 4 times Node's time once their work is in methods handed arrays, and at Node's time as plain loops over locals.
+
+### What landed
+
+- `ff5981cbf` A loop that stores at an index it cannot bound asks once whether the array moved (optimize/forward-hops.js).
+- `52e68b85c` The data forms' listing for it: 684 gaps of 800 as before, 30 cells moved, all smaller.
+- `e8b8eb687` A helper of a few instructions is left to the engine's inliner: the speed tier's splice of every function of at most 16 nodes into each caller is off unless `tinyNodes` asks (optimize/inline-tiny.js).
+- `b872400e8` The listing for it: 77 cells moved, every one at 'speed'.
+- `46bc590a4` The changelog's two entries.
+
+### The hop
+
+A store at an index not proven inside the length keeps the growing store on its other arm, and that store hands the array back to its binding (`$t = __arr_set_idx_ptr($t, i, v)`, `$a = $t`; `__arr_set_num` under a key no proof makes an index). The hop's pass hoists a receiver the loop never writes and read the hand-back as a write, so `flags[k - 1] = false` under `k <= size`, both handed to the function, asked at every read and store: a load, a compare and a call the engine must allow for. The hand-back, and the copy a loop writes back after an inner loop, are no rebinding to a loop. Walks ahead of the hoist find them by the copies standing where each is written, repeated until one finds nothing new.
+
+A sieve in a method handed its array and its size, against Node on an M4 (probe/k2-sieve.js under the tools directory): 1.70 to 1.73 where 2.69 to 2.88 at 'speed', 1.58 to 1.59 where 1.99 to 2.01 at level 2. A permutation by swaps, a queens search, a tower of linked disks and a tree of arrays do not move.
+
+Nine bench cases of 105 change, 615 bytes more in all. Six paired rounds against main, those nine and threeanim: geomean 1.000; decode-tta 0.970, polytri 1.011, webaudio 1.013, threeanim 1.000; peak memory within 0.5 MB.
+
+#### Its first form cost a bench case 9%, in code that never runs
+
+The first form also kept, along a path, the answer a hop had given before a hand-back. threeanim then ran 1.088 of its time over twelve paired rounds, every round above 1.079. Its one changed function is the kernel, `Quaternion.setFromEuler`, and the change is in the `warn(...params)` spliced into its arm for an unknown rotation order, which the case never takes: one test fewer. Hand-edited copies of the module, assembled by watr and run by the bench's own runner (probe/pad-variants.mjs, probe/asm.mjs, bench/_lib/run-jz-host.mjs under the tools directory and the repository): twenty-two `nop`s in the function left main fast and the first form slow, so it is no matter of bytes or alignment; the address recomputed with no test was fast; the test kept with a trap for its arm was slow. V8's own trace of what it inlines into the function is the same for both builds. The cause is in the engine's code for the function and was not found.
+
+So the hoist is the loop's alone (`rebound`): along a path a hand-back is a set like any other (`written`), and the case's bytes are main's. What this says of the bench: a case can move 9% by a change in an arm it never runs. A paired timing of every case whose bytes move is what caught it; the bytes alone would have read as a saving.
+
+Six mutations each fail a test (own/mutant-hops.sh under the tools directory). A seventh passes: a path's writes read as a loop's rebindings, the first form, which no test tells from this one. The bench case does. An eighth passed and its code went: `__arr_prop`, a read's miss arm, counted a cold call.
+
+### The helpers of a few instructions
+
+'speed' was the slower tier on these kernels. Each setting the two presets differ in, taken alone (probe/tier-bisect.mjs under the tools directory), names one for the largest: the splice of every function of at most 16 nodes into each of its callers.
+
+V8 inlines a small callee by how often its call ran, within a budget the caller's size sets and the module's share of small functions scales. The splice grows the caller at every site, the ones that never run among them, and takes the helpers out of that share. Its own trace (`node --trace-wasm-inlining`) of a recursive method that builds a tree of arrays: 1,305 wire bytes and a budget of 1,716 without the splice, eight callees inlined; 1,520 bytes and a budget of 1,672 with it, two inlined, and a pointer's box and the frame's test of its result refused at 3,086 calls each, "not enough inlining budget". With V8's budget raised by flag the two builds time alike; with its inlining off both take about twice as long.
+
+Against Node on an M4, the splice at 16 nodes and none: the tree of arrays in a method 3.4 and 2.4, in a plain function 2.2 and 1.5 (level 2 reads 2.0 to 2.3 for the method and 1.46 for the function); the sieve 1.7 and 1.4 to 1.5; the permutation, the queens search and the tower alike. A bound on the caller's size instead (the splice only into callers of at most 200, 400 or 800 nodes) left the sieve at 1.3 to 1.4 and the tree at 2.7 to 3.3, worse than none.
+
+Over the 44 bench cases whose 'speed' builds the bound changes, six paired rounds each, none against 16 (taken on the hop's first form, whose builds differ from the final by the bytes above): geomean 1.002, 1.003 at the first pass. Without the splice fabrik 1.043, fftplan 1.030, mapobj 1.024, watr 1.022 (first pass 1.053), jsonroundtrip 1.022; the other way upfirdn 0.899 (its rounds 0.877 to 1.171), stringify 0.965, decode-alac 0.972. The 44 builds are 108,167 bytes smaller in all. The corpus the splice was tuned on does not show what it costs.
+
+The listing reads the change against its own count: 74 cells make 1 to 6 calls more in their loops, 251 in all, and 75 hold fewer loop ops, 1,576 in all. It counts a call in a loop as what the compiler could not see through; these are helpers the engine inlines where they run. Four of the moved kernels timed, 16 nodes and none: a prefix sum over an array a closure holds 420 ns and 324, a gather over one an instance fills by `push` 1,058 and 1,000, one over a `new Array` a parameter holds 950 and 995, a boxed record's renewal 3,745 and 3,737.
+
+### The check (aw, on 46bc590a4)
+
+Every step exit 0, in 50 minutes at a load of 5 to 20, and test262 in 28. WASI 7,601, default 7,728, armed level 3 7,510, level 0 7,488, each with one skipped and none failed; test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's 344 cells with none differing; five test files on a fresh hosted compiler (parity, forward-hops, header-hoist, inline-tiny, mem-alias), the hosted compiler 38,070,430 bytes where main's is 38,066,036; the examples 25 of 25 twice at a geomean of 1.70; the bench bytes those measured before it, 44 cases; test262 4,137 passed and 4,045 refused as they should be, with no accepted negative and no failure.
+
+### CI on 31e838229, and the held-out run on it (45336802598)
+
+test262, self-compile and examples-perf green. test: every leg green but `claims`, on its standing lines, and `test (opt3)`, where one test timed out at its 5 seconds: 'async: bare fetch binds from the JS host', a local HTTP server and two fetches, on a runner that took 3,004 s for its group of files. The file passes here at plain level 3 three times of three, and its program has no class for the getter's call to touch. The failed jobs run again on the same commit: `test (opt3)` green, `claims` as before. A timeout of a test that waits on the network, on a loaded runner.
+
+The held-out run: 23 of 23, geomean 1.45 (AWFY 2.16 over 14, CLBG 0.78 over 9). Every build's bytes are those of the run before, as they should be: the getter's call is in none of them. So two runs of the same builds on the same CPU model read the lane's own noise for the AWFY shard: within 3% on eleven programs, and deltablue 1.49 where 1.62, havlak 5.10 where 5.64, storage 2.04 where 2.21. A landing's effect under 10% on those three is not read from one run.
+
+### Found, not fixed
+
+- Other settings of the speed tier that lose to level 2 on a kernel: a queens search over plain arrays 1.24 of level 2's time (`wordTruncation` 0.88, `guardedToInt32` 0.89 taken alone), a sieve over a local 1.12 (`hoistConstantPool` 0.83, `rotateLoops` 0.90). The preset is tuned on the bench corpus. A gate that holds 'speed' to level 2's time on the data forms' programs would hold it to more.
+- The data forms' gather kernel at 'speed': 950 to 1,060 ns where Node takes 180 to 194, 5 to 6 times. The largest ratio seen in the gate's own programs.
+- A second subclass under a base class makes a method's swap generic (`__typed_idx`, `__arr_prop` on a miss arm): the summary's `arrayNumericPropertiesAbsent` turns false for the field's array. Traced to that fact, not to its cause.
+- In a method of an instance made at module start: the reset's barrier on every store to it and to its array, `this.count++` through a number conversion, the arena's frame at each call of a recursive method, an allocation. None measured alone.
+- A loop's length word is still read at every pass, and a boolean element's truth is a generic test.
+- `Quaternion.setFromEuler` calls three sines and three cosines and V8 has budget for one of the six. The math kernel's splice is the loop's; these calls are in no loop.
+- The list's hop (the record before this one).
+
+### Next
+
+The exam: the lane's sieve and storage after this landing (the analogs say 15 to 30% each; the lane's noise on storage is 8%). Then the gather. Then the gate of 'speed' against level 2.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
