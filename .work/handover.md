@@ -773,3 +773,14 @@ d3a226f74 next-y      the while and the dispatchers, held at their listings
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-obj.sh` (the twenty mutations; `ONLY=On` runs one), `own/obj-chain.sh` (the two test files on five legs, the narrowing's mutations, the listings, the bench bytes), `own/ar-legs.sh` (named test files on the five legs of any tree), `probe/nan-armed.mjs` (programs of a folded NaN, armed, against Node), `probe/alias-loads.mjs` (the alias test's loads by carrier), `probe/bytes-of.mjs` (a program's module bytes), `probe/call-time.mjs` (the object programs against Node), `probe/time-kernel.mjs` (one program's exports, one tree a process), `probe/form-src.mjs` (a data-forms program's source), `probe/guards-of.mjs` (the missing-receiver tests a function keeps), `probe/who-retypes.mjs` and `probe/who-types.mjs` (who gives a local its wasm type), the kernels `probe/k-list.js` (the hop still at 1.7 ns), `k-over2.js`, `k-field.js`, `k-closed-a.js`, `k-held-a.js` to `k-held-e.js`, `k-big-a.js` to `k-big-d.js`, `k-bool-a.js`, `k-truth-loops.js`, `k-rec-box.js`, and `k-getter-call.js` (the program main refuses).
+
+## Branches of the land-at landing (2026-11-24), tips before deletion
+
+```
+d33938ce5 list-w      the landing branch: 2 commits on bf57cb248; the record's commit after it
+fd5fbc2d7 arr-y       the array branch: 2 commits on bf57cb248 (a growing store's hand-back keeps its hop out of the loop), five legs passed, not landed
+43c23852d arr-w       the same tree as arr-y under a message that misstated a count: to delete
+0fb568364 land-ar     the landing before
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: the analog kernels `probe/k-shapes.js` (plain forms), `probe/k-shapes2.js` (five classes under one base) and `probe/k2-sieve.js`, `k2-permute.js`, `k2-queens.js`, `k2-towers.js`, `k2-storage.js` (one class under its base, the lane's shape); `probe/k-list2.js`, `k-list3.js` (walks, in allocation order and shuffled); `probe/chase-floor.mjs` (hand-written wasm walks), `probe/wat-variants.mjs` (hand edits of an emitted function, timed); `probe/loop-calls.mjs` (each innermost loop's hops, header loads and calls), `probe/fn-calls.mjs` (a function's calls), `probe/params.mjs` and `probe/sum-params.mjs` (parameters as the emitter and as the summary settled them), `probe/sum-field.mjs` (the summary's kind of a field), `probe/why.mjs` (the compiler's own `why`), `probe/agree-all.mjs` (every export against Node at each level), `probe/try.mjs` (programs from stdin against Node), `probe/mod-wat.mjs`, `probe/fn-wat.mjs`; `own/heldout-two.mjs` (two runs of the lane side by side), `own/mutant-getter.sh`, `own/mutant-hops.sh`, `own/ar-legs.sh` (named test files on the five legs).

@@ -3941,6 +3941,56 @@ CI on af975b1db (main before): test262, self-compile and examples-perf green; te
 
 The list's hop. Then the fact that holds until the first write. Then memory beside the ops in the gate, the `while` and the dispatchers against their listings, plain arrays proven numeric. Whether the dispatcher's BigInt goes out as a patch of 1.0 is the owner's call.
 
+## The land-at landing: a call of what a class's getter answers, and what the held-out exam said of the landing before (2026-11-24)
+
+Two commits on bf57cb248, the integrator's.
+
+### What landed
+
+- `f8c975f5f` A call of a name a class answers through a getter (`g.f(1, 2)`, `f` a getter that answers a function) on a receiver the summary cannot name as one class (emit/class-dispatch.js `callOf`, `classMethodCall`, `classRootNames`).
+- `d33938ce5` Its changelog entry.
+
+### Two failures of 1.0.3, 1.0.4 and main it ends
+
+Found while writing the landing before: its kernel of calls through a field met a class whose member was a getter. Each tag's tree was run here with the local watr and subscript.
+
+- A module refused. Where the receiver may be missing, or is an element the summary cannot place (`let g = null; g = new G()`, a list filled by `push`): "'G…f__get' is not a known function or built-in". The census of member uses counts `r.m(…)` as a call of `m`, not a read, and only a read of `f` rooted the getter.
+- A call that threw. Where the receiver is one of two classes, one with the getter and one that stores a field of the name: "is not a function" for the getter's class. No class had a function of the name, so the call went as on a receiver of no class, by the field's lookup.
+
+The call of a name now has its dispatcher wherever some class answers the name through a getter (the arm that runs the getter and calls its answer was there, under a method of the name alone), the call roots it, and a receiver of a class with the getter takes it. Seven programs against Node at five levels. Four mutations each fail the test (own/mutant-getter.sh under the tools directory); a fifth passed and its code went, the getter itself among the roots, which the dispatcher reaches.
+
+### What it costs
+
+One bench case of 105 moves, webaudio, its bytes equal and its text not. Timed against main over six paired rounds it reads 1.007, three rounds under 1 and three over (0.985 to 1.010), its peak memory 77.8 MB where 77.4. The hosted compiler is 38,066,036 bytes where main's is 38,064,408, 1,628 more.
+
+### The check (at, on d33938ce5)
+
+Every step exit 0, in 56 minutes at a load of 5 to 27, and test262 in 28. WASI 7,599, default 7,726, armed level 3 7,508, level 0 7,486, each with one skipped and none failed; test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's 344 cells with none differing; four test files on a fresh hosted compiler (parity, class-members, classes, host-classes); the examples 25 of 25 twice at geomeans of 1.71 and 1.72; test262 4,137 passed and 4,045 refused as they should be, with no accepted negative and no failure.
+
+CI on 0fb568364 (main before): test262, self-compile and examples-perf green; test green in every leg but `claims`, whose failing lines are those of the run on af975b1db, line for line (reference evidence missing or stale, the swap bound, the docs' figures, size against AssemblyScript on 8 cases).
+
+### The held-out run on 0fb568364 (45320430778): the exam of the landing before
+
+23 of 23 run, geomean 1.48 (AWFY 2.21 over 14, CLBG 0.80 over 9). Its runners are those of the run on 9e7dd971b (AWFY a Xeon 6975P-C, CLBG an EPYC 9V45), and on them the lane repeats: the builds whose bytes did not change read within 0.03 of what they read then (bounce 1.86 and 1.85, list 1.17 and 1.17, sieve 2.88 and 2.85, richards 4.80 and 4.83), storage alone 2.21 where 2.06. `own/heldout-two.mjs` under the tools directory prints two runs side by side with their CPUs; a run compares only with one on the same.
+
+Eight builds changed with the object rules (deltablue 670 bytes smaller, havlak 437, cd 417, towers 36, richards 7, json 6, permute 6, queens 4) and no time moved past that noise: cd 2.96 where 2.77, deltablue 1.62 where 1.59, havlak 5.64 where 5.46, permute 2.32 where 2.45, towers 3.87 where 3.88, richards 4.80 where 4.83. The geomean is 1.48 both times. The four rules closed cells of the data forms' gate; the held-out programs do not spend their time there.
+
+### Where they spend it: analogs written from the benchmarks' public descriptions
+
+The lane times steady state (scripts/heldout.mjs: warm-up rounds, then samples of the harness's inner loop), so its ratios are of running code. Kernels of the same shapes, written from the public descriptions and never from the held-out sources, read at Node's time where the arrays are locals under literal bounds (a sieve 0.93 to 1.02, queens 0.8 to 1.1), and far from it once the work is in methods of an instance a base class's loop calls, with arrays handed as parameters or held in fields (probe/k2-*.js under the tools directory, one class under its base, as a lane program has). Rough, taken under a landing check's load, 'speed', against Node: sieve 2.3 (the lane 2.88), permute 2.5 (2.32), queens 1.4 (2.10), towers 4.2 (3.87), storage 3.4 (2.21). To be measured again on a quiet machine before any of it is quoted.
+
+- A loop that stores at an index it cannot bound asked whether the block had moved at every read and store: the growing store on its other arm rebinds the receiver, which the hop's pass read as a write. Fixed on the branch `arr-y` (two commits, not in this landing): the sieve 2.3 to 1.8 under the same load.
+- The array's length is still read at every pass; a boolean element's truth is a generic test; the instance, made at module start, takes the reset's barrier on every store; a recursive method pays its arena frame at each call. None measured alone yet.
+- A second subclass under the base makes the same swap generic (`__typed_idx`, `__arr_prop` on a miss arm): the summary's `arrayNumericPropertiesAbsent` turns false for the field's array. Traced to that fact, not to its cause. Not the lane's shape (one class a program), a real one.
+
+### The list's hop, explained and not closed
+
+Hand-written wasm walks, no jz (probe/chase-floor.mjs under the tools directory; M4, 256 records, the hop alone, lists in allocation order and shuffled alike): the tagged word and its wrap with the link at offset 32, 1.18 ns a hop, which is what jz emits; a 32-bit address 0.93; the link at offset 0, 0.93 and 0.75; V8 on the same walk in JS 0.69. So the hop is the wrap of the 64-bit word and, on arm64, the add of the link's offset before an indexed load. A pass that loaded the address beside the word (keep/twin-pointers.patch) took 7% off most walks and doubled a list of two small classes: the M4 predicts a walk over nodes in allocation order, and the second load broke the prediction (196 to 213 ns in order, 370 shuffled, Node 200 to 213 either way). Withdrawn. Walks are timed over shuffled lists from here on. What closes it is the emitter's: a nullable pointer held as its address, and the followed link stored first.
+
+### Next
+
+The array branch: quiet timings, then the length, then its landing. Then, each measured alone on the one-class analogs: the reset's barrier on a hot store to a module-lifetime object, the truth test of a boolean element, a recursive method's frame. Then the second subclass's lost fact. The list's representation after those.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
