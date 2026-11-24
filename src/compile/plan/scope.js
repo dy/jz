@@ -560,7 +560,7 @@ export const devirtClassCalls = (ast = null, facts = null) => {
   const call = (fn, recv, args) => { changed = true; return ['()', fn, args.length ? [',', recv, ...args] : recv] }
   // `stmt`: the node is a statement of a `;` list, its value unused (a setter's result is not the value assigned).
   const rewrite = (n, view, stmt = false) => {
-    if (!Array.isArray(n)) return n
+    if (!Array.isArray(n) || n[0] == null) return n   // a literal whole: its NaN is no changed child
     if (n[0] === '=>') { const body = rewrite(n[2], ctx.summary.at(n[1])); return body === n[2] ? n : [n[0], n[1], body] }
     let out = n
     // A mutated member is no read: its receiver alone rewrites.
@@ -625,7 +625,7 @@ export const devirtClassCalls = (ast = null, facts = null) => {
 export const devirtHeldCalls = () => {
   let changed = false
   const rewrite = (n, view) => {
-    if (!Array.isArray(n)) return n
+    if (!Array.isArray(n) || n[0] == null) return n
     if (n[0] === '=>') { const body = rewrite(n[2], ctx.summary.at(n[1])); return body === n[2] ? n : [n[0], n[1], body] }
     let out = n
     for (let i = 1; i < n.length; i++) { const c = rewrite(n[i], view); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }
@@ -654,7 +654,7 @@ export const settleTestedReceivers = () => {
   const ofMarked = (n) => Array.isArray(n) && n[0] === '.' && n.length === 3 && typeof n[2] === 'string' &&
     Array.isArray(n[1]) && n[1][0] === '()' && n[1][1] === '__present' && n[1].length === 3
   const rewrite = (n) => {
-    if (!Array.isArray(n)) return n
+    if (!Array.isArray(n) || n[0] == null) return n
     if (ofMarked(n)) { changed = true; return rewrite(withLoc(['.', n[1][2], n[2]], n)) }
     let out = n
     for (let i = MUTATE_OPS.has(n[0]) && ofMarked(n[1]) ? 2 : 1; i < n.length; i++) { const c = rewrite(n[i]); if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c } }

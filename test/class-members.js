@@ -402,6 +402,31 @@ test('class members: a receiver tested for its truth is read without a second te
   }
 })
 
+// A rewrite of calls answers a body it leaves alone as the node it was given: the summary is
+// the program's until a sweep reports a change (plan/index.js `sweep`), which the armed build
+// checks at each reuse (compile/index.js summarizeProgram, under JZ_DEBUG_INVARIANTS). A folded
+// `0 / 0` is a literal whose value is unequal to itself: read as a child that changed, it had
+// every node above it copied. The check sees it at level 0, which every leg compiles here
+// for the armed one; without the checks these are the programs against the host.
+test('class members: a body no call rewrite changes is the node it was, a folded NaN in it or not', () => {
+  const rows = [
+    ['a local', `export let f = (a) => { let x = 0 / 0; if (x) return 1; return a }`],
+    ['a class and no call of it', `class A { constructor() { this.x = 0 / 0 } }
+      const a = new A()
+      export let f = (k) => { const v = a.x; return v !== v ? k : 0 / 0 }`],
+    ['an argument', `const g = (x, y) => x !== x ? y : x
+      export let f = (k) => g(0 / 0, k) + g(k, 0 / 0)`],
+    ['a held function', `const add = (a, b) => a + b
+      const o = { f: add, n: 0 / 0 }
+      export let f = (k) => { const v = o.f(k, 0 / 0); return v !== v ? k : 0 }`],
+    ['a spliced method', `class P { constructor(x) { this.x = x } sum(k) { return this.x + k + 0 / 0 } }
+      const ps = [new P(1), new P(2)]
+      export let f = (n) => { let s = 0; for (let i = 0; i < 2; i++) { const v = ps[i].sum(n); s += v !== v ? 1 : 0 } return s }`],
+    ['a loop', `export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) { const v = i % 2 ? 0 / 0 : i; s += v !== v ? 1 : v } return s }`],
+  ]
+  for (const optimize of [0, ...levels(2, 3)]) for (const [label, src] of rows) agree(src, 'f', [3], { optimize }, `${label} at ${optimize}`)
+})
+
 test('class members: a prototype store the class cannot take is rejected at compile time', () => {
   rejects(`class V {}\nconst patch = () => { V.prototype.k = 1 }\nexport const f = () => { patch(); return new V().k }`, /prototype/, 'inside a function')
   rejects(`class V {}\nV.prototype.k = function () { return 1 }\nV.prototype.k = 5\nexport const f = () => new V().k`, /prototype/, 'a function and a value under one name')
