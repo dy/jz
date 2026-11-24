@@ -760,3 +760,16 @@ d3a226f74 next-y      the while and the dispatchers, held at their listings
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-acc.sh`, `own/mutant-recv.sh` and `own/mutant-obj.sh` (the mutations; `ONLY=On` runs one of the last), `probe/call-time.mjs` (the object programs against Node), `probe/who-retypes.mjs` (who retypes a local after emit) and `probe/who-types.mjs`, `probe/guards-of.mjs` (the missing-receiver tests a function keeps), `probe/count-of.mjs` (a module's lines, bytes and matches, one tree a process), `probe/levels-of.mjs` (a kernel at every level against Node), the kernels `probe/k-list.js`, `k-over2.js`, `k-field.js`, `k-closed-a.js`, `k-held-a.js`, `k-held-b.js`, `k-big-a.js`, `k-big-b.js`, `k-big-c.js`, `k-list-guards.js`.
+
+## Branches of the land-ar landing (2026-11-24), tips before deletion
+
+```
+8fd166479 land-ar     the landing branch: 9 commits on afd39f3c5; the record's commit after it
+75439e610 obj-w       the same five changes as committed first, on 714676b57 (no changelog)
+af975b1db land-aq     the landing before
+bd67ac5b0 release-1.0 1.0.4, tagged v1.0.4
+d3a226f74 next-y      the while and the dispatchers, held at their listings
+339744bec next-x      where their rework starts
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-obj.sh` (the twenty mutations; `ONLY=On` runs one), `own/obj-chain.sh` (the two test files on five legs, the narrowing's mutations, the listings, the bench bytes), `own/ar-legs.sh` (named test files on the five legs of any tree), `probe/nan-armed.mjs` (programs of a folded NaN, armed, against Node), `probe/alias-loads.mjs` (the alias test's loads by carrier), `probe/bytes-of.mjs` (a program's module bytes), `probe/call-time.mjs` (the object programs against Node), `probe/time-kernel.mjs` (one program's exports, one tree a process), `probe/form-src.mjs` (a data-forms program's source), `probe/guards-of.mjs` (the missing-receiver tests a function keeps), `probe/who-retypes.mjs` and `probe/who-types.mjs` (who gives a local its wasm type), the kernels `probe/k-list.js` (the hop still at 1.7 ns), `k-over2.js`, `k-field.js`, `k-closed-a.js`, `k-held-a.js` to `k-held-e.js`, `k-big-a.js` to `k-big-d.js`, `k-bool-a.js`, `k-truth-loops.js`, `k-rec-box.js`, and `k-getter-call.js` (the program main refuses).

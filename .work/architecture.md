@@ -3855,6 +3855,92 @@ Eleven shards green; `publish` failed on the claims gate and committed nothing. 
 
 The object cliffs, each as a general rule pinned by a kernel and the new cells: a pointer a loop follows and stores through held as its bits; a receiver of several classes dispatched over those classes alone; a field that holds one function called as that function; a receiver a truth test guards read without a second test. Then memory beside the ops in the gate, the `while` and the dispatchers against their listings, plain arrays proven numeric.
 
+## The land-ar landing: object programs' four rules, and a dispatcher's BigInt read as its word (2026-11-24)
+
+Nine commits on afd39f3c5, the integrator's. The cells the landing before added timed three cliffs against Node: a method of several classes, a function a field holds, a list. This one takes the function a field holds under Node's time, the method of several classes from twice Node's time to between 0.8 and 1.25 of it, and the list's update to its read's time.
+
+### What landed
+
+- `821599e06` A pointer a loop follows and stores through is held as its bits (optimize/int-narrow.js narrowBoxedLocals). A compound store copies the pointer into its receiver, a read that kept it a float; a copy into a local held as bits is now no other read, where some write of the copied local is a load.
+- `323200cc3` A receiver of several classes dispatches over those classes alone (emit/class-dispatch.js closedArms): a compare of its schema id per function and the class's function called directly, where it took the dispatcher over every class of the program, whose last arm looks the member up by name and may allocate. With it a wrong answer (below).
+- `f10d7c0b7` A call through a member that holds one function of the module in every shape of the receiver is the call of that function (summary/query.js heldCallee, plan/scope.js devirtHeldCalls, a sweep of its own), where it was an indirect call through the closure ABI.
+- `a14cafafa` A bare name tested for its truth is present on the arm the test guards (compile/flow-types.js extractRefinements): a member read there makes no test of its own.
+- `a8ecf6eed` The data forms' listing: 684 gaps of 800 as before, 56 cells moved, 48 smaller and 8 larger.
+- `e932ed5bb` The changelog's five entries.
+- `9d88a44df` The plan's three call rewrites answer a literal whole (plan/scope.js). Found by the first check of this landing (below).
+- `a19a0f68a` test/mem-alias.js counts a word's load in either carrier. The same check.
+- `8fd166479` The changelog's timings as ranges over two runs, after the check.
+
+### A wrong answer of main and of 1.0.0 to 1.0.4
+
+A class dispatcher returns into a tagged slot (emit-func.js boxedResult), so a BigInt comes back boxed, and a reader of an access the kind proves a BigInt takes the raw word. `t += x.big()` over an array of two classes that each define `big`, or of a class with it and one without, summed the boxes' pointers: -12384898975253024 where Node gives 36028797018964128, at every level; an overridden getter the same. Each tag was run here with the local watr and subscript, not its pins. Found by the test of the closed dispatch. The arms of a closed dispatch join raw where each function returns its word, and the dispatcher's result is unboxed where the access's kind is BigInt. Ruled out beside it, on main: a Boolean through a dispatcher, and a BigInt a closure returns by name, through a field, through an array, or picked by a test.
+
+### Against Node
+
+Per call of a kernel over 256 records, the least of five batches, the update then the read, as multiples of Node's time, at level 2 and at 'speed'. Two runs of each tree (probe/call-time.mjs under the tools directory; M4 at a load of 4 to 5, main's first run five hours before the other three):
+
+| form | main, level 2 | here, level 2 | main, 'speed' | here, 'speed' |
+|---|---|---|---|---|
+| a method of two classes | 1.84 to 2.00, 2.11 to 2.22 | 0.80 to 0.82, 1.03 to 1.14 | 1.89 to 2.05, 2.21 to 2.29 | 0.78 to 0.91, 1.01 to 1.05 |
+| a method of three classes | 1.88 to 2.00, 2.34 to 2.41 | 0.93 to 0.94, 1.15 to 1.23 | 2.05 to 2.21, 2.56 to 2.59 | 0.91 to 1.01, 1.15 to 1.23 |
+| a function a field holds | 1.80 to 1.83, 2.00 | 0.69 to 0.70, 0.72 to 0.76 | 1.69 to 1.72, 1.82 to 1.84 | 0.50 to 0.52, 0.71 to 0.74 |
+| a list | 2.51 to 2.96, 1.69 to 1.72 | 1.52 to 1.68, 1.72 to 1.73 | 2.55 to 2.86, 1.67 to 1.69 | 1.61 to 1.65, 1.73 to 1.74 |
+| getters and setters | 0.84, 0.86 to 0.92 | 0.59 to 0.65, 0.66 to 0.67 | 0.70 to 0.71, 0.64 to 0.67 | 0.62 to 0.70, 0.66 to 0.68 |
+
+Every other form within 0.04 of main, or inside its two runs. The list is still a cliff: its read 447 to 452 ns for 256 hops where Node takes 260, 1.7 ns a hop against 1.0, the update (399 to 439 ns where 661 to 768) now at the read's time, and the carrier does not explain the rest. A method of several classes still reads above Node, 1.03 to 1.23. The changelog first quoted one run of the branch before its last rule; `8fd166479` restates it from these.
+
+### How two of the rules came to their form
+
+- The held call first read the member's kind. A literal's getter that answers the function (`get f() { reads += 10; return add }`) has that kind, and the call skipped the getter: 0 reads where 40. The stop hook's review asked for the case. The rule now reads slots: a shape without the slot answers the read some other way and keeps its call.
+- The copy rule first held any copied box as bits. The data forms' listing came back with 47 cells longer, the typed-array record's update 7 loop ops and 4 to 6% slower: its pointer is a call's result, and held as bits the one reinterpretation only moved from the copy to the write, with fewer values named by watr after it. A copied local is now held only where some write of it is a load, which is then an integer's. 8 cells stay longer: the typed-array record's renewal by 9 ops, timed equal to main (3,955 and 4,010 ns where 3,927 and 3,962 at level 2; 3,745 where 3,794 at 'speed'), and six by 1.
+
+### Mutations
+
+Twenty (own/mutant-obj.sh under the tools directory), each against test/class-members.js and test/int-narrow.js: seventeen on the default and level 3 legs, the three of the literal guard on the armed one. Eighteen fail. Two pass. The raw mark on the joined arms of a closed dispatch, which the reader's own kind makes redundant wherever the summary types the access a BigInt; it stays for an access typed wider than its arms. And the literal guard of the settled receiver's rewrite: that sweep runs only after a splice, which advances the revision, and nothing asks the summary between the two, so no check sees its copy today. Four passed at first and fail since their tests were written: the closed arms' test of a missing receiver (a method's receiver is tested before it reaches them; an accessor's is not), the held call's guard of a slot that may be missing (a field that is the function or null), a shape without the slot (a receiver of two shapes, one a getter), and a truth test's false arm (the receiver was null on every path, and its read threw whatever the arm was told).
+
+### What it costs
+
+- Bench bytes: 28 of 105 cases move. 'speed' builds 5,914,971 to 5,907,555, 'size' builds 2,662,322 to 2,658,029; webaudio -4,184 and -2,729, decode-dsd -592, threescene -584, threeanim -570, watr -517. Larger: stdlib-dists' size build by 73 (its speed build 301 smaller), upfirdn's by 3, setops' by 1, worley's speed build by 5.
+- Time and memory, the 27 whose 'speed' build moves, six paired rounds against main, taken on e932ed5bb (the commits after it move no bench byte): medians 0.827 to 1.019. Over twelve rounds: wordcount 0.849, its whole difference one `f64.load` and a reinterpretation become an `i64.load` in its kernel; threeanim 1.012, eleven of twelve above 1; jsontransform 0.999. threecull 0.983, six of six below 1, where the landing before left it at 1.023. Peak memory within 0.4 MB on every case.
+- The hosted compiler: 38,064,408 bytes where main's is 38,205,916, 141,508 smaller.
+
+### The first check failed, on two things
+
+Check `ar` on e932ed5bb: the WASI and default legs with one failure each, armed level 3 with six. Before it the branch had run its two test files on five legs, and never the whole suite.
+
+- A body copied under a sweep that reported no change. The held call's rewrite walked a literal's value as a child, and a folded `0 / 0` holds a NaN, unequal to itself: the walk took it for a changed child and copied every node above it, in every function holding such a literal. The summary was then of nodes the program no longer had. The armed build refuses that at the summary's next reuse (compile/index.js summarizeProgram), and five tests that compile at level 0 failed there (four of test/statements.js, one of test/number-eq.js). No wrong answer was found on the other legs. The class call's rewrite does the same on main, for a program of classes none of whose calls it rewrites (`class A { constructor() { this.x = 0 / 0 } }`, level 0, armed), and so does the settled receiver's, landed before this, where nothing can see it. The three now answer a literal whole. Its test compiles level 0 on every leg: `levels()` gives the armed leg its level 3 alone, and the copy shows at 0.
+- A test's measure. test/mem-alias.js asked for six `f64.load` fewer with store forwarding than without, and a pointer the loop only follows is now an `i64.load`: 6 against 10 where main reads 8 against 14. The loads are the same on both trees, 22 words against 34 for the chain (11 and 17 in each of the loop's two versions), 78 against 90 through sine and cosine. The bar counts both carriers and asks for twelve.
+
+The defect is a change flag kept apart from the identity of the body a rewrite returns. The other rewrites that compare a child by identity were read for it: plan/constants.js, loop-fields.js, counted-loops.js and alias.js answer a literal whole; the split of spliced bindings (prepare/split-bindings.js through plan/alias.js) reports a change by the body's identity, so a copy there advances the revision; compile/loop-divmod.js and plan/scratch.js rewrite only for a candidate they found, which is a change. No other case found, by reading and not by running.
+
+A sweep that runs for every program goes through the whole armed leg before its landing check from here on.
+
+### The check (as, on a19a0f68a; the changelog's commit is after it)
+
+Every step exit 0, in 63 minutes at a load of 5 to 18, and test262 in 28. WASI 7,598, default 7,725, armed level 3 7,507, level 0 7,485, each with one skipped and none failed; test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's 344 cells with none differing; eight test files on a fresh hosted compiler (parity, class-members, int-narrow, classes, data, optimizer-promote, array-load-cse, mem-alias); the examples 25 of 25 twice at a geomean of 1.71; the bench bytes those of the first check to the byte, so the two commits after it move none; test262 4,137 passed and 4,045 refused as they should be, with no accepted negative and no failure.
+
+CI on af975b1db (main before): test262, self-compile and examples-perf green; test green in every leg but `claims`, red on its standing reasons (reference evidence missing or stale, the swap bound of the committed evidence, alpha's native lowering at 3.52 of jz's bytes against a bar of 3.5, the docs against the datasets).
+
+### The held-out run on af975b1db (45273482701), and what the lane cannot say
+
+23 of 23 run. Geomean 1.55 over 23 (AWFY 2.38 over 14, CLBG 0.79 over 9), where the run on 9e7dd971b read 1.48. Every program's jz build is the same bytes in both runs: that landing moved none of them. Both shards changed CPU (AWFY from a Xeon 6975P-C to an EPYC 7763, CLBG from an EPYC 9V45 to the Xeon), and the same builds read deltablue 2.76 where 1.59 (jz 67.8 ms where 44.6, V8 25.3 where 28.1), havlak 7.66 where 5.46, cd 3.25 where 2.77, permute 2.15 where 2.45. One build's ratio moves by up to 1.7 with the runner's CPU, so two runs do not compare. A landing's effect is read by its bytes and by pairs here until the lane times the build before beside the new one in one run, or its runner is pinned. Not changed; the owner's call.
+
+### Corrections to the record before this one
+
+- "Published 1.0.3 fails `@audio/plugin-vst`'s native lane at `wasm2c`": the plugin's defect, not jz's. It called wasm2c without `--enable-exceptions`, and 1.0.3 gives that module a tag section where main gives none. Fixed in audiojs/plugin 684677f (the audio session's report): its suite 100 of 100 against 1.0.3, 99 of 100 against af975b1db, the one the known tripwire of a shim's fixed memory.
+
+### Found, not fixed
+
+- A program main refuses, 9e7dd971b and the tree of 1.0.4 too: a class's getter that answers a function, called through the member. `class G { get f() { return add } }; g.f(1, 2)` fails to compile at every level, "'Gf__get' is not a known function or built-in" (probe/k-getter-call.js).
+- The list at 1.7 ns a hop.
+- A `for` whose step assigns the tested name (`p = p.next`) keeps the step's test of it, a `while` body that assigns it its own, and `p !== null` proves nothing: the summary's kinds do not tell null from undefined, and a guard's fact is dropped for any name its body assigns. A fact that holds until the first write would cover the walk: killed at a write, never restored at a scope's end once killed, and killed at the entry of a loop that writes the name. Designed, not written.
+- threecull's 1.023 of the landing before: 0.983 here, with no cause found for either.
+- The landings since 82d1e0216 without a changelog entry: still owed.
+
+### Next
+
+The list's hop. Then the fact that holds until the first write. Then memory beside the ops in the gate, the `while` and the dispatchers against their listings, plain arrays proven numeric. Whether the dispatcher's BigInt goes out as a patch of 1.0 is the owner's call.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
