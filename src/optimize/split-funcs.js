@@ -267,20 +267,90 @@ const callsAlways = (list) => {
 }
 
 const holdsLoop = (n) => isArr(n) && (n[0] === 'loop' || n.some(holdsLoop))
-// A loop every run of `n` meets: none under one arm of an `if` alone. A store's growing arm holds
-// the loop that fills its gap and a logged root's the probe of its table, a helper's loops spliced
-// where the arm was; the runs that stay in bounds meet neither.
-const runsLoop = (n) => {
+// The loops a pass is long by: the program's own, however they end, and a helper's that counts
+// its passes. The program's carry the id their maker gave them (`$loop3` the emitter's and the
+// array walks', `$__simd_loop0` the vectorizer's, under whatever prefix an inliner added); a
+// helper's label is written by hand and carries none (test/split-funcs.js holds the runtime to
+// it). A nest entered once whose inner loop the data ends (`while (x > eps)`) ran its first call
+// in 43 ms with its pass a function and in 86 to 108 without.
+const ownLoop = (label) => typeof label === 'string' && /loop\d+$/.test(label)
+// A loop of the program's every run of `n` meets: none under one arm of an `if` alone.
+const runsOwn = (n) => {
   if (!isArr(n)) return false
-  if (n[0] === 'loop') return true
-  if (n[0] !== 'if') return n.some(runsLoop)
+  if (n[0] === 'loop' && ownLoop(n[1])) return true
+  if (n[0] !== 'if') return n.some(runsOwn)
   let arms = 0, looped = 0
   for (const c of n) if (isArr(c)) {
-    if (c[0] === 'then' || c[0] === 'else') { arms++; if (runsLoop(c)) looped++ }
-    else if (runsLoop(c)) return true
+    if (c[0] === 'then' || c[0] === 'else') { arms++; if (runsOwn(c)) looped++ }
+    else if (runsOwn(c)) return true
   }
   return arms === 2 && looped === 2
 }
+// A helper's loop counts its passes where a branch of its own, the way back or an exit, tests a
+// local the loop steps by a constant, against a bound or down to zero: a copy, a fill. A helper's
+// search does not (a table's probe, its step `(b + 1) & mask`, left on what it finds or where it
+// has gone round): its passes are few wherever it runs, and spliced into a kernel's pass it made
+// each of 256 keyed reads a call, 1.2 to 1.4 times the time of the tier below.
+const TEST = /^(?:i32|i64)\.(?:lt|le|gt|ge)_[su]$|^(?:i32|i64|f64)\.(?:eq|ne)$|^f64\.(?:lt|le|gt|ge)$/
+const STEP = /^(?:i32|i64|f64)\.(?:add|sub)$/
+/** The locals `loop` steps by a constant, and the tests of its own branches (an inner loop's are its own). */
+const sweepOf = (loop) => {
+  const stepped = new Set(), tests = []
+  const walk = (n) => {
+    if (!isArr(n) || n[0] === 'loop') return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && isArr(n[2]) && STEP.test(n[2][0]) && isArr(n[2][1]) && n[2][1][0] === 'local.get'
+      && n[2][1][1] === n[1] && isArr(n[2][2]) && String(n[2][2][0]).endsWith('.const')) stepped.add(n[1])
+    if (n[0] === 'br_if') tests.push(n.at(-1))
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  for (let i = 1; i < loop.length; i++) walk(loop[i])
+  return { stepped, tests }
+}
+/** Whether a branch's test `t` is of one of the `stepped` locals: the local, or its comparison. */
+const testsStep = (t, stepped) => {
+  const one = (e) => isArr(e) && (e[0] === 'local.get' || e[0] === 'local.tee') && stepped.has(e[1])
+  return isArr(t) && (one(t) || (t[0] === 'i32.eqz' ? testsStep(t[1], stepped) : TEST.test(t[0]) && (one(t[1]) || one(t[2]))))
+}
+const counts = (loop) => { const { stepped, tests } = sweepOf(loop); return tests.some(t => testsStep(t, stepped)) }
+// Whether every run of `n` meets a loop that counts its passes. Of an `if`, what both arms meet: a
+// store's growing arm holds the loop that fills its gap, a helper's loop spliced where the arm
+// was, and the runs that stay in bounds do not meet it. Of a list of statements, those ahead of
+// the first that may leave the list by a branch to a label the statement does not hold: a spliced
+// insert leaves by one where the key is found, and the sweep that rehashes its table stands after
+// it. The loop's own test ahead of its first pass (`(block $b (br_if $b (ge i n)) (loop …))`) is
+// no such leaving: the loop is met, of no pass.
+const leaves = (s) => {
+  const held = new Set()
+  const labels = (n) => { if (!isArr(n)) return; if (STRUCT.has(n[0]) && isName(n[1])) held.add(n[1]); for (let i = 1; i < n.length; i++) labels(n[i]) }
+  labels(s)
+  const out = (n) => isArr(n) && (RETURNS.has(n[0]) || (BR.has(n[0]) && n.some((t, i) => i > 0 && !isArr(t) && !held.has(t))) || n.some(out))
+  return out(s)
+}
+const LISTS = new Set(['block', 'loop', 'then', 'else', 'func'])
+const runsSweep = (n) => {
+  if (!isArr(n)) return false
+  if (n[0] === 'loop' && counts(n)) return true
+  if (LISTS.has(n[0])) {
+    for (let i = 1; i < n.length; i++) {
+      const st = n[i]
+      if (!isArr(st)) continue
+      if (runsSweep(st)) return true
+      if (!leaves(st)) continue
+      const next = n[0] === 'block' && st[0] === 'br_if' && st[1] === n[1] ? n.slice(i + 1).find(x => isArr(x) && x[0] === 'loop') : null
+      if (!next || !testsStep(st.at(-1), sweepOf(next).stepped)) return false
+    }
+    return false
+  }
+  if (n[0] !== 'if') return n.some(runsSweep)
+  let arms = 0, looped = 0
+  for (const c of n) if (isArr(c)) {
+    if (c[0] === 'then' || c[0] === 'else') { arms++; if (runsSweep(c)) looped++ }
+    else if (runsSweep(c)) return true
+  }
+  return arms === 2 && looped === 2
+}
+/** Whether every run of `n` meets a loop a pass is long by. */
+const runsLoop = (n) => runsOwn(n) || runsSweep(n)
 const STORE = /^(?:i32|i64|f32|f64|v128)\.store/
 /** Whether statement `n` takes no value from the stack and leaves none, its operands folded in:
  *  only a run of such statements can become a call (a stack-style operand, or a value a later

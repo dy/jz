@@ -452,6 +452,137 @@ test('loop passes: a kernel whose store keeps its growing arm calls nothing per 
   ok(!/\(func \$prefix[^\s)]*\$s\d/.test(compile(src, { optimize: { level: 'speed' }, wat: true })), 'no pass of the kernel\'s loop is a function')
 })
 
+// The loop a pass is long by is the program's own (its label carries the id its maker gave it), or
+// a helper's that counts its passes: a branch of its own tests a local it steps by a constant,
+// against a bound or down to zero. A helper's search is neither, and its passes are few: a keyed
+// read's probe, spliced where the read was, made each of 256 lookups a call. And the run meets
+// the loop on every run: a sweep standing after an exit by branch (a spliced insert's, which
+// leaves where the key is found, the rehash of its table after it) is met on some; a loop's own
+// test ahead of its first pass is no such exit. The labels here are a helper's, written by hand.
+const PASS = (inner) => `(func $f (export "f") (param $n i32) (result i32)
+    (local $i i32) (local $j i32) (local $k i32) (local $acc i32)
+    (block $done (loop $rows
+      (br_if $done (i32.ge_s (local.get $i) (i32.const 40)))
+      (local.set $acc (i32.add (local.get $acc) (i32.mul (local.get $i) (i32.const 3))))
+      ${inner}
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $rows)))
+    (local.get $acc))`
+const SUM = `(local.set $acc (i32.add (local.get $acc) (i32.xor (local.get $j) (local.get $n))))`
+const SWEEPS = {
+  'a test ahead of the first pass and one at the end': `(local.set $j (i32.const 0))
+      (block $none (br_if $none (i32.ge_s (local.get $j) (local.get $i)))
+        (loop $col ${SUM} (br_if $col (i32.lt_s (local.tee $j (i32.add (local.get $j) (i32.const 1))) (local.get $i)))))`,
+  'a count down to zero': `(local.set $j (i32.const 6))
+      (loop $col ${SUM} (br_if $col (local.tee $j (i32.sub (local.get $j) (i32.const 1)))))`,
+  'a count up to a bound it must not equal': `(local.set $j (i32.const 0))
+      (loop $col ${SUM} (br_if $col (i32.ne (local.tee $j (i32.add (local.get $j) (i32.const 1))) (i32.const 6))))`,
+}
+const SEARCHES = {
+  'a probe that steps by one under a mask': `(local.set $j (local.get $i))
+      (block $hit (loop $probe
+        (br_if $hit (i32.eqz (i32.and (i32.add (local.get $acc) (local.get $j)) (i32.const 3))))
+        (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (i32.const 63)))
+        (br $probe)))
+      ${SUM}`,
+  'a scan that steps by one and leaves on what it reads': `(local.set $j (i32.const 0))
+      (block $found (loop $scan
+        (br_if $found (i32.eq (i32.and (i32.mul (i32.add (local.get $j) (local.get $i)) (i32.const 7)) (i32.const 15)) (i32.const 3)))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $scan)))
+      ${SUM}`,
+  'a probe holding a sweep under one arm': `(local.set $j (local.get $i))
+      (block $hit (loop $probe
+        (br_if $hit (i32.eqz (i32.and (i32.add (local.get $acc) (local.get $j)) (i32.const 3))))
+        (if (i32.gt_s (local.get $j) (i32.const 1000)) (then
+          (local.set $k (i32.const 0))
+          (loop $fill (local.set $acc (i32.add (local.get $acc) (local.get $k))) (br_if $fill (i32.lt_s (local.tee $k (i32.add (local.get $k) (i32.const 1))) (i32.const 4))))))
+        (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (i32.const 63)))
+        (br $probe)))
+      ${SUM}`,
+  'a probe that stops where it has gone round': `(local.set $j (local.get $i))
+      (block $round (loop $probe
+        (local.set $acc (i32.add (local.get $acc) (i32.const 1)))
+        (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (i32.const 7)))
+        (br_if $round (i32.eq (local.get $j) (i32.and (local.get $i) (i32.const 7))))
+        (br $probe)))`,
+  'a sweep after an exit the data decides': `(block $skip
+        (br_if $skip (i32.and (local.get $i) (i32.const 1)))
+        (local.set $j (i32.const 0))
+        (loop $col ${SUM} (br_if $col (i32.lt_s (local.tee $j (i32.add (local.get $j) (i32.const 1))) (i32.const 6)))))`,
+}
+test('loop passes: the pass moves for a loop that counts its passes and every run meets, and stays for a search or a sweep past an exit', () => {
+  for (const [name, inner] of Object.entries(SWEEPS)) is(passes(`(module ${PASS(inner)})`).made, 1, `${name}: the pass moves`)
+  for (const [name, inner] of Object.entries(SEARCHES)) is(passes(`(module ${PASS(inner)})`).made, 0, `${name}: the pass stays`)
+  for (const [name, inner] of Object.entries({ ...SWEEPS, ...SEARCHES })) {
+    const wat = `(module ${PASS(inner)})`
+    for (const n of [-1, 0, 7, 39]) is(passes(wat).exports.f(n), plain(wat).f(n), `${name}: f(${n})`)
+  }
+})
+
+// The same searches under the program's labels move: a `while` the data ends is long as the data.
+const OWN = {
+  'a scan of the program\'s': SEARCHES['a scan that steps by one and leaves on what it reads'].replace(/\$scan\b/g, '$loop7'),
+  'one spliced from a function of the program\'s': SEARCHES['a scan that steps by one and leaves on what it reads'].replace(/\$scan\b/g, '$__inl3L_loop2'),
+  'one behind its own test': `(local.set $j (local.get $i))
+      (block $brk4 (br_if $brk4 (i32.eqz (i32.and (i32.add (local.get $acc) (local.get $j)) (i32.const 3))))
+        (loop $loop4
+          (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (i32.const 63)))
+          (br_if $loop4 (i32.and (i32.add (local.get $acc) (local.get $j)) (i32.const 3)))))
+      ${SUM}`,
+  'a lifted one': SWEEPS['a count down to zero'].replace(/\$col\b/g, '$__simd_loop0'),
+}
+test('loop passes: the program\'s own loop moves its pass however it ends, a helper\'s search spliced beside it does not', () => {
+  for (const [name, inner] of Object.entries(OWN)) {
+    const wat = `(module ${PASS(inner)})`
+    is(passes(wat).made, 1, `${name}: the pass moves`)
+    for (const n of [-1, 0, 7, 39]) is(passes(wat).exports.f(n), plain(wat).f(n), `${name}: f(${n})`)
+  }
+  is(passes(`(module ${PASS(SEARCHES['a scan that steps by one and leaves on what it reads'].replace(/\$scan\b/g, '$__inl3L_probe'))})`).made, 0, 'a helper\'s search spliced in: the pass stays')
+  // under one arm of an `if` it is the arm's, as a helper's is
+  const armed = (wat) => wat.replace(/\$col\b/g, '$loop5').replace(/\$down\b/g, '$loop6')
+  is(passes(armed(`(module ${ARMED('(local.set $acc (i32.xor (local.get $acc) (i32.const 5)))')})`)).made, 0, 'the program\'s loop one arm holds: no pass moves')
+  is(passes(armed(`(module ${ARMED(`(local.set $j (local.get $i))
+          (block $back (loop $down
+            (br_if $back (i32.le_s (local.get $j) (i32.const 0)))
+            (local.set $acc (i32.sub (local.get $acc) (local.get $j)))
+            (local.set $j (i32.sub (local.get $j) (i32.const 2)))
+            (br $down)))`)})`)).made, 1, 'one in each arm: the pass moves')
+  // through the compiler: a nest entered once whose inner loop the data ends keeps its pass a function
+  const src = `export let main = (n) => { let s = 0; for (let r = 0; r < 40; r++) { let x = r + 1.5, k = 0; while (x > 0.01) { x *= 0.9; k++ } s += k } return s + n }`
+  const want = oracle(src).main
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', loopPasses: false })) for (const n of [0, 3]) is(jz(src, { optimize }).exports.main(n), want(n), `main(${n}) at ${JSON.stringify(optimize)}`)
+  if (onKernel()) return
+  ok(/\(func \$main\$s\d/.test(compile(src, { optimize: { level: 'speed' }, wat: true })), 'the pass of a nest whose inner loop the data ends is a function')
+})
+
+// The runtime's hand-written loops carry no id: the rule above reads a loop as the program's by one.
+test('loop passes: no loop of the runtime\'s is labelled as the program\'s are', () => {
+  const src = `const m = new Map(), s = new Set(), d = {}
+    export let f = (k) => { m.set(k, [k, 'a' + k]); s.add('x' + k); d['k' + k] = k; const a = Array.from(m.keys()).concat([...s].map(x => x.length)); a.sort(); return JSON.stringify(a.slice(1)) + a.join().split(',').length + Object.keys(d).length }`
+  const wat = compile(src, { optimize: 0, wat: true })
+  const own = wat.split(/\n(?=  \(func )/).filter(fn => /^  \(func \$__/.test(fn)).flatMap(fn => [...fn.matchAll(/\(loop (\$[^\s()]+)/g)].map(m => `${fn.match(/\(func (\S+)/)[1]} ${m[1]}`)).filter(l => /loop\d+$/.test(l.split(' ')[1]))
+  is(own.join(', '), '', 'the runtime\'s loops by label')
+})
+
+test('loop passes: a keyed read of each of 256 elements calls nothing per element at the speed tier', () => {
+  const src = `const N = 256, K = 37
+    const qs = new Int32Array(N); for (let i = 0; i < N; i++) qs[i] = 1000 + 17 * ((i * 5) % (K + 5))
+    const m = new Map(); for (let i = 0; i < K; i++) m.set(1000 + 17 * i, i + 1)
+    const names = new Map(); for (let i = 0; i < K; i++) names.set('k' + i, i + 1)
+    const ws = []; for (let i = 0; i < N; i++) ws.push('k' + (i * 5) % (K + 5))
+    export let lookup = () => { let s = 0; for (let i = 0; i < N; i++) { const k = qs[i]; s += m.get(k) || 0 } return s }
+    export let member = () => { let s = 0; for (let i = 0; i < N; i++) if (m.has(qs[i])) s++; return s }
+    export let named = () => { let s = 0; for (let i = 0; i < N; i++) s += names.get(ws[i]) || 0; return s }`
+  const want = oracle(src)
+  for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', loopPasses: false })) {
+    const got = jz(src, { optimize }).exports
+    for (const k of ['lookup', 'member', 'named']) is(got[k](), want[k](), `${k} at ${JSON.stringify(optimize)}`)
+  }
+  if (onKernel()) return
+  ok(!/\(func \$(lookup|member|named)[^\s)]*\$s\d/.test(compile(src, { optimize: { level: 'speed' }, wat: true })), 'no pass of a kernel\'s loop is a function')
+})
+
 test('loop passes: a loop of passes a runtime value counts, of many passes, or entered at an unknown count keeps them', () => {
   // its passes may be short (a frame's loop over its rows): a call each would cost
   const kept = {
