@@ -69,12 +69,14 @@ test('alias: a method reads back what the method before it stored, through anoth
       ok(Math.abs(got - want) <= 1e-12 * Math.max(1, Math.abs(want)), `${name} of ${n} at ${optimize}: ${got} for ${want}`)
     }
     if (belowOpt(2)) continue
-    const body = funcWat(wat(src, { optimize: 3 }), 'f'), loads = (t) => (t.match(/f64\.load/g) || []).length
+    // a word's load in either carrier: a pointer the loop only follows is loaded as its bits
+    const body = funcWat(wat(src, { optimize: 3 }), 'f'), loads = (t) => (t.match(/[fi]64\.load/g) || []).length
     ok(!/call \$[^\s)]*(rotate|mul)/.test(body), `${name}: both methods splice into the loop`)
     // the loop reads the local's four elements from the values the rotation stored, and
-    // the local and its elements once: six loads fewer than the round trip
+    // the local and its elements once: six loads fewer than the round trip, in each of
+    // the two versions the loop is emitted in
     const without = loads(funcWat(wat(src, { optimize: { level: 3, forwardStores: false } }), 'f'))
-    ok(loads(body) <= without - 6, `${name}: the local matrix's elements come from the values stored (${loads(body)} loads, ${without} without forwarding)`)
+    ok(loads(body) <= without - 12, `${name}: the local matrix's elements come from the values stored (${loads(body)} loads, ${without} without forwarding)`)
   }
 })
 
