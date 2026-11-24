@@ -163,13 +163,15 @@ const RECORD = {
   // arrays of typed arrays)
   box: { make: (n, ...v) => `const ${n} = new Float64Array(4); ${v.slice(0, 4).map((x, i) => `${n}[${i}] = ${x}`).join('; ')}`, field: (p, f) => `${p}[${FIELDS.indexOf(f)}]` },
 }
-// `step` updates every record in place, `advance` the one held in `st`, and
+// `step` updates every record in place, `advance` the one held in `st`,
 // `renew` replaces every record by a new one of the same form, the update
-// written immutably.
+// written immutably, and `sum` reads two fields of every record straight off
+// its element, with no name for the record between.
 const recKernels = (r, get) => ({
   step: `for (let i = 0; i < ps.length; i++) { const p = ps[i]; ${get('p', 'x')} += ${get('p', 'vx')}; ${get('p', 'y')} += ${get('p', 'vy')} } return ${get('ps[0]', 'x')}`,
   advance: `for (let i = 0; i < N; i++) { ${get('st', 'x')} += ${get('st', 'vx')}; ${get('st', 'y')} += ${get('st', 'vy')} } return ${get('st', 'x')} + ${get('st', 'y')}`,
   renew: `for (let i = 0; i < ps.length; i++) { const p = ps[i]; ${r.make('q', `${get('p', 'x')} + ${get('p', 'vx')}`, `${get('p', 'y')} + ${get('p', 'vy')}`, get('p', 'vx'), get('p', 'vy'), 'i & 1')}; ps[i] = q } return ${get('ps[0]', 'x')}`,
+  sum: `let s = 0; for (let i = 0; i < ps.length; i++) s += ${get('ps[i]', 'x')} + ${get('ps[i]', 'y')}; return s`,
 })
 const recCheck = get => `let s = 0; for (let i = 0; i < ps.length; i++) { const p = ps[i]; s += ${get('p', 'x')} + 2 * ${get('p', 'y')} + 3 * ${get('p', 'vx')} + 5 * ${get('p', 'vy')} } return s + ${get('st', 'x')} * 7 + ${get('st', 'y')} * 11`
 const recProgram = (form, r, late) => {
