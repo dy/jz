@@ -94,6 +94,23 @@ const forwards = (set) => {
   return isArr(v) && v.length === 3 && v[0] === 'call' && FORWARDS.has(v[1]) && isGet(unbox(v[2])) && unbox(v[2])[1] === set[1]
 }
 
+// A growing store hands its receiver back (module/array.js `__arr_set_idx_ptr`: the box it was
+// given, or the one its growth made of the same array; module/collection.js `__arr_set_num`, the
+// store under a Number no proof makes an index: that hand-back, or the box as given where the
+// key names a property), and the emitter writes that to the copy the store held its receiver in
+// (`$t = __arr_set_idx_ptr($t, i, v)`), then the copy to the receiver's binding (`$a = $t`).
+// Each names the array it named: no write of it where a hop is asked, and the call's own
+// re-resolve follows the block if it moved.
+const HANDS_BACK = new Set(['$__arr_set_idx_ptr', '$__arr_set_num'])
+/** The local a hand-back's call reads its receiver from, where `set` writes one; else null. */
+const handBackFrom = (set) => {
+  let v = unbox(set[2])
+  if (isArr(v) && v[0] === 'local.tee') v = unbox(v[2])
+  if (!isArr(v) || v[0] !== 'call' || !HANDS_BACK.has(v[1])) return null
+  const from = unbox(v[2])
+  return isGet(from) ? from[1] : null
+}
+
 /** Hoist the forward hops of each loop's unrebound receivers in `fn`, asking `fx` (the
  *  module's effects) what a call does; a module global is a receiver where it holds a box
  *  (`globalTypes`, its wasm type by name). */
@@ -118,11 +135,26 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
   // below the floor, which no compaction moves, so the forward hands it back
   // as it was, and a copy of it stays one. A hop of such a root is then the
   // loop's to hoist, set again as the compaction re-enters the loop.
-  const writtenOf = new Map()
-  const written = (n) => {
-    let out = writtenOf.get(n)
-    if (!out) { out = new Set(); walkAst(n, { enter: c => { if (isSet(c) && !forwards(c)) out.add(c[1]) } }); writtenOf.set(n, out) }
+  const writtenOf = new Map(), reboundOf = new Map(), handed = new Set()
+  const setsOf = (n, cache, back) => {
+    let out = cache.get(n)
+    if (!out) { out = new Set(); walkAst(n, { enter: c => { if (isSet(c) && !forwards(c) && !(back && handed.has(c))) out.add(c[1]) } }); cache.set(n, out) }
     return out
+  }
+  // What a loop rebinds: its writes but a hand-back of the receiver to its own binding and the
+  // binding's own box written back to it (`handed`: the sets the first walks found so, by the
+  // copies standing at each). Those leave the binding its array, and its hop is the loop's.
+  const rebound = (n) => setsOf(n, reboundOf, true)
+  // What a node writes, hand-backs among it: along a path a hand-back is a set like any other,
+  // the binding's copies gone and what was asked of it asked again. (Read past one, an answer
+  // saved the cold arm of a matrix kernel a test, and the kernel ran 9% longer on an M4: the
+  // engine's code for the function, by no cause found. The hoist is the loop's alone.) The first
+  // walks read what is rebound in its place, to follow a copy across a hand-back.
+  const written = (n) => proving ? rebound(n) : setsOf(n, writtenOf, false)
+  // Whether `name` holds the box `root` holds, through the copies `env` keeps.
+  const boxOf = (env, name, root) => {
+    for (let k = 0; k < 4 && name !== root; k++) { const v = unbox(env.get(name)); if (!isGet(v)) return false; name = v[1] }
+    return name === root
   }
 
   // The receiver whose pointer `e` reads, `k` bytes from it (0: the pointer, -4: its forward
@@ -247,7 +279,7 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
       if (!found && (parent === fn || LISTS.has(parent[0])) && followable(n)) {
         const roots = new Set()
         visitList(n, 1, new Map(inner), [], roots)
-        const w = written(n)
+        const w = rebound(n)
         for (const root of roots) if (root[0] !== '@' && !w.has(root) && !active.some(g => g.root === root)) groups.push({ root, r: fresh('i32') })
       }
       visitList(n, 1, inner, groups.length ? [...active, ...groups] : active, found)
@@ -275,8 +307,14 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
       if (!found) asked = after
       return 0
     }
+    // (a hand-back's receiver is read before its call: what the copies hold as the set is reached;
+    // the copy written back to the binding it was taken from gives the binding the box it holds)
+    if (proving && isSet(n)) {
+      const from = handBackFrom(n) ?? (isGet(unbox(n[2])) ? unbox(n[2])[1] : null)
+      if (from != null && boxOf(env, from, n[1])) handed.add(n)
+    }
     for (let j = 1; j < n.length; j++) visit(n, j, env, active, found)
-    if (isSet(n)) {
+    if (isSet(n) && !(proving && handed.has(n))) {
       kill(env, n[1])
       if (!found) dropAsked(n[1])
       if (copyOf(n[2]) && !reads(n[2], n[1])) env.set(n[1], n[2])
@@ -320,6 +358,14 @@ export function hoistForwardHops(fn, fx, globalTypes = null) {
     return out
   }
   const resets = new Set(), wrappers = []
+  // The hand-backs first, each by the copies standing where it is written: a walk with every
+  // write a write but those the walks before it found, until one finds none (a copy carried
+  // across an inner loop that hands it back stands only once that loop's hand-back is known).
+  // The last walk found none, so what it kept of each loop's rebindings is what the hoist reads.
+  let proving = false
+  walkAst(fn, { enter: c => { if (proving) return false; if (c[0] === 'call' && HANDS_BACK.has(c[1])) proving = true } })
+  for (let known = -1; proving && handed.size !== known;) { known = handed.size; reboundOf.clear(); visitList(fn, start, new Map(), [], new Set()) }
+  proving = false
   visitList(fn, start, new Map(), [], null)
   if (!locals.length) return
   // A re-resolve no read of its local follows (the arm a loop breaks out of

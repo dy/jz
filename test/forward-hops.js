@@ -126,3 +126,66 @@ test('forward hops: a receiver asks once between calls that may move its block',
   const want = oracle(src).f(40)
   for (const optimize of levels(2, 'speed', 'size')) is(jz(src, { optimize }).exports.f(40), want, `f(40) at ${optimize}`)
 })
+
+// A store past the length takes the growing store, which hands its receiver back to the
+// binding (module/array.js `__arr_set_idx_ptr`; `$t = __arr_set_idx_ptr($t, i, v)`, then
+// `$a = $t`). The binding names the array it named, so the loop asks for its hop once and
+// again after that call, where it kept the hop at every read and store: a function over an
+// array and a bound it is handed proves neither in bounds.
+const STORES = [
+  ['a bound inside the length', `const clear = (flags, size) => { let n = 0
+      for (let i = 2; i <= size; i++) if (flags[i - 1]) { n++; let k = i + i; while (k <= size) { flags[k - 1] = false; k += i } }
+      return n }
+    const sizes = [100, 100]
+    export let f = () => { let t = 0; for (let r = 0; r < 3; r++) { const flags = new Array(100); flags.fill(true); t += clear(flags, sizes[r & 1]) } return t }`],
+  ['a bound past the length: the block moves under the loop', `const fill = (xs, n) => { let s = 0; for (let k = 0; k < n; k++) { xs[k] = k * 2; s += xs[k >> 1] } return s }
+    const ns = [70, 9]
+    export let f = () => { const a = [], b = [5, 6, 7]; return [fill(a, ns[0]), fill(b, ns[1]), fill(b, ns[0]), a.length, b.length, a[69], b[8]].join() }`],
+  ['one array under two names, the store through one moving what the other reads', `const two = (xs, ys, n) => { let s = 0; for (let k = 0; k < n; k++) { xs[k + 3] = k; s += ys[k] } return s }
+    const ns = [40]
+    export let f = () => { const a = [1, 2, 3]; return two(a, a, ns[0]) + ':' + a.length }`],
+  ['a binding given another array in the loop', `const swap = (xs, other, n) => { let s = 0
+      for (let k = 0; k < n; k++) { xs[k] = k + 1; s += xs[k]; if (k === 4) xs = other }
+      return s + ':' + xs.length }
+    const ns = [12]
+    export let f = () => { const a = [], b = [9, 9]; return swap(a, b, ns[0]) + ':' + a.length + ':' + b.length + ':' + b.join('') }`],
+  ['holes left by a store far past the end', `const far = (xs, n) => { let holes = 0; for (let k = 0; k < n; k++) { xs[k * 3] = k; if (xs[k * 3 - 1] === undefined) holes++ } return holes + ':' + xs.length }
+    const ns = [15]
+    export let f = () => far([], ns[0])`],
+  ['a step the function is handed, whole: every key an index', `const put = (xs, n, step) => { let s = 0; for (let k = 0; k < n; k += step) { xs[k] = k + 1; s += xs[k] } return s + ':' + xs.length }
+    const steps = [1, 2]
+    export let f = () => [put([], 40, steps[0]), put([7], 40, steps[1])].join()`],
+  ['a step of a half: every other key a property of its string', `const put = (xs, n, step) => { let s = 0; for (let k = 0; k < n; k += step) { xs[k] = k + 1; s += xs[k] } return s + ':' + xs.length + ':' + xs[1.5] + ':' + xs['2.5'] }
+    const steps = [0.5]
+    export let f = () => put([], 12, steps[0])`],
+  ['a method handed the array and its bound', `class S {
+      work() { const flags = new Array(100); flags.fill(true); return this.sieve(flags, 100) }
+      sieve(flags, size) { let n = 0; for (let i = 2; i <= size; i++) { if (flags[i - 1]) { n++; let k = i + i; while (k <= size) { flags[k - 1] = false; k += i } } } return n }
+    }
+    const s = new S()
+    export let f = () => s.work() + s.work()`],
+]
+test('forward hops: a store past the length hands its receiver back, and the loop follows the block', () => {
+  for (const [label, src] of STORES) agrees(src, label)
+})
+
+test('forward hops: a loop that stores by an index it cannot bound asks before the loop', () => {
+  if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
+  // a hop's test, of the value form or the statement's: `(i32.eq (i32.load A) (i32.const -1))`
+  const isTest = c => Array.isArray(c) && c[0] === 'i32.eq' && Array.isArray(c[1]) && c[1][0] === 'i32.load' && Array.isArray(c[2]) && c[2][0] === 'i32.const' && Number(c[2][1]) === -1
+  const isHop = n => n[0] === 'if' && (isTest(n[1]) || isTest(n[2]))
+  const find = (n, pred, out = []) => { if (Array.isArray(n)) { if (pred(n)) out.push(n); for (let i = 1; i < n.length; i++) find(n[i], pred, out) } return out }
+  const loopsOf = (src) => find(parseWat(funcWat(wat(src, { optimize: 2 }), 'f')), n => n[0] === 'loop')
+  // the innermost loops that store an element (the helper is spliced into `f`): the scan's clearing loop
+  const storing = loopsOf(STORES[0][1]).filter(l => find(l.slice(1), m => m[0] === 'loop').length === 0 && find(l, m => m[0] === 'f64.store').length > 0)
+  ok(storing.length > 0, 'the clearing loops are there')
+  for (const l of storing) is(find(l, isHop).length, 0, `no hop inside ${l[1]}`)
+  // a binding the loop gives another array is written: its loop asks at each pass
+  ok(loopsOf(STORES[3][1]).some(l => find(l, isHop).length > 0), 'a binding given another array keeps its hop inside')
+  // the store under a Number hands its receiver back as the index store does: the method's clearing
+  // loops, each version of them (the scan around one asks once for the copy the clearing loop reads)
+  const numbered = find(parseWat(wat(STORES[7][1], { optimize: 2 })), n => n[0] === 'loop' && find(n.slice(1), m => m[0] === 'loop').length === 0 &&
+    find(n, m => m[0] === 'call' && m[1] === '$__arr_set_num').length > 0)
+  ok(numbered.length > 0, 'the store under a Number is there')
+  for (const l of numbered) is(find(l, isHop).length, 0, `no hop inside ${l[1]}`)
+})
