@@ -4136,6 +4136,74 @@ So does one called by the pushing statement itself (`memo.push(get(9 - i) + i)`)
 
 The wrong answer first. Then the gather through that same fact, read by the summary. Then the gate of 'speed' against level 2 on the data forms' programs.
 
+## The land-ay landing: an array a function reads before its init pushes end; the lane on another CPU; the owner's direction (2026-11-24)
+
+Two commits on 6e1ea6df1, the integrator's.
+
+### What landed
+
+- `c3467c745` A module array grown by counted top-level pushes is no frozen one where a function may hold it before the last push (summary/index.js `short`, `settleInitOrder`, `initOrderOf`; summary/query.js `frozenLenOf`).
+- `e3b7b8f45` Its changelog entry.
+
+### The wrong answer
+
+Found reading for the gather (the record before this one). An array the module's top level grows by counted pushes keeps a known length after init, and the plan hands that length to every function, with the proof that the array never moves. A function can run before the array has it:
+
+```js
+const memo = []
+const get = (k) => { const v = memo[k]; return v === undefined ? -1 : v }
+const early = get(3)                       // Node: -1. jz: 0, or what memory holds there
+for (let i = 0; i < 10; i++) memo.push(i * 2)
+```
+
+The read past what is pushed so far had no test against the length. The same through a function the pushing statement calls, a closure an array or an object holds, a method, a constructor, a static method, a getter, a method taken as a value, an iterator under `for…of`, a spread, a destructuring, `Array.from`, `new Set` and `yield*`, and at level 0 a conversion. Of 42 such programs, the tree of v1.0.4 answers 40 wrong (38 at each of levels 2, 3 and 'size') and main 39 (37). The rule came with 6ef2aa75a, which every tag from v1.0.0 holds; 1.0.0 to 1.0.3 were not run. The module's own statements read right.
+
+This is the fourth wrong answer of 1.0.4 fixed on main since it was cut (a BigInt through a dispatcher, the two failures of a getter's call, this). Whether they go out as 1.0.5 is the owner's.
+
+### The fix, and what the walk it stands on lacked
+
+The summary already walks what each top-level statement has run, for a function property read before its first store (`initOrderOf`). The same walk now marks an array short where a function that holds it, under any name, has run by the statement of its last push. By the array's cell and not the name: a parameter takes its argument's length. The statements' own mentions do not count: the module reads an array by what it holds then.
+
+That walk had holes, which the function property's rule shared:
+
+- It never ran a class's function: one is no value a statement makes. A call under a member's name on an instance of known classes now runs its class's function; on a receiver the kinds name no class for, or one no value has reached (a conversion's `this`), every class's function of the name.
+- An argument that was neither a name nor an arrow ran nothing (`run(p.at)`, `[4, 5].map(pick())`).
+- A value nothing names, called or handed to a builtin, may be a method taken as a value: it runs the class functions some read binds.
+
+And it was coarse where one bench case showed it. Every accessor and conversion ran from the first statement, so with the class functions now run, web-audio-api's oscillator setter reached `PeriodicWave.getBuiltIn` "ahead" of the static field it reads, and the field read as possibly missing: 318 bytes at 'speed', one function. An instance's accessors now run from the statement that runs its class's factory; Math's functions are handed nothing; a call of Math or of a function of the module reads the kind of its result. With those the 105 bench cases are main's bytes.
+
+28 mutations (own/mutant-frozen.sh under the tools directory): 25 each fail a test. Three pass and their code stays as closed defaults, each named in the commit: an array whose push no top-level statement holds; two joined arrays' lists of pushes; an accessor no class's instance answers. Two more passed and their code went: the iteration protocol's members run by name for a runtime helper (every iteration names its members where it calls them), and a second clearing of the set.
+
+### The check (ay, on e3b7b8f45)
+
+Every step exit 0, in 63 minutes at a load of 6 to 50 (side runs of the integrator's beside it; the same check takes 50 on a quiet machine), and test262 in 38. WASI 7,605, default 7,732, armed level 3 7,514, level 0 7,492, each with one skipped and none failed; test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's cells with none differing; three test files on a fresh hosted compiler (parity, fixed-length, function-props), the hosted compiler 38,102,052 bytes where main's is 38,072,249; the examples 25 of 25 twice at a geomean of 1.69; the bench bytes main's, 105 cases of 105; test262 4,137 passed and 4,045 refused as they should be, with no accepted negative and no failure.
+
+### The held-out lane on another CPU (run 45390303191 on 526ee72f2)
+
+23 of 23, geomean 1.58 (AWFY 2.21, CLBG 0.93), worst havlak 7.64. Both shards ran on an EPYC 7763 where the run before ran on a Xeon 6975P, and no build differs from that run's in bytes, by either row. So the two runs are the same 23 builds on two CPUs: 1.41 on the Xeon, 1.58 on the EPYC. jz's times are 18 to 101% longer, V8's too, and the ratios move both ways: deltablue 2.81 where 1.56, havlak 7.64 where 5.42, fannkuchredux 3.50 where 2.36; permute 2.13 where 2.44, list 1.07 where 1.17, sieve 1.60 where 1.72.
+
+What it says: the lane's figure is of a CPU as much as of a compiler, by 0.17 here. A landing is read against the run before it only on the same CPU model, as the last three were. The record's own "tuned" line carries no CPU, and reads as a regression to anyone who does not look. To settle with the owner: pin the lane to one runner model, or time the build before in the same job.
+
+### CI on 526ee72f2, and a correction to the record before last
+
+test262, self-compile and examples-perf green. test: every job green but `claims`, on its standing lines, and `test (opt3)`, where one test timed out at its 5 seconds: 'async: bare fetch binds from the JS host', the same test as on 31e838229, the second time in three landings. The failed jobs were asked to run again on the same commit; the rerun had not finished when this was written.
+
+The land-aw record called it "a timeout of a test that waits on the network, on a loaded runner". The cause was not measured then and that reading was wrong. Measured here (the test's three steps timed apart at level 3, at a load of 23): the compile of its seven lines takes 2.1 to 3.7 seconds, the two fetches 5 to 48 ms. The suite's limit is a race with a timer, which a synchronous compile outlasts, so on a runner several times slower the limit is the compile's. The test now has 60 seconds, as the WebSocket tests have theirs (a commit of the landing after this one). A seven-line async program that takes seconds to compile at level 3 is itself a finding: not measured on a quiet machine yet.
+
+### The owner's direction (2026-11-24)
+
+On the question of what comes next: "we need general coverage of compile shapes to guarantee good outcome for any users programs - mem, perf first of all on speed tier. Size doesn't matter anymore outside of the initial set of programs." Read here as: the gates of phases 13 to 15 lead (coverage of shapes), memory and time at 'speed' are what a cell measures first, and bytes are a criterion for the bench corpus alone, whose size claims stand.
+
+Begun on it, on branches after this landing: the data forms' gate measures what a kernel's steady call takes from the heap and holds 'speed' to level 2 (calls made, SIMD, memory). First reading: 756 of 800 cells take nothing; 26 are short of the lightest form by memory (a record's renewal by `{}` then stores takes five times the literal's); and 9 cells are worse at 'speed' than at level 2, eight of them one cause, a keyed read of 256 elements making 257 calls where level 2 makes one (the pass of the kernel's loop made a function for the hash probe spliced into it).
+
+### Worktrees
+
+39 stood beside main this morning. The ten whose tips main holds are removed with their sixteen branches (nothing lost). The superseded ones and the held work (the NaN box, the retired dispatchers and the `while`, the tests' close-out, three small ones) wait for the owner's word; the handover lists them.
+
+### Next
+
+The loop-pass rule the tier cells name (timed first: what a call a pass costs a kernel called again and again, and what it saves a nest entered once). Then the gather through the frozen length, now safe to read. Then the record forms' memory.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

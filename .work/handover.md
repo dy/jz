@@ -806,3 +806,17 @@ frozen-w             (uncommitted at this record) the array a function reads bef
 ```
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/try.mjs <tree> <level>` (programs on stdin, separated by a line of `----`, each `f()` beside Node's), `probe/sum-index.mjs` (each indexed read of a function: the summary's kinds of receiver, key and read, whether it is a present read, its word range), `probe/form-src.mjs` (one of the data forms' programs written out), `probe/tier-order.mjs`, `own/mutant-passes.sh`, `own/mutant-frozen.sh`, `own/heldout-two.mjs` (two runs of the held-out record side by side, a program counted changed by either row's bytes); the held-out records `heldout-31e.json`, `heldout-bbe.json`; the early-read programs `keep/frozen/*.txt`, of which test/fixed-length.js on frozen-w holds every one that matters.
+
+## Branches of the land-ay landing (2026-11-24), tips before deletion
+
+```
+e3b7b8f45 frozen-x    the landing branch: 2 commits on 6e1ea6df1; the record's commit after it
+          frozen-w    (uncommitted, superseded) the fix's first form, on a48dd5501
+c503b1845 gate-w      the next landing's base: da64bf084 the data forms' gate measures memory and holds 'speed' to level 2; c503b1845 the fetch test's limit
+          rule-w      (uncommitted, on gate-w) a pass of a loop moves for a loop that counts its passes; waits for its timing
+          built-w     (uncommitted, on gate-w) an object built by stores is its literal (jzify/bundler.js builtLiterals)
+```
+
+Left standing by the owner's silence, not by a ruling: the superseded worktrees and the held branches listed to the owner on 2026-11-24 (the NaN box `nanbox-rest2`; `next-x` and `next-y`; `tests-time` and `worktree-agent-afab4ffb7d6879342`; `decoders-ada0`; `worktree-agent-a4519a2dc39ff972e`; `worktree-agent-a5f89d0c0c9d7eb2f`). The ten worktrees whose tips main held are removed, with their sixteen branches.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/frozen-len.mjs` and `probe/frozen-cases.mjs` (a program's frozen length; the test file's programs on another tree), `own/mutant-frozen.sh`, `own/mutant-passes2.sh`, `own/mutant-built.sh`, `keep/frozen/*.txt` (the early-read programs), `keep/pass-rule.patch`, `forms-gate-show.txt` (every cell of the gate: ops, calls, calls run, bytes a call), `heldout-526.json`.
