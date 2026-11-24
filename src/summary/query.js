@@ -23,7 +23,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, internalIncoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildStore, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, fnAssigned, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -756,14 +756,15 @@ export function summaryQueries(facts, internal = false) {
       // its cell, -1 for arrays whose cell is unknown, null for no array.
       arrayRecordOf: e => { const k = kindOfExpr(e); return !hasTag(k, K.ARRAY) ? null : tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : -1 },
       // The length a module binding's array has after module init and keeps
-      // (index.js `built`, `grown`, `unknown`): what it was built with plus the
+      // (index.js `built`, `grown`, `unknown`, `short`): what it was built with plus the
       // elements the top level pushed through this very name in counted loops;
-      // null when anything else resized it, or the pushes went through another name.
+      // null when anything else resized it, the pushes went through another name,
+      // or a function the initializers run before the last push holds it.
       frozenLenOf: name => {
         const k = readKind(name)
         if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
         const c = cell(paramOf(k)), n = built[c], g = grown.get(c)
-        if (!(n >= 0) || unknown.has(c) || (g && g.name !== name)) return null
+        if (!(n >= 0) || unknown.has(c) || short.has(c) || (g && g.name !== name)) return null
         const len = n + (g?.n ?? 0)
         return stores.get(c) >= len ? null : len
       },

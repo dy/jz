@@ -250,6 +250,84 @@ test('frozen length: a read through the binding follows no forward and loads no 
   }
 })
 
+// The frozen length is the array's once the initializers are done with it. A
+// function a statement runs before the last of the pushes reads the array short
+// of that count, under whatever name it holds it: an index past what is pushed
+// so far is undefined there (summary `short`, settleInitOrder). The module's own
+// statements read the array by what it holds as they run.
+const PEEK = `(k) => { const v = ps[k]; return v === undefined ? 1000 : v }`
+const PUSHES = `for (let i = 0; i < 10; i++) ps.push(i)`
+const readShort = [
+  ['a function called before the pushes', `const ps = []\nconst g = ${PEEK}\nconst e = g(4)\n${PUSHES}\nexport const f = () => e + g(3)`],
+  ['one the pushing statement calls', `const ps = []\nconst g = ${PEEK}\nfor (let i = 0; i < 10; i++) ps.push(g(9 - i) + i)\nexport const f = () => ps[0] + ps[9]`],
+  ['one called between two runs of pushes', `const ps = []\nconst g = ${PEEK}\nfor (let i = 0; i < 5; i++) ps.push(i)\nconst e = g(7)\nfor (let i = 5; i < 10; i++) ps.push(i)\nexport const f = () => e + g(7)`],
+  ['a literal start', `const ps = [1, 2]\nconst g = ${PEEK}\nconst e = g(1) * 10 + g(5)\n${PUSHES}\nexport const f = () => e + g(5)`],
+  ['a function that calls the reader', `const ps = []\nconst g = ${PEEK}\nconst h = (k) => g(k) + 1\nconst e = h(4)\n${PUSHES}\nexport const f = () => e + h(3)`],
+  ['a function handed it as an argument', `const ps = []\nconst g = (xs, k) => { const v = xs[k]; return v === undefined ? 1000 : v }\nconst e = g(ps, 4)\n${PUSHES}\nexport const f = () => e + g(ps, 3)`],
+  ['a closure an array holds', `const ps = []\nconst cb = [${PEEK}]\nconst e = cb[0](4)\n${PUSHES}\nexport const f = () => e + cb[0](3)`],
+  ['a closure an object holds', `const ps = []\nconst o = { peek: ${PEEK} }\nconst e = o.peek(4)\n${PUSHES}\nexport const f = () => e + o.peek(3)`],
+  ['a callback handed to a function', `const ps = []\nconst g = ${PEEK}\nconst run = (fn) => fn(4)\nconst e = run(g)\n${PUSHES}\nexport const f = () => e + run(g)`],
+  ['a method', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst e = p.at(4)\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a method the pushing statement calls', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nfor (let i = 0; i < 10; i++) ps.push(p.at(9 - i) + i)\nexport const f = () => ps[0] + ps[9]`],
+  ['a constructor', `const ps = []\nclass P { constructor(k) { const v = ps[k]; this.v = v === undefined ? 1000 : v } }\nconst p = new P(4)\n${PUSHES}\nexport const f = () => p.v + new P(3).v`],
+  ['a static method', `const ps = []\nclass P { static at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst e = P.at(4)\n${PUSHES}\nexport const f = () => e + P.at(3)`],
+  ['a getter', `const ps = []\nclass P { get four() { const v = ps[4]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst e = p.four\n${PUSHES}\nexport const f = () => e + p.four`],
+  ['a static getter', `const ps = []\nclass P { static get four() { const v = ps[4]; return v === undefined ? 1000 : v } }\nconst e = P.four\n${PUSHES}\nexport const f = () => e + P.four`],
+  ['a getter a subclass inherits', `const ps = []\nclass B { get four() { const v = ps[4]; return v === undefined ? 1000 : v } }\nclass P extends B {}\nconst p = new P()\nconst e = p.four\n${PUSHES}\nexport const f = () => e + p.four`],
+  ['a method a subclass inherits, called by one of its own', `const ps = []\nclass B { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nclass P extends B { twice(k) { return this.at(k) * 2 } }\nconst p = new P()\nconst e = p.twice(4)\n${PUSHES}\nexport const f = () => e + p.twice(3)`],
+  ['a method under a computed name', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst name = 'at'\nconst e = p[name](4)\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a callback handed to an array\'s method', `const ps = []\nlet e = 0;\n[4, 5].forEach((k) => { const v = ps[k]; e += v === undefined ? 1000 : v })\n${PUSHES}\nexport const f = () => e + ps[4]`],
+  ['a method taken as a value', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst m = p.at\nconst e = m(4)\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a method handed to a function', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst run = (fn) => fn(4)\nconst e = run(p.at)\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a method handed to an array\'s method', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst e = [4, 5].map(p.at)\n${PUSHES}\nexport const f = () => e[0] + e[1] + p.at(3)`],
+  ['a method of an object a computed key reads', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst table = { go: null }\ntable.go = new P()\nconst key = ['go']\nconst e = table[key[0]].at(4)\n${PUSHES}\nexport const f = () => e + table.go.at(3)`],
+  ['an iterator a loop walks', `const ps = []\nclass Bag { constructor() { this.n = 3 } [Symbol.iterator]() { let i = 0; const n = this.n; return { next: () => { const v = ps[i]; return i++ < n ? { done: false, value: v === undefined ? 1000 : v } : { done: true, value: undefined } } } } }\nconst b = new Bag()\nlet e = 0\nfor (const v of b) e += v\n${PUSHES}\nexport const f = () => e`],
+  ['a generator a spread walks', `const ps = []\nclass Bag { constructor() { this.n = 3 } *[Symbol.iterator]() { for (let i = 0; i < this.n; i++) { const v = ps[i]; yield (v === undefined ? 1000 : v) } } }\nconst b = new Bag()\nconst got = [...b]\n${PUSHES}\nexport const f = () => got[0] + got[1] + got[2] + [...b][2]`],
+  ['a conversion an operator runs', `const ps = [1, 2, 3, 4]\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } valueOf() { return this.at(4) + this.at(5) * 10 + this.at(6) * 100 + this.at(7) * 1000 } }\nconst p = new P()\nconst e = p * 2\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a conversion to a string', `const ps = [1, 2, 3, 4]\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } toString() { return 'x' + this.at(4) + this.at(5) } }\nconst p = new P()\nconst e = ('' + p).length\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a method among values of several kinds, called', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst mixed = [1, 'a', p.at]\nconst e = mixed[2](4)\n${PUSHES}\nexport const f = () => e + p.at(3)`],
+  ['a method among values of several kinds, handed to an array\'s method', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst mixed = [1, 'a', p.at]\nconst e = [4, 5].map(mixed[2])\n${PUSHES}\nexport const f = () => e[0] + e[1] + p.at(3)`],
+  ['a method a call answers, handed to an array\'s method', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst pick = () => p.at\nconst e = [4, 5].map(pick())\n${PUSHES}\nexport const f = () => e[0] + e[1] + p.at(3)`],
+  ['a method behind a closure a stored member holds, called by the pushes', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst mixed = [1, 'a', p.at]\nconst o = {}\no.go = (k) => mixed[2](k)\nfor (let i = 0; i < 10; i++) ps.push(o.go(9 - i) + i)\nexport const f = () => ps[0] + ps[9]`],
+  ['a closure an inline list holds, handed to a method of an array', `const ps = []\nconst g = ${PEEK}\nconst e = [4, 5].map([g][0])\n${PUSHES}\nexport const f = () => e[0] + e[1] + g(3)`],
+  ['a method an inline list holds, handed to a method of an array', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst e = [4, 5].map([p.at][0])\n${PUSHES}\nexport const f = () => e[0] + e[1] + p.at(3)`],
+  ['a getter of an object literal', `const ps = []\nconst o = { get four() { const v = ps[4]; return v === undefined ? 1000 : v } }\nconst e = o.four\n${PUSHES}\nexport const f = () => e + o.four`],
+  ['a conversion of an object literal', `const ps = []\nconst o = { valueOf() { const v = ps[4]; return v === undefined ? 1000 : v } }\nconst e = o * 2\n${PUSHES}\nexport const f = () => e + o * 1`],
+  ['an iterator of a class, walked through a value of any kind', `const ps = []\nclass Bag { [Symbol.iterator]() { let i = 0; return { next: () => { const v = ps[i]; return i++ < 3 ? { done: false, value: v === undefined ? 1000 : v } : { done: true, value: undefined } } } } }\nconst boxes = { any: null }\nboxes.any = new Bag()\nlet e = 0\nfor (const v of boxes.any) e += v\n${PUSHES}\nexport const f = () => e`],
+  ['an iterator Array.from walks', `const ps = []\nclass Bag { [Symbol.iterator]() { let i = 0; return { next: () => { const v = ps[i]; return i++ < 3 ? { done: false, value: v === undefined ? 1000 : v } : { done: true, value: undefined } } } } }\nconst b = new Bag()\nconst got = Array.from(b)\n${PUSHES}\nexport const f = () => got[0] + got[1] + got[2]`],
+  ['an iterator a Set is made from', `const ps = []\nclass Bag { [Symbol.iterator]() { let i = 0; return { next: () => { const v = ps[i]; return i++ < 3 ? { done: false, value: v === undefined ? 1000 : v } : { done: true, value: undefined } } } } }\nconst b = new Bag()\nconst got = new Set(b)\n${PUSHES}\nexport const f = () => got.size * 10000 + (got.has(1000) ? 1 : 0)`],
+  ['an iterator a destructuring walks', `const ps = []\nclass Bag { [Symbol.iterator]() { let i = 0; return { next: () => { const v = ps[i]; return i++ < 3 ? { done: false, value: v === undefined ? 1000 : v } : { done: true, value: undefined } } } } }\nconst b = new Bag()\nconst [x, y] = b\n${PUSHES}\nexport const f = () => x + y`],
+  ['a generator another delegates to', `const ps = []\nclass Bag { *[Symbol.iterator]() { for (let i = 0; i < 3; i++) { const v = ps[i]; yield (v === undefined ? 1000 : v) } } }\nconst b = new Bag()\nconst all = function* () { yield* b }\nlet e = 0\nfor (const v of all()) e += v\n${PUSHES}\nexport const f = () => e`],
+  ['an iterator spread into the arguments of Math, through a value of any kind', `const ps = []\nclass Bag { [Symbol.iterator]() { let i = 0; return { next: () => { const v = ps[i]; return i++ < 3 ? { done: false, value: v === undefined ? 1000 : v } : { done: true, value: undefined } } } } }\nconst boxes = { any: null }\nboxes.any = new Bag()\nconst e = Math.max(...boxes.any)\n${PUSHES}\nexport const f = () => e`],
+  ['a method behind a closure handed to a function', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst p = new P()\nconst m = (k) => p.at(k)\nconst run = (fn) => fn(4)\nconst e = run(m)\n${PUSHES}\nexport const f = () => e + m(3)`],
+]
+// Each of these keeps its count: what runs before the last push holds no such array.
+const readWhole = [
+  ['a function the pushes call that holds another array', `const qs = [3, 4]\nconst ps = []\nconst g = (k) => qs[k & 1] * k\nfor (let i = 0; i < 10; i++) ps.push(g(i))\nexport const f = () => { let s = 0; for (let i = 0; i < 10; i++) s += ps[i]; return s }`],
+  ['a reader called once the pushes are done', `const ps = []\nconst g = ${PEEK}\n${PUSHES}\nconst e = g(4) + g(12)\nexport const f = () => e + g(3)`],
+  ['a method the pushes call, beside one that reads the array and runs later', `const ps = []\nclass R { constructor() { this.s = 1 } next() { this.s = (this.s * 5 + 3) % 16; return this.s } at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst r = new R()\nfor (let i = 0; i < 10; i++) ps.push(r.next())\nexport const f = () => r.at(3) + r.at(12)`],
+  ['a class\'s method of the name the pushes go by', `const ps = []\nclass Q { constructor() { this.n = 0 } push(k) { const v = ps[k]; this.n += v === undefined ? 1000 : v } }\n${PUSHES}\nconst q = new Q()\nq.push(3)\nq.push(12)\nexport const f = () => q.n`],
+  ['a reader made before the pushes, which call a method of a class', `const ps = []\nclass R { constructor() { this.s = 1 } next() { this.s = (this.s * 5 + 3) % 16; return this.s } }\nconst r = new R()\nconst g = ${PEEK}\nfor (let i = 0; i < 10; i++) ps.push(r.next())\nexport const f = () => g(3) + g(12)`],
+  ['a closure an object holds, never called, beside the pushes\' call of a class\'s method', `const ps = []\nclass R { constructor() { this.s = 1 } next() { this.s = (this.s * 5 + 3) % 16; return this.s } }\nconst r = new R()\nconst o = { peek: ${PEEK} }\nfor (let i = 0; i < 10; i++) ps.push(r.next())\nexport const f = () => o.peek(3) + o.peek(12)`],
+  ['a getter of a class with no instance until the pushes are done', `const ps = []\nclass P { get four() { const v = ps[4]; return v === undefined ? 1000 : v } }\n${PUSHES}\nconst p = new P()\nexport const f = () => p.four + 1`],
+  ['a call nothing names, beside a method never taken as a value', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nconst mixed = [1, 'a', (k) => k + 1]\nconst e = mixed[2](4)\n${PUSHES}\nconst p = new P()\nexport const f = () => e + p.at(3) + p.at(12)`],
+  ['an iteration nothing names, beside a method taken as a value and not called', `const ps = []\nclass P { at(k) { const v = ps[k]; return v === undefined ? 1000 : v } }\nclass Bag { [Symbol.iterator]() { let i = 0; return { next: () => i++ < 2 ? { done: false, value: i } : { done: true, value: undefined } } } }\nconst p = new P()\nconst m = p.at\nlet e = 0\nfor (const v of new Bag()) e += v\n${PUSHES}\nexport const f = () => e + m(3) + m(12)`],
+  ['Math handed what no kind names, beside a reader an object holds', `const ps = []\nconst o = { peek: ${PEEK} }\nconst h = (x) => Math.min(9, x[0])\nconst e = h([5, 6]) + h(new Float64Array(2))\n${PUSHES}\nexport const f = () => e + o.peek(3) + o.peek(12)`],
+  ['a method of an array handed what a function of the module returns', `const ps = []\nconst o = { peek: ${PEEK} }\nconst fib = (n) => n < 2 ? n : fib(n - 1) + fib(n - 2)\nlet k = 3\nk += 1\nconst e = [1, 2, 3].indexOf(fib(k))\n${PUSHES}\nexport const f = () => e + o.peek(3) + o.peek(12)`],
+  ['a method of an array handed what Math returns', `const ps = []\nconst o = { peek: ${PEEK} }\nlet k = 2.5\nk += 1\nconst e = [1, 2, 3].indexOf(Math.floor(k))\n${PUSHES}\nexport const f = () => e + o.peek(3) + o.peek(12)`],
+  ['the module reading it as it grows', `const ps = []\nlet e = 0\nfor (let i = 0; i < 10; i++) { const v = ps[9 - i]; e += v === undefined ? 1000 : v; ps.push(i) }\nconst g = ${PEEK}\nexport const f = () => e + g(3) + g(11)`],
+]
+
+test('frozen length: an array a function holds before the last push is no frozen one', () => {
+  for (const [name, src] of readShort) is(frozenLen(src, 'ps'), null, name)
+  for (const [name, src] of readWhole) is(frozenLen(src, 'ps'), 10, name)
+})
+
+test('frozen length: a read before the last push is the host\'s, in a function and in the module', () => {
+  for (const [name, src] of [...readShort, ...readWhole])
+    for (const optimize of levels(0, 2, 3, 'size')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
+})
+
 // An array a function builds, a literal grown by pushes through its name alone,
 // each inside counted loops of one trip count and named by nothing else until
 // the pushes end, has that many elements wherever another function reads it

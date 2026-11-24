@@ -831,9 +831,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // and no other branch, so their number is known (`grown`, recomputed every
   // round), and never resized in any other way (`unknown`). The binding holds
   // its final pointer, so a read through it after init needs no forwarding
-  // follow and knows the length.
+  // follow and knows the length. After init: a function the initializers run
+  // before the last of those pushes reads the array short of its count, so an
+  // array such a function holds under any name is none of these (`short`,
+  // settleInitOrder; the module's own statements read it by what it holds then).
   const built = []               // dense cell root → count | LEN_OPEN
-  const grown = new Map()        // cell root → { n, name }: init pushes' count and the one name they went through
+  const grown = new Map()        // cell root → { n, name, sites }: init pushes' count, the one name they went through, the pushes
+  const short = new Set()        // cell roots a function may hold before the init pushes end
   const unknown = new Set()      // cell roots resized in a way no count follows
   const resizedElsewhere = new Set()   // the same but for the pushes of a function building the array (`builds`)
   const trips = []               // the trip counts of the counted loops being walked
@@ -1749,7 +1753,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // (a count the arrays of both take, or none)
     if (cellLenAlias.has(a) && cellLenAlias.get(a) !== cellLenAlias.get(b)) cellLenAlias.delete(a)
     const ga = grown.get(a), gb = grown.get(b)
-    if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) ga.n += gb.n; else { unknown.add(a); resizedElsewhere.add(a) } }
+    if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) { ga.n += gb.n; for (const s of gb.sites) ga.sites.push(s) } else { unknown.add(a); resizedElsewhere.add(a) } }
     multiSite.add(a)
     if (builds.has(b)) builds.set(a, builds.has(a) ? null : builds.get(b))
     // The cells are one before the rows merge: a row that reaches itself ends here.
@@ -3574,7 +3578,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         }
         if (c >= 0 && via !== null) {
           const g = grown.get(c), count = trips.reduce((p, t) => p * t, n)
-          if (!g) grown.set(c, { n: count, name: via }); else if (g.name === via) g.n += count; else { unknown.add(c); resizedElsewhere.add(c) }
+          if (!g) grown.set(c, { n: count, name: via, sites: [node] }); else if (g.name === via) { g.n += count; g.sites.push(node) } else { unknown.add(c); resizedElsewhere.add(c) }
         }
       } else if (name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, onOpen ? `resized by ${name}` : null)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
@@ -6043,7 +6047,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const queryFacts = {
     kinds, incoming, internalIncoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
@@ -6498,9 +6502,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // global so read holds the nullish it starts as, and the kinds settle again.
   // A read is any mention but the target of `=` or of `??=`, which tests the bits
   // it finds whatever its kind says.
+  // The same order decides the arrays the init pushes freeze (`grown`): one a
+  // function holds under any name, run by a statement up to the one with the last
+  // of its pushes, is read short of its count there (`short`). The statements'
+  // own mentions are the module's, which reads an array by what it holds then.
   let initOrder = null
   const settleInitOrder = () => {
-    while (assumedInit.size) {
+    while (assumedInit.size || grown.size) {
       initOrder ??= initOrderOf()
       const early = initOrder()
       if (!early.length) return
@@ -6538,6 +6546,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const f of funcs) { iterKey(f.body); if (f.defaults) for (const k in f.defaults) iterKey(f.defaults[k]) }
     const hooks = conversions || accessors?.size > 0 || funcs.some(f => f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET))
     return () => {
+      // The arrays the init pushes freeze, each with the statement holding the
+      // last of its pushes: -1 for a push no statement holds, which no count follows.
+      const growing = new Map(), pushed = new Map()
+      for (const [c, g] of grown) { growing.set(cell(c), -1); for (const s of g.sites) pushed.set(s, cell(c)) }
+      const place = (n, at) => {
+        if (!Array.isArray(n) || n[0] === '=>') return
+        const c = pushed.get(n)
+        if (c !== undefined) growing.set(c, at)
+        for (let i = 1; i < n.length; i++) place(n[i], at)
+      }
+      if (pushed.size) for (let at = 0; at < stmts.length; at++) place(stmts[at], at)
+      short.clear()
+      for (const [c, last] of growing) if (last < 0) short.add(c)
       const bindingKind = (name, scope) => { const key = keyOf(name, scope); return key === null ? null : kinds[key] ?? K.NONE }
       // The callables a kind names: [] where it holds none (a primitive is no
       // function: a call of one throws, a builtin handed one calls none), null
@@ -6557,6 +6578,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (!Array.isArray(e)) return null
         if (e[0] === 'str') return [STRING]
         if (e[0] === '[') return [ARRAY_ANY]
+        // A call's result: a Number of Math's, what a function of the module returns.
+        if (e[0] === '()' && typeof e[1] === 'string' && keyOf(e[1], scope) === null) return e[1].startsWith('math.') ? [NUMBER] : funcByName.has(e[1]) ? [results.get(e[1]) ?? K.NONE] : null
         if (e[0] === '()' && Array.isArray(e[1]) && e[1][0] === '.' && typeof e[1][2] === 'string') {
           const rs = readKinds(e[1][1], scope), m = e[1][2]
           if (rs === null || !rs.length) return null
@@ -6631,7 +6654,21 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
             if (m === 'call' || m === 'apply') return cs.flatMap(c => membersOf(paramOf(c)))
             return callablesIn(cs.flatMap(c => membersOf(paramOf(c)).flatMap(id => [closureProps.get(id)?.get(m) ?? K.NONE, closureWild.get(id) ?? K.NONE])))
           }
-          if (cs.every(c => tagOf(c) === K.OBJECT && paramOf(c) !== UNKNOWN)) { const ks = []; for (const c of cs) { const k = slotKinds(paramOf(c), m); if (k === null) return null; ks.push(...k) } return callablesIn(ks) }
+          if (cs.every(c => tagOf(c) === K.OBJECT && paramOf(c) !== UNKNOWN)) {
+            // A shape with a slot of the name calls what the slot holds. A class's
+            // instance calls its class's function of the name, where no store gives
+            // an instance a member of its own under it (memberMayBeOwn).
+            const ks = [], fns = []
+            for (const c of cs) for (const sid of shapesOf(paramOf(c))) {
+              if (opaqueSchemas.has(sid)) return null
+              const fn = memberMayBeOwn(m) ? null : classOfSid(sid)?.methods.get(m) ?? null
+              if (schemas[sid].indexOf(m) >= 0) ks.push(slotOf(sid, m))
+              else if (fn === null) return null
+              if (fn !== null) fns.push(fn)
+            }
+            const held = callablesIn(ks)
+            return held === null ? null : fns.length ? [...held, ...fns] : held
+          }
           return null
         }
         return null
@@ -6642,7 +6679,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const unitOf = (key) => {
         let u = units.get(key)
         if (u) return u
-        units.set(key, u = { reads: new Set(), dynamic: false, makes: new Set(), runs: new Set() })
+        units.set(key, u = { reads: new Set(), held: new Set(), dynamic: false, wild: false, makes: new Set(), runs: new Set() })
         const f = typeof key === 'string' ? funcByName.get(key) : null
         const defaults = f ? f.defaults : closureDefaults[key]
         if (defaults) for (const name in defaults) scan(defaults[name], u, key)
@@ -6662,18 +6699,42 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         const rs = readKinds(f[1], scope)
         return rs !== null && rs.every(r => { const t = tagOf(core(r)); return t === K.NONE || TABLE_METHODS[t]?.has(f[2]) === true && !builtinReceiverMayHaveOwn(t, f[2]) })
       }
+      // What a builtin, or a callee nothing names, may run of an argument: the
+      // closures its kinds name, and under a member's name each class's function of
+      // the name (`run(p.at)`). An argument no kind names may be any closure made so
+      // far; one that may be a callable of no known set (any value), a method taken
+      // as a value too (`wild`). A container is called by no builtin, but a host
+      // calls what it holds.
+      const unreached = (e, scope) => { const rs = readKinds(e, scope); return rs !== null && rs.every(r => tagOf(core(r)) === K.NONE) }
+      const runMembers = (name, u) => { for (const fn of membersByName.get(name) ?? NO_MEMBERS) u.runs.add(fn) }
       const runArg = (a, u, scope) => {
         if (Array.isArray(a) && a[0] === '=>') { u.runs.add(closureId(a)); return }
-        if (typeof a !== 'string') return
-        const key = keyOf(a, scope)
-        if (key === null) { if (funcByName.has(a)) u.runs.add(a); return }
-        const c = callablesOf(kinds[key] ?? K.NONE)
-        if (c === null) u.dynamic = true; else for (const id of c) u.runs.add(id)
+        let ks, m = null
+        if (typeof a === 'string') {
+          const key = keyOf(a, scope)
+          if (key === null) { if (funcByName.has(a)) u.runs.add(a); return }
+          ks = [kinds[key] ?? K.NONE]
+        } else {
+          if (!Array.isArray(a) || a[0] == null || a[0] === 'str' || a[0] === 'bool' || a[0] === '!' || a[0] === 'typeof' || CONVERTING_RESULTS.has(a[0])) return
+          if ((a[0] === '.' || a[0] === '?.') && typeof a[2] === 'string') { m = a[2]; runMembers(m, u) }
+          ks = readKinds(a, scope)
+          if (ks === null) { u.dynamic = true; if (m === null) u.wild = true; return }
+        }
+        for (const k of ks) {
+          const c = callablesOf(k)
+          if (c !== null) { for (const id of c) u.runs.add(id); continue }
+          u.dynamic = true
+          if (m === null && hasTag(k, K.CLOSURE)) u.wild = true
+        }
       }
       const scan = (n, u, scope) => {
         if (typeof n === 'string') {
           const key = keyOf(n, scope)
-          if (key !== null) { if (assumedInit.get(n) === key) u.reads.add(n) }
+          if (key !== null) {
+            if (assumedInit.get(n) === key) u.reads.add(n)
+            const c = growing.size ? lenCell(kinds[key] ?? K.NONE) : -1
+            if (c >= 0 && growing.has(c)) u.held.add(c)
+          }
           else if (funcByName.has(n)) u.makes.add(n)
           return
         }
@@ -6686,13 +6747,27 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (op === '...' && iterates) u.dynamic = true
         if (op === '()' || op === '?.()') {
           const t = runsNothing(n, scope) ? [] : targetsOf(n[1], scope)
-          if (t === null) { u.dynamic = true; scan(n[1], u, scope) }
-          else {
+          // A class's function is no value a statement makes. A call under a member's
+          // name, on a receiver the kinds name no class for, may run each class's
+          // function of the name; so may one on a receiver no value has reached (a
+          // conversion's `this`, which no call binds). A value nothing names, called,
+          // may be a method taken as one (`wild`: the class functions some read binds);
+          // a helper of the runtime is no value, and an iteration names its members
+          // where it calls them.
+          const m = Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string' ? n[1][2] : null
+          if (m !== null && t !== 'builtin' && membersByName.has(m) && (t === null || unreached(n[1][1], scope))) runMembers(m, u)
+          if (t === null) {
+            u.dynamic = true
+            if (m === null && !(typeof n[1] === 'string' && keyOf(n[1], scope) === null)) u.wild = true
+            scan(n[1], u, scope)
+          } else {
             if (t !== 'builtin') for (const id of t) u.runs.add(id)
             if (Array.isArray(n[1]) && n[1][0] !== '=>') scan(n[1][0] === '.' || n[1][0] === '?.' ? n[1][1] : n[1], u, scope)
           }
+          // (Math's functions call nothing they are handed)
+          const hands = (t === 'builtin' || t === null) && !(typeof n[1] === 'string' && n[1].startsWith('math.'))
           for (let i = 2; i < n.length; i++) for (const a of Array.isArray(n[i]) && n[i][0] === ',' ? n[i].slice(1) : [n[i]]) {
-            if (t === 'builtin' || t === null) runArg(a, u, scope)
+            if (hands) runArg(a, u, scope)
             scan(a, u, scope)
           }
           return
@@ -6701,27 +6776,49 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       }
       // What has run by each statement: its reads, through what it runs, and once
       // something unnamed is called, through everything made.
-      const reads = new Set(), made = new Set(), seen = new Set()
-      let dynamic = hooks
+      const reads = new Set(), held = new Set(), made = new Set(), seen = new Set()
+      let dynamic = hooks, wild = false
       const absorb = (u) => {
         for (const r of u.reads) reads.add(r)
+        for (const c of u.held) held.add(c)
         if (u.dynamic) dynamic = true
+        if (u.wild) wild = true
         for (const m of u.makes) made.add(m)
         for (const r of u.runs) if (!seen.has(r)) { seen.add(r); absorb(unitOf(r)) }
       }
       // A getter, a setter or a conversion method runs at a read or an operator: in a
-      // program that defines one, it runs from the first statement on.
+      // program that defines one, it runs from the first statement on. An instance's
+      // runs once there is an instance: from the statement that runs its class's
+      // factory, a subclass's with what it inherits (`live`); a dispatcher over
+      // classes runs what its receiver's class answers, no more.
+      const hook = (m) => m.endsWith(ACCESSOR_GET) || m.endsWith(ACCESSOR_SET) || m === 'toString' || m === 'valueOf' || m === '@@toPrimitive'
+      const ofInstances = new Set(), live = new Set()
+      if (hooks && classes) for (const e of classes.values()) for (const [name, fn] of e.methods) if (hook(name)) ofInstances.add(fn)
       if (hooks) for (const f of funcs) {
-        const m = f.name.slice(f.name.lastIndexOf(CLASS_T) + 1)
-        if (m.endsWith(ACCESSOR_GET) || m.endsWith(ACCESSOR_SET) || m === 'toString' || m === 'valueOf' || m === '@@toPrimitive') { seen.add(f.name); absorb(unitOf(f.name)) }
+        if (hook(f.name.slice(f.name.lastIndexOf(CLASS_T) + 1)) && !ofInstances.has(f.name) && !f.sig.dispatcher) { seen.add(f.name); absorb(unitOf(f.name)) }
+      }
+      const wake = () => {
+        let woke = false
+        if (ofInstances.size) for (const e of classes.values()) if (!live.has(e) && seen.has(e.factory)) {
+          live.add(e)
+          for (const [name, fn] of e.methods) if (hook(name) && !seen.has(fn)) { seen.add(fn); absorb(unitOf(fn)); woke = true }
+        }
+        return woke
       }
       const early = []
       for (let at = 0; at < stmts.length; at++) {
-        const u = { reads: new Set(), dynamic: false, makes: new Set(), runs: new Set() }
+        const u = { reads: new Set(), held: new Set(), dynamic: false, wild: false, makes: new Set(), runs: new Set() }
         scan(stmts[at], u, MODULE)
+        u.held.clear()   // the statement's own mentions are the module's
         absorb(u)
-        if (dynamic) for (const m of made) if (!seen.has(m)) { seen.add(m); absorb(unitOf(m)) }
+        // (what one of these runs may make more, or call what nothing names: until none is new)
+        for (let more = true; more;) {
+          more = wake()
+          if (wild) for (const fns of membersByName.values()) for (const fn of fns) if (!seen.has(fn) && reached.has(binderNames.get(fn))) { seen.add(fn); absorb(unitOf(fn)); more = true }
+          if (dynamic) for (const m of made) if (!seen.has(m)) { seen.add(m); absorb(unitOf(m)); more = true }
+        }
         for (const [g, first] of firstStore) if (first === at && reads.has(g) && assumedInit.has(g)) early.push(g)
+        for (const [c, last] of growing) if (last === at && held.has(c)) short.add(c)
       }
       return early
     }
