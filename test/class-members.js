@@ -523,3 +523,57 @@ test('class members: a method reads and calls beside a getter of its name elsewh
   ]
   for (const optimize of levels(false, 2, 3, 'size')) for (const [label, src] of rows) agree(src, 'f', [], { optimize }, `O${optimize} ${label}`)
 })
+
+// A call of a name is a read of it and a call of what was read. A class that answers the
+// name through a getter has no function of the name: the call goes through the call's
+// dispatcher, whose arm for the class runs the getter and calls its answer on the receiver
+// (class-dispatch.js classMethodCall, synthesizeClassDispatchers `callOf`). The census counts
+// `r.m(…)` as a call of `m`, not a read, so the getter and that dispatcher are the call's to
+// root (classRootNames): a receiver the summary cannot name, a missing one among them, took
+// a getter no one had emitted, and one of two classes, the other storing a field of the
+// name, took the field's lookup for both.
+test('class members: a call of a name a class answers through a getter calls what the getter answers', () => {
+  const rows = [
+    ['a receiver that may be missing', `const add = (a, b) => a + b
+      class G { get f() { return add } }
+      let g = null
+      g = new G()
+      export const f = () => g.f(1, 1)`],
+    ['an element of a list built by push, the getter run once a call', `let reads = 0
+      const add = (a, b) => (a | 0) + (b | 0)
+      class G { constructor(v) { this.v = v } get f() { reads++; return add } }
+      const gs = []
+      for (let i = 0; i < 4; i++) gs.push(new G(i))
+      export const f = () => { let s = 0; for (let i = 0; i < gs.length; i++) s += gs[i].f(i, 1); return s + '|' + reads }`],
+    ['beside a class that stores a field of the name', `const add = (a, b) => a + b
+      class G { get f() { return add } }
+      class K { constructor() { this.f = (a, b) => a * b } }
+      const xs = []
+      xs.push(new G()); xs.push(new K())
+      export const f = () => [xs[0].f(2, 3), xs[1].f(2, 3)]`],
+    ['beside a class with a method of the name, each on its receiver', `class G { constructor(k) { this.k = k } get f() { return (a) => a + this.k } }
+      class H { constructor(k) { this.k = k } f(a) { return a * this.k } }
+      const xs = []
+      for (let i = 0; i < 4; i++) xs.push(i & 1 ? new G(i) : new H(i))
+      export const f = () => xs.map(x => x.f(10))`],
+    ['inherited, with a setter beside it', `const add = (a, b) => a + b
+      class G { get f() { return add } set f(v) { this.k = v } }
+      class B extends G { }
+      let b = null
+      b = new B()
+      export const f = () => { b.f = 3; return [b.f(1, 2), b.k] }`],
+    ['fewer arguments than parameters, more, and a spread', `const pick = (a, b, c) => [a, b, c === undefined ? 'none' : c].join()
+      class G { get f() { return pick } }
+      let g = null
+      g = new G()
+      export const f = () => { const two = [1, 2]; return [g.f(1), g.f(1, 2, 3, 4), g.f(...two)] }`],
+    ['a missing receiver, and a getter that answers no function', `const add = (a, b) => a + b
+      class G { get f() { return add } }
+      class U { get f() { return undefined } }
+      let none = null, u = null
+      u = new U()
+      const tried = (g) => { try { return g.f(1, 1) } catch (e) { return e instanceof TypeError ? 'type' : 'other' } }
+      export const f = () => [tried(none), tried(u), tried(new G())]`],
+  ]
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const [label, src] of rows) agree(src, 'f', [], { optimize }, `${label} at ${optimize}`)
+})

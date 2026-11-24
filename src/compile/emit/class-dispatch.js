@@ -112,6 +112,7 @@ const tagEq = (recv, sid) => ['i64.eq', ['i64.and', ['i64.reinterpret_f64', ['lo
  * member's name holds (`value` names the local it was read into).
  * Returns undefined when the receiver is no class instance.
  */
+const VIA = '\0dispatcher'   // `fnOf`'s answer for a class whose access is its dispatcher's arm, no function to call
 function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
   if (inDispatcher()) return undefined
   // a scalar-replaced literal (SRoA, no heap presence) is never an instance
@@ -122,6 +123,8 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
   // elsewhere with a member of this name is no reason to dispatch its reads.
   if (!known) return notAnObject(obj) || knownNonInstance(obj) || !ctx.funcs.names.has(dispatcher) ? undefined : dispatcher
   const fns = known.entries.map(fnOf), fn = fns[0]
+  // (a class that answers the access as only the dispatcher writes it out: a call of what its getter answers)
+  if (fns.includes(VIA)) return ctx.funcs.names.has(dispatcher) ? dispatcher : undefined
   if (fns.every(f => f == null)) return rest(held ?? obj)
   // The classes resolve the member to different functions (an override among them). They are all the
   // receiver's classes: a compare of its schema id per function but the last, each arm the class's
@@ -214,7 +217,9 @@ export function classMethodCall(obj, method, args, rest) {
   // an own property is called as the closure it holds, a spread through the ordinary path
   const own = ctx.closure.call && !args.some(a => Array.isArray(a) && a[0] === '...')
     ? (v, recv) => ctx.closure.call(local(v), args, false, true, local(recv)) : (v, recv) => rest(recv)
-  const r = dispatch(obj, method, e => e.methods.get(method) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'), undefined, own)
+  // (a class whose `method` is a getter is called through what the getter answers: the dispatcher's arm)
+  const r = dispatch(obj, method, e => e.methods.get(method) ?? (e.methods.has(method + ACCESSOR_GET) ? VIA : null),
+    (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'), undefined, own)
   return typeof r === 'string' ? viaDispatcher(node, ['()', r, withReceiver(obj, args)]) : r
 }
 
@@ -468,19 +473,26 @@ export function synthesizeClassDispatchers() {
   const readOf = (prop) => (e) => e.methods.has(prop + ACCESSOR_GET) ? ['()', e.methods.get(prop + ACCESSOR_GET), R]
     : e.methods.has(prop) ? ['()', e.methods.get(prop) + BIND, R] : null
   const of = (key, call) => (e) => e.methods.has(key) ? call(e.methods.get(key)) : null
+  // A call of a name is a class's method, or what its getter answers called on the receiver: one
+  // dispatcher of the call answers both, whether or not any class has the method (a name every
+  // class answers through a getter is called through it all the same).
+  const callOf = (key) => {
+    // every argument a call writes out: a receiver of no class takes them all
+    const arity = Math.max(0, passed.get(key) ?? 0, ...entries.map(e => { const f = byName.get(e.methods.get(key)); return f ? f.sig.params.length - 1 : 0 }))
+    define(dispatcherName(key, 'call'), arity, (e) => e.methods.has(key) ? ['()', e.methods.get(key), withR(arity)]
+      : e.methods.has(key + ACCESSOR_GET) ? ['()', ['.', ['()', e.methods.get(key + ACCESSOR_GET), R], 'call'], withR(arity)] : null,
+      ['()', ['.', R, key], closureArgs(arity)], key)
+  }
   for (const key of keys) {
     const isGet = key.endsWith(ACCESSOR_GET), isSet = key.endsWith(ACCESSOR_SET)
     const prop = isGet ? key.slice(0, -ACCESSOR_GET.length) : isSet ? key.slice(0, -ACCESSOR_SET.length) : key
-    if (isGet) { if (read.has(prop)) define(dispatcherName(key, 'call'), 0, readOf(prop), ['.', R, prop], prop); continue }
-    if (isSet) { if (written.has(prop)) define(dispatcherName(key, 'call'), 1, of(key, fn => ['()', fn, withR(1)]), ['=', ['.', R, prop], A(0)], prop); continue }
-    if (called.has(key)) {
-      // every argument a call writes out: a receiver of no class takes them all
-      const arity = Math.max(0, passed.get(key) ?? 0, ...entries.map(e => { const f = byName.get(e.methods.get(key)); return f ? f.sig.params.length - 1 : 0 }))
-      // a class whose `key` is a getter calls what the getter answers, on the receiver
-      define(dispatcherName(key, 'call'), arity, (e) => e.methods.has(key) ? ['()', e.methods.get(key), withR(arity)]
-        : e.methods.has(key + ACCESSOR_GET) ? ['()', ['.', ['()', e.methods.get(key + ACCESSOR_GET), R], 'call'], withR(arity)] : null,
-        ['()', ['.', R, key], closureArgs(arity)], key)
+    if (isGet) {
+      if (read.has(prop)) define(dispatcherName(key, 'call'), 0, readOf(prop), ['.', R, prop], prop)
+      if (called.has(prop)) callOf(prop)
+      continue
     }
+    if (isSet) { if (written.has(prop)) define(dispatcherName(key, 'call'), 1, of(key, fn => ['()', fn, withR(1)]), ['=', ['.', R, prop], A(0)], prop); continue }
+    if (called.has(key)) callOf(key)
     if (read.has(key)) define(dispatcherName(key, 'read'), 0, readOf(key), ['.', R, key], key)
   }
 }
@@ -592,7 +604,13 @@ export function classRootNames() {
   for (const entry of classes().values()) for (const [m, fn] of entry.methods) {
     // ToPrimitive reaches toString/valueOf through coercion, never a call site
     if (m === 'toString' || m === 'valueOf') roots.push(fn)
-    if (m.endsWith(ACCESSOR_GET)) { if (read.has(m.slice(0, -ACCESSOR_GET.length))) roots.push(fn, dispatcherName(m, 'call')); continue }
+    if (m.endsWith(ACCESSOR_GET)) {
+      const prop = m.slice(0, -ACCESSOR_GET.length)
+      if (read.has(prop)) roots.push(fn, dispatcherName(m, 'call'))
+      // (a call of the member reads it too: the call's dispatcher runs the getter, which it reaches, and calls what it answers)
+      if (called.has(prop)) roots.push(dispatcherName(prop, 'call'))
+      continue
+    }
     if (m.endsWith(ACCESSOR_SET)) { if (written.has(m.slice(0, -ACCESSOR_SET.length))) roots.push(fn, dispatcherName(m, 'call')); continue }
     if (called.has(m)) roots.push(fn, dispatcherName(m, 'call'))
     if (read.has(m)) roots.push(fn, fn + BIND, dispatcherName(m, 'read'))
