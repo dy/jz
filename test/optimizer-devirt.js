@@ -7,6 +7,7 @@ import { ctx } from '../src/ctx.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
+import { objectSchemaGuardHex } from '../layout.js'
 import { passFacts } from '../src/wat/assemble/optimize-module.js'
 import { funcWat, run, oracle, jz, compile } from './util.js'
 import { count, walk } from '../scripts/wat-probe.mjs'
@@ -307,6 +308,62 @@ test('devirtSchemaReads: a receiver local the function writes keeps its reads to
     for (const flag of [0, 1]) for (const n of [0, 1, 3]) {
       for (const ex of [original, optimized]) { const v = new DataView(ex.memory.buffer); for (let i = 0; i < 6; i++) v.setBigInt64(i * 8, BigInt(11 + i * 7), true) }
       is(optimized.f(0n, flag, n), original.f(0n, flag, n), `flag ${flag}, count ${n}: ${body}`)
+    }
+  }
+})
+
+test('devirtSchemaReads: a field read straight off an element is dispatched as one held in a local is', () => {
+  // The receiver of `ps[i].x` is the element's load, past the forwarding word of its array's
+  // base. It reads and never writes, so the dispatch may run it once, where it stood. Under
+  // `i < ps.length` the element is present with no test, and the read was a hash probe an
+  // element where the same read through a local was a jump table.
+  const records = `const ps = []\nfor (let i = 0; i < 64; i++) { const p = i & 1 ? { x: i, y: i + 1 } : { y: i + 1, x: i }; ps.push(p) }`
+  const forms = {
+    'under a count': `let s = 0; for (let i = 0; i < 64; i++) s += ps[i].x; return s`,
+    'held in a local': `let s = 0; for (let i = 0; i < 64; i++) { const p = ps[i]; s += p.x } return s`,
+    'under the length': `let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x; return s`,
+    'beside a store to the element': `let s = 0; for (let i = 0; i < ps.length; i++) { ps[i].y = s; s += ps[i].x + ps[i].y } return s`,
+    'off an element of an element': `const rows = [ps, ps]; let s = 0; for (let i = 0; i < ps.length; i++) s += rows[i & 1][i].x; return s`,
+  }
+  for (const [name, body] of Object.entries(forms)) {
+    const src = `${records}\nexport const f = () => { ${body} }`
+    for (const optimize of levels(2, 'speed')) ok(/br_table/.test(compile(src, { wat: true, optimize })), `${name}: a jump table at ${optimize}`)
+    for (const optimize of levels(0, 2, 3, 'speed', 'size')) is(run(src, { optimize }).f(), oracle(src).f(), `${name} at ${optimize}`)
+  }
+})
+
+test('devirtSchemaReads: a receiver may read memory; no operand may write', () => {
+  // An object of the test's schema at 16, its field 7; its box in memory at 64.
+  const cases = [
+    // [what, the call, whether the dispatch takes it]
+    ['a receiver loaded from memory', `(call $__dyn_get_test2 (i64.load (i32.const 64)) (i64.const 1))`, true],
+    ['a receiver loaded past a forwarding word', `(call $__dyn_get_test2 (i64.load (if (result i32) (i32.eq (i32.load (i32.const 4)) (i32.const -1)) (then (call $__ptr_offset_fwd (i32.const 64))) (else (i32.const 64)))) (i64.const 1))`, true],
+    ['a receiver a tee holds', `(call $__dyn_get_test2 (local.tee $sum (i64.load (i32.const 64))) (i64.const 1))`, true],
+    ['a key that writes', `(call $__dyn_get_test2 (i64.load (i32.const 64)) (block (result i64) (i64.store (i32.const 0) (i64.const 99)) (i64.const 1)))`, false],
+    ['a receiver that calls the program', `(call $__dyn_get_test2 (call $bump) (i64.const 1))`, false],
+  ]
+  for (const [name, call, taken] of cases) {
+    compile('', { optimize: 2 })
+    const box = BigInt(objectSchemaGuardHex(ctx.schema.register(['x']))) | 16n
+    ctx.core.includes.add('__ptr_type')
+    const ast = parseWat(`(module (memory (export "memory") 1)
+      (func $__ptr_offset_fwd (param i32) (result i32) (local.get 0))
+      (func $bump (result i64) (i64.store (i32.const 0) (i64.add (i64.load (i32.const 0)) (i64.const 1))) (i64.load (i32.const 64)))
+      (func $__dyn_get_test2 (param i64 i64) (result i64) (i64.add (i64.load (i32.const 0)) (i64.const 1000)))
+      (func $f (export "f") (result i64) (local $sum i64) (i64.add ${call} (i64.load (i32.const 0)))))`)
+    const bytes = encodeWat(ast), fn = findFunc(ast, '$f')
+    walk(fn, n => { if (n[0] === 'call' && n[1] === '$__dyn_get_test2') n.dvProp = 'x' })
+    devirtSchemaReads(fn, passFacts(ctx.transform.optimize), ctx.transform.optimize)
+    is(JSON.stringify(fn).includes('br_table'), taken, `${name}: ${taken ? 'dispatched' : 'left a call'}`)
+    const original = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports
+    const optimized = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+    // (the box at 64 is an object of the schema, then a number: the arm, then the call)
+    for (const held of [box, 5n]) {
+      for (const ex of [original, optimized]) { const v = new DataView(ex.memory.buffer); v.setBigInt64(0, 3n, true); v.setBigInt64(16, 7n, true); v.setBigInt64(64, held, true) }
+      const want = original.f(), got = optimized.f()
+      if (taken) is(got, held === box ? 7n + 3n : want, `${name}: ${held === box ? 'the slot' : 'the call'}`)
+      else is(got, want, `${name}: as written`)
+      is(new DataView(optimized.memory.buffer).getBigInt64(0, true), new DataView(original.memory.buffer).getBigInt64(0, true), `${name}: memory as written`)
     }
   }
 })

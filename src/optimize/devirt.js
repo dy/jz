@@ -15,11 +15,15 @@ import { findBodyStart, nextLocalId, cloneIR, isPureIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { LAYOUT, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, i64Hex } from '../../layout.js'
 import { inlinePureCallExpr } from './vectorize/inline-pure.js'
+import { carry } from './address.js'
 
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
 const OBJECT_TAG = objectSchemaGuardHex(0)
 const OBJECT_TAG_MASK = i64Hex(BigInt(OBJECT_SCHEMA_HI_MASK) ^ (BigInt(LAYOUT.AUX_MASK) << BigInt(LAYOUT.AUX_SHIFT)))
 
+// What reads and never writes: a load, the value of an `if` of such arms, the helpers that walk a header.
+const READ_OPS = new Set(['i64.load', 'f64.load', 'i32.load', 'if', 'then', 'else', 'result'])
+const READ_CALLS = new Set(['$__ptr_type', '$__ptr_offset_fwd'])
 const PURE_I64 = new Set(['i64.const', 'i64.reinterpret_f64', 'f64.reinterpret_i64',
   'i64.and', 'i64.or', 'i64.xor', 'i64.shr_u', 'i64.shl', 'i64.eq', 'i64.ne', 'i64.eqz',
   'i64.extend_i32_u', 'i64.extend_i32_s',
@@ -121,6 +125,18 @@ export function devirtSchemaReads(fn, { schemas = null, schemasByProp = null, fi
     for (let i = from; i < n.length; i++) if (!pureOp(n[i])) return false
     return true
   }
+  // The rewrite asks less of an operand than the memo does. Its arms skip the key, tag and hash,
+  // a tee sunk into an operand is hoisted ahead of them all, and the receiver runs once where it
+  // stood (a stable local read in place, anything else spilled): none may write, and each may
+  // read memory, which the memo's reuse of an earlier answer may not. `ps[i].x`: the receiver is
+  // the element's load, past the forwarding word of its array's base.
+  const readsOnly = n => {
+    if (!Array.isArray(n)) return true
+    const from = n[0] === 'call' ? (READ_CALLS.has(n[1]) ? 2 : 0) : PURE_I64.has(n[0]) || READ_OPS.has(n[0]) ? 1 : 0
+    if (!from) return isPureIR(n)
+    for (let i = from; i < n.length; i++) if (!readsOnly(n[i])) return false
+    return true
+  }
   const rewrite = (parent, i) => {
     // A schema fast path retains the generic call as its fallback. Size mode
     // shares that call instead of adding dispatch arms; read reuse still runs.
@@ -148,11 +164,14 @@ export function devirtSchemaReads(fn, { schemas = null, schemasByProp = null, fi
         teeHoists.push(['local.set', n[1], extractTees(n[2])])
         return ['local.get', n[1]]
       }
-      return n.map((c, k) => k === 0 ? c : extractTees(c))
+      // (a node no tee stands in is the node itself, an access with its mark; one rebuilt carries it)
+      let out = null
+      for (let k = 1; k < n.length; k++) { const c = extractTees(n[k]); if (c !== n[k]) (out ??= n.slice())[k] = c }
+      return out === null ? n : carry(n, out)
     }
     const operands = node.slice(2).map(extractTees)
-    for (const op of operands) if (!pureOp(op)) { if (DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
-    for (const h of teeHoists) if (!pureOp(h[2])) { if (DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
+    for (const op of operands) if (!readsOnly(op)) { if (DBG_DSR) console.error('[dsr-bail]', prop, 'impure operand:', JSON.stringify(op).slice(0, 200)); return }
+    for (const h of teeHoists) if (!readsOnly(h[2])) { if (DBG_DSR) console.error('[dsr-bail]', prop, 'impure tee:', JSON.stringify(h).slice(0, 200)); return }
     // the dispatch's generic arm — the original call over the tee-free operands
     const genericCall = [node[0], node[1], ...operands]
     if (uid === null) uid = nextLocalId(fn, '$__dsr')
