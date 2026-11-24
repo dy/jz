@@ -35,11 +35,20 @@ export const loopBodyOps = (tree, entered, weigh = isOp) => {
 // `keep`: every call goes through the host bridge (a boxed result decoded, the
 // host imports given) and the memory is not reset between calls, whose state
 // later calls read (test/data-forms.js).
-export const runEntered = (tree, calls, keep = false) => {
-  const loops = [], start = new Map(), runs = []
-  let cur = start
+const DECLS = new Set(['param', 'result', 'local', 'export', 'type'])
+export const runEntered = (tree, calls, keep = false, steady = null) => {
+  const loops = [], start = new Map(), runs = [], kept = new Map(), funcs = []
+  let cur = start, ran = 0
   const walk = n => {
     if (!Array.isArray(n)) return
+    // (`steady`: every function counts its entries, the calls a run makes whatever
+    // the tier wrote out, unrolled or left in an arm that never runs)
+    if (steady && n[0] === 'func') {
+      let body = typeof n[1] === 'string' ? 2 : 1
+      while (Array.isArray(n[body]) && DECLS.has(n[body][0])) body++
+      funcs.push([n, body])
+      n.splice(body, 0, ['call', '$__ratchet_fn'])
+    }
     if (n[0] === 'loop') {
       const id = loops.length
       let body = typeof n[1] === 'string' ? 2 : 1
@@ -53,27 +62,47 @@ export const runEntered = (tree, calls, keep = false) => {
     for (const c of n) walk(c)
   }
   walk(tree)
-  tree.splice(1, 0, ['import', '"ratchet"', '"enter"', ['func', '$__ratchet_enter', ['param', 'i32']]])
+  const heads = [['import', '"ratchet"', '"enter"', ['func', '$__ratchet_enter', ['param', 'i32']]]]
+  if (steady) heads.push(['import', '"ratchet"', '"fn"', ['func', '$__ratchet_fn']])
+  tree.splice(1, 0, ...heads)
   let binary
   try { binary = encodeWat(tree) }
-  finally { tree.splice(1, 1); for (const [loop, body] of loops) loop.splice(body, 1) }
-  const imports = { ratchet: { enter: id => cur.set(loops[id][0], (cur.get(loops[id][0]) ?? 0) + 1) } }
+  finally { tree.splice(1, heads.length); for (const [loop, body] of loops) loop.splice(body, 1); for (const [fn, body] of funcs) fn.splice(body, 1) }
+  const imports = { ratchet: { enter: id => cur.set(loops[id][0], (cur.get(loops[id][0]) ?? 0) + 1), fn: () => { ran++ } } }
   const each = (exports, reset) => {
     for (const [name, args] of calls) {
-      cur = new Map()
-      runs.push({ loops: cur, ret: exports[name](...args) })
+      cur = new Map(); ran = 0
+      const ret = exports[name](...args)
+      runs.push({ loops: cur, ret, ran })
       reset?.()
     }
   }
   // numbers cross a raw instance; arrays go through the host bridge
   if (keep || calls.some(([, args]) => args.some(a => typeof a === 'object'))) {
-    const { exports, memory } = instantiate(new WebAssembly.Module(binary), { imports })
+    const { exports, memory, instance } = instantiate(new WebAssembly.Module(binary), { imports })
     each(exports, keep ? null : () => memory?.reset?.())
+    // What a call of each export of `steady` takes from the heap and the calls it
+    // makes, its first call behind it (a durable array's snapshot, a table's first
+    // growth): the middle of eight calls' advances of the bump pointer (`__jz_heap`)
+    // and of their counts of function entries, so a call in which a compaction
+    // gives back the calls' before it is no measure, and both are the same on every
+    // machine. A kernel that keeps nothing takes none.
+    const heap = instance.exports.__jz_heap
+    if (steady) {
+      cur = new Map()
+      const middle = (xs) => xs.sort((a, b) => a - b)[xs.length >> 1]
+      for (const name of steady) {
+        exports[name]()
+        const took = [], made = []
+        for (let i = 0; i < 8; i++) { const at = heap?.value ?? 0; ran = 0; exports[name](); took.push((heap?.value ?? 0) - at); made.push(ran) }
+        kept.set(name, { mem: Math.max(0, middle(took)), ran: middle(made) })
+      }
+    }
   } else {
     const { exports } = new WebAssembly.Instance(new WebAssembly.Module(binary), imports)
     each(exports)
   }
-  return { start, runs }
+  return { start, runs, kept }
 }
 
 // The ops of the loops any of `calls` (argument lists of `f`) entered.

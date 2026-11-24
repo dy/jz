@@ -33,6 +33,17 @@
 //      by ops alone, a loop that calls the dynamic path would rank above the
 //      inline code it falls back from. The start is not a kernel (a module's
 //      init may be baked at compile time); the `late` holder's init call is.
+//  (c) Memory beside the counts: what a call of the kernel takes from the heap
+//      once its first call is behind it (test/_loop-ops.js `steady`: the bump
+//      pointer's advance, the middle of eight calls'). A kernel that keeps
+//      nothing takes none; one that renews its records takes what the records
+//      weigh, and a form short of the lightest falls short by `mem`, in bytes.
+//  (d) 'speed' is no worse than level 2: a cell at 'speed' whose call runs
+//      more calls (every function's entries counted as the kernel runs, the
+//      middle of the same eight calls', so a loop written out four times, an
+//      arm that never runs or a first call's snapshots weigh nothing),
+//      lost the SIMD level 2 has, or takes more from the heap than the same
+//      cell at level 2 falls short by `tier`.
 // A shortfall of today is listed in test/data-forms.json. A cell fails on any
 // difference from its listing, a smaller gap too, so the list holds what the
 // compiler does and only shrinks. Rewrite it with `node test/data-forms.js
@@ -315,7 +326,7 @@ const show = v => Object.is(v, -0) ? '-0' : String(v)
 const DECL = new Set(['param', 'result', 'local', 'export', 'type'])
 const measure = (p, level) => {
   const tree = parseWat(compile(p.src, { optimize: level, wat: true }))
-  const { runs } = runEntered(tree, p.calls.map(c => [c, []]), true)
+  const { runs, kept } = runEntered(tree, p.calls.map(c => [c, []]), true, p.kernels)
   const funcs = new Map(tree.filter(n => Array.isArray(n) && n[0] === 'func' && !String(n[1]).startsWith('$__')).map(f => [f[1], f]))
   const own = ['module', ...funcs.values()]
   const callee = n => CALLS.has(n[0]) && !String(n[1]).startsWith('$__throw') && (n[0].includes('call_') ? n[0] : n[1])
@@ -348,6 +359,7 @@ const measure = (p, level) => {
       return [k, {
         simd: loopBodyOps(own, m, n => weight(n).simd) > 0, calls,
         ops: loopBodyOps(tree, m, n => weight(n).ops), trips: [...m.values()].some(h => h > 1),
+        mem: kept.get(k).mem, ran: kept.get(k).ran,
       }]
     })),
   }
@@ -356,7 +368,13 @@ const node = p => { const m = oracle(p.src); return p.calls.map(c => m[c]()) }
 
 // One group at one level: the miscompiles, each cell's counts, and each short
 // cell's gap.
+const swept = new Map()
 const sweep = (group, level) => {
+  const id = `${group}/${level}`
+  if (!swept.has(id)) swept.set(id, sweepOnce(group, level))
+  return swept.get(id)
+}
+const sweepOnce = (group, level) => {
   const bad = [], rows = {}
   for (const p of GROUPS[group]()) {
     const key = k => `${group}/${p.form}/${k}/${level}`
@@ -369,7 +387,7 @@ const sweep = (group, level) => {
   const gaps = {}
   for (const cells of Object.values(rows)) {
     if (!cells.some(r => r.trips)) continue
-    const vec = cells.some(r => r.simd), fewest = Math.min(...cells.map(r => r.calls.length))
+    const vec = cells.some(r => r.simd), fewest = Math.min(...cells.map(r => r.calls.length)), least = Math.min(...cells.map(r => r.mem))
     for (const status of [true, false]) {
       const peers = cells.filter(r => r.simd === status)
       if (!peers.length) continue
@@ -379,11 +397,26 @@ const sweep = (group, level) => {
         if (vec && !status) g.simd = 'lost'
         if (r.calls.length > fewest) g.calls = r.calls.length - fewest
         if (r.ops > bar.ops) g.ops = r.ops - bar.ops
+        if (r.mem > least) g.mem = r.mem - least
         if (Object.keys(g).length) gaps[r.key] = g
       }
     }
   }
-  return { bad, gaps, rows: Object.values(rows).flat() }
+  const all = Object.values(rows).flat()
+  // (d): against the same cell a tier below
+  if (level === 'speed') {
+    const below = new Map(sweep(group, 2).rows.map(r => [r.key.slice(0, r.key.lastIndexOf('/')), r]))
+    for (const r of all) {
+      const b = below.get(r.key.slice(0, r.key.lastIndexOf('/')))
+      if (!b || !(r.trips || b.trips)) continue
+      const tier = {}
+      if (r.ran > b.ran) tier.calls = r.ran - b.ran
+      if (b.simd && !r.simd) tier.simd = 'lost'
+      if (r.mem > b.mem) tier.mem = r.mem - b.mem
+      if (Object.keys(tier).length) (gaps[r.key] ??= {}).tier = tier
+    }
+  }
+  return { bad, gaps, rows: all }
 }
 
 // Every cell the gate measures, by key; no compile.
@@ -393,11 +426,13 @@ const cells = () => Object.entries(GROUPS).flatMap(([group, programs]) =>
 // A cell's shortfall against what the table lists for it.
 const verdict = (key, g = {}, k = {}) => {
   const bad = []
-  for (const f of ['calls', 'ops']) {
-    if (g[f] && !k[f]) bad.push(`${key}: ${g[f]} ${f} past the best form, not listed`)
-    else if ((g[f] || 0) !== (k[f] || 0)) bad.push(`${key}: ${g[f] || 'no'} ${f} past the best form now, listed ${k[f]}`)
+  for (const [f, what] of [['calls', 'calls'], ['ops', 'ops'], ['mem', 'bytes kept a call']]) {
+    if (g[f] && !k[f]) bad.push(`${key}: ${g[f]} ${what} past the best form, not listed`)
+    else if ((g[f] || 0) !== (k[f] || 0)) bad.push(`${key}: ${g[f] || 'no'} ${what} past the best form now, listed ${k[f]}`)
   }
   if (g.simd !== k.simd) bad.push(`${key}: ${g.simd ? 'not vectorized where another form is' : 'vectorized as the best form'}, listed ${k.simd ?? 'none'}`)
+  const tier = t => t ? JSON.stringify(t) : 'none'
+  if (tier(g.tier) !== tier(k.tier)) bad.push(`${key}: short of level 2 by ${tier(g.tier)}, listed ${tier(k.tier)}`)
   return bad
 }
 
@@ -408,15 +443,15 @@ if (update || shown) {
   // `--show=rec/` sweeps that group alone, a filter without a group all of them;
   // `--update` sweeps all
   const filter = shown?.split('=')[1] ?? ''
-  const swept = group => update || !filter.includes('/') || filter.startsWith(group + '/')
+  const wanted = group => update || !filter.includes('/') || filter.startsWith(group + '/')
   const known = {}, bad = []
   for (const group of Object.keys(GROUPS)) for (const level of LEVELS) {
-    if (!swept(group)) continue
+    if (!wanted(group)) continue
     const t0 = performance.now(), r = sweep(group, level)
     console.error(`${pass(group, level)}: ${((performance.now() - t0) / 1000).toFixed(1)} s`)
     bad.push(...r.bad); Object.assign(known, r.gaps)
     if (shown) for (const c of r.rows) if (c.key.includes(filter))
-      console.log(`${c.key}  ${c.simd ? 'simd ' : ''}${c.ops} ops  ${c.calls.length} calls${c.calls.length ? ' ' + c.calls.join(' ') : ''}${r.gaps[c.key] ? '  short ' + JSON.stringify(r.gaps[c.key]) : ''}`)
+      console.log(`${c.key}  ${c.simd ? 'simd ' : ''}${c.ops} ops  ${c.calls.length} calls${c.calls.length ? ' ' + c.calls.join(' ') : ''}  ${c.ran} run${c.mem ? `  takes ${c.mem} bytes a call` : ''}${r.gaps[c.key] ? '  short ' + JSON.stringify(r.gaps[c.key]) : ''}`)
   }
   if (update) {
     const keys = cells().filter(k => known[k])
@@ -428,9 +463,10 @@ if (update || shown) {
   const known = JSON.parse(readFileSync(KNOWN, 'utf8'))
   test('data-forms: a cell passes only as listed, a smaller gap failing like a larger one', () => {
     const fails = (g, k) => verdict('cell', g, k).length
-    for (const [g, k] of [[{}, {}], [{ ops: 5 }, { ops: 5 }], [{ calls: 2, ops: 5 }, { calls: 2, ops: 5 }], [{ simd: 'lost' }, { simd: 'lost' }]]) ok(!fails(g, k), `as listed: ${JSON.stringify([g, k])}`)
+    for (const [g, k] of [[{}, {}], [{ ops: 5 }, { ops: 5 }], [{ calls: 2, ops: 5 }, { calls: 2, ops: 5 }], [{ simd: 'lost' }, { simd: 'lost' }], [{ mem: 64 }, { mem: 64 }], [{ tier: { calls: 1 } }, { tier: { calls: 1 } }]]) ok(!fails(g, k), `as listed: ${JSON.stringify([g, k])}`)
     for (const [g, k] of [[{ ops: 5 }, {}], [{ ops: 5 }, { ops: 3 }], [{ ops: 3 }, { ops: 5 }], [{}, { ops: 5 }], [{ calls: 1 }, { calls: 2 }], [{ calls: 2 }, {}],
-      [{}, { calls: 1 }], [{ simd: 'lost' }, {}], [{}, { simd: 'lost' }], [{ simd: 'lost' }, { ops: 5 }], [{ ops: 5 }, { calls: 5 }]]) ok(fails(g, k), `differs: ${JSON.stringify([g, k])}`)
+      [{}, { calls: 1 }], [{ simd: 'lost' }, {}], [{}, { simd: 'lost' }], [{ simd: 'lost' }, { ops: 5 }], [{ ops: 5 }, { calls: 5 }],
+      [{ mem: 64 }, {}], [{}, { mem: 64 }], [{ mem: 64 }, { mem: 32 }], [{ tier: { calls: 1 } }, {}], [{}, { tier: { mem: 8 } }], [{ tier: { calls: 1 } }, { tier: { calls: 2 } }]]) ok(fails(g, k), `differs: ${JSON.stringify([g, k])}`)
   })
   test('data-forms: every listed gap names a cell the gate measures', () => {
     const all = new Set(cells()), stale = Object.keys(known).filter(k => !all.has(k))
