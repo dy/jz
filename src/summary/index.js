@@ -1609,6 +1609,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const count = integerOf(node[2])
       if (count >= 0 && count <= 0x7fffffff) return count
     }
+    // (`Array.from({ length: N }, …)` of such a count too: an array-like of the one key; a count the program
+    // computes may be a fraction, of which `from` makes fewer elements than a counter below it reads)
+    if (Array.isArray(node) && node[0] === '()' && node[1] === 'Array.from' && node.length === 3) {
+      const src = Array.isArray(node[2]) && node[2][0] === ',' ? node[2][1] : node[2]
+      if (Array.isArray(src) && src[0] === '{}' && src.length === 2 && Array.isArray(src[1]) && src[1][0] === ':' && src[1][1] === 'length') {
+        const count = integerOf(src[1][2])
+        if (count >= 0 && count <= 0x7fffffff) return count
+      }
+    }
     if (!Array.isArray(node) || node[0] !== '[') return LEN_OPEN
     for (let i = 1; i < node.length; i++) if (Array.isArray(node[i]) && node[i][0] === '...') return LEN_OPEN
     return node.length - 1
@@ -3407,7 +3416,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (tagOf(cb) === K.NONE) return arr
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); raiseElem(arr, ANY); return arr }
     for (let i = 3; i < n; i++) escape(ks[base + i])
-    raiseElem(arr, call2(paramOf(cb), elem, NUMBER, n > 2 ? ks[base + 2] : NULLISH))
+    // (the callback's index is below the count, and the numbers it returns are the elements', as `map`'s)
+    const b = sp
+    pushK(elem); pushK(NUMBER)
+    knums[b + 1] = indexNums(arr)
+    const r = callClosure(paramOf(cb), b, 2, null, n > 2 ? ks[base + 2] : NULLISH)
+    sp = b
+    raiseElem(arr, r, false, false, false, hasTag(r, K.NUMBER) ? callbackNums(paramOf(cb)) : NR_NONE)
     return arr
   }
   // `JSON.parse` of a string the program holds (a literal, a module const):

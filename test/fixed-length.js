@@ -43,6 +43,29 @@ test('fixed length: a construction counted by a name that holds an integer for g
   is(made('let N = 8', 'new Array(N)', 'N = k; t[0] = k'), null, 'a binding written again holds none')
   is(made('const N = 8', 'new Array(N)', 't.push(k)'), null, 'a push opens it, as a literal count\'s')
   is(made('const N = 8', 'new Array(N)', 't[8] = k'), null, 'and a store past it')
+  // `Array.from` of an array-like that is its length alone
+  is(made('const N = 8', 'Array.from({ length: N }, (_, i) => i * 2)'), 8, 'Array.from of a module constant')
+  is(made('', 'Array.from({ length: 8 }, (_, i) => i * 2)'), 8, 'of a literal')
+  is(made('', 'Array.from({ length: 8 })'), 8, 'without a callback')
+  is(made('', 'Array.from({ length: 8.5 }, (_, i) => i * 2)'), null, 'a fraction makes fewer elements than a counter below it reads')
+  is(made('', 'Array.from({ length: 8, 0: 5 }, (_, i) => i * 2)'), null, 'an array-like of more than its length is no count')
+  is(fixedLen(`export const f = (n) => { const t = Array.from({ length: n }, (_, i) => i * 2); return t[4] }`, 'f', 't'), null, 'nor is a count the caller gives')
+})
+
+// Its elements are what the callback returns for an index below the count, so a gather through it
+// stays inside both arrays; an array-like of more keys, a fraction and a missing callback read as Node.
+const FROM = [
+  ['a gather through it', `const N = 8\nconst idx = Array.from({ length: N }, (_, i) => (i * 3 + 1) % N), a = Array.from({ length: N }, (_, i) => i * 0.5)\nexport const f = () => { let s = 0; for (let i = 0; i < N; i++) s += u(a[idx[i]]); return s }`, 'in in'],
+  ['read past its count', `const t = Array.from({ length: 6 }, (_, i) => i * 2)\nexport const f = () => { let s = 0; for (let i = 0; i < 8; i++) s += u(t[i]); return s }`, 'open'],
+  ['without a callback', `const t = Array.from({ length: 6 })\nexport const f = () => { let s = 0; for (let i = 0; i < 6; i++) s += u(t[i]); return s }`, 'hole'],
+  ['an array-like of more keys', `const t = Array.from({ length: 6, 0: 5, 2: 7 })\nexport const f = () => { let s = 0; for (let i = 0; i < 6; i++) s += u(t[i]); return s }`, 'open'],
+  ['a fraction', `const t = Array.from({ length: 3.5 }, (_, i) => i * 2)\nexport const f = () => { let s = 0; for (let i = 0; i < 3.5; i++) s += u(t[i]); return s }`, 'open'],
+]
+test('fixed length: Array.from of a length has its callback\'s results below the count', () => {
+  for (const [what, src, reads] of FROM) {
+    is(present(`${U}\n${src}`, 'f'), reads, what)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(`${U}\n${src}`, 'f', [], { optimize }, `${what} at ${optimize}`)
+  }
 })
 
 test('fixed length: a resize, a store past the count or an unbounded index opens it', () => {
