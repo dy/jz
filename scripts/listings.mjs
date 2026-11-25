@@ -15,6 +15,7 @@ export const LISTINGS = [
   // (its two hosts write one file: one after the other, in one task)
   { name: 'perf-ratchet', command: 'sh', args: ['-c', 'node test/perf-ratchet.js --update && JZ_TEST_HOST=wasi node test/perf-ratchet.js --update'], env: legEnv(), writes: 'test/perf-ratchet.json' },
   { name: 'vector-coverage', args: ['test/vector-coverage.js', '--update'], env: legEnv(), writes: 'test/vector-coverage.json' },
+  { name: 'reduce-coverage', args: ['test/reduce-coverage.js', '--update'], env: legEnv(), writes: 'test/reduce-coverage.json' },
 ]
 
 // the listings' contents, by the hash git gives them
