@@ -19,12 +19,15 @@
 //  (a) Every call answers what Node answers. A difference is a miscompile,
 //      never listed.
 //  (b) Per kernel the best form sets the bar. Three counts over the loops the
-//      kernel's call enters (test/_loop-ops.js), static over the loops a run
-//      selected, so the same on every machine: whether the program's own
-//      functions hold a SIMD op there (the runtime's `$__*` copy loops use one
-//      for every form); the calls there, the runtime's and the program's, but
-//      a `$__throw*`; and the ops there, as spellings.js counts them, a called
-//      function of the program's counted as its body (see `measure`). A form
+//      kernel's call enters (test/_loop-ops.js), read off the code and the
+//      rounds a run takes, so the same on every machine: whether the program's
+//      own functions hold a SIMD op there (the runtime's `$__*` copy loops use
+//      one for every form); the calls there, the runtime's and the program's,
+//      but a `$__throw*`; and the ops the call runs there, each op once a round
+//      of its loop, a called function of the program's counted as its body (see
+//      `measure`). By the round, not by what the loops hold: a sum written out
+//      four accumulators to the round holds twice the ops of the one-accumulator
+//      loop and runs in two thirds of its time, and held ops read it as a loss. A form
 //      not vectorized where another is falls short by `simd: 'lost'`; by
 //      `calls`, its calls past the fewest of any form; by `ops`, its ops past
 //      the form of its own status with the fewest calls, then the fewest ops.
@@ -362,7 +365,7 @@ const measure = (p, level) => {
       loopBodyOps(tree, m, n => { calls.push(...weight(n).calls); return 0 })
       return [k, {
         simd: loopBodyOps(own, m, n => weight(n).simd) > 0, calls,
-        ops: loopBodyOps(tree, m, n => weight(n).ops), trips: [...m.values()].some(h => h > 1),
+        ops: loopBodyOps(tree, m, n => weight(n).ops, true), trips: [...m.values()].some(h => h > 1),
         mem: kept.get(k).mem, ran: kept.get(k).ran,
       }]
     })),

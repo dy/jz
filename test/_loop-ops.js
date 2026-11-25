@@ -7,26 +7,31 @@ import encodeWat from 'watr/compile'
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`;
 // `weigh` takes the place of the count of one per node (the data-form gate
 // counts the calls and the SIMD ops with it, and a called function's body).
+// `byRound`: a node weighs once a round of the loop it stands in, `entered` the
+// map of each loop to the rounds it ran (runEntered): what a call runs, where
+// the plain count is what its loops hold. A loop written out four to the round
+// holds four times the ops and runs a quarter of the rounds.
 const isLoop = (n) => Array.isArray(n) && n[0] === 'loop'
 export const isSite = (n) => n[0] === 'if' && Array.isArray(n[1]) && n[1][0] === 'call' && n[1][1] === '$__gc_begin'
 const isOp = (n) => typeof n[0] === 'string'
-export const loopBodyOps = (tree, entered, weigh = isOp) => {
+export const loopBodyOps = (tree, entered, weigh = isOp, byRound = false) => {
   let count = 0
+  // (`inLoop`: the weight of a node here, 0 outside every loop)
   const walk = (n, inLoop) => {
     if (!Array.isArray(n) || n[0] === 'loop' && entered && !entered.has(n) || isSite(n)) return
-    const here = inLoop || n[0] === 'loop'
-    if (here) count += Number(weigh(n))
+    const here = n[0] !== 'loop' ? inLoop : byRound ? entered.get(n) : 1
+    if (here) count += Number(weigh(n)) * here
     let end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length
     const copy = n[0] === 'block' && typeof n[1] === 'string' && /__sp\.f\d+d$/.test(n[1])
     if (copy && isLoop(n[end - 1])) end--
     for (let i = 1; i < end; i++) {
       const c = n[i]
       if (!copy || !Array.isArray(c) || c[0] !== 'block' || !isLoop(c[c.length - 1])) { walk(c, here); continue }
-      if (here) count += Number(weigh(c))
+      if (here) count += Number(weigh(c)) * here
       for (let k = 1; k < c.length - 1; k++) walk(c[k], here)
     }
   }
-  walk(tree, false)
+  walk(tree, 0)
   return count
 }
 
