@@ -10,7 +10,10 @@
 // and a closure made before the fill sees it. Each program answers what Node answers at every level.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, oracle, wat } from './util.js'
+import parseWat from 'watr/parse'
+import { run, oracle, wat, compileInProcess as compile } from './util.js'
+import { levels, onWasi } from './_matrix.js'
+import { loopBodyOps, runEntered } from './_loop-ops.js'
 
 const LEVELS = [false, true, 'size', { level: 'speed', relaxedFloat: false }, 'speed']
 const name = (o) => JSON.stringify(o)
@@ -164,4 +167,75 @@ export let main = () => {
   for (let c = 0; c < a.length; c++) s += a[c] ? a[c][1] + ';' : 'null;'
   return s
 }`)
+})
+
+// A loop over a holder that may be unset tests the holder once, ahead of the loop: the for
+// emitter versions a loop on what its fast arm assumes (compile/emit/control-flow.js), and a plain
+// array is a candidate for its presence as a typed array is (type/loop-versioning.js), where the
+// arm then leaves its accesses bare: an array of fixed length. The arm that runs holds no test of
+// the holder, so the lane lift and the counted reads see a bare loop; the loop as written runs
+// where a holder is missing, and throws where the read is reached. An array of open length (the
+// pushes below: no built length reaches a binding a function assigns) keeps its loop as written.
+const HOLDERS = {
+  literal: (x, f) => `${x} = [${Array.from({ length: 16 }, (_, i) => f(i)).join(', ')}]`,
+  counted: (x, f, v) => `${x} = new Array(N); for (let i = 0; i < ${x}.length; i++) ${x}[i] = ${v}`,
+  filled: (x, f, v) => `${x} = new Array(N).fill(0); for (let i = 0; i < N; i++) ${x}[i] = ${v}`,
+  pushed: (x, f, v) => `${x} = []; for (let i = 0; i < N; i++) ${x}.push(${v})`,
+}
+const FIXED = ['literal', 'counted', 'filled']
+const unset = (make) => `const N = 16
+let a, b, c, seen = 0
+const tries = (f) => { try { return f() } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }
+export let fill = () => { ${make('a', i => i * 0.5, 'i * 0.5')}; ${make('b', i => i + 1, 'i + 1')}; ${make('c', () => 0, '0')}; return 0 }
+const drop = (k) => { if (k === 0) a = undefined; else if (k === 1) b = null; else c = undefined; return 0 }
+export let dot = () => { let s = 0; for (let i = 0; i < N; i++) s += a[i] * b[i]; return s }
+export let prefix = () => { let s = 0; for (let i = 0; i < N; i++) { s += a[i]; c[i] = s } return c[N - 1] }
+export let own = () => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+const some = (n) => { let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }
+const first = () => { let s = 0; for (let i = 0; i < N; i++) { c[i] = i + 0.25; seen++; s += a[i] } return s }
+const midway = () => { let s = 0; for (let i = 0; i < N; i++) { if (i === 3) drop(0); seen++; s += a[i] } return s }
+const deep = (k) => { if (k > 0) return deep(k - 1); a = undefined; return 0 }
+const called = () => { let s = 0; for (let i = 0; i < N; i++) { if (i === 5) deep(2); seen++; s += a[i] } return s }
+export let main = () => {
+  const out = [tries(dot), tries(prefix), tries(own), some(0), tries(() => some(1))]
+  fill(); out.push(dot(), prefix(), own(), some(4))
+  drop(1); out.push(tries(dot), prefix())
+  fill(); drop(2); out.push(dot(), tries(prefix))
+  fill(); drop(0); out.push(tries(dot), tries(prefix), some(0), tries(first), seen, c[0], c[1])
+  fill(); seen = 0; out.push(tries(midway), seen)
+  fill(); seen = 0; out.push(tries(called), seen)
+  return out.join(',')
+}`
+test('nullable arrays: a loop over a holder that may be unset throws where Node does, and runs none where it has no round', () => {
+  for (const [form, make] of Object.entries(HOLDERS)) asNode(form, unset(make))
+})
+
+test('nullable arrays: the loop that runs holds no test of its holders', () => {
+  if (onWasi()) return
+  const throwsOf = (n) => n[0] === 'call' && n[1] === '$__throw_property_nullish', callOf = (n) => n[0] === 'call'
+  for (const [form, make] of Object.entries(HOLDERS)) for (const optimize of levels(2, 'speed')) {
+    const tree = parseWat(compile(unset(make), { optimize, wat: true }))
+    const { runs } = runEntered(tree, [['fill', []], ['dot', []], ['prefix', []]])
+    const tests = (k) => loopBodyOps(tree, new Set(runs[k].loops.keys()), throwsOf)
+    for (const [k, kernel] of [[1, 'dot'], [2, 'prefix']]) ok(runs[k].loops.size >= 1, `${form}, ${kernel} at ${optimize}: a loop runs`)
+    // (the pushes: the arm would keep each read's test of its bounds, and its loop, unrolled over them, ran slower)
+    if (!FIXED.includes(form)) { ok(tests(1) > 0, `${form}, dot at ${optimize}: the loop as written`); continue }
+    for (const [k, kernel] of [[1, 'dot'], [2, 'prefix']]) is(tests(k), 0, `${form}, ${kernel} at ${optimize}: no test of a holder in the loop that runs`)
+    // (the reads are the array's own: a holder taken for another kind of value reads through a helper)
+    is(loopBodyOps(tree, new Set(runs[1].loops.keys()), callOf), 0, `${form}, dot at ${optimize}: no call in the loop that runs`)
+  }
+})
+
+// A holder that cannot be missing takes no guard: its loop is written once, and as it stands (a
+// guard's arm is entered with the counter read where it starts: the lane loop's bound was then
+// computed at run time, where the count is a literal).
+test('nullable arrays: a loop over holders that are always there is written once', () => {
+  const src = `const N = 16
+const ${HOLDERS.literal('a', i => i * 0.5)}, ${HOLDERS.literal('b', i => i + 1)}, ${HOLDERS.literal('c', () => 0)}
+export let dot = () => { let s = 0; for (let i = 0; i < N; i++) s += a[i] * b[i]; return s }
+export let prefix = () => { let s = 0; for (let i = 0; i < N; i++) { s += a[i]; c[i] = s } return c[N - 1] }`
+  const fn = (name, optimize) => wat(src, { optimize }).split(/\n(?=\s*\(func )/).find(f => f.trimStart().startsWith(`(func $${name}`))
+  is((fn('prefix', false).match(/\(loop\b/g) || []).length, 1, 'at level 0, where nothing else copies a loop')
+  if (onWasi()) return
+  is((fn('dot', 2).match(/\(i32\.ge_s\s*\(local\.get \$i\)\s*\(i32\.const 16\)\)/g) || []).length, 2, 'the lane loop and the rounds after it each stop at the count as a literal')
 })

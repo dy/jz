@@ -15,7 +15,7 @@
  */
 import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs, nodeKey, nodeEqual } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { isNullable, core, NUMBER } from '../summary/kind.js'
+import { isNullable, core, NUMBER, K, tagOf } from '../summary/kind.js'
 import { repOf, repOfGlobal, intCertainOf } from '../reps.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedElemCtor } from '../typed-provenance.js'
@@ -672,6 +672,18 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   const advancedKeys = new Map()   // key → { recv, idx, forms: Map(signature → affine), bad, absent }
   const scan = (n) => {
     if (sourceVersionedLoop(n)) return false
+    // A plain array of fixed length that may be missing is a candidate for its
+    // presence alone: the guard tests the holder once, and the fast arm's reads
+    // and stores are the array emitter's own, bare inside the length. (An array
+    // of open length stays as written: the arm would keep each read's test of
+    // its bounds, and its loop, unrolled over them, ran slower.)
+    if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv && !seen.has(n[1] + '\x00present') && stable(n[1])) {
+      const view = ctx.summary?.at(ctx.func.current)
+      if (view && tagOf(core(view.kindOfExpr(n[1]) ?? 0)) === K.ARRAY && receiverMayBeAbsent(n[1], n[2]) && view.fixedLenOfExpr(n[1]) != null) {
+        seen.add(n[1] + '\x00present'); cands.push({ recv: n[1], idx: n[2], presence: true })
+        return
+      }
+    }
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
         && typedRecv(n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])

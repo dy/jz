@@ -27,7 +27,7 @@ import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.j
 import { fuseProbeIf } from './fuse-probes.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
-import { isNullable } from '../../summary/kind.js'
+import { isNullable, core, valOf } from '../../summary/kind.js'
 import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 
 
@@ -1052,7 +1052,7 @@ export const controlFlowOps = {
             if (!isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(c.recv)) || freeRefs.get(c.recv)?.val) continue
             conjs.push(['i32.eqz', isNullish(asF64(emit(c.recv)))])
             // present in the fast arm: its reads take the kind without the missing part
-            freeRefs.set(c.recv, { val: VAL.TYPED, notNullish: true })
+            freeRefs.set(c.recv, { val: valOf(core(ctx.summary.at(ctx.func.current).kindOfExpr(c.recv))) ?? VAL.TYPED, notNullish: true })
           }
           // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
           // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never
