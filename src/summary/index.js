@@ -848,7 +848,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // counted loops of an exact trip count and on no other path (`exactTrips`:
   // a start and an end of one value each, a step of one, no `break`,
   // `continue` or `return` in the body). Nothing else can see it before it is
-  // whole, so wherever another function reads it, it has its literal's count
+  // whole, so wherever it is read, by its builder past the pushes or by
+  // another function, it has its literal's count
   // plus the pushes, where nothing else resizes the cell (`resizedElsewhere`:
   // `unknown` but for these pushes, which other proofs still read as a
   // resize) and no other construction joins it (`builds`, `multiSite`; query.js
@@ -857,13 +858,32 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // one `n`. A push with no such count leaves the cell open for the round
   // (null); the round's walk is complete, so the last one decides, as for `grown`.
   const ownBuilds = new Map()    // binding key → the literal its declaration builds
-  const builds = new Map()       // cell root → { scope, key, pushes: Map(push node → elements) } | null
+  const builds = new Map()       // cell root → { key, pushes: Map(push node → elements) } | null
   const exactTrips = []          // per counted loop being walked: its exact trip count, or -1
   const multiSite = new Set()    // cell roots joining several construction sites
   // The element reads whose index the walk found inside the receiver's fixed
   // length (a counter's span), by node: the query has no loop in view and
   // reads them present through this set.
   const presentReads = new Set()
+  // The length an array has once it is built, for the readers that meet it built: a function's
+  // `const x = []` grown by counted pushes alone (`builds`) for every reader but its builder, a
+  // module's (`grown`) for every function, where none runs ahead of the last push (`short`). A
+  // push opens the cell's count (`lens`), and a read under `i < N` of an array pushed N times
+  // could miss: `idx[i]` read a number or nothing, and `a[idx[i]]` then went by a key of no known
+  // kind, a call an element. The length is the cell's, for bounds alone: where the block stands
+  // is the holder's to say (a name taken before the pushes holds the block's first place).
+  // A function's build its builder reads whole too: every mention of the name but a push's
+  // stands after the last push (`buildsAlone`). The module's statements read theirs as it grows.
+  // It is assumed, not raised: a store walked before its array's builder would leave a hole no
+  // later round takes back. So the solve runs once without it (`steady` empty), reads the table
+  // off that solve where an index met an open count (`wanted`), and runs again with the table
+  // given from its first round; a class the second solve finds no longer built to that length
+  // leaves the table and the solve runs once more (`settleSteady`).
+  let steady = new Map()         // cell → { len, init }: the lengths this solve takes as given; `init` for one the module grows
+  let builtLens = steady         // and those it found (`steadyOf`), which the query reads (builtLenOf)
+  const wanted = new Set()       // cell roots an index of nonnegative integers met with the count open
+  // (an element read the walk holds present, where its array's numbers are integers of one hull: its span)
+  const readSpans = new Map()
   // and the element stores whose index it found a span of integers (a counter's, a parameter's whose every
   // argument is one): where the array's length is fixed, which holds the span, the cell's own store
   const presentStores = new Set()
@@ -921,6 +941,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const openLen = (arr, why, counted = false, built = false) => { const c = lenCell(arr); if (c >= 0) { setLen(c, LEN_OPEN, why); if (!counted) unknown.add(c); if (!counted && !built) resizedElsewhere.add(c) } }
   /** The fixed length of the array `arr` holds, -1 where it may change or differ. */
   const fixedLen = (arr) => { const c = lenCell(arr), n = c < 0 ? -1 : lens[c]; return n >= 0 && !(stores.get(c) >= n) ? n : -1 }
+  /** The length the array of cell `c` has for the code being walked, where the solve was given one (`steady`); -1 otherwise. */
+  const steadyAt = (c) => {
+    const st = c < 0 ? undefined : steady.get(c)
+    return st === undefined || st.init && current === null ? -1 : st.len
+  }
   // The integers an index can be, `[lo, hi]`: a literal, a constant, the
   // counter of a counted loop while its body is walked, and sums, products,
   // remainders and masks of those. null where the walk cannot bound it.
@@ -967,6 +992,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op == null) return Number.isInteger(e[1]) ? pointRange(e[1]) : null
     if ((op === '(' || op === '()' && e.length === 2)) return spanOf(e[1], scope, integral)
     if (e.length !== 3) return null
+    if (op === '[]') return readSpans.get(e) ?? null
     // A typed array's length is its count for good.
     if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') {
       const len = typedLenOf(scope ?? MODULE, e[1])
@@ -1161,6 +1187,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   /** The numbers an array's elements are, for a callback it hands them to. */
   const cellNums = (arr) => { const c = arrayCell(arr); return c === UNKNOWN ? null : elemNums[c] === undefined ? NR_NONE : elemNums[c] }
+  /** A present element read's span: its array's numbers where they are integers of one finite hull, and nothing else is stored there. */
+  const noteSpan = (n, recv) => {
+    const r = cellNums(recv)
+    if (r && r.int && Number.isInteger(r.lo) && Number.isInteger(r.hi) && tagOf(core(elemOf(recv))) === K.NUMBER && !hasTag(elemOf(recv), K.NULLISH) && !hasTag(elemOf(recv), K.ABSENT)) readSpans.set(n, [r.lo, r.hi])
+    else readSpans.delete(n)
+  }
   /** The indices a callback over the array sees. */
   const indexNums = (arr) => { const n = fixedLen(arr); return n === 0 ? NR_NONE : nrInts(0, n > 0 ? n - 1 : 0xfffffffe) }
   // The hull of the arguments each parameter of a function receives, over
@@ -1559,7 +1591,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const appends = recvName !== null && typeof idx === 'string' && appendCounters.get(idx)?.has(recvName) === true
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
-    if (!appends && (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c])) raiseHole(arr)
+    const inside = !!span && span[1] < steadyAt(c)
+    if (span && span[0] >= 0 && !inside) wanted.add(c)
+    if (!appends && !inside && (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c])) raiseHole(arr)
     if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c); resizedElsewhere.add(c) }
     else if (!(stores.get(c) >= span[1])) {
       if (onOpen && lens[c] >= 0 && span[1] >= lens[c]) onOpen(lens[c], `stored at index ${span[1]}`, current, site)
@@ -3573,7 +3607,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           else {
             const count = exactTrips.reduce((p, t) => p * t, n), pushes = b?.pushes ?? new Map(), was = pushes.get(node)
             if (was !== undefined && was !== count) builds.set(c, null)
-            else { pushes.set(node, count); if (!b) builds.set(c, { scope: current, key: own, pushes }) }
+            else { pushes.set(node, count); if (!b) builds.set(c, { key: own, pushes }) }
           }
         }
         if (c >= 0 && via !== null) {
@@ -4247,7 +4281,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
         // An index the fixed length holds reads an element, never past the end.
         const span = spanOf(idx, current, true)
-        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); return elemOf(recv) }
+        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) { presentReads.add(n); noteSpan(n, recv); return elemOf(recv) }
+        // (or the length the array was built to, for a reader that meets it built)
+        if (span && span[0] >= 0) {
+          const c = lenCell(recv)
+          if (span[1] < steadyAt(c)) { presentReads.add(n); noteSpan(n, recv); return elemOf(recv) }
+          if (c >= 0) wanted.add(c)
+        }
         // So does a counter the loop bounds by the array's own length (`c < inp.length`),
         // the length fixed or left alone by the loop (lenStable: no call reaches the array, no store to its length).
         // (a binding reassigned elsewhere still bounds the loop that reads it: the alias of its length survived every assignment before the loop)
@@ -4255,7 +4295,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         // (a cell constructed with the count the loop's bound aliases, `state = new Array(n)` read under `i < n`: inside it, where the loop leaves its length alone;
         // a receiver of no cell has no count: `cell` of an unknown parameter would write past the table)
         if (typeof idx === 'string' && typeof n[1] === 'string' && loopBodies.has(idx) && celled(recv) && countBounds(cell(paramOf(recv)), idx) && !lengthMayChange(idx, loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
-        presentReads.delete(n)
+        presentReads.delete(n); readSpans.delete(n)
         // (in a function no call has bound yet the read has not run, as its stores have not: a parameter's hull
         // comes a round after its kind, and "absent" joined before it is for good)
         return runs(current) ? orAbsent(entryOf(recv, ik)) : entryOf(recv, ik)
@@ -4743,9 +4783,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   // Whether `decl`, one of the current function's own statements, declares in
   // `name` (by its declarator `d`) an array nothing else can see before the
-  // last statement pushing through the name ends: from the declaration to it,
-  // the name is only ever a push's receiver (`ownBuilds`). Syntactic, so read
-  // once per declarator.
+  // last statement pushing through the name ends: up to it, the name is only
+  // ever a push's receiver (`ownBuilds`), in the statements ahead of the
+  // declaration too (a function declared in the body stands first in it, and an
+  // arrow may name a `const` declared after it: either can run between the
+  // pushes). Syntactic, so read once per declarator.
   const alone = new Map()   // declarator → whether it builds alone
   const buildsAlone = (decl, d, name) => {
     let r = alone.get(d)
@@ -4759,7 +4801,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // every mention of the name, but the declared one, is a push's receiver
     let names = -1, pushes = 0
     const count = (m) => { if (!Array.isArray(m) || m[0] === 'str') return; if (isPush(m)) pushes++; for (let i = 1; i < m.length; i++) if (m[i] === name) names++; else count(m[i]) }
-    for (let i = at; last > 0 && i <= last; i++) count(list[i])
+    for (let i = 1; last > 0 && i <= last; i++) count(list[i])
     alone.set(d, r = last > 0 && names === pushes)
     return r
   }
@@ -6049,7 +6091,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const queryFacts = {
     kinds, incoming, internalIncoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, resizedElsewhere, builds, multiSite, presentReads, presentStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, presentReads, presentStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
@@ -6825,13 +6867,63 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return early
     }
   }
-  seed([])
-  fixpoint()
-  settleInitOrder()
+  // The solve's own state back to its start, for a solve of the same program under other givens.
+  const resetSolve = () => {
+  if (losses) losses.length = 0
+  if (opens) opens.length = 0
+  kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+  tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); presentStores.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); jumped.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
+  wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
+    readSpans.clear(); wanted.clear()
+  }
+  // The lengths this solve found its arrays built to: a function's build, and the module's for
+  // its functions (`steady`, above). By the cell of the one construction each is: a cell that
+  // joined another is no one array's.
+  const steadyOf = () => {
+    const roots = new Map()
+    for (const [c, b] of builds) {
+      if (!b || cell(c) !== c || resizedElsewhere.has(c) || multiSite.has(c)) continue
+      let len = built[c]
+      for (const count of b.pushes.values()) len += count
+      if (!(stores.get(c) >= len)) roots.set(c, { len, init: false })
+    }
+    for (const [c, g] of grown) {
+      if (cell(c) !== c || !(built[c] >= 0) || unknown.has(c) || multiSite.has(c) || short.has(c) || roots.has(c)) { roots.delete(c); continue }
+      const len = built[c] + g.n
+      if (!(stores.get(c) >= len)) roots.set(c, { len, init: true })
+    }
+    return roots
+  }
+  // The kinds under `numeric`, then again given the lengths the first solve found where an index
+  // asked for one, and once more for each class a later solve no longer finds built to its length:
+  // the table is taken once and only shrinks. False where the solve met a layout to restart for.
+  let steadyTaken = false
+  const solve = (numeric) => {
+    for (;;) {
+      seed(numeric)
+      fixpoint()
+      settleInitOrder()
+      if (unnamed.size && discover) return false
+      const found = steadyOf()
+      let next = null
+      if (!steadyTaken) {
+        let asked = false
+        for (const c of wanted) if (found.has(cell(c))) { asked = true; break }
+        if (asked) { next = found; steadyTaken = true }
+      } else if (steady.size) {
+        const kept = new Map()
+        for (const [id, st] of steady) { const now = found.get(id); if (now !== undefined && now.len === st.len && now.init === st.init) kept.set(id, st) }
+        if (kept.size !== steady.size) next = kept
+      }
+      if (next === null) { builtLens = found; return true }
+      steady = next
+      resetSolve()
+    }
+  }
+  if (!solve([])) return { discovered: [...unnamed.values()] }
   // Batch every layout the kind fixpoint discovers before restarting. A
   // restart in the middle can discover only one layer of a call chain at a
   // time, rebuilding the whole program once per layer.
-  if (unnamed.size && discover) return { discovered: [...unnamed.values()] }
   // The demand pass, then the kinds again with the demanded and compatible
   // exported parameters NUMBER. A numeric-demanded parameter is read only
   // where a string would be converted anyway, so the f64 boundary is the
@@ -6864,20 +6956,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    if (losses) losses.length = 0
-    if (opens) opens.length = 0
-    kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); presentStores.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); jumped.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
-    wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
-    seed(seeded)
-    fixpoint()
-    settleInitOrder()
-    if (unnamed.size && discover) return { discovered: [...unnamed.values()] }
+    resetSolve()
+    if (!solve(seeded)) return { discovered: [...unnamed.values()] }
   }
 
   // Resolve union-find roots once before publishing. Readers never compress
   // paths or borrow the solver's mutable current scope.
   for (let id = 0; id < cellUp.length; id++) cellUp[id] = cell(id)
+  queryFacts.builtLens = builtLens
   // Publish settled hull records, not a closure over the solver and mutable
   // function inputs. No later round writes these buffers; queries borrow them.
   for (const f of funcs) if (openCaller(f.name, f)) argRanges.delete(f.name)

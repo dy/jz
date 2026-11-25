@@ -769,8 +769,10 @@ test('summary: delete, a host import, for-of, a binding read before its assignme
 test('summary: array cells join every store; two arrays joined share one cell', () => {
   summarize(`const mk = () => ({ v: 1 })
     const fill = (a, v) => { a[0] = v }
-    export const f = (k) => { const arr = [mk()]; arr.push({ v: 2 }); const o = arr[0]; const two = k ? [1] : ['s']; const nums = [1]; const strs = ['a']; fill(nums, 2); fill(strs, 'b'); const n = nums[0]; return o.v + two.length + (k ? two[0] : n) }`)
-  is(tagOf(kindOf('f', 'o')), K.OBJECT, 'a push of the same shape keeps the element shape'); ok(isNullable(kindOf('f', 'o')), 'an element read may be out of range')
+    export const f = (k) => { const arr = [mk()]; arr.push({ v: 2 }); const o = arr[0], q = arr[2]; const two = k ? [1] : ['s']; const nums = [1]; const strs = ['a']; fill(nums, 2); fill(strs, 'b'); const n = nums[0]; return o.v + (q ? q.v : 0) + two.length + (k ? two[0] : n) }`)
+  is(tagOf(kindOf('f', 'o')), K.OBJECT, 'a push of the same shape keeps the element shape')
+  // (the literal and the push are the function's build, two elements: summary `steady`)
+  ok(!isNullable(kindOf('f', 'o')), 'an element inside what the function built is there'); ok(isNullable(kindOf('f', 'q')), 'one past it may be out of range')
   ok(paramOf(kindOf('f', 'two')) !== UNKNOWN, 'two arrays joined name one cell'); is(tagOf(ctx.summary.at('f').kindOfExpr(['[]', 'two', 0])), K.ANY, 'whose elements are the join')
   is(tagOf(kindOf('f', 'n')), K.ANY, 'a store through a parameter both arrays flow into reaches both')
   is(tagOf(join(kind(K.NUMBER), kind(K.BOOL))), K.ANY, 'two tags read as ANY through the one-tag API'); ok(hasTag(join(kind(K.NUMBER), kind(K.BOOL)), K.BOOL) && !hasTag(join(kind(K.NUMBER), kind(K.BOOL)), K.STRING), 'and keep their set')

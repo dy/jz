@@ -7,6 +7,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
+import { K, hasTag } from '../src/summary/index.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, oracle, run, wat, funcWat, compileInProcess as compile, jz } from './util.js'
 import parseWat from 'watr/parse'
@@ -330,7 +331,7 @@ test('frozen length: a read before the last push is the host\'s, in a function a
 
 // An array a function builds, a literal grown by pushes through its name alone,
 // each inside counted loops of one trip count and named by nothing else until
-// the pushes end, has that many elements wherever another function reads it
+// the pushes end, has that many elements wherever it is read
 // (summary `builds`, query builtLenOf): the length of a design function's
 // sections is a number, and a loop bounded by it runs that many times.
 const builtLen = (src, scope, name) => {
@@ -364,7 +365,12 @@ const unbuilt = [
 test('built length: counted pushes before anything else names the array give its length to another function', () => {
   for (const [name, src, len] of built) is(builtLen(src, 'use', 'xs'), len, name)
   for (const [name, src] of unbuilt) is(builtLen(src, 'use', 'xs'), null, name)
-  is(builtLen(built[0][1], 'make', 'out'), null, 'the builder reads its array while it grows')
+  is(builtLen(built[0][1], 'make', 'out'), 5, 'the builder\'s own mentions of it follow the pushes')
+  // (a function declared in the body stands ahead of the array, and an arrow may name a `const` declared after it)
+  const between = (peek, after = '') => `const u = (v) => v === undefined ? 1000 : v\nconst make = (n) => {\n${peek}\nconst out = []\nlet seen = 0\nfor (let i = 0; i < n; i++) { seen += sum(); out.push(i) }\n${after}\nreturn seen + sum() + out.length }\nexport const f = () => make(5)`
+  const SUMS = `{ let s = 0; for (let j = 0; j < 5; j++) s += u(out[j]); return s }`
+  is(builtLen(between('', `function sum() ${SUMS}`), 'make', 'out'), null, 'a function declared in the body, called between the pushes')
+  is(builtLen(between(`const sum = () => ${SUMS}`), 'make', 'out'), null, 'an arrow ahead of the array it names, called between the pushes')
 })
 
 test('built length: every kernel matches the host', () => {
@@ -373,6 +379,156 @@ test('built length: every kernel matches the host', () => {
       const host = oracle(src).f, mod = run(src, { optimize }).f
       for (const c of [0, 1]) is(mod(c), host(c), `${name} at ${optimize}, ${c}`)
     }
+})
+
+// The length an array is built to is also the solver's own (summary `steady`,
+// `steadyOf`, `solve`): a function's build for every reader but its builder, the
+// module's for its functions where none runs ahead of the last push. An element
+// read whose index the walk bounds below it is present, with no miss to answer
+// for, and its span is its array's integers where they have one hull, for an
+// index that is itself an element (`a[idx[i]]`). The solve runs once without the
+// lengths and again with those it found given: a hole raised by a store walked
+// before its array's builder is taken back by no later round.
+// Each element read of a function in source order, a store's target aside: `in`
+// where the summary holds it inside its array's length (query presentArrayRead),
+// `hole` where it does and the element may still be one no store filled.
+const present = (src, scope, optimize = 0) => {
+  compile(src, { optimize })
+  const fn = ctx.funcs.list.find(f => typeof scope === 'string' ? f.name === scope : scope.test(f.name)), view = ctx.summary.at(fn.body), out = []
+  const read = (n, target) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '[]' && n.length === 3 && !target) out.push(!view.presentArrayRead(n) ? 'open' : hasTag(view.kindOfExpr(n), K.ABSENT) ? 'hole' : 'in')
+    for (let i = 1; i < n.length; i++) read(n[i], n[0] === '=' && i === 1)
+  }
+  read(fn.body, false)
+  return out.join(' ')
+}
+const U = `const u = (v) => v === undefined ? 1000 : v`
+const MK = `const mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i); return out }`
+const SUM = (n) => `(xs) => { let s = 0; for (let i = 0; i < ${n}; i++) s += u(xs[i]); return s }`
+const VALS = `const vals = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 0.25); return out }`
+const GATHER = (n) => `const g = (a, idx) => { let s = 0; for (let i = 0; i < ${n}; i++) s += u(a[idx[i]]); return s }`
+// [what, source, the reading function, its reads]
+const steady = [
+  ['a build read by another function under its count', `${U}\n${MK}\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5))`, 'use', 'in'],
+  ['read past its count', `${U}\n${MK}\nconst use = ${SUM(6)}\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['built and read in one function, under its count and past it', `${U}\nexport const f = () => { const xs = []; for (let i = 0; i < 6; i++) xs.push(i * 0.5); let s = 0; for (let i = 0; i < 6; i++) s += u(xs[i]); for (let i = 0; i < 8; i++) s += u(xs[i]); return s }`, 'f', 'in open'],
+  ['built, read, then pushed to again in one function', `${U}\nexport const f = () => { const xs = []; for (let i = 0; i < 6; i++) xs.push(i * 0.5); let s = 0; for (let i = 0; i < 6; i++) s += u(xs[i]); xs.push(9); for (let i = 0; i < 6; i++) s += u(xs[i]); return s }`, 'f', 'open open'],
+  ['read by its builder as it grows', `${U}\nconst mk = (n) => { const out = []; let seen = 0; for (let i = 0; i < n; i++) { out.push(i); seen += u(out[n - 1 - i]) } return seen }\nexport const f = () => mk(6)`, 'mk', 'open'],
+  ['stored to inside its count, then read', `${MK}\nconst use = (xs) => { for (let i = 0; i < 5; i++) xs[i] = xs[i] * 3 + 1; let s = 0; for (let i = 0; i < 5; i++) s += xs[i]; return s + xs.length }\nexport const f = () => use(mk(5))`, 'use', 'in in'],
+  ['stored to inside its count by one function, read by another under its own length', `${MK}\nconst fill = (xs) => { for (let i = 0; i < 5; i++) xs[i] = i * 2 }\nconst use = (xs) => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i]; return s }\nexport const f = () => { const a = mk(5); fill(a); return use(a) }`, 'use', 'in'],
+  ['a build and an empty literal through one reader', `${U}\n${MK}\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5)) * 10000 + use([])`, 'use', 'open'],
+  ['a hole stored inside its count', `${U}\n${MK}\nconst use = (xs) => { xs[2] = undefined; let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nexport const f = () => use(mk(5))`, 'use', 'in'],
+  ['stored to past its count', `${U}\n${MK}\nconst use = (xs) => { xs[7] = 1; let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s + xs.length }\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['a reader that pushes', `${U}\n${MK}\nconst use = (xs) => { xs.push(9); let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['a reader that pops', `${U}\n${MK}\nconst use = (xs) => { xs.pop(); let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['a reader that shifts', `${U}\n${MK}\nconst use = (xs) => { xs.shift(); let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['a reader that splices', `${U}\n${MK}\nconst use = (xs) => { xs.splice(1, 2); let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['a reader that cuts the length', `${U}\n${MK}\nconst use = (xs) => { xs.length = 2; let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['two counts through one reader', `${U}\n${MK}\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5)) * 10000 + use(mk(6))`, 'use', 'open'],
+  ['a build and a literal through one reader', `${U}\n${MK}\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5)) * 10000 + use([1, 2])`, 'use', 'open'],
+  ['a push more under a condition', `${U}\nconst mk = (n, c) => { const out = []; for (let i = 0; i < n; i++) out.push(i); if (c) out.push(99); return out }\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5, false)) * 10000 + use(mk(5, true))`, 'use', 'open'],
+  ['a loop that may leave before its count', `${U}\nconst mk = (n, stop) => { const out = []; for (let i = 0; i < n; i++) { if (i === stop) break; out.push(i) } return out }\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5, 3)) * 10000 + use(mk(5, 9))`, 'use', 'open'],
+  ['a loop that may return before its count', `${U}\nconst mk = (n, stop) => { const out = []; for (let i = 0; i < n; i++) { if (i === stop) return out; out.push(i) } return out }\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5, 2)) * 10000 + use(mk(5, 9))`, 'use', 'open'],
+  ['a loop a throw may end, caught in the builder', `${U}\nconst check = (i) => { if (i === 3) throw new Error('stop') }\nconst mk = (n) => { const out = []; try { for (let i = 0; i < n; i++) { check(i); out.push(i) } } catch (e) {} return out }\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5))`, 'use', 'open'],
+  ['a loop a throw may end, the array in a holder', `${U}\nconst box = { list: [0] }\nconst check = (i) => { if (i === 3) throw new Error('stop') }\nconst mk = (n) => { const out = []; box.list = out; for (let i = 0; i < n; i++) { check(i); out.push(i) } return out }\nconst use = ${SUM(5)}\nexport const f = () => { try { mk(5) } catch (e) {} return use(box.list) }`, 'use', 'open'],
+  ['handed to a reader before the last push', `${U}\nconst use = ${SUM(5)}\nconst mk = (n) => { const out = []; let seen = 0; for (let i = 0; i < n; i++) { seen += use(out); out.push(i) } return seen + use(out) }\nexport const f = () => mk(5)`, 'use', 'open'],
+  ['held by an object before the pushes, read between them', `${U}\nconst use = (o) => { const xs = o.list; let s = 0; for (let i = 0; i < 5; i++) s += u(xs[i]); return s }\nconst mk = (n) => { const out = []; const o = { list: out }; let seen = 0; for (let i = 0; i < n; i++) { seen += use(o); out.push(i) } return seen + use(o) }\nexport const f = () => mk(5)`, 'use', 'open'],
+  ['yielded before the last push', `${U}\nfunction* mk(n) { const out = []; for (let i = 0; i < n; i++) { yield out; out.push(i) } yield out }\nconst use = ${SUM(4)}\nexport const f = () => { let t = 0; for (const xs of mk(4)) t += use(xs); return t }`, 'use', 'open'],
+  ['what a constructor built, read by a method', `${U}\nclass K { constructor() { const a = []; for (let i = 0; i < 6; i++) a.push(i * 2); this.a = a } sum(n) { let s = 0; for (let i = 0; i < n; i++) s += u(this.a[i]); return s } }\nexport const f = () => new K().sum(6)`, /sum$/, 'in'],
+  ['what a constructor built, read past its count', `${U}\nclass K { constructor() { const a = []; for (let i = 0; i < 6; i++) a.push(i * 2); this.a = a } sum(n) { let s = 0; for (let i = 0; i < n; i++) s += u(this.a[i]); return s } }\nexport const f = () => new K().sum(8)`, /sum$/, 'open'],
+  ['what a constructor built and a method grows', `${U}\nclass K { constructor() { const a = []; for (let i = 0; i < 6; i++) a.push(i * 2); this.a = a } sum(n) { let s = 0; for (let i = 0; i < n; i++) s += u(this.a[i]); return s } more() { this.a.push(1) } }\nexport const f = () => { const k = new K(); const a = k.sum(6); k.more(); return a * 100000 + k.sum(6) }`, /sum$/, 'open'],
+  ['a constructor that stores it before the pushes and reads between them', `${U}\nclass K { constructor() { const a = []; this.a = a; this.seen = 0; for (let i = 0; i < 6; i++) { this.seen += this.sum(6); a.push(i * 2) } } sum(n) { let s = 0; for (let i = 0; i < n; i++) s += u(this.a[i]); return s } }\nexport const f = () => { const k = new K(); return k.seen * 100 + k.sum(6) }`, /sum$/, 'open'],
+  ['the module\'s, through a name taken before the pushes', `const ps = []\nconst alias = ps\nfor (let i = 0; i < 200; i++) ps.push(i)\n${U}\nexport const f = () => { let s = 0; for (let i = 0; i < 200; i++) s += u(alias[i]); return s + alias.length }`, 'f', 'in'],
+  ['the module\'s, through a holder made before the pushes', `const ps = []\nconst holder = { list: ps }\nfor (let i = 0; i < 200; i++) ps.push(i * 0.5)\n${U}\nexport const f = () => { const xs = holder.list; let s = 0; for (let i = 0; i < 200; i++) s += u(xs[i]); return s + xs.length }`, 'f', 'in'],
+  ['the module\'s, pushed in two loops and a nest', `const ps = []\nfor (let i = 0; i < 3; i++) ps.push(i)\nfor (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) ps.push(i * 10 + j)\n${U}\nexport const f = () => { let s = 0; for (let i = 0; i < 7; i++) s += u(ps[i]); return s + ps.length }`, 'f', 'in'],
+  ['the module\'s, pushed through a name that holds one of two arrays', `const a = [], b = []\nconst ps = Math.random() < 2 ? a : b\nfor (let i = 0; i < 4; i++) ps.push(i)\n${U}\nexport const f = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(b[i]) * 10 + u(a[i]); return s }`, 'f', 'open open'],
+  ['the module\'s, read past its count', `const ps = []\nfor (let i = 0; i < 3; i++) ps.push(i)\n${U}\nexport const f = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(ps[i]); return s + ps.length }`, 'f', 'open'],
+  ['the module\'s, read by a function between two loops of pushes', `const ps = []\n${U}\nconst use = () => { let s = 0; for (let i = 0; i < 6; i++) s += u(ps[i]); return s }\nfor (let i = 0; i < 3; i++) ps.push(i)\nconst mid = use()\nfor (let i = 0; i < 3; i++) ps.push(i + 5)\nexport const f = () => mid * 100000 + use()`, 'use', 'open'],
+  ['the module\'s, which a function pushes to', `const ps = []\nfor (let i = 0; i < 4; i++) ps.push(i)\n${U}\nexport const f = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(ps[i]); ps.push(50); for (let i = 0; i < 4; i++) s += u(ps[i]); return s }`, 'f', 'open open'],
+  ['the module\'s, which a function empties', `const ps = []\nfor (let i = 0; i < 4; i++) ps.push(i + 1)\n${U}\nexport const f = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(ps[i]); ps.length = 0; for (let i = 0; i < 4; i++) s += u(ps[i]); return s }`, 'f', 'open open'],
+  ['a gather through a built index', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push((i * 3 + 1) % n); return out }\n${VALS}\n${GATHER(16)}\nexport const f = () => g(vals(16), mk(16))`, 'g', 'in in'],
+  ['a gather of a gather', `const mk = (n, k) => { const out = []; for (let i = 0; i < n; i++) out.push((i * k + 1) % n); return out }\nconst mk2 = (n, k) => { const out = []; for (let i = 0; i < n; i++) out.push((i * k + 2) % n); return out }\n${VALS}\nconst g = (a, p, q) => { let s = 0; for (let i = 0; i < 8; i++) s += a[p[q[i]]]; return s }\nexport const f = () => g(vals(8), mk(8, 3), mk2(8, 5))`, 'g', 'in in in'],
+  ['a gather whose index reaches past the values', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 2); return out }\n${VALS}\n${GATHER(8)}\nexport const f = () => g(vals(8), mk(8))`, 'g', 'open in'],
+  ['a gather by fractions', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 0.5); return out }\n${VALS}\n${GATHER(4)}\nexport const f = () => g(vals(4), mk(4))`, 'g', 'open in'],
+  ['a gather by an index below zero', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i - 2); return out }\n${VALS}\n${GATHER(4)}\nexport const f = () => g(vals(4), mk(4))`, 'g', 'open in'],
+  ['a gather by an index one element of which is undefined', `${U}\n${MK}\n${VALS}\n${GATHER(4)}\nexport const f = () => { const idx = mk(4); idx[1] = undefined; return g(vals(4), idx) }`, 'g', 'open in'],
+  ['a gather by a literal index with a hole', `${U}\n${VALS}\n${GATHER(4)}\nexport const f = () => g(vals(4), [2, , 1, 0])`, 'g', 'open hole'],
+  ['a gather by a literal index a later function shortens', `${U}\nconst idx = [2, 0, 1, 3], vals = [10, 20, 30, 40]\nconst g = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(vals[idx[i]]); return s }\nconst cut = () => { idx.pop() }\nexport const f = () => { cut(); return g() }`, 'g', 'open open'],
+  ['a gather by a literal index a later function stores a fraction in', `${U}\nconst idx = [2, 0, 1, 3], vals = [10, 20, 30, 40]\nconst g = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(vals[idx[i]]); return s }\nconst spoil = () => { idx[1] = 0.5 }\nexport const f = () => { spoil(); return g() }`, 'g', 'open in'],
+  ['a gather by an index one element of which is a string', `${U}\n${MK}\n${VALS}\n${GATHER(4)}\nexport const f = () => { const idx = mk(4); idx[1] = 'length'; return g(vals(4), idx) }`, 'g', 'open in'],
+]
+// (programs whose reading code is a closure, or whose arrays meet other builtins: the answer alone)
+const steadyRuns = [
+  ['a function declared after the pushes, called between them', `${U}\nfunction mk(n) { const out = []; let seen = 0; for (let i = 0; i < n; i++) { seen += sum(); out.push(i) } return seen + sum(); function sum() { let s = 0; for (let j = 0; j < 5; j++) s += u(out[j]); return s } }\nexport const f = () => mk(5)`],
+  ['an arrow ahead of the array it names, called between the pushes', `${U}\nconst mk = (n) => { const sum = () => { let s = 0; for (let j = 0; j < 5; j++) s += u(out[j]); return s }; const out = []; let seen = 0; for (let i = 0; i < n; i++) { seen += sum(); out.push(i) } return seen + sum() }\nexport const f = () => mk(5)`],
+  ['a closure made in the builder before the last push', `${U}\nconst mk = (n) => { const out = []; const peek = (k) => u(out[k]); let seen = 0; for (let i = 0; i < n; i++) { seen += peek(n - 1); out.push(i) } return seen + peek(n - 1) }\nexport const f = () => mk(5)`],
+  ['closures made in the builder after the last push, one of which grows it', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 2); return { at: (k) => u(out[k]), grow: () => out.push(7) } }\nexport const f = () => { const o = mk(4); let s = 0; for (let i = 0; i < 6; i++) s += o.at(i); o.grow(); for (let i = 0; i < 6; i++) s += o.at(i); return s }`],
+  ['a closure summing what its maker built', `const mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 2); return () => { let s = 0; for (let i = 0; i < 6; i++) s += out[i]; return s } }\nexport const f = () => mk(6)() + mk(6)()`],
+  ['a recursive builder reading the array of the call below', `${U}\nconst mk = (d) => { const out = []; const below = d > 0 ? mk(d - 1) : out; let s = 0; for (let i = 0; i < 4; i++) { s += u(below[i]); out.push(i + d) } return d === 2 ? [s] : out }\nexport const f = () => mk(2)[0]`],
+  ['sorted, reversed, filled, joined and cut by the builtins', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(n - i); return out }\nconst use = (xs) => { let s = 0; for (let i = 0; i < 5; i++) s = s * 3 + u(xs[i]); return s }\nexport const f = () => { const c = mk(5); c.sort((x, y) => x - y); const d = mk(5); d.reverse(); const e = mk(5); e.fill(undefined, 1, 3); const b = c.concat(mk(5)), t = d.slice(1); return [use(c), use(d), use(e), use(b), use(t)].join() }`],
+  ['the module\'s own statements reading it as it grows', `const ps = []\n${U}\nfor (let i = 0; i < 3; i++) ps.push(i)\nlet mid = 0\nfor (let i = 0; i < 6; i++) mid += u(ps[i])\nfor (let i = 0; i < 3; i++) ps.push(i + 5)\nexport const f = () => { let s = 0; for (let i = 0; i < 6; i++) s += u(ps[i]); return mid * 100000 + s }`],
+  ['a function\'s build the module pushes further', `${MK}\nconst ps = mk(3)\nfor (let i = 0; i < 4; i++) ps.push(i + 10)\n${U}\nconst use = ${SUM(8)}\nexport const f = () => use(ps)`],
+  ['a function\'s build another function pushes further', `${MK}\nconst more = (xs) => { for (let i = 0; i < 4; i++) xs.push(i + 10); return xs }\n${U}\nconst use = ${SUM(8)}\nexport const f = () => use(more(mk(3)))`],
+  ['a scatter through a built index', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push((i * 5 + 2) % n); return out }\nconst zeros = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(0); return out }\nconst scatter = (a, idx) => { for (let i = 0; i < 8; i++) a[idx[i]] = i + 1; let s = 0; for (let i = 0; i < 8; i++) s = s * 3 + u(a[i]); return s }\nexport const f = () => scatter(zeros(8), mk(8))`],
+  ['a scatter whose index reaches past its target', `${U}\nconst mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 2); return out }\nconst zeros = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(0); return out }\nconst scatter = (a, idx) => { for (let i = 0; i < 6; i++) a[idx[i]] = i + 1; let s = 0; for (let i = 0; i < 12; i++) s = s * 3 + u(a[i]); return s + a.length }\nexport const f = () => scatter(zeros(6), mk(6))`],
+]
+
+test('built length: a read another function bounds below it is present, and only there', () => {
+  for (const [name, src, fn, reads] of steady) is(present(src, fn), reads, name)
+})
+
+test('built length: a store inside it leaves no hole, where no read asks for the length either', () => {
+  // (the stores run from the last element down, no append; the reader hands the elements to a callback,
+  // with no index of its own: only the store's span meets the open count)
+  const src = `${MK}\nconst fill = (xs) => { for (let i = 4; i >= 0; i--) xs[i] = i * 2 }\nconst use = (xs) => xs.reduce((s, v) => s + v, 0)\nexport const f = () => { const a = mk(5); fill(a); return use(a) }`
+  compile(src, { optimize: 0 })
+  const fn = ctx.funcs.map.get('use'), xs = JSON.parse(JSON.stringify(fn.sig.params.map(p => p.name)))[0]
+  ok(!hasTag(ctx.summary.at(fn.body).elemKindOf(xs), K.ABSENT), 'the elements are all there')
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `at ${optimize}`)
+})
+
+// The second solve walks every function from its first round, where the first reaches a
+// callee a round after its caller. A parameter's hull comes a round after its kind, so a
+// function walked in the round that binds it read an element bounded by that hull as
+// "maybe absent", for good: a read there waits for the round that binds the function, as
+// its stores do (summary `runs`).
+test('built length: a read in a function no call has bound yet waits for its parameter\'s hull', () => {
+  const program = (p) => `${MK}\nconst idx = mk(8)\n${p}
+    class V { constructor(x = 0, y = 0) { this.x = x; this.y = y } from(array, offset = 0) { this.x = array[offset]; this.y = array[offset + 1]; return this } len() { return this.x * this.x + this.y * this.y } }
+    const a = new V(), b = new V()
+    const count = () => { let s = 0; for (let i = 0; i < 8; i++) s += idx[i]; return s }
+    const ray = (out) => { let s = 0; for (let k = 0; k < 4; k++) for (let i = 0; i < 4; i++) { a.from(p, i * 4); b.from(p, i * 4 + 2); s += a.len() + b.len() } out[1] = s }
+    const run = (out) => { out[0] = count(); ray(out) }
+    export let f = () => { const out = new Float64Array(3); for (let i = 0; i < 3; i++) run(out); return out[0] + out[1] }`
+  const holders = {
+    'a typed array': `const p = new Float32Array(16)\nfor (let i = 0; i < p.length; i++) p[i] = i * 0.5`,
+    'an array of fixed length': `const p = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8]`,
+  }
+  for (const [name, p] of Object.entries(holders)) {
+    const src = program(p)
+    compile(src, { optimize: 0 })
+    const fn = ctx.funcs.list.find(f => /len$/.test(f.name)), view = ctx.summary.at(fn.body), fields = []
+    const read = (n) => { if (!Array.isArray(n)) return; if (n[0] === '.' && (n[2] === 'x' || n[2] === 'y')) fields.push(hasTag(view.kindOfExpr(n), K.ABSENT) ? 'maybe absent' : 'there'); for (let i = 1; i < n.length; i++) read(n[i]) }
+    read(fn.body)
+    is(fields.join(), 'there,there,there,there', `${name}: the fields it fills are Numbers`)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
+  }
+})
+
+test('built length: a build the module pushes further is neither\'s', () => {
+  // (the module's counted pushes resize nothing by the summary's count of them: the build's length is not the array's)
+  const src = `${MK}\nconst ps = mk(3)\nfor (let i = 0; i < 4; i++) ps.push(i + 10)\n${use}\nexport const f = () => use(ps)`
+  is(builtLen(src, 'use', 'xs'), null)
+  is(builtLen(`${MK}\n${use}\nexport const f = () => use(mk(3))`, 'use', 'xs'), 3, 'the build alone keeps its length')
+  // (the module's own array is the frozen length's to answer, by name: its statements read it as it grows)
+  compile(`const ps = []\nfor (let i = 0; i < 4; i++) ps.push(i)\nlet n = 0\nfor (let i = 0; i < ps.length; i++) n += ps[i]\nexport const f = () => n + ps.length`, { optimize: 0 })
+  is(ctx.summary.at(undefined).builtLenOf('ps'), null, 'the module\'s own has none')
+})
+
+test('built length: every such program answers as the host', () => {
+  for (const [name, src] of [...steady, ...steadyRuns])
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
 })
 
 // An element read whose counter the walk found inside the fixed length is
