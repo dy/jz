@@ -401,7 +401,13 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   // The f32→f64 widening sum uses half-width load64_zero loads; the multi-accumulator
   // offsetLoads/laneBytes logic assumes full v128 loads, so keep it single-accumulator.
   const plainReduce = !reduceEntry.minmaxSelect && !widen && !sawWidenF32 && canonC == null
-  const NACC = (multiAcc && plainReduce && (laneType === 'f64' || laneType === 'f32')) ? 4 : 1
+  // The narrowing sum takes them too (lane-tables.js NARROW_LANES: whole v128 loads of f64
+  // lanes, a round's conversions independent of one another, and a wrapping integer sum the
+  // same in any order): with one accumulator an integer sum over 256 cells ran at 36 ns
+  // where the float sum beside it, four to the round, ran at 15. The byte and short
+  // widening sums keep one: not measured.
+  const narrowing = widen?.laneType === 'f64'
+  const NACC = multiAcc && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing) ? 4 : 1
   const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
   const laneBytes = lanes * stride
 

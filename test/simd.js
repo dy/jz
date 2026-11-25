@@ -2465,6 +2465,26 @@ export let isum = () => { let s = 0; for (let i = 0; i < 64; i++) s += c[i]; ret
   is(jz(src, { optimize: 2 }).exports.isum(), oracle(src).isum(), 'the integer sum')
 })
 
+// Four accumulators a round at the speed tier, as a float sum takes them (reduceUnroll): a
+// round's conversions are independent of one another and a wrapping integer sum, or an xor,
+// is the same in any order, so every count answers as the loop written does, what is left
+// under eight cells in the scalar loop. With one accumulator the sum over 256 cells ran at
+// 36 to 38 ns where the float sum beside it, four to the round, ran at 15 (raw exports, Node
+// 25, an M4); with four it runs at 23.
+test('vectorize: an integer sum of converted f64 lanes takes four accumulators at the speed tier', () => {
+  const cells = (n) => Array.from({ length: n }, (_, i) => (i * 37 + 11) % 64 - 20)
+  const program = (n, op) => `const c = [${cells(n).join(', ')}]
+export let isum = () => { let s = 0; for (let i = 0; i < ${n}; i++) s ${op} c[i]; return s }`
+  const unrolled = (text) => /i32x4\.trunc_sat_f64x2_s_zero/.test(text) && /\$__simd_acc\d+_3/.test(text)
+  ok(unrolled(wat(program(64, '+='), { optimize: 'speed' })), 'four accumulators at speed')
+  if (ownedLevels(2).length) ok(!/\$__simd_acc\d+_1/.test(wat(program(64, '+='), { optimize: 2 })), 'one at level 2, which unrolls no reduction')
+  for (const op of ['+=', '^='])
+    for (const n of [1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 67]) {
+      const src = program(n, op)
+      for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.isum(), oracle(src).isum(), `${n} cells, ${op} at ${optimize}`)
+    }
+})
+
 // The preamble runs twice, cloned ahead of the strips and again by the block as written: a set
 // the loop writes, or one that reads a local the loop writes, computes another value the second
 // time, and the block is no scaffold (scaffold.js preambleOf).
