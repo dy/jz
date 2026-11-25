@@ -9,7 +9,7 @@ import { is, ok } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
 import { K, hasTag } from '../src/summary/index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, oracle, run, wat, funcWat, compileInProcess as compile, jz } from './util.js'
+import { agree, oracle, run, wat, funcWat, hasFunc, compileInProcess as compile, jz } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 
@@ -713,7 +713,8 @@ test('built length: a store inside it is the cell\'s own, with no helper and no 
   if (belowOpt(2)) return
   for (const [name, src, fn, stores] of builtStores) {
     if (stores !== 'in') continue
-    const body = funcWat(wat(src, { optimize: 2 }), fn) ?? wat(src, { optimize: 2 })
+    // (a function spliced into its caller has no text of its own: the module's then)
+    const text = wat(src, { optimize: 2 }), body = hasFunc(text, fn) ? funcWat(text, fn) : text
     ok(!/__arr_set_idx_ptr|__arr_set_num/.test(body), `${name}: no store helper`)
     // (a durable array is saved for the reset once, ahead of the loop that runs: the bitmap's test is not in it.
     // A name the pushes did not go through has a second loop after it, for an array shorter than the bound.)

@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { oracle, jz, compile, funcWat } from './util.js'
+import { oracle, jz, compile, funcWat, hasFunc } from './util.js'
 import { ownedLevels, onKernel } from './_matrix.js'
 
 // The same receiver crosses both the known-layout and generic coercion paths.
@@ -970,9 +970,8 @@ test('ToNumber and ToString of a user conversion: the primitive converted once m
     if (onKernel()) continue
     const text = compile(src, { optimize, wat: true })
     for (const name of ['__to_num', '__number', '__to_str']) {
-      const body = funcWat(text, name)
-      if (!body && optimize) continue   // inlined into its callers past level 0
-      ok(body && !new RegExp(`call \\$${name}\\b`).test(body), `O${optimize}: $${name} does not call itself`)
+      if (!hasFunc(text, name) && optimize) continue   // inlined into its callers past level 0
+      ok(!new RegExp(`call \\$${name}\\b`).test(funcWat(text, name)), `O${optimize}: $${name} does not call itself`)
     }
   }
 })

@@ -604,7 +604,7 @@ test('frame effects: a key a store inserts is the receiver\'s, and a frame that 
   if (!onKernel()) {
     const quiet = `const table = {}
       export function f(names, base) { for (let i = 0; i < names.length; i++) table[names[i]] = base + i; return 0 }`
-    const body = bodyOf(compile(quiet, { wat: true, ...TAPE }), 'f')
+    const body = funcWat(compile(quiet, { wat: true, ...TAPE }), 'f')
     ok(/\$__ink/.test(body) && loopSpans(body).length > 0 && !loopSpans(body).some(l => /\$__ink/.test(l)), 'a quiet loop\'s check asks the note after the loop')
   }
   // a key short enough to live in its pointer names no memory: a call that inserts one gives its 4 KB back
@@ -1715,7 +1715,7 @@ test('frame effects: a frame whose callees only grow older storage pays no proto
   const text = compile(src, { ...opts, wat: true, whyNotRewind: (n, r) => why.set(n, r) })
   for (const name of ['$put', '$fill', '$down']) is(why.get(name), 'escape: grows only storage older than the frame', name)
   ok(why.get('$made') !== 'escape: grows only storage older than the frame', `a frame that makes storage of its own keeps its verdict: ${why.get('$made')}`)
-  for (const name of ['fill', 'down']) ok(!/heap_save|esc_save/.test(bodyOf(text, name)), `${name}: no save at entry, no restore at return`)
+  for (const name of ['fill', 'down']) ok(!/heap_save|esc_save/.test(funcWat(text, name)), `${name}: no save at entry, no restore at return`)
   const host = oracle(src)
   for (const optimize of levels(2, 3, 'size')) {
     const { exports: m, memory } = jz(src, { optimize })
