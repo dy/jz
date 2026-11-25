@@ -150,9 +150,13 @@ export function summaryQueries(facts, internal = false) {
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   // Solver bottom means an index has no evidence, not that an emitted read is
   // absent. Unlike the solver's pending transfer, a query must retain entries.
+  // (the solver's entryOf otherwise: a number that may be missing, or a key only
+  // missing, names an element or the property "undefined" or "null", never
+  // length or a method)
   const entryOf = (arr, ik) => {
     if (paramOf(arr) === UNKNOWN) return ANY
     if (ik === NUMBER) return merge(elemOf(arr), numericPropsOf(arr))
+    if (core(ik) === NUMBER || tagOf(ik) === K.NULLISH || tagOf(ik) === K.ABSENT) return anyPropOf(arr)
     return merge(anyPropOf(arr), merge(NUMBER, kind(K.CLOSURE)))
   }
   // The array cells a value of the solver's kind `k` may hold at any depth: its

@@ -1937,14 +1937,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   /** A numeric key names an element. A number that may be missing can also
    * name the property "undefined" or "null", a stored entry, never length or
-   * a method. Other keys can also name length or an inherited method,
+   * a method; a key that is only missing names those alone (a read of an
+   * element not stored yet in the round that walks it, which a later round
+   * makes a number: what it joined here stays). Other keys can also name
+   * length or an inherited method,
    * independently of the values stored beside the elements. */
   const entryOf = (arr, ik) => {
     const t = tagOf(ik)
     if (paramOf(arr) === UNKNOWN) return ANY
     if (ik === NUMBER) return merge(elemOf(arr), numericPropsOf(arr))
     if (t === K.NONE) return K.NONE
-    if (core(ik) === NUMBER) return anyPropOf(arr)
+    if (core(ik) === NUMBER || t === K.NULLISH || t === K.ABSENT) return anyPropOf(arr)
     return merge(anyPropOf(arr), join(NUMBER, kind(K.CLOSURE)))
   }
   const raiseNumeric = (arr, k, nums = null) => {
