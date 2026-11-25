@@ -4495,6 +4495,66 @@ test262, self-compile and examples-perf green. test: every job green but `claims
 
 The bound by a plain array's own length; then the arrays of open length (the append by index as a build, a module `let` built in a function, the copies); then the two things the timing showed, the sum's word and the unroller over tested reads.
 
+## The land-be landing: a loop bounded by the array's own length (2026-11-25)
+
+Five commits on 2f050eb7e, the integrator's.
+
+### What landed
+
+- `a03d09d84` The data forms' gate has a sequence kernel bounded by the array's own length: 112 cells more, 938 in all.
+- `c28200941` The length of a fixed-length array reads as its count, for a name and past the test of a holder that may be unset (module/core.js).
+- `919159668` A fixed-length plain array's own length is a bound the for emitter's versioning takes (type/loop-versioning.js `fixedArray`).
+- `f92720012` The listing: 535 gaps of 938 cells where 555.
+- `d6907fa3a` The changelog's two entries.
+
+### The loop the gate did not have
+
+Every sequence kernel of the gate was bounded by the count N. A program's loops are mostly bounded by the array: `for (let i = 0; i < a.length; i++)`. The landing before this one took the test of an unset holder out of the loop and timed it by kernels under N; the same loop under `a.length` was not touched by it, and no cell of the gate said so (that landing's record did). The kernel was added first, on main's compiler: 51 of its 112 cells short, 32 of them every plain array in two holders, a closure's binding and a module `let` a function assigns.
+
+Two facts were missing, and they were the same fact read in two places:
+
+- **The length was loaded.** `a.length` of an array the summary holds at one count read the header each round, behind a relocated array's hop. The array's own reads rest their bounds on that count; the length did not read it. A loop under a loaded bound is no loop the lane lift takes.
+- **The scan's bounds were typed arrays' lengths.** A loop is versioned on its holder's presence only where the scan can read the bound at the entry, and it read a typed array's `.length` so and no plain array's.
+
+The second is safe only for the count that is for good: a guard reads its bound once, and an array that grows in the loop runs past it, with a typed array beside it read untested. That is the mutation the tests had to be made to catch: a growth the loop's own scan cannot see, with no call in the loop.
+
+### What it reads and times
+
+The kernel's cells: 31 short of 112 where 51. The five fixed-length forms read the literal's module form in both holders. A call over 256 elements at 'speed', ns:
+
+- In a closure's binding: the sum 50 where 171 (Node 97).
+- In a module `let` a function assigns: the sum 45 where 174 (Node 98); summing an index array 51 where 192; a gather under the index array's length 200 where 302.
+
+### The bench bytes and times
+
+Nine of 105 cases move in bytes against main, all by the length's fold and all but one figure smaller (size 2,654,830 to 2,653,981, speed 5,802,465 to 5,800,065): stringify 397 fewer at 'size' and 901 at 'speed', jsontransform 310 and 597, stdlib-dists and stdlib-special 9 and about 270, webaudio 17 and 148, watr 27 and 131, mapstr 56 and 96, mapobj 7 and 15, async 17 fewer and 26 more. Over six paired rounds they time as main's: geomean 1.002, from 0.982 (async) to 1.018 (mapstr, 0.955 to 1.039) and 1.016 (mapobj, 0.924 to 1.151).
+
+### The held-out lane
+
+Run 45595189951 on 06a04aaf5: geomean 1.54 of 23, AWFY on a Xeon 6975P-C and CLBG on an EPYC 7763. Each shard reads as the earlier run on its CPU did: AWFY's fourteen programs within 1.6% of run 45543144196's times on the Xeon, CLBG's nine within 0.6% of run 45390303191's on the EPYC. The geomean moves with the pair of CPUs the shards draw (1.41 on two Xeons, 1.58 on two EPYCs, 1.54 on one of each), not with the three landings between. Most builds are 11 to 15 bytes larger (the array cell's own hole test); awfy-richards is 572 smaller. The lane's record is on main as c62b7aaa1 and 2f050eb7e.
+
+### The check (be, on d6907fa3a)
+
+Ahead of the check the whole default leg and the whole armed level 3 leg were run on the branch's source (the tree before a commit message was corrected): 7,762 of 7,762 and 7,544 of 7,544. The four mutations of the two rules each fail a test.
+
+The check ran on d6907fa3a in 56 minutes, every step exit 0: lint and audit clean; the bench bytes 105 of 105, the nine as measured above and no other moved; the listings rewritten in place and unmoved; WASI 7,635, default 7,762, armed level 3 7,544, level 0 7,522, test:self 89, integration 240 of 241 with one skipped, the examples 25 of 25 twice (1.66 and 1.69), three files on a fresh hosted compiler (nullable-arrays 11, fixed-length 31, array-holes 19). test262 in 29 minutes: 4,137 pass, 4,045 refused, no accepted negative, no failure.
+
+### CI on 06a04aaf5
+
+test262, self-compile and examples-perf green. test: every job green but `claims`, which fails 19 of 45 as it did on 14d88f53c: it reads the committed reference evidence, which no landing since has moved.
+
+### Found, not fixed
+
+- What is left of the new kernel: the arrays of open length in the two holders (pushes, the append by index, a spread copy), a view's lanes at module level, a typed array's lanes in the assigned holder under its own length, and single ops.
+- From the landing before: the integer sum kept as a word; the unroller over tested reads; a read under the array's own length where the loop calls a function that cannot reach the array.
+- Two wrong answers on main, in every release since 1.0.0, found by tests written for the landing after this one while this one was being checked. Neither is touched by this landing; both are that landing's first commits:
+  - `memory.reset()` leaves a loop's stores in an array that moved while the module built it, where the loop stores through a name taken before the move. The save hoisted ahead of the loop takes the name's first place for the block, which forwards (emit/control-flow.js, the loop's `durableLoopArrays` save): `let ys = xs` ahead of a hundred pushes interleaved with other allocations, then `for (let i = 0; i < ys.length; i++) ys[i] = 0` in an export, reads zeros after the reset at every level.
+  - A module array its own statements store to at or past its constructed count, before or between its counted pushes, is held as long as the pushes alone make it: `const ps = []; ps[3] = 1` and four pushes hold eight elements, the summary's frozen length says four, and `ps[7]` in a function reads undefined where it is 3 (summary/index.js `grown`), at every level.
+
+### Next
+
+The two fixes. Then the arrays of open length, which every remaining block of the sequence family comes down to: a store inside the length an array was built to (it calls the growth helper today where the read beside it is a load), the append by index as a build, pushes into a binding a function assigns (the built length does not reach it), the copies. Then the record and key families' cliffs, which the listing still heads: an open spread, the string-keyed lookups, a record assigned field by field.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

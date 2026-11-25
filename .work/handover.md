@@ -885,3 +885,13 @@ Two figures to read with care. A count of functions entered by a program with ON
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-unset.sh` with `own/mutate.py` (the sixteen mutations of this landing's four rules, by label: U the holder's presence, W the fill and the named count, F `Array.from`), `own/stage-late.py` and `own/apply-stage.sh` (a landing's stages cut out of one work tree's files), `probe/time-kernel.mjs` (a program's exports timed against Node's, with an init call and its arguments), `probe/form-src.mjs` (the source of one data-forms program), `probe/show-delta.mjs` and `probe/gaps.mjs` (two listings compared, one tallied), `forms-lateP4-show.txt` (this landing's listing, each cell's line).
 
 Read the clock before a listing's ops where a loop is copied or unrolled: the holder's test taken out of an open-length array's loop read as fewer ops in one kernel and timed 7 to 29% slower in two others.
+
+## Branches of the land-be landing (2026-11-25), tips before deletion
+
+```
+d6907fa3a own-z      the landing branch: five commits on 2f050eb7e; the record's commit after it
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-ownlen.sh` (the four mutations of this landing's two rules; their text is `own/mutate.py`'s, by label B1 to B4), `probe/in/k/own-late.mjs` (the sum, the index sum and the gather bounded by the array's own length, in a holder a function assigns), `forms-ownbound-show.txt` (this landing's listing, each cell's line).
+
+A mutation that widens a rule wants a program the widened rule really takes. "The length of any plain array is a bound" passed three programs that grew the bounding array before one was written that the scan versions: no call in the loop, the typed array the function's own, the growth through another name by a store at its end.
