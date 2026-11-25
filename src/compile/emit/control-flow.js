@@ -568,10 +568,10 @@ function emitLoopFreshBoxed(body, frame) {
 // module `let` nothing the loop runs assigns (flow-types.js assignedOver), or a
 // binding of the frame. Their snapshot for the reset moves before the loop.
 function durableLoopArrays(init, cond, step, body) {
-  const names = new Set(), stores = new Map(), touched = new Set()   // name → every index it is stored at; the names a call or a member reaches
+  const names = new Set(), stores = new Map(), touched = new Set()   // name → every store's target; the names a call or a member reaches
   const walk = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
-    if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') { names.add(n[1][1]); (stores.get(n[1][1]) ?? stores.set(n[1][1], []).get(n[1][1])).push(n[1][2]) }
+    if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') { names.add(n[1][1]); (stores.get(n[1][1]) ?? stores.set(n[1][1], []).get(n[1][1])).push(n[1]) }
     // (a member of the array, or the array as a call's argument: its length may change)
     if ((n[0] === '.' || n[0] === '?.') && typeof n[1] === 'string') touched.add(n[1])
     if ((n[0] === '()' || n[0] === '?.()' || n[0] === 'new') && n.length > 2) walkAst(n[2], { enter: m => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') touched.add(m[i]) } })
@@ -579,10 +579,11 @@ function durableLoopArrays(init, cond, step, body) {
   }
   walk(body)
   // An array of no fixed length whose every store in the body is at an index
-  // proven inside its length (type/canonical-bounds.js inBoundsArrIdx), the
+  // proven inside its length (type/canonical-bounds.js inBoundsArrIdx), or
+  // inside the length it was built to (summary/query.js builtArrayStore), the
   // body reaching it no other way: nothing in the loop grows or relocates it.
-  const inBounds = (name) => !touched.has(name) && stores.get(name).every(idx => typeof idx === 'string' && inBoundsArrIdx(ctx).has(name + '\x00' + idx))
   const view = ctx.summary?.at(ctx.func.current)
+  const inBounds = (name) => !touched.has(name) && stores.get(name).every(t => typeof t[2] === 'string' && inBoundsArrIdx(ctx).has(name + '\x00' + t[2]) || view?.builtArrayStore(t) === true)
   const out = []
   for (const name of names) {
     // A binding the body or the head declares does not exist before the loop,

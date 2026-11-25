@@ -597,7 +597,11 @@ function emitElementStore(arr, idx, val, node) {
   // Canonical array loops prove an element key even on tiers that skip the
   // interval solve. An ordinary array's wasm32 cells also bound it below i32.
   // (a key of the counter, `out[o + 2]` under `const o = i * 6`, by its node: idxKey)
-  const boundedArray = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY && inBoundsArrIdx(ctx).has(idxKey(arr, idx))
+  // (or one whose range is inside the length the array was built to, summary/query.js steadyLenOf: nothing grows it
+  // there, and the block, which may have moved while it was built, is where the store's hop finds it)
+  const view = ctx.summary?.at(ctx.func.current), built = typeof arr === 'string' ? view?.steadyLenOf(arr) : null
+  const boundedArray = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY && (inBoundsArrIdx(ctx).has(idxKey(arr, idx)) ||
+    built != null && indexRange != null && indexRange[0] >= 0 && indexRange[1] < built)
   const whole = isPresentNumber(ctx, idx) && wholeKey(idx)
   const indexOnly = whole && (boundedArray || indexRange != null && indexRange[0] >= 0 && indexRange[1] <= 0x7fffffff)
   // An array index past 2^31 too, below 2^32 - 1 (storeArrayPayload 'wide')
@@ -789,13 +793,12 @@ function emitElementStore(arr, idx, val, node) {
   // 3. A literal index inside a receiver of fixed length → the cell's own store.
   const litIndex = arrIndex ?? (Array.isArray(idx) && idx[0] == null && Number.isInteger(idx[1]) && idx[1] >= 0 ? idx[1] : null)
   if (litIndex != null) {
-    const view = ctx.summary?.at(ctx.func.current)
     if (litIndex < view?.fixedLenOfExpr(arr)) return storeFixedElement(arr, litIndex, valueExpr, view.mayBeNullishExpr(arr))
   } else if (numericKey && typeof arr === 'string') {
     // 3a. An index the range solver holds inside the fixed length (a callee's
     //     `out[offset + stride]` once its arguments' constants flow in): the
     //     cell's own store at the computed offset, no length test.
-    const view = ctx.summary?.at(ctx.func.current), len = view?.fixedLenOfExpr(arr)
+    const len = view?.fixedLenOfExpr(arr)
     // (or one the summary's walk holds there: a parameter whose every argument is an integer of the length, query.js presentArrayStore)
     if (len > 0) { const r = intExprRange(idx); if (r && r[0] >= 0 && r[1] < len || node != null && view.presentArrayStore(node)) return storeFixedElement(arr, asI32(emit(idx)), valueExpr, view.mayBeNullishExpr(arr)) }
   }

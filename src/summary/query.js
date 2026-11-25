@@ -23,7 +23,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, internalIncoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, builtLens, presentReads, presentStores, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, builtLens, presentReads, presentStores, steadyStores, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildStore, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, fnAssigned, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -294,6 +294,8 @@ export function summaryQueries(facts, internal = false) {
     const range = span(n[2], keyOf)
     return range !== null && range[0] >= 0 && range[1] < length
   }
+  // The record of the length the arrays of a kind were built to (index.js steadyOf), undefined where they have none.
+  const builtOf = k => tagOf(k) !== K.ARRAY || isNullable(k) || paramOf(k) === UNKNOWN ? undefined : builtLens.get(cell(paramOf(k)))
   const views = new Map()
   const view = scope => {
     let cached = views.get(scope)
@@ -775,12 +777,10 @@ export function summaryQueries(facts, internal = false) {
       // The length an array has once the function building it has it (index.js
       // `builds`, `steadyOf`): its literal's count plus the pushes, for every mention of
       // it but the pushes' own; null where anything else resizes it.
-      builtLenOf: e => {
-        const k = kindOfExpr(e)
-        if (tagOf(k) !== K.ARRAY || isNullable(k) || paramOf(k) === UNKNOWN) return null
-        const st = builtLens.get(cell(paramOf(k)))
-        return st === undefined || st.init ? null : st.len
-      },
+      builtLenOf: e => { const st = builtOf(kindOfExpr(e)); return st === undefined || st.init ? null : st.len },
+      // The same with the module's arrays, for the code of this scope: the module's functions meet one
+      // built, where none runs ahead of its last push (index.js steadyAt); its own statements meet it as it grows.
+      steadyLenOf: e => { const st = builtOf(kindOfExpr(e)); return st === undefined || st.init && scope === '' ? null : st.len },
       // The finite interval each parameter of a function receives over every
       // call the walk binds (index.js `argRanges`), null per position a call
       // leaves unbounded; null for a function the host or a dispatcher may call.
@@ -795,6 +795,9 @@ export function summaryQueries(facts, internal = false) {
       // an element store at an index the walk found a span of integers, where the receiver keeps its length: by the
       // walk every store of such an array is inside it (one at 7 into an array of three opens it, and is no such store)
       presentArrayStore: n => presentStores.has(n) && fixedLen(kindOfExpr(n[1])) != null,
+      // (or inside the length its array was built to, for the code that meets it built: a loop saves such an array
+      // for the reset once, ahead of itself, where it has no range of its counter yet, emit/control-flow.js durableLoopArrays)
+      builtArrayStore: n => steadyStores.has(n),
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayDenseOfExpr: node => {

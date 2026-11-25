@@ -888,6 +888,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // and the element stores whose index it found a span of integers (a counter's, a parameter's whose every
   // argument is one): where the array's length is fixed, which holds the span, the cell's own store
   const presentStores = new Set()
+  // (and those below the length their array was built to, for the code that meets it built: `steady`, storeAt's `inside`.
+  // An array in the table when the solve ends had no store at or past that length, so a verdict once given stands.)
+  const steadyStores = new Set()
   // A read of an element or a member through a receiver the walk holds only
   // undefined or null throws, and so does a statement that makes one on every
   // path through it (ast.js onEveryPath): what follows it in its list never
@@ -1600,6 +1603,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
     const inside = !!span && span[1] < steadyAt(c)
+    // (kept by node for the loop that saves its array ahead of itself: nothing such a store does makes the array longer)
+    if (inside && node !== null) steadyStores.add(node)
     if (span && span[0] >= 0 && !inside) wanted.add(c)
     if (!appends && !inside && (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c])) raiseHole(arr)
     if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c); resizedElsewhere.add(c) }
@@ -6135,7 +6140,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const queryFacts = {
     kinds, incoming, internalIncoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, presentReads, presentStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, short, unknown, presentReads, presentStores, steadyStores, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
@@ -6917,7 +6922,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (losses) losses.length = 0
   if (opens) opens.length = 0
   kinds.length = 0; incoming.length = 0; internalIncoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-  tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); initStored.clear(); multiSite.clear(); presentReads.clear(); presentStores.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); jumped.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
+  tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); initStored.clear(); multiSite.clear(); presentReads.clear(); presentStores.clear(); steadyStores.clear(); missingReads.clear(); throwing.clear(); cellLenAlias.clear(); for (const [id, count] of ownCount) cellLenAlias.set(id, count); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear(); jumped.clear(); shapeMoves.clear(); moduleConstRanges.clear(); numsStrict = false
   wildStore.all = false; pendingIndexed = false; wildStore.values = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     readSpans.clear(); wanted.clear()
   }

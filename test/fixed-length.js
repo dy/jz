@@ -633,6 +633,69 @@ test('built length: every such program answers as the host', () => {
     for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
 })
 
+// A store inside the length an array was built to is the cell's own store, as a read there is the
+// cell's own load (query builtArrayStore): an index the walk holds a span of integers, from 0 up,
+// below that length, in code that meets the array built. Nothing grows, so the store asks no
+// length and calls no helper; the block may have moved while it was built, so the store goes by
+// the hop its holder needs. Each element store of a function in source order: `in` where the
+// summary holds it so.
+const storedIn = (src, scope) => {
+  compile(src, { optimize: 0 })
+  const fn = ctx.funcs.list.find(f => f.name === scope), view = ctx.summary.at(fn.body), out = []
+  const visit = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '=' && Array.isArray(n[1]) && n[1][0] === '[]') out.push(view.builtArrayStore(n[1]) ? 'in' : 'open')
+    for (let i = 1; i < n.length; i++) visit(n[i])
+  }
+  visit(fn.body)
+  return out.join(' ')
+}
+const PS = (n) => `const ps = []\nfor (let i = 0; i < ${n}; i++) ps.push(i)`
+// [what, source, the storing function, its stores]
+const builtStores = [
+  ['a build stored to by another function under its count', `${MK}\nconst fill = (xs) => { for (let i = 0; i < 5; i++) xs[i] = i * 2 + 1; return xs.length }\nexport const f = () => { const a = mk(5); return fill(a) * 1000 + a[0] + a[4] }`, 'fill', 'in'],
+  ['built and stored to in one function', `export const f = () => { const xs = []; for (let i = 0; i < 6; i++) xs.push(i); for (let i = 0; i < 6; i++) xs[i] = xs[i] * 2 + 1; return xs[5] * 100 + xs.length }`, 'f', 'in'],
+  ['stored to at a parameter every call keeps under its count', `${MK}\nconst put = (xs, k) => { xs[k] = 7; return xs.length }\nexport const f = () => { const a = mk(5); return put(a, 2) * 1000 + put(a, 4) * 100 + a[2] * 10 + a[4] }`, 'put', 'in'],
+  ['stored to at a parameter one call puts at its count', `${MK}\nconst put = (xs, k) => { xs[k] = 7; return xs.length }\nexport const f = () => { const a = mk(5); return put(a, 2) * 1000 + put(a, 5) * 100 + a[2] * 10 + a[5] }`, 'put', 'open'],
+  ['stored to at its count', `${MK}\nconst put = (xs) => { xs[5] = 7; return xs.length }\nexport const f = () => { const a = mk(5); return put(a) * 100 + a[5] }`, 'put', 'open'],
+  ['stored to under and at its count', `${MK}\nconst fill = (xs) => { for (let i = 0; i < 6; i++) xs[i] = i + 1; return xs.length }\nexport const f = () => { const a = mk(5); return fill(a) * 100 + a[5] }`, 'fill', 'open'],
+  ['stored to by a reader that pushes first', `${MK}\nconst fill = (xs) => { xs.push(9); for (let i = 0; i < 5; i++) xs[i] = 1; return xs.length }\nexport const f = () => { const a = mk(5); return fill(a) * 100 + a[5] + a[0] }`, 'fill', 'open'],
+  ['stored to at a fraction of its count', `${MK}\nconst fill = (xs) => { for (let i = 0; i < 4; i++) xs[i * 0.5] = 9; return xs.length }\nexport const f = () => { const a = mk(5); return fill(a) * 10000 + a[0] * 100 + a[1] * 10 + a[2] }`, 'fill', 'open'],
+  ['the module\'s, stored to by a function under its count', `${PS(8)}\nexport const f = () => { for (let i = 0; i < 8; i++) ps[i] = ps[i] * 2 + 1; let s = 0; for (let i = 0; i < 8; i++) s += ps[i]; return s * 100 + ps.length }`, 'f', 'in'],
+  ['the module\'s, stored to at its count', `${PS(8)}\nexport const f = () => { ps[8] = 5; return ps.length * 100 + ps[8] }`, 'f', 'open'],
+  // (a guard keeps the index below the length and says nothing of 0: `ps[-2]` names a property)
+  ['the module\'s, stored to under a guard from below zero', `${PS(100)}\nexport const f = () => { for (let i = -2; i < 50; i++) if (i < ps.length) ps[i] = 7; return ps.length * 1000 + ps[0] + ps[49] + ps[50] }`, 'f', 'open'],
+  // (a name taken before the pushes holds the block's first place, which forwards: the arrays pushed between move it)
+  ['the module\'s, stored to through a name taken before it moved', `const ps = []\nlet alias = ps\nconst pad = []\nfor (let i = 0; i < 100; i++) { ps.push(i); pad.push([i, i]) }\nexport const swap = () => { alias = ps; return 0 }\nexport const f = () => { for (let i = 0; i < 100; i++) alias[i] = i * 2 + 1; return ps[99] * 1000 + ps.length + pad.length }`, 'f', 'in'],
+]
+// (stores of the module's own statements, which meet the array as it grows: the answer alone)
+const builtStoreRuns = [
+  ['the module\'s, stored to by its own statements past what it has', `const ps = []\nfor (let i = 0; i < 4; i++) ps.push(i)\nfor (let i = 0; i < 8; i++) ps[i] = i * 3\nfor (let i = 0; i < 4; i++) ps.push(i)\nexport const f = () => ps.length * 1000 + ps[7] + ps[11]`],
+  ['the module\'s, stored to by its own statements between its pushes', `const ps = []\nfor (let i = 0; i < 4; i++) ps.push(i)\nfor (let i = 0; i < 4; i++) ps[i] = i * 3 + 1\nfor (let i = 0; i < 4; i++) ps.push(i)\nexport const f = () => ps.length * 1000 + ps[3] + ps[7]`],
+]
+
+test('built length: a store another function bounds below it is inside, and only there', () => {
+  for (const [name, src, fn, stores] of builtStores) is(storedIn(src, fn), stores, name)
+})
+
+test('built length: a store inside it is the cell\'s own, with no helper and no test of the reset\'s save in its loop', () => {
+  if (belowOpt(2)) return
+  for (const [name, src, fn, stores] of builtStores) {
+    if (stores !== 'in') continue
+    const body = funcWat(wat(src, { optimize: 2 }), fn) ?? wat(src, { optimize: 2 })
+    ok(!/__arr_set_idx_ptr|__arr_set_num/.test(body), `${name}: no store helper`)
+    // (a durable array is saved for the reset once, ahead of the loop that runs: the bitmap's test is not in it.
+    // A name the pushes did not go through has a second loop after it, for an array shorter than the bound.)
+    const loop = body.indexOf('(loop'), next = body.indexOf('(loop', loop + 1)
+    ok(loop < 0 || !body.slice(loop, next < 0 ? body.length : next).includes('__durable_arr_seen'), `${name}: the save's test is ahead of the loop`)
+  }
+})
+
+test('built length: every program storing so answers as the host', () => {
+  for (const [name, src] of [...builtStores, ...builtStoreRuns])
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
+})
+
 // A construction a loop fills whole holds no hole: the loop at once after it stores each index
 // below the count, the count being the loop's bound by its own name, by the same integer, or as
 // the array's own length; the value may read a count nothing writes again (summary/index.js
