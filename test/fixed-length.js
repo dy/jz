@@ -32,6 +32,19 @@ test('fixed length: a literal written inside its count keeps it', () => {
   is(fixedLen(`export const f = (k) => { const v = [k, k, k]; v[1] = 2; return v[0] + v[1] }`, 'f', 'v'), 3, 'a local literal')
 })
 
+// A construction's count is a literal, or a name that holds an integer for good (the plan folds
+// such a name's reads to the integer, so the emitter builds the one array either way).
+test('fixed length: a construction counted by a name that holds an integer for good has that count', () => {
+  const made = (decl, make, body = 't[0] = k') => fixedLen(`${decl}\nconst t = ${make}\nexport const f = (k) => { ${body}; return t[7] }`, null, 't')
+  is(made('const N = 8', 'new Array(N)'), 8, 'a module constant')
+  is(made('const N = 8', 'Array(N)'), 8, 'called without new')
+  is(made('let N = 8', 'new Array(N)'), 8, 'a binding nothing writes again')
+  is(fixedLen(`export const f = (k) => { const n = 5; const t = new Array(n); t[0] = k; return t[4] }`, 'f', 't'), 5, 'a constant of the function')
+  is(made('let N = 8', 'new Array(N)', 'N = k; t[0] = k'), null, 'a binding written again holds none')
+  is(made('const N = 8', 'new Array(N)', 't.push(k)'), null, 'a push opens it, as a literal count\'s')
+  is(made('const N = 8', 'new Array(N)', 't[8] = k'), null, 'and a store past it')
+})
+
 test('fixed length: a resize, a store past the count or an unbounded index opens it', () => {
   const open = (body, why) => is(fixedLen(`const out = [0, 0, 0]\nexport const f = (k, i) => { ${body}; return out[0] }`, null, 'out'), null, why)
   open('out[3] = k', 'a store past the count')

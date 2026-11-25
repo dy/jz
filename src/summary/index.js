@@ -950,6 +950,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // counter of a counted loop while its body is walked, and sums, products,
   // remainders and masks of those. null where the walk cannot bound it.
   const ints = new Map()         // a name declared once as an integer literal → its value
+  /** The integer an expression is for good: a literal, or such a name. */
+  const integerOf = (e) => typeof e === 'string' ? ints.get(e) : Array.isArray(e) && e[0] == null && Number.isInteger(e[1]) ? e[1] : undefined
   const spans = new Map()        // the counters of the loops being walked → [lo, hi]
   const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
   const moduleConstRanges = new Map()  // module binding id → its const initializer's interval, for every frame
@@ -1601,9 +1603,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
   }
   const literalCount = (node) => {
-    // a construction of a literal count (`new Array(4)`) has that many cells
-    if (Array.isArray(node) && node[0] === '()' && (node[1] === 'new.Array' || node[1] === 'Array') && node.length === 3 &&
-        Array.isArray(node[2]) && node[2][0] == null && Number.isInteger(node[2][1]) && node[2][1] >= 0 && node[2][1] <= 0x7fffffff) return node[2][1]
+    // a construction of a literal count (`new Array(4)`) has that many cells; so has one whose count is a name that holds
+    // an integer for good (`new Array(N)`: `ints`)
+    if (Array.isArray(node) && node[0] === '()' && (node[1] === 'new.Array' || node[1] === 'Array') && node.length === 3) {
+      const count = integerOf(node[2])
+      if (count >= 0 && count <= 0x7fffffff) return count
+    }
     if (!Array.isArray(node) || node[0] !== '[') return LEN_OPEN
     for (let i = 1; i < node.length; i++) if (Array.isArray(node[i]) && node[i][0] === '...') return LEN_OPEN
     return node.length - 1
