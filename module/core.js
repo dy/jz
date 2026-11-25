@@ -3099,6 +3099,9 @@ export default (ctx) => {
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
         // A receiver whose only missing value is absence tests for undefined alone.
         const missing = hasTag(receiverKind, K.NULLISH) ? isNullish : isUndef
+        // (past the test the length of a fixed-length array is its count, as the fold below reads it for a name)
+        const count = prop === 'length' && typeof obj === 'string' ? ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(obj) : null
+        if (count != null) return typed(['block', ['result', 'f64'], ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]], ['f64.const', count]], 'f64')
         // Past the test a name is present: the read takes its present kind
         // (`d.length` of a typed array that may be missing reads the header).
         const same = typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`
@@ -3160,7 +3163,10 @@ export default (ctx) => {
       // the runtime load too, until/unless a cross-function fact propagates
       // it into one of these two maps.
       if (typeof obj === 'string') {
+        // (a plain array of fixed length, the summary's `lens`: every array the name can hold is built at
+        // one count and nothing resizes any of them, the fact its reads' bounds already rest on)
         const litLen = ctx.func.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj) ?? repOf(obj)?.arrayLen
+          ?? ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(obj)
         if (litLen != null) return typed(['f64.const', litLen], 'f64')
       }
       // Fast path: typed-narrowed local (ptrKind=TYPED with known ptrAux) — bypass

@@ -68,6 +68,23 @@ test('fixed length: Array.from of a length has its callback\'s results below the
   }
 })
 
+// The length of an array of fixed length is its count: a literal where it is read, after the
+// holder's test where the holder may be unset. An array of open length reads its header.
+test('fixed length: the length reads as the count', () => {
+  const f = (src, optimize) => funcWat(wat(src, { optimize }), 'f')
+  const fixed = `const N = 8\nconst t = new Array(N).fill(0)\nexport const f = () => t.length`
+  const unset = `let t\nexport const init = () => { t = new Array(8).fill(0); return 0 }\nexport const f = () => t.length`
+  const open = `const t = []\nexport const g = (k) => { t.push(k); return 0 }\nexport const f = () => t.length`
+  for (const optimize of [0, 2]) {
+    ok(/\b(?:f64|i32)\.const 8\b/.test(f(fixed, optimize)) && !/\.load/.test(f(fixed, optimize)), `a constant holder at ${optimize}: the count, no load`)
+    ok(/\b(?:f64|i32)\.const 8\b/.test(f(unset, optimize)) && !/\.load/.test(f(unset, optimize)), `a holder that may be unset at ${optimize}: the count past its test`)
+    ok(/\.load/.test(f(open, optimize)), `an array of open length at ${optimize}: its header`)
+  }
+  const tries = `const tries = (h) => { try { return h() } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }`
+  const calls = `${unset.replace('export const f', 'const f')}\n${tries}\nexport const main = () => { const out = [tries(f)]; init(); out.push(f()); return out.join() }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(calls, 'main', [], { optimize }, `unset, then set, at ${optimize}`)
+})
+
 test('fixed length: a resize, a store past the count or an unbounded index opens it', () => {
   const open = (body, why) => is(fixedLen(`const out = [0, 0, 0]\nexport const f = (k, i) => { ${body}; return out[0] }`, null, 'out'), null, why)
   open('out[3] = k', 'a store past the count')
