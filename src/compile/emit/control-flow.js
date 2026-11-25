@@ -12,7 +12,7 @@ import {
 isArrayIndexKey, RELATIONAL_OPS, nodeKey } from '../../ast.js'
 import { HEAP, LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
-  asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
+  asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, ptrOffsetIR, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { durableArrSnapNode, hasDurableReset, madeByCall } from '../../../module/collection/durable.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
@@ -1387,12 +1387,15 @@ export const controlFlowOps = {
     // A durable array the body stores into by a name the loop never reassigns
     // is saved for the reset before the loop (module/collection/durable.js):
     // its stores inside then skip the round's snapshot test, which only the
-    // first of them could have needed.
+    // first of them could have needed. The save is of the block the stores
+    // reach: an array of no fixed length may have moved as it grew, and a name
+    // taken before the move holds its first place, which forwards.
     const savedArrays = hasDurableReset() ? durableLoopArrays(init, cond, step, body) : []
     const savedRefs = new Map()
     for (const name of savedArrays) {
-      const b = tempI32('lsb')
-      result.push(['local.set', `$${b}`, ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(name))]]], durableArrSnapNode(b, ['i64.reinterpret_f64', asF64(emit(name))]))
+      const b = tempI32('lsb'), fixed = ctx.summary.at(ctx.func.current).fixedLenOf(name) != null
+      const at = fixed ? ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(name))]] : ptrOffsetIR(typed(asF64(emit(name)), 'f64'), VAL.ARRAY)
+      result.push(['local.set', `$${b}`, at], durableArrSnapNode(b, ['i64.reinterpret_f64', asF64(emit(name))]))
       inc('__durable_arr_snap')
       ;(ctx.func.savedStores ??= []).push(name)
       savedRefs.set(name, { ...ctx.func.refinements?.get(name), saved: true })

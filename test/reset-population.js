@@ -177,6 +177,28 @@ ${READS('G2')}`, [['m0'], ['m1'], ['m0', 'm1']]],
 for (const [name, text, rounds = [['m0'], ['m0', 'm0']]] of FIXED)
   test(`reset population: ${name}`, () => population(name, [{ j: 0, text, rounds }]))
 
+// An array that moved while the module built it, stored to in a loop through a name taken before
+// the move. The name holds the block's first place, which forwards, and the loop's save for the
+// reset, taken once ahead of it (compile/emit/control-flow.js durableLoopArrays), is of the block
+// the stores reach. Taken at the first place it saved a block no store wrote, and the stores
+// outlived the reset: in every release from 1.0.0 these read zeros after it, the loops under the
+// array's own length at every level and the one under a literal at levels 2 and above. The arrays
+// pushed between are large: a save at the first place reads the forward for a length and copies
+// that many words, which in a small heap happen to hold the block that moved.
+const MOVED = `const xs = []
+let ys = xs
+const pad = []
+for (let i = 0; i < 100; i++) { xs.push(i + 0.5); pad.push(new Float64Array(256)) }
+export let swap = () => { ys = xs; return 0 }
+const zero = (a) => { for (let i = 0; i < a.length; i++) a[i] = 0; return 0 }
+export let m0 = () => { for (let i = 0; i < ys.length; i++) ys[i] = 0; return 0 }
+export let m1 = () => { const len = ys.length; for (let i = 0; i < len; i++) ys[i] = 0; return 0 }
+export let m2 = () => { for (let i = 0; i < 100; i++) ys[i] = 0; return 0 }
+export let m3 = () => zero(ys)
+${READS('xs')}`
+test('reset population: an array that moved as the module built it, stored to in a loop through a name taken before the move', () =>
+  population('moved', [{ j: 0, text: MOVED, rounds: [['m0'], ['m1'], ['m2'], ['m3']] }]))
+
 // The same generator pointed at a Map, a Set and an object made at start: keys and values of
 // the static data, strings the call makes (short enough to be held inline, or on the heap) and
 // arrays it makes; a set of a new and of a present key, a fused update (`set(k, get(k))`, `if
