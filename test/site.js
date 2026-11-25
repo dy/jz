@@ -783,11 +783,16 @@ test('site: the held-out lane runs by hand, V8 alone when dry, and records a con
   const on = workflow.slice(workflow.indexOf('\non:\n'), workflow.indexOf('\nconcurrency:\n'))
   ok(on.includes('  workflow_dispatch:\n') && !/\n  (push|pull_request|schedule|workflow_run):/.test(on), 'dispatched by hand only')
   ok(/options: \[dry, contact\]\n        default: dry/.test(on), 'dry unless asked')
-  const run = workflow.slice(workflow.indexOf('\n  run:\n'), workflow.indexOf('\n  record:\n'))
+  const call = workflow.slice(workflow.indexOf('\n  run:\n'), workflow.indexOf('\n  record:\n'))
   const record = workflow.slice(workflow.indexOf('\n  record:\n'))
-  ok(!/git (push|commit)|--publish/.test(run) && /permissions:\n      contents: read/.test(run), 'the measuring job writes nothing to the repository')
+  // (each set is measured by heldout-set.yml, which the lane alone calls)
+  const set = readFileSync(join(root, '.github/workflows/heldout-set.yml'), 'utf8'), run = set.slice(set.indexOf('\njobs:\n'))
+  ok(call.includes('uses: ./.github/workflows/heldout-set.yml') && call.includes('set: ${{ matrix.set }}') && call.includes('mode: ${{ inputs.mode }}'), 'each set in the set workflow, with the run\'s mode')
+  ok(/^on:\n  workflow_call:\n/m.test(set) && !/\n  (push|pull_request|schedule|workflow_run|workflow_dispatch):/.test(set.slice(0, set.indexOf('\njobs:\n'))), 'which nothing else starts')
+  const reads = /permissions:\n      contents: read\n      actions: read\n/
+  ok(!/git (push|commit)|--publish/.test(call + run) && reads.test(call) && reads.test(run), 'the measuring job writes nothing to the repository')
   const lanes = run.split('\n      - ').filter(step => /bench\/bench\.mjs|porf|jsvu|setup-deno|setup-bun/.test(step))
-  ok(lanes.length === 5 && lanes.every(step => step.includes("if: inputs.mode == 'contact'")), 'a dry run installs no lane and builds no jz: V8 alone runs the drivers')
+  ok(lanes.length === 5 && lanes.every(step => step.includes("inputs.mode == 'contact'")), 'a dry run installs no lane and builds no jz: V8 alone runs the drivers')
   ok(run.includes('node scripts/heldout.mjs check "$RUNNER_TEMP/heldout/cases"'), 'V8 runs every driver and the set\'s own check')
   ok(run.includes('node scripts/heldout.mjs registered "$RUNNER_TEMP/heldout/cases"'), 'a contact refuses a program registered under another compiler')
   ok(run.includes(`node bench/bench.mjs --targets=${LANES.join(',')} --paired=6`), 'and measures the record\'s lanes (bench/heldout/lane.mjs LANES), jz at speed and exact beside every engine, in paired rounds')
@@ -795,6 +800,44 @@ test('site: the held-out lane runs by hand, V8 alone when dry, and records a con
   ok(workflow.includes('[ "$MODE" = contact ] && [ "$GITHUB_REF" != refs/heads/main ]'), 'a contact runs on main alone')
   ok(record.includes("inputs.mode == 'contact'") && /permissions:\n      contents: write\n      actions: read/.test(record), 'the record job alone may write, for a contact')
   ok(record.includes('node scripts/heldout.mjs record "$run/cases" "$run/bench.json" --publish'), 'through the tested script')
+})
+
+// A contact is measured on one CPU model: a hosted runner is one of several, and jz's time
+// against a JIT's reads by the model (heldout-set.yml, its header). The set's job is drawn six
+// times, one after another; the first step of each decides whether the draw takes the set, and
+// every later step runs for the draw that took it alone. The step's script is run here as the
+// runner runs it, `gh` a stand-in answering how many artifacts of the set's name the run holds.
+test('site: a held-out contact is measured on the pinned CPU alone, by the first of six draws that is one', () => {
+  const set = readFileSync(join(root, '.github/workflows/heldout-set.yml'), 'utf8')
+  ok(/max-parallel: 1\n      matrix:\n        draw: \[1, 2, 3, 4, 5, 6\]\n/.test(set) && set.includes('DRAWS: 6\n'), 'six draws, one after another')
+  const steps = set.slice(set.indexOf('\n    steps:\n')).split(/\n      - /).slice(1)
+  ok(steps[0].startsWith('id: draw\n') && steps.length > 10 && steps.slice(1).every(step => step.includes("steps.draw.outputs.go == 'true'")), 'every step after the draw is the taken draw\'s alone')
+  ok(steps[0].includes('/actions/runs/$GITHUB_RUN_ID/artifacts?name=heldout-$SET"') && /name: heldout-\$\{\{ inputs\.set \}\}\n/.test(steps[steps.length - 1]), 'a set is taken once its artifact is in the run')
+  const pinned = set.match(/\n  PINNED_CPU: (.+)\n/)[1]
+  const script = steps[0].slice(steps[0].indexOf('run: |\n') + 7).split('\n').map(line => line.replace(/^ {10}/, '')).join('\n')
+  const dir = mkdtempSync(join(tmpdir(), 'jz-draw-'))
+  try {
+    writeFileSync(join(dir, 'gh'), '#!/bin/sh\necho "$TAKEN"\n', { mode: 0o755 })
+    const take = (mode, draw, cpu, taken = 0) => {
+      writeFileSync(join(dir, 'cpuinfo'), `processor\t: 0\nvendor_id\t: x\nmodel name\t: ${cpu}\nprocessor\t: 1\nmodel name\t: ${cpu}\n`)
+      writeFileSync(join(dir, 'out'), '')
+      const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, CPUINFO: join(dir, 'cpuinfo'),
+        GITHUB_OUTPUT: join(dir, 'out'), GITHUB_REPOSITORY: 'o/r', GITHUB_RUN_ID: '1', TAKEN: String(taken), MODE: mode, SET: 'awfy', DRAW: String(draw), DRAWS: '6', PINNED_CPU: pinned } })
+      return `${r.status} ${readFileSync(join(dir, 'out'), 'utf8').trim() || 'left'}`
+    }
+    const other = 'AMD EPYC 7763 64-Core Processor'
+    is(take('contact', 1, pinned), '0 go=true', 'a contact on the pinned model takes the set')
+    is(take('contact', 4, pinned), '0 go=true', 'at any draw')
+    is(take('contact', 1, other), '0 left', 'a contact on another model leaves it to the next draw')
+    is(take('contact', 5, other), '0 left', 'as far as the fifth')
+    is(take('contact', 6, other), '1 left', 'the last draw fails where none was the pinned model')
+    is(take('contact', 6, pinned), '0 go=true', 'and takes the set where it is one')
+    is(take('contact', 3, pinned, 1), '0 left', 'a set an earlier draw took is left, on the pinned model too')
+    is(take('contact', 6, other, 1), '0 left', 'and the last draw does not fail for it')
+    is(take('dry', 1, other), '0 go=true', 'a dry run takes the first draw on any model')
+    is(take('dry', 2, pinned), '0 left', 'and that draw alone')
+    is(take('dry', 2, other, 1), '0 left', 'taken or not')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('site: a measurement run that lost a shard is rerun once, failed jobs only', () => {

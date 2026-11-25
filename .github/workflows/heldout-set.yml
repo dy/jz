@@ -1,0 +1,139 @@
+name: heldout set
+# One set of the held-out lane: heldout.yml calls this once a set, the sets side by side.
+# A contact is measured on one CPU model. A hosted runner is drawn from a pool of several (of
+# the 28 draws the record held when this was written, 16 were the Xeon below, 5 an EPYC 9V45,
+# 4 an EPYC 7763, 2 an EPYC 9V74, 1 a Xeon 8573C), and jz's time against a JIT's reads by the
+# model drawn: the 23 programs' geomean was 1.41 on two of the Xeon, 1.58 on two EPYCs and 1.54
+# on one of each, where one compiler on one model reads within 1.6%. So the job is drawn up to
+# six times, one after another, and the first draw on the pinned model measures; a draw on any
+# other ends at its first step, as does every draw after the set is taken. A dry run times
+# nothing and takes the first draw, whatever its CPU. A set is taken by its artifact in the
+# run, so a re-run of a run's jobs finds it taken and measures nothing: a contact is repeated
+# by a new run.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        required: true
+      set:
+        type: string
+        required: true
+env:
+  PINNED_CPU: Intel(R) Xeon(R) 6975P-C
+jobs:
+  measure:
+    name: ${{ inputs.mode }} ${{ inputs.set }}, draw ${{ matrix.draw }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        draw: [1, 2, 3, 4, 5, 6]
+    # The measuring job writes nothing to the repository; the record job does. It reads the
+    # run's artifacts to see whether an earlier draw took the set.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      MODE: ${{ inputs.mode }}
+      SET: ${{ inputs.set }}
+      DRAW: ${{ matrix.draw }}
+      DRAWS: 6
+    steps:
+      # go=true where this draw is the set's: no draw before it took the set (its artifact is
+      # the mark, uploaded once its drivers are made whether the measurement then passed or
+      # failed: a failed measurement is not drawn again), and the runner is the pinned model
+      # (a contact) or the draw is the first (a dry run). The last draw of a contact fails
+      # where no draw was the pinned model.
+      - id: draw
+        name: take the set on the pinned CPU, or leave it to the next draw
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cpu=$(grep -m1 'model name' "${CPUINFO:-/proc/cpuinfo}" | sed 's/^[^:]*: *//')
+          taken=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=heldout-$SET" --jq '.total_count')
+          if [ "$taken" != 0 ]; then
+            echo "::notice::$SET, draw $DRAW: an earlier draw took the set"
+          elif [ "$MODE" != contact ]; then
+            if [ "$DRAW" = 1 ]; then echo "go=true" >> "$GITHUB_OUTPUT"; fi
+          elif [ "$cpu" = "$PINNED_CPU" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$DRAW" = "$DRAWS" ]; then
+            echo "::error::$SET: none of $DRAWS draws was a $PINNED_CPU (the last a $cpu), so the set is not measured: run the lane again"
+            exit 1
+          else
+            echo "::notice::$SET, draw $DRAW: a $cpu, not the pinned $PINNED_CPU"
+          fi
+      # Full history: a program's registration is read from the manifest's.
+      - uses: actions/checkout@v4
+        if: steps.draw.outputs.go == 'true'
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        if: steps.draw.outputs.go == 'true'
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+        if: steps.draw.outputs.go == 'true'
+      - run: npm rebuild esbuild
+        if: steps.draw.outputs.go == 'true'
+      - name: fetch the pinned files
+        if: steps.draw.outputs.go == 'true'
+        run: node scripts/heldout.mjs fetch "$RUNNER_TEMP/heldout/src" --sets="$SET"
+      - name: generate the drivers
+        if: steps.draw.outputs.go == 'true'
+        run: node scripts/heldout.mjs generate "$RUNNER_TEMP/heldout/src" "$RUNNER_TEMP/heldout/cases" --sets="$SET"
+      # A dry run fails on a program V8 does not run or the set's check does not pass, the
+      # manifest's notMeasured aside, and on a marked program that passes; a contact run
+      # records an unmarked one (its rows unverified) and measures the rest.
+      - name: V8 runs every driver and the set's own check
+        if: steps.draw.outputs.go == 'true'
+        run: node scripts/heldout.mjs check "$RUNNER_TEMP/heldout/cases" "$RUNNER_TEMP/heldout/src" --sets="$SET" || test "$MODE" = contact
+      - name: refuse a program registered under another compiler
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+        run: node scripts/heldout.mjs registered "$RUNNER_TEMP/heldout/cases" --sets="$SET"
+      - uses: denoland/setup-deno@v2
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+        with:
+          deno-version: v2.x
+      - uses: oven-sh/setup-bun@v2
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+      - name: install jsc (JavaScriptCore), the latest Linux build
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+        run: |
+          JSC=$(curl -fsSL https://webkitgtk.org/jsc-built-products/x86_64/release/LAST-IS | grep -o '^[0-9]*')
+          npx --yes jsvu --os=linux64 "javascriptcore@$JSC"
+          "$HOME/.jsvu/bin/jsc-$JSC" -e 'print("jsc ready")' | grep -q 'jsc ready'
+          echo "JSC_BIN=$HOME/.jsvu/bin/jsc-$JSC" >> "$GITHUB_ENV"
+      # The release bench.yml measures (alpha 25, c9af40c).
+      - name: porffor alpha 25 (release, pinned)
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+        env:
+          PORFFOR_RELEASE: alpha-25
+          PORFFOR_REV: c9af40c8c6913e04d491412ae9fe0f34b97b51df
+        run: |
+          curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
+          test -x "$HOME/.local/bin/porf"
+          "$HOME/.local/bin/porf" --version | grep -q "${PORFFOR_REV:0:7}"
+          echo "PORF_BIN=$HOME/.local/bin/porf" >> "$GITHUB_ENV"
+      - name: install GNU time (peak RSS) and clang (Porffor's C backend)
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+        run: sudo apt-get update && sudo apt-get install -y time clang
+      - name: measure every lane, the claim lanes' paired rounds
+        if: steps.draw.outputs.go == 'true' && inputs.mode == 'contact'
+        env:
+          JZ_BENCH_CASES_DIR: ${{ runner.temp }}/heldout/cases
+          JZ_BENCH_ORACLE: source
+          JZ_BENCH_BUILD_DIR: ${{ runner.temp }}/heldout/build
+        run: node bench/bench.mjs --targets=jz,jz-exact,v8,deno,bun,jsc,porf-native --paired=6 --no-web --json="$RUNNER_TEMP/heldout/bench.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.draw.outputs.go == 'true' }}
+        with:
+          name: heldout-${{ inputs.set }}
+          path: |
+            ${{ runner.temp }}/heldout/cases/index.json
+            ${{ runner.temp }}/heldout/cases/check.json
+            ${{ runner.temp }}/heldout/bench.json
+          if-no-files-found: ignore

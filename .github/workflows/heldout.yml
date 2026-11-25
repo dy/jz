@@ -12,6 +12,8 @@ name: heldout
 #     measured on first contact once. No lane measures a program marked notMeasured and
 #     the record stores no entry of it: the run names it, with why, and the lane's
 #     figures count it as registered and not measured.
+#     Measured on one CPU model, the one heldout-set.yml pins: a runner of any other
+#     leaves the set to the next draw.
 on:
   workflow_dispatch:
     inputs:
@@ -51,86 +53,22 @@ jobs:
             if (bad.length) { console.error(`no set ${bad.join(", ")} in bench/heldout/manifest.json`); process.exit(1) }
             console.log(`sets=${JSON.stringify(want)}`)' "$SETS" >> "$GITHUB_OUTPUT"
 
+  # Each set in a workflow of its own (heldout-set.yml), the sets side by side: a contact is
+  # measured on one CPU model, which a set's job is drawn for up to six times.
   run:
     needs: plan
-    name: ${{ inputs.mode }} ${{ matrix.set }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 340
     strategy:
       fail-fast: false
       matrix:
         set: ${{ fromJSON(needs.plan.outputs.sets) }}
-    # The measuring job writes nothing to the repository; the record job does.
+    # The measuring jobs write nothing to the repository; the record job does.
     permissions:
       contents: read
-    env:
-      MODE: ${{ inputs.mode }}
-      SET: ${{ matrix.set }}
-    steps:
-      # Full history: a program's registration is read from the manifest's.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci --ignore-scripts
-      - run: npm rebuild esbuild
-      - name: fetch the pinned files
-        run: node scripts/heldout.mjs fetch "$RUNNER_TEMP/heldout/src" --sets="$SET"
-      - name: generate the drivers
-        run: node scripts/heldout.mjs generate "$RUNNER_TEMP/heldout/src" "$RUNNER_TEMP/heldout/cases" --sets="$SET"
-      # A dry run fails on a program V8 does not run or the set's check does not pass, the
-      # manifest's notMeasured aside, and on a marked program that passes; a contact run
-      # records an unmarked one (its rows unverified) and measures the rest.
-      - name: V8 runs every driver and the set's own check
-        run: node scripts/heldout.mjs check "$RUNNER_TEMP/heldout/cases" "$RUNNER_TEMP/heldout/src" --sets="$SET" || test "$MODE" = contact
-      - name: refuse a program registered under another compiler
-        if: inputs.mode == 'contact'
-        run: node scripts/heldout.mjs registered "$RUNNER_TEMP/heldout/cases" --sets="$SET"
-      - uses: denoland/setup-deno@v2
-        if: inputs.mode == 'contact'
-        with:
-          deno-version: v2.x
-      - uses: oven-sh/setup-bun@v2
-        if: inputs.mode == 'contact'
-      - name: install jsc (JavaScriptCore), the latest Linux build
-        if: inputs.mode == 'contact'
-        run: |
-          JSC=$(curl -fsSL https://webkitgtk.org/jsc-built-products/x86_64/release/LAST-IS | grep -o '^[0-9]*')
-          npx --yes jsvu --os=linux64 "javascriptcore@$JSC"
-          "$HOME/.jsvu/bin/jsc-$JSC" -e 'print("jsc ready")' | grep -q 'jsc ready'
-          echo "JSC_BIN=$HOME/.jsvu/bin/jsc-$JSC" >> "$GITHUB_ENV"
-      # The release bench.yml measures (alpha 25, c9af40c).
-      - name: porffor alpha 25 (release, pinned)
-        if: inputs.mode == 'contact'
-        env:
-          PORFFOR_RELEASE: alpha-25
-          PORFFOR_REV: c9af40c8c6913e04d491412ae9fe0f34b97b51df
-        run: |
-          curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
-          test -x "$HOME/.local/bin/porf"
-          "$HOME/.local/bin/porf" --version | grep -q "${PORFFOR_REV:0:7}"
-          echo "PORF_BIN=$HOME/.local/bin/porf" >> "$GITHUB_ENV"
-      - name: install GNU time (peak RSS) and clang (Porffor's C backend)
-        if: inputs.mode == 'contact'
-        run: sudo apt-get update && sudo apt-get install -y time clang
-      - name: measure every lane, the claim lanes' paired rounds
-        if: inputs.mode == 'contact'
-        env:
-          JZ_BENCH_CASES_DIR: ${{ runner.temp }}/heldout/cases
-          JZ_BENCH_ORACLE: source
-          JZ_BENCH_BUILD_DIR: ${{ runner.temp }}/heldout/build
-        run: node bench/bench.mjs --targets=jz,jz-exact,v8,deno,bun,jsc,porf-native --paired=6 --no-web --json="$RUNNER_TEMP/heldout/bench.json"
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: heldout-${{ matrix.set }}
-          path: |
-            ${{ runner.temp }}/heldout/cases/index.json
-            ${{ runner.temp }}/heldout/cases/check.json
-            ${{ runner.temp }}/heldout/bench.json
-          if-no-files-found: ignore
+      actions: read
+    uses: ./.github/workflows/heldout-set.yml
+    with:
+      mode: ${{ inputs.mode }}
+      set: ${{ matrix.set }}
 
   record:
     needs: [plan, run]
