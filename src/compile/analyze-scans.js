@@ -1681,19 +1681,19 @@ export function collectF64StridedIndexVars(body, locals) {
  * round: over 256 cells the integer form ran at 36 ns where a float sum of the same
  * cells ran at 16. The value is the same Number either way (a word's sum the range
  * proof bounds is exact in an f64).
- * A local is one where every write past its declaration is `s += E` (as `s = s + E`
- * arrives too, src/normalize.js) with E such a read at a counter or a constant past it
- * (`c[i]`, `c[i + 1]`: a name a step by one writes), and every other mention of it
- * stands outside every loop: a read in a loop may be an index or a word operand, which
- * the float would then convert each round.
+ * A local is one where every write past its declaration is `s += E` or `s -= E` (as
+ * `s = s + E` arrives too, src/normalize.js) with E such a read at a counter or a constant
+ * from it (`c[i]`, `c[i + 1]`, `c[i - 1]`: a name a step by one writes), and every other
+ * mention of it stands outside every loop: a read in a loop may be an index or a word
+ * operand, which the float would then convert each round.
  * Those are the forms of sum the lanes take, and the float pays nowhere else: where the
  * loop stays a cell to the round, a float sum's round waits on the one before it and a
- * word's does not. Raw exports over 256 cells, the word and then the float: `s -= c[i]`
- * 77 ns and 86, `c[i - 1]` 80 and 87, a counter stepped by two 38 and 40, and a cell at
- * a computed index (`b[idx[i] & 255]`) 144 and 182 through the host's wrapper. A form
- * the lanes learn to take is a form to add here. (A sum of this form the lanes still
- * refuse, under a condition or beside an early exit, ran the same either way: 81 and 82,
- * 88 and 89.)
+ * word's does not. Raw exports over 256 cells, the word and then the float: a counter
+ * stepped by two 38 ns and 40, a cell at a computed index (`b[idx[i] & 255]`) 144 and 182
+ * through the host's wrapper, and before the lanes took them `s -= c[i]` 77 and 86,
+ * `c[i - 1]` 80 and 87. A form the lanes learn to take is a form to add here. (A sum of
+ * this form the lanes still refuse, under a condition or beside an early exit, ran the
+ * same either way: 81 and 82, 88 and 89.)
  */
 const SUM_LOOPS = new Set(['for', 'while', 'do', 'for-in', 'for-of'])
 export function collectCellSums(body, locals, wordRead) {
@@ -1703,8 +1703,8 @@ export function collectCellSums(body, locals, wordRead) {
   const stepped = new Set()
   walkAst(body, { enter: n => { if ((n[0] === '++' || n[0] === '--') && typeof n[1] === 'string') stepped.add(n[1]) } })
   const counter = (k) => typeof k === 'string' && stepped.has(k)
-  const atCounter = (cell) => counter(cell[2]) || Array.isArray(cell[2]) && cell[2][0] === '+' && counter(cell[2][1])
-    && Array.isArray(cell[2][2]) && cell[2][2][0] == null && cell[2][2][1] >= 0
+  const atCounter = (cell) => counter(cell[2]) || Array.isArray(cell[2]) && (cell[2][0] === '+' || cell[2][0] === '-') && counter(cell[2][1])
+    && Array.isArray(cell[2][2]) && cell[2][2][0] == null
   const walk = (n, loops) => {
     if (typeof n === 'string') { if (loops) bar(n); return }
     if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return
@@ -1713,7 +1713,7 @@ export function collectCellSums(body, locals, wordRead) {
       return
     }
     if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') {
-      const name = n[1], cell = n[0] === '+=' ? n[2] : null
+      const name = n[1], cell = n[0] === '+=' || n[0] === '-=' ? n[2] : null
       if (cell != null && locals.get(name) === 'i32' && sums?.get(name) !== false && wordRead(cell) && atCounter(cell)) {
         const count = (sums ||= new Map()).get(name) ?? 0
         sums.set(name, count + 1)

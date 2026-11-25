@@ -140,7 +140,7 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     }
   }
   const bodyLen = body0.length
-  let accName, opName, reduceEntry, exprNode, canonC = null
+  let accName, opName, mergeOp = null, reduceEntry, exprNode, canonC = null
   if (bodyLen === 1) {
     const stmt = body0[0]
     if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
@@ -205,11 +205,9 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
       exprNode = cb.core[2]
       canonC = cb.C
     } else {
-      if (rhs.length !== 3) return null
-      opName = rhs[0]
-      reduceEntry = plainReduceEntry(opName)
-      if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
-      exprNode = rhs[2]
+      const plain = plainReduce(rhs, accName)
+      if (!plain) return null
+      opName = plain.opName; mergeOp = plain.mergeOp; reduceEntry = plain.reduceEntry; exprNode = plain.exprNode
     }
   } else if (bodyLen === 2) {
     const s1 = body0[0], s2 = body0[1]
@@ -367,7 +365,7 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
 
-  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32)
+  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp ?? opName)
 }
 
 // SIMD prefix + horizontal fold + (preserved scalar tail), shared by tryReduceReassoc and
@@ -379,7 +377,9 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
 // `widen`/`sawWidenF32` are the narrow-widening sum shapes only tryReduceReassoc produces:
 // `widen` takes a vector of its lane type to i32x4 partials by its `steps`, of which `fold`
 // lanes hold a value (all four where it names none).
-function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32) {
+// `mergeOp` merges the folded lanes into the accumulator: the reduction's op, or the
+// subtraction of a sum taken from it (plainReduce).
+function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp) {
   const { incVar } = bl
   const stride = LANE_INFO[laneType].stride
   const id = freshIdRef.next++
@@ -476,7 +476,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
     // Merge the SIMD result into the live accumulator. For canon (min/max) the
     // merged value is re-canonicalized so a NaN that surfaced only in the SIMD
     // range still crosses as the canonical NaN when the scalar tail is empty.
-    const merged = [opName, ['local.get', accName], horiz]
+    const merged = [mergeOp, ['local.get', accName], horiz]
     mergeStmts = canonC == null
       ? [['local.set', accName, merged]]
       : [['local.set', accName, merged],
@@ -778,6 +778,19 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 // A float sum or product in lanes adds in another order than the loop: relaxedFloat's alone.
 const REASSOCIATES = new Set(['f64.add', 'f64.mul', 'f32.add', 'f32.mul'])
 const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relaxF32 ? null : REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
+// A plain reduction's value, `acc OP x`, read for both recognizers: its op, the op that merges the
+// lanes' result into the accumulator, the table's entry and the operand. Each op here commutes, so
+// `x OP acc` is the same reduction (`s = a[i] + s`). And `acc - x` is the sum of the x's taken from
+// the accumulator once: the lanes add, the merge subtracts, exactly for a wrapping integer and, for
+// a float, in the other order its sum already takes under relaxedFloat.
+const SUM_OF = { 'i32.sub': 'i32.add', 'i64.sub': 'i64.add', 'f32.sub': 'f32.add', 'f64.sub': 'f64.add' }
+function plainReduce(rhs, accName) {
+  if (rhs.length !== 3) return null
+  const sum = SUM_OF[rhs[0]], opName = sum ?? rhs[0], reduceEntry = plainReduceEntry(opName)
+  if (!reduceEntry) return null
+  if (isLocalGet(rhs[1], accName)) return { opName, mergeOp: rhs[0], reduceEntry, exprNode: rhs[2] }
+  return sum == null && isLocalGet(rhs[2], accName) ? { opName, mergeOp: opName, reduceEntry, exprNode: rhs[1] } : null
+}
 
 // ---- General base-layer REDUCTION recognizer (dispatch-chain terminal) ----------------
 //
@@ -821,7 +834,7 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (!boundLocal && !isI32Const(bound)) return null
   if (body.length !== 1 && body.length !== 2) return null
 
-  let accName, opName, reduceEntry, exprNode, canonC = null
+  let accName, opName, mergeOp = null, reduceEntry, exprNode, canonC = null
   if (body.length === 1) {
     const stmt = body[0]
     if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
@@ -851,11 +864,9 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
       }
       exprNode = minmax.exprNode
     } else {
-      if (rhs.length !== 3) return null
-      opName = rhs[0]
-      reduceEntry = plainReduceEntry(opName)
-      if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
-      exprNode = rhs[2]
+      const plain = plainReduce(rhs, accName)
+      if (!plain) return null
+      opName = plain.opName; mergeOp = plain.mergeOp; reduceEntry = plain.reduceEntry; exprNode = plain.exprNode
     }
   } else {
     const s1 = body[0], s2 = body[1]
@@ -937,5 +948,5 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost', 'cost')
 
-  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, null, false)
+  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, null, false, mergeOp ?? opName)
 }

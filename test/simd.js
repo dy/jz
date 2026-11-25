@@ -2489,14 +2489,15 @@ export let isum = () => { let s = 0; for (let i = 0; i < ${n}; i++) s ${op} c[i]
     }
 })
 
-// At the speed tier an accumulator a loop adds f64 cells read as words to, at its counter, is
-// held as a float (compile/analyze-scans.js collectCellSums): no round converts its cell, and
-// the sum lifts to float lanes, four accumulators to the round (17 ns over 256 cells where the
-// word's lanes took 37 with one accumulator and 24 with four; raw exports, Node 25, an M4). Not
-// where anything else writes the accumulator or a loop reads it (an index or a word operand would
-// convert the float each round); not for a form of sum no lane takes, where the float is the
-// slower (a subtraction, a cell before the counter or at a computed index, a stride of two); and
-// not in the strict tiers, where a float sum runs in the loop's order, one add a cell.
+// At the speed tier an accumulator a loop adds f64 cells read as words to, or takes them from,
+// at its counter or a constant from it, is held as a float (compile/analyze-scans.js
+// collectCellSums): no round converts its cell, and the sum lifts to float lanes, four accumulators
+// to the round (17 ns over 256 cells where the word's lanes took 37 with one accumulator and 24
+// with four; raw exports, Node 25, an M4). Not where anything else writes the accumulator or a
+// loop reads it (an index or a word operand would convert the float each round); not for a form
+// of sum no lane takes, where the float is the slower (a cell at a computed index, a stride of
+// two); and not in the strict tiers, where a float sum runs in the loop's order, one add a cell.
+// A float by this rule is a sum in float lanes: the rule holds no form the lanes refuse.
 // Each program: its accumulator's register, and its answer.
 test('vectorize: a sum of a plain array\'s words is a float sum at the speed tier', () => {
   const cells = Array.from({ length: 67 }, (_, i) => (i * 37 + 11) % 64 - 20)
@@ -2505,9 +2506,9 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   const sums = [
     ['added to', `let s = 0; ${LOOP} s += c[i]; return s`, 'f64'],
     ['added to as an assignment', `let s = 0; ${LOOP} s = s + c[i]; return s`, 'f64'],
-    // (the lanes take no sum by subtraction, and none of the cell before the counter)
-    ['taken from', `let s = 500; ${LOOP} s -= c[i]; return s`, 'i32'],
-    ['taken from as an assignment', `let s = 500; ${LOOP} s = s - c[i]; return s`, 'i32'],
+    ['taken from', `let s = 500; ${LOOP} s -= c[i]; return s`, 'f64'],
+    ['taken from as an assignment', `let s = 500; ${LOOP} s = s - c[i]; return s`, 'f64'],
+    ['added to and taken from', `let s = 0; ${LOOP} s += c[i]; for (let i = 0; i < 30; i++) s -= c[i]; return s`, 'f64'],
     ['read as an index after its loop', `let s = 0; ${LOOP} s += c[i]; return c[s & 63] * 1000 + s`, 'f64'],
     // (its register is another rule's at this tier, a float before this one: the answer alone)
     ['read as an index in its loop', `let s = 0, t = 0; ${LOOP} { s += c[i]; t += c[s & 63] } return t * 1000 + s`, null],
@@ -2521,9 +2522,11 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
     ['fed a cell at a computed index', `let s = 0; ${LOOP} s += c[(i * 5) & 63]; return s`, 'i32'],
     ['fed a cell at a name a round computes', `let s = 0; ${LOOP} { const k = (i * 5) & 63; s += c[k] } return s`, 'i32'],
     ['fed the cell after its counter', `let s = 0; for (let i = 0; i < 66; i++) s += c[i + 1]; return s`, 'f64'],
-    ['fed the cell before its counter', `let s = 0; for (let i = 1; i < 67; i++) s += c[i - 1]; return s`, 'i32'],
-    ['fed the cell a negative constant past its counter', `let s = 0; for (let i = 1; i < 67; i++) s += c[i + -1]; return s`, 'i32'],
+    ['fed the cell before its counter', `let s = 0; for (let i = 1; i < 67; i++) s += c[i - 1]; return s`, 'f64'],
+    ['fed the cell three before its counter, counting down', `let s = 0; for (let i = 66; i >= 3; i--) s += c[i - 3]; return s`, 'f64'],
+    ['fed the cell a computed count before its counter', `let s = 0; for (let i = 1; i < 67; i++) s += c[i - (c[0] & 1)]; return s`, 'i32'],
     ['at a counter stepped by two', `let s = 0; for (let i = 0; i < 66; i += 2) s += c[i]; return s`, 'i32'],
+    ['fed the cell at twice its counter', `let s = 0; for (let i = 0; i < 33; i++) s += c[i * 2]; return s`, 'i32'],
     ['at a counter stepped by an added one', `let s = 0; for (let i = 0; i < 67; i += 1) s += c[i]; return s`, 'f64'],
     ['at a counter stepped down', `let s = 0; for (let i = 66; i >= 0; i--) s += c[i]; return s`, 'f64'],
   ]
@@ -2535,10 +2538,46 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
     if (kept !== null && ownedLevels('speed').length) is(register(src, 'speed'), kept, `${name}: its register at speed`)
     if (kept !== null && ownedLevels(2).length) is(register(src, 2), 'i32', `${name}: a word at level 2`)
     for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+    if (kept === 'f64' && ownedLevels('speed').length) ok(/f64x2\.add/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), `${name}: in float lanes`)
   }
   if (!ownedLevels('speed').length) return
   const text = funcWat(wat(program(sums[0][1]), { optimize: 'speed' }), 'f')
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
+})
+
+// A reduction read whichever side holds its accumulator, and a sum taken from it: `s = a[i] + s`
+// is `s += a[i]`, every op of the table commuting, and `s -= a[i]` is the sum of the cells taken
+// from `s` once, so the lanes add and the merge subtracts (optimize/vectorize/reduce.js
+// plainReduce). `s = a[i] - s` is neither: each round negates what the rounds before it made.
+// And over a plain array the general address proof reads through the temp a read stages its base
+// in (addr-model.js isInvariantBase): the cell before the counter lifts as over a typed array.
+// The floats are quarters, whose sums are exact in any order.
+test('vectorize: a reduction lifts with its accumulator on either side, and as a sum taken from it', () => {
+  const head = `const N = 67
+const fa = new Float64Array(N), ia = new Int32Array(N), ua = new Uint8Array(N), pa = []
+for (let i = 0; i < N; i++) { fa[i] = ((i * 37 + 11) % 64) * 0.25 - 3; ia[i] = (i * 37 + 11) % 64 - 20; ua[i] = (i * 53 + 7) % 251; pa.push(((i * 29 + 5) % 64) * 0.5 - 7) }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  // [name, body, in lanes at 'speed', in lanes at level 2 (null: either)]
+  const rows = [
+    ['a float sum taken from', `let s = 100; ${LOOP} s -= fa[i]; return s`, true, null],
+    ['a wrapping integer sum taken from', `let s = 100; ${LOOP} s = (s - ia[i]) | 0; return s`, true, true],
+    ['a byte sum taken from', `let s = 100; ${LOOP} s -= ua[i]; return s`, true, null],
+    ['a plain array\'s float sum taken from', `let s = 100; ${LOOP} s -= pa[i]; return s`, true, null],
+    ['a float sum, the accumulator on the right', `let s = 0.5; ${LOOP} s = fa[i] + s; return s`, true, null],
+    ['an integer xor, the accumulator on the right', `let x = 5; ${LOOP} x = ia[i] ^ x; return x`, true, true],
+    ['a difference from the accumulator on the right', `let s = 0.5; ${LOOP} s = fa[i] - s; return s`, false, false],
+    ['a plain array\'s cell before the counter', `let s = 0; for (let i = 1; i < N; i++) s += pa[i - 1]; return s`, true, null],
+    ['a plain array\'s cell two before the counter, counting down', `let s = 0; for (let i = N - 1; i >= 2; i--) s += pa[i - 2]; return s`, true, null],
+  ]
+  for (const [name, body, atSpeed, at2] of rows) {
+    const src = head + `export let f = () => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) {
+      is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+      const lanes = optimize === 2 ? at2 : atSpeed
+      if (lanes !== null) is(/v128|[if]\d+x\d+\./.test(funcWat(wat(src, { optimize }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no lanes'} at ${optimize}`)
+    }
+  }
 })
 
 // The preamble runs twice, cloned ahead of the strips and again by the block as written: a set
@@ -5264,14 +5303,14 @@ test('SIMD general-reduce f64 - dot-style two-array combine, one array at a runt
   }
 })
 
-// Negative/safety cases: a genuinely non-associative op (subtraction accumulate — not in
-// REDUCE_OP_LOOKUP) must decline cleanly, and a SECOND independent loop-carried accumulator in
-// the same body (violating "single accumulator, no other loop-carried state") must ALSO decline —
-// both compared byte-for-byte against the SAME source compiled on unmodified main tip (a4726c5a),
-// not just "result unaffected", since a false-positive precondition here would be a real
-// mis-vectorization risk, not a missed optimization.
-
-test('SIMD general-reduce safety - non-associative op (s -= a[i+off+5]) never vectorizes as a reduce', () => {
+// A subtraction accumulate is no op of REDUCE_OP_LOOKUP, and lanes that subtracted would fold
+// to another value: it lifts as the sum of its operands, taken from the accumulator once
+// (reduce.js plainReduce), exact for a wrapping integer. The lanes add, the merge subtracts.
+// A SECOND independent loop-carried accumulator in the same body (violating "single
+// accumulator, no other loop-carried state") must decline. Both are compared against the same
+// source compiled without the vectorizer, since a false-positive precondition here would be a
+// real mis-vectorization risk, not a missed optimization.
+test('SIMD general-reduce - a sum taken from its accumulator (s -= a[i+off+5]) lifts as the sum, taken once', () => {
   const src = `export let main = (offIn) => {
     const off = (offIn | 0) & 7, n = 40
     const a = new Int32Array(56)
@@ -5282,10 +5321,10 @@ test('SIMD general-reduce safety - non-associative op (s -= a[i+off+5]) never ve
   }`
   const laned = jzWat(src, SIMD_OPT), unlaned = jzWat(src, NOVEC)
   for (let off = 0; off < 16; off++) {
-    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
+    is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} bit-exact vs scalar`)
   }
   const w = laned.wat
-  ok(!/i32x4\.(add|sub)/.test(w), 'no i32x4 add/sub lift anywhere (fill loop is a non-ramp multiply-hash, no incidental SIMD; the subtract-accumulate itself is non-associative under REDUCE_OP_LOOKUP, so declines)')
+  ok(/i32x4\.add/.test(w) && !/i32x4\.sub/.test(w), 'the lanes add and none subtracts (the fill loop is a non-ramp multiply-hash, no incidental SIMD)')
 })
 
 test('SIMD general-reduce safety - second independent loop-carried accumulator never vectorizes as a reduce', () => {
