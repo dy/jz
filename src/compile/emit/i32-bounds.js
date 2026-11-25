@@ -106,6 +106,14 @@ function boundedHi(n) {
   if (gh != null && gh < hi) hi = gh
   return Number.isFinite(hi) ? hi : null
 }
+/** An integer hull at this emission position: intExprRange's, a bare name's top lowered to what
+ *  a loop's test proves of it until its first write (loopGuardHi). For a decision made of one
+ *  read where it is emitted (an element read's bounds), never for one about a whole body: there
+ *  the name's later writes are in scope. */
+export const rangeHere = (n) => {
+  const r = intExprRange(n), top = r && typeof n === 'string' ? ctx.types.loopGuardHi?.get(n) : null
+  return top != null ? [r[0], Math.min(r[1], top)] : r
+}
 /** Symmetric lower-bound-only resolver (subtraction's mirror of boundedHi). */
 function boundedLo(n) {
   if (typeof n !== 'string') { const r = intExprRange(n); return r ? r[0] : null }

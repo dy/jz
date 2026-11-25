@@ -825,3 +825,39 @@ test('fixed length: an out-buffer through a function property keeps its count', 
   is(stores(alias), stores(direct), 'the alias stores as the direct call does')
   is(stores(direct), 0, 'the direct call stores into the cell')
 })
+
+// A loop's test bounds its counter at every read ahead of the counter's first write: a `while`
+// that ends in its step reads inside the array as the `for` it spells does (the read is the bare
+// load at emit, so the lanes take the loop; module/array.js, emit/i32-bounds.js rangeHere).
+// Past a write of the name the test says nothing: a
+// read after the step, after a write in a branch, or in an inner loop that writes the name is
+// tested, and one past the end answers undefined (`u` makes it 1000).
+test('fixed length: a read under a while\'s test is inside the array until the counter is written', () => {
+  const N = 67
+  const head = `${U}
+const N = ${N}
+const a = []
+for (let i = 0; i < N; i++) a.push(((i * 37 + 11) % 64) * 0.25 - 3)
+const bytes = new Uint8Array([3, 200, 5, 250, 1, 9, 100, 2])
+`
+  // [name, body, in lanes at 'speed' (null: either)]
+  const rows = [
+    ['a while that ends in its step', `let s = 0, i = 0; while (i < N) { s += a[i]; i++ } return s`, true],
+    ['a do-while that ends in its step', `let s = 0, i = 0; do { s += a[i]; i++ } while (i < N); return s`, true],
+    ['from a start past zero, to a bound within', `let s = 0, i = 3; while (i <= N - 2) { s += a[i]; i += 1 } return s`, true],
+    ['the read past the end, one cell on', `let s = 0, i = 0; while (i < N) { s += u(a[i + 1]); i++ } return s`, false],
+    ['the read after the step', `let s = 0, i = 0; while (i < N) { i++; s += u(a[i]) } return s`, false],
+    ['from a start below zero', `let s = 0, i = -2; while (i < N) { s += u(a[i]); i++ } return s`, false],
+    ['a counter a closure steps', `let s = 0, i = 0; const bump = () => { i++ }; while (i < N) { bump(); s += u(a[i]) } return s`, false],
+    ['a name of a byte\'s range, written in an inner loop', `let s = 0, k = 0, b = bytes[k++]; while (b < N) { for (let j = 0; j < 2; j++) { s += u(a[b]); b = bytes[k++ & 7] } if (k > 40) break } return s`, null],
+    ['a name of a byte\'s range, written by an inner loop\'s step', `let s = 0, k = 0, b = bytes[k++]; while (b < N) { for (let j = 0; j < 2; j++, b = bytes[k++ & 7]) s += u(a[b]); if (k > 40) break } return s`, null],
+    ['a name of a byte\'s range, written by an inner loop\'s test', `let s = 0, k = 0, b = bytes[k++]; while (b < N) { for (let j = 0; j < 2 && (b = bytes[k++ & 7]) < 300; j++) s += u(a[b]); if (k > 40) break } return s`, null],
+    ['a name of a byte\'s range, written in a branch ahead of the read', `let s = 0, k = 0, b = bytes[k++]; while (b < N) { if (k & 1) b = bytes[k++ & 7]; s += u(a[b]); b = bytes[k++ & 7]; if (k > 40) break } return s`, null],
+    ['a name of a byte\'s range, read ahead of its write', `let s = 0, k = 0, b = bytes[k++ & 7]; while (b < N) { s += a[b]; b = bytes[k++ & 7]; if (k > 40) break } return s`, null],
+  ]
+  for (const [name, body, lanes] of rows) {
+    const src = `${head}export const f = () => { ${body} }`
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
+    if (lanes !== null && !belowOpt(2)) is(/v128/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no lanes'} at speed`)
+  }
+})

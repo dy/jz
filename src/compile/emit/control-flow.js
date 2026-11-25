@@ -1431,6 +1431,12 @@ export const controlFlowOps = {
     // The same facts ride this loop's lowering link to the optimizer (loopFacts' doc).
     const facts = loopFacts(init, cond, step, body)
     const { iv: counterName, guard: guardName, guardRange: guardBoundRange } = facts
+    // A name an enclosing loop's test bounds and this loop writes: the bound holds on this loop's
+    // first pass alone, and a read in it is emitted once for every pass. The write ends the fact
+    // for the rest of the enclosing body, as writeVar would where the write is emitted.
+    const outer = loopGuardHi()
+    if (outer.size) for (const name of [...outer.keys()])
+      if (isReassigned(body, name) || step != null && isReassigned(step, name) || cond != null && isReassigned(cond, name)) outer.delete(name)
     let guardHadPrev = false, guardPrev
     if (guardBoundRange) {
       const map = loopGuardHi()

@@ -42,6 +42,7 @@ import { DATA_VIEW_FLAG, nanPrefixHex, ATOM, atomNanHex, numTypedElemWat, ptrIsW
 
 const NAN_BITS = nanPrefixHex()
 import { withRefinements } from '../src/compile/flow-types.js'
+import { rangeHere } from '../src/compile/emit/i32-bounds.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
@@ -1460,8 +1461,10 @@ export default (ctx) => {
       const staticProven = stLen != null && !!ctx.types.arrResized && !!ctx.types.nameEscapes
         && !ctx.types.arrResized.has(arr) && !ctx.types.nameEscapes.has(arr)
         && (range => range != null && range[0] >= 0 && range[1] < stLen)(intExprRange(idx))
+      // (the index's hull at this read: a loop's test bounds its counter until the counter's first
+      // write, so a read ahead of a step the body ends in is under the test, as a `for`'s is)
       const fixedProven = keyIsNum && fixedLen != null
-        && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(intExprRange(idx))
+        && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(rangeHere(idx))
       const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven || summaryPresent ||
         (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
         (rep?.arrayLen != null && typedIdxProven(arr, idx)))
