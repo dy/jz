@@ -862,3 +862,16 @@ fff2b47e6 len-z       (superseded) the branch the check ran on: len-z2 is its re
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/mul-sites.mjs` (the calls of a method left in each named function after the plan, and the method's node count), `probe/case-wasm.mjs` and `probe/run-wasm.mjs` (a bench case's wasm written to a file; modules' `main` run in one process by rounds, under any V8 flag: `node --print-wasm-code` prints the machine code here), `own/mutant-steady.sh` (the built length's 33 mutations), `forms-main-f4a-show.txt` and `forms-leny-show.txt` (the gate's every cell before and after), `bh-leny-b3.jsonl` (the landing's bench bytes).
 
 A figure to read before calling a bench case a tie: its bytes at the SIZE tier. threecull's time was 0.994 with 2,261 more bytes there, and the bytes were a kind that had got worse in every method of a class.
+
+## Branches of the land-bc landing (2026-11-25), tips before deletion
+
+```
+8ad64526f miss-z      the landing branch: four commits on e06f39782; the record's commit after it
+7f9ae40ca miss-y      (superseded) the same four before test/inline-tiny.js was corrected inside the second: the same source
+2f4169c68 miss-x      (superseded) the same four on 814c38987, before the held-out lane's record moved main: the same source
+          whole-w     on 2f4169c68, uncommitted in its worktree at this record: the named count (`new Array(N)`) and `covers` by the array's own length; held until the receiver's presence leaves the loop (the record above, "Found, not fixed")
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/gaps.mjs` (the data forms' listing tallied by family, form, holder, kernel or level: where the calls and the functions entered are), `probe/present.mjs` (each element read's verdict, in, hole or open, with the fixed and built lengths the query answers), `probe/kinds.mjs` (the kind of each read in a function), `probe/entered.mjs` (the functions a steady call enters, by name; it takes arguments and an init export), `probe/misskey-entered.mjs`, `probe/misskey-bytes.mjs` and `probe/misskey-src.mjs` (test/missing-key.js's sixteen programs under any tree), `probe/ast-module.mjs` (the module's statements as the plan left them), `own/mutant-misskey.sh` (the seven mutations of this landing's rules, and an eighth for the named count), `keep/fill/full/` (the named count's two files as they stood with this landing's), `forms-whole1-show.txt` (the listing with the named count and the wider `covers`: 575 gaps).
+
+Two figures to read with care. A count of functions entered by a program with ONE reader flatters: a helper with a single site is spliced whatever it is. And the bench's bytes column is the size build's while the time is the speed build's (bench.mjs compileJzHost, compileJzSize).

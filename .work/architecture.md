@@ -4377,6 +4377,60 @@ test262, self-compile and examples-perf green. test: every job green but `claims
 
 The forms of the same class the built length does not reach: an array filled by index from empty; `new Array(N)` filled whole; a module `let` built in a function (the gate's `late` holder); the store's own code inside a built length; and the least length, for arrays that keep growing (a reader's push or a store past the length only grows the array: the reads below stay present).
 
+## The land-bc landing: the key that may be missing (2026-11-25)
+
+Four commits on e06f39782, the integrator's.
+
+### What landed
+
+- `a61ee214a` An array read by a key that may be missing answers the elements' kind, in the summary's query as in its solver (summary/query.js and summary/index.js `entryOf`).
+- `cdeec2341` A present Number's element is read in line where the key may be missing; `__arr_cell` tests its hole itself (module/array.js, module/core.js).
+- `b87c8fbd3` The listing: 74 cells move, none for the worse; 678 gaps of 826 cells, as before.
+- `8ad64526f` The changelog's two entries.
+
+### The class
+
+After the built length the largest block of the data forms' gaps was the gather `a[idx[i]]` where the index array is made any way but counted pushes: stores by index from empty, `new Array(n)`, `.fill`, `Array.from`, `.map`, a spread copy. 74 cells with one holder of the pushed form, each entering 257 to 1,283 functions a run.
+
+Its key is a Number or undefined: the summary cannot hold the index array's read inside the length, or the array free of holes. Three things made that key cost a call or more an element, none of them the missing proof:
+
+- **The query's rule was not the solver's.** summary/query.js restates the solver's `entryOf`, and had lost the case of a Number that may be missing: it answered "a Number or a function" for every such read, so the emitter took the read for a value of no known kind. The solver's own rule lacked a case too: a key that is only missing in the round that first walks the read (an index array filled later in that round) joined a function into the sum for good, and `s += …` kept its test for a string.
+- **The Number's arm called a helper.** The read tests its key and takes the dynamic lookup for anything but a Number; the Number's arm called `__arr_idx`, where a Number key of its own takes the checked load in line. The arm is now that load.
+- **A select ran a call on both arms.** `__arr_cell` was `select(v, __arr_value(v), raw)`. Spliced into a loop the call stayed, an element.
+
+A run of the gather over 64 elements, in sixteen programs that make the arrays eight ways, enters 1 function at 'speed' where 129 to 195 in twelve of them. Over 4,096 elements it takes 6.2 to 7.4 µs where 8.8 to 9.6; Node takes 2.4, and jz 2.6 where the summary proves both reads. So the unproven gather is 2.6 to 3.0 times Node's where it was 3.7 to 4.0: a slope where a cliff stood. Closing it is the proof, which these forms still lack.
+
+### The bench bytes and times
+
+Nineteen of 105 cases move in bytes against main (size 2,657,415 to 2,654,830, speed 5,804,542 to 5,802,465), most by the helper's own test (6 bytes at 'size', 6 to 16 at 'speed'); stdlib-gamma is 2,559 smaller at 'size' and 1,318 at 'speed'. Over six paired rounds the eighteen that move at 'speed' time as main's: geomean 1.006, the least 0.993 (async, stringify), the most 1.044 (fabrik, 0.958 to 1.046), 1.018 (polytri) and 1.014 (jsontransform); those three over twelve rounds read 1.000, 1.003 and 0.999.
+
+### The held-out lane
+
+Run 45543144196 on 814c38987: geomean 1.41 of 23, both shards on a Xeon 6975P-C, where the last run on that CPU (at bbe185b2a) read 1.41. Two builds moved with the landing before this one: awfy-permute 77 bytes smaller (2.33 of V8's time where 2.44 on that CPU), awfy-richards 637 larger (4.56 where 4.82). The lane's record is on main as 63ce8ae6e and e06f39782.
+
+### The check (bc, on 8ad64526f)
+
+Ahead of the check the whole default leg and the whole armed level 3 leg were run on the branch as it then stood (7f9ae40ca, the same source): 7,752 of 7,754 and 7,534 of 7,536, the same two tests failing in each. test/inline-tiny.js read `__arr_value` as the helper a bound splices, and with the second commit its sample program links no function that calls it. The tests now take whichever helpers the program calls without the pass and no longer calls under the bound; the correction is inside that commit, by replay (8ad64526f), and the file with test/missing-key.js passes on five legs there, 15 of 15 each.
+
+The check then ran on 8ad64526f in 55 minutes, every step exit 0: lint and audit clean; the bench bytes 105 of 105 with none moved against the branch's own; the listings rewritten in place and unmoved; WASI 7,627, default 7,754, armed level 3 7,536, level 0 7,514, test:self 89, integration 240 of 241 with one skipped, the examples 25 of 25 twice (1.71 and 1.72), three files on a fresh hosted compiler (missing-key 5, fixed-length 26, summary 90). test262 in 28 minutes: 4,137 pass, 4,045 refused, no accepted negative, no failure.
+
+### CI on 814c38987
+
+test262, self-compile and examples-perf green. test: every job green but `claims`, as it stands on main.
+
+### Found, not fixed
+
+- The named count. `new Array(N)` of a name that holds an integer for good has no fixed length; a literal count has. One line gives it, and with `covers` taking the array's own length as the loop's bound 103 gaps of the listing close (575). It was written and held back: the `late` holder's arrays (a module `let` a function assigns) then become fixed-length, and their loops keep the nullish test and the durable snapshot's test inside, where main's loop, versioned by another rule, had them outside (35 to 49 ops to 89 to 96 in the prefix kernel). They join the literal in that holder, which reads so already.
+- That class itself: a plain array in a module `let` read in a loop. The for-loop emitter versions a loop on its receivers' presence and extents for typed arrays (the guard ahead, a bare fast arm); an array gets it only through the plan's split of an open-length array's loop, a fixed-length one not at all.
+- An exported function's parameter that is `new Array(n)`'s count and also a bare key (`idx[count]` with `count = n`) is of no known kind, and the arrays made from it hold anything. `idx[count + 1]` is fine.
+- At level 2 an array that may hold a hole pays a call of `__arr_value` an element (ir/arrays.js: the tier's choice for size). 'speed' tests in place.
+- A helper with one site in the module is spliced whatever it is, so a program with one reader flatters a count of functions entered. The tests of this landing have two.
+- quatmul's 1.05 to 1.10 against the build before the built length: still not explained.
+
+### Next
+
+The proof for these forms, in this order: the receiver's presence tested once ahead of a loop over a plain array (the `late` holder's class); then the named count and the fill under the array's own length; `Array.from({ length })` and the copies; the append by index as a build.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
