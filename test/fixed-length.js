@@ -501,6 +501,36 @@ const MK = `const mk = (n) => { const out = []; for (let i = 0; i < n; i++) out.
 const SUM = (n) => `(xs) => { let s = 0; for (let i = 0; i < ${n}; i++) s += u(xs[i]); return s }`
 const VALS = `const vals = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 0.25); return out }`
 const GATHER = (n) => `const g = (a, idx) => { let s = 0; for (let i = 0; i < ${n}; i++) s += u(a[idx[i]]); return s }`
+// The module's array stored by index: [what, the statements that make it, how far the reader goes, its read]
+const READ = (n) => `export const f = () => { let s = 0; for (let i = 0; i < ${n}; i++) s += u(xs[i]); return s }`
+const APPENDED = [
+  ['stored by index from empty at the top level', `const xs = []; for (let i = 0; i < 6; i++) xs[i] = i * 0.5`, 6, 'in'],
+  ['and read past its rounds', `const xs = []; for (let i = 0; i < 6; i++) xs[i] = i * 0.5`, 7, 'open'],
+  ['by a loop that may leave early', `const xs = []; for (let i = 0; i < 6; i++) { if (i === 4) break; xs[i] = i * 0.5 }`, 6, 'open'],
+  ['by a loop that may skip a round', `const xs = []; for (let i = 0; i < 6; i++) { if (i === 2) continue; xs[i] = i * 0.5 }`, 6, 'open'],
+  ['over a literal it outgrows', `const xs = [9, 9]; for (let i = 0; i < 6; i++) xs[i] = i * 0.5`, 6, 'in'],
+  ['then pushed to twice', `const xs = []; for (let i = 0; i < 6; i++) xs[i] = i * 0.5\nxs.push(7); xs.push(8)`, 8, 'in'],
+  ['after pushes it stays inside', `const xs = []; xs.push(7); xs.push(8); xs.push(9)\nfor (let i = 0; i < 2; i++) xs[i] = i * 0.5`, 3, 'in'],
+  ['after pushes it outgrows', `const xs = []; xs.push(7); xs.push(8)\nfor (let i = 0; i < 6; i++) xs[i] = i * 0.5`, 6, 'in'],
+  ['twice, the second the longer', `const xs = []; for (let i = 0; i < 4; i++) xs[i] = i\nfor (let i = 0; i < 6; i++) xs[i] = i * 0.5`, 6, 'in'],
+  ['twice, the second the shorter', `const xs = []; for (let i = 0; i < 6; i++) xs[i] = i\nfor (let i = 0; i < 4; i++) xs[i] = i * 0.5`, 6, 'in'],
+  ['under a test that fails', `const xs = []; if (xs.length === 1) for (let i = 0; i < 6; i++) xs[i] = i * 0.5`, 6, 'open'],
+  ['inside a longer loop', `const xs = []; for (let r = 0; r < 8; r++) for (let i = 0; i < 6; i++) xs[i] = i * 0.5 + r`, 8, 'open'],
+  ['through a second name, after a push through the first', `const xs = []; xs.push(7)\nconst ys = xs; for (let i = 0; i < 6; i++) ys[i] = i * 0.5`, 6, 'open'],
+  ['from one', `const xs = []; for (let i = 1; i < 6; i++) xs[i] = i * 0.5`, 6, 'open'],
+  ['by a function run ahead of a second loop', `const xs = []; for (let i = 0; i < 4; i++) xs[i] = i\nconst peek = () => u(xs[5])\nconst early = peek()\nfor (let i = 0; i < 6; i++) xs[i] = i * 0.5 + early`, 6, 'open'],
+  ['between two loops of pushes', `const xs = []; for (let i = 0; i < 4; i++) xs.push(i)\nfor (let i = 0; i < 8; i++) xs[i] = i * 3\nfor (let i = 0; i < 4; i++) xs.push(i)`, 12, 'in'],
+  // (rounds a loop may not run are no count: the pushes after it would be added to what it never stored)
+  ['by a loop that may leave early, between pushes', `const xs = []; xs.push(1); xs.push(2)\nfor (let i = 0; i < 8; i++) { if (i === 6) break; xs[i] = i }\nfor (let i = 0; i < 8; i++) xs.push(9)`, 14, 'open'],
+  // (a push of the loop's own adds rounds the stores do not: five elements after four rounds of both, not eight)
+  ['by a loop that pushes after each store', `const xs = []; for (let i = 0; i < 4; i++) { xs[i] = i * 0.5; xs.push(7) }`, 8, 'open'],
+  ['by a loop that pushes ahead of each store', `const xs = []; for (let i = 0; i < 4; i++) { xs.push(7); xs[i] = i * 0.5 }`, 6, 'open'],
+  ['and at an index further on in the same loop', `const xs = []; for (let i = 0; i < 4; i++) { xs[i] = i * 0.5; xs[i + 4] = 1 }`, 9, 'open'],
+].map(([what, make, n, reads]) => [what, `${U}\n${make}\n${READ(n)}`, 'f', reads])
+// (a function's stores are no part of init: it may never run, or run after the read; beside a loop
+// of the module's its rounds would be taken for the module's own)
+APPENDED.push(['stored by index in a function', `${U}\nconst xs = []\nconst fillUp = () => { for (let i = 0; i < 6; i++) xs[i] = i * 0.5; return 0 }\nexport const f = () => { let s = 0; for (let i = 0; i < 6; i++) s += u(xs[i]); fillUp(); return s }`, 'f', 'open'])
+APPENDED.push(['stored by index at the top level and further in a function', `${U}\nconst xs = []; for (let i = 0; i < 4; i++) xs[i] = i\nconst fillUp = () => { for (let i = 0; i < 6; i++) xs[i] = i * 0.5; return 0 }\nexport const f = () => { let s = 0; for (let i = 0; i < 6; i++) s += u(xs[i]); fillUp(); return s }`, 'f', 'open'])
 // [what, source, the reading function, its reads]
 const steady = [
   ['a build read by another function under its count', `${U}\n${MK}\nconst use = ${SUM(5)}\nexport const f = () => use(mk(5))`, 'use', 'in'],
@@ -552,6 +582,7 @@ const steady = [
   ['a gather by an index one element of which is a string', `${U}\n${MK}\n${VALS}\n${GATHER(4)}\nexport const f = () => { const idx = mk(4); idx[1] = 'length'; return g(vals(4), idx) }`, 'g', 'open in'],
   // (the module's stores by index from empty: a counter from 0 that each round stores at leaves the
   // array as long as the loop's rounds, a count added once at init as counted pushes add theirs)
+  ...APPENDED,
 ]
 // (programs whose reading code is a closure, or whose arrays meet other builtins: the answer alone)
 const steadyRuns = [

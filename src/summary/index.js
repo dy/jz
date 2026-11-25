@@ -1595,11 +1595,24 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if ((!span || span[0] < 0) && !runs(current)) return
     // (a counter whose every round stores here at it, from 0: each store lands at the length at most)
     const appends = recvName !== null && typeof idx === 'string' && appendCounters.get(idx)?.has(recvName) === true
-    // The module's own statements storing at or past the count the array was constructed with may make it
-    // longer by a number no push counts (`const ps = []; ps[3] = 1` and four pushes leave eight elements):
-    // the round's end takes the count of such an array back (`initStored`, fixpoint).
+    // Such a loop at the module's top level, counted, run whole, under no other branch and with no push
+    // of its own through the name, leaves the array as long as its rounds where it was shorter: a known
+    // number of elements added once, at init, as counted pushes add theirs (`grown`; a name there is the module's).
+    const counted = appends && node !== null && current === null && countedDepth === 1 && branch === countedDepth
+      && exactTrips[0] >= 0 && appendCounters.get(idx).get(recvName) === true
+    if (counted) {
+      const g = grown.get(c), more = exactTrips[0] - built[c] - (g?.n ?? 0)
+      if (more > 0) {
+        if (!g) grown.set(c, { n: more, name: recvName, sites: [node] })
+        else if (g.name === recvName) { g.n += more; g.sites.push(node) }
+        else { unknown.add(c); resizedElsewhere.add(c) }
+      }
+    }
+    // Any other store of the module's own statements at or past the count the array was constructed with
+    // may make it longer by a number no push counts (`const ps = []; ps[3] = 1` and four pushes leave
+    // eight elements): the round's end takes the count of such an array back (`initStored`, fixpoint).
     // (one at an index the walk cannot bound opens the array below, for good)
-    if (current === null && span && !(span[1] < built[c])) initStored.add(c)
+    else if (current === null && span && !(span[1] < built[c])) initStored.add(c)
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
     const inside = !!span && span[1] < steadyAt(c)
@@ -5420,7 +5433,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // reached, so it leaves no hole, where the loop's test and body run no code
   // of the program's, write no length and call no member that may shrink an
   // array (only `push`, which appends). → the receivers' names, or null.
-  const appendCounters = new Map()   // counter → the receivers its rounds store at it
+  const appendCounters = new Map()   // counter → the receivers its rounds store at it, each with whether the stores alone lengthen it
   const stepStatements = (b) => Array.isArray(b) && b[0] === '{}' && b.length === 2 ? stepStatements(b[1]) : Array.isArray(b) && b[0] === ';' ? b.slice(1) : [b]
   const shrinksAny = (body) => some(body, m => m[0] === '()' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][2] !== 'push')
   const appendReceivers = (n) => {
@@ -5430,9 +5443,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!c || from[0] !== 0 || from[1] !== 0 || n[3]?.[0] !== '++' || !Array.isArray(body)) return null
     // (a store under a key that is no number may name `length`)
     if (bodyRunsCode(body) || bodyRunsCode(n[2]) || shrinksAny(body) || lengthStoresOf(body).some(([, key]) => key === null || key !== c.name && !numberKey(key))) return null
-    const out = new Set(), assigns = assignedIn(body)
+    // (each with whether the stores alone lengthen it there: a push through the name in the body adds rounds of its own)
+    const out = new Map(), assigns = assignedIn(body)
+    const pushes = (name) => some(body, m => m[0] === '()' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === name && m[1][2] === 'push')
     for (const s of stepStatements(body)) {
-      if (Array.isArray(s) && s[0] === '=' && Array.isArray(s[1]) && s[1][0] === '[]' && typeof s[1][1] === 'string' && s[1][2] === c.name && !assigns.includes(s[1][1])) out.add(s[1][1])
+      if (Array.isArray(s) && s[0] === '=' && Array.isArray(s[1]) && s[1][0] === '[]' && typeof s[1][1] === 'string' && s[1][2] === c.name && !assigns.includes(s[1][1])) out.set(s[1][1], !pushes(s[1][1]))
       if (hasOwnContinue(s)) break
     }
     return out.size ? out : null
