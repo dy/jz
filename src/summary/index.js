@@ -3342,27 +3342,42 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // under `i < M` from 0, and the tail from where the main loop stopped under
   // `i < count`, the two ranges the one the loop as written stores (three
   // statements of the list, or a list of three where the split left one).
+  // The count is the loop's bound as its own name, as the same integer (a
+  // literal, or a name that holds one for good), or as the array's own length
+  // (`x.length`, `x.length | 0` as the plan narrows it): the loop stores below
+  // the length it tests, which so stays the count. And the value may read a
+  // count nothing writes again (`(i * 37 + 11) % n`): a literal, such a name, a
+  // parameter or a declaration assigned once (`stable`).
+  const countBound = (bound, count, target) => {
+    if (typeof count === 'string' && bound === count) return true
+    const len = Array.isArray(bound) && bound[0] === '|' && Array.isArray(bound[2]) && bound[2][0] == null && bound[2][1] === 0 ? bound[1] : bound
+    if (Array.isArray(len) && len[0] === '.' && len[2] === 'length' && nodeEqual(len[1], target)) return true
+    const n = integerOf(count)
+    return n !== undefined && integerOf(bound) === n
+  }
   const stepsStoring = (loop, target, bound, count, fromZero) => {
     if (!Array.isArray(loop) || loop[0] !== 'for' || loop.length !== 5) return false
     const [, init, test, step, body] = loop
     if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
     const i = init[1][1], from = init[1][2]
-    if (fromZero && !(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== bound) return false
+    if (fromZero && !(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i) return false
+    if (!(bound === null ? countBound(test[2], count, target) : test[2] === bound)) return false
     if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return false
     const only = Array.isArray(body) && body[0] === '{}' ? (Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 ? body[1][1] : body[1]) : body
     if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || !nodeEqual(only[1][1], target)) return false
-    const v = only[2]
-    return !(typeof target === 'string' ? some(v, m => m.includes(target) || m.includes(count), REFS_THROUGH_ARROWS) : some(v, m => nodeEqual(m, target) || m.includes(count), REFS_THROUGH_ARROWS))
+    const v = only[2], moving = typeof count === 'string' && !ints.has(count) && !stable(count, current ?? MODULE)
+    return !some(v, m => (typeof target === 'string' ? m.includes(target) : nodeEqual(m, target)) || moving && m.includes(count), REFS_THROUGH_ARROWS)
   }
+  // (`bound` null: the loop's own bound is the count's, countBound)
   const covers = (d, list, i) => {
     const target = d[1], count = d[2][2], next = list[i + 1]
-    if (typeof count !== 'string' || !Array.isArray(next)) return false
-    if (next[0] === 'for') return stepsStoring(next, target, count, count, true)
+    if (!Array.isArray(next)) return false
+    if (next[0] === 'for') return stepsStoring(next, target, null, count, true)
     const at = next[0] === ';' ? 1 : i + 1, seq = next[0] === ';' ? next : list
     const decl = seq[at], main = seq[at + 1], tail = seq[at + 2]
     const bound = Array.isArray(tail) && tail.splitFrom === 0 && Array.isArray(decl) && decl[0] === 'const' && decl.length === 2 ? decl[1] : null
     return Array.isArray(bound) && bound[0] === '=' && typeof bound[1] === 'string' &&
-      stepsStoring(main, target, bound[1], count, true) && stepsStoring(tail, target, count, count, false)
+      stepsStoring(main, target, bound[1], count, true) && stepsStoring(tail, target, null, count, false)
   }
   // a list's statement before it is walked: a construction it fills, or what follows does
   const markFilled = (list, i) => {

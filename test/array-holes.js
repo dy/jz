@@ -310,6 +310,14 @@ const FILLED = {
   readsSelf: `export let main = (n) => { const x = new Array(n); for (let i = 0; i < n; i++) x[i] = x[n - 1 - i] === undefined ? 1 : 2; let s = 0; for (let i = 0; i < n; i++) s += x[i]; return s }`,
   countAlias: `export let main = (k) => { const z = [1, 2, 3, 4, 5, 6, 7, 8]; const n = z.length; const x = new Array(n); const y = new Array(3)
     const w = k ? x : y; let s = 0; for (let i = 0; i < z.length; i++) s += w[i] === undefined ? 1 : 100; return s }`,
+  // (the count as the loop's bound: the array's own length, the same integer, a value that reads it)
+  ownLength: HOLES + `export let main = (n) => { const y = new Array(3); const x = new Array(n); for (let i = 0; i < x.length; i++) x[i] = i; return holes(y) * 100 + holes(x) }`,
+  sameInteger: HOLES + `const N = 6\nexport let main = (n) => { const x = new Array(6); for (let i = 0; i < N; i++) x[i] = i + n; const y = new Array(N); for (let i = 0; i < 6; i++) y[i] = i; return holes(x) * 100 + holes(y) }`,
+  readsCount: HOLES + `export let main = (n) => { const x = new Array(n); for (let i = 0; i < n; i++) x[i] = (i * 3 + 1) % n; return holes(x) }`,
+  // (a bound short of the count, another array's length, a count the value moves: the holes stay)
+  boundShort: HOLES + `const N = 6, M = 5\nexport let main = (n) => { const x = new Array(N); for (let i = 0; i < M; i++) x[i] = i; const y = new Array(6); for (let i = 0; i < 5; i++) y[i] = i + n; return holes(x) * 100 + holes(y) }`,
+  boundOther: HOLES + `export let main = (n) => { const y = new Array(3); const x = new Array(n + 4); for (let i = 0; i < y.length; i++) x[i] = i; return holes(x) }`,
+  countMoves: HOLES + `export let main = (n) => { let m = n + 4; const x = new Array(m); for (let i = 0; i < m; i++) x[i] = (m = 2); return holes(x) }`,
 }
 
 test('array holes: a filled array leaves the holes of an array its cell joins', () => {

@@ -551,6 +551,37 @@ test('built length: every such program answers as the host', () => {
     for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
 })
 
+// A construction a loop fills whole holds no hole: the loop at once after it stores each index
+// below the count, the count being the loop's bound by its own name, by the same integer, or as
+// the array's own length; the value may read a count nothing writes again (summary/index.js
+// covers, countBound).
+const WHOLE = [
+  ['the array\'s own length', `const t = new Array(8); for (let i = 0; i < t.length; i++) t[i] = i * 2`],
+  ['the same integer', `const t = new Array(8); for (let i = 0; i < 8; i++) t[i] = i * 2`],
+  ['a name that holds it', `const N = 8\nconst t = new Array(N); for (let i = 0; i < N; i++) t[i] = i * 2`],
+  ['a name, and its integer as the bound', `const N = 8\nconst t = new Array(N); for (let i = 0; i < 8; i++) t[i] = i * 2`],
+  ['a value that reads the count', `const N = 8\nconst t = new Array(N); for (let i = 0; i < N; i++) t[i] = (i * 3 + 1) % N`],
+]
+const HOLED = [
+  ['a bound short of the count', `const t = new Array(8); for (let i = 0; i < 7; i++) t[i] = i * 2`],
+  ['a name short of the count', `const N = 8, M = 7\nconst t = new Array(N); for (let i = 0; i < M; i++) t[i] = i * 2`],
+  ['another array\'s length', `const w = new Array(7)\nconst t = new Array(8); for (let i = 0; i < w.length; i++) t[i] = i * 2`],
+  ['a value that reads the array', `const t = new Array(8); for (let i = 0; i < 8; i++) t[i] = t[7 - i] === undefined ? 1 : 2`],
+  ['a loop from one', `const t = new Array(8); for (let i = 1; i < 8; i++) t[i] = i * 2`],
+]
+const READS = `export const f = () => { let s = 0; for (let i = 0; i < 8; i++) s += u(t[i]); return s }`
+// (a count the caller gives: read under the array's own length; one the value moves fills nothing)
+const GIVEN = (count, value) => `export const f = (n) => { ${count}; const t = new Array(m); for (let i = 0; i < m; i++) t[i] = ${value}; let s = 0; for (let i = 0; i < t.length; i++) { const v = t[i]; s += v === undefined ? 1000 : v } return s }`
+test('fixed length: a construction a loop fills whole holds no hole', () => {
+  for (const [what, make] of WHOLE) is(present(`${U}\n${make}\n${READS}`, 'f'), 'in', what)
+  for (const [what, make] of HOLED) is(present(`${U}\n${make}\n${READS}`, 'f'), 'hole', what)
+  is(present(GIVEN('const m = n', '(i * 3 + 1) % m'), 'f'), 'in', 'a value that reads a count held for good')
+  is(present(GIVEN('let m = n', '(m = 3)'), 'f'), 'hole', 'a value that moves the count')
+  for (const [what, make] of [...WHOLE, ...HOLED]) for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(`${U}\n${make}\n${READS}`, 'f', [], { optimize }, `${what} at ${optimize}`)
+  for (const [count, value] of [['const m = n', '(i * 3 + 1) % m'], ['let m = n', '(m = 3)']])
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) for (const n of [8, 0, 5]) agree(GIVEN(count, value), 'f', [n], { optimize }, `${count}, ${value}: f(${n}) at ${optimize}`)
+})
+
 // An element read whose counter the walk found inside the fixed length is
 // present, by node: a field of it reads its slot, an element of it its cell.
 test('fixed length: a counted read of an array of one shape reads slots and cells directly', () => {
