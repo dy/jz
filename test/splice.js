@@ -317,8 +317,11 @@ const CELL = `function cell(h, v, c) {
   a = a * c + b; b = b * c - d; d = d * c + a
   return a + b * 0.5 + d * 0.25
 }\n`
-const SWEEPS = CELL + `export let chroma = (h, v, n) => { let s = 0; for (let c = 0; c < n; c++) s += cell(h, v, c * 0.125); return s }
+const TWO_SWEEPS = CELL + `export let chroma = (h, v, n) => { let s = 0; for (let c = 0; c < n; c++) s += cell(h, v, c * 0.125); return s }
 export let hue = (v, n) => { let s = 0; for (let k = 0; k < n; k++) s += cell(k * 2.5, v, k * 0.125); return s }\n`
+// (a third site: a body of two sites, both in loops, splices into each at the speed tier whatever
+// its arguments, plan/inline.js)
+const SWEEPS = TWO_SWEEPS + `export let both = (n) => { let s = 0; for (let k = 0; k < n; k++) s += cell(k * 2.5, k * 0.5, k * 0.125); return s }\n`
 
 test('splice: a body past the warm size splices where the loop holds the arguments it computes from', () => {
   const host = oracle(SWEEPS)
@@ -329,11 +332,14 @@ test('splice: a body past the warm size splices where the loop holds the argumen
       is(m.chroma(h, v, 0), host.chroma(h, v, 0), `no pass of chroma(${h}, ${v}) at ${optimize}`)
     }
     is(m.hue(5.5, 4), host.hue(5.5, 4), `hue at ${optimize}`)
+    is(m.both(4), host.both(4), `both at ${optimize}`)
   }
   if (belowOpt(3)) return
   const text = wat(SWEEPS, { optimize: 'speed' })
   ok(!/call \$cell/.test(funcWat(text, 'chroma')), 'the loop that holds two arguments takes the body')
   ok(/call \$cell/.test(funcWat(text, 'hue')), 'the loop that moves them keeps the call')
+  ok(/call \$cell/.test(funcWat(text, 'both')), 'and so does the other')
+  ok(!/call \$cell/.test(wat(TWO_SWEEPS, { optimize: 'speed' })), 'of two sites, both in loops, each takes the body')
 })
 
 // A tuple's elements take the lanes of each early return, as a Number's value takes its one local:

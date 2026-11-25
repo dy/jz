@@ -115,8 +115,14 @@ test('alias: a method of a receiver that may be missing tests it before its argu
   ok(!/call \$[^\s)]*sum/.test(funcWat(wat(src, { optimize: 3 }), 'f')), 'the method splices into the loop')
 })
 
-// three's Matrix4.multiplyMatrices, sixteen products of four: a body too large to splice
-// at two sites. A loop calls it directly; another calls it on an element of an array.
+// three's Matrix4.multiplyMatrices, sixteen products of four. A loop calls it directly;
+// another calls it on an element of an array. Where the element may be missing (the loop
+// runs to a count the program is handed) its call stays a member call, and the first loop
+// keeps its sole splice: a second direct call of a body this size would leave the method
+// whole for both, its parameters the kinds of both sites. Where the element is known there
+// (the arrays are built by counted pushes and the loop runs to that count) both calls are
+// direct, and at the speed tier the body is spliced into both loops: a body whose two sites
+// are both in loops is copied once more up to 600 nodes (plan/inline.js).
 const MUL4 = (() => {
   const at = (p, r, c) => `${p}${r}${c}`, rows = [0, 1, 2, 3]
   const reads = (p, arr) => `const ${rows.flatMap(r => rows.map(c => `${at(p, r, c)} = ${arr}[${c * 4 + r}]`)).join(', ')}`
@@ -134,13 +140,21 @@ export let view = (n) => { const proj = new M(), v = new M(), pv = new M(), eye 
   for (let k = 0; k < n; k++) { eye.e[0] = k; v.at(eye); pv.mul(proj, v); s += pv.e[12] } return s }
 export let chain = (n) => { let s = 0
   for (let k = 0; k < n; k++) for (let i = 0; i < N; i++) { wor[i].mul(i === 0 ? loc[0] : wor[i - 1], loc[i]); s += wor[i].e[1] } return s }`
+// (the same with the element's loop run to a count the caller gives: `wor[i]` may be missing)
+const HOT_OPEN = HOT.replace('export let chain = (n) => { let s = 0', 'export let chain = (n, m) => { let s = 0').replace('for (let i = 0; i < N; i++) { wor[i].mul', 'for (let i = 0; i < m; i++) { wor[i].mul')
 
 test('alias: a loop that calls a method directly keeps its splice beside a receiver that may be missing', () => {
-  for (const optimize of levels(0, 2, 3)) for (const f of ['view', 'chain']) agree(HOT, f, [3], { optimize }, `${f} at ${optimize}`)
+  for (const optimize of levels(0, 2, 3)) { agree(HOT_OPEN, 'view', [3], { optimize }, `view at ${optimize}`); agree(HOT_OPEN, 'chain', [3, 16], { optimize }, `chain at ${optimize}`) }
   if (belowOpt(2)) return
-  // the element's call stays a member call: a second direct call would leave the
-  // method whole for both, its parameters the kinds of both sites
-  ok(!/call \$[^\s)]*mul/.test(funcWat(wat(HOT, { optimize: 3 }), 'view')), 'the direct call splices into its loop')
+  ok(!/call \$[^\s)]*mul/.test(funcWat(wat(HOT_OPEN, { optimize: 3 }), 'view')), 'the direct call splices into its loop')
+})
+
+test('alias: a method two loops call directly is spliced into both at the speed tier', () => {
+  for (const optimize of levels(0, 2, 3, 'speed')) for (const f of ['view', 'chain']) agree(HOT, f, [3], { optimize }, `${f} at ${optimize}`)
+  for (const optimize of levels(3, 'speed')) for (const f of ['view', 'chain'])
+    ok(!/call \$[^\s)]*mul/.test(funcWat(wat(HOT, { optimize }), f)), `${f}'s loop holds the body at ${optimize}`)
+  // (below that tier the second copy is bytes the call saves: the body stays one function for both)
+  for (const optimize of levels(2)) ok(/call \$[^\s)]*mul/.test(funcWat(wat(HOT, { optimize }), 'view')), 'the body stays a function at level 2')
 })
 
 // The passes on IR whose accesses carry the marks the emitter leaves.

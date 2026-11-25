@@ -1386,7 +1386,9 @@ const inlineHot = (programFacts, ast) => {
     // Spliced at every site: a small body within its cap of cold sites, or a
     // larger one at two sites. A leaf's second copy is bounded: 200 nodes when
     // every site is hot (cloth's relax, ~160 nodes × 2 sites, fired per link
-    // every relaxation pass), 48 when a site is not (noise's grad, called
+    // every relaxation pass), 600 at the speed tier (three's 4×4 multiply, 531
+    // nodes, called in two loops: a call at either costs the other loop its
+    // splice too), 48 when a site is not (noise's grad, called
     // from perlin: straight-line, but the per-pixel kernel itself). A sole
     // site copies nothing, whatever the size (Ray's intersectTriangle).
     // A tiny leaf has no cap at the speed tier: its body is the size of the
@@ -1397,7 +1399,7 @@ const inlineHot = (programFacts, ast) => {
     if (!sites?.length) continue
     const small = isTinyLeaf || isSmallLeaf || isSmallKernel
     const everywhere = factory || (small || fixedTypedArraySite ? coldSites <= leafSiteCap || (speedTier && isTinyLeaf) : sites.length <= 2)
-      && (small || hasLoop || (sites.length - 1) * size <= (coldSites ? 48 : 200))
+      && (small || hasLoop || (sites.length - 1) * size <= (coldSites ? 48 : speedTier ? 600 : 200))
     // Past that budget a body still splices at its sites in loops, where the
     // call is the per-iteration cost the splice removes; its straight-line
     // sites keep the call and the body. three's `applyMatrix4` (~80 nodes,
