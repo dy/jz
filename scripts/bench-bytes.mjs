@@ -10,7 +10,7 @@
 //
 //   node scripts/bench-bytes.mjs [--base=<ref>] [--cases=a,b]   the report (--cases: those alone, the base not cached)
 //   node scripts/bench-bytes.mjs --hash <root> <case>...        one JSON line a case (a worker)
-import { readdirSync, existsSync, readFileSync, writeFileSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs'
+import { readdirSync, existsSync, readFileSync, writeFileSync, mkdtempSync, realpathSync, symlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -61,7 +61,10 @@ const git = (...a) => {
 async function baseRows(ref) {
   const sha = git('rev-parse', ref), cache = join(tmpdir(), `jz-bench-bytes-${sha}.jsonl`)
   if (existsSync(cache) && !only) return { sha, rows: new Map(readFileSync(cache, 'utf8').trim().split('\n').map(l => JSON.parse(l)).map(r => [r.id, r])) }
-  const dir = mkdtempSync(join(tmpdir(), 'jz-bench-base-'))
+  // (at its real path: bench/_lib/compile.js swaps the bench library into a case's module graph by its own real
+  // path and the graph holds each file by the path it was entered through, so under a linked path, as the
+  // system's temporary directory is on macOS, the swap misses and a case with a graph compiles to other bytes)
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), 'jz-bench-base-'))
   try {
     const tar = spawnSync('sh', ['-c', 'git archive "$1" | tar -x -C "$2"', 'sh', sha, dir], { cwd: root, encoding: 'utf8' })
     if (tar.status !== 0) throw new Error(`git archive ${sha}: ${tar.stderr}`)
