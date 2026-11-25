@@ -9,7 +9,7 @@ import { is, ok } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
 import { K, hasTag } from '../src/summary/index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, oracle, run, wat, funcWat, hasFunc, compileInProcess as compile, jz } from './util.js'
+import { agree, oracle, run, wat, funcWat, compileInProcess as compile, jz } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 
@@ -713,13 +713,16 @@ test('built length: a store inside it is the cell\'s own, with no helper and no 
   if (belowOpt(2)) return
   for (const [name, src, fn, stores] of builtStores) {
     if (stores !== 'in') continue
-    // (a function spliced into its caller has no text of its own: the module's then)
-    const text = wat(src, { optimize: 2 }), body = hasFunc(text, fn) ? funcWat(text, fn) : text
+    // (a function spliced into its caller has no text of its own: the export's, which then holds its loop)
+    const body = funcWat(wat(src, { optimize: 2 }), fn, 'f')
     ok(!/__arr_set_idx_ptr|__arr_set_num/.test(body), `${name}: no store helper`)
-    // (a durable array is saved for the reset once, ahead of the loop that runs: the bitmap's test is not in it.
-    // A name the pushes did not go through has a second loop after it, for an array shorter than the bound.)
-    const loop = body.indexOf('(loop'), next = body.indexOf('(loop', loop + 1)
-    ok(loop < 0 || !body.slice(loop, next < 0 ? body.length : next).includes('__durable_arr_seen'), `${name}: the save's test is ahead of the loop`)
+    // (a durable array is saved for the reset once, ahead of the loop that runs: the bitmap's test is not in it,
+    // the loop's own text to its closing paren. An array the split's proof does not reach has a second loop
+    // after it, for one shorter than the bound, and that loop's save stands between the two.)
+    const loop = body.indexOf('(loop')
+    let end = loop, depth = 0
+    if (loop >= 0) do { depth += body[end] === '(' ? 1 : body[end] === ')' ? -1 : 0; end++ } while (depth > 0)
+    ok(loop < 0 || !body.slice(loop, end).includes('__durable_arr_seen'), `${name}: the save's test is ahead of the loop`)
   }
 })
 
