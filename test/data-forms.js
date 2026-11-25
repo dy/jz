@@ -93,12 +93,14 @@ const MAKE = {
 const makeAll = (form, set) => Object.entries(SEQ).map(([n, [v, f]]) => MAKE[form](n, v, set, n === 'idx', f))
 // Each kernel reads the sequences by the names `at` gives them: floats read
 // (dot), a store (prefix), integers read as numbers (isum) and as indices
-// (gather), and polytri's masked index (mask). `check` reads every element of
-// every sequence, so (a) sees each store.
+// (gather), and polytri's masked index (mask), each under the count N; and a
+// sum under the array's own length (own), the bound most loops are written
+// with. `check` reads every element of every sequence, so (a) sees each store.
 const SEQ_KERNELS = {
   dot: ({ a, b }) => `let s = 0; for (let i = 0; i < N; i++) s += ${a}[i] * ${b}[i]; return s`,
   prefix: ({ a, c }) => `let s = 0; for (let i = 0; i < N; i++) { s += ${a}[i]; ${c}[i] = s } return ${c}[N - 1]`,
   isum: ({ idx }) => `let s = 0; for (let i = 0; i < N; i++) s += ${idx}[i]; return s`,
+  own: ({ a }) => `let s = 0; for (let i = 0; i < ${a}.length; i++) s += ${a}[i]; return s`,
   gather: ({ a, idx }) => `let s = 0; for (let i = 0; i < N; i++) s += ${a}[${idx}[i]]; return s`,
   mask: ({ b, idx }) => `let s = 0; for (let i = 0; i < N; i++) s += ${b}[${idx}[i] & (N - 1)]; return s`,
 }
