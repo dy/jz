@@ -1974,6 +1974,35 @@ test('summary: a method on a host value leaves typed arrays\' named properties a
 
 // A parameter only tested joins its arguments without losing what a join loses
 // (summary/index.js passiveParamsOf).
+// An exported parameter the body uses as a Number makes the summary solve twice (the seeded
+// solve), and a later solve walks every function from its first round, where the first
+// reaches a callee a round after its caller. A parameter's hull comes a round after its
+// kind, so a function walked in the round that binds it read an element bounded by that
+// hull as "maybe absent", for good: every field such a read fills, and every method of the
+// class, then tests for a missing value. A read there waits for the round that binds the
+// function, as its stores do (`runs`).
+test('summary: a read in a function no call has bound yet waits for its parameter\'s hull', () => {
+  const program = (p, param, use) => `${p}
+    class V { constructor(x = 0, y = 0) { this.x = x; this.y = y } from(array, offset = 0) { this.x = array[offset]; this.y = array[offset + 1]; return this } len() { return this.x * this.x + this.y * this.y } }
+    const a = new V(), b = new V()
+    const ray = (out) => { let s = 0; for (let k = 0; k < 4; k++) for (let i = 0; i < 4; i++) { a.from(p, i * 4); b.from(p, i * 4 + 2); s += a.len() + b.len() } out[1] = s }
+    const run = (out) => { out[0] = 1; ray(out) }
+    export let f = (${param}) => { const out = new Float64Array(3); for (let i = 0; i < 3; i++) run(out); return out[0] + out[1]${use} }`
+  const holders = {
+    'a typed array': `const p = new Float32Array(16)\nfor (let i = 0; i < p.length; i++) p[i] = i * 0.5`,
+    'an array of fixed length': `const p = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8]`,
+  }
+  for (const [holder, p] of Object.entries(holders)) for (const [solves, param, use] of [['one solve', '', ''], ['the seeded solve', 'n', ' + n * 2']]) {
+    const src = program(p, param, use)
+    summarize(src)
+    const fn = ctx.funcs.list.find(f => /len$/.test(f.name)), view = ctx.summary.at(fn.body), fields = []
+    const read = (n) => { if (!Array.isArray(n)) return; if (n[0] === '.' && (n[2] === 'x' || n[2] === 'y')) fields.push(hasTag(view.kindOfExpr(n), K.ABSENT) ? 'maybe absent' : 'there'); for (let i = 1; i < n.length; i++) read(n[i]) }
+    read(fn.body)
+    is(fields.join(), 'there,there,there,there', `${holder}, ${solves}: the fields it fills are Numbers`)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) is(jz(src, { optimize }).exports.f(3), oracle(src).f(3), `${holder}, ${solves}, at ${optimize}`)
+  }
+})
+
 test('summary: a parameter used inside a try statement is no parameter only tested', () => {
   const stored = `{ let a = { x: 1 }; f(a, 1); f(7, 1); return typeof a.x === 'string' ? 1 : 0 }`
   const programs = {

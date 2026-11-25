@@ -4239,7 +4239,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return k
       }
       if (t === K.TYPED) return ik === K.NONE ? K.NONE : !typedElementKey(idx, ik === NUMBER) ? core(ik) === NUMBER ? orAbsent(merge(typedElemKind(recv), typedPropsOf(recv))) : ANY
-        : typedPresentAt(n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
+        : typedPresentAt(n) || !runs(current) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
       if (t === K.HASH) return orAbsent(elemOf(recv))
       if (t === K.ARRAY) {
         const row = paramOf(recv) === UNKNOWN ? null : tuples.get(cell(paramOf(recv)))
@@ -4256,7 +4256,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         // a receiver of no cell has no count: `cell` of an unknown parameter would write past the table)
         if (typeof idx === 'string' && typeof n[1] === 'string' && loopBodies.has(idx) && celled(recv) && countBounds(cell(paramOf(recv)), idx) && !lengthMayChange(idx, loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
         presentReads.delete(n)
-        return orAbsent(entryOf(recv, ik))
+        // (in a function no call has bound yet the read has not run, as its stores have not: a parameter's hull
+        // comes a round after its kind, and "absent" joined before it is for good)
+        return runs(current) ? orAbsent(entryOf(recv, ik)) : entryOf(recv, ik)
       }
       // A string's character, or nothing past its end.
       if (t === K.STRING) return orAbsent(STRING)
