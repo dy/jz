@@ -4258,6 +4258,68 @@ test262, self-compile and examples-perf green. test: every job green, `test (opt
 
 The length an array has once it is built by counted pushes, for the solver's own read rule: the largest block of the 680 gaps (a gather through a pushed index array makes a call an element). Begun on a branch of this landing.
 
+## The land-ba landing: a field read straight off an element, a store to a record of a few shapes; the built length held back (2026-11-24)
+
+Seven commits on 0b1020068, the integrator's.
+
+### What landed
+
+- `2a4e5b782` The data forms' gate reads a record's fields straight off its element (the records' kernel `sum`): 826 cells where 800.
+- `de6884e5f` The dispatch of a read over a record's known shapes takes a receiver that reads memory (optimize/devirt.js `readsOnly`).
+- `0c818d4fc` The listing after it.
+- `85ddb97de` Its changelog entry.
+- `96c7bcfe9` A store to a record of a few known shapes takes the slot of the shape a guard proves, at the levels that optimize (emit-assign.js step 2b, `guardedFieldStore`, `shapesOf`).
+- `e2a658fa5` The listing after it.
+- `b643be36b` Its changelog entry.
+
+### Two cliffs of one class: records of more than one shape
+
+Both were found while the built length (below) was measured, and neither is of it.
+
+**The read.** `ps[i].x` over records of a few known shapes is a jump table over them. The pass asked every operand of the read to be pure, and the receiver of `ps[i].x` is the element's load. Through a local (`const p = ps[i]; p.x`) the read was dispatched; straight off the element, where the element is present with no test (`i < ps.length`), it stayed a hash probe, a call an element: 0.46 to 0.51 ms for 2,000 runs over 64 records where the other spelling takes 0.20 to 0.21 (Node 0.09 to 0.10). Now 0.21 to 0.22. What the rewrite needs is that no operand writes: its arms skip the key, tag and hash, and the receiver runs once where it stood. The armed leg found one fault in the first form (the tee extraction rebuilt each operand and dropped an access's memory mark). Two bench cases grow at 'speed', watr by 2,791 bytes and decode-dsd by 262, and keep their time (1.009 and 1.000 of main's over six paired rounds).
+
+**The store.** `p.x += p.vx` over such records was the dynamic store, which hashes its key, at every level that optimizes. The store's guard chain stood behind the switch that turns the guards off where the pass that dispatches reads runs (levels 2 and 3 and 'speed', up to 24 schemas; so since f40a2a191 of 2026-09-15): the reads have that pass, and stores have none. 256 records of two shapes, two fields each: 1,539 functions entered a run where 3 now, 6.4 to 6.9 ms for 2,000 runs where 1.7 to 1.9 (Node 1.15 to 1.2). A compound store straight off an element stages its receiver in a temp the summary knows nothing of; the temp now carries the shapes of what it read. No bench case's bytes move: the corpus has no such store, which is why the cliff stood. The gate's records group holds it.
+
+The gate's cells for both stay listed. It counts the calls a loop holds, and each jump table or guard chain keeps its generic call as the arm no record of the program takes. A gap by calls should be of calls run: not changed here.
+
+### The built length: written, measured, held back
+
+The largest block of the gate's gaps is one fact the solver lacked: an array built by counted pushes has that many elements for whoever reads it. Written as a second solve under the lengths the first found (summary `steady`, `steadyOf`, `solve`): the gather over pushed arrays goes from 987 to 1,207 ops and 257 to 769 calls a run to 26 ops and none, in five holders at both levels; 16 gaps close; bench arraydowngrade runs in 0.83 of its time. It is a work-in-progress commit on branch `len-x` and is not landed, for what it does to two programs:
+
+- A method called directly in one loop and on an element in another (three's scene update beside its view matrix, test/mem-alias.js): the element's call turns direct once its receiver is present, which makes two direct sites, and the first loop loses its sole splice: 0.37 ms where 0.29. The rule that protects the splice (1a8f3a5b0) covers a receiver that may be missing, and this one no longer may.
+- bench quatmul reads 1.05 of its time over 20 paired rounds, twice. The cause first found was real and is fixed on the branch: the source-level load CSE, which runs after the last summary, built a new node for a read two statements share, and a read's verdict is by node. With the fix the loop has no bounds test and is leaner by every count. It still reads 1.05. Not understood.
+
+Found on the way and fixed on the branch: three facts that were false (a build the module pushes further kept the build's length; a closure standing ahead of the array's declaration was not counted among its mentions; the module's count went to both of two arrays one name may hold). The first two are main's: no wrong answer was found from either on main or on 1.0.4 in 16 programs, since the fact's one reader there was not reached.
+
+### The check (ba, on b643be36b)
+
+Every step exit 0, in 64 minutes: WASI 7,614, default 7,741, armed level 3 7,523, level 0 7,501, each with one skipped and none failed; test:self 89; integration 240 of 241 with one skipped; lint and the audit clean; the four listings rewritten to the bytes committed; the reset probe's 344 cells with none differing; the bench bytes those of the two rules measured apart (against main, watr and decode-dsd at 'speed'); the examples 25 of 25 twice at geomeans of 1.68 and 1.70; test262 4,137 passed and 4,045 refused as they should be, with no accepted negative and no failure.
+
+On a fresh hosted compiler parity (19) and member-targets (13) pass. The hosted compiler is 38,867,585 bytes where main's is 38,139,357, 1.9% more: its own records of several shapes take the jump tables and the guard chains. Whether it compiles faster for them is not measured. A third file was named for the hosted run by the integrator's mistake: test/optimizer-devirt.js, which the hosted suite excludes. 33 of its 36 tests pass there, the new one of the five loop forms among them; the three that fail set the in-process compiler's schema list, which a kernel run leaves undefined (two are main's tests, the third the new one written in their form).
+
+### The held-out lane on a third pair of CPUs (run 45463499938 on b3a4c945c)
+
+23 of 23, geomean 1.58. Every timed build has the bytes of the two runs before it: the two landings since moved none of the 23. The shards ran on an EPYC 9V45 and an EPYC 9V74: 1.41 on the Xeon 6975P, 1.58 on the EPYC 7763, 1.58 here. The object programs read far worse on the EPYCs with the same bytes (deltablue 1.56, 2.81, 2.86; havlak 5.42, 7.64, 7.82; cd 2.79, 3.21, 3.94; towers 3.88, 3.76, 4.70). Why jz's code loses more than V8's there is not looked at.
+
+### CI on b3a4c945c
+
+test262, self-compile and examples-perf green. test: every job green but `claims`, as it stands on main.
+
+### Found, and next to land: a later solve reads a parameter before its hull
+
+The built length's second solve made bench threecull 2,261 bytes larger at 'size'. The cause is main's too. The summary reads a parameter's hull a round after its kind, and a function walked in the round that binds it read an element bounded by that hull as "maybe absent", for good; a first solve reaches a callee a round after its caller, which hid it, and a later solve walks every function from its first round. Main's later solve is the seeded one: an exported function that takes a number costs a class three calls below it the Number-ness of the fields such a read fills (`Vector3.fromArray(p, i * 9)`: x, y and z, and a test in every method). The fix is two lines, a read that waits as a store already does (branch `wait-w`, with its test; both halves fail it when taken out). It lands next, alone.
+
+### Found, not fixed
+
+- `ps[i].y += v` straight off an element of several shapes still asks whether its operand is a string, a call a record: the read through the staged receiver has no kind.
+- A typed array as a record read straight off its element (`ps[i][0]`) is a call a read at level 2, none at 'speed'; a record made by Object.assign, a call an element at level 2 (the gate's new cells).
+- An array's method under a computed name (`xs[m](9)`) or taken as a value (`const p = xs.pop; p.call(xs)`) throws at run time.
+- Read by a jump table, a field of a two-shape record still takes about twice Node's time.
+
+### Next
+
+The built length's three: the splice at each loop that calls a method directly (the speed tier, within a budget, measured on the corpus), quatmul's time, and threecull's 'size' build, 2,261 bytes larger with it. Then the forms of the same class it does not reach: an array filled by index from empty, `new Array(N)` filled whole, a module `let` built in a function, the store's own code inside a built length, and the least length for arrays that keep growing.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

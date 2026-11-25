@@ -834,3 +834,19 @@ Removed since the last record, their content on the landing branch: `gate-w`, `b
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/try.mjs` (programs from stdin against Node at a level), `probe/present.mjs` (which element reads the summary holds inside a length, per function), `probe/solves.mjs` (the summary's solves per bench case, on a tree patched to record them), `own/mutant-passes2.sh` and `own/mutant-built.sh`, `forms-gate-show.txt` and `forms-len-seq.txt` (every cell of the gate before and after the built length: ops, calls, calls run, bytes a call), `keep/pass-rule.patch`, `keep/built-fold.patch`.
 
 A suite started beside a battery runs in one process unless `JZ_TEST_JOBS` is set (test/index.js splits over the idle cores): three hours where 25 minutes.
+
+## Branches of the land-ba landing (2026-11-24), tips before deletion
+
+```
+b643be36b store-x     the landing branch: seven commits on 0b1020068; the record's commit after it
+85ddb97de recv-x      its first four (the gate's kernel and the receiver rule), the base of len-x
+75fe84a45 len-x       (work in progress, on recv-x, five commits) the built length for the solver's own read rule; the load CSE moving the first read's own node; the read that waits, with its test
+          wait-w      (uncommitted, on store-x) the read that waits for its parameter's hull, alone, with its test by the seeded solve: the next landing
+b3a4c945c rule-x      the landing before, kept as main's compiler for probes
+```
+
+`len-x` is to be replayed on main once its three are settled (the splice at a second direct site, quatmul's time, threecull's 'size' bytes); its finished commit's message is `msg/built-length.txt` under the tools directory, its changelog entry `msg/built-length-changelog.txt`.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/entered.mjs` (the functions a steady call enters, by name), `probe/present.mjs` and `probe/case-present.mjs` (which element reads the summary holds inside a length: programs from stdin, or a bench case's function), `probe/case-top.mjs` (a bench case's functions after the plan), `probe/show-delta.mjs` (two `--show` listings of the gate, the cells that moved), `probe/heldout-runs.mjs` (the lane's last runs side by side), `probe/phases.mjs` (a compile's phase times), `probe/solves.mjs` (the summary's solves a bench case), `own/mutant-recv.sh`, `own/mutant-store.sh`, `own/mutant-steady.sh`, `keep/len.patch` and `keep/len/` (the built length's three files), `forms-recvx-show.txt` and `forms-lenx-show.txt`.
+
+How a node that lost its verdict was traced: accessor traps on every slot of the path to the node, set after the final summary, print the stack of whatever replaces one (the scratchpad's trap.mjs; the idea is to keep).
