@@ -8,9 +8,13 @@
  * `'./parse.js'` from the entry) would otherwise hit prepare.js as separate
  * modules with separate exports / mangling prefixes — and any module-level
  * state (like a shared `lookup` registry) would split in two.
+ * The file is the physical one, as Node's own module identity is: a directory
+ * reached through a symbolic link (macOS's temporary directory, a linked
+ * package or directory) names its files by two absolute paths, and a file
+ * imported by both is the one module, under the path it was first met by.
  */
 
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, realpathSync } from 'fs'
 import { dirname, resolve, join } from 'path'
 import { execFileSync } from 'child_process'
 import { parse } from './parse.js'
@@ -138,7 +142,16 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     if (resolved instanceof Error) throw resolved
     return resolved
   }
+  // (one module a physical file: a file met again under another spelling takes the one it was first met by)
+  const spelled = new Map()       // real path → the absolute path the file was first resolved to
   const resolveAbsPath = (specifier, fromDir) => {
+    const abs = locate(specifier, fromDir)
+    if (abs == null || !existsSync(abs)) return abs
+    const real = realpathSync(abs), first = spelled.get(real)
+    if (first === undefined) spelled.set(real, abs)
+    return first ?? abs
+  }
+  const locate = (specifier, fromDir) => {
     if (isExternal(specifier)) return null
     if (pkgImports[specifier]) return pkgImports[specifier]
     if (specifier.startsWith('./') || specifier.startsWith('../')) {

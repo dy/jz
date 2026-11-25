@@ -4,7 +4,7 @@
 // module through resolveModuleGraph.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
@@ -59,5 +59,34 @@ test('resolve: a module graph of the sites, its sources untouched elsewhere', as
     const { code, modules: graph } = resolveModuleGraph(join(dir, 'main.js'))
     is(Object.keys(graph).map(p => p.slice(dir.length + 1)).join(), bundled, `${name}: the modules bundled`)
     is(jz(code, { modules: graph }).exports.f(), want, `${name}: as Node`)
+  }
+})
+
+// One module a physical file, as Node keeps one: a directory reached through a symbolic link
+// names its files by two absolute paths, and a graph keyed by the path as written held a file
+// imported both ways as two modules, each with its own state (a counter bumped once in each
+// where Node bumps one twice). Two forms: a linked directory inside the project, and the
+// project itself entered through a link while one of its imports comes back by the real name.
+test('resolve: a file reached through a symbolic link and by its own path is one module', async () => {
+  if (onKernel()) return
+  const COUNT = 'let n = 0\nexport const bump = () => ++n'
+  const twice = (first, second) => `import { bump } from '${first}'\nimport { bump as again } from '${second}'\nexport const f = () => bump() * 10 + again()`
+  // a linked directory inside the project
+  const inner = files({ 'main.js': twice('./lib/count.js', './alias/count.js') })
+  mkdirSync(join(inner, 'lib'))
+  writeFileSync(join(inner, 'lib', 'count.js'), COUNT)
+  symlinkSync(join(inner, 'lib'), join(inner, 'alias'))
+  // the project through a link, an import back by the real name
+  const outer = files({ 'count.js': COUNT })
+  const link = join(scratch, `link${programs++}`)
+  symlinkSync(outer, link)
+  writeFileSync(join(outer, 'main.js'), twice('./count.js', `../${outer.slice(scratch.length + 1)}/count.js`))
+  // (each with the one module it holds: the file under the path its first import met it by)
+  for (const [name, entry, first] of [['a linked directory', join(inner, 'main.js'), join(inner, 'lib', 'count.js')], ['an entry through a link', join(link, 'main.js'), join(link, 'count.js')]]) {
+    const want = (await import(pathToFileURL(entry).href)).f()
+    is(want, 12, `${name}: Node keeps one counter`)
+    const { code, modules } = resolveModuleGraph(entry)
+    is(Object.keys(modules).join(), first, `${name}: one module`)
+    is(jz(code, { modules }).exports.f(), want, `${name}: as Node`)
   }
 })
