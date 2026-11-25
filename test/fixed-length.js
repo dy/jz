@@ -322,6 +322,28 @@ test('frozen length: a read through the binding follows no forward and loads no 
   }
 })
 
+// The count is the pushes' own: a store of the module's own statements at or past what the array
+// was constructed with may make it longer by a number no push counts (summary `initStored`). Read
+// by the constructed count, not by what the pushes gave so far: a loop's pushes are counted whole
+// as its first is walked, ahead of a store in the same loop that the first round runs short of them.
+// Before, `const ps = []; ps[3] = 1` and four pushes read as four elements: `ps[7]` was undefined.
+const STORED = [
+  ['a store before the pushes', `const ps = []\nps[3] = 1\nfor (let i = 0; i < 4; i++) ps.push(i)`, 7],
+  ['a store between the pushes, past what they gave', `const ps = [1, 2]\nfor (let i = 0; i < 3; i++) ps.push(i)\nps[6] = 9\nfor (let i = 0; i < 3; i++) ps.push(i + 10)`, 9],
+  ['a loop of stores between the pushes, from its third element on', `const ps = []\nfor (let i = 0; i < 4; i++) ps.push(i)\nfor (let i = 2; i < 8; i++) ps[i] = i * 3\nfor (let i = 0; i < 4; i++) ps.push(i)`, 11],
+  ['a store in the loop that pushes, past its first rounds', `const ps = []\nfor (let i = 0; i < 4; i++) { ps.push(i); ps[3] = 0 }`, 6],
+  ['a store ahead of the push of its round', `const ps = []\nfor (let i = 0; i < 4; i++) { ps[i] = 0; ps.push(7) }`, 4],
+  ['a store by a key the walk cannot bound', `const ps = []\nlet k = 2\nk += k\nps[k] = 1\nfor (let i = 0; i < 4; i++) ps.push(i)`, 8],
+]
+test('frozen length: a store of the module\'s own statements past what the array was made with takes the count back', () => {
+  for (const [name, body, last] of STORED) {
+    const src = `${body}\nexport const f = () => { const v = ps[${last}]; return ps.length * 1000 + (v === undefined ? 500 : v) }`
+    is(frozenLen(src, 'ps'), null, name)
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
+  }
+  is(frozenLen(`const ps = [1, 2, 3]\nps[1] = 9\nfor (let i = 0; i < 4; i++) ps.push(i)\nexport const f = () => ps[6]`, 'ps'), 7, 'a store inside the constructed count leaves it')
+})
+
 // The frozen length is the array's once the initializers are done with it. A
 // function a statement runs before the last of the pushes reads the array short
 // of that count, under whatever name it holds it: an index past what is pushed
@@ -528,6 +550,8 @@ const steady = [
   ['a gather by a literal index a later function shortens', `${U}\nconst idx = [2, 0, 1, 3], vals = [10, 20, 30, 40]\nconst g = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(vals[idx[i]]); return s }\nconst cut = () => { idx.pop() }\nexport const f = () => { cut(); return g() }`, 'g', 'open open'],
   ['a gather by a literal index a later function stores a fraction in', `${U}\nconst idx = [2, 0, 1, 3], vals = [10, 20, 30, 40]\nconst g = () => { let s = 0; for (let i = 0; i < 4; i++) s += u(vals[idx[i]]); return s }\nconst spoil = () => { idx[1] = 0.5 }\nexport const f = () => { spoil(); return g() }`, 'g', 'open in'],
   ['a gather by an index one element of which is a string', `${U}\n${MK}\n${VALS}\n${GATHER(4)}\nexport const f = () => { const idx = mk(4); idx[1] = 'length'; return g(vals(4), idx) }`, 'g', 'open in'],
+  // (the module's stores by index from empty: a counter from 0 that each round stores at leaves the
+  // array as long as the loop's rounds, a count added once at init as counted pushes add theirs)
 ]
 // (programs whose reading code is a closure, or whose arrays meet other builtins: the answer alone)
 const steadyRuns = [
