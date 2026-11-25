@@ -459,6 +459,8 @@ const cursorStrideOf = (body, c) => {
 // (`const { x } = cache.get(n)`, `const x = chs[c]`), as the element loads do.
 // One that may be missing is a candidate too: the guard tests its presence.
 const typedRecv = (name) => typedStorageNameCtor(ctx, name) ?? ctx.summary?.at(ctx.func.current).typedPayloadCtorOfExpr(name) ?? null
+// (a plain array of fixed length: its length is the count for good, a bound the guard reads as a typed array's)
+const fixedArray = (name) => { const view = ctx.summary?.at(ctx.func.current); return !!view && tagOf(core(view.kindOfExpr(name) ?? 0)) === K.ARRAY && view.fixedLenOfExpr(name) != null }
 
 export function versionableTypedFor(init, cond, step, body, locals, entryHint = null) {
   // `&&`-cond whiles (`while (len < max && src[j+len] === src[ip+len]) len++`
@@ -589,7 +591,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   //     abs-compare fails and the checked arm takes over; a genuine number converts
   //     exactly via ceil/floor + trunc_sat (never traps, saturation is conjunct-dead).
   const bKind = intLiteralValue(bound) != null ? 'i32'
-    : (() => { const r = lengthRecv(bound); return r != null && typedRecv(r) && stable(r) })() ? 'i32'
+    : (() => { const r = lengthRecv(bound); return r != null && (typedRecv(r) || fixedArray(r)) && stable(r) })() ? 'i32'
     : typeof bound === 'string' && stable(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
     // an invariant pure EXPRESSION bound (`x < w - 1` — the stencil interior) re-
     // evaluates safely in the guard; machine-f64 rides the runtime-conjunct path

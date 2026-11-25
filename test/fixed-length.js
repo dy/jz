@@ -85,6 +85,24 @@ test('fixed length: the length reads as the count', () => {
   for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(calls, 'main', [], { optimize }, `unset, then set, at ${optimize}`)
 })
 
+// A loop bounded by an array's own length is one the for emitter may version where that length is
+// the count for good. One that grows in the loop is no bound a guard can read at the entry: the
+// typed reads beside it stay tested. (Through the bounding name the loop's own scan sees the
+// push; through another name of the array, or in a call, only the summary does.)
+test('fixed length: a loop bounded by a length that grows keeps its reads tested', () => {
+  const body = (grow) => `let s = 0; for (let i = 0; i < arr.length; i++) { ${grow}; t[i] = i + 0.5; s += t[i] === undefined ? 100 : t[i] } return s * 10 + arr.length`
+  const grows = {
+    'through its own name': `export const f = () => { const arr = [1, 2]; ${body('if (arr.length < 8) arr.push(i)')} }`,
+    'through another name': `export const f = () => { const arr = [1, 2], more = arr; ${body('if (more.length < 8) more.push(i)')} }`,
+    'in a call': `const arr = [1, 2]\nconst grow = (i) => { if (arr.length < 8) arr.push(i); if (i > 99) return grow(i - 1); return 0 }\nexport const f = () => { ${body('grow(i)')} }`,
+  }
+  for (const [what, src] of Object.entries(grows)) for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(`const t = new Float64Array(4)\n${src}`, 'f', [], { optimize }, `${what} at ${optimize}`)
+  // (no call in the loop and the typed array the function's own: the loop the scan would version,
+  // its guard reading two for a bound that reaches eight)
+  const local = `export const f = () => { const t = new Float64Array(4); const arr = [1, 2], more = arr; ${body('if (more.length < 8) more[more.length] = i')} }`
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(local, 'f', [], { optimize }, `by a store at its end through another name, at ${optimize}`)
+})
+
 test('fixed length: a resize, a store past the count or an unbounded index opens it', () => {
   const open = (body, why) => is(fixedLen(`const out = [0, 0, 0]\nexport const f = (k, i) => { ${body}; return out[0] }`, null, 'out'), null, why)
   open('out[3] = k', 'a store past the count')

@@ -215,12 +215,13 @@ test('nullable arrays: the loop that runs holds no test of its holders', () => {
   const throwsOf = (n) => n[0] === 'call' && n[1] === '$__throw_property_nullish', callOf = (n) => n[0] === 'call'
   for (const [form, make] of Object.entries(HOLDERS)) for (const optimize of levels(2, 'speed')) {
     const tree = parseWat(compile(unset(make), { optimize, wat: true }))
-    const { runs } = runEntered(tree, [['fill', []], ['dot', []], ['prefix', []]])
+    const { runs } = runEntered(tree, [['fill', []], ['dot', []], ['prefix', []], ['own', []]])
     const tests = (k) => loopBodyOps(tree, new Set(runs[k].loops.keys()), throwsOf)
-    for (const [k, kernel] of [[1, 'dot'], [2, 'prefix']]) ok(runs[k].loops.size >= 1, `${form}, ${kernel} at ${optimize}: a loop runs`)
+    for (const [k, kernel] of [[1, 'dot'], [2, 'prefix'], [3, 'own']]) ok(runs[k].loops.size >= 1, `${form}, ${kernel} at ${optimize}: a loop runs`)
     // (the pushes: the arm would keep each read's test of its bounds, and its loop, unrolled over them, ran slower)
     if (!FIXED.includes(form)) { ok(tests(1) > 0, `${form}, dot at ${optimize}: the loop as written`); continue }
-    for (const [k, kernel] of [[1, 'dot'], [2, 'prefix']]) is(tests(k), 0, `${form}, ${kernel} at ${optimize}: no test of a holder in the loop that runs`)
+    // (`own` is bounded by the array's own length: of fixed length that is its count, a bound the guard reads once)
+    for (const [k, kernel] of [[1, 'dot'], [2, 'prefix'], [3, 'own']]) is(tests(k), 0, `${form}, ${kernel} at ${optimize}: no test of a holder in the loop that runs`)
     // (the reads are the array's own: a holder taken for another kind of value reads through a helper)
     is(loopBodyOps(tree, new Set(runs[1].loops.keys()), callOf), 0, `${form}, dot at ${optimize}: no call in the loop that runs`)
   }
