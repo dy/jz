@@ -4691,6 +4691,69 @@ On de8edbe79, the landing before: examples-perf, self-compile and test262 green;
 
 The integer sum (branch `isum-x`: the gate counting the ops a call runs, four accumulators for the narrowing sum, an accumulator fed by f64 cells held as a float at the speed tier; written, its seven mutations each failing a test, not yet timed on a quiet machine). Then the arrays of open length that are left, and the record and key families.
 
+## The land-bh landing: a plain array's integer sum as a float sum, and the gate counting what a call runs (2026-11-25)
+
+Five commits on 6218cda1c, the integrator's.
+
+### What landed
+
+- `fa9e92c77` The data forms' gate counts the ops a call runs, each op weighed once a round of the loop it stands in, where it counted the ops its loops hold (test/_loop-ops.js `loopBodyOps` by the round). The held count read an unroll as a loss: four accumulators to the round hold 38 ops where one holds 20, and run in two thirds of the time. On main's compiler the listing reads 550 gaps of 938 by the round where the held count read 505: the 45 more are differences the held count could not see.
+- `177a827b1` The narrowing sum (an i32 accumulator fed f64 lanes by conversion) takes four accumulators at the speed tier, as the float sum does (src/optimize/vectorize/reduce.js `reduceWrapper`).
+- `ae5aea228` At the speed tier an accumulator a loop adds a plain array's integers to is held as a float (src/compile/analyze-scans.js `collectCellSums`; src/compile/analyze/body-facts.js `widenLocalTypes`): the sum lifts to float lanes, four accumulators to the round, and no round converts a cell.
+- `259c676f1` The listing rewritten: 527 gaps of 938.
+- `e3048609b` The changelog's entry.
+
+### What it gives, measured
+
+Raw calls of the export, one export a process, the least of seven batches, Node 25 on an M4, 256 elements at 'speed', main and then this:
+
+| the integer sum `s += c[i]` | main | this |
+|---|---|---|
+| over a literal | 40 ns | 17 |
+| over an array the module pushes | 39 | 16 |
+| over one it builds by index | 39 | 17 |
+| counting down | 39 | 17 |
+| of the cell after the counter, `c[i + 1]` | 40 | 17 |
+| the same sum at level 2 | 39 | 40 |
+| the same sum at 'size' | 78 | 79 |
+
+The listing: 51 of the 938 cells moved and none runs more ops. In 34 the integer sum at 'speed' runs 1,088 ops a call where 2,560. Bench bytes: none of the 105 cases moved at 'size' or at 'speed', so no case's time was owed.
+
+### What the timing decided
+
+The rule as first written held every accumulator fed from such cells as a float, at every level. Timing, a kernel at a time, took it back to where it pays:
+
+- At 'speed' alone. A float sum the tier may not reorder runs one add a cell: 111 ns at level 2 where the word's lanes take 39.
+- Only the forms of sum the lanes take: an addition, of the cell at a counter or a constant past it, the counter stepped by one. Where the loop stays a cell to the round the float is the slower, its round waiting on the one before it. The word and then the float: `s -= c[i]` 77 ns and 86, `c[i - 1]` 80 and 87, a counter stepped by two 38 and 40, a cell at a computed index 144 and 182 through the host's wrapper.
+
+So a float accumulator is worth its register exactly where the loop lifts, and the rule names the lanes' forms. As the lanes learn a form the rule takes it: the next landing's work.
+
+One export a process, and raw: a timing loop that has called other functions calls this one through a call site of many targets and reads slower by an amount of its own, and the host's wrapper adds 24 to 51 ns a call. Every kernel time in this record is taken so.
+
+### The check
+
+On e3048609b, every step exit 0 in 53 minutes at 8 jobs: the default leg 7,775 tests, level 3 armed 7,554, WASI 7,645, level 0 7,532, the self-compile gate 89, integration 241 of 242 with one skip, the bench corpus's bytes unmoved against main in all 105 cases, the examples at a geomean of 1.70 and 1.69 against V8, jz ahead on 25 of 25. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 996 seconds.
+
+On a fresh hosted compiler: the kernel's parity and oracle tests 19 of 19, test/data-forms.js 16 of 16, test/simd.js 300 of 301. That file is outside the hosted suite by design (test/index.js `KERNEL_EXCLUDE`, the optimizer-shape class) and was run here for the new tests in it, which pass. The one that fails pins a shape: the text of a compile with the lanes switched off differs from the default's. Hosted it does not, by the top-level `noSimd` or by `optimize: { simd: false }`. I first read the cause as the adapter not forwarding `noSimd` and was wrong: the optimize key, which it does forward, changes nothing either. The cause is not found. It is no part of this landing (the test and the adapter are main's), and it is listed below.
+
+Fifteen mutations of the rule and of the four accumulators each fail a test (the tools directory's `own/mutant-isum.sh`). Run by the three tests' names (`TST_GREP`) a mutant takes three seconds where the file took three and a half minutes.
+
+### CI on 6218cda1c, the first run of the sliced workflow
+
+Every job green but `claims`, which stands as before. The test workflow took 52 minutes of wall time where the unsliced one took 124 on de8edbe79; its longest job 52 minutes.
+
+### Found, not fixed
+
+- **Ways of writing a reduction the lanes refuse.** Over a plain array: a sum by subtraction (over a typed array too), the cell before the counter, a `while` loop whose counter stands outside it (87 ns where the `for` takes 17), two sums in one loop, a sum or a count under a condition, a sum through `forEach` or `reduce`. The next landing takes the first three forms and puts the rest in a table.
+- A typed array's integer sum runs 3,072 to 3,456 ops a call, more than a plain array's 1,088.
+- Eight cells are listed for one call at 'speed' that level 2 does not make: two closures whose code became the same are one function, which each export calls where it held a copy of its own. The time did not move (16 ns and 16).
+- The hosted compiler's text with the lanes switched off equals its default's (above).
+- `s += c[i] * c[i]` over words is not in lanes (88 ns).
+
+### Next
+
+The reductions' forms: the accumulator on either side, a sum taken from it, the cell before the counter over a plain array, and a table of every way of writing a reduction over every kind of array, in lanes or not, that only grows (written and passing on a branch off this landing: 65 of 115 in lanes at 'speed' where this landing has 53). Then the `while` loop that ends in its counter's step.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

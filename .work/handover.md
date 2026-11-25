@@ -934,3 +934,23 @@ What this landing taught:
 
 - Work parked "for review" is work not landed. The chain sat a week while main moved 186 commits; the replay cost an afternoon, most of it main's newer tests meeting the chain's stricter helper. Review within the day or say it is not going in.
 - A bench byte that moves for a change with no compiler source is a finding, not noise: ten cases 2,445 bytes apart led to one file held as two modules under a linked path.
+
+## Branches of the land-bh landing (2026-11-25), tips before deletion
+
+```
+e3048609b isum-x     the landing branch: five commits on 6218cda1c; the record's commit after it
+```
+
+For whoever lands next:
+
+- Time a kernel raw and one export a process (the tools directory's `probe/raw-time.mjs`, one name a run). Through the host's wrapper a call costs 24 to 51 ns more, and a timing loop that has called other functions reads slower again.
+- Run a mutant against its tests by name: `TST_GREP='<a part of each test's name>' node test/index.js <file>` takes seconds where the file takes minutes. A mutant that passes the named tests is then run against the file.
+- The data forms' listing is by the round now: a cell's figure is the ops a call of the kernel runs over 256 elements, not the ops its loops hold.
+- A float accumulator pays only in a loop the lanes take. Before typing a value as a float for the lanes' sake, time the forms the lanes refuse.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `probe/lifts.mjs` (which reductions lift, by kind of array), `probe/isum-shapes.mjs` (shapes around the float accumulator answered as Node at three levels), `own/time-isum.sh`, `own/mutant-isum.sh`, `forms-run-base-show.txt` and `forms-isum3-show.txt` (the data forms' sweep on main and on this landing, by the round), `probe/show-delta.mjs` (the cells that moved between two sweeps).
+
+What this landing taught:
+
+- The first form of the rule was right by the count of ops and wrong by the clock in four forms. The gate's count is where to look, and a clock on each form the change touches is what decides.
+- I named a cause for a hosted failure from reading one file, wrote the fix, and the fix changed nothing: the cause was not the one I read. A cause is named when the fix that follows from it works.
