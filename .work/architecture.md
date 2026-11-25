@@ -4633,6 +4633,64 @@ The check ran the default and armed level 3 legs after two legs I had already ru
 
 The integer sum (the gate's measure by element, the four accumulators, the accumulator not held as a word). The test-time branch, rebased and reviewed. Then the arrays of open length that are left: a function's own build by index (its append stores must not read as stores inside the length they build), pushes into a binding a function assigns, the copies. Then the record and key families' cliffs.
 
+## The land-bg landing: the test-time chain's later steps, and one module a file through a link (2026-11-25)
+
+Twenty-nine commits on f39304914: the test-time chain's twenty-four (written by agents on 2026-11-18 and 19, each checked by another, then parked for the integrator's review and left there a week), replayed on main, and five of the integrator's.
+
+### What landed
+
+The chain, in its order:
+
+- A test's source compiled once for its text and its runs (`jzWat`), and `funcWat` made to throw where the module defines none of the names it is asked for, so a pin cannot pass on a function that is not there.
+- The populations in one sampled form (`JZ_TEST_SAMPLE=<n>` runs one program in n, the same ones each run), and the core's dearest sweeps under the same switch.
+- test262 as one runner module with one pin, a worker a process.
+- `npm run test:quick`: the import lint, the file audit and 109 core files chosen by 16 faults.
+- `npm run test:landing`: the landing check as one command, a leg at a time, each timed in CPU seconds against a recorded budget.
+- CI's core and generated legs cut over machines, three processes each, no job past an hour; integration at level 3 armed; a job for the generated files that divide their levels.
+- Pins that held with their pass off dropped or rewritten (deopt D2's two shapes, optimizer-licm's for-bound shape), and one added where a pass alone decides (combineGuards).
+
+The integrator's five:
+
+- `7ca85b790` Four of main's function reads carried onto the funcWat that throws (written on main after the chain parted from it).
+- `ee74559f9` test/fixed-length.js: the store test reads the export where its function was spliced away, and the loop by its own extent.
+- `41e3ca85f` src/resolve.js: a file reached by two paths is one module.
+- `f552f84d3` scripts/bench-bytes.mjs: the base tree built at its real path.
+- `710cd12db` The changelog's two entries.
+
+### What it gives, measured
+
+- **The quick tier: 1,254 tests in 111 seconds** at 8 jobs. The inner loop had been a file or two by hand, or the default leg's 17 minutes.
+- **CI in slices.** The test workflow took 124 minutes on de8edbe79, its default leg one job of 124 and its level 3 leg one of 115. Each is now three jobs under the hour. Not measured yet: this landing's own CI run is the first.
+- test262 in 985 seconds at 8 jobs where the old runner took 1,750 at its two workers.
+- The four listings rewritten side by side in 97 seconds where they took about six minutes in turn.
+- The default leg in 1,005 seconds where main's takes 1,060: no gain worth the name. The chain's gains are the quick tier, the sampled populations and the slices, not the legs.
+
+`npm run test:landing` ran whole on the replayed chain in 118.6 minutes at 8 jobs: seventeen legs, every one's tests passing but one of the WASI leg's (below). Its verdict was red for that and for budgets: its record is of 2026-11-19 at four processes, `generated` ran over it (4,257 CPU s of 3,223) and six legs added since have none. A run with `--record` on a quiet machine is owed before it is the landing check; until then the check is the integrator's script, which this run agrees with leg for leg.
+
+### Two things the chain's check found
+
+- **A test of the landing before this one asserted nothing in two of its rows.** `funcWat` on main answers an empty text for a function the level spliced into its caller, and the test of a store inside a built length kept that text (`??` takes an empty string): its pins of no store helper and of no save in the loop passed on nothing, for the two rows whose storing function is not the export. Through the funcWat that throws the row failed. Read through the export, and the loop cut by its own extent (it had been cut at the next loop's start, past the save that stands between a split's two loops), the test passes on both hosts: the compiler was right, the test was not looking.
+- **One file was two modules through a symbolic link.** The resolver names a module by its absolute path so that one file is one module, and took the path as written. A directory reached through a link (macOS's temporary directory, a linked package or directory) names its files twice: `import … from './lib/count.js'` beside `import … from './alias/count.js'`, `alias` a link to `lib`, held two counters where Node holds one. A resolved file is now looked up by its real path, and one met before takes the spelling it was first met by. (Keyed by the real path itself, the first form, it broke a caller that keeps the graph's files under the directory it names: the three.js example vendored two files of twelve under a linked node_modules, and the integration suite said so before it left the branch.) It showed as bench bytes: the chain's bench-bytes leg builds its base under the system's temporary directory and reported ten cases with a module graph moved, 2,445 bytes at 'size', for a change with no compiler source in it. The bench's compile helper swaps the bench library in by its real path where the graph holds it by the path it was entered through; the leg now builds its base at its real path.
+
+### The check
+
+The chain's own landing check ran whole on the replay, at the carry commit on de8edbe79, in 118.6 minutes at 8 jobs: the listings unmoved, lint and audit clean, core default 7,772, armed level 3 7,551, level 0 7,529, WASI 7,641 of 7,642 (the store test, fixed in the commit after), the generated suite at one program in 4 with 326 and its files that divide their levels with 54 at level 0 and 30 armed, integration 241 with one skipped, test262 4,137 pass and 4,045 refused with no accepted negative and no failure (the old runner's counts), its built-ins 910 pass with 37 expected failures, test:self 89, 119 of the hosted suite's 321 files on a fresh hosted compiler, the examples 25 of 25.
+
+On the three commits after it: the quick tier 1,254, the resolver's files 121 (resolve, passes, dynamic-import, imports), integration 241 with one skipped, the bench bytes against main 105 cases with none moved, on the landing branch's source; the whole WASI leg 7,643 of 7,643 and test:self 89 on the first form of the resolver's commit. The default, armed and level 0 legs were not run again after those three commits, which change one test that both hosts then ran, the resolver, and a script: CI runs them.
+
+### CI
+
+On de8edbe79, the landing before: examples-perf, self-compile and test262 green; test green in every job but `claims`, as it stands on main; 124 minutes. This landing's run is the first under the sliced workflow.
+
+### Found, not fixed
+
+- `npm run test:landing` has no budgets for six of its legs and a stale one for the generated suite: a `--record` run.
+- The landing check is still about an hour and a half of this machine. What would halve a landing is CI as the gate on a pushed branch, which waits on the owner's word.
+
+### Next
+
+The integer sum (branch `isum-x`: the gate counting the ops a call runs, four accumulators for the narrowing sum, an accumulator fed by f64 cells held as a float at the speed tier; written, its seven mutations each failing a test, not yet timed on a quiet machine). Then the arrays of open length that are left, and the record and key families.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

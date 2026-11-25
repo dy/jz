@@ -912,3 +912,25 @@ Three things this landing taught:
 - A timing taken through the interop wrapper is a call's cost, not a kernel's: the wrapper adds 24 to 51 ns on a kernel of 256 elements, and by different amounts for different exports. Time the raw export beside it.
 - A count of ops in a loop's round is no measure across an unroll: four accumulators read as 38 ops where 20 and run in two thirds of the time. Where a change unrolls, read the clock before the listing.
 - A name-level fact and a node-level fact are both needed where the emitter rewrites the tree after the last summary (its unrolled loops are literal indices on fresh nodes), and each wants its own witness.
+
+## Branches of the land-bg landing (2026-11-25), tips before deletion
+
+```
+710cd12db tests-w                              the landing branch: twenty-nine commits on f39304914; the record's commit after it
+0b61334a3 worktree-agent-afab4ffb7d6879342     the test-time chain as its agents left it on 9d56c891c (2026-11-19): landed as the first twenty-four of tests-w
+99cfc1c3f tests-time                           the chain's tree before its close-out, contained in the branch above
+```
+
+The commands this landing brings, for whoever lands next:
+
+- `npm run test:quick` after every edit: the import lint, the file audit and 109 core files, 1,254 tests in under two minutes. It never replaces the legs.
+- `npm run test:landing` is the landing check as one command, but its budgets are stale: run it once with `--record` on a quiet machine (about two hours at 8 jobs) before reading its verdict. Until then the integrator's script under the tools directory stands (`own/check-and-262.sh`).
+- `funcWat(text, ...names)` throws where the module defines none of the names: a pin on a function a level may splice away names its caller too, or asks `hasFunc` first. On main before this landing it answered an empty text, and a test that kept it asserted nothing.
+- CI's test workflow is cut in slices (`core (default) 1/3` and so on) with a `checks` job for the source checks: read a run by job, not by the four old names.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/merge-imports.py` (a replay's import-only conflicts resolved by the union of both sides' names), `testsx-landing.out` (the chain's landing check, whole, on the replayed chain).
+
+What this landing taught:
+
+- Work parked "for review" is work not landed. The chain sat a week while main moved 186 commits; the replay cost an afternoon, most of it main's newer tests meeting the chain's stricter helper. Review within the day or say it is not going in.
+- A bench byte that moves for a change with no compiler source is a finding, not noise: ten cases 2,445 bytes apart led to one file held as two modules under a linked path.
