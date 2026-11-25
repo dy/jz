@@ -8,13 +8,21 @@
 //     query as in its solver (summary/query.js entryOf restated the rule
 //     without that case and answered a Number or a function besides, so `s +=
 //     a[idx[i]]` tested its operand for a string at every element); a key that
-//     is only missing in the round that walks it joins the same.
+//     is only missing in the round that walks it joins the same;
+//   - a present Number reads its element in line, the checked load any Number
+//     key takes (module/array.js): the dispatch called `__arr_idx` for it, a
+//     call an element wherever the helper has a second site;
+//   - the helper's own element (`__arr_cell`, where the program keeps raw
+//     Numbers in some array) tests the hole itself: its `select` ran a call of
+//     `__arr_value` at every element, the arm taken or not.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import parseWat from 'watr/parse'
 import { ctx } from '../src/ctx.js'
 import { K, hasTag } from '../src/summary/index.js'
-import { levels } from './_matrix.js'
-import { oracle, run, compileInProcess as compile } from './util.js'
+import { levels, onWasi } from './_matrix.js'
+import { funcWat, oracle, run, wat, compileInProcess as compile } from './util.js'
+import { runEntered } from './_loop-ops.js'
 
 // How the index array and the values are made.
 const FORMS = {
@@ -57,6 +65,34 @@ test('missing key: the gather through every form of index array answers as Node'
   }
 })
 
+// The array read has holes of its own; the key's call rebinds the receiver's name; it grows the
+// receiver, in a call and through the name: the element is the one of the array the read held
+// before its key ran, where that array stands after it.
+const HOLES = `const a = new Array(8), idx = new Array(8)
+a[1] = 1.5; a[4] = 4.5; a[7] = 7.5
+for (let i = 0; i < 8; i++) idx[i] = (i * 3) % 8
+export let f = (m) => { let s = 0, u = 0; for (let i = 0; i < m; i++) { const v = a[idx[i]]; if (v === undefined) u++; else s += v } return s * 100 + u }`
+const REBOUND = `const first = [10, 20, 30], second = [1, 2, 3], idx = new Array(3)
+idx[0] = 2; idx[2] = 1
+let a = first
+const pick = (i) => { a = second; return idx[i] }
+export let f = (i) => { a = first; const v = a[pick(i)]; return v === undefined ? -1 : v }`
+const GROWN = `const idx = new Array(3)
+idx[0] = 40; idx[2] = 1
+let g = [0.5]
+const grow = (i) => { for (let k = 0; k < 64; k++) g.push(k + 1.5); return idx[i] }
+export let f = (i) => { g = [0.5]; const v = g[grow(i)]; return v === undefined ? -1 : v }`
+const PUSHED = `const idx = new Array(3)
+idx[0] = 2; idx[2] = 1
+export let f = (i) => { const g = [0.5]; const v = g[(g.push(1.5), g.push(2.5), idx[i])]; return v === undefined ? -1 : v }`
+test('missing key: the element is the held array\'s as its key left it, a hole of it nothing', () => {
+  for (const [what, src, args] of [['holes', HOLES, [8, 12, 0]], ['a receiver its key rebinds', REBOUND, [0, 1, 2]], ['a receiver its key\'s call grows', GROWN, [0, 1, 2]],
+    ['a receiver its key pushes to', PUSHED, [0, 1, 2]]]) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'speed', 'size')) { const m = run(src, { optimize }); for (const x of args) is(m.f(x), want.f(x), `${what}: f(${x}) at ${optimize}`) }
+  }
+})
+
 // The read's kind, and the sum's it is added to (a method or a string joined in a round stays in the sum).
 const kinds = (src, optimize) => {
   compile(src, { optimize })
@@ -80,4 +116,20 @@ test('missing key: the read answers the elements\' kind, never a method or the l
   // a key that is only missing
   const { reads } = kinds(`const t = [1.5, 2.5, 3.5]\nexport let gather = () => { let u; const v = t[(u, u)]; return v === undefined ? 1 : 0 }`, 0)
   ok(reads.length === 1 && !hasTag(reads[0], K.CLOSURE), 'a key only missing names no method')
+})
+
+test('missing key: a present Number reads its element in line', () => {
+  if (onWasi()) return
+  // the functions a steady call of the gather enters (test/_loop-ops.js), of 64 elements
+  const entered = (src, optimize) => runEntered(parseWat(compile(src, { optimize, wat: true })), [['init', [64]]], true, ['gather']).kept.get('gather').ran
+  for (const [holder, program] of Object.entries(HOLDERS)) for (const form of Object.keys(FORMS)) {
+    for (const optimize of levels('speed')) { const n = entered(program(form), optimize); ok(n < 8, `${form}, ${holder}: ${n} functions entered a run at ${optimize}`) }
+  }
+})
+
+// (the size tier keeps the helpers functions: a program that holds raw Numbers in an array links this one)
+test('missing key: the helper\'s element tests its hole itself', () => {
+  const cell = funcWat(wat(built('push'), { optimize: 'size' }), '__arr_cell')
+  ok(cell.startsWith('(func'), 'the program links the helper')
+  ok(!/\bcall\b/.test(cell), 'which calls nothing')
 })

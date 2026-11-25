@@ -61,7 +61,10 @@ export let main = (n) => {
 // A helper of a few instructions joins every caller only where `tinyNodes` gives the bound. The
 // speed tier gives none: the engine inlines such a helper by how often its call runs, within a
 // budget the caller's size sets, and a copy at every site spends that budget on the sites that
-// never run (optimize/inline-tiny.js, its header).
+// never run (optimize/inline-tiny.js, its header). The helpers are whichever the program links:
+// those it calls without the pass and no longer calls under the bound.
+const helpersOf = (optimize) => new Set([...compile(SRC, { optimize, wat: true }).matchAll(/\(call (\$__[\w$]+)/g)].map(m => m[1]))
+const joinedByBound = () => { const bound = helpersOf({ level: 'speed', tinyNodes: 16 }); return [...helpersOf({ level: 'speed', inlineTiny: false })].filter(h => !bound.has(h)) }
 test('inline tiny: a helper of a few instructions joins every caller where `tinyNodes` asks, and the speed tier does not ask', () => {
   const native = oracle(SRC).main
   for (const optimize of ownedLevels({ level: 'speed' }, { level: 'speed', tinyNodes: 16 }, { level: 'speed', inlineTiny: false })) {
@@ -69,15 +72,16 @@ test('inline tiny: a helper of a few instructions joins every caller where `tiny
     for (const n of [0, 1, 9, 100]) is(main(n), native(n), `${JSON.stringify(optimize)}: main(${n})`)
   }
   if (onKernel()) return
-  const calls = (wat) => (wat.match(/\(call \$__arr_value\b/g) || []).length
-  ok(calls(compile(SRC, { optimize: { level: 'speed', inlineTiny: false }, wat: true })) > 0, 'the helper is called without the pass')
-  is(calls(compile(SRC, { optimize: { level: 'speed', tinyNodes: 16 }, wat: true })), 0, 'the bound splices it into every caller')
-  ok(calls(compile(SRC, { optimize: { level: 'speed' }, wat: true })) > 0, 'the speed tier leaves it a call')
+  const joined = joinedByBound()
+  ok(joined.length > 0, 'the bound splices a helper the program calls without the pass into every caller')
+  const speed = helpersOf({ level: 'speed' })
+  ok(joined.some(h => speed.has(h)), `the speed tier leaves one a call: ${joined.join(' ')}`)
 })
 
 test('inline tiny: the default tier keeps its calls', () => {
   if (onKernel()) return
-  ok(/\(call \$__arr_value\b/.test(compile(SRC, { optimize: { level: 2 }, wat: true })), 'the helper is called')
+  const two = helpersOf({ level: 2 })
+  ok(joinedByBound().some(h => two.has(h)), 'a helper the bound would splice is called')
 })
 
 // A runtime helper past the tiny bound joins the calls a program's loop makes on every iteration

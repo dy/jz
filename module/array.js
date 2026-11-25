@@ -1609,13 +1609,25 @@ export default (ctx) => {
       }
       const index = useRuntimeKeyDispatch && !keyIsNum ? null : vi(), baseTmp = temp()
       // A present Number keeps the element path; boxed keys need ToPropertyKey.
+      // The element path is the checked load above, in line and spelled the same
+      // (a key that is no index reads as -1, past every length). Its base is the
+      // receiver's after the key ran, as any read's: a key that may rebind the
+      // receiver's name left a held value here (`changing`, at the top). The
+      // size tier calls the read.
       if (useRuntimeKeyDispatch && !keyIsNum)
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
             const keyI32 = keyIndex(typed(keyExpr, 'f64'))
-            inc('__arr_idx')
-            return (['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], keyI32])
+            if (ctx.transform.optimize?.leanRuntime) {
+              inc('__arr_idx')
+              return (['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], keyI32])
+            }
+            const at = tempI32('ai')
+            return ['if', ['result', 'f64'],
+              ['i32.lt_u', ['local.tee', `$${at}`, keyI32], ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
+              ['then', value(markElem(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${at}`]), arr))],
+              ['else', undefExpr()]]
           })], 'f64')
       inc('__arr_idx_known')
       return typed(['block', ['result', 'f64'],

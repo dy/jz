@@ -171,7 +171,7 @@ export default (ctx) => {
     __cap: () => ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux', ...VIEW_DEPS()],
     __typed_data: ['__ptr_aux'],
     __arr_value: [],
-    __arr_cell: ['__arr_value'],
+    __arr_cell: [],
     __typed_idx: () => [...typedIdxDeps(), ...VIEW_DEPS()],
     __typed_idx_tail: () => [...TYPED_IDX_TAIL_DEPS(), ...VIEW_DEPS()],
     __typed_idx_tagged: () => [...(leanRuntime() ? TYPED_IDX_TAGGED_DEPS : ['__typed_idx_tagged_tail', '__ptr_offset_fwd', '__arr_value', arrCellHelper()]), ...VIEW_DEPS()],
@@ -277,9 +277,13 @@ export default (ctx) => {
   // An element of the array \`ptr\` as a value: a hole reads undefined, unless
   // the array keeps raw Numbers (its aux ARRAY_RAW, compile/numeric-arrays.js),
   // which holds none, so that no Number's bits read as one.
+  // (its own test, not a call of __arr_value: a select runs both its arms, and
+  // spliced into a loop the call stayed one an element)
   ctx.core.stdlib['__arr_cell'] = `(func $__arr_cell (param $ptr i64) (param $v f64) (result f64)
-    (select (local.get $v) (call $__arr_value (local.get $v))
-      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const ${ARRAY_RAW})))))`
+    (select (f64.const nan:${UNDEF_NAN}) (local.get $v)
+      (i32.and
+        (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${TOMB_NAN}))
+        (i32.eqz (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const ${ARRAY_RAW})))))))`
 
   // "$x holds a PTR.BIGINT box": a NaN-box with the BIGINT tag. The NaN test
   // comes first, as everywhere (a Number's bits spell any tag: 12.0 reads
