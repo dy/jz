@@ -488,6 +488,13 @@ test('built length: a store inside it leaves no hole, where no read asks for the
   for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `at ${optimize}`)
 })
 
+test('built length: a read two statements share keeps its verdict in the one load it becomes', () => {
+  // (compile/cse-load.js runs after the last summary and reads the element once for both: the load left is the first read's own node)
+  const src = `${MK}\nconst A = mk(64)\nconst use = (xs, w) => { let s = 0, t = 0; for (let i = 0; i < 64; i++) { s += xs[i] * w; t += xs[i] + s } return s + t }\nexport const f = () => use(A, 2) + use(A, 3)`
+  for (const optimize of levels(2, 'speed')) ok(/^in( in)*$/.test(present(src, 'use', optimize)), `every read left is inside the length at ${optimize}: ${present(src, 'use', optimize)}`)
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `at ${optimize}`)
+})
+
 // The second solve walks every function from its first round, where the first reaches a
 // callee a round after its caller. A parameter's hull comes a round after its kind, so a
 // function walked in the round that binds it read an element bounded by that hull as

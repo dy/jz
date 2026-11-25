@@ -256,7 +256,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
 
   // Process the statement list of a `[';', …]` node (children [1..]).
   const runSeq = (seq) => {
-    // key → { arr, ctor, idxNode, idxVars, firstStmt, occ: [{ parent, idx, numeric }] }
+    // key → { arr, ctor, idxNode, read (the first occurrence's node), idxVars, firstStmt, occ: [{ parent, idx, numeric }] }
     const avail = new Map()
     // A bound-once receiver can hold an already available array element.
     // Two such bindings read the same pointer, even if later writes change
@@ -422,7 +422,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
           return
         }
         const vars = new Set(); idxVars(node[2], vars)
-        avail.set(key, { arr, ctor, idxNode: node[2], idxVars: vars, firstStmt: si, occ: [{ parent, idx: pi, numeric, word }] })
+        avail.set(key, { arr, ctor, idxNode: node[2], read: node, idxVars: vars, firstStmt: si, occ: [{ parent, idx: pi, numeric, word }] })
         return                                            // don't descend into a stable index
       }
       // A call or a user conversion runs after its operands: loads read in them are cached
@@ -459,7 +459,8 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
         for (const o of e.occ) o.parent[o.idx] = temp
         continue
       }
-      const read = ['[]', e.arr, e.idxNode], allNumeric = e.occ.every(o => o.numeric)
+      // (the first read's own node, moved: what the summary holds of it by node, that it is inside its array's length, goes with it)
+      const read = e.read, allNumeric = e.occ.every(o => o.numeric)
       // A load every use of which is a bitwise operand holds its word: ToInt32 of
       // ToInt32 is the one, so the uses read it as they read the Number, converted once.
       const cached = e.occ.every(o => o.word) ? ['|', read, [null, 0]] : allNumeric ? ['u+', read] : read, temp = freshName(cached)
