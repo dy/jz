@@ -44,7 +44,7 @@ import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/i
 import { definitelyAssigned } from '../../summary/definite.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
-  findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
+  findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectCellSums, collectBareEscapes, narrowUint32, narrowWordLocals,
   scanObjectArrayFacts, isFreshArrayCtor, stampLoopCounterRanges, stampCountdowns,
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
@@ -779,6 +779,14 @@ function widenLocalTypes(body, locals, valTypes, readPresent, unsignedLocals, wo
   const numbersOf = (name) => lifetimes?.get(name) ?? null
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
   const keepI32 = (name) => unsignedLocals.has(name) || wordLocals.has(name) || i32SafeIdx.has(name) || (!!numbersOf(name)?.int && !f64IdxVars.has(name))
+  // An accumulator a loop feeds from f64 cells read as words is a float, where nothing reads it as a word in a
+  // loop: held as a word it converts a cell each round (analyze-scans.js collectCellSums). Only where a float
+  // sum may be reordered (relaxedFloat): there it lifts to float lanes, four accumulators to the round; in
+  // the strict tiers a float sum runs in the loop's order, one add a cell, and the word's lanes are the faster.
+  const cells = ctx.transform.optimize?.relaxedFloat ? ctx.summary?.at(body) : null
+  if (cells?.wordReadRange) {
+    for (const name of collectCellSums(body, locals, e => Array.isArray(e) && e[0] === '[]' && cells.wordReadRange(e) != null)) locals.set(name, 'f64')
+  }
   const widenPass = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]

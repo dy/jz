@@ -2456,13 +2456,16 @@ export let dot = () => k.dot()`
   }
 })
 
-// An i32 sum of a plain array's integers, each read by the exact conversion of its f64: two
-// lanes a pass converted into an i32x4's low lanes (lane-tables.js NARROW_LANES), at any level.
+// An i32 reduction of a plain array's integers, each read by the exact conversion of its f64:
+// two lanes a pass converted into an i32x4's low lanes (lane-tables.js NARROW_LANES). The sum in
+// the strict tiers, and the xor at any level (at the speed tier the sum's accumulator is a float
+// and its lanes are floats, the test below).
 test('vectorize: an integer sum of converted f64 lanes lifts', () => {
-  const src = `const c = [${Array.from({ length: 64 }, (_, i) => (i * 37 + 11) % 64).join(', ')}]
-export let isum = () => { let s = 0; for (let i = 0; i < 64; i++) s += c[i]; return s }`
-  for (const optimize of ownedLevels(2, 'speed')) ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, { optimize })), `at ${optimize}: two conversions a pass`)
-  is(jz(src, { optimize: 2 }).exports.isum(), oracle(src).isum(), 'the integer sum')
+  const program = (op) => `const c = [${Array.from({ length: 64 }, (_, i) => (i * 37 + 11) % 64).join(', ')}]
+export let isum = () => { let s = 0; for (let i = 0; i < 64; i++) s ${op} c[i]; return s }`
+  for (const optimize of ownedLevels(2)) ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(program('+='), { optimize })), `the sum at ${optimize}: two conversions a pass`)
+  for (const optimize of ownedLevels(2, 'speed')) ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(program('^='), { optimize })), `the xor at ${optimize}: two conversions a pass`)
+  for (const op of ['+=', '^=']) is(jz(program(op), { optimize: 2 }).exports.isum(), oracle(program(op)).isum(), `the reduction by ${op}`)
 })
 
 // Four accumulators a round at the speed tier, as a float sum takes them (reduceUnroll): a
@@ -2475,14 +2478,67 @@ test('vectorize: an integer sum of converted f64 lanes takes four accumulators a
   const cells = (n) => Array.from({ length: n }, (_, i) => (i * 37 + 11) % 64 - 20)
   const program = (n, op) => `const c = [${cells(n).join(', ')}]
 export let isum = () => { let s = 0; for (let i = 0; i < ${n}; i++) s ${op} c[i]; return s }`
+  // (the xor: an accumulator that must be a word. The sum's is a float at this tier, the test below)
   const unrolled = (text) => /i32x4\.trunc_sat_f64x2_s_zero/.test(text) && /\$__simd_acc\d+_3/.test(text)
-  ok(unrolled(wat(program(64, '+='), { optimize: 'speed' })), 'four accumulators at speed')
-  if (ownedLevels(2).length) ok(!/\$__simd_acc\d+_1/.test(wat(program(64, '+='), { optimize: 2 })), 'one at level 2, which unrolls no reduction')
+  ok(unrolled(wat(program(64, '^='), { optimize: 'speed' })), 'four accumulators at speed')
+  if (ownedLevels(2).length) ok(!/\$__simd_acc\d+_1/.test(wat(program(64, '^='), { optimize: 2 })), 'one at level 2, which unrolls no reduction')
   for (const op of ['+=', '^='])
     for (const n of [1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 67]) {
       const src = program(n, op)
       for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.isum(), oracle(src).isum(), `${n} cells, ${op} at ${optimize}`)
     }
+})
+
+// At the speed tier an accumulator a loop adds f64 cells read as words to, at its counter, is
+// held as a float (compile/analyze-scans.js collectCellSums): no round converts its cell, and
+// the sum lifts to float lanes, four accumulators to the round (17 ns over 256 cells where the
+// word's lanes took 37 with one accumulator and 24 with four; raw exports, Node 25, an M4). Not
+// where anything else writes the accumulator or a loop reads it (an index or a word operand would
+// convert the float each round); not for a form of sum no lane takes, where the float is the
+// slower (a subtraction, a cell before the counter or at a computed index, a stride of two); and
+// not in the strict tiers, where a float sum runs in the loop's order, one add a cell.
+// Each program: its accumulator's register, and its answer.
+test('vectorize: a sum of a plain array\'s words is a float sum at the speed tier', () => {
+  const cells = Array.from({ length: 67 }, (_, i) => (i * 37 + 11) % 64 - 20)
+  const program = (body) => `const c = [${cells.join(', ')}]\nexport let f = () => { ${body} }`
+  const LOOP = 'for (let i = 0; i < 67; i++)'
+  const sums = [
+    ['added to', `let s = 0; ${LOOP} s += c[i]; return s`, 'f64'],
+    ['added to as an assignment', `let s = 0; ${LOOP} s = s + c[i]; return s`, 'f64'],
+    // (the lanes take no sum by subtraction, and none of the cell before the counter)
+    ['taken from', `let s = 500; ${LOOP} s -= c[i]; return s`, 'i32'],
+    ['taken from as an assignment', `let s = 500; ${LOOP} s = s - c[i]; return s`, 'i32'],
+    ['read as an index after its loop', `let s = 0; ${LOOP} s += c[i]; return c[s & 63] * 1000 + s`, 'f64'],
+    // (its register is another rule's at this tier, a float before this one: the answer alone)
+    ['read as an index in its loop', `let s = 0, t = 0; ${LOOP} { s += c[i]; t += c[s & 63] } return t * 1000 + s`, null],
+    ['read as a word operand in its loop', `let s = 0, t = 0; ${LOOP} { s += c[i]; t ^= s } return t * 1000 + s`, 'i32'],
+    ['set again in its loop', `let s = 0; ${LOOP} { s += c[i]; if (i === 40) s = 3 } return s`, null],
+    ['stepped beside its sum', `let s = 0; ${LOOP} { s += c[i]; s++ } return s`, 'i32'],
+    ['stepped ahead of its sum', `let s = 0; ${LOOP} { s++; s += c[i] } return s`, 'i32'],
+    ['named by a closure', `let s = 0; const read = () => s; ${LOOP} s += c[i]; return read()`, null],
+    ['fed a product of two cells', `let s = 0; ${LOOP} s += c[i] * c[66 - i]; return s`, null],
+    // (a cell at a computed index is read one a round: no lanes, and a float sum's round would wait on the one before it)
+    ['fed a cell at a computed index', `let s = 0; ${LOOP} s += c[(i * 5) & 63]; return s`, 'i32'],
+    ['fed a cell at a name a round computes', `let s = 0; ${LOOP} { const k = (i * 5) & 63; s += c[k] } return s`, 'i32'],
+    ['fed the cell after its counter', `let s = 0; for (let i = 0; i < 66; i++) s += c[i + 1]; return s`, 'f64'],
+    ['fed the cell before its counter', `let s = 0; for (let i = 1; i < 67; i++) s += c[i - 1]; return s`, 'i32'],
+    ['fed the cell a negative constant past its counter', `let s = 0; for (let i = 1; i < 67; i++) s += c[i + -1]; return s`, 'i32'],
+    ['at a counter stepped by two', `let s = 0; for (let i = 0; i < 66; i += 2) s += c[i]; return s`, 'i32'],
+    ['at a counter stepped by an added one', `let s = 0; for (let i = 0; i < 67; i += 1) s += c[i]; return s`, 'f64'],
+    ['at a counter stepped down', `let s = 0; for (let i = 66; i >= 0; i--) s += c[i]; return s`, 'f64'],
+  ]
+  // the accumulator's register in `f`: the type of the local the source's `s` became
+  // (`$s`, or `$__inl1_s` where the function was spliced into its export)
+  const register = (src, optimize) => funcWat(wat(src, { optimize }), 'f').match(/\(local \$(?:\S*_)?s (i32|f64)\)/)?.[1] ?? null
+  for (const [name, body, kept] of sums) {
+    const src = program(body)
+    if (kept !== null && ownedLevels('speed').length) is(register(src, 'speed'), kept, `${name}: its register at speed`)
+    if (kept !== null && ownedLevels(2).length) is(register(src, 2), 'i32', `${name}: a word at level 2`)
+    for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+  }
+  if (!ownedLevels('speed').length) return
+  const text = funcWat(wat(program(sums[0][1]), { optimize: 'speed' }), 'f')
+  ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
 // The preamble runs twice, cloned ahead of the strips and again by the block as written: a set
