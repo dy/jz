@@ -895,3 +895,20 @@ d6907fa3a own-z      the landing branch: five commits on 2f050eb7e; the record's
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-ownlen.sh` (the four mutations of this landing's two rules; their text is `own/mutate.py`'s, by label B1 to B4), `probe/in/k/own-late.mjs` (the sum, the index sum and the gather bounded by the array's own length, in a holder a function assigns), `forms-ownbound-show.txt` (this landing's listing, each cell's line).
 
 A mutation that widens a rule wants a program the widened rule really takes. "The length of any plain array is a bound" passed three programs that grew the bounding array before one was written that the scan versions: no call in the loop, the typed array the function's own, the growth through another name by a store at its end.
+
+## Branches of the land-bf landing (2026-11-25), tips before deletion
+
+```
+110ad8edc open-q     the landing branch: six commits on 95a5ee4c5; the record's commit after it
+466a2c343 isum-w     KEPT: the narrowing sum's four accumulators, one commit on e671ca31a, for the landing after this one
+```
+
+The same day 23 superseded worktrees were removed at the owner's word, their uncommitted changes saved as patches first; a branch was deleted only where every commit of it is on main by patch (seven), and every other branch stays as a ref. Worktrees left beside main: `nanbox-rest2`, `next-x` and `agent-a5f89d0c0c9d7eb2f` (held), `agent-afab4ffb7d6879342` (the test-time chain's unlanded steps), `v104` (release-1.0).
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-open.sh` (this landing's twenty mutations, their text `own/mutate.py`'s by label), `own/stage-open.py` (a tested tree cut into the landing's commits, each stage a set of whole files, the last rebuilt from the one before it and compared), `probe/raw-time.mjs` (a kernel's export timed raw and through the wrapper), `probe/reset-run.mjs` (one instance, calls and resets in order), `probe/stale-ptr.mjs` (a module global's pointer and header words after the start: a capacity of -1 is a block that moved), `probe/in/a/` (the programs of this landing's findings), `forms-openq4-show.txt` (this landing's listing, each cell's line).
+
+Three things this landing taught:
+
+- A timing taken through the interop wrapper is a call's cost, not a kernel's: the wrapper adds 24 to 51 ns on a kernel of 256 elements, and by different amounts for different exports. Time the raw export beside it.
+- A count of ops in a loop's round is no measure across an unroll: four accumulators read as 38 ops where 20 and run in two thirds of the time. Where a change unrolls, read the clock before the listing.
+- A name-level fact and a node-level fact are both needed where the emitter rewrites the tree after the last summary (its unrolled loops are literal indices on fresh nodes), and each wants its own witness.

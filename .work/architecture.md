@@ -4555,6 +4555,84 @@ test262, self-compile and examples-perf green. test: every job green but `claims
 
 The two fixes. Then the arrays of open length, which every remaining block of the sequence family comes down to: a store inside the length an array was built to (it calls the growth helper today where the read beside it is a load), the append by index as a build, pushes into a binding a function assigns (the built length does not reach it), the copies. Then the record and key families' cliffs, which the listing still heads: an open spread, the string-keyed lookups, a record assigned field by field.
 
+## The land-bf landing: two wrong answers of main fixed, stores inside a built length, the append by index (2026-11-25)
+
+Six commits on 95a5ee4c5, the integrator's.
+
+### What landed
+
+- `5bb477c6e` Fix: the reset's save of a loop's array reads the block the stores reach, not the name's first place (compile/emit/control-flow.js).
+- `e671ca31a` Fix: a module array its own statements store past loses its pushes' count (summary/index.js `initStored`).
+- `90e803266` A store inside the length an array was built to is the cell's own (compile/emit-assign.js; emit/control-flow.js durableLoopArrays; query.js `steadyLenOf`, `builtArrayStore`).
+- `35816bee4` A module array's append by index counts as its build (summary/index.js storeAt, `appendReceivers`).
+- `c2f3eba55` The listing: 505 gaps of 938 cells where 535.
+- `110ad8edc` The changelog's four entries.
+
+### Two wrong answers, in every release since 1.0.0
+
+Both were found by tests written for the two rules, before either rule was committed, and each is fixed ahead of them.
+
+- **A reset left a loop's stores.** A loop that stores into a durable array saves it for the reset once, ahead of itself, and the save took the binding's pointer for the block. An array of no fixed length may have moved as it grew; a name taken before the move holds the first place, which forwards. The save recorded a block no store wrote. `let ys = xs` ahead of a hundred pushes with other allocations between them, then `for (let i = 0; i < ys.length; i++) ys[i] = 0` in an export: zeros after `memory.reset()`. A small heap hides it (a save at a forwarded place reads the forward for a length and copies that many words, which may hold the block that moved), so the test's arrays between are 2 KiB each.
+- **A module array stored to by index between its pushes was held too short.** The summary counted the pushes and measured the stores against the sum at the solve's end. `const ps = []; ps[3] = 1` and four pushes hold eight elements; the summary said four and `ps[7]` read undefined in a function. Such a store now marks its array, by the count the array was constructed with: a loop's pushes are counted whole as its first is walked, so "what the pushes gave so far" would pass a store the loop's first round runs short of.
+
+### The two rules
+
+- **A store inside a built length.** The length an array was built to was the reads' fact; a store took a fixed length alone. The emitter now stores in place where the index's range lies inside the built length, by the length and its own range (so its unrolled loops store so too), and a loop of such stores saves its array once ahead of itself, by the summary's verdict for the store's node (ahead of the loop the emitter has no range of the counter).
+- **The append by index.** A counted loop from 0 at the module's top level that stores at its counter each round, run whole and under no other branch, adds its rounds less what the array held, as counted pushes add theirs.
+
+What the rules' own tests turned up, each a change to the rule before it was committed:
+
+- The append rule as first written was unsound: `for (…) { ps[i] = 0; ps.push(7) }` counted four and four where the array is five long. A loop that pushes through the name is not counted.
+- The emitter unrolls small constant loops into literal indices the summary never walked: the store reads the length by name and its own range, not the walk's node alone.
+- Three conditions of the store's verdict (not at the length, not below zero, a whole number) could not be shown to matter: an index of any of the three takes the built length from its array elsewhere in the summary. The verdict is the test the walk already made (`inside`), with none of them.
+
+### What it reads and times
+
+The listing: 38 cells move, 36 for the better, 30 gaps close. Raw calls of each export over 256 elements at 'speed' under Node 25 on an M4, the least of seven batches, a video call on the machine:
+
+- The prefix sum over arrays made by pushes: 134 ns where 370; a literal's is 133, the function in Node itself 151.
+- Arrays the module stores by index: the gather 133 where 410 (Node 150), the dot product 29 where 155, the index sum 45 where 129 (Node 93), the masked read 122 where 161 (Node 159), the prefix sum 139 where 156.
+
+**The times of the four landings before this one were taken through the interop wrapper**, which costs 24 to 51 ns a call on these kernels (an integer sum reads 36 ns raw and 87 through it). Their differences stand; their ratios are understated. From here the kernels are timed raw (the tools directory's `probe/raw-time.mjs`).
+
+### The bench bytes and times
+
+One of 105 cases moves in bytes against main: arraydowngrade, 339 fewer at 'size' and 1,333 fewer at 'speed' (size 2,653,981 to 2,653,642, speed 5,800,065 to 5,798,732). Over six paired rounds it times as main's: 1.003, from 0.993 to 1.011.
+
+### Held back, and what comes next
+
+- The same built length in the plan's loop split (plan/loops.js `fixedPast`) was written and taken out: it drops a second loop no round runs, and an integer sum over a pushed array held as a parameter then reads the integer lanes every other holder's reads, 36 ns raw where the float lanes it has by the split take 16.
+- That is the integer sum's own defect, in two parts. The narrowing sum runs with one accumulator where a float sum takes four: with four it runs at 23 ns (written and tested, branch `isum-w`, 466a2c343). It is not in this landing because the gate counts ops in a round, and four accumulators read as 38 ops where 20 in 35 cells that are faster: the gate's measure has to count by element first. And an accumulator fed by nothing but f64 loads is held as a word, which is the conversion the float lanes do not pay.
+
+### The check (bf, on 110ad8edc)
+
+Ahead of the check the whole default and armed level 3 legs were run on an earlier form of the tree (with the loop split's change in it, before the store's verdict was reduced): 7,766 of 7,766 and 7,548 of 7,548. Eighteen of the landing's twenty mutations fail a test on the final rules; the two that do not are named in the store's commit.
+
+The check ran on 110ad8edc in 98 minutes with test262 beside its legs, every step exit 0: lint and audit clean; the bench bytes 105 of 105, the one as measured above and no other moved; the listings rewritten in place and unmoved; default 7,766, armed level 3 7,548, WASI 7,639, level 0 7,526, test:self 89, integration 241 of 242 with one skipped, the examples 25 of 25 twice (1.68 and 1.68), fixed-length's 35 on a fresh hosted compiler (the reset population does not run there). test262: 4,137 pass, 4,045 refused, no accepted negative, no failure.
+
+### CI
+
+CI on 90b23a809, the landing before this one, was cancelled by the push of the CPU pin (95a5ee4c5), which holds the same compiler source. On 95a5ee4c5: test262 and self-compile green; test green in every job but `claims`, as it stands on main.
+
+### The held-out lane
+
+Pinned to one CPU model with this landing's base (95a5ee4c5): of the record's 28 draws 16 were a Xeon 6975P-C, and jz's time against a JIT's read by the model drawn more than by the landings between (1.41 on two of the Xeon, 1.58 on an EPYC 9V45 and an EPYC 9V74, 1.54 on the Xeon and an EPYC 7763). Each set is drawn up to six times and the first draw on the Xeon measures. A dry run of the workflows passed (45632494703); the pin is first exercised by the contact after this landing.
+
+### The landing check, shortened
+
+The check ran the default and armed level 3 legs after two legs I had already run on the same source, and test262 after the check. It now runs those two legs first and ends the legs at the first that fails, with test262 beside them. The first run so took 98 minutes where the check and test262 one after the other took 92: test262 beside the legs made every leg slower (the default leg 27 minutes where 18, the armed one 37 where 17, test262 itself 75 where 29; a video call ran on the machine besides). test262 goes back after the check. What is saved is the legs run ahead of it, about 35 minutes a landing.
+
+### Found, not fixed
+
+- The integer sum, above.
+- A prefix sum reads 133 to 139 ns raw in every form, the literal's too, where the function in Node takes 151: no gap, and no lanes either.
+- From the landings before: the unroller over tested reads; a read under the array's own length where the loop calls a function that cannot reach the array.
+- The test-time chain's later steps (24 commits, branch `worktree-agent-afab4ffb7d6879342`: sampled populations, a source compiled once for its text and its runs, test262 as one runner with worker processes) were parked for review on 2026-11-19 and never reviewed. About 150 commits behind main.
+
+### Next
+
+The integer sum (the gate's measure by element, the four accumulators, the accumulator not held as a word). The test-time branch, rebased and reviewed. Then the arrays of open length that are left: a function's own build by index (its append stores must not read as stores inside the length they build), pushes into a binding a function assigns, the copies. Then the record and key families' cliffs.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
