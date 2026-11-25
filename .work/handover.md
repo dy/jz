@@ -875,3 +875,13 @@ A figure to read before calling a bench case a tie: its bytes at the SIZE tier. 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/gaps.mjs` (the data forms' listing tallied by family, form, holder, kernel or level: where the calls and the functions entered are), `probe/present.mjs` (each element read's verdict, in, hole or open, with the fixed and built lengths the query answers), `probe/kinds.mjs` (the kind of each read in a function), `probe/entered.mjs` (the functions a steady call enters, by name; it takes arguments and an init export), `probe/misskey-entered.mjs`, `probe/misskey-bytes.mjs` and `probe/misskey-src.mjs` (test/missing-key.js's sixteen programs under any tree), `probe/ast-module.mjs` (the module's statements as the plan left them), `own/mutant-misskey.sh` (the seven mutations of this landing's rules, and an eighth for the named count), `keep/fill/full/` (the named count's two files as they stood with this landing's), `forms-whole1-show.txt` (the listing with the named count and the wider `covers`: 575 gaps).
 
 Two figures to read with care. A count of functions entered by a program with ONE reader flatters: a helper with a single site is spliced whatever it is. And the bench's bytes column is the size build's while the time is the speed build's (bench.mjs compileJzHost, compileJzSize).
+
+## Branches of the land-bd landing (2026-11-25), tips before deletion
+
+```
+65a50e02f late-x      the landing branch: six commits on 14d88f53c; the record's commit after it
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `own/mutant-unset.sh` with `own/mutate.py` (the sixteen mutations of this landing's four rules, by label: U the holder's presence, W the fill and the named count, F `Array.from`), `own/stage-late.py` and `own/apply-stage.sh` (a landing's stages cut out of one work tree's files), `probe/time-kernel.mjs` (a program's exports timed against Node's, with an init call and its arguments), `probe/form-src.mjs` (the source of one data-forms program), `probe/show-delta.mjs` and `probe/gaps.mjs` (two listings compared, one tallied), `forms-lateP4-show.txt` (this landing's listing, each cell's line).
+
+Read the clock before a listing's ops where a loop is copied or unrolled: the holder's test taken out of an open-length array's loop read as fewer ops in one kernel and timed 7 to 29% slower in two others.

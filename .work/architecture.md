@@ -4431,6 +4431,70 @@ test262, self-compile and examples-perf green. test: every job green but `claims
 
 The proof for these forms, in this order: the receiver's presence tested once ahead of a loop over a plain array (the `late` holder's class); then the named count and the fill under the array's own length; `Array.from({ length })` and the copies; the append by index as a build.
 
+## The land-bd landing: the count by a name, the fill, a holder tested once, `Array.from` (2026-11-25)
+
+Six commits on 14d88f53c, the integrator's.
+
+### What landed
+
+- `51fb2909b` A construction counted by a name that holds an integer for good has its count (summary/index.js `literalCount`, `integerOf`).
+- `905ea65a5` A construction a loop fills whole holds no hole where the loop's bound is the count by another spelling: the same integer, the array's own length; and the value may read a count nothing writes again (summary/index.js `covers`, `countBound`).
+- `93501c8a2` A plain array of fixed length that may be unset is tested once, ahead of the loop that reads it (type/loop-versioning.js, compile/emit/control-flow.js).
+- `5228b14a0` `Array.from({ length: N }, f)` has its count, and its elements the numbers its callback returns below the count (summary/index.js `literalCount`, `arrayFrom`).
+- `25fbc620d` The listing: 504 gaps of 826 cells where 678.
+- `65a50e02f` The changelog's four entries.
+
+### The proof the landing before this one lacked
+
+The key that may be missing was made cheap there; here it is made rare. An index array reads as a literal's does once the summary holds its count and knows it whole, and four ordinary shapes were short of that by one fact each:
+
+- **The count had to be a literal.** `new Array(N)` with `const N = 256` had no fixed length. The summary reads the tree before the plan folds such a name, and already had the integer in the table that bounds every counter; the count now asks it.
+- **The fill had to name the count.** `x = new Array(n)` followed by a loop storing each index was whole only under `i < n` itself: not under `i < x.length`, not under the same integer, and not where the value read the count (`(i * 37 + 11) % n`), which is what an index table's value does.
+- **A holder a function assigns kept its test in the loop.** `let a; export let init = () => { a = … }` is how a program that sets itself up in a call holds its arrays. Each read and store tested the binding, every round; the lanes were lost and a stored-to array's durable snapshot was tested beside it. A typed array's loop was already versioned on the holder's presence; a plain array of fixed length now is.
+- **`Array.from` had no count and its callback no bounds.** As `map`'s rule already gave both.
+
+The first of these alone made things worse where the third was missing: the arrays it made fixed-length took the literal's loop in that holder, tests and all (an index sum of 175 ns became 1,275). The commits stand in this order, and the third pays the first's debt.
+
+### What it reads and times
+
+The listing: 293 cells move, 174 gaps close. The five forms a program makes a known-length array by (`new Array(N)` and a loop, `.fill`, `.map`, `Array.from`, a literal) read alike in every holder, 20 gaps of 62 cells each. Sixteen cells read more in some figure, none a loss (lanes gained, a count that is now the literal's, a builder that enters 46 functions a run where 1,078).
+
+Time of a call over 256 elements at 'speed', ns, before and after, Node beside:
+
+- A literal in a holder a function assigns: dot product 188 to 49 (Node 1,010), prefix sum 227 to 182 (151), index sum 1,275 to 92 (85 to 105), gather 246 to 195 (139), masked read 1,278 to 150 (145).
+- `Array.from` at module level: dot product 193 to 49, prefix sum 207 to 182, index sum 195 to 90, gather 439 to 194, masked read 289 to 150.
+
+### What the timing turned back
+
+The holder's test was first taken out for every plain array. For an array of open length the fast arm keeps each read's test of its bounds, the scalar unroller then unrolls over those tests, and the loop ran slower: pushed arrays, dot 188 to 201 ns and masked read 189 to 225; `Array.from` before it had a count, dot 197 to 254. The rule that landed takes arrays of fixed length only, and those forms time as main's. The listing had read it otherwise: the gather far smaller (1,097 ops to 119), the dot product's loop larger only by its unrolling. The clock read the gather unmoved and the others slower.
+
+### The bench bytes and times
+
+No bench case's bytes move, at 'size' or at 'speed', in 105 of 105: the corpus makes its arrays other ways (typed arrays, literals, pushes). The measure of this landing is the listing and the kernels above, which is what the listing is for.
+
+### The check (bd, on 65a50e02f)
+
+Ahead of the check the whole default leg and the whole armed level 3 leg were run on the branch: 7,760 of 7,760 and 7,542 of 7,542. The sixteen mutations of the four rules each fail a test on the branch's final tree.
+
+The check ran on 65a50e02f in 57 minutes, every step exit 0: lint and audit clean; the bench bytes 105 of 105 with none moved; the listings rewritten in place and unmoved; WASI 7,633, default 7,760, armed level 3 7,542, level 0 7,520, test:self 89, integration 240 of 241 with one skipped, the examples 25 of 25 twice (1.70 and 1.70), three files on a fresh hosted compiler (nullable-arrays 11, fixed-length 29, array-holes 19). test262 in 28 minutes: 4,137 pass, 4,045 refused, no accepted negative, no failure.
+
+### CI on 14d88f53c
+
+test262, self-compile and examples-perf green. test: every job green but `claims`, as it stands on main.
+
+### Found, not fixed
+
+- An integer sum kept as a word while each round adds a float converts both ways each round, a chain the next round waits on: 5 ns an element (the literal's index sum and masked read in the assigned holder on main, 1,276 and 1,282 ns). The lanes replace it here; where none come it stays.
+- Unrolling a loop over bounds-tested array reads costs time (above).
+- A loop bounded by a plain array's own length is not versioned on the holder's presence: the scan takes a typed array's length for a bound, not a plain array's. It is the commonest loop over such a holder.
+- A read under the array's own length is not held present where the loop calls a function that cannot reach the array.
+- The arrays of open length: the append by index from empty, a spread copy, and pushes in a holder a function assigns (61, 61 and 43 gaps of 62 cells).
+- From the landing before: an exported parameter that is a count and a bare key; level 2's call for a hole; quatmul.
+
+### Next
+
+The bound by a plain array's own length; then the arrays of open length (the append by index as a build, a module `let` built in a function, the copies); then the two things the timing showed, the sum's word and the unroller over tested reads.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
