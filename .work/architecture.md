@@ -4320,6 +4320,63 @@ The built length's second solve made bench threecull 2,261 bytes larger at 'size
 
 The built length's three: the splice at each loop that calls a method directly (the speed tier, within a budget, measured on the corpus), quatmul's time, and threecull's 'size' build, 2,261 bytes larger with it. Then the forms of the same class it does not reach: an array filled by index from empty, `new Array(N)` filled whole, a module `let` built in a function, the store's own code inside a built length, and the least length for arrays that keep growing.
 
+## The land-bb landing: the built length, the read that waits for its parameter's hull, the splice at two loop sites (2026-11-25)
+
+Six commits on f4afd4a63, the integrator's.
+
+### What landed
+
+- `77bae3a17` A read in a function no call has bound yet waits for its parameter's hull, as its stores do (summary/index.js `runs`).
+- `cf59c8d1e` An array read inside the length it was built to is present: the solver solves again under the lengths the first solve found (summary/index.js `steady`, `steadyOf`, `solve`; query.js builtLenOf from the one table).
+- `dc58ebd58` The source-level load CSE moves the first read's own node (compile/cse-load.js).
+- `ecf8fceb2` A straight-line body with two sites, both in loops, is spliced at both up to 600 nodes at the speed tier (plan/inline.js).
+- `f3e9ab288` The listing: 678 gaps of 826 cells where 694.
+- `c4ba84a25` The changelog's three entries.
+
+### The built length
+
+The largest block of the data forms' gaps was one fact the solver lacked. An array built by counted pushes has that many elements for whoever reads it, and the plan knew it; the solver's own read rule did not, since a push opens the cell's count. So `idx[i]` under `i < N` read a number or nothing, and `a[idx[i]]` went by a key of no known kind, a call an element.
+
+A kind only rises, so the length cannot be raised inside the one solve: a read walked before its array's builder would join "absent" for good. The solve runs once without the lengths, reads them off that solve, and runs again with them given; a class a later solve no longer finds built leaves the table and the solve runs once more. Fifteen of the 105 bench cases solve again, 0.3% of the corpus' compile time; watr, jessie and the compiler itself solve once.
+
+Forty cells of the gate move, all of arrays made by pushes; 16 gaps close. The gather through a pushed index: 987 to 1,207 ops and 257 to 769 functions entered a run where 26 ops and none, in five holders at both levels. Bench arraydowngrade runs in 0.83 of its time.
+
+### What it cost on the way, and what each was
+
+Four things stood between the first form and this landing, each found by a figure that looked small.
+
+- **A wrong answer of its own.** A closure standing ahead of the array's declaration (a function declared in the body, which jzify stands first; an arrow naming a later `const`) was not counted among the array's mentions, and was answered the whole length while it ran between the pushes: 20 where 15,020. The fact was already false on main, as was a second (a build the module pushes further kept the build's length); no wrong answer came of either there, in 16 programs on main and on 1.0.4. A third was this change's own before it was committed: a count given to both of two arrays one name may hold.
+- **bench threecull, 2,261 bytes larger at 'size'.** A later solve walks every function from its first round, where a first reaches a callee a round after its caller, and a parameter's hull comes a round after its kind: a read bounded by that hull was "maybe absent", for good. `Vector3.fromArray(p, i * 9)` left x, y and z so, and every method of the class tested each field. This is main's too, by its seeded solve: an exported function that takes a number costs a class three calls below it the same. The read now waits, as a store already did (the first commit).
+- **bench quatmul, 1.05 of its time.** The source-level load CSE runs after the last summary and built a new node for a read two statements share; a read's verdict is by node. Fixed (the third commit): the kernel's inner loop is then 111 machine instructions where 130, with the same multiplies, divides and square root. It still reads 1.05 to 1.10 of main's time, in one process as by the paired protocol, under V8's unrolling and peeling switches alike. Not explained. The case still leads V8 (0.71 of its time where 0.645), and it is slower than main's build by more than a tie allows: landed disclosed, the cause owed.
+- **A lost splice.** three's 4×4 multiply called directly in one loop and on an element in another: the element's call was a member call while the element might be missing, which left the first loop the method's one direct site. Present, it is a second direct site, and a body of 531 nodes was spliced into neither: 0.37 ms where 0.29. The loop-site budget at 1,100 nodes spliced both and made bench munsell 3.1 times slower (the candidates are a fixpoint, and its kernel fell out of the function that held it). The rule that landed is narrower: the second copy of a body whose two sites are both in loops, 600 nodes at the speed tier where 200. bench stdlib-special alone moves with it (1,333 bytes at 'speed', 1.015 of its time).
+
+### The bench bytes and times
+
+Twelve of 105 cases move against main. Over six paired rounds: arraydowngrade 0.828, arraynumeric 0.996, entity 0.999, immutable 1.000, polytri 1.004, quatmul 1.100 (1.048 to 1.158 over twelve; 0.71 of V8's time where 0.645), sosfilter 0.996, stdlib-special 1.015, threecull 1.000, threescene 1.000, webaudio 1.000, wordcount 1.013 (0.880 to 1.098 over twelve). `npm run test:three`: 7 of 7, the kernels' own times main's within 3%.
+
+### The check (bb, on fff2b47e6; the branch that landed is its replay, c4ba84a25)
+
+The check ran on fff2b47e6 in 58 minutes: lint and audit clean; the bench bytes 105 of 105 with none moved against the tree's own; WASI 7,622, default 7,749, level 0 7,509, test:self 89, integration 240 of 241 with one skipped, the examples 25 of 25 twice (1.69 and 1.70), three files on a fresh hosted compiler (fixed-length 26, summary 90, mem-alias 10). test262 in 29 minutes: 4,137 pass, 4,045 refused, no accepted negative, no failure.
+
+The armed level 3 leg failed one test of 7,531, the integrator's miss. test/splice.js held the second of a body's two loop sites to keep its call, which the two-site rule of this landing takes; the file's assertions on the emitted text run at level 3 alone, and the default leg, run whole ahead of the check, does not reach them. The test was corrected inside the rule's commit by replay (c4ba84a25 is fff2b47e6's source, test/splice.js its one difference: a third site keeps the old pin, and the pair alone is held to take the body twice). On c4ba84a25: the armed level 3 leg whole, 7,531 of 7,531 in 19 minutes; test/splice.js on five legs, 20 of 20 on each. The other legs were not run again: no source file differs.
+
+A change of plan/inline.js, or of any rule every program takes, wants the whole level 3 leg ahead of the check, not the default leg alone.
+
+### CI on f4afd4a63
+
+test262, self-compile and examples-perf green. test: every job green but `claims`, as it stands on main.
+
+### Found, not fixed
+
+- quatmul's time, above.
+- A store through an index array (`a[idx[i]] = v`) still opens its target: the first solve has no span for the index and the table is taken once.
+- The gate's `calls` gap counts the calls a loop holds, not those it runs.
+- An array's method under a computed name or taken as a value throws at run time.
+
+### Next
+
+The forms of the same class the built length does not reach: an array filled by index from empty; `new Array(N)` filled whole; a module `let` built in a function (the gate's `late` holder); the store's own code inside a built length; and the least length, for arrays that keep growing (a reader's push or a store past the length only grows the array: the reads below stay present).
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

@@ -850,3 +850,15 @@ b3a4c945c rule-x      the landing before, kept as main's compiler for probes
 Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/entered.mjs` (the functions a steady call enters, by name), `probe/present.mjs` and `probe/case-present.mjs` (which element reads the summary holds inside a length: programs from stdin, or a bench case's function), `probe/case-top.mjs` (a bench case's functions after the plan), `probe/show-delta.mjs` (two `--show` listings of the gate, the cells that moved), `probe/heldout-runs.mjs` (the lane's last runs side by side), `probe/phases.mjs` (a compile's phase times), `probe/solves.mjs` (the summary's solves a bench case), `own/mutant-recv.sh`, `own/mutant-store.sh`, `own/mutant-steady.sh`, `keep/len.patch` and `keep/len/` (the built length's three files), `forms-recvx-show.txt` and `forms-lenx-show.txt`.
 
 How a node that lost its verdict was traced: accessor traps on every slot of the path to the node, set after the final summary, print the stack of whatever replaces one (the scratchpad's trap.mjs; the idea is to keep).
+
+## Branches of the land-bb landing (2026-11-25), tips before deletion
+
+```
+c4ba84a25 len-z2      the landing branch: six commits on f4afd4a63; the record's commit after it
+fff2b47e6 len-z       (superseded) the branch the check ran on: len-z2 is its replay with test/splice.js corrected inside the two-site rule's commit
+75fe84a45 len-x       (superseded) the built length's work in progress on the landing before: five commits, their content on len-z but for d26bd2f28's clearing of the reached set, which the waiting read replaced
+```
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/` for what comes next: `probe/mul-sites.mjs` (the calls of a method left in each named function after the plan, and the method's node count), `probe/case-wasm.mjs` and `probe/run-wasm.mjs` (a bench case's wasm written to a file; modules' `main` run in one process by rounds, under any V8 flag: `node --print-wasm-code` prints the machine code here), `own/mutant-steady.sh` (the built length's 33 mutations), `forms-main-f4a-show.txt` and `forms-leny-show.txt` (the gate's every cell before and after), `bh-leny-b3.jsonl` (the landing's bench bytes).
+
+A figure to read before calling a bench case a tie: its bytes at the SIZE tier. threecull's time was 0.994 with 2,261 more bytes there, and the bytes were a kind that had got worse in every method of a class.
