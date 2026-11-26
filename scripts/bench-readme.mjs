@@ -156,6 +156,9 @@ const claimsGate = () => {
   if (!m) throw Error('package.json: test:claims is not `node <file>`')
   return `\`${m[1]}\``
 }
+// The data forms' listing (test/data-forms.json: each cell short of its kernel's best form, test/data-forms.js):
+// the cells it lists, those short by a call inside the loop, and those of them over a sequence of numbers.
+const forms = () => Object.entries(JSON.parse(readFileSync(join(ROOT, 'test/data-forms.json'), 'utf8')))
 const porfforRelease = () => {
   const m = d.meta?.versions?.porffor?.match(/^alpha (\d+) \(([0-9a-f]{7,}) (\d{4}-\d{2}-\d{2})\)$/)
   return m ? `alpha ${m[1]} (\`${m[2]}\`, ${m[3]})` : '–'
@@ -167,6 +170,9 @@ const bendRelease = () => {
 const FIGURES = {
   'pending-cases': pendingCases,
   'claims-gate': claimsGate,
+  'forms-short': () => String(forms().length),
+  'forms-calls': () => String(forms().filter(([, gap]) => gap.calls).length),
+  'forms-seq-calls': () => String(forms().filter(([cell, gap]) => gap.calls && cell.startsWith('seq/')).length),
   'porffor-release': porfforRelease,
   'bend-release': bendRelease,
   'v8-speed': () => x2(figure(d, 'speed', 'v8')),

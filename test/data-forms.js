@@ -479,6 +479,18 @@ if (update || shown) {
     const all = new Set(cells()), stale = Object.keys(known).filter(k => !all.has(k))
     ok(!stale.length, stale.length ? `not measured: ${stale.join(', ')}` : 'listed cells')
   })
+  // No cell of the sequence group is short by a call inside its loop: however an array of
+  // numbers is made and wherever it is held, its loops call what the best form's call. A
+  // listing cannot take one back. And README states the listing's counts as they stand
+  // (its marked figures, scripts/bench-readme.mjs `forms`).
+  test('data-forms: no sequence cell is short by a call, and README states the counts', () => {
+    const listed = Object.entries(known), calls = listed.filter(([, gap]) => gap.calls), seq = calls.filter(([cell]) => cell.startsWith('seq/'))
+    ok(!seq.length, seq.length ? `short by a call: ${seq.map(([cell]) => cell).join(', ')}` : 'no sequence cell is short by a call')
+    const readme = readFileSync(join(import.meta.dirname, '..', 'README.md'), 'utf8')
+    const stated = key => new RegExp(`<!-- fig:${key} -->([^<]*)<!-- /fig -->`).exec(readme)?.[1]
+    for (const [key, count] of [['forms-short', listed.length], ['forms-calls', calls.length], ['forms-seq-calls', seq.length]])
+      ok(stated(key) === String(count), `README states ${key} as ${stated(key)}, the listing gives ${count}: node test/data-forms.js --update, then npm run bench:readme`)
+  })
   for (const group of Object.keys(GROUPS)) for (const level of LEVELS) {
     test(`data-forms: ${pass(group, level)} answers what Node does and compiles as well as the best form`, () => {
       if (onWasi()) return

@@ -443,6 +443,15 @@ no memory, allocator or startup, and an empty program is an empty module.
 Size-optimized JZ is about a fifth smaller than AssemblyScript (geomean <!-- fig:as-size-geomean -->0.80×<!-- /fig -->
 over the <!-- fig:as-size-cases -->57<!-- /fig --> cases both compile) while keeping JavaScript's bounds checks.
 
+How the data is held should not change the cost of a loop over it: an array made
+by pushes, a fill, `Array.from`, `map` or a spread, held in a module constant, a
+binding an init call sets, a parameter, a field or a closure. `test/data-forms.js`
+compiles each combination, for arrays, records and keyed collections, and holds
+every cell to the best form of its kernel. <!-- fig:forms-short -->504<!-- /fig --> cells are listed short of it
+today (`test/data-forms.json`), <!-- fig:forms-calls -->83<!-- /fig --> of them by a call inside the loop that
+the best form does not make: <!-- fig:forms-seq-calls -->0<!-- /fig --> over an array of numbers, the rest over
+records and keyed collections.
+
 </details>
 
 <details>
