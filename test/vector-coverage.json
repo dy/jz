@@ -18,7 +18,7 @@
   "last": {"2":"VVVVVV.........","speed":"VVVVVV........."},
   "count": {"2":"...............","speed":"..............."},
   "min": {"2":"VVVVVVVVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},
-  "minIf": {"2":"...............","speed":"VVVVVV........."},
+  "minIf": {"2":"...............","speed":"VVVVVVVVVVVVVVV"},
   "rev": {"2":"...............","speed":"..............."},
   "step2": {"2":"...............","speed":"..............."},
   "cursor": {"2":"VVVVVVVVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},

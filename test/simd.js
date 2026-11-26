@@ -2588,6 +2588,7 @@ for (let i = 0; i < N; i++) { ia[i] = (i * 2654435761) | 0; wa[i] = (i * 2654435
     ['whole words taken from', `let s = 1000; ${LOOP} s -= ia[i]; return s`, true],
     ['whole words, the accumulator on the right', `let s = 7; ${LOOP} s = ia[i] + s; return s`, true],
     ['unsigned words', `let s = 0; ${LOOP} s += wa[i]; return s`, true],
+    ['whole words, the cell before the counter', `let s = 0; for (let i = 1; i < N; i++) s += ia[i - 1]; return s`, true],
     ['shorts by a while', `let s = 0; ${WHILE('sa')}`, true],
     ['signed bytes by a while', `let s = 0; ${WHILE('ba')}`, true],
     ['bytes by a while', `let s = 0; ${WHILE('ua')}`, true],
@@ -2805,6 +2806,11 @@ for (let i = 0; i < N; i++) { fa[i] = ((i * 37 + 11) % 64) * 0.25 - 3; ia[i] = (
     ['an integer xor, the accumulator on the right', `let x = 5; ${LOOP} x = ia[i] ^ x; return x`, true, true],
     ['a difference from the accumulator on the right', `let s = 0.5; ${LOOP} s = fa[i] - s; return s`, false, false],
     ['a plain array\'s cell before the counter', `let s = 0; for (let i = 1; i < N; i++) s += pa[i - 1]; return s`, true, null],
+    // (the reductions' own address fold takes the cell a constant before the counter, shifted or, over bytes, not)
+    ['a byte sum of the cell before the counter', `let s = 0; for (let i = 1; i < N; i++) s += ua[i - 1]; return s`, true, true],
+    ['a byte sum of the cell after the counter', `let s = 0; for (let i = 0; i < N - 1; i++) s += ua[i + 1]; return s`, true, true],
+    ['a wrapping integer sum of the cell three before the counter', `let s = 0; for (let i = 3; i < N; i++) s = (s + ia[i - 3]) | 0; return s`, true, true],
+    ['a byte sum from the far end', `let s = 0; ${LOOP} s += ua[N - 1 - i]; return s`, null, null],
     ['a plain array\'s cell two before the counter, counting down', `let s = 0; for (let i = N - 1; i >= 2; i--) s += pa[i - 2]; return s`, true, null],
   ]
   for (const [name, body, atSpeed, at2] of rows) {

@@ -244,10 +244,11 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
       exprNode = rhs[2]
     } else return null
 
-    // Offset-indexed reductions (matmul `s += A[ai+k]*Bt[bj+k]`): the index `ai+k`
-    // lowers to `(i32.shl (i32.add ai i) K)`, which matchLaneAddr rejects (the IV is
-    // not the bare shift operand). Fold the loop-invariant part into the base —
-    //   (base + (INV+i)<<K)  →  ((base + INV<<K) + i<<K)
+    // Offset-indexed reductions (matmul `s += A[ai+k]*Bt[bj+k]`, the cell before the counter
+    // `a[i - 1]`): the index lowers to `(i32.shl (i32.add ai i) K)`, or with no shift over bytes,
+    // which matchLaneAddr rejects (the IV is not the bare operand). Fold the loop-invariant part
+    // into the base —
+    //   (base + (INV+i)<<K)  →  ((base + INV<<K) + i<<K)      (base + (i-INV)<<K)  →  ((base - INV<<K) + i<<K)
     // so the offset is the bare IV the matcher/lifter already accept. The byte address
     // is unchanged, so the v128.load reads the same consecutive pair → bit-exact. INV
     // must be loop-invariant (not written in the loop) and IV-free (coefficient 1).
@@ -255,21 +256,25 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
       const writtenInLoop = new Set()
       ;(function wr(n) { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writtenInLoop.add(n[1]); for (let i = 1; i < n.length; i++) wr(n[i]) })(loopNode)
       const invFree = (n) => !isArr(n) || (!(n[0] === 'local.get' && (n[1] === incVar || writtenInLoop.has(n[1]))) && n.every((c, i) => i === 0 || invFree(c)))
+      // (what an index adds to the counter or takes from it, with the op: [INV, op], else null)
+      const beside = (idx) => {
+        if (!isArr(idx) || idx.length !== 3 || (idx[0] !== 'i32.add' && idx[0] !== 'i32.sub')) return null
+        const xIV = isLocalGet(idx[1], incVar), yIV = isLocalGet(idx[2], incVar)
+        if (xIV === yIV || idx[0] === 'i32.sub' && !xIV) return null
+        const inv = xIV ? idx[2] : idx[1]
+        return invFree(inv) ? [inv, idx[0]] : null
+      }
       let folded = false
       const foldAddr = (n) => {
         if (!isArr(n)) return n
         if (n[0] === 'i32.add' && n.length === 3) {
           for (const [base, off] of [[n[1], n[2]], [n[2], n[1]]]) {
-            if (isArr(off) && off[0] === 'i32.shl' && off.length === 3 && isArr(off[1]) && off[1][0] === 'i32.add' && off[1].length === 3) {
-              const k = constNum(off[2]), x = off[1][1], y = off[1][2]
-              const xIV = isLocalGet(x, incVar), yIV = isLocalGet(y, incVar)
-              if (k != null && k >= 0 && k <= 3 && xIV !== yIV) {
-                const inv = xIV ? y : x
-                if (invFree(inv)) {
-                  folded = true
-                  return ['i32.add', ['i32.add', foldAddr(base), ['i32.shl', inv, ['i32.const', k]]], ['i32.shl', ['local.get', incVar], ['i32.const', k]]]
-                }
-              }
+            const shifted = isArr(off) && off[0] === 'i32.shl' && off.length === 3, k = shifted ? constNum(off[2]) : 0
+            const part = k != null && k >= 0 && k <= 3 ? beside(shifted ? off[1] : off) : null
+            if (part) {
+              folded = true
+              const scaled = (x) => k ? ['i32.shl', x, ['i32.const', k]] : x
+              return ['i32.add', [part[1], foldAddr(base), scaled(part[0])], scaled(['local.get', incVar])]
             }
           }
         }
@@ -283,8 +288,9 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
     // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
     const accType = fnLocals.get(accName)
-    let widen = wide ?? ((opName === 'i32.add' && accType === 'i32' && canonC == null
-      && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null)
+    // (the load bare, or with the constant element offset its memarg carries, `a[i + 1]`)
+    const plainLoad = isArr(exprNode) && (exprNode.length === 2 || exprNode.length === 3 && typeof exprNode[1] === 'string' && exprNode[1].startsWith('offset='))
+    let widen = wide ?? ((opName === 'i32.add' && accType === 'i32' && canonC == null && plainLoad && WIDEN_LOADS[exprNode[0]]) || null)
     // The narrowing sum (lane-tables.js NARROW_LANES): the lanes are the f64 operand's, converted
     // into the i32 accumulator's two low lanes.
     if (!widen && accType === 'i32' && canonC == null && !reduceEntry.minmaxSelect && constNum(reduceEntry.constNode) === 0
