@@ -48,6 +48,7 @@
 import { DBG_INVARIANTS } from '../../debug.js'
 import { findBodyStart, writtenLocals } from '../../ir.js'
 import { walkAst } from '../../ast.js'
+import { dissolveDeadTees } from './access.js'
 import { channelScan, tryBlurMultiPixel, tryChannelReduce1px } from './blur-channel.js'
 import { canonicalizeCounters } from './counter-run.js'
 import { tryDivergentEscapeVectorize } from './divergent-escape.js'
@@ -162,6 +163,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // Canonicalize the `if COND (then (br L))` break idiom to `br_if L COND` (watr's brif shape),
   // so the loop-scan recognizers see the branch form they were tuned against.
   canonicalizeIfBr(fn)
+  // A temp an access staged its base in and nothing reads: the access's address is the base's.
+  dissolveDeadTees(fn)
 
   // A distinct parameter retains its allocation identity only while unwritten
   // (a static one's entry write is the address every call passes, compile/emit-func.js).

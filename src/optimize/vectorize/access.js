@@ -136,6 +136,21 @@ export const deadTees = (n, counts) => {
   walkAst(n, { enter: x => { if (x[0] === 'local.tee' && counts.has(x[1])) ok = false } })
   return ok
 }
+// A tee of a local nothing reads is its value. jz stages each access's base in a temp of its own
+// (`(local.tee $ab BASE)`, read again only where the access tests its bounds), so two reads of one
+// element differ by their temps' names, and an address holds a tee no proof of it reads through.
+// Dissolved across the function once, ahead of every recognizer.
+export const dissolveDeadTees = (fn) => {
+  const counts = localGetCounts(fn)
+  const walk = (n) => {
+    for (let i = 1; i < n.length; i++) {
+      let c = n[i]
+      while (isArr(c) && c[0] === 'local.tee' && c.length === 3 && typeof c[1] === 'string' && !counts.has(c[1])) c = n[i] = c[2]
+      if (isArr(c)) walk(c)
+    }
+  }
+  walk(fn)
+}
 // Count `(local.get NAME)` occurrences across a function: a temp read once can dissolve
 // into what reads it; a tee whose local is never read can dissolve with its subtree.
 export const localGetCounts = (fn) => {

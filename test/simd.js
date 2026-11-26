@@ -2545,6 +2545,36 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// A float extreme kept by a test (`if (a[i] > m) m = a[i]`, its ternary, the element read once
+// into a temp) is the pseudo-maximum of its lanes (f64x2.pmax, reduce.js): four accumulators to
+// the round at the speed tier, since one carries a compare and a select from round to round where
+// the loop as written carries a branch that predicts (79 ns over 256 elements with one, the loop
+// 73, four 25). Over a plain array as over a typed one: a plain array's read stages its base in
+// a temp of its own, which made the test's read and the store's two reads, and the temp is
+// dissolved ahead of the recognizers where nothing reads it (vectorize/access.js dissolveDeadTees).
+test('vectorize: a float extreme kept by a test lifts over a plain array, four accumulators at the speed tier', () => {
+  const head = `const N = 67
+const pa = [], ta = new Float64Array(N)
+for (let i = 0; i < N; i++) { pa.push(((i * 37 + 11) % 64) * 0.25 - 3); ta[i] = ((i * 29 + 5) % 64) * 0.5 - 7 }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  const rows = [
+    ['a plain array\'s maximum, the element read twice', `let m = -Infinity; ${LOOP} if (pa[i] > m) m = pa[i]; return m`],
+    ['a plain array\'s maximum, the element read once', `let m = -Infinity; ${LOOP} { const x = pa[i]; if (x > m) m = x } return m`],
+    ['a plain array\'s maximum by a ternary', `let m = -Infinity; ${LOOP} m = pa[i] > m ? pa[i] : m; return m`],
+    ['a plain array\'s minimum from its first element', `let m = pa[0]; for (let i = 1; i < N; i++) if (pa[i] < m) m = pa[i]; return m`],
+    ['a typed array\'s maximum', `let m = -Infinity; ${LOOP} if (ta[i] > m) m = ta[i]; return m`],
+  ]
+  for (const [name, body] of rows) {
+    const src = head + `export let f = () => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+    if (!ownedLevels('speed').length) continue
+    const text = funcWat(wat(src, { optimize: 'speed' }), 'f')
+    ok(/f64x2\.pm(ax|in)/.test(text) && /v128\.load/.test(text), `${name}: in lanes at speed`)
+    ok(/\$__simd_acc\d+_3/.test(text), `${name}: four accumulators`)
+  }
+})
+
 // An integer element's sum into a Number is left as written: the tier that keeps the loop's order
 // would convert two elements a round and still add them in order, and the loop as written carries
 // its accumulator as an integer (optimize/wide-accumulator.js). Over an Int32Array of 256 the lift

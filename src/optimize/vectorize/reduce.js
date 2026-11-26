@@ -407,7 +407,10 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   // where the float sum beside it, four to the round, ran at 15. The byte and short
   // widening sums keep one: not measured.
   const narrowing = widen?.laneType === 'f64'
-  const NACC = multiAcc && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing) ? 4 : 1
+  // And the float extreme by a test (`if (a[i] > m) m = a[i]`, f64x2.pmax): its one accumulator
+  // carries a compare and a select from round to round, where the loop as written carries a
+  // branch that predicts. Over 256 elements one accumulator ran at 79 ns, the loop at 73.
+  const NACC = multiAcc && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing || reduceEntry.pmaxF64 === true) ? 4 : 1
   const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
   const laneBytes = lanes * stride
 

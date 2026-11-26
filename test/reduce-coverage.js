@@ -5,9 +5,10 @@
 // FORMS writes one (the sum by its spellings, taken from its accumulator, of a neighbour, under a
 // condition, two in a loop, through a callback), over each of KINDS, the arrays a program holds:
 // a plain array of fractions, a plain array of integers, a Float64Array, an Int32Array, a
-// Uint8Array. At level 2 and at 'speed' a program's mark is V where its kernel adds a v128
-// instruction to the module (the same program with an empty kernel the measure), `.` where it
-// adds none, `!` where the compiler refuses the program. Every program that compiles answers what
+// Uint8Array. At level 2 and at 'speed' a program's mark is V where its kernel adds a vector load
+// to the module (the same program with an empty kernel the measure), `.` where it adds none, `!`
+// where the compiler refuses the program. A vector load, not any v128 instruction: a scalar
+// extreme written as a pseudo-minimum of two splats (optimize/select-bits.js) is no lane. Every program that compiles answers what
 // Node answers, at both levels: the fractions are quarters, whose sums are exact in any order.
 // test/reduce-coverage.json lists each form's marks, one a kind in KINDS' order, by level. A form
 // fails on any difference from its listing: a mark lost is a lift lost; a mark gained is a lift
@@ -66,7 +67,7 @@ const FORMS = {
 }
 const program = (kind, body) => `const N = ${N}\n${KINDS[kind]}\nexport let f = () => { ${body} }`
 
-const SIMD = /v128\.|[if](8x16|16x8|32x4|64x2)\./g
+const SIMD = /v128\.load/g
 const count = (wat) => (wat.match(SIMD) || []).length
 const blanks = new Map()
 // The module beside the kernel: the same program with an empty kernel, once a kind and level.
