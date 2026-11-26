@@ -35,8 +35,8 @@ import { simdLoop, simdBound, stripOpen } from './scaffold.js'
 // and the chooser takes the cheaper pass; where it is not, this one declines.
 
 // The tees of a statement that hold a pure load, inlined at the tee and at every read
-// of the local (a temp the load cache made for a lane read), the names noted in
-// `teed`; a local read past the loop keeps its tee.
+// of the local (a temp the load cache made for a lane read), each noted in `teed` with
+// its load; a local read past the loop keeps its tee.
 const inlineLaneTees = (stmt, outsideReads, teed) => {
   const tees = new Map(), written = new Set(), blocked = new Set()
   let straight = true
@@ -67,7 +67,7 @@ const inlineLaneTees = (stmt, outsideReads, teed) => {
   // assignment does not define its sibling or the continuation.
   for (const name of blocked) tees.delete(name)
   if (!straight || !tees.size) return stmt
-  for (const t of tees.keys()) teed.add(t)
+  for (const [t, load] of tees) teed.set(t, load)
   const clone = (n) => isArr(n) ? n.map(clone) : n
   const sub = (n) => !isArr(n) ? n : (n[0] === 'local.tee' || n[0] === 'local.get') && tees.has(n[1]) ? clone(tees.get(n[1])) : n.map(sub)
   return sub(stmt)
@@ -107,265 +107,278 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     }
     return stmt
   }
-  const bodyStmts = []
-  for (let i = 3; i < incIdx; i++) bodyStmts.push(loopNode[i])
-  // A lane read the load cache shares between the compare and the store arrives as a
-  // temp: `(local.set $t C)` declares it, `(f64.gt (local.tee $t LOAD) acc)` fills it
-  // and the store reads `(local.get $t)`. Both sides are that load: inline it for
-  // recognition and drop the declaration its reads no longer need. Sound as the collapse
-  // below: the lift consumes the load, the scalar remainder keeps the tee and its temp.
-  const teed = new Set()
-  for (let i = 0; i < bodyStmts.length; i++) bodyStmts[i] = asSelectAssign(inlineLaneTees(bodyStmts[i], bl.outsideReads, teed))
-  if (teed.size) for (let i = bodyStmts.length - 1; i >= 0; i--) {
-    const s = bodyStmts[i]
-    if (isArr(s) && s[0] === 'local.set' && teed.has(s[1]) && !hasSideEffect(s[2])) bodyStmts.splice(i, 1)
-  }
-  // CSE collapse: `m = a[i] > m ? a[i] : m` hoists the load into its own `(local.set $t LOAD)`
-  // ahead of the reduction, making a 2-statement body the single-statement min/max recognizer
-  // misses. When $t is pure (no side effect, no accumulator reference) inline it back into the
-  // reduction so the canonical one-statement shape is recognized. Sound: the lift only consumes
-  // the inlined lane expr for the SIMD prefix; the original $t set survives in the scalar
-  // remainder (the unchanged blockNode), so $t stays defined wherever else it is read.
-  let body0 = bodyStmts
-  if (bodyStmts.length === 2) {
-    const [s1, s2] = bodyStmts
-    if (isArr(s1) && s1[0] === 'local.set' && typeof s1[1] === 'string' && s1.length === 3 &&
-        isArr(s2) && s2[0] === 'local.set' && typeof s2[1] === 'string' && s2.length === 3 && s1[1] !== s2[1]) {
-      const t = s1[1], expr = s1[2]
-      const usesName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => usesName(c, name)))
-      if (!hasSideEffect(expr) && !usesName(expr, s2[1]) && !usesName(expr, t)) {
-        const subst = (n) => isArr(n) ? (n[0] === 'local.get' && n[1] === t ? expr : n.map(subst)) : n
-        body0 = [['local.set', s2[1], subst(s2[2])]]
-      }
+  // The body in reductions, each one statement, or the two of a NaN-canon min/max (the temp's
+  // set and the select that reads it). Every other statement must be a temp: a set of a local
+  // to a value with no effect, which is that value where the statements after it read the
+  // local. `const x = a[i]` ahead of `s += x` and of `if (x > m) m = x` is one; so is the load
+  // `m = a[i] > m ? a[i] : m` hoists, and the load the load cache shares between statements:
+  // `(local.set $t C)` declares it, the first read is `(local.tee $t LOAD)` and the reads after
+  // it `(local.get $t)` (inlineLaneTees: inlined in its statement, and for those after it).
+  // Sound: the lift only consumes the inlined value for the SIMD prefix; the temp's own set
+  // survives in the scalar remainder (the unchanged blockNode), so it stays defined wherever
+  // else it is read. Several reductions lift as one loop, each with its accumulators, where
+  // none reads another's accumulator: a sum beside a sum of squares, a minimum beside a maximum.
+  const isSet = (s) => isArr(s) && s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string'
+  const temps = new Map(), groups = []
+  const inlined = (n) => !isArr(n) || !temps.size ? n : n[0] === 'local.get' && temps.has(n[1]) ? cloneNode(temps.get(n[1])) : n.map(inlined)
+  // (a statement's own tees first, which its reads after them see; then the temps of the statements
+  // before it. A write a statement still holds inside it refuses the reduction where its operand is scanned.)
+  const normal = (stmt, teed) => asSelectAssign(inlined(inlineLaneTees(stmt, bl.outsideReads, teed)))
+  for (let i = 3; i < incIdx; i++) {
+    const teed = new Map(), s = normal(loopNode[i], teed)
+    if (!isSet(s)) return null
+    if (usesLocal(s[2], s[1])) groups.push([s])
+    else {
+      // (the canon pair: the next statement reads this one's temp into the accumulator this one read)
+      const next = i + 1 < incIdx ? normal(loopNode[i + 1], new Map()) : null
+      if (isSet(next) && next[1] !== s[1] && usesLocal(s[2], next[1]) && usesLocal(next[2], s[1])) { groups.push([s, next]); i++ }
+      else if (hasSideEffect(s[2])) return null
+      else temps.set(s[1], s[2])
     }
+    for (const [t, load] of teed) temps.set(t, load)
   }
-  const bodyLen = body0.length
-  let accName, opName, mergeOp = null, reduceEntry, exprNode, canonC = null
-  if (bodyLen === 1) {
-    const stmt = body0[0]
-    if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
-    accName = stmt[1]
-    if (typeof accName !== 'string') return null
-    const rhs = stmt[2]
-    if (!isArr(rhs)) return null
-    const minmax = matchIntMinMaxReduce(rhs, accName)
-    if (minmax && minmax.laneType === 'f64') {
-      // Comparison min/max over an f64 array (`m = a[i] > m ? a[i] : m`). f64x2.pmax/pmin
-      // replicate the scalar `(a>m)?a:m` EXACTLY per element — pmax(m,a) = (m<a)?a:m keeps the
-      // accumulator on NaN (m<NaN is false) and on a ±0 tie, never NaN-poisoning the way
-      // f64x2.max would. They preserve the data's exact NaN bits (a selection, not a compute),
-      // so no canon is needed. The ONLY divergence from the sequential scalar is the SIGN of a
-      // zero RESULT when the extremum is hit by both +0 and −0 in different lanes (a cross-lane
-      // reorder) — strictly less than the ULP reassociation the sum reductions already accept,
-      // so it rides the relaxedFloat tier (on at 'speed'); strict callers opt out (scalar).
-      if (!vecState.relaxF32) return null
-      reduceEntry = {
-        simd: minmax.isMax ? 'f64x2.pmax' : 'f64x2.pmin',
-        extract: 'f64x2.extract_lane', laneType: 'f64',
-        identity: ['f64.const', minmax.isMax ? '-inf' : 'inf'],
-        minmaxSelect: true, isMax: minmax.isMax, pmaxF64: true,
-      }
-      exprNode = minmax.exprNode
-    } else if (minmax) {
-      // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
-      // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
-      // op's neutral — INT_MIN for max, INT_MAX for min. A bare narrow load instead folds
-      // at its own lane width/sign (MINMAX_WIDEN), 16 or 8 lanes per vector.
-      const w = isArr(minmax.exprNode) && minmax.exprNode.length === 2
-        ? MINMAX_WIDEN[minmax.exprNode[0]] : null
-      reduceEntry = w ? {
-        simd: `${w.pre}.${minmax.isMax ? 'max' : 'min'}_${w.sign}`,
-        extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
-        identity: ['i32.const', minmax.isMax ? w.lo : w.hi],
-        minmaxSelect: true, isMax: minmax.isMax, accI32: true,
-      } : {
-        simd: minmax.isMax ? 'i32x4.max_s' : 'i32x4.min_s',
-        extract: 'i32x4.extract_lane', laneType: 'i32',
-        identity: ['i32.const', minmax.isMax ? -2147483648 : 2147483647],
-        minmaxSelect: true, isMax: minmax.isMax,
-      }
-      exprNode = minmax.exprNode
-    } else if (rhs[0] === 'block') {
-      // Un-flattened NaN-canon float min/max — the same reduction as the two-statement
-      // canon (bodyLen===2 below), but with the cn-temp set + select still wrapped in a
-      // value-block: (local.set acc (block (result T) (local.set cn (OP acc expr))
-      // (select C (local.get cn) (T.ne cn cn)))). mergeBlocks normally hoists this to the
-      // flat form; recognize the block form directly so vectorization doesn't hinge on
-      // that hoist having run.
-      let bi = 1
-      if (typeof rhs[bi] === 'string' && rhs[bi].startsWith('$')) bi++
-      if (isArr(rhs[bi]) && rhs[bi][0] === 'result') bi++
-      const inner = rhs[bi]
-      const op = isArr(inner) && inner[0] === 'local.set' && isArr(inner[2]) ? inner[2][0] : null
-      reduceEntry = op ? REDUCE_CANON[op] : null
-      if (!reduceEntry) return null
-      const cb = matchCanonBlock(rhs, reduceEntry.laneType)
-      if (!cb || !isArr(cb.core) || cb.core.length !== 3 || !isLocalGet(cb.core[1], accName)) return null
-      opName = op
-      exprNode = cb.core[2]
-      canonC = cb.C
-    } else {
-      const plain = plainReduce(rhs, accName)
-      if (!plain) return null
-      opName = plain.opName; mergeOp = plain.mergeOp; reduceEntry = plain.reduceEntry; exprNode = plain.exprNode
-    }
-  } else if (bodyLen === 2) {
-    const s1 = body0[0], s2 = body0[1]
-    if (!isArr(s1) || s1[0] !== 'local.set' || s1.length !== 3) return null
-    if (!isArr(s2) || s2[0] !== 'local.set' || s2.length !== 3) return null
-    const cnName = s1[1], rhs = s1[2]
-    if (typeof cnName !== 'string' || !isArr(rhs) || rhs.length !== 3) return null
-    opName = rhs[0]
-    reduceEntry = REDUCE_CANON[opName]
-    if (!reduceEntry) return null
-    accName = s2[1]
-    if (typeof accName !== 'string' || accName === cnName) return null
-    const canon = matchCanonSelect(s2[2], reduceEntry.laneType)
-    if (!canon || !isLocalGet(canon.val, cnName)) return null
-    if (!isLocalGet(rhs[1], accName)) return null
-    canonC = canon.C
-    exprNode = rhs[2]
-  } else return null
+  if (!groups.length) return null
+  const found = []
+  for (const g of groups) {
+    const m = matchReduction(g)
+    if (!m) return null
+    found.push(m)
+  }
+  return reduceWrapper(bl, freshIdRef, multiAcc, found)
 
-  // Offset-indexed reductions (matmul `s += A[ai+k]*Bt[bj+k]`): the index `ai+k`
-  // lowers to `(i32.shl (i32.add ai i) K)`, which matchLaneAddr rejects (the IV is
-  // not the bare shift operand). Fold the loop-invariant part into the base —
-  //   (base + (INV+i)<<K)  →  ((base + INV<<K) + i<<K)
-  // so the offset is the bare IV the matcher/lifter already accept. The byte address
-  // is unchanged, so the v128.load reads the same consecutive pair → bit-exact. INV
-  // must be loop-invariant (not written in the loop) and IV-free (coefficient 1).
-  {
-    const writtenInLoop = new Set()
-    ;(function wr(n) { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writtenInLoop.add(n[1]); for (let i = 1; i < n.length; i++) wr(n[i]) })(loopNode)
-    const invFree = (n) => !isArr(n) || (!(n[0] === 'local.get' && (n[1] === incVar || writtenInLoop.has(n[1]))) && n.every((c, i) => i === 0 || invFree(c)))
-    let folded = false
-    const foldAddr = (n) => {
-      if (!isArr(n)) return n
-      if (n[0] === 'i32.add' && n.length === 3) {
-        for (const [base, off] of [[n[1], n[2]], [n[2], n[1]]]) {
-          if (isArr(off) && off[0] === 'i32.shl' && off.length === 3 && isArr(off[1]) && off[1][0] === 'i32.add' && off[1].length === 3) {
-            const k = constNum(off[2]), x = off[1][1], y = off[1][2]
-            const xIV = isLocalGet(x, incVar), yIV = isLocalGet(y, incVar)
-            if (k != null && k >= 0 && k <= 3 && xIV !== yIV) {
-              const inv = xIV ? y : x
-              if (invFree(inv)) {
-                folded = true
-                return ['i32.add', ['i32.add', foldAddr(base), ['i32.shl', inv, ['i32.const', k]]], ['i32.shl', ['local.get', incVar], ['i32.const', k]]]
+  // One reduction of the body: what its lanes are and how they fold, or null.
+  function matchReduction(body0) {
+    const bodyLen = body0.length
+    let accName, opName, mergeOp = null, reduceEntry, exprNode, canonC = null
+    if (bodyLen === 1) {
+      const stmt = body0[0]
+      if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+      accName = stmt[1]
+      if (typeof accName !== 'string') return null
+      const rhs = stmt[2]
+      if (!isArr(rhs)) return null
+      const minmax = matchIntMinMaxReduce(rhs, accName)
+      if (minmax && minmax.laneType === 'f64') {
+        // Comparison min/max over an f64 array (`m = a[i] > m ? a[i] : m`). f64x2.pmax/pmin
+        // replicate the scalar `(a>m)?a:m` EXACTLY per element — pmax(m,a) = (m<a)?a:m keeps the
+        // accumulator on NaN (m<NaN is false) and on a ±0 tie, never NaN-poisoning the way
+        // f64x2.max would. They preserve the data's exact NaN bits (a selection, not a compute),
+        // so no canon is needed. The ONLY divergence from the sequential scalar is the SIGN of a
+        // zero RESULT when the extremum is hit by both +0 and −0 in different lanes (a cross-lane
+        // reorder) — strictly less than the ULP reassociation the sum reductions already accept,
+        // so it rides the relaxedFloat tier (on at 'speed'); strict callers opt out (scalar).
+        if (!vecState.relaxF32) return null
+        reduceEntry = {
+          simd: minmax.isMax ? 'f64x2.pmax' : 'f64x2.pmin',
+          extract: 'f64x2.extract_lane', laneType: 'f64',
+          identity: ['f64.const', minmax.isMax ? '-inf' : 'inf'],
+          minmaxSelect: true, isMax: minmax.isMax, pmaxF64: true,
+        }
+        exprNode = minmax.exprNode
+      } else if (minmax) {
+        // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
+        // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
+        // op's neutral — INT_MIN for max, INT_MAX for min. A bare narrow load instead folds
+        // at its own lane width/sign (MINMAX_WIDEN), 16 or 8 lanes per vector.
+        const w = isArr(minmax.exprNode) && minmax.exprNode.length === 2
+          ? MINMAX_WIDEN[minmax.exprNode[0]] : null
+        reduceEntry = w ? {
+          simd: `${w.pre}.${minmax.isMax ? 'max' : 'min'}_${w.sign}`,
+          extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
+          identity: ['i32.const', minmax.isMax ? w.lo : w.hi],
+          minmaxSelect: true, isMax: minmax.isMax, accI32: true,
+        } : {
+          simd: minmax.isMax ? 'i32x4.max_s' : 'i32x4.min_s',
+          extract: 'i32x4.extract_lane', laneType: 'i32',
+          identity: ['i32.const', minmax.isMax ? -2147483648 : 2147483647],
+          minmaxSelect: true, isMax: minmax.isMax,
+        }
+        exprNode = minmax.exprNode
+      } else if (rhs[0] === 'block') {
+        // Un-flattened NaN-canon float min/max — the same reduction as the two-statement
+        // canon (bodyLen===2 below), but with the cn-temp set + select still wrapped in a
+        // value-block: (local.set acc (block (result T) (local.set cn (OP acc expr))
+        // (select C (local.get cn) (T.ne cn cn)))). mergeBlocks normally hoists this to the
+        // flat form; recognize the block form directly so vectorization doesn't hinge on
+        // that hoist having run.
+        let bi = 1
+        if (typeof rhs[bi] === 'string' && rhs[bi].startsWith('$')) bi++
+        if (isArr(rhs[bi]) && rhs[bi][0] === 'result') bi++
+        const inner = rhs[bi]
+        const op = isArr(inner) && inner[0] === 'local.set' && isArr(inner[2]) ? inner[2][0] : null
+        reduceEntry = op ? REDUCE_CANON[op] : null
+        if (!reduceEntry) return null
+        const cb = matchCanonBlock(rhs, reduceEntry.laneType)
+        if (!cb || !isArr(cb.core) || cb.core.length !== 3 || !isLocalGet(cb.core[1], accName)) return null
+        opName = op
+        exprNode = cb.core[2]
+        canonC = cb.C
+      } else {
+        const plain = plainReduce(rhs, accName)
+        if (!plain) return null
+        opName = plain.opName; mergeOp = plain.mergeOp; reduceEntry = plain.reduceEntry; exprNode = plain.exprNode
+      }
+    } else if (bodyLen === 2) {
+      const s1 = body0[0], s2 = body0[1]
+      if (!isArr(s1) || s1[0] !== 'local.set' || s1.length !== 3) return null
+      if (!isArr(s2) || s2[0] !== 'local.set' || s2.length !== 3) return null
+      const cnName = s1[1], rhs = s1[2]
+      if (typeof cnName !== 'string' || !isArr(rhs) || rhs.length !== 3) return null
+      opName = rhs[0]
+      reduceEntry = REDUCE_CANON[opName]
+      if (!reduceEntry) return null
+      accName = s2[1]
+      if (typeof accName !== 'string' || accName === cnName) return null
+      const canon = matchCanonSelect(s2[2], reduceEntry.laneType)
+      if (!canon || !isLocalGet(canon.val, cnName)) return null
+      if (!isLocalGet(rhs[1], accName)) return null
+      canonC = canon.C
+      exprNode = rhs[2]
+    } else return null
+
+    // Offset-indexed reductions (matmul `s += A[ai+k]*Bt[bj+k]`): the index `ai+k`
+    // lowers to `(i32.shl (i32.add ai i) K)`, which matchLaneAddr rejects (the IV is
+    // not the bare shift operand). Fold the loop-invariant part into the base —
+    //   (base + (INV+i)<<K)  →  ((base + INV<<K) + i<<K)
+    // so the offset is the bare IV the matcher/lifter already accept. The byte address
+    // is unchanged, so the v128.load reads the same consecutive pair → bit-exact. INV
+    // must be loop-invariant (not written in the loop) and IV-free (coefficient 1).
+    {
+      const writtenInLoop = new Set()
+      ;(function wr(n) { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writtenInLoop.add(n[1]); for (let i = 1; i < n.length; i++) wr(n[i]) })(loopNode)
+      const invFree = (n) => !isArr(n) || (!(n[0] === 'local.get' && (n[1] === incVar || writtenInLoop.has(n[1]))) && n.every((c, i) => i === 0 || invFree(c)))
+      let folded = false
+      const foldAddr = (n) => {
+        if (!isArr(n)) return n
+        if (n[0] === 'i32.add' && n.length === 3) {
+          for (const [base, off] of [[n[1], n[2]], [n[2], n[1]]]) {
+            if (isArr(off) && off[0] === 'i32.shl' && off.length === 3 && isArr(off[1]) && off[1][0] === 'i32.add' && off[1].length === 3) {
+              const k = constNum(off[2]), x = off[1][1], y = off[1][2]
+              const xIV = isLocalGet(x, incVar), yIV = isLocalGet(y, incVar)
+              if (k != null && k >= 0 && k <= 3 && xIV !== yIV) {
+                const inv = xIV ? y : x
+                if (invFree(inv)) {
+                  folded = true
+                  return ['i32.add', ['i32.add', foldAddr(base), ['i32.shl', inv, ['i32.const', k]]], ['i32.shl', ['local.get', incVar], ['i32.const', k]]]
+                }
               }
             }
           }
         }
+        return n.map(foldAddr)
       }
-      return n.map(foldAddr)
+      const fe = foldAddr(exprNode)
+      if (folded) exprNode = fe
     }
-    const fe = foldAddr(exprNode)
-    if (folded) exprNode = fe
-  }
 
-  // Accumulator's declared local type must match the lane element type.
-  // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
-  // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
-  const accType = fnLocals.get(accName)
-  let widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
-    && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null
-  // The narrowing sum (lane-tables.js NARROW_LANES): the lanes are the f64 operand's, converted
-  // into the i32 accumulator's two low lanes.
-  if (!widen && accType === 'i32' && canonC == null && !reduceEntry.minmaxSelect && constNum(reduceEntry.constNode) === 0
-      && isArr(exprNode) && exprNode.length === 2 && NARROW_LANES[exprNode[0]]) {
-    widen = { laneType: 'f64', steps: [NARROW_LANES[exprNode[0]]], fold: 2 }
-    exprNode = exprNode[1]
-  }
-  // Widening float min/max: the canon over a sign-matched converted narrow load
-  // (`m = Math.max(m, u8[i])`, acc f64) folds at the load's own width — exact,
-  // since min/max never rounds and u8…i16 values are exact in f64. Only the one
-  // horizontal result converts to f64 for the merge (+ re-canon for a NaN acc).
-  if (canonC != null && (opName === 'f64.max' || opName === 'f64.min') && accType === 'f64'
-      && isArr(exprNode) && exprNode.length === 2 && MINMAX_CVT[exprNode[0]] && isArr(exprNode[1])) {
-    const w = MINMAX_WIDEN[exprNode[1][0]]
-    if (w && w.sign === MINMAX_CVT[exprNode[0]]) {
-      const isMax = opName === 'f64.max'
-      reduceEntry = {
-        simd: `${w.pre}.${isMax ? 'max' : 'min'}_${w.sign}`,
-        extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
-        identity: ['i32.const', isMax ? w.lo : w.hi],
-        minmaxSelect: true, isMax, accF64: exprNode[0], canonC,
-      }
+    // Accumulator's declared local type must match the lane element type.
+    // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
+    // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
+    const accType = fnLocals.get(accName)
+    let widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
+      && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null
+    // The narrowing sum (lane-tables.js NARROW_LANES): the lanes are the f64 operand's, converted
+    // into the i32 accumulator's two low lanes.
+    if (!widen && accType === 'i32' && canonC == null && !reduceEntry.minmaxSelect && constNum(reduceEntry.constNode) === 0
+        && isArr(exprNode) && exprNode.length === 2 && NARROW_LANES[exprNode[0]]) {
+      widen = { laneType: 'f64', steps: [NARROW_LANES[exprNode[0]]], fold: 2 }
       exprNode = exprNode[1]
-      canonC = null
     }
-  }
-  if (!widen && accType !== (reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
+    // Widening float min/max: the canon over a sign-matched converted narrow load
+    // (`m = Math.max(m, u8[i])`, acc f64) folds at the load's own width — exact,
+    // since min/max never rounds and u8…i16 values are exact in f64. Only the one
+    // horizontal result converts to f64 for the merge (+ re-canon for a NaN acc).
+    if (canonC != null && (opName === 'f64.max' || opName === 'f64.min') && accType === 'f64'
+        && isArr(exprNode) && exprNode.length === 2 && MINMAX_CVT[exprNode[0]] && isArr(exprNode[1])) {
+      const w = MINMAX_WIDEN[exprNode[1][0]]
+      if (w && w.sign === MINMAX_CVT[exprNode[0]]) {
+        const isMax = opName === 'f64.max'
+        reduceEntry = {
+          simd: `${w.pre}.${isMax ? 'max' : 'min'}_${w.sign}`,
+          extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
+          identity: ['i32.const', isMax ? w.lo : w.hi],
+          minmaxSelect: true, isMax, accF64: exprNode[0], canonC,
+        }
+        exprNode = exprNode[1]
+        canonC = null
+      }
+    }
+    if (!widen && accType !== (reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
 
-  // Bound must be loop-invariant: (local.get $L) or (i32.const N).
-  const { bound, boundLocal } = bl
-  if (!boundLocal && !isI32Const(bound)) return null
+    // Bound must be loop-invariant: (local.get $L) or (i32.const N).
+    const { bound, boundLocal } = bl
+    if (!boundLocal && !isI32Const(bound)) return null
 
-  // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of
-  // accName forbidden (the accumulator only appears in the outer wrapper).
-  const laneType = widen ? widen.laneType : reduceEntry.laneType
-  const stride = LANE_INFO[laneType].stride
-  const addrLocals = new Map()
-  const offsetTees = new Map()
-  let loadCount = 0, sawWidenF32 = false
-  function scanExpr(node) {
-    if (!isArr(node)) return true
-    const op = node[0]
-    if (LOAD_OPS[op]) {
-      // f32→f64 widening reduction (`s += f32arr[i]`, acc f64): liftExprV promotes
-      // the f32.load to f64x2.promote_low_f32x4, so accept it under an f64 lane and
-      // validate at the f32 element stride (4) — the loop still steps `lanes` (2)
-      // elements, advancing the f32 address by 8 bytes (the load64_zero the lift reads).
-      const ltw = LOAD_OPS[op]
-      const widenF32 = ltw === 'f32' && laneType === 'f64'
-      if (ltw !== laneType && !widenF32) return false
-      if (widenF32) sawWidenF32 = true
-      // a constant element offset (`a[i + 3]`) rides the memarg, `offset=12`: the lane
-      // address is the operand after it, and the lift keeps the memarg on the vector load
-      const m = matchLaneAddr(typeof node[1] === 'string' && node[1].startsWith('offset=') ? node[2] : node[1], incVar, addrLocals, offsetTees)
-      if (!m) return false
-      if ((1 << m.strideLog2) !== (widenF32 ? 4 : stride)) return false
-      if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
-      if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
-      loadCount++
+    // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of
+    // accName forbidden (the accumulator only appears in the outer wrapper).
+    const laneType = widen ? widen.laneType : reduceEntry.laneType
+    const stride = LANE_INFO[laneType].stride
+    const addrLocals = new Map()
+    const offsetTees = new Map()
+    let loadCount = 0, sawWidenF32 = false
+    function scanExpr(node) {
+      if (!isArr(node)) return true
+      const op = node[0]
+      if (LOAD_OPS[op]) {
+        // f32→f64 widening reduction (`s += f32arr[i]`, acc f64): liftExprV promotes
+        // the f32.load to f64x2.promote_low_f32x4, so accept it under an f64 lane and
+        // validate at the f32 element stride (4) — the loop still steps `lanes` (2)
+        // elements, advancing the f32 address by 8 bytes (the load64_zero the lift reads).
+        const ltw = LOAD_OPS[op]
+        const widenF32 = ltw === 'f32' && laneType === 'f64'
+        if (ltw !== laneType && !widenF32) return false
+        if (widenF32) sawWidenF32 = true
+        // a constant element offset (`a[i + 3]`) rides the memarg, `offset=12`: the lane
+        // address is the operand after it, and the lift keeps the memarg on the vector load
+        const m = matchLaneAddr(typeof node[1] === 'string' && node[1].startsWith('offset=') ? node[2] : node[1], incVar, addrLocals, offsetTees)
+        if (!m) return false
+        if ((1 << m.strideLog2) !== (widenF32 ? 4 : stride)) return false
+        if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+        if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
+        loadCount++
+        return true
+      }
+      if (STORE_OPS[op]) return false
+      if (op === 'local.set' || op === 'local.tee') return false  // no intermediates
+      if (op === 'local.get' && node[1] === accName) return false
+      for (let i = 1; i < node.length; i++) if (!scanExpr(node[i])) return false
       return true
     }
-    if (STORE_OPS[op]) return false
-    if (op === 'local.set' || op === 'local.tee') return false  // no intermediates
-    if (op === 'local.get' && node[1] === accName) return false
-    for (let i = 1; i < node.length; i++) if (!scanExpr(node[i])) return false
-    return true
+    if (!scanExpr(exprNode)) return null
+    if (loadCount === 0) return null
+    // Soundness gate for offset-tee resolution (see tryVectorize).
+    for (const [name, k] of offsetTees) {
+      if (_offsetLocalStride([exprNode], name, incVar) !== k) return null
+    }
+
+    // Classify locals referenced in EXPR. Anything not the induction var or an
+    // address-tee is invariant (we forbade local.set/tee in scanExpr).
+    const referenced = new Set()
+    walkAst(exprNode, { enter: n => { if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1]) } })
+    const localKind = new Map()
+    for (const name of referenced) {
+      if (name === incVar) continue
+      if (addrLocals.has(name) || offsetTees.has(name)) { localKind.set(name, 'addr'); continue }
+      // (a local the body writes is no invariant: another reduction's accumulator, or one a later
+      // statement sets, read here as the pass before left it)
+      if (bl.writes.has(name)) return null
+      localKind.set(name, 'invariant')
+    }
+    for (const name of addrLocals.keys()) localKind.set(name, 'addr')
+    for (const name of offsetTees.keys()) localKind.set(name, 'addr')
+
+    const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals)
+
+    const liftedExpr = liftExprV(exprNode, ctx)
+    // liftExprV's contract is "null ⟺ ctx.fail"; under self-compile (jz.wasm) it can diverge and
+    // return null WITHOUT the flag, which would otherwise splice a literal `null` operand into the
+    // emitted `(<reduce>.add acc null)` — invalid wasm ("not enough arguments on the stack"). Treat
+    // a null lift as a bail (the loop stays scalar — correct, just unvectorized on that leg).
+    if (ctx.fail || liftedExpr == null) return null
+    if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
+
+    return { reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp: mergeOp ?? opName }
   }
-  if (!scanExpr(exprNode)) return null
-  if (loadCount === 0) return null
-  // Soundness gate for offset-tee resolution (see tryVectorize).
-  for (const [name, k] of offsetTees) {
-    if (_offsetLocalStride([exprNode], name, incVar) !== k) return null
-  }
-
-  // Classify locals referenced in EXPR. Anything not the induction var or an
-  // address-tee is invariant (we forbade local.set/tee in scanExpr).
-  const referenced = new Set()
-  walkAst(exprNode, { enter: n => { if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1]) } })
-  const localKind = new Map()
-  for (const name of referenced) {
-    if (name === incVar) continue
-    if (addrLocals.has(name) || offsetTees.has(name)) { localKind.set(name, 'addr'); continue }
-    localKind.set(name, 'invariant')
-  }
-  for (const name of addrLocals.keys()) localKind.set(name, 'addr')
-  for (const name of offsetTees.keys()) localKind.set(name, 'addr')
-
-  const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals)
-
-  const liftedExpr = liftExprV(exprNode, ctx)
-  // liftExprV's contract is "null ⟺ ctx.fail"; under self-compile (jz.wasm) it can diverge and
-  // return null WITHOUT the flag, which would otherwise splice a literal `null` operand into the
-  // emitted `(<reduce>.add acc null)` — invalid wasm ("not enough arguments on the stack"). Treat
-  // a null lift as a bail (the loop stays scalar — correct, just unvectorized on that leg).
-  if (ctx.fail || liftedExpr == null) return null
-  if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
-
-  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp ?? opName)
 }
 
 // SIMD prefix + horizontal fold + (preserved scalar tail), shared by tryReduceReassoc and
@@ -379,15 +392,48 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
 // lanes hold a value (all four where it names none).
 // `mergeOp` merges the folded lanes into the accumulator: the reduction's op, or the
 // subtraction of a sum taken from it (plainReduce).
-function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp) {
+// `found` is the loop's reductions (matchReduction's, tryGeneralReduce's one): each brings its
+// accumulators, what a round adds to them and how they fold (reducePart), and the strips run
+// them side by side, a round of each a pass. All step by one count of elements a round.
+function reduceWrapper(bl, freshIdRef, multiAcc, found) {
   const { incVar } = bl
+  const parts = found.map(m => reducePart(m, freshIdRef, multiAcc))
+  const { id, step, guarded } = parts[0]
+  // (a guarded part's prefix is skipped whole where no strip runs: alone in its loop)
+  if (parts.length > 1 && parts.some(p => p.step !== step || p.guarded)) return null
+  const simdBoundName = `$__simd_bound${id}`
+  const boundExpr = bl.boundLocal ? ['local.get', bl.boundLocal] : bl.bound
+  const loopBody = parts.flatMap(p => p.accumulate)
+  loopBody.push(['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', step]]])
+  const simdBlock = simdLoop(id, incVar, simdBoundName, loopBody, bl.dir)
+  // Span-aligned SIMD bound: stop while a full `lanes`-wide load stays in
+  // range, for ANY induction start (the min/max idiom seeds m=a[0] and starts
+  // at i=1, which `& ~(lanes-1)` masking would run one lane past the end). For
+  // a lane-aligned start this yields the same iteration set as masking; the
+  // scalar tail (original `i<bound` guard) cleans up regardless.
+  // A full N·lanes-wide step (all N accumulators) must stay in range.
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, step, 0, bl.dir)]
+  // Narrow-widened entries seed the vector acc with a LANE-domain neutral (e.g.
+  // 0 for u8-max) — only neutral once real lanes fold in. Guard the whole SIMD
+  // prefix incl. the merge so a zero-iteration range can't clamp the live acc
+  // toward the identity. Full-width entries use absolute neutrals; unguarded.
+  // (The guarded path is always NACC=1 — accI32/accF64 are non-plain reductions.)
+  const prefix = [...parts.flatMap(p => p.initAcc), simdBlock, ...parts.flatMap(p => [...p.combineAccs, ...p.mergeStmts])]
+  const core = guarded ? [['if', stripOpen(incVar, simdBoundName, bl.dir, step), ['then', ...prefix]]] : prefix
+  const wrapper = ['block', ...bl.preamble.map(cloneNode), boundSetup, ...core, bl.blockNode]
+  return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...parts.flatMap(p => p.decls)], reductions: new Set(found.map(m => m.accName)) }
+}
+
+// One reduction's part of the strips: its accumulators' start, what a round adds to them, their
+// fold into one and its merge into the live accumulator, the locals it declares, the elements a
+// round takes (`step`), and whether its prefix must be skipped where no strip runs (`guarded`).
+function reducePart(m, freshIdRef, multiAcc) {
+  const { reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp } = m
   const stride = LANE_INFO[laneType].stride
   const id = freshIdRef.next++
-  const simdBoundName = `$__simd_bound${id}`
   const simdAccName = `$__simd_acc${id}`   // accumulator 0 — the one the merge folds
   const info = LANE_INFO[laneType]
   const lanes = info.lanes
-  const boundExpr = bl.boundLocal ? ['local.get', bl.boundLocal] : bl.bound
 
   // Multi-accumulator unroll. A reduction's loop-carried accumulator is a latency
   // chain — each iteration's op waits on the previous result, so a single vector
@@ -431,10 +477,8 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
 
   const initAcc = []
   for (let k = 0; k < NACC; k++) initAcc.push(['local.set', accK(k), [accSplat, reduceEntry.constNode ?? reduceEntry.identity]])
-  const loopBody = []
-  for (let k = 0; k < NACC; k++) loopBody.push(['local.set', accK(k), [reduceEntry.simd, ['local.get', accK(k)], accOperandFor(k)]])
-  loopBody.push(['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes * NACC]]])
-  const simdBlock = simdLoop(id, incVar, simdBoundName, loopBody, bl.dir)
+  const accumulate = []
+  for (let k = 0; k < NACC; k++) accumulate.push(['local.set', accK(k), [reduceEntry.simd, ['local.get', accK(k)], accOperandFor(k)]])
   // Combine the N accumulators into acc 0 (lane-wise) before the horizontal fold.
   const combineAccs = []
   for (let k = 1; k < NACC; k++) combineAccs.push(['local.set', simdAccName, [reduceEntry.simd, ['local.get', simdAccName], ['local.get', accK(k)]]])
@@ -487,31 +531,12 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
            ['select', canonC, ['local.get', accName],
              [`${laneType}.ne`, ['local.get', accName], ['local.get', accName]]]]]
   }
-  // Span-aligned SIMD bound: stop while a full `lanes`-wide load stays in
-  // range, for ANY induction start (the min/max idiom seeds m=a[0] and starts
-  // at i=1, which `& ~(lanes-1)` masking would run one lane past the end). For
-  // a lane-aligned start this yields the same iteration set as masking; the
-  // scalar tail (original `i<bound` guard) cleans up regardless.
-  // A full N·lanes-wide step (all N accumulators) must stay in range.
-  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes * NACC, 0, bl.dir)]
-
-  // Narrow-widened entries seed the vector acc with a LANE-domain neutral (e.g.
-  // 0 for u8-max) — only neutral once real lanes fold in. Guard the whole SIMD
-  // prefix incl. the merge so a zero-iteration range can't clamp the live acc
-  // toward the identity. Full-width entries use absolute neutrals; unguarded.
-  // (The guarded path is always NACC=1 — accI32/accF64 are non-plain reductions.)
-  const core = reduceEntry.accI32 || reduceEntry.accF64
-    ? [['if', stripOpen(incVar, simdBoundName, bl.dir, lanes * NACC),
-        ['then', ...initAcc, simdBlock, ...combineAccs, ...mergeStmts]]]
-    : [...initAcc, simdBlock, ...combineAccs, ...mergeStmts]
-  const wrapper = ['block', ...bl.preamble.map(cloneNode), boundSetup, ...core, bl.blockNode]
-  const newLocalDecls = [
-    ['local', simdBoundName, 'i32'],
+  const decls = [
     ['local', simdAccName, 'v128'],
     ...Array.from({ length: NACC - 1 }, (_, k) => ['local', accK(k + 1), 'v128']),
     ...extraDecls,
   ]
-  return { wrapper, newLocalDecls, reductions: new Set([accName]) }
+  return { id, step: lanes * NACC, guarded: !!(reduceEntry.accI32 || reduceEntry.accF64), initAcc, accumulate, combineAccs, mergeStmts, decls }
 }
 
 // Bit-exact f64 map-reduce (the direct-summation n-body force loop). A loop that
@@ -959,5 +984,5 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost', 'cost')
 
-  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, null, false, mergeOp ?? opName)
+  return reduceWrapper(bl, freshIdRef, multiAcc, [{ reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen: null, sawWidenF32: false, mergeOp: mergeOp ?? opName }])
 }

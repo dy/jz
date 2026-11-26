@@ -14,12 +14,12 @@
   "sum by reduce": {"2":"..VV.","speed":"..VV."},
   "sum of squares": {"2":"VVVV.","speed":"VVVV."},
   "sum of magnitudes": {"2":"VVVV.","speed":"VVVV."},
-  "sum and sum of squares": {"2":".....","speed":"....."},
+  "sum and sum of squares": {"2":".....","speed":"V.V.."},
   "sum where": {"2":".....","speed":"....."},
   "count where": {"2":".....","speed":"....."},
   "max": {"2":"VVV..","speed":"VVV.."},
   "min": {"2":"VVV..","speed":"VVV.."},
   "max by a test": {"2":"...V.","speed":"V.VV."},
-  "max and min": {"2":".....","speed":"....."},
+  "max and min": {"2":".....","speed":"V.V.."},
   "xor": {"2":"VV.V.","speed":"VV.V."}
 }

@@ -2545,6 +2545,47 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// Several reductions in one loop lift side by side, each with its accumulators, a round of each
+// a pass (reduce.js tryReduceReassoc, reduceWrapper): a sum beside a sum of squares, a minimum
+// beside a maximum. An element the statements share arrives as a temp (`const x = a[i]`, or the
+// load cache's: the first read tees it, the statements after read the local), which is the load
+// where each reads it. They lift together or not at all: not where one reads another's
+// accumulator, reads a local a later statement writes (the value of the pass before), is fed
+// the counter alone, or takes another count of elements a round.
+test('vectorize: several reductions in one loop lift side by side', () => {
+  const head = `const N = 67
+const pa = [], ta = new Float64Array(N), ia = new Int32Array(N), sa = new Int16Array(N)
+for (let i = 0; i < N; i++) { pa.push(((i * 37 + 11) % 64) * 0.25 - 3); ta[i] = ((i * 29 + 5) % 64) * 0.5 - 7; ia[i] = (i * 37 + 11) % 64 - 20; sa[i] = (i * 53 + 7) % 3001 - 1500 }
+let calls = 0
+const bump = (v) => { calls++; return v }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  // [name, body, the loop's reductions in lanes at 'speed']
+  const rows = [
+    ['a sum and a sum of squares', `let s = 0, q = 0; ${LOOP} { s += pa[i]; q += pa[i] * pa[i] } return s * 3 + q`, true],
+    ['a minimum and a maximum, the element read at each test', `let lo = Infinity, hi = -Infinity; ${LOOP} { if (pa[i] < lo) lo = pa[i]; if (pa[i] > hi) hi = pa[i] } return hi * 1000 + lo`, true],
+    ['a minimum and a maximum of a temp', `let lo = Infinity, hi = -Infinity; ${LOOP} { const x = ta[i]; if (x < lo) lo = x; if (x > hi) hi = x } return hi * 1000 + lo`, true],
+    ['Math.min and Math.max', `let lo = Infinity, hi = -Infinity; ${LOOP} { lo = Math.min(lo, pa[i]); hi = Math.max(hi, pa[i]) } return hi * 1000 + lo`, true],
+    ['a sum, a sum of squares and a maximum', `let s = 0, q = 0, m = -Infinity; ${LOOP} { const x = pa[i]; s += x; q += x * x; if (x > m) m = x } return s * 3 + q + m * 1000`, true],
+    ['two sums over two arrays', `let s = 0, t = 0; ${LOOP} { s += pa[i]; t += ta[i] * 0.5 } return s * 3 + t`, true],
+    ['one that reads the other\'s accumulator', `let s = 0, q = 0; ${LOOP} { s += pa[i]; q += s * pa[i] } return q`, false],
+    ['one that reads what a later statement writes', `let q = 0, prev = 1; ${LOOP} { q += prev * pa[i]; prev = pa[i] } return q`, false],
+    ['a temp that reads an accumulator', `let s = 0, q = 0; ${LOOP} { const x = pa[i] + s * 0.5; s += x; q += x } return s * 3 + q`, false],
+    ['a temp made by a call that counts', `let s = 0, q = 0; ${LOOP} { const x = bump(pa[i]); s += x; q += x * x } return s * 3 + q + calls`, false],
+    ['a call that counts beside a sum, its value kept', `let s = 0, last = 0; ${LOOP} { last = bump(pa[i]); s += pa[i] } return s * 3 + calls + last`, false],
+    ['a float sum and a wrapping integer xor, eight elements a round and four', `let s = 0, x = 0; ${LOOP} { s += ta[i]; x ^= ia[i] } return s * 3 + x`, false],
+    // (a maximum over short elements starts its lanes at the shorts' least: its prefix is skipped whole where no
+    // strip runs, which it is not beside another reduction's. Both take eight elements a round.)
+    ['a short maximum from below its range beside a sum', `let m = -100000, s = 0; for (let i = 0; i < n; i++) { if (sa[i] > m) m = sa[i]; s += ta[i] } return m * 1000 + s`, false, [0], [5], [67]],
+  ]
+  for (const [name, body, lanes, ...calls] of rows) {
+    const src = head + `export let f = (n) => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) for (const args of calls.length ? calls : [[]])
+      is(jz(src, { optimize }).exports.f(...args), oracle(src).f(...args), `${name} at ${optimize}${args.length ? ` over ${args[0]}` : ''}`)
+    if (ownedLevels('speed').length) is(/\$__simd_acc/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no reduction in lanes'} at speed`)
+  }
+})
+
 // A float extreme kept by a test (`if (a[i] > m) m = a[i]`, its ternary, the element read once
 // into a temp) is the pseudo-maximum of its lanes (f64x2.pmax, reduce.js): four accumulators to
 // the round at the speed tier, since one carries a compare and a select from round to round where
@@ -5363,10 +5404,11 @@ test('SIMD general-reduce f64 - dot-style two-array combine, one array at a runt
 // A subtraction accumulate is no op of REDUCE_OP_LOOKUP, and lanes that subtracted would fold
 // to another value: it lifts as the sum of its operands, taken from the accumulator once
 // (reduce.js plainReduce), exact for a wrapping integer. The lanes add, the merge subtracts.
-// A SECOND independent loop-carried accumulator in the same body (violating "single
-// accumulator, no other loop-carried state") must decline. Both are compared against the same
-// source compiled without the vectorizer, since a false-positive precondition here would be a
-// real mis-vectorization risk, not a missed optimization.
+// A second accumulator in the same body lifts beside the first where it is a reduction over
+// elements too (the test of several reductions below); one fed the counter is none, and the
+// loop declines whole. Both are compared against the same source compiled without the
+// vectorizer, since a false-positive precondition here would be a real mis-vectorization risk,
+// not a missed optimization.
 test('SIMD general-reduce - a sum taken from its accumulator (s -= a[i+off+5]) lifts as the sum, taken once', () => {
   const src = `export let main = (offIn) => {
     const off = (offIn | 0) & 7, n = 40
@@ -5384,7 +5426,7 @@ test('SIMD general-reduce - a sum taken from its accumulator (s -= a[i+off+5]) l
   ok(/i32x4\.add/.test(w) && !/i32x4\.sub/.test(w), 'the lanes add and none subtracts (the fill loop is a non-ramp multiply-hash, no incidental SIMD)')
 })
 
-test('SIMD general-reduce safety - second independent loop-carried accumulator never vectorizes as a reduce', () => {
+test('SIMD general-reduce safety - a second accumulator fed the counter keeps the loop from the reductions\' lanes', () => {
   const src = `export let main = (offIn) => {
     const off = (offIn | 0) & 7, n = 40
     const a = new Int32Array(56)
@@ -5401,7 +5443,7 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
     is(laned.fresh().exports.main(off), unlaned.fresh().exports.main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
   }
   const w = laned.wat
-  ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the two-accumulator loop (body.length===2 with two unrelated accumulators fails both the bodyLen===1 and the REDUCE_CANON bodyLen===2 shape match, so declines — the "single accumulator, no other loop-carried state" precondition holds)')
+  ok(!/i32x4\.add/.test(w), 'no i32x4.add lift: the second accumulator is fed the counter, no element, so its reduction has no lanes and the loop, whose reductions lift together or not at all, declines')
 })
 
 // Every positive case below uses `^` (XOR) rather than `+` for the neighbour combine: jz's own
