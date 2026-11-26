@@ -401,3 +401,39 @@ test('array holes: a store through an accessor between the length test and a cou
   const run = (ex) => { let n = 0; return ex.m({ get v () { if (n++ === 5) ex.swap(); return 1 } }) }
   for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is(run(jz(host, { optimize }).exports), run(oracle(host)), `from a host object @${optimize}`)
 })
+
+// `Object.assign` among plain objects, in a program with no accessor, stores
+// slots and runs nothing: the counted store beside it stays inside the length,
+// and a later read of the array tests for no hole.
+test('array holes: Object.assign among plain objects leaves a counted store inside the length', () => {
+  const src = `const ps = []
+    for (let i = 0; i < 8; i++) ps.push({ x: i, y: 1, vx: 1 })
+    export let renew = () => { for (let i = 0; i < ps.length; i++) { const p = ps[i], q = { x: p.x + p.vx, y: p.y }; Object.assign(q, { vx: p.vx }); ps[i] = q } return ps[0].x }
+    export let m = () => { let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x + ps[i].y; return s }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    is(got.renew() + got.m(), want.renew() + want.m(), `answers @${optimize}`)
+  }
+  for (const optimize of levels(2)) ok(!/__arr_value/.test(funcWat(compile(src, { optimize, wat: true }), 'm')), `no hole test in the read @${optimize}`)
+})
+
+// So does a typed array made of a count. One made of an array converts the
+// array's elements, which is the program's code where an element has a valueOf.
+test('array holes: a typed array made of a count leaves a counted store inside the length', () => {
+  const src = `const qs = []
+    for (let i = 0; i < 8; i++) { const p = new Float64Array(2); p[0] = i; qs.push(p) }
+    export let renew = () => { for (let i = 0; i < qs.length; i++) { const q = new Float64Array(2); q[0] = qs[i][0] + 1; qs[i] = q } return qs[0][0] }
+    export let m = () => { let s = 0; for (let i = 0; i < qs.length; i++) s += qs[i][0]; return s }`
+  const made = `let ps = []
+    const short = [{ x: -1 }, { x: -2 }]
+    for (let i = 0; i < 8; i++) ps.push({ x: i })
+    let n = 0
+    const conv = [{ valueOf () { if (n++ === 5) ps = short; return 1 } }]
+    export let converts = () => { let got = 0; for (let i = 0; i < ps.length; i++) { const t = new Float64Array(conv); got += t[0]; ps[i] = { x: i * 2 } } return got + ':' + ps.length + ':' + (short[3] === undefined) + ':' + (short[5] ? short[5].x : -1) + ':' + short.length }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    is(got.renew() + got.m(), want.renew() + want.m(), `answers @${optimize}`)
+    is(jz(made, { optimize }).exports.converts(), oracle(made).converts(), `made of objects that convert @${optimize}`)
+  }
+  for (const optimize of levels(2)) ok(!/__arr_value/.test(funcWat(compile(src, { optimize, wat: true }), 'm')), `no hole test in the read @${optimize}`)
+})

@@ -5463,13 +5463,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // index, which a getter on an element may answer: only a Map copies as a table.)
   // (a name no value has reached yet holds the question open: the read this
   // proves gives that name its value, and the round that sees it answers.)
-  const WALKED = new Set([K.ARRAY, K.SET, K.MAP, K.TYPED, K.STRING])
+  const WALKED = new Set([K.ARRAY, K.SET, K.MAP, K.TYPED, K.STRING]), PLAIN_OBJECTS = new Set([K.OBJECT])
   const walksBuiltin = (name, of = WALKED) => { const k = typeof name === 'string' ? nameKind(name) : null; return k !== null && (k === K.NONE || of.has(tagOf(core(k)))) }
   const builtinCall = (m) => {
     const f = m[1], args = argList(m[2])
     if (f === '__coll_start' || f === '__coll_next' || f === '__coll_key' || f === '__coll_val') return true
     if (f === 'new.Set' || f === '__iter_arr') return args.length === 0 || (args.length === 1 && walksBuiltin(args[0]))
     if (f === 'new.Map') return args.length === 0 || (args.length === 1 && walksBuiltin(args[0], new Set([K.MAP])))
+    // A typed array made of a count: its cells, zeroed.
+    if (typeof f === 'string' && f.startsWith('new.') && TYPED_CTOR.test(f)) return args.length === 0 || (args.length === 1 && plainOperand(args[0]))
+    // `Object.assign` among objects, where the program defines no accessor: it stores slots.
+    if (f === 'Object.assign') return !getterAnywhere() && !setterAnywhere() && args.length > 0 && args.every(a => Array.isArray(a) ? a[0] === '{}' : walksBuiltin(a, PLAIN_OBJECTS))
     if (!Array.isArray(f) || f[0] !== '.' || typeof f[1] !== 'string' || typeof f[2] !== 'string' || memberMayBeOwn(f[2])) return false
     const k = nameKind(f[1])
     return k !== null && (k === K.NONE || TABLE_METHODS[tagOf(core(k))]?.has(f[2]) === true)
