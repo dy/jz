@@ -14,7 +14,7 @@
  */
 import { LAYOUT, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { findBodyStart, writtenLocals, buildRefcount, nextLocalId } from '../ir.js'
-import { T, walkAst } from '../ast.js'
+import { T, cloneNode, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
 import { NO_MODULE } from './effects.js'
 import { HEADER_STORE_FREE, carry } from './address.js'
@@ -833,6 +833,175 @@ const foldsToConst = (n, consts) => {
 }
 
 // JZ supplies only the language/representation proof and profitability policy.
+// A test in a loop's first pass that never returns where it holds, over values the loop does
+// not change: `xs[i]` in a loop, `xs` a binding that holds an array or nothing, tests `xs` a
+// pass (module/array.js: the read throws where its receiver is missing). Such a test holds on
+// the first pass or on none. Where nothing the pass does ahead of it can be seen (no store, no
+// call but a reader of headers, no branch but the loop's own leading exits, and no write of a
+// local where a handler of the function could read it), the pass that reaches it has done
+// nothing: the test stands ahead of the loop, under those exits, and the loop holds what the
+// test stood before, which the hoist after this then takes (the header word a read's base
+// follows) and the lanes after that.
+// Ahead of the loop's block where the block holds sets alone before the loop and the test reads
+// none of them (the lanes read a block of sets and a loop, vectorize/scaffold.js preambleOf);
+// else ahead of the loop where it stands.
+const SEQUENCE = new Set(['block', 'loop', 'then', 'else', 'func'])
+const TRAPPING = (op) => op.includes('.div_') || op.includes('.rem_') || op.includes('.trunc_f')
+const NUMERIC = (op) => op.startsWith('i32.') || op.startsWith('i64.') || op.startsWith('f64.') || op.startsWith('f32.')
+function hoistLoopGuards(fn, bodyStart, invarianceOf, fx) {
+  let caught = false, loops = false
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: n => { if (n[0] === 'try_table' || n[0] === 'try') caught = true; else if (n[0] === 'loop') loops = true } })
+  if (!loops) return null
+  // what a pass may do ahead of the test, unseen: numeric work that cannot trap, reads, and the
+  // calls that read headers or nothing (`writes`: a write of a local too; `mine`: of these alone)
+  const quietOp = (n, writes, mine) => {
+    const op = n[0]
+    if (op === 'local.set' || op === 'local.tee') return mine?.has(n[1]) === true || writes && !caught
+    if (op === 'call') { const k = fx.kind(n[1]); return k === 'pure' || k === 'header' }
+    if (op === 'local.get' || op === 'global.get' || op === 'select' || op === 'drop' || op === 'block' || op === 'if' || op === 'then' || op === 'else' || op === 'result') return true
+    return NUMERIC(op) && !TRAPPING(op) && !isMemWrite(op)
+  }
+  const quiet = (n, writes, mine = null) => {
+    if (!Array.isArray(n)) return true
+    if (!quietOp(n, writes, mine)) return false
+    for (let i = 1; i < n.length; i++) if (!quiet(n[i], writes, mine)) return false
+    return true
+  }
+  // The locals a test keeps a value in for itself (`(local.tee $t X)`, read again inside it: a
+  // test of null and of undefined): the test's own where the function names them nowhere else,
+  // and then they leave the loop with it. null where another part of the function names one.
+  const NONE = new Set()
+  let named = null
+  const ownLocals = (test) => {
+    const within = new Map(), written = new Set()
+    walkAst(test, { enter: n => {
+      if (n[0] !== 'local.get' && n[0] !== 'local.set' && n[0] !== 'local.tee') return
+      within.set(n[1], (within.get(n[1]) ?? 0) + 1)
+      if (n[0] !== 'local.get') written.add(n[1])
+    } })
+    if (!written.size) return NONE
+    if (!named) {
+      named = new Map()
+      for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: n => { if (n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') named.set(n[1], (named.get(n[1]) ?? 0) + 1) } })
+    }
+    for (const name of written) if (named.get(name) !== within.get(name)) return null
+    return written
+  }
+  // (an arm that reaches an `unreachable` or a call that never returns, whatever it is wrapped in,
+  // and holds no branch that could leave it another way)
+  const ends = (n) => Array.isArray(n) && (n[0] === 'unreachable' || n[0] === 'call' && !fx.returns(n[1]) ||
+    n[0] !== 'if' && n[0] !== 'loop' && n.some((c, i) => i > 0 && ends(c)))
+  const leaves = (n) => Array.isArray(n) && (n[0] === 'br' || n[0] === 'br_if' || n[0] === 'br_table' || n[0] === 'return' || n.some((c, i) => i > 0 && leaves(c)))
+  const shaped = (n) => n.length === 3 && Array.isArray(n[1]) && Array.isArray(n[2]) && n[2][0] === 'then' && ends(n[2]) && !leaves(n[2])
+  // The first thing a pass does that is not quiet, in the order it is evaluated: 2 where that is
+  // such a test (`hit` its holder and place), 0 where it is anything else, 1 where `n` is quiet whole.
+  let hit = null, pure = null
+  const seek = (n, up, at) => {
+    if (!Array.isArray(n)) return 1
+    if (n[0] === 'if') {
+      const mine = shaped(n) ? ownLocals(n[1]) : null
+      if (mine && quiet(n[1], false, mine) && pure(n[1], mine)) { hit = [up, at]; return 2 }
+      let c = 1
+      while (c < n.length && !(Array.isArray(n[c]) && n[c][0] !== 'result')) c++
+      const r = c < n.length ? seek(n[c], n, c) : 1
+      if (r !== 1) return r
+      for (let i = c + 1; i < n.length; i++) if (!quiet(n[i], true)) return 0
+      return 1
+    }
+    for (let i = 1; i < n.length; i++) { const r = seek(n[i], n, i); if (r !== 1) return r }
+    return quietOp(n, true) ? 1 : 0
+  }
+  // (a block left holding one value is the value)
+  const tidy = (up, at) => {
+    const n = up[at]
+    if (!Array.isArray(n)) return
+    for (let i = 1; i < n.length; i++) tidy(n, i)
+    if (n[0] !== 'block' || typeof n[1] === 'string') return
+    const first = Array.isArray(n[1]) && n[1][0] === 'result' ? 2 : 1
+    if (n.length === first + 1 && Array.isArray(n[first])) up[at] = n[first]
+  }
+  const reads = (n, names) => {
+    let found = false
+    walkAst(n, { enter: c => { if (found) return false; if (c[0] === 'local.get' && names.has(c[1])) found = true } })
+    return found
+  }
+  // One test of `loop` (in `up`, itself in `gup`) taken ahead of it: what then holds `up`, null where the loop has no such test.
+  const entered = new Set(), present = new Map()
+  const hoist = (loop, up, gup) => {
+    let i = 1
+    const label = typeof loop[1] === 'string' ? loop[i++] : null
+    if (Array.isArray(loop[i]) && loop[i][0] === 'result') return null
+    const exits = [], targets = new Set()
+    for (; i < loop.length; i++) {
+      const s = loop[i]
+      if (!(Array.isArray(s) && s[0] === 'br_if' && s.length === 3 && s[1] !== label && Array.isArray(s[2]) && quiet(s[2], false))) break
+      exits.push(s[2]); targets.add(s[1])
+    }
+    hit = null
+    pure = (c, mine) => (pure = invarianceOf(loop))(c, mine)
+    for (; i < loop.length; i++) {
+      const r = seek(loop[i], loop, i)
+      if (r === 2) break
+      if (r === 0) return null
+    }
+    if (!hit) return null
+    const guard = hit[0][hit[1]]
+    const li = up.indexOf(loop), held = gup != null && SEQUENCE.has(gup[0])
+    // The loop alone in its block, each of its leading exits the block's end: the block is the
+    // loop, and stands under those exits' failing, the test ahead of it there (`entered`: a
+    // block so placed, its loop then running a pass). What the test proves holds through the loop.
+    const own = held && up[0] === 'block' && typeof up[1] === 'string' && up.length === 3 && [...targets].every(l => l === up[1])
+    // Else ahead of the block of sets the loop closes, where the test reads none of them, or
+    // ahead of the loop where it stands, under the exits in turn.
+    let pre = null
+    if (!own && held && up[0] === 'block') {
+      pre = new Set()
+      for (let k = typeof up[1] === 'string' ? 2 : 1; k < li && pre; k++) {
+        const c = up[k]
+        if (Array.isArray(c) && c[0] === 'local.set' && typeof c[1] === 'string' && quiet(c[2], false)) pre.add(c[1])
+        else pre = null
+      }
+      if (pre && (reads(guard[1], pre) || exits.some(e => reads(e, pre)))) pre = null
+    }
+    if (!own && !pre && !SEQUENCE.has(up[0])) return null
+    const not = (e) => e[0] === 'i32.eqz' && e.length === 2 ? cloneNode(e[1]) : ['i32.eqz', cloneNode(e)]
+    hit[0].splice(hit[1], 1)
+    for (let k = 1; k < loop.length; k++) tidy(loop, k)
+    if (own) {
+      // (the binding the emitter marked an array past this test, module/array.js: its headers are there to read)
+      if (guard.arrayPast) {
+        let name = null, one = true
+        walkAst(guard[1], { enter: c => { if (c[0] === 'local.get' || c[0] === 'global.get') { if (name !== null && name !== c[1]) one = false; name = c[1] } } })
+        if (one && typeof name === 'string') { let names = present.get(loop); if (!names) present.set(loop, names = new Set()); names.add(name) }
+      }
+      const at = gup.indexOf(up)
+      if (!exits.length || entered.has(up)) { gup.splice(at, 0, guard); return gup }
+      const arm = ['then', guard, up]
+      gup[at] = ['if', exits.length === 1 ? not(exits[0]) : ['i32.eqz', exits.map(cloneNode).reduce((a, e) => ['i32.or', a, e])], arm]
+      entered.add(up)
+      return arm
+    }
+    let stmt = guard
+    for (let k = exits.length - 1; k >= 0; k--) stmt = ['if', not(exits[k]), ['then', stmt]]
+    if (pre) gup.splice(gup.indexOf(up), 0, stmt)
+    else up.splice(li, 0, stmt)
+    return gup
+  }
+  // (the loops inside first: a test taken out of one stands in the pass of the loop around it)
+  const visit = (n, up, gup) => {
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (!Array.isArray(c)) continue
+      visit(c, n, up)
+      const at = n.indexOf(c, i)
+      if (at >= 0) i = at
+    }
+    if (n[0] === 'loop' && up) for (let holder = gup; ;) { const next = hoist(n, up, holder); if (next === null) break; holder = next }
+  }
+  visit(fn, null, null)
+  return present
+}
+
 // Watr owns traversal, private-local checks, extraction, deduplication and typing.
 // Facts: the module bindings that hold typed arrays of their own (`freshTypedGlobals`,
 // plan/literals.js) and the functions a loop may call without a header changing
@@ -850,7 +1019,7 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_
   const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams, freshTypedGlobals)
   const stableHeaderNames = fn.stableHeaderNames || null
   const presentArrays = fn.presentArrays || null
-  const defs = presentArrays || stableHeaderNames ? singleDefs(fn, bodyStart) : null
+  let defs = presentArrays || stableHeaderNames ? singleDefs(fn, bodyStart) : null
   const hardOpCache = new Map()
   const consts = constLocals(fn, bodyStart)
   const fixedLoad = fixedTypedLoad(fn)
@@ -870,6 +1039,13 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_
     }
     own(fn)
   }
+  // (the tests that leave their loops first, and the arrays each proves there: `presentOf`)
+  const proven = hoistLoopGuards(fn, bodyStart, (loop) => {
+    const { pureGiven } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad })
+    return (c, mine) => pureGiven(c, mine)
+  }, effects)
+  if (proven?.size && !defs) defs = singleDefs(fn, bodyStart)
+  const presentOf = (loop) => { const more = proven?.get(loop); return more ? new Set([...presentArrays ?? [], ...more]) : presentArrays }
   hoistInvariants(fn, {
     prefix: '$__li',
     callType: callee => effects.kind(callee) ? effects.results(callee)?.[0] ?? null : null,
@@ -880,7 +1056,7 @@ export function hoistInvariantLoop(fn, { freshTypedGlobals = null, effects = NO_
           if (at.boundsOwner === node.boundsOwner) return true
         return false
       } : null
-      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
+      const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, fx: effects, stableHeaderNames, presentArrays: presentOf(loop), presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
       const arith = !hasV128 && (nested || everyLoop)
       return (node, bound) => !constTree(node) &&
         (hasHardOp(node, hardOpCache) || isPtrBaseDecode(node) || arith && doesWork(node) && !foldsToConst(node, consts)) && pureGiven(node, bound)

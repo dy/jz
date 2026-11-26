@@ -145,8 +145,8 @@ test('fixed length: arrays that meet share one count or none', () => {
   is(fixedLen(mixed, null, 'a'), null, 'two counts in one parameter')
   is(fixedLen(mixed, 'first', 'v'), null)
   is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, 'a'), 3, 'a copy is an array of its own')
-  for (const name of ['b', 'd'])
-    is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, name), null, `${name}: built by something other than a plain literal`)
+  is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, 'b'), 4, 'b: a copy by spread has its source\'s count and the elements beside it')
+  is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, 'd'), null, 'd: built by something other than a plain literal')
   // (a map makes an element for each of its receiver's, test/element-numbers.js)
   is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, 'c'), 3, 'c: a map of an array of one count')
 })
@@ -896,4 +896,324 @@ const made = () => { const out = []; for (let i = 0; i < 40; i++) out.push(i * 0
     for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
     if (lanes !== null && !belowOpt(2)) is(/v128\.load/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no lanes'} at speed`)
   }
+})
+
+// An array a module binding holds once an init call has built it, `let xs` and
+// `xs = []; for (…) xs.push(v)` in a function: the gallery's form. A reader meets the
+// binding empty, and throws, or whole: the summary holds the built length for it where
+// nothing can run between the assignment and the last push but the build itself
+// (src/summary/index.js buildsLate), the read goes through the name (module/array.js,
+// directArray), and its test of the name leaves a loop it holds in every pass
+// (optimize/licm.js hoistLoopGuards), so the loop is the one over a module constant.
+// Each program's calls answer as the host's, a throw for a throw.
+test('built length: an array a module binding holds once an init call built it is read as one built', () => {
+  const head = `${U}
+const N = 67
+let xs, idx, ys, zs, ws, keep, two, odd, own, mine, tmp, ra, rb, vs, more, sr
+let st, sk, nm, ne, sf, sb, rc, rw, wf, bb
+let bn = 1
+let nul = null, maybe = null, from = null
+let seen = -1, hits = 0
+const out = new Float64Array(N)
+export const fill = () => { xs = []; for (let i = 0; i < N; i++) xs.push(i * 0.5 - 3); idx = []; for (let i = 0; i < N; i++) idx.push((i * 37 + 11) % N); return 0 }
+export const sum = () => { let s = 0; for (let i = 0; i < N; i++) s += xs[i]; return s }
+export const gather = () => { let s = 0; for (let i = 0; i < N; i++) s += xs[idx[i]]; return s }
+export const upTo = (n) => { let s = 0; for (let i = 0; i < n; i++) s += u(xs[i]); return s }
+export const rows = (m) => { let s = 0; for (let j = 0; j < m; j++) for (let i = 0; i < N; i++) s += xs[i] * (j + 1); return s }
+export const fillSum = () => { mine = []; for (let i = 0; i < N; i++) mine.push(i * 0.25); let s = 0; for (let i = 0; i < N; i++) s += mine[i]; return s }
+const holesY = () => { let n = 0; for (let i = 0; i < N; i++) if (ys[i] === undefined) n++; return n }
+export const spied = () => { ys = []; for (let i = 0; i < N; i++) { ys.push(i); if (i === 3) seen = holesY() } return seen * 1000 + holesY() }
+const holesV = () => { let n = 0; for (let i = 0; i < N; i++) if (vs[i] === undefined) n++; return n }
+const peekV = (i) => { if (i === 3) seen = holesV(); return 0 }
+export const peeked = () => { vs = []; for (let i = 0; i < N; i++) vs.push(i + peekV(i)); return seen * 1000 + holesV() }
+const holesZ = () => { let n = 0; for (let i = 0; i < N; i++) if (zs[i] === undefined) n++; return n }
+const conv = { valueOf() { if (hits++ === 3) seen = holesZ(); return 2 } }
+export const converted = () => { hits = 0; zs = []; for (let i = 0; i < N; i++) zs.push(conv * i); return seen * 1000 + holesZ() + zs[5] }
+export const again = () => { if (ws) ws.push(99); ws = []; for (let i = 0; i < N; i++) ws.push(i); return ws.length }
+export const kept = () => { again(); keep = ws; again(); let s = 0; for (let i = 0; i <= N; i++) s += u(keep[i]); return keep.length * 100000 + s }
+export const short = () => { two = []; for (let i = 0; i < 5; i++) two.push(i); return 0 }
+export const long = () => { two = []; for (let i = 0; i < N; i++) two.push(i); return 0 }
+export const both = () => { let s = 0; for (let i = 0; i < N; i++) s += u(two[i]); return s }
+export const halved = () => { odd = []; for (let i = 0; i < N; i++) if (i % 2) odd.push(i); let s = 0; for (let i = 0; i < N; i++) s += u(odd[i]); return s }
+export const touched = () => { own = []; for (let i = 0; i < N; i++) { own.push(i); own[0] = own.length } let s = 0; for (let i = 0; i < N; i++) s += own[i]; return s }
+export const tried = () => { let n = -1, s = 0; try { for (let i = 0; i < N; i++) { n = i; s += xs[i] } } catch (e) { return n } return s }
+export const storing = () => { let s = 0; for (let i = 0; i < N; i++) { out[i] = i + 1; s += xs[i] } return s }
+export const out0 = () => out[0]
+const bump = () => { hits++; return 0 }
+export const called = () => { hits = 0; let s = 0; try { for (let i = 0; i < N; i++) { s += bump() + xs[i] } } catch (e) { s = -1 } return s * 1000 + hits }
+export const dot = () => { let s = 0; for (let i = 0; i < N; i++) s += xs[i] * ys[i]; return s }
+export const mkMore = () => { more = []; for (let i = 0; i < N; i++) more.push(i); return 0 }
+export const addMore = () => { more.push(7); return more.length }
+export const readMore = () => { let s = 0; for (let i = 0; i <= N; i++) s += u(more[i]); return s }
+export const selfRead = () => { sr = []; let n = 0; for (let i = 0; i < N; i++) { sr.push(i); if (sr[N - 1] === undefined) n++ } return n }
+export const dropping = () => { tmp = [7, 8]; let s = 0; for (let i = 0; i < N; i++) { s += tmp[0]; tmp = undefined } return s }
+export const mkNul = () => { nul = []; for (let i = 0; i < N; i++) nul.push(i * 0.25); return 0 }
+export const sumNul = () => { let s = 0; for (let i = 0; i < N; i++) s += nul[i]; return s }
+export const counts = () => { let n = 0, s = 0; for (let i = 0; i < N; i++) { if (seen < 1e9) n++; s += u(xs[0]) } return n * 100000 + s }
+export const armed = () => { hits = 0; let s = 0; try { for (let i = 0; i < N; i++) { if (i === 0) bump(); s += xs[i] } } catch (e) { s = -1 } return s * 1000 + hits }
+export const rebound = () => { ra = [10, 20]; rb = [30, 40]; return ra[(ra = rb, 1)] * 100 + ra[0] }
+export const stopBuild = (at) => { st = []; for (let i = 0; i < N; i++) { if (i === at) throw 1; st.push(i + 1) } return 0 }
+export const readStop = () => { let s = 0; for (let i = 0; i < N; i++) s += st[i] === undefined ? 1000 : st[i]; return s * 100 + st.length }
+export const skipBuild = (skip) => { sk = []; if (skip) return 0; for (let i = 0; i < N; i++) sk.push(i + 1); return 1 }
+export const readSkip = () => { let s = 0; for (let i = 0; i < N; i++) s += sk[i] === undefined ? 1000 : sk[i]; return s * 100 + sk.length }
+export const setMaybe = (k) => { maybe = k ? { x: 2 } : null; return 0 }
+export const memberBuild = () => { nm = []; for (let i = 0; i < N; i++) nm.push(maybe.x + i); return 0 }
+export const readMember = () => { let s = 0; for (let i = 0; i < N; i++) s += nm[i] === undefined ? 1000 : nm[i]; return s * 100 + nm.length }
+export const setFrom = (k) => { from = k ? [1, 2, 3] : null; return 0 }
+export const elementBuild = () => { ne = []; for (let i = 0; i < N; i++) ne.push(from[i % 3] + i); return 0 }
+export const readElement = () => { let s = 0; for (let i = 0; i < N; i++) s += ne[i] === undefined ? 1000 : ne[i]; return s * 100 + ne.length }
+export const stopFill = (at) => { sf = []; for (let i = 0; i < N; i++) { if (i === at) throw 1; sf[i] = i + 1 } return 0 }
+export const readFill = () => { let s = 0; for (let i = 0; i < N; i++) s += sf[i] === undefined ? 1000 : sf[i]; return s * 100 + sf.length }
+export const blockBuild = (skip) => { sb = []; out: { if (skip) break out; for (let i = 0; i < N; i++) sb.push(i + 1) } return 0 }
+export const readBlock = () => { let s = 0; for (let i = 0; i < N; i++) s += sb[i] === undefined ? 1000 : sb[i]; return s * 100 + sb.length }
+export const setBn = (k) => { bn = k ? 10n : 1; return 0 }
+export const bigBuild = () => { bb = []; for (let i = 0; i < N; i++) bb.push(bn * 2 + i); return 0 }
+export const readBig = () => { let s = 0; for (let i = 0; i < N; i++) s += bb[i] === undefined ? 1000 : bb[i]; return s * 100 + bb.length }
+export const ownRead = () => { const os = []; let n = 0; for (let i = 0; i < N; i++) { os.push(i); if (os[N - 1] === undefined) n++ } return n * 1000 + os.length }
+export const ownStore = () => { const ot = []; for (let i = 0; i < N; i++) { ot.push(i); ot[0] = ot.length } let s = 0; for (let i = 0; i < N; i++) s += ot[i]; return s }
+export const recBuild = () => { rc = []; for (let i = 0; i < N; i++) { const p = { x: i, y: i * 2 }; rc.push(p) } return 0 }
+export const recSum = () => { let s = 0; for (let i = 0; i < N; i++) s += rc[i].x + rc[i].y; return s }
+export const rowBuild = () => { rw = []; for (let i = 0; i < N; i++) rw.push([i, i + 1]); return 0 }
+export const rowSum = () => { let s = 0; for (let i = 0; i < N; i++) s += rw[i][0] * rw[i][1]; return s }
+export const wholeFill = () => { wf = []; for (let i = 0; i < N; i++) wf[i] = i * 0.5; return 0 }
+export const wholeSum = () => { let s = 0; for (let i = 0; i < N; i++) s += wf[i]; return s }
+`
+  // [name, the calls in order, each an export and its arguments]
+  const runs = [
+    ['a reader ahead of the build throws', [['sum'], ['gather'], ['upTo', 3], ['rows', 2], ['dot']]],
+    ['a loop of no pass over a missing array throws nothing', [['upTo', 0], ['rows', 0]]],
+    ['a pass that can be seen ahead of the test is seen', [['tried'], ['storing'], ['out0'], ['called'], ['armed']]],
+    ['a test that returns stays in its loop', [['fill'], ['counts']]],
+    ['the build, then its readers', [['fill'], ['sum'], ['gather'], ['upTo', 5], ['upTo', 80], ['rows', 3], ['tried'], ['storing'], ['out0'], ['called']]],
+    ['the build twice', [['fill'], ['fill'], ['sum'], ['gather']]],
+    ['the builder reads what it built', [['fillSum'], ['fillSum']]],
+    ['a reader the build calls between its pushes meets it short', [['spied']]],
+    ['a reader a pushed value calls meets it short', [['peeked']]],
+    ['a pushed value whose conversion reads the array meets it short', [['converted']]],
+    ['a push ahead of the assignment grows the array before it', [['kept']]],
+    ['two builds of one binding', [['short'], ['both'], ['long'], ['both'], ['short'], ['both']]],
+    ['a push under a condition', [['halved']]],
+    ['a store between the pushes', [['touched']]],
+    ['a reader of two arrays, one missing', [['fill'], ['dot'], ['spied'], ['dot']]],
+    ['a binding a pass of the loop empties', [['dropping']]],
+    ['a binding that starts null', [['sumNul'], ['mkNul'], ['sumNul']]],
+    ['a push through the binding in another function', [['mkMore'], ['readMore'], ['addMore'], ['readMore']]],
+    ['a builder that reads between its pushes', [['selfRead']]],
+    ['a key that gives the name another array', [['rebound']]],
+    // (a build left early leaves the binding part built, or empty, to a reader that expects it whole)
+    ['a build a throw stops', [['stopBuild', 9], ['readStop'], ['stopBuild', -1], ['readStop'], ['stopBuild', 0], ['readStop']]],
+    ['a build a return skips', [['skipBuild', 1], ['readSkip'], ['skipBuild', 0], ['readSkip'], ['skipBuild', 1], ['readSkip']]],
+    ['a build the member of a missing value stops', [['setMaybe', 0], ['memberBuild'], ['readMember'], ['setMaybe', 1], ['memberBuild'], ['readMember']]],
+    ['a build the element of a missing array stops', [['setFrom', 0], ['elementBuild'], ['readElement'], ['setFrom', 1], ['elementBuild'], ['readElement']]],
+    ['a fill a throw stops', [['stopFill', 9], ['readFill'], ['stopFill', -1], ['readFill']]],
+    ['a build a labelled block is left ahead of', [['blockBuild', 1], ['readBlock'], ['blockBuild', 0], ['readBlock']]],
+    ['a build a BigInt beside a Number stops', [['setBn', 0], ['bigBuild'], ['readBig'], ['setBn', 1], ['bigBuild'], ['readBig']]],
+    ['a function\'s own array it reads or stores into between its pushes', [['ownRead'], ['ownStore']]],
+    ['records, arrays and a fill, which stay', [['recBuild'], ['recSum'], ['rowBuild'], ['rowSum'], ['wholeFill'], ['wholeSum']]],
+  ]
+  const call = (m, [name, ...args]) => { try { return m[name](...args) } catch (e) { return 'throws' } }
+  for (const optimize of levels(0, 2, 3, 'size', 'speed'))
+    for (const [name, calls] of runs) {
+      const got = run(head, { optimize }), want = oracle(head)
+      is(JSON.stringify(calls.map(c => call(got, c))), JSON.stringify(calls.map(c => call(want, c))), `${name} at ${optimize}`)
+    }
+  if (belowOpt(2)) return
+  // (the calls a function makes inside its loops, by name)
+  const text = wat(head, { optimize: 'speed' })
+  const inLoops = (name) => {
+    const out = [], go = (n, looped) => { if (!Array.isArray(n)) return; if (n[0] === 'call' && looped) out.push(n[1]); for (const c of n) go(c, looped || n[0] === 'loop') }
+    go(parseWat(funcWat(text, name)), false)
+    return out
+  }
+  const THROW = '$__throw_property_nullish'
+  ok(/v128\.load/.test(funcWat(text, 'sum')) && /v128\.load/.test(funcWat(text, 'sumNul')), 'the sum in lanes at speed, from a binding that starts undefined or null')
+  is(inLoops('gather').join(' '), '', 'the gather calls nothing in its loop at speed')
+  ok(!/f64\.eq|f64\.trunc/.test(funcWat(text, 'gather')), 'and reads its index as the word it is')
+  ok(!inLoops('sum').includes(THROW) && !inLoops('rows').includes(THROW), 'the name is tested ahead of the loops')
+  ok(inLoops('tried').includes(THROW) && inLoops('called').includes(THROW), 'and in the loop where a pass can be seen ahead of the test')
+  // (the base a read follows, its array's forwarding word, is read ahead of the loop with the test: level 2 has no lanes to say so)
+  const loads = [], held = (n, looped) => { if (!Array.isArray(n)) return; if (n[0] === 'i32.load' && looped) loads.push(n); for (const c of n) held(c, looped || n[0] === 'loop') }
+  held(parseWat(funcWat(wat(head, { optimize: 2 }), 'sum')), false)
+  is(loads.length, 0, 'the sum reads no header in its loop at level 2')
+  ok(/i32\.lt_u/.test(funcWat(text, 'both')) && /i32\.lt_u/.test(funcWat(text, 'holesY')) && /i32\.lt_u/.test(funcWat(text, 'holesZ')) && /i32\.lt_u/.test(funcWat(text, 'peeked')), 'a binding with no one built length keeps its reads\' tests')
+  for (const reader of ['readStop', 'readSkip', 'readMember', 'readElement', 'readFill', 'readBlock', 'readBig'])
+    ok(/i32\.lt_u/.test(funcWat(text, reader)), `${reader}: a build that may be left early has no built length, and its reader keeps its test`)
+  for (const reader of ['recSum', 'rowSum', 'wholeSum'])
+    ok(!/i32\.lt_u/.test(funcWat(text, reader)), `${reader}: a build of records, of arrays or by a fill stays, and its reader tests no index`)
+})
+
+// The length of such a binding's array is read through the name too (module/core.js): a loop
+// bounded by `xs.length` tested the name and read the header every pass.
+test('built length: a loop bounded by the length of an array a module binding may hold reads it once', () => {
+  const src = `const N = 67
+let xs
+export const fill = () => { xs = []; for (let i = 0; i < N; i++) xs.push(i * 0.5 - 3); return 0 }
+export const whole = () => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i]; return s }
+export const count = () => xs.length
+`
+  const call = (m, name) => { try { return m[name]() } catch (e) { return 'throws' } }
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const got = run(src, { optimize }), want = oracle(src), calls = ['whole', 'count', 'fill', 'whole', 'count']
+    is(JSON.stringify(calls.map(c => call(got, c))), JSON.stringify(calls.map(c => call(want, c))), `ahead of the build and after it at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  ok(/v128\.load/.test(funcWat(wat(src, { optimize: 'speed' }), 'whole')), 'in lanes at speed')
+})
+
+// An array a function builds by a loop that fills it from 0, `const a = []; for (let i = 0; i < N;
+// i++) a[i] = v`, has the loop's rounds for its length as one built by counted pushes has their
+// count (src/summary/index.js buildsAlone `fillSites`, storeAt): held in a field of `this`,
+// captured by a closure, or in a module binding an init call sets, its readers meet it whole.
+// The store that fills it makes the length: it is no store inside it (query.js arrayFill), and
+// the plan leaves its loop as written (plan/loops.js). Every program answers as the host.
+test('built length: an array a loop fills from 0 has the loop\'s rounds', () => {
+  // (each array read in the function that builds it, by a loop of its own: a shared reader's
+  // parameter would join their cells, and a module binding that starts empty has no length by name)
+  const READ = (n) => `let s = 0; for (let i = 0; i < ${n}; i++) s += u(a[i])`
+  const head = `${U}
+const N = 67
+class K {
+  constructor() { const a = []; for (let i = 0; i < N; i++) a[i] = i * 0.5 - 3; this.a = a; const idx = []; for (let i = 0; i < N; i++) idx[i] = (i * 37 + 11) % N; this.idx = idx }
+  sum() { let s = 0; for (let i = 0; i < N; i++) s += this.a[i]; return s }
+  gather() { let s = 0; for (let i = 0; i < N; i++) s += this.a[this.idx[i]]; return s }
+}
+const k = new K()
+export const fieldSum = () => k.sum()
+export const fieldGather = () => k.gather()
+const mk = () => { const a = []; for (let i = 0; i < N; i++) a[i] = i * 0.25; return { sum: () => { let s = 0; for (let i = 0; i < N; i++) s += a[i]; return s } } }
+const held = mk()
+export const closureSum = () => held.sum()
+let late, spy, seenF = -1
+const holesF = () => { let n = 0; for (let i = 0; i < N; i++) if (spy[i] === undefined) n++; return n }
+const peekF = (i) => { if (i === 3) seenF = holesF(); return i }
+export const spied = () => { spy = []; for (let i = 0; i < N; i++) spy[i] = peekF(i); return seenF * 1000 + holesF() }
+export const spiedBetween = () => { spy = []; for (let i = 0; i < 5; i++) spy[i] = i; seenF = holesF(); for (let i = 0; i < N; i++) spy[i] = i * 2; return seenF * 1000 + holesF() }
+export const fillLate = () => { late = []; for (let i = 0; i < N; i++) late[i] = i + 0.5; return 0 }
+export const lateSum = () => { let s = 0; for (let i = 0; i < N; i++) s += late[i]; return s }
+export const wholeAfter = () => { const a = []; for (let i = 0; i < N; i++) a[i] = i; let s = 0; for (let i = 0; i < N; i++) s += a[i]; return s * 1000 + a.length }
+export const fromOne = () => { const a = []; for (let i = 1; i < N; i++) a[i] = i; ${READ('N')}; return s * 1000 + a.length }
+export const byTwo = () => { const a = []; for (let i = 0; i < N; i += 2) a[i] = i; ${READ('N')}; return s * 1000 + a.length }
+export const farFirst = () => { const a = []; a[80] = 1; for (let i = 0; i < N; i++) a[i] = i; ${READ('90')}; return s * 1000 + a.length }
+export const longThenShort = () => { const a = []; for (let i = 0; i < N; i++) a[i] = i; for (let i = 0; i < 5; i++) a[i] = -i; ${READ('N + 5')}; return s * 1000 + a.length }
+export const shortThenLong = () => { const a = []; for (let i = 0; i < 5; i++) a[i] = -i; for (let i = 0; i < N; i++) a[i] = i; ${READ('N + 5')}; return s * 1000 + a.length }
+export const fillThenPush = () => { const a = []; for (let i = 0; i < 5; i++) a[i] = i; for (let i = 0; i < N; i++) a.push(i); return a.reduce((s, x) => s + x, 0) * 1000 + a.length }
+export const pushThenFill = () => { const a = []; for (let i = 0; i < 5; i++) a.push(i); for (let i = 0; i < N; i++) a[i] = i * 2; ${READ('N + 5')}; return s * 1000 + a.length }
+export const selfFed = () => { const a = []; for (let i = 0; i < N; i++) a[i] = i ? a[i - 1] + 2 : 1; ${READ('N')}; return s * 1000 + a.length }
+export const underATest = () => { const a = []; for (let i = 0; i < N; i++) if (i % 3) a[i] = i; ${READ('N')}; return s * 1000 + a.length }
+export const withABreak = () => { const a = []; for (let i = 0; i < N; i++) { a[i] = i; if (i === 9) break } ${READ('N')}; return s * 1000 + a.length }
+export const atAName = () => { const a = [], j = 3; for (let i = 0; i < N; i++) a[j] = i; ${READ('N')}; return s * 1000 + a.length }
+export const pushedInside = () => { const a = []; for (let i = 0; i < N; i++) { a[i] = i; a.push(-1) } ${READ('N + 3')}; return s * 1000 + a.length }
+const upTo = (n) => { const a = []; for (let i = 0; i < n; i++) a[i] = i; return a }
+export const byCount = () => { const p = upTo(5), m = upTo(N); let s = 0; for (let i = 0; i < N; i++) s += u(p[i]) + 2 * u(m[i]); return s * 1000 + p.length + m.length }
+`
+  // [name, the calls in order]
+  const runs = [
+    ['held in a field', [['fieldSum'], ['fieldGather']]],
+    ['captured by a closure', [['closureSum']]],
+    ['in a module binding an init call sets', [['lateSum'], ['fillLate'], ['lateSum'], ['fillLate'], ['lateSum']]],
+    ['filled with a value that calls a reader', [['spied']]],
+    ['read by a call between two fills', [['spiedBetween']]],
+    ['read by its builder past the fill', [['wholeAfter']]],
+    ['filled from 1', [['fromOne']]],
+    ['filled by two', [['byTwo']]],
+    ['stored far ahead of its fill', [['farFirst']]],
+    ['filled whole, then in part', [['longThenShort']]],
+    ['filled in part, then whole', [['shortThenLong']]],
+    ['filled, then pushed', [['fillThenPush']]],
+    ['pushed, then filled', [['pushThenFill']]],
+    ['fed its own elements', [['selfFed']]],
+    ['filled under a test', [['underATest']]],
+    ['filled by a loop that breaks', [['withABreak']]],
+    ['pushed in the loop that fills it', [['pushedInside']]],
+    ['stored at one name, not the counter', [['atAName']]],
+    ['filled to a count its caller gives', [['byCount']]],
+  ]
+  const call = (m, [name, ...args]) => { try { return m[name](...args) } catch (e) { return 'throws' } }
+  for (const optimize of levels(0, 2, 3, 'size', 'speed'))
+    for (const [name, calls] of runs) {
+      const got = run(head, { optimize }), want = oracle(head)
+      is(JSON.stringify(calls.map(c => call(got, c))), JSON.stringify(calls.map(c => call(want, c))), `${name} at ${optimize}`)
+    }
+  if (belowOpt(2)) return
+  const text = wat(head, { optimize: 'speed' })
+  ok(/v128\.load/.test(funcWat(text, 'lateSum')), 'the sum over the module binding\'s array in lanes at speed')
+  // (the method's own function, its name the class's and its own around a mark, or the export it was spliced into)
+  const method = text.split('\n  (func ').find(f => /^\$K\S*sum\s/.test(f)) ?? funcWat(text, 'fieldSum')
+  ok(/v128\.load/.test(method), 'and the one over the field\'s')
+})
+
+// A copy by spread, `[...xs]`, has the length `xs` has where the copy is made, which the summary
+// holds for an array of fixed length, one met built, or, at the top level of the module's own
+// statements, one grown so far by counted pushes (src/summary/index.js copyCount, lengthHere);
+// and its elements' numbers. Every program answers as the host.
+test('fixed length: a copy by spread has its source\'s length where it is made', () => {
+  // (each array read by a loop of its own: a shared reader's parameter would join their cells, and their lengths with them)
+  const READ = (name, n) => `let s = 0; for (let i = 0; i < ${n}; i++) s += u(${name}[i])`
+  const head = `${U}
+const N = 67
+const s0 = []
+for (let i = 0; i < N; i++) s0.push(i * 0.5 - 3)
+const i0 = []
+for (let i = 0; i < N; i++) i0.push((i * 37 + 11) % N)
+const cp = [...s0], ci = [...i0], wide = [0.5, ...s0, 1.5], two = [...s0, ...s0]
+const e0 = []
+for (let i = 0; i < 5; i++) e0.push(i)
+const early = [...e0]
+for (let i = 0; i < N; i++) e0.push(i + 10)
+let mid = null
+const g0 = []
+for (let i = 0; i < N; i++) { g0.push(i); if (i === 3) mid = [...g0] }
+const h0 = []
+for (let i = 0; i < N; i++) h0.push(i)
+const addH = () => { h0.push(1); h0.push(2); h0.push(3) }
+addH()
+const hc = [...h0]
+const j0 = []
+for (let i = 0; i < N; i++) j0.push(i)
+j0[N + 5] = 1
+const jc = [...j0]
+const made = () => { const t0 = []; for (let i = 0; i < N; i++) t0.push(i * 0.25); const t = [...t0]; return t }
+const o0 = []
+o0[3] = 1
+for (let i = 0; i < 4; i++) o0.push(i + 10)
+const oc = [...o0]
+const r0 = []
+for (let i = 0; i < N; i++) r0.push(i)
+const far = () => { r0[N + 2] = 1 }
+far()
+const rc = [...r0]
+const q0 = []
+for (let i = 0; i < 5; i++) q0.push(i)
+const snap = () => [...q0]
+const qc = snap()
+for (let i = 0; i < N; i++) q0.push(i + 10)
+const mc = made()
+export const sum = () => { let s = 0; for (let i = 0; i < N; i++) s += cp[i]; return s }
+export const gather = () => { let s = 0; for (let i = 0; i < N; i++) s += cp[ci[i]]; return s }
+export const counts = () => cp.length * 1e6 + wide.length * 1e3 + two.length
+export const ends = () => { ${READ('wide', 'N + 3')}; const w = s; { ${READ('two', '2 * N + 1')}; return w * 1000 + s } }
+export const before = () => { ${READ('early', 'N')}; return s * 1000 + early.length }
+export const inside = () => { ${READ('mid', 'N')}; return s * 1000 + mid.length }
+export const afterACall = () => { ${READ('hc', 'N + 5')}; return s * 1000 + hc.length }
+export const pastAStore = () => { ${READ('jc', 'N + 8')}; return s * 1000 + jc.length }
+export const inAFunction = () => { let s = 0; for (let i = 0; i < N; i++) s += mc[i]; return s * 1000 + mc.length }
+export const storedAhead = () => { ${READ('oc', '10')}; return s * 1000 + oc.length }
+export const storedByAFunction = () => { ${READ('rc', 'N + 5')}; return s * 1000 + rc.length }
+export const byAFunctionAtInit = () => { ${READ('qc', 'N')}; return s * 1000 + qc.length }
+`
+  const names = ['sum', 'gather', 'counts', 'ends', 'before', 'inside', 'afterACall', 'pastAStore', 'inAFunction', 'byAFunctionAtInit', 'storedAhead', 'storedByAFunction']
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const got = run(head, { optimize }), want = oracle(head)
+    for (const name of names) is(got[name](), want[name](), `${name} at ${optimize}`)
+  }
+  is(fixedLen(head, null, 'cp'), 67, 'the copy of a pushed array has its count')
+  is(fixedLen(head, null, 'wide'), 69, 'with the elements beside the spread')
+  is(fixedLen(head, null, 'two'), 134, 'and two spreads their sum')
+  is(fixedLen(head, null, 'early'), 5, 'a copy made ahead of later pushes has what was pushed by then')
+  is(fixedLen(head, null, 'hc'), null, 'none for a source a function pushed to')
+  is(fixedLen(head, null, 'jc'), null, 'nor for one stored past its count')
+  if (belowOpt(2)) return
+  const text = wat(head, { optimize: 'speed' })
+  ok(/v128\.load/.test(funcWat(text, 'sum')), 'the sum over the copy in lanes at speed')
+  ok(!/\(call |f64\.eq|f64\.trunc/.test(funcWat(text, 'gather').match(/\(loop[\s\S]*/)?.[0] ?? '('), 'the gather over two copies calls nothing and reads its index as a word')
 })

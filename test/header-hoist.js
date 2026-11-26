@@ -3,8 +3,10 @@
 // once, before the loop (optimize/licm.js, ir/pointers.js fwdOffsetIR's value
 // form): `mul(out, a[i], b[i])` over module arrays of arrays resolves `a` and
 // `b` ahead of the loop and tests only the index inside. A loop that grows an
-// array, or reads one that may be missing, keeps the reads inside: the hoisted
-// load of a missing receiver would trap where the zero-trip loop did nothing.
+// array keeps the reads inside. One that reads an array its binding may not
+// hold tests the binding once, ahead of the loop and under the loop's own exit
+// (optimize/licm.js hoistLoopGuards), and the header reads follow the test out:
+// a loop of no pass still reads nothing, and throws nothing.
 // A durable array such a loop stores into is saved for the reset before the
 // loop, once (compile/emit/control-flow.js durableLoopArrays).
 import test from 'tst'
@@ -73,7 +75,9 @@ test('header hoist: the forwarding hop and the length leave the loop, the barrie
     previous = at + loop.length
   }
   ok(/call \$__ptr_offset_fwd/.test(loopBody(fnText(text, 'grow'))), 'a loop that grows an array keeps the hop inside')
-  ok(/i32\.load/.test(loopBody(fnText(text, 'sum'))), 'a receiver that may be missing keeps its header reads inside')
+  const sum = fnText(text, 'sum')
+  ok(!/i32\.load/.test(loopBody(sum)), 'a receiver that may be missing leaves no header read inside')
+  ok(/i64\.eq\s*\(local\.get \$\w+\)\s*\(global\.get \$__fc\d+\)\)\s*\(then\s*\(call \$__throw_property_nullish\)/.test(before(sum)), 'its test stands ahead of the loop')
 })
 
 // The reset keeps its meaning with the barrier ahead of the loop: round 2

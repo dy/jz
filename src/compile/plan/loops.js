@@ -262,7 +262,8 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
     // (a module binding the loop only reads has its hop out of the loop already, optimize/licm.js:
     // the split pays where it stores, whose growth call rebinds it in the loop and keeps every hop in)
     if (stable(n[1]) === MODULE && !storesInto(body, n[1])) return
-    if (f[0] === 1 && f[1] === 0 && boundRecvs.includes(n[1]) || fixedPast(n[1], f[0], f[1])) return
+    // (nor the store that fills an array its function builds: every round of it appends, summary/query.js arrayFill)
+    if (f[0] === 1 && f[1] === 0 && boundRecvs.includes(n[1]) || fixedPast(n[1], f[0], f[1]) || view.arrayFill?.(n)) return
     const at = forms.get(n[1]) ?? forms.set(n[1], new Map()).get(n[1])
     at.set(f[0], Math.max(at.get(f[0]) ?? 0, f[1]))
   } })

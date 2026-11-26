@@ -599,7 +599,8 @@ function emitElementStore(arr, idx, val, node) {
   // (a key of the counter, `out[o + 2]` under `const o = i * 6`, by its node: idxKey)
   // (or one whose range is inside the length the array was built to, summary/query.js steadyLenOf: nothing grows it
   // there, and the block, which may have moved while it was built, is where the store's hop finds it)
-  const view = ctx.summary?.at(ctx.func.current), built = typeof arr === 'string' ? view?.steadyLenOf(arr) : null
+  // (but for the store that fills the array, which makes that length: summary/query.js arrayFill)
+  const view = ctx.summary?.at(ctx.func.current), built = typeof arr === 'string' && !(node != null && view?.arrayFill(node)) ? view?.steadyLenOf(arr) : null
   const boundedArray = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY && (inBoundsArrIdx(ctx).has(idxKey(arr, idx)) ||
     built != null && indexRange != null && indexRange[0] >= 0 && indexRange[1] < built)
   const whole = isPresentNumber(ctx, idx) && wholeKey(idx)

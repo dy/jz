@@ -174,15 +174,15 @@ export let main = () => {
 // array is a candidate for its presence as a typed array is (type/loop-versioning.js), where the
 // arm then leaves its accesses bare: an array of fixed length. The arm that runs holds no test of
 // the holder, so the lane lift and the counted reads see a bare loop; the loop as written runs
-// where a holder is missing, and throws where the read is reached. An array of open length (the
-// pushes below: no built length reaches a binding a function assigns) keeps its loop as written.
+// where a holder is missing, and throws where the read is reached. An array its function builds by
+// counted pushes through the binding has its built length there too (src/summary/index.js lateSpan):
+// its reads go through the binding, whose test leaves the loop (src/optimize/licm.js hoistLoopGuards).
 const HOLDERS = {
   literal: (x, f) => `${x} = [${Array.from({ length: 16 }, (_, i) => f(i)).join(', ')}]`,
   counted: (x, f, v) => `${x} = new Array(N); for (let i = 0; i < ${x}.length; i++) ${x}[i] = ${v}`,
   filled: (x, f, v) => `${x} = new Array(N).fill(0); for (let i = 0; i < N; i++) ${x}[i] = ${v}`,
   pushed: (x, f, v) => `${x} = []; for (let i = 0; i < N; i++) ${x}.push(${v})`,
 }
-const FIXED = ['literal', 'counted', 'filled']
 const unset = (make) => `const N = 16
 let a, b, c, seen = 0
 const tries = (f) => { try { return f() } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }
@@ -218,8 +218,6 @@ test('nullable arrays: the loop that runs holds no test of its holders', () => {
     const { runs } = runEntered(tree, [['fill', []], ['dot', []], ['prefix', []], ['own', []]])
     const tests = (k) => loopBodyOps(tree, new Set(runs[k].loops.keys()), throwsOf)
     for (const [k, kernel] of [[1, 'dot'], [2, 'prefix'], [3, 'own']]) ok(runs[k].loops.size >= 1, `${form}, ${kernel} at ${optimize}: a loop runs`)
-    // (the pushes: the arm would keep each read's test of its bounds, and its loop, unrolled over them, ran slower)
-    if (!FIXED.includes(form)) { ok(tests(1) > 0, `${form}, dot at ${optimize}: the loop as written`); continue }
     // (`own` is bounded by the array's own length: of fixed length that is its count, a bound the guard reads once)
     for (const [k, kernel] of [[1, 'dot'], [2, 'prefix'], [3, 'own']]) is(tests(k), 0, `${form}, ${kernel} at ${optimize}: no test of a holder in the loop that runs`)
     // (the reads are the array's own: a holder taken for another kind of value reads through a helper)

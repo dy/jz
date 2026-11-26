@@ -798,6 +798,8 @@ export function summaryQueries(facts, internal = false) {
       // (or inside the length its array was built to, for the code that meets it built: a loop saves such an array
       // for the reset once, ahead of itself, where it has no range of its counter yet, emit/control-flow.js durableLoopArrays)
       builtArrayStore: n => steadyStores.has(n),
+      // A store that is its array's own build: `x[i] = v` in the loop that fills, from 0, an array its function builds (index.js fillSites).
+      arrayFill: n => facts.fillStores?.has(n) === true,
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayDenseOfExpr: node => {

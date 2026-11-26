@@ -859,6 +859,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // one `n`. A push with no such count leaves the cell open for the round
   // (null); the round's walk is complete, so the last one decides, as for `grown`.
   const ownBuilds = new Map()    // binding key → the literal its declaration builds
+  const lateOwners = new Map()   // an assigned binding's key → the function that builds through it (lateSpan)
+  const lateRuns = new Set()     // and those whose build may run code of the program's or leave early, this round
   const builds = new Map()       // cell root → { key, pushes: Map(push node → elements) } | null
   const exactTrips = []          // per counted loop being walked: its exact trip count, or -1
   const multiSite = new Set()    // cell roots joining several construction sites
@@ -1595,6 +1597,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if ((!span || span[0] < 0) && !runs(current)) return
     // (a counter whose every round stores here at it, from 0: each store lands at the length at most)
     const appends = recvName !== null && typeof idx === 'string' && appendCounters.get(idx)?.has(recvName) === true
+    // The store of a loop through which a function builds its array (`ownBuilds`, buildsAlone's
+    // `fillSites`): the loop's rounds are the array's length where the store is an append of a
+    // counted loop run whole, as a counted push is its count; else the cell is open for the round.
+    if (node !== null && recvName !== null && current !== null && fillSites.has(node)) {
+      const own = keyOf(recvName), lit = own !== null && (bindingScope[own] === current || lateOwners.get(own) === current) ? ownBuilds.get(own) : undefined
+      if (lit !== undefined && cells.has(lit) && cell(cells.get(lit)) === c) {
+        const b = builds.get(c)
+        const whole = appends && exactTrips[0] >= 0
+        if (!whole || b === null || (b && b.key !== own)) builds.set(c, null)
+        else { const pushes = b?.pushes ?? new Map(); pushes.set(node, Math.max(0, exactTrips[0] - built[c])); if (!b) builds.set(c, { key: own, pushes, filled: true }) }
+      }
+    }
     // Such a loop at the module's top level, counted, run whole, under no other branch and with no push
     // of its own through the name, leaves the array as long as its rounds where it was shorter: a known
     // number of elements added once, at init, as counted pushes add theirs (`grown`; a name there is the module's).
@@ -1615,7 +1629,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     else if (current === null && span && !(span[1] < built[c])) initStored.add(c)
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
-    const inside = !!span && span[1] < steadyAt(c)
+    // (but the store that fills it: that one makes the length)
+    const inside = !!span && span[1] < steadyAt(c) && !(node !== null && fillSites.has(node))
     // (kept by node for the loop that saves its array ahead of itself: nothing such a store does makes the array longer)
     if (inside && node !== null) steadyStores.add(node)
     if (span && span[0] >= 0 && !inside) wanted.add(c)
@@ -1645,6 +1660,37 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!Array.isArray(node) || node[0] !== '[') return LEN_OPEN
     for (let i = 1; i < node.length; i++) if (Array.isArray(node[i]) && node[i][0] === '...') return LEN_OPEN
     return node.length - 1
+  }
+  // A literal's count with its spreads: `[...xs]` copies as many elements as `xs` holds where the
+  // walk stands, a length it knows for an array of fixed length, one met built (`steady`), or, at
+  // the top level of the module's own statements, one built with a count and grown since by the
+  // counted pushes walked so far (`grown`, which a later statement's pushes have not reached and
+  // a loop around the literal would have counted whole). A source of open count is asked for
+  // (`wanted`), as an index is.
+  const lengthHere = (arr) => {
+    const n = fixedLen(arr)
+    if (n >= 0) return n
+    const c = lenCell(arr)
+    if (c < 0) return -1
+    const met = steadyAt(c)
+    if (met >= 0) return met
+    wanted.add(c)
+    if (current !== null || branch !== 0 || !(built[c] >= 0) || unknown.has(c)) return -1
+    const len = built[c] + (grown.get(c)?.n ?? 0)
+    return stores.get(c) >= len ? -1 : len
+  }
+  const copyCount = (node) => {
+    const plain = literalCount(node)
+    if (plain >= 0 || !Array.isArray(node) || node[0] !== '[') return plain
+    let count = 0
+    for (let i = 1; i < node.length; i++) {
+      const e = node[i]
+      if (!(Array.isArray(e) && e[0] === '...')) { count++; continue }
+      const k = typeof e[1] === 'string' ? nameKind(e[1]) : null, len = k === null ? -1 : lengthHere(k)
+      if (len < 0) return LEN_OPEN
+      count += len
+    }
+    return count <= 0x7fffffff ? count : LEN_OPEN
   }
   const cellUp = []              // cell id → its parent; a root is its own
   // Typed elements have fixed widths; named properties keep ordinary values.
@@ -3660,12 +3706,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         const c = lenCell(recv)
         // through the name a function builds its array in (`ownBuilds`): counted, or the cell open for the round
         const own = via === null && current !== null && node && Array.isArray(node[1]) && typeof node[1][1] === 'string' ? keyOf(node[1][1]) : null
-        const site = own !== null && bindingScope[own] === current ? ownBuilds.get(own) : undefined
+        const site = own !== null && (bindingScope[own] === current || lateOwners.get(own) === current) ? ownBuilds.get(own) : undefined
         const building = site !== undefined && c >= 0 && cells.has(site) && cell(cells.get(site)) === c
         openLen(recv, 'resized by push', via !== null, building)
         if (building) {
           const b = builds.get(c), exact = branch === countedDepth && spreadAt(base, n) === n && exactTrips.every(t => t >= 0)
-          if (!exact || b === null || (b && b.key !== own)) builds.set(c, null)
+          if (!exact || b === null || (b && (b.key !== own || b.filled))) builds.set(c, null)
           else {
             const count = exactTrips.reduce((p, t) => p * t, n), pushes = b?.pushes ?? new Map(), was = pushes.get(node)
             if (was !== undefined && was !== count) builds.set(c, null)
@@ -4276,13 +4322,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === '=>') { loopAssigns(n); for (const name of assignedIn(n)) { const key = keyOf(name); if (key !== null) closureAssigned.add(key) } const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') { const sid = literalSid(n); return sid === DYNAMIC_LITERAL ? dynamicLiteral(n) : staticLiteral(n, sid) }
     if (op === '[') {
-      const arr = arrayOf(n, K.NONE), id = paramOf(arr)
+      const arr = arrayOf(n, K.NONE, null, copyCount(n)), id = paramOf(arr)
       if (id !== UNKNOWN && !tuples.has(cell(id))) tuples.set(cell(id), [])
       for (let i = 1; i < n.length; i++) {
         const k = n[i] == null ? ABSENT : expr(n[i]), row = id === UNKNOWN ? null : tuples.get(cell(id))
         if (Array.isArray(n[i]) && n[i][0] === '...') invalidateTuple(arr)
         else if (row) { const next = merge(row[i - 1] ?? K.NONE, k); if (next !== row[i - 1]) { row[i - 1] = next; changed = true } }
-        raiseElem(arr, k, true, false, false, !hasTag(k, K.NUMBER) ? NR_NONE : Array.isArray(n[i]) && n[i][0] === '...' ? null : numRangeOf(n[i]))
+        // (a spread of an array brings its elements' numbers with them: `[...xs]` of integers is one of integers)
+        const spread = Array.isArray(n[i]) && n[i][0] === '...', from = spread && typeof n[i][1] === 'string' ? nameKind(n[i][1]) : null
+        raiseElem(arr, k, true, false, false, !hasTag(k, K.NUMBER) ? NR_NONE : !spread ? numRangeOf(n[i]) : from !== null && tagOf(core(from)) === K.ARRAY ? cellNums(core(from)) : null)
       }
       return arr
     }
@@ -4567,7 +4615,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       v = merge(op === '??=' ? core(t) : t, stored)
     }
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
-    if (typeof target === 'string') { if (hulls.size || indexBounds.size) keepHull(target, op, value); return assignName(target, v) }
+    if (typeof target === 'string') {
+      if (hulls.size || indexBounds.size) keepHull(target, op, value)
+      // (a binding given a literal the function then builds alone: `ownBuilds`, as a `const` of its own)
+      if (op === '=' && node !== null && current !== null && branch === 0 && Array.isArray(value) && value[0] === '[' && literalCount(value) >= 0) {
+        const key = keyOf(target)
+        const span = key !== null ? lateSpan(node, target) : null
+        if (span) { ownBuilds.set(key, value); lateOwners.set(key, current); if (!span.every(st => staysIn(st, target))) lateRuns.add(key) }
+      }
+      return assignName(target, v)
+    }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       if (typeof prop === 'string' && strayArray(recv)) strayProps.add(prop)
@@ -4851,6 +4908,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // arrow may name a `const` declared after it: either can run between the
   // pushes). Syntactic, so read once per declarator.
   const alone = new Map()   // declarator → whether it builds alone
+  const buildEnds = new Map()   // and, where it does, the statements after it through the last of its build
+  const fillSites = new Set()   // the targets (`x[i]`) of the stores of the loops that fill such an array from 0
   const buildsAlone = (decl, d, name) => {
     let r = alone.get(d)
     if (r !== undefined) return r
@@ -4858,14 +4917,45 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const list = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1] : [';', body[1]]) : null
     const at = list ? list.indexOf(decl) : -1
     const isPush = (m) => m[0] === '()' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === name && m[1][2] === 'push'
-    let last = -1
-    for (let i = at + 1; at > 0 && i < list.length; i++) if (some(list[i], isPush, { skipArrow: false })) last = i
-    // every mention of the name, but the declared one, is a push's receiver
+    // (or the store of a loop that fills it from 0, `for (…) x[i] = v`, a statement of the loop's own:
+    // an append where the walk holds its counter one, appendCounters, and then a push by another name)
+    const fillOf = (st) => Array.isArray(st) && st[0] === 'for' && st.length === 5 && Array.isArray(st[4]) ? stepStatements(st[4]).find(s =>
+      Array.isArray(s) && s[0] === '=' && Array.isArray(s[1]) && s[1][0] === '[]' && s[1].length === 3 && s[1][1] === name && typeof s[1][2] === 'string') : undefined
+    // (a build is by pushes or by fills, as its first statement is: a loop that stores at its counter
+    // past the pushes is one over an array already built, `xs[i] = xs[i] * 2`)
+    let last = -1, byFill = null
+    const fills = new Set()
+    for (let i = at + 1; at > 0 && i < list.length; i++) {
+      const fill = fillOf(list[i]), pushed = !fill && some(list[i], isPush, { skipArrow: false })
+      if (byFill === null && (fill || pushed)) byFill = !!fill
+      if (byFill ? fill : pushed) last = i
+      if (byFill && fill) fills.add(fill)
+    }
+    // every mention of the name, but the declared one, is a push's receiver or such a store's
     let names = -1, pushes = 0
-    const count = (m) => { if (!Array.isArray(m) || m[0] === 'str') return; if (isPush(m)) pushes++; for (let i = 1; i < m.length; i++) if (m[i] === name) names++; else count(m[i]) }
+    const count = (m) => { if (!Array.isArray(m) || m[0] === 'str') return; if (isPush(m) || fills.has(m)) pushes++; for (let i = 1; i < m.length; i++) if (m[i] === name) names++; else count(m[i]) }
     for (let i = 1; last > 0 && i <= last; i++) count(list[i])
     alone.set(d, r = last > 0 && names === pushes)
+    if (r) { for (const fill of fills) fillSites.add(fill[1]); buildEnds.set(d, list.slice(at + 1, last + 1)) }
     return r
+  }
+  // The same of a binding one of the function's own statements gives a literal (`xs = []`, the
+  // binding a module's `let` an init call sets): it builds alone as a `const` of the function
+  // does, and, since another function can name it, the statements from the assignment through the
+  // last push must stay in the build (staysIn): run no code of the program's (a call, a
+  // conversion of an object, a getter) and not leave early (a `return`, a throw written or made
+  // by an operation: a caller that catches it reads the binding part built). That is the last
+  // round's to say, by its kinds (`lateRuns`, which the lengths' table reads, steadyOf). A
+  // reader then meets the binding as it was before the call, or whole. (An allocation that
+  // fails in a push leaves it short: the instance has trapped.)
+  const lateSpans = new Map()   // assignment → the statements after it through its last push, null where it does not build alone
+  const lateSpan = (stmt, name) => {
+    let span = lateSpans.get(stmt)
+    if (span === undefined) {
+      span = buildsAlone(stmt, stmt, name) ? buildEnds.get(stmt) : null
+      lateSpans.set(stmt, span)
+    }
+    return span
   }
   const decl = (n) => {
     const tdz = isTdzDecl(n)
@@ -5395,6 +5485,62 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     walk(body)
     return runs
+  }
+  // Whether a statement of a late build stays in the build: it runs no code of the program's
+  // (another function would read the binding part built), and it holds no `return`, no `throw`
+  // written, and no operation that makes one (a member of a value that may be missing, a
+  // BigInt beside a Number): left early, the build leaves the binding part built, or empty,
+  // where another function reads it. So the statements hold only
+  // what stays: loops, tests, declarations and assignments to names; a value handed on (a name,
+  // a literal of such values, a choice of them, an element of an array, a typed array or a
+  // string that is there, a member of an object that is there); arithmetic, comparisons and
+  // Math's functions over operands that convert nothing (`plainOperand`); the build's own
+  // pushes and stores (`name`).
+  const OPERAND_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | NULL_BITS
+  const operandKind = (k) => k != null && (k & TAGS) !== 0 && (k & TAGS & ~OPERAND_BITS) === 0
+  const thereKind = (e) => { const k = typeof e === 'string' ? nameKind(e) : null; return k !== null && (k & NULL_BITS) === 0 ? tagOf(k) : K.NONE }
+  const CHOICES = new Set(['?:', '&&', '||', '??', ',', '(', '!', 'typeof'])
+  const ARITHMETIC = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '<', '>', '<=', '>=', '==', '!=', '===', '!==', 'strcat', '`'])
+  const STATEMENTS = new Set([';', 'for', 'while', 'do', 'if'])
+  const literalValue = (m) => m[0] == null && (m[1] == null || typeof m[1] === 'number' || typeof m[1] === 'string' || typeof m[1] === 'boolean') || m[0] === 'str' || m[0] === 'bool' || m[0] === 'nan'
+  // an operand of arithmetic that converts nothing and cannot throw: a Number, a string, a Boolean or a missing value, by its kind
+  const plainOperand = (m) => {
+    if (typeof m === 'number') return true
+    if (typeof m === 'string') return operandKind(nameKind(m))
+    if (!Array.isArray(m)) return false
+    const op = m[0]
+    if (literalValue(m)) return true
+    if (op === '[]') {
+      if (m.length !== 3 || !plainOperand(m[2])) return false
+      const t = thereKind(m[1])
+      return t === K.TYPED || t === K.STRING || t === K.ARRAY && paramOf(nameKind(m[1])) !== UNKNOWN && operandKind(elems[cell(paramOf(nameKind(m[1])))])
+    }
+    if (op === '.') return m.length === 3 && m[2] === 'length' && sequenceTag(thereKind(m[1]))
+    if (op === '()') return mathCall(m) && argList(m[2]).every(plainOperand)
+    if (!ARITHMETIC.has(op) && !CHOICES.has(op)) return false
+    for (let i = 1; i < m.length; i++) if (!plainOperand(m[i])) return false
+    return true
+  }
+  const propsOf = (m) => m.length === 2 && Array.isArray(m[1]) && m[1][0] === ',' ? m[1].slice(1) : m.slice(1)
+  const staysIn = (m, name) => {
+    if (m == null || typeof m === 'number' || typeof m === 'string') return true
+    if (!Array.isArray(m)) return false
+    const op = m[0]
+    if (literalValue(m)) return true
+    const rest = (from) => { for (let i = from; i < m.length; i++) if (!staysIn(m[i], name)) return false; return true }
+    if (op === 'let' || op === 'const') { for (let i = 1; i < m.length; i++) { const d = m[i]; if (typeof d !== 'string' && !(Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && staysIn(d[2], name))) return false } return true }
+    // (a name takes any value, and a Number's update is arithmetic; the build's own store takes its key and its value)
+    if (op === '=') return typeof m[1] === 'string' ? m[1] !== name && rest(2)
+      : Array.isArray(m[1]) && m[1][0] === '[]' && m[1].length === 3 && m[1][1] === name && plainOperand(m[1][2]) && rest(2)
+    if (MUTATE_OPS.has(op)) return typeof m[1] === 'string' && m[1] !== name && plainOperand(m[1]) && (m.length < 3 || plainOperand(m[2]))
+    if (op === '[') return rest(1)
+    // an object literal of plain names (a block holds statements)
+    if (op === '{}') { const ps = propsOf(m); return ps.length > 0 && ps.every(q => Array.isArray(q) && q[0] === ':') ? ps.every(q => typeof q[1] === 'string' && staysIn(q[2], name)) : rest(1) }
+    if (op === '[]') return m.length === 3 && sequenceTag(thereKind(m[1])) && plainOperand(m[2])
+    if (op === '.') { const t = thereKind(m[1]); return m.length === 3 && typeof m[2] === 'string' && (m[2] === 'length' && sequenceTag(t) || t === K.OBJECT && !hasGetter(m[2])) }
+    if (op === '()') return Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === name && m[1][2] === 'push' ? argList(m[2]).every(a => staysIn(a, name)) : plainOperand(m)
+    if (ARITHMETIC.has(op)) return plainOperand(m)
+    return (CHOICES.has(op) || STATEMENTS.has(op)) && rest(1)
   }
   const lengthStores = new WeakMap()   // body → the stores that may write a length: receiver, computed key (a syntactic fact)
   const lengthStoresOf = (body) => {
@@ -6546,7 +6692,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     numRound++
     grown.clear()   // the init pushes are counted afresh by every round's walk
     decisions.clear()   // as are the tests: the round without a change, its kinds settled, decides
-    ownBuilds.clear(); builds.clear()   // and the arrays functions build
+    ownBuilds.clear(); lateOwners.clear(); lateRuns.clear(); builds.clear()   // and the arrays functions build
     retainSeen.clear(); hostSeen.clear()   // the walks' records, afresh each round (retain)
     spreadSources.clear() // join the source kinds from this round's reachable contexts
     for (const f of funcs) {
@@ -6947,10 +7093,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const steadyOf = () => {
     const roots = new Map()
     for (const [c, b] of builds) {
-      if (!b || cell(c) !== c || resizedElsewhere.has(c) || multiSite.has(c)) continue
-      let len = built[c]
-      for (const count of b.pushes.values()) len += count
-      if (!(stores.get(c) >= len)) roots.set(c, { len, init: false })
+      // (nor one whose build may run code of the program's, by the last round's kinds: lateRuns)
+      if (!b || cell(c) !== c || resizedElsewhere.has(c) || multiSite.has(c) || lateRuns.has(b.key)) continue
+      let len = built[c], most = 0
+      for (const count of b.pushes.values()) { len += count; if (count > most) most = count }
+      // (loops that fill from 0 lie over one another: the longest is the length)
+      if (b.filled) len = built[c] + most
+      if (!(stores.get(c) >= len)) roots.set(c, { len, init: false, fills: b.filled ? [...b.pushes.keys()] : null })
     }
     for (const [c, g] of grown) {
       if (cell(c) !== c || !(built[c] >= 0) || unknown.has(c) || multiSite.has(c) || short.has(c) || roots.has(c)) { roots.delete(c); continue }
@@ -7029,6 +7178,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // paths or borrow the solver's mutable current scope.
   for (let id = 0; id < cellUp.length; id++) cellUp[id] = cell(id)
   queryFacts.builtLens = builtLens
+  // (the stores that fill an array a function builds, by their target: the plan leaves their loop whole, plan/loops.js)
+  queryFacts.fillStores = new Set()
+  for (const st of builtLens.values()) if (st.fills) for (const node of st.fills) queryFacts.fillStores.add(node)
   // Publish settled hull records, not a closure over the solver and mutable
   // function inputs. No later round writes these buffers; queries borrow them.
   for (const f of funcs) if (openCaller(f.name, f)) argRanges.delete(f.name)

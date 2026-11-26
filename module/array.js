@@ -981,9 +981,15 @@ export default (ctx) => {
       const present = absentOnly && source.presentRead === true
       // A numeric name/literal key cannot change a direct local receiver.
       // Keep its identity visible to loop proofs instead of capturing it.
-      const direct = nullable && typeof arr === 'string' && source[0] === 'local.get' &&
-        vtArr === VAL.TYPED && valOf(core(view.kindOfExpr(['[]', arr, idx]))) === VAL.NUMBER &&
-        (typeof idx === 'string' || Array.isArray(idx) && idx[0] == null) && isPresentNumber(ctx, idx)
+      const plainKey = (typeof idx === 'string' || Array.isArray(idx) && idx[0] == null) && isPresentNumber(ctx, idx)
+      const directTyped = nullable && typeof arr === 'string' && source[0] === 'local.get' &&
+        vtArr === VAL.TYPED && valOf(core(view.kindOfExpr(['[]', arr, idx]))) === VAL.NUMBER && plainKey
+      // So for an array a name holds or nothing (`let xs` an init call sets, read in a loop):
+      // captured, each read's receiver was a temp of the round, and its test, its base and
+      // its load were the round's too, to every pass after.
+      const directArray = nullable && !changing && !directTyped && typeof arr === 'string' && vtArr === VAL.ARRAY &&
+        (source[0] === 'local.get' || source[0] === 'global.get') && source.length === 2
+      const direct = directTyped || directArray
       const h = direct ? arr : temp('ai')
       if (!direct) {
         holds(h, arr)
@@ -1013,7 +1019,10 @@ export default (ctx) => {
         if (!present && !(typeof arr === 'string' && ctx.func.refinements?.get(arr)?.notNullish)) {
           // A receiver whose only missing value is absence tests for undefined alone.
           const missing = hasTag(view.kindOfExpr(arr), K.NULLISH) ? isNullish : isUndef
-          setup.push(['if', missing(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
+          const test = ['if', missing(directArray ? asF64(emit(arr)) : typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]]
+          // (past it the name holds an array: the mark a loop's hoist reads, optimize/licm.js hoistLoopGuards)
+          if (directArray) test.arrayPast = true
+          setup.push(test)
           if (typeof arr === 'string') (ctx.func.checkedRecv ??= []).push(arr)
         }
       }
@@ -1023,10 +1032,12 @@ export default (ctx) => {
       let result
       try {
         result = direct
-          ? withRefinements(new Map([[arr, { val: VAL.TYPED, notNullish: true }]]), key, () => ctx.core.emit['[]'](arr, key))
-          : ctx.core.emit['[]'](h, key)
+          ? withRefinements(new Map([[arr, { val: directArray ? VAL.ARRAY : VAL.TYPED, notNullish: true }]]), key, () => ctx.core.emit['[]'](arr, key, directArray ? node : null))
+          : ctx.core.emit['[]'](h, key, node)
       } finally { if (!direct) scope?.unalias(h) }
-      const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
+      // (a word the read through the name answers stays one: an element of a dense array of words)
+      const word = directArray && result?.type === 'i32'
+      const wrapped = word ? typed(['block', ['result', 'i32'], ...setup, result], 'i32') : typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
       if (result?.checkedNumRead) wrapped.checkedNumRead = true
       if (result?.presentNumRead) wrapped.presentNumRead = true
       if (result?.presentRead) wrapped.presentRead = true

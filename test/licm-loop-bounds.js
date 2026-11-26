@@ -200,3 +200,45 @@ test('LICM loop bounds: renamed loop copies keep their proof inside each copy', 
   const after = instantiate(ast)
   for (const n of [0, 1, 3]) for (const m of [0, 1, 3]) is(after(65532, n, m), before(65532, n, m), 'the copied guard rejects its replaced pointer')
 })
+
+// A test that never returns leaves its loop (optimize/licm.js hoistLoopGuards) only where the
+// loop's first pass, up to the test, can be seen by nothing. The conditions a program jz compiles
+// does not reach, on functions as written: each answers after the hoist as before it, a trap for a
+// trap of the same kind.
+test('LICM loop guards: a test that never returns leaves its loop where its first pass is unseen', () => {
+  const made = (locals, block) => {
+    const ast = parseWat(`(module (memory 1)
+      (func $boom (import "env" "boom"))
+      (func $f (export "f") (param $n i32) (param $p i64) (param $d i32) (result i32)
+        (local $i i32) (local $r i32) ${locals}
+        ${block}
+        (local.get $r)))`)
+    let fn
+    walk(ast, n => { if (n[0] === 'func' && n[1] === '$f') fn = n })
+    return { ast, fn }
+  }
+  const inst = (ast) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast)), { env: { boom: () => { throw new Error('the test') } } }).exports.f
+  const answer = (f, n, p, d) => { try { return f(n, p, d) } catch (e) { return e instanceof WebAssembly.RuntimeError ? 'a trap' : e.message } }
+  const TEST = '(if (i64.eq (local.get $p) (i64.const 7)) (then (call $boom) (unreachable)))'
+  const STEP = '(local.set $r (i32.add (local.get $r) (local.get $i))) (local.set $i (i32.add (local.get $i) (i32.const 1)))'
+  const EXIT = (label) => `(br_if ${label} (i32.ge_s (local.get $i) (local.get $n)))`
+  // [what, the function's locals, its body, whether the test leaves the loop]
+  const shapes = [
+    ['the loop alone in its block', '', `(block $brk (loop $l ${EXIT('$brk')} ${TEST} ${STEP} (br $l)))`, true],
+    ['an exit to a block further out, past a statement', '', `(block $out (block $brk (loop $l ${EXIT('$out')} ${TEST} ${STEP} (br $l))) (local.set $r (i32.const 9)))`, true],
+    ['a statement of the block ahead of the loop', '', `(block $brk (local.set $r (i32.const 5)) (loop $l ${EXIT('$brk')} ${TEST} ${STEP} (br $l)))`, true],
+    ['a division ahead of the test', '', `(block $brk (loop $l ${EXIT('$brk')} (local.set $r (i32.div_s (i32.const 7) (local.get $d))) ${TEST} ${STEP} (br $l)))`, false],
+    ['a temp of the test read ahead of it', '(local $t i64)', `(block $brk (loop $l ${EXIT('$brk')} (local.set $r (i32.add (local.get $r) (i32.wrap_i64 (local.get $t)))) (if (i64.eq (local.tee $t (local.get $p)) (i64.const 7)) (then (call $boom) (unreachable))) ${STEP} (br $l)))`, false],
+    ['a header read under a test of its own', '', `(block $brk (loop $l ${EXIT('$brk')} ${TEST} (if (local.get $d) (then (local.set $r (i32.load (i32.sub (i32.wrap_i64 (local.get $p)) (i32.const 4)))))) ${STEP} (br $l)))`, true],
+  ]
+  const inLoop = (fn) => { let found = false; walk(fn, n => { if (n[0] === 'loop') walk(n, c => { if (c[0] === 'call' && c[1] === '$boom') found = true }) }); return found }
+  for (const [what, locals, body, leaves] of shapes) {
+    const { ast, fn } = made(locals, body)
+    const before = inst(ast)
+    hoistInvariantLoop(fn)
+    is(!inLoop(fn), leaves, `${what}: the test ${leaves ? 'leaves' : 'stays in'} the loop`)
+    const after = inst(ast)
+    for (const n of [0, 1, 3]) for (const p of [0n, 5n, 7n]) for (const d of [0, 1])
+      is(answer(after, n, p, d), answer(before, n, p, d), `${what}: f(${n}, ${p}, ${d})`)
+  }
+})

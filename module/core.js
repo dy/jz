@@ -3102,6 +3102,11 @@ export default (ctx) => {
         // (past the test the length of a fixed-length array is its count, as the fold below reads it for a name)
         const count = prop === 'length' && typeof obj === 'string' ? ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(obj) : null
         if (count != null) return typed(['block', ['result', 'f64'], ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]], ['f64.const', count]], 'f64')
+        // The length of an array a module binding holds or nothing, read through the name as its
+        // elements are (module/array.js directArray): captured, the test and the header's read were
+        // a temp's of the round, in a loop's own test.
+        if (prop === 'length' && typeof obj === 'string' && value[0] === 'global.get' && value.length === 2 && summaryTagOf(summaryCore(receiverKind)) === K.ARRAY)
+          return typed(['block', ['result', 'f64'], ['if', missing(value), ['then', ['drop', throwTypeErrorIR()]]], emitLengthAccess(typed(cloneIR(value), 'f64'), VAL.ARRAY)], 'f64')
         // Past the test a name is present: the read takes its present kind
         // (`d.length` of a typed array that may be missing reads the header).
         const same = typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`
