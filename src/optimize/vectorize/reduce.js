@@ -152,7 +152,7 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // One reduction of the body: what its lanes are and how they fold, or null.
   function matchReduction(body0) {
     const bodyLen = body0.length
-    let accName, opName, mergeOp = null, reduceEntry, exprNode, canonC = null
+    let accName, opName, mergeOp = null, reduceEntry, exprNode, canonC = null, wide = null
     if (bodyLen === 1) {
       const stmt = body0[0]
       if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
@@ -216,6 +216,8 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
         opName = op
         exprNode = cb.core[2]
         canonC = cb.C
+      } else if ((wide = wideSum(rhs, accName, fnLocals))) {
+        opName = 'i64.add'; mergeOp = wide.mergeOp; reduceEntry = WIDE_SUM[wide.laneType]; exprNode = wide.exprNode
       } else {
         const plain = plainReduce(rhs, accName)
         if (!plain) return null
@@ -278,8 +280,8 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     // Exception: the widening byte/short sum — i32 accumulator fed by ONE bare
     // narrow load (`s += u8[i]`), whose LANE type is i8/i16 but reduces into i32.
     const accType = fnLocals.get(accName)
-    let widen = (opName === 'i32.add' && accType === 'i32' && canonC == null
-      && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null
+    let widen = wide ?? ((opName === 'i32.add' && accType === 'i32' && canonC == null
+      && isArr(exprNode) && exprNode.length === 2 && WIDEN_LOADS[exprNode[0]]) || null)
     // The narrowing sum (lane-tables.js NARROW_LANES): the lanes are the f64 operand's, converted
     // into the i32 accumulator's two low lanes.
     if (!widen && accType === 'i32' && canonC == null && !reduceEntry.minmaxSelect && constNum(reduceEntry.constNode) === 0
@@ -437,7 +439,16 @@ function reduceWrapper(bl, freshIdRef, multiAcc, found) {
   // toward the identity. Full-width entries use absolute neutrals; unguarded.
   // (The guarded path is always NACC=1 — accI32/accF64 are non-plain reductions.)
   const prefix = [...parts.flatMap(p => p.initAcc), simdBlock, ...parts.flatMap(p => [...p.combineAccs, ...p.mergeStmts])]
-  const core = guarded ? [['if', stripOpen(incVar, simdBoundName, bl.dir, step), ['then', ...prefix]]] : prefix
+  // An integer sum kept in 64-bit lanes merges into its float once. That is the loop's sum where
+  // each of the loop's adds is exact: the accumulator an integer, and within 2^53 through the walk
+  // (its elements at most `most` each, the walk at most the counter's distance to the bound).
+  // Elsewhere, a fraction, a NaN, a sum past 2^53, the loop runs as written.
+  const exactly = ({ acc, most }) => ['i32.and',
+    ['f64.eq', ['local.get', acc], ['f64.trunc', ['local.get', acc]]],
+    ['f64.le', ['f64.abs', ['local.get', acc]], ['f64.sub', ['f64.const', 2 ** 53], ['f64.mul', ['f64.const', most],
+      ['f64.add', ['f64.const', 1], ['f64.abs', ['f64.sub', ['f64.convert_i32_s', cloneNode(boundExpr)], ['f64.convert_i32_s', ['local.get', incVar]]]]]]]]]
+  const open = stripOpen(incVar, simdBoundName, bl.dir, step)
+  const core = guarded ? [['if', parts[0].exact ? ['i32.and', open, exactly(parts[0].exact)] : open, ['then', ...prefix]]] : prefix
   const wrapper = ['block', ...bl.preamble.map(cloneNode), boundSetup, ...core, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...parts.flatMap(p => p.decls)], reductions: new Set(found.map(m => m.accName)) }
 }
@@ -474,14 +485,18 @@ function reducePart(m, freshIdRef, multiAcc) {
   // And the float extreme by a test (`if (a[i] > m) m = a[i]`, f64x2.pmax): its one accumulator
   // carries a compare and a select from round to round, where the loop as written carries a
   // branch that predicts. Over 256 elements one accumulator ran at 79 ns, the loop at 73.
-  const NACC = multiAcc && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing || reduceEntry.pmaxF64 === true) ? 4 : 1
+  const NACC = multiAcc && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing || reduceEntry.pmaxF64 === true || widen?.wide != null) ? 4 : 1
   const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
   const laneBytes = lanes * stride
 
   // Widening sum: the ACCUMULATOR vector is i32x4 regardless of the (narrow)
   // lane type; each iteration's 16-byte load collapses via extadd_pairwise.
-  const accSplat = widen ? 'i32x4.splat' : info.splat
+  // (the wide sum's is i64x2: each i32x4 partial extends into it, its low half and its high)
+  const accSplat = widen ? widen.wide != null ? 'i64x2.splat' : 'i32x4.splat' : info.splat
   const accumOperand = widen ? widen.steps.reduce((e, s) => [s, e], liftedExpr) : liftedExpr
+  const halves = `$__simd_w${id}`
+  const extended = (e) => widen?.wide == null ? e
+    : ['i64x2.add', [`i64x2.extend_low_i32x4_${widen.wide}`, ['local.tee', halves, e]], [`i64x2.extend_high_i32x4_${widen.wide}`, ['local.get', halves]]]
   // Accumulator k reads the same lane-aligned data as acc 0, shifted by k chunks
   // (k·laneBytes). Acc 0 keeps the address tees (it sets them); acc k>0 reads the
   // tee'd address (normTee → local.get) and adds the byte offset to each load.
@@ -491,7 +506,7 @@ function reducePart(m, freshIdRef, multiAcc) {
       ? ['v128.load', `offset=${+node[1].slice(7) + off}`, ...node.slice(2)]
       : ['v128.load', ['i32.add', node[1], ['i32.const', off]]])
     : node.map(c => offsetLoads(c, off))
-  const accOperandFor = (k) => k === 0 ? accumOperand : offsetLoads(normTee(accumOperand), k * laneBytes)
+  const accOperandFor = (k) => extended(k === 0 ? accumOperand : offsetLoads(normTee(accumOperand), k * laneBytes))
 
   const initAcc = []
   for (let k = 0; k < NACC; k++) initAcc.push(['local.set', accK(k), [accSplat, reduceEntry.constNode ?? reduceEntry.identity]])
@@ -542,7 +557,8 @@ function reducePart(m, freshIdRef, multiAcc) {
     // merged value is re-canonicalized so a NaN that surfaced only in the SIMD
     // range still crosses as the canonical NaN when the scalar tail is empty.
     // (a count kept in float lanes goes back to its word: exact, the lanes' sum an integer)
-    const merged = counted ? [counted, ['local.get', accName], ['i32.wrap_i64', ['i64.trunc_sat_f64_s', horiz]]] : [mergeOp, ['local.get', accName], horiz]
+    const merged = counted ? [counted, ['local.get', accName], ['i32.wrap_i64', ['i64.trunc_sat_f64_s', horiz]]]
+      : [mergeOp, ['local.get', accName], widen?.wide != null ? ['f64.convert_i64_s', horiz] : horiz]
     mergeStmts = canonC == null
       ? [['local.set', accName, merged]]
       : [['local.set', accName, merged],
@@ -553,9 +569,11 @@ function reducePart(m, freshIdRef, multiAcc) {
   const decls = [
     ['local', simdAccName, 'v128'],
     ...Array.from({ length: NACC - 1 }, (_, k) => ['local', accK(k + 1), 'v128']),
+    ...(widen?.wide != null ? [['local', halves, 'v128']] : []),
     ...extraDecls,
   ]
-  return { id, step: lanes * NACC, guarded: !!(reduceEntry.accI32 || reduceEntry.accF64), initAcc, accumulate, combineAccs, mergeStmts, decls }
+  const exact = widen?.wide != null ? { acc: accName, most: widen.most } : null
+  return { id, step: lanes * NACC, guarded: !!(reduceEntry.accI32 || reduceEntry.accF64 || exact), exact, initAcc, accumulate, combineAccs, mergeStmts, decls }
 }
 
 // Bit-exact f64 map-reduce (the direct-summation n-body force loop). A loop that
@@ -833,6 +851,28 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 // A float sum or product in lanes adds in another order than the loop: relaxedFloat's alone.
 const REASSOCIATES = new Set(['f64.add', 'f64.mul', 'f32.add', 'f32.mul'])
 const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relaxF32 ? null : REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
+// An integer element's sum into a float, `s += t[i]` over an Int32Array or a narrower integer
+// array: kept in i64x2 lanes, where no sum of elements overflows, and merged into the float once
+// (reduceWrapper `exactly`). The lanes are the elements'; bytes and shorts first add in pairs to
+// i32x4 (WIDEN_LOADS' steps), and each i32x4 extends into the i64x2 by its two halves. `most`: an
+// element's greatest magnitude; `wide`: how a partial extends, by the conversion's sign for a
+// whole word and by the load's for a narrower one.
+const WIDE_SUM = Object.fromEntries(['i32', 'i16', 'i8'].map(t => [t, { simd: 'i64x2.add', extract: 'i64x2.extract_lane', laneType: t, constNode: ['i64.const', 0] }]))
+const WIDE_LOADS = {
+  'i32.load': { laneType: 'i32', steps: [], most: 2 ** 32 },
+  'i32.load16_s': { laneType: 'i16', steps: WIDEN_LOADS['i32.load16_s'].steps, most: 2 ** 16, wide: 's' },
+  'i32.load16_u': { laneType: 'i16', steps: WIDEN_LOADS['i32.load16_u'].steps, most: 2 ** 16, wide: 'u' },
+  'i32.load8_s': { laneType: 'i8', steps: WIDEN_LOADS['i32.load8_s'].steps, most: 2 ** 8, wide: 's' },
+  'i32.load8_u': { laneType: 'i8', steps: WIDEN_LOADS['i32.load8_u'].steps, most: 2 ** 8, wide: 'u' },
+}
+function wideSum(rhs, accName, fnLocals) {
+  if (rhs.length !== 3 || (rhs[0] !== 'f64.add' && rhs[0] !== 'f64.sub') || fnLocals.get(accName) !== 'f64') return null
+  const fed = isLocalGet(rhs[1], accName) ? rhs[2] : rhs[0] === 'f64.add' && isLocalGet(rhs[2], accName) ? rhs[1] : null
+  const sign = isArr(fed) && fed.length === 2 ? MINMAX_CVT[fed[0]] : null, load = sign && isArr(fed[1]) ? WIDE_LOADS[fed[1][0]] : null
+  // (a narrower element extends by its load's sign: one loaded signed and converted unsigned is another value)
+  if (!load || load.wide === 's' && sign !== 's') return null
+  return { ...load, wide: load.wide ?? sign, fold: 2, mergeOp: rhs[0], exprNode: fed[1] }
+}
 // A signed word's lanes, for an extreme of whole words kept in a float (MINMAX_WIDEN's shape).
 const WHOLE_WORD = { pre: 'i32x4', sign: 's', laneType: 'i32', lo: -2147483648, hi: 2147483647, extract: 'i32x4.extract_lane' }
 // A condition over f64 values: its lanes are f64's (an element of another width in it fails the scan of its loads).

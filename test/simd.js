@@ -2545,6 +2545,47 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// An integer element's sum into a Number, `s += t[i]` over an Int32Array or a narrower integer
+// array where no range holds `s` a word: kept in 64-bit lanes, where no sum of elements overflows,
+// and merged into the float once (reduce.js wideSum, reduceWrapper `exactly`). Four accumulators
+// at the speed tier. The merge is the loop's sum only where each of the loop's adds is exact: from
+// a fraction, a NaN, or a start near 2^53 the loop runs as written and rounds where it rounds.
+test('vectorize: an integer element\'s sum into a Number is kept in 64-bit lanes and merged once', () => {
+  const head = `const N = 67
+const ia = new Int32Array(N), wa = new Uint32Array(N), sa = new Int16Array(N), ba = new Int8Array(N), ua = new Uint8Array(N), ones = new Int32Array(N), zeros = new Int32Array(N)
+for (let i = 0; i < N; i++) { ia[i] = (i * 2654435761) | 0; wa[i] = (i * 2654435761) >>> 0; sa[i] = (i * 3737 + 11) % 60000 - 30000; ba[i] = (i * 53 + 7) % 251 - 125; ua[i] = (i * 53 + 7) % 251; ones[i] = 1 }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  const WHILE = (t) => `let i = 0; while (i < N) { s += ${t}[i]; i++ } return s`
+  // [name, body, in lanes at 'speed' (null: either), calls]
+  const rows = [
+    ['whole words', `let s = 0; ${LOOP} s += ia[i]; return s`, true],
+    ['whole words taken from', `let s = 1000; ${LOOP} s -= ia[i]; return s`, true],
+    ['whole words, the accumulator on the right', `let s = 7; ${LOOP} s = ia[i] + s; return s`, true],
+    ['unsigned words', `let s = 0; ${LOOP} s += wa[i]; return s`, true],
+    ['shorts by a while', `let s = 0; ${WHILE('sa')}`, true],
+    ['signed bytes by a while', `let s = 0; ${WHILE('ba')}`, true],
+    ['bytes by a while', `let s = 0; ${WHILE('ua')}`, true],
+    ['from a fraction', `let s = 0.5; ${LOOP} s += ia[i]; return s`, null],
+    ['from a NaN', `let s = NaN; ${LOOP} s += ia[i]; return s`, null],
+    // (each add of 1 to 2^53 rounds back to it; their sum added once would not)
+    ['from 2^53, of ones', `let s = 9007199254740992; ${LOOP} s += ones[i]; return s`, null],
+    // (2^52 - 0.5 plus 1 is a tie, and rounds to even at each add: added once, the ones' sum rounds once)
+    ['from a fraction under 2^52, of ones', `let s = 4503599627370495.5; ${LOOP} s += ones[i]; return s`, null],
+    ['from minus zero, of zeros', `let s = -0; ${LOOP} s += zeros[i]; return 1 / s`, null],
+    ['over a count the caller gives', `let s = 0.5; for (let i = 0; i < n; i++) s += ia[i]; return s`, null, [0], [3], [67]],
+  ]
+  for (const [name, body, lanes, ...calls] of rows) {
+    const src = head + `export let f = (n) => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) for (const args of calls.length ? calls : [[]])
+      is(jz(src, { optimize }).exports.f(...args), oracle(src).f(...args), `${name} at ${optimize}${args.length ? ` over ${args[0]}` : ''}`)
+    if (lanes !== null && ownedLevels('speed').length) {
+      const text = funcWat(wat(src, { optimize: 'speed' }), 'f')
+      ok(/i64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text), `${name}: 64-bit lanes, four accumulators at speed`)
+    }
+  }
+})
+
 // `Math.max(m, t[i])` over an integer typed array keeps its extreme in a float and folds at the
 // elements' own width (reduce.js, MINMAX_WIDEN): sixteen bytes or eight shorts a vector, and four
 // whole signed words, each exact in an f64. With its NaN canon and bare, where only arithmetic
