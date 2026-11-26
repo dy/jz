@@ -217,6 +217,7 @@ const TESTS = [
   'static-scratch',
   'static-locals',
   'iteration-release',
+  'memory-cells',
   'held-number',
   'split-bindings',
   'module-scratch',
@@ -415,6 +416,8 @@ if (slice && !splittable) throw new Error('--slice cuts a whole core, generated 
 //   - vector-coverage: SIMD presence per alias-battery loop at level 2 and 'speed'
 //     against a committed table; excluded for the same reason.
 //   - reduce-coverage: SIMD presence per way of writing a reduction, the same way.
+//   - memory-cells: what a loop keeps of its passes at each level from 1 up, against
+//     the named gaps; the kernel compiles at one level, so excluded the same way.
 //   - wat-bytes: compile()'s bytes against watr's encoding of its text, the premise
 //     of test/util.js jzWat, which on this leg compiles twice and does not use it.
 //   - self-compile-source: a host-side scan of the self-compile kernel's own source for
@@ -423,7 +426,7 @@ if (slice && !splittable) throw new Error('--slice cuts a whole core, generated 
 //
 // Optimizer-shape class (kernel runs optimize:false; shape asserts can't match
 // — same as perf-ratchet above): simd, optimizer-*, never-grown, slot-hazards.
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'wat-bytes', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'spellings', 'data-forms', 'vector-coverage', 'reduce-coverage', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'wat-bytes', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'spellings', 'data-forms', 'vector-coverage', 'reduce-coverage', 'memory-cells', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   'runner', 'bench-build', 'source-map', // JS entry/CLI options and debug metadata are outside the kernel ABI
   'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
@@ -454,7 +457,7 @@ const LEG_INVARIANT = new Set([
 // Files that choose their own optimize levels (an explicit `optimize` on every
 // compile; fuzz and wat-invariants sweep {0,1,2,3} themselves) but compile under the
 // leg's host: the opt0/opt3 legs skip them, the wasi leg keeps them.
-const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'spellings', 'data-forms', 'vector-coverage', 'reduce-coverage', 'refactor-oracle', 'self-compile-includes', 'snapshot', 'vector-dependence'])
+const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'spellings', 'data-forms', 'vector-coverage', 'reduce-coverage', 'memory-cells', 'refactor-oracle', 'self-compile-includes', 'snapshot', 'vector-dependence'])
 const onOptLeg = process.env.JZ_TEST_OPTIMIZE != null, onHostLeg = !!process.env.JZ_TEST_HOST
 const legSkips = (name) => (onOptLeg && (LEG_INVARIANT.has(name) || OPT_INVARIANT.has(name))) || (onHostLeg && LEG_INVARIANT.has(name))
 
