@@ -4817,6 +4817,64 @@ Thirty-one mutations each fail a test: twenty-four of the forms, the float sum's
 
 Written on a branch off this landing, not committed: a tee nothing reads dissolved ahead of the vectorizer's recognizers (a plain array's two reads of one element were two expressions to them), and four accumulators for the float extreme kept by a test: 25 ns where 73 over a plain array and where 78 over a Float64Array. Then the minimum and maximum in one loop, `reduce` and `indexOf` over a plain array, and an integer array's sum in 64-bit lanes.
 
+## The land-bj landing: several reductions in one loop, the extreme kept by a test, array methods over a built array, reductions under a condition (2026-11-26)
+
+Eight commits on 6dbbf3226, the integrator's.
+
+### What landed
+
+- `45369ce1f`, `9552e2352` The reductions' recognizer reads a statement without the tees of locals the function never reads (src/optimize/vectorize/lift.js `deadTee`, reduce.js): a plain array's two reads of one element, each staging its base, were two expressions to it. In its own copy: the first of the two commits dissolved them across the function, and is corrected by the second. The float extreme kept by a test takes four accumulators at the speed tier.
+- `b50dce579` Several reductions in one loop lift side by side: the body is read as reductions and temps, each reduction with its own accumulators, one strip loop (reduce.js `matchReduction`, `reducePart`, `reduceWrapper`).
+- `1a8a9c8a1` An array method walks an array inside the length it was built to as one of fixed length (module/array/callback.js, src/summary/query.js `steadyLenOf`).
+- `e5d4a973b` A reduction under a condition is the reduction of its masked operand, and a count under a test of float elements is kept in float lanes (reduce.js `plainReduce`, the counted path).
+- `140fdee3a`, `25e85cd27`, `fb7f0fa42` The changelog's entries.
+
+### What it gives, measured
+
+Raw calls of the export, one export a process, the least of seven batches, Node 25 on an M4, 256 elements of a plain array at 'speed', main, this, and Node's own:
+
+| | main | this | Node |
+|---|---|---|---|
+| `if (a[i] > m) m = a[i]` | 72 ns | 25 | |
+| a minimum and a maximum by tests in one loop | 426 | 38 | 166 |
+| `Math.min` and `Math.max` in one loop | 86 | 21 | |
+| a sum and a sum of squares in one loop | 102 | 25 | 130 |
+| `xs.reduce((s, x) => s + x, 0)`, a pushed array | 122 | 17 | 51 |
+| `xs.forEach(x => { s += x })` | 120 | 17 | 569 |
+| `xs.filter(x => x > 10).length` | 98 | 76 | 321 |
+| `xs.some(…)`, `xs.every(…)` | 74, 75 | 64 | 71 |
+| `xs.findIndex(x => x === v)` | 65 | 57 | 64 |
+| `if (a[i] > 10) s += a[i]` | 104 | 25 | 121 |
+| `if (a[i] > 10) n++` | 115 | 25 | 104 |
+
+`reduce` over a pushed array and the count under a condition were slower than V8's. The table of reductions: 73 of 115 programs in lanes at 'speed' where 60, 43 at level 2 where 36.
+
+One bench case's bytes moved of 105: webaudio, 71 bytes more at 'speed', 0.996 of main's time paired.
+
+### I was wrong to dissolve the dead tees in place
+
+The first commit rewrote the function: every tee of a local nothing reads became its value, ahead of the recognizers. It moved the bytes of 29 bench cases, and timing each of them paired against main found the ALAC decoder 4% slower, three times: 1.042, 1.037, 1.050. The loop specializer (optimize/specialize.js) had counted on those tees: the predictor kept 4 of its 17 specialized copies. The recognizer already read a copy of each statement; the copy now drops the tees and the function keeps them. With that the decoder's bytes are main's.
+
+An in-place change of the IR inside the vectorizer reaches every pass after it. It was found only because every moved case was timed.
+
+### The check
+
+On ee332c1da, the same eight commits on 6b961d6f3 (the base moved after the check by the held-out lane's record alone, bench/heldout.json), every step exit 0 in 53 minutes at 8 jobs: the default leg 7,782 tests, level 3 armed 7,561, WASI 7,652, level 0 7,539, the self-compile gate 89, integration 241 of 242 with one skip, the bench corpus's bytes against main as above, the examples at a geomean of 1.71 and 1.72 against V8, jz ahead on 25 of 25. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 1,040 seconds.
+
+On a fresh hosted compiler: the kernel's parity and oracle tests 19 of 19, test/fixed-length.js 37 of 37, test/simd.js 305 of 306: the one is the shape pin recorded two landings ago, in a file outside the hosted suite.
+
+Mutations, each failing a test (own/mutant-cliff.sh under the tools directory): seven of the dead tees and the several reductions, three of the condition. Two parts no test holds: the refusal of a temp whose value has an effect, and the size of the two integers a count chooses between (sixty-seven passes cannot reach the sum it guards, 2^53).
+
+### Found, not fixed
+
+- test/data-forms.json: 498 gaps of 938 where 527. 102 cells count 32 ops more a call: the lifted loads are built from the copy without the tee, and the address is `base + (i << 3)` through one temp where the tail had made a pointer of it. One WAT op a round, no instruction more where the shift folds; a sum ran at 17 ns and 16.
+- `indexOf` and `includes` over a plain array: 58 ns, V8 33. Their loop was fixed already; it is a search no lane takes.
+- A sum where two bounds hold, two reductions under one condition, the same reductions over integer arrays: the table lists each.
+
+### Next
+
+Committed on a branch off this landing, not checked: the extremes of integer elements at their width, an integer element's sum into a Number in 64-bit lanes, a word order read as the lanes' order, the address `i − k` folded: 98 of 115 in lanes at 'speed'.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

@@ -976,3 +976,21 @@ What this landing taught:
 
 - Three times the first idea was the larger one and the wrong one: a rewrite of the loop where one proof asked for the wrong range; a weight in the cost model where one tier took a body it had no work for; an extension of that tier where its lift already lost. Each time the timing or a gate said so within minutes. Measure the small form first.
 - A soundness fact borrowed for a new question needs its limits read again. The loop test's bound was safe for the question it was kept for and unsafe for a read's bounds, in one shape: a nested loop that writes the name.
+
+## Branches of the land-bj landing (2026-11-26), tips before deletion
+
+```
+fb7f0fa42 cond-x    the landing branch: eight commits on 6dbbf3226 (checked as ee332c1da on 6b961d6f3); the record's commit after it
+61bed6601 cliff-x   its first three commits before the two after them were written (deleted)
+1ac8d7795 meth-x    its first six (deleted)
+```
+
+For whoever lands next:
+
+- The reductions' recognizer (src/optimize/vectorize/reduce.js `tryReduceReassoc`) reads a body as reductions and temps. Each statement is read in a copy: dead tees out, its own lane tees inlined, then the temps of the statements before it. A reduction's operand that reads a local the body writes refuses. `matchReduction` answers one reduction, `reducePart` builds its accumulators, `reduceWrapper` runs the parts in one strip loop under one skip.
+- Change the recognizer's copy, never the function, to make two expressions one: the passes after the vectorizer read what it leaves (the ALAC decoder lost 13 specialized loop copies to an in-place dissolve).
+- Time every bench case whose bytes move, paired against main. That is what found the 4%.
+- The table's mark (test/reduce-coverage.js) is a vector load the kernel adds over the blank program. Any v128 op was the mark before, and read a scalar pseudo-minimum of two splats as lanes: the slowest cell of the table was marked in lanes.
+- An array made by counted pushes that nothing resizes has its length for every reader (src/summary/query.js `steadyLenOf`); the array methods' loop now asks for it. A callback that resizes its receiver leaves it no such length.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-cliff.sh` and `own/mutate.py` (the mutations by label, run by test name in seconds), `probe/in/a/minmax.mjs`, `maxforms.mjs`, `callbacks.mjs`, `reduce-kinds.mjs` (the timing inputs), `probe/funcs-diff.mjs` and `probe/case-funcs.mjs` (which functions of a bench case moved).
