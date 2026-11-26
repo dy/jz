@@ -2545,6 +2545,44 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// A reduction under a condition, `if (c) acc = acc OP x`, is the reduction of `c ? x : N`, N the
+// op's neutral (reduce.js plainReduce): the lanes blend the operand with it by the test's mask.
+// A count under a test of f64 elements (`if (a[i] > t) n++`) has an integer accumulator and a
+// test in f64 lanes: its choice of two small integers is kept as floats, the count their float
+// sum, exact in any order, and taken back to a word at the merge, at any level.
+test('vectorize: a reduction under a condition lifts as the reduction of its masked operand', () => {
+  const head = `const N = 67
+const pa = [], ta = new Float64Array(N), ia = new Int32Array(N)
+for (let i = 0; i < N; i++) { pa.push(((i * 37 + 11) % 64) * 0.25 - 3); ta[i] = ((i * 29 + 5) % 64) * 0.5 - 7; ia[i] = (i * 37 + 11) % 64 - 20 }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  // [name, body, in lanes at 'speed', in lanes at level 2 (null: either)]
+  const rows = [
+    ['a sum where', `let s = 0.5; ${LOOP} if (pa[i] > 1) s += pa[i]; return s`, true, null],
+    ['a sum where, a typed array', `let s = 0.5; ${LOOP} if (ta[i] < 3) s += ta[i] * 0.5; return s`, true, null],
+    ['a sum taken where', `let s = 100; ${LOOP} if (pa[i] > 1) s -= pa[i]; return s`, true, null],
+    ['a sum where not, by a ternary', `let s = 0.5; ${LOOP} s = pa[i] > 1 ? s : s + pa[i]; return s`, null, null],
+    // (halved, so the product is exact in any order)
+    ['a product where', `let p = 1; ${LOOP} if (pa[i] > 9) p *= 0.5; return p`, true, null],
+    ['an integer xor where', `let x = 5; ${LOOP} if (ia[i] > 3) x ^= ia[i]; return x`, true, true],
+    ['a count where', `let n = 0; ${LOOP} if (pa[i] > 1) n++; return n`, true, true],
+    ['a count by three where, a typed array', `let n = 7; ${LOOP} if (ta[i] <= 2.5) n += 3; return n`, true, true],
+    ['a count down where', `let n = 1000; ${LOOP} if (pa[i] > 1) n--; return n`, true, true],
+    ['a count whose test reads the count', `let n = 0; ${LOOP} if (pa[i] > n) n++; return n`, false, false],
+    ['a count by two million where', `let n = 0; ${LOOP} if (pa[i] > 1) n += 2000000; return n`, null, null],
+    ['a count where an integer element as a float passes', `let n = 0; ${LOOP} if (ia[i] > 0.5) n++; return n`, null, null],
+    ['a sum where between two bounds', `let s = 0.5; ${LOOP} if (pa[i] > 1 && pa[i] < 9) s += pa[i]; return s`, null, null],
+  ]
+  for (const [name, body, atSpeed, at2] of rows) {
+    const src = head + `export let f = () => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) {
+      is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+      const lanes = optimize === 2 ? at2 : atSpeed
+      if (lanes !== null) is(/\$__simd_acc/.test(funcWat(wat(src, { optimize }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no reduction in lanes'} at ${optimize}`)
+    }
+  }
+})
+
 // Several reductions in one loop lift side by side, each with its accumulators, a round of each
 // a pass (reduce.js tryReduceReassoc, reduceWrapper): a sum beside a sum of squares, a minimum
 // beside a maximum. An element the statements share arrives as a temp (`const x = a[i]`, or the

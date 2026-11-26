@@ -306,7 +306,20 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
         canonC = null
       }
     }
-    if (!widen && accType !== (reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
+    // A count under a test of f64 elements (`if (a[i] > t) n++`: an i32 accumulator fed a choice of
+    // two small integers by a comparison of f64 lanes): the lanes are the comparison's, so the
+    // choice is of the same integers as floats and the count their float sum, exact in any order
+    // (integers of at most 2^20 a pass, under 2^31 passes), taken back to a word at the merge.
+    let counted = null
+    if (!widen && accType === 'i32' && canonC == null && (opName === 'i32.add') && isArr(exprNode) && exprNode[0] === 'select' && exprNode.length === 4) {
+      const [x, y] = [constNum(exprNode[1]), constNum(exprNode[2])]
+      if (isI32Const(exprNode[1]) && isI32Const(exprNode[2]) && Math.abs(x) <= 0x100000 && Math.abs(y) <= 0x100000 && testsF64(exprNode[3])) {
+        counted = mergeOp
+        opName = 'f64.add'; mergeOp = 'f64.add'; reduceEntry = REDUCE_OP_LOOKUP.get('f64.add')
+        exprNode = ['select', ['f64.const', x], ['f64.const', y], exprNode[3]]
+      }
+    }
+    if (!widen && accType !== (counted ? 'i32' : reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
 
     // Bound must be loop-invariant: (local.get $L) or (i32.const N).
     const { bound, boundLocal } = bl
@@ -380,7 +393,7 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     if (ctx.fail || liftedExpr == null) return null
     if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
 
-    return { reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp: mergeOp ?? opName }
+    return { reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp: mergeOp ?? opName, counted }
   }
 }
 
@@ -431,7 +444,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, found) {
 // fold into one and its merge into the live accumulator, the locals it declares, the elements a
 // round takes (`step`), and whether its prefix must be skipped where no strip runs (`guarded`).
 function reducePart(m, freshIdRef, multiAcc) {
-  const { reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp } = m
+  const { reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32, mergeOp, counted } = m
   const stride = LANE_INFO[laneType].stride
   const id = freshIdRef.next++
   const simdAccName = `$__simd_acc${id}`   // accumulator 0 — the one the merge folds
@@ -526,7 +539,8 @@ function reducePart(m, freshIdRef, multiAcc) {
     // Merge the SIMD result into the live accumulator. For canon (min/max) the
     // merged value is re-canonicalized so a NaN that surfaced only in the SIMD
     // range still crosses as the canonical NaN when the scalar tail is empty.
-    const merged = [mergeOp, ['local.get', accName], horiz]
+    // (a count kept in float lanes goes back to its word: exact, the lanes' sum an integer)
+    const merged = counted ? [counted, ['local.get', accName], ['i32.wrap_i64', ['i64.trunc_sat_f64_s', horiz]]] : [mergeOp, ['local.get', accName], horiz]
     mergeStmts = canonC == null
       ? [['local.set', accName, merged]]
       : [['local.set', accName, merged],
@@ -817,6 +831,12 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 // A float sum or product in lanes adds in another order than the loop: relaxedFloat's alone.
 const REASSOCIATES = new Set(['f64.add', 'f64.mul', 'f32.add', 'f32.mul'])
 const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relaxF32 ? null : REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
+// A condition over f64 values: its lanes are f64's (an element of another width in it fails the scan of its loads).
+const testsF64 = (c) => {
+  let f64 = false
+  walkAst(c, { enter: n => { if (typeof n[0] === 'string' && n[0].startsWith('f64.')) f64 = true } })
+  return f64
+}
 // A plain reduction's value, `acc OP x`, read for both recognizers: its op, the op that merges the
 // lanes' result into the accumulator, the table's entry and the operand. Each op here commutes, so
 // `x OP acc` is the same reduction (`s = a[i] + s`). And `acc - x` is the sum of the x's taken from
@@ -824,6 +844,14 @@ const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relax
 // a float, in the other order its sum already takes under relaxedFloat.
 const SUM_OF = { 'i32.sub': 'i32.add', 'i64.sub': 'i64.add', 'f32.sub': 'f32.add', 'f64.sub': 'f64.add' }
 function plainReduce(rhs, accName) {
+  // Under a condition, `if (c) acc = acc OP x` (asSelectAssign's `select(acc OP x, acc, c)`): the
+  // reduction of `c ? x : N`, N the op's neutral, which leaves the accumulator as it was (a float
+  // sum's but for the sign of a zero, relaxedFloat's as its order is).
+  if (rhs[0] === 'select' && rhs.length === 4) {
+    const plain = isLocalGet(rhs[2], accName) && isArr(rhs[1]) ? plainReduce(rhs[1], accName) : null
+    const neutral = plain?.reduceEntry.constNode
+    return neutral == null ? null : { ...plain, exprNode: ['select', plain.exprNode, neutral, rhs[3]] }
+  }
   if (rhs.length !== 3) return null
   const sum = SUM_OF[rhs[0]], opName = sum ?? rhs[0], reduceEntry = plainReduceEntry(opName)
   if (!reduceEntry) return null
