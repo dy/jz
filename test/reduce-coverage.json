@@ -19,7 +19,7 @@
   "count where": {"2":"V.VV.","speed":"V.VV."},
   "max": {"2":"VVVVV","speed":"VVVVV"},
   "min": {"2":"VVVVV","speed":"VVVVV"},
-  "max by a test": {"2":"...V.","speed":"V.VV."},
+  "max by a test": {"2":"...VV","speed":"V.VVV"},
   "max and min": {"2":".....","speed":"V.VVV"},
   "xor": {"2":"VV.V.","speed":"VV.V."}
 }

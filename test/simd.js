@@ -2545,6 +2545,31 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// An extreme of integer elements kept in a word, from the first element: `let m = t[0]; … if (t[i]
+// > m) m = t[i]`. The emitter compares the element and the word as floats, and the integer pass
+// makes it the words' order after the lanes have run: the reductions' recognizer reads it so
+// already (reduce.js wordOrders), where an unsigned word, which may pass 2^31, keeps its floats.
+test('vectorize: an order between two words compared as floats is the words\' own to the lanes', () => {
+  const head = `const N = 67
+const ua = new Uint8Array(N), sa = new Int16Array(N), ia = new Int32Array(N), wa = new Uint32Array(N)
+for (let i = 0; i < N; i++) { ua[i] = (i * 53 + 7) % 251; sa[i] = (i * 3737 + 11) % 60000 - 30000; ia[i] = (i * 2654435761) | 0; wa[i] = (i * 2654435761) >>> 0 }
+`
+  const FROM = 'for (let i = 1; i < N; i++)'
+  // [name, body, the lanes' op at 'speed' (null: none asked)]
+  const rows = [
+    ['a maximum of bytes from the first', `let m = ua[0]; ${FROM} if (ua[i] > m) m = ua[i]; return m`, 'i8x16.max_u'],
+    ['a minimum of shorts from the first', `let m = sa[0]; ${FROM} if (sa[i] < m) m = sa[i]; return m`, 'i16x8.min_s'],
+    ['a maximum of whole words from the first', `let m = ia[0]; ${FROM} if (ia[i] > m) m = ia[i]; return m`, null],
+    ['a maximum of unsigned words from the first', `let m = wa[0]; ${FROM} if (wa[i] > m) m = wa[i]; return m`, null],
+    ['a minimum of unsigned words from the first', `let m = wa[0]; ${FROM} if (wa[i] < m) m = wa[i]; return m`, null],
+  ]
+  for (const [name, body, op] of rows) {
+    const src = head + `export let f = () => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+    if (op && ownedLevels('speed').length) ok(funcWat(wat(src, { optimize: 'speed' }), 'f').includes(op), `${name}: ${op} at speed`)
+  }
+})
+
 // An integer element's sum into a Number, `s += t[i]` over an Int32Array or a narrower integer
 // array where no range holds `s` a word: kept in 64-bit lanes, where no sum of elements overflows,
 // and merged into the float once (reduce.js wideSum, reduceWrapper `exactly`). Four accumulators
