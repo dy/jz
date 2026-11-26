@@ -349,6 +349,8 @@ export function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPi
  * bindings across one scan; `writes` is the loop scaffold's written-names set.
  */
 function isInvariantBase(b, writes) {
+  // (a plain array's read stages its base in a temp of its own, `(local.tee $ab BASE)`: the value is BASE's)
+  if (isArr(b) && b[0] === 'local.tee' && b.length === 3) b = b[2]
   return (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
 }
 

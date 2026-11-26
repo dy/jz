@@ -62,7 +62,8 @@ const pseudoOperand = (simd, expr, ctx) => {
 // 'shape' (the rest).
 // `fn`: the function a vectorizeLaneLocal call lifts; `onceRead`: its once-read locals, taken
 // on the first question (onceReadOf)
-export const vecState = { whyNotActive: false, whyNotReason: null, reasons: null, relaxF32: false, relaxedSimd: false, crPow: false, fn: null, onceRead: null }
+// `reads`: the locals it reads, taken on the first question (deadTee).
+export const vecState = { whyNotActive: false, whyNotReason: null, reasons: null, relaxF32: false, relaxedSimd: false, crPow: false, fn: null, onceRead: null, reads: null }
 // Float32 storage still computes JavaScript expressions in f64 lanes. The
 // promote/demote strip for a pure f32 copy round-trips losslessly and stays
 // on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
@@ -81,7 +82,7 @@ export const vecState = { whyNotActive: false, whyNotReason: null, reasons: null
 // reset()/beginSession(), even though within-compile correctness still relies on
 // the call-site arm/disarm (unchanged here). The module stage registers it
 // (wat/assemble/optimize-module.js): no pass reads the compile's state.
-export const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.reasons = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
+export const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.reasons = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null; vecState.reads = null }
 
 // The one lift context shape: the self-compile kernel infers one struct layout per shared
 // callee (liftStmt/liftExprV/liftFail), so every recognizer builds its ctx here rather than
@@ -438,6 +439,17 @@ function shortCircuit(n) {
   if (isA(th[1], 1) && safe(el[1])) return { join: 'v128.or', a, b: el[1] }
   if (isA(el[1], 0) && safe(th[1])) return { join: 'v128.and', a, b: th[1] }
   return null
+}
+/** A tee of a local the function being lifted never reads: its value alone. jz stages each access's
+ *  base in a temp of its own (`(local.tee $ab BASE)`, read again only where the access tests its
+ *  bounds), so two reads of one element differ by their temps' names. */
+export function deadTee(n) {
+  if (!isArr(n) || n[0] !== 'local.tee' || n.length !== 3 || typeof n[1] !== 'string' || !vecState.fn) return false
+  if (!vecState.reads) {
+    const reads = vecState.reads = new Set()
+    walkAst(vecState.fn, { enter: c => { if (c[0] === 'local.get' && typeof c[1] === 'string') reads.add(c[1]) } })
+  }
+  return !vecState.reads.has(n[1])
 }
 // The locals the function being lifted reads once and writes once: a lowered `A || B` keeps A
 // in one of them for its then arm alone. Taken once per function, where a condition asks.

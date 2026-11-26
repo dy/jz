@@ -3,7 +3,7 @@ import { _offsetLocalStride, addressTees, affineAddr, constNum, hasSideEffect, i
 import { isProfitable, liftWeight } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { CONVERT_LANES, LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, NARROW_LANES, PPC_CALL2, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
-import { liftCtx, liftExprV, liftFail, refusedFor, vecState } from './lift.js'
+import { deadTee, liftCtx, liftExprV, liftFail, refusedFor, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop, simdBound, stripOpen } from './scaffold.js'
 
@@ -123,7 +123,10 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   const inlined = (n) => !isArr(n) || !temps.size ? n : n[0] === 'local.get' && temps.has(n[1]) ? cloneNode(temps.get(n[1])) : n.map(inlined)
   // (a statement's own tees first, which its reads after them see; then the temps of the statements
   // before it. A write a statement still holds inside it refuses the reduction where its operand is scanned.)
-  const normal = (stmt, teed) => asSelectAssign(inlined(inlineLaneTees(stmt, bl.outsideReads, teed)))
+  // (first without the tees nothing reads, lift.js deadTee: the test's read of an element and the
+  // store's are then one expression. The loop as written keeps them: this is the recognizer's copy.)
+  const undead = (n) => !isArr(n) ? n : deadTee(n) ? undead(n[2]) : n.map(undead)
+  const normal = (stmt, teed) => asSelectAssign(inlined(inlineLaneTees(undead(stmt), bl.outsideReads, teed)))
   for (let i = 3; i < incIdx; i++) {
     const teed = new Map(), s = normal(loopNode[i], teed)
     if (!isSet(s)) return null
