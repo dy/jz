@@ -178,6 +178,9 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
           minmaxSelect: true, isMax: minmax.isMax, pmaxF64: true,
         }
         exprNode = minmax.exprNode
+        // (named as the extreme it is: of integer elements it folds at their width, below, as
+        // `Math.max` of them does. An integer is no NaN, and the sign of a zero is this tier's.)
+        opName = minmax.isMax ? 'f64.max' : 'f64.min'
       } else if (minmax) {
         // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
         // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
@@ -418,9 +421,10 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
 function reduceWrapper(bl, freshIdRef, multiAcc, found) {
   const { incVar } = bl
   const parts = found.map(m => reducePart(m, freshIdRef, multiAcc))
-  const { id, step, guarded } = parts[0]
-  // (a guarded part's prefix is skipped whole where no strip runs: alone in its loop)
-  if (parts.length > 1 && parts.some(p => p.step !== step || p.guarded)) return null
+  const { id, step } = parts[0]
+  if (parts.some(p => p.step !== step)) return null
+  // (one part's prefix that must be skipped where no strip runs skips them all: they are one loop)
+  const guarded = parts.some(p => p.guarded)
   const simdBoundName = `$__simd_bound${id}`
   const boundExpr = bl.boundLocal ? ['local.get', bl.boundLocal] : bl.bound
   const loopBody = parts.flatMap(p => p.accumulate)
@@ -448,7 +452,7 @@ function reduceWrapper(bl, freshIdRef, multiAcc, found) {
     ['f64.le', ['f64.abs', ['local.get', acc]], ['f64.sub', ['f64.const', 2 ** 53], ['f64.mul', ['f64.const', most],
       ['f64.add', ['f64.const', 1], ['f64.abs', ['f64.sub', ['f64.convert_i32_s', cloneNode(boundExpr)], ['f64.convert_i32_s', ['local.get', incVar]]]]]]]]]
   const open = stripOpen(incVar, simdBoundName, bl.dir, step)
-  const core = guarded ? [['if', parts[0].exact ? ['i32.and', open, exactly(parts[0].exact)] : open, ['then', ...prefix]]] : prefix
+  const core = guarded ? [['if', parts.reduce((c, p) => p.exact ? ['i32.and', c, exactly(p.exact)] : c, open), ['then', ...prefix]]] : prefix
   const wrapper = ['block', ...bl.preamble.map(cloneNode), boundSetup, ...core, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...parts.flatMap(p => p.decls)], reductions: new Set(found.map(m => m.accName)) }
 }

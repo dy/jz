@@ -20,6 +20,6 @@
   "max": {"2":"VVVVV","speed":"VVVVV"},
   "min": {"2":"VVVVV","speed":"VVVVV"},
   "max by a test": {"2":"...V.","speed":"V.VV."},
-  "max and min": {"2":".....","speed":"V.V.."},
+  "max and min": {"2":".....","speed":"V.VVV"},
   "xor": {"2":"VV.V.","speed":"VV.V."}
 }

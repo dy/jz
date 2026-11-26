@@ -2574,6 +2574,8 @@ for (let i = 0; i < N; i++) { ia[i] = (i * 2654435761) | 0; wa[i] = (i * 2654435
     ['from a fraction under 2^52, of ones', `let s = 4503599627370495.5; ${LOOP} s += ones[i]; return s`, null],
     ['from minus zero, of zeros', `let s = -0; ${LOOP} s += zeros[i]; return 1 / s`, null],
     ['over a count the caller gives', `let s = 0.5; for (let i = 0; i < n; i++) s += ia[i]; return s`, null, [0], [3], [67]],
+    // (two sums in one loop, the second's start the one that must refuse the merge)
+    ['two sums, the second from 2^53, of ones', `let s = 0, t = 9007199254740992; ${LOOP} { s += ia[i]; t += ones[i] } return (t - 9007199254740992) * 1000000 + s % 1000`, null],
   ]
   for (const [name, body, lanes, ...calls] of rows) {
     const src = head + `export let f = (n) => { ${body} }`
@@ -2602,6 +2604,9 @@ for (let i = 0; i < N; i++) { ia[i] = (i * 2654435761) | 0; ua[i] = (i * 53 + 7)
     ['a minimum of whole words', `let m = Infinity; ${LOOP} m = Math.min(m, ia[i]); return m`, 'i32x4.min_s'],
     ['a maximum of bytes', `let m = -Infinity; ${LOOP} m = Math.max(m, ua[i]); return m`, 'i8x16.max_u'],
     ['a minimum of shorts', `let m = Infinity; ${LOOP} m = Math.min(m, sa[i]); return m`, 'i16x8.min_s'],
+    ['a maximum of whole words kept by a test', `let m = -Infinity; ${LOOP} if (ia[i] > m) m = ia[i]; return m`, 'i32x4.max_s'],
+    ['a minimum of bytes kept by a test', `let m = Infinity; ${LOOP} if (ua[i] < m) m = ua[i]; return m`, 'i8x16.min_u'],
+    ['a maximum of whole words kept by a test, from a NaN', `let m = NaN; ${LOOP} if (ia[i] > m) m = ia[i]; return m`, null],
     ['a maximum of whole words from a NaN', `let m = NaN; ${LOOP} m = Math.max(m, ia[i]); return m`, null],
     ['a maximum of whole words that leaves the function as it is', `let m = -Infinity; ${LOOP} m = Math.max(m, ia[i]); return [m][0]`, null],
     ['a maximum of unsigned words', `let m = -Infinity; ${LOOP} m = Math.max(m, wa[i]); return m`, null],
@@ -2683,8 +2688,9 @@ const bump = (v) => { calls++; return v }
     ['a call that counts beside a sum, its value kept', `let s = 0, last = 0; ${LOOP} { last = bump(pa[i]); s += pa[i] } return s * 3 + calls + last`, false],
     ['a float sum and a wrapping integer xor, eight elements a round and four', `let s = 0, x = 0; ${LOOP} { s += ta[i]; x ^= ia[i] } return s * 3 + x`, false],
     // (a maximum over short elements starts its lanes at the shorts' least: its prefix is skipped whole where no
-    // strip runs, which it is not beside another reduction's. Both take eight elements a round.)
-    ['a short maximum from below its range beside a sum', `let m = -100000, s = 0; for (let i = 0; i < n; i++) { if (sa[i] > m) m = sa[i]; s += ta[i] } return m * 1000 + s`, false, [0], [5], [67]],
+    // strip runs, and the sum's with it, the two being one loop. Both take eight elements a round.)
+    ['a short maximum from below its range beside a sum', `let m = -100000, s = 0; for (let i = 0; i < n; i++) { if (sa[i] > m) m = sa[i]; s += ta[i] } return m * 1000 + s`, true, [0], [5], [67]],
+    ['a sum beside a short maximum from below its range', `let m = -100000, s = 0; for (let i = 0; i < n; i++) { s += ta[i]; if (sa[i] > m) m = sa[i] } return m * 1000 + s`, true, [0], [5], [67]],
   ]
   for (const [name, body, lanes, ...calls] of rows) {
     const src = head + `export let f = (n) => { ${body} }`
