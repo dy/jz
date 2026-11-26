@@ -123,10 +123,10 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   const inlined = (n) => !isArr(n) || !temps.size ? n : n[0] === 'local.get' && temps.has(n[1]) ? cloneNode(temps.get(n[1])) : n.map(inlined)
   // (a statement's own tees first, which its reads after them see; then the temps of the statements
   // before it. A write a statement still holds inside it refuses the reduction where its operand is scanned.)
-  // (first without the tees nothing reads, lift.js deadTee: the test's read of an element and the
-  // store's are then one expression. The loop as written keeps them: this is the recognizer's copy.)
-  const undead = (n) => !isArr(n) ? n : deadTee(n) ? undead(n[2]) : n.map(undead)
-  const normal = (stmt, teed) => asSelectAssign(inlined(inlineLaneTees(wordOrders(undead(stmt)), bl.outsideReads, teed)))
+  // (first as the recognizer reads it, `readAs`: without the tees nothing reads, so that the test's
+  // read of an element and the store's are one expression, and with its orders in the lanes'
+  // terms. The loop as written keeps its own: this is the recognizer's copy.)
+  const normal = (stmt, teed) => asSelectAssign(inlined(inlineLaneTees(readAs(stmt), bl.outsideReads, teed)))
   for (let i = 3; i < incIdx; i++) {
     const teed = new Map(), s = normal(loopNode[i], teed)
     if (!isSet(s)) return null
@@ -883,17 +883,33 @@ function wideSum(rhs, accName, fnLocals) {
   if (!load || load.wide === 's' && sign !== 's') return null
   return { ...load, wide: load.wide ?? sign, fold: 2, mergeOp: rhs[0], exprNode: fed[1] }
 }
-// An order between two words the emitter compared as floats, `(f64.gt (f64.convert_i32_s a)
-// (f64.convert_i32_s b))`, is the words' own signed order: each conversion is exact and keeps the
-// order. An unsigned byte or short is no negative word, so it orders signed too. (The integer
-// pass rewrites these after the lanes have run: the recognizer reads its copy so already.)
+// A statement as the reductions' recognizer reads it, a copy:
+// - without the tees of locals the function never reads (lift.js deadTee);
+// - an order between two words the emitter compared as floats, `(f64.gt (f64.convert_i32_s a)
+//   (f64.convert_i32_s b))`, as the words' own signed order: each conversion is exact and keeps
+//   the order, and an unsigned byte or short is no negative word (the integer pass writes these
+//   so after the lanes have run);
+// - an order between a float cell read as a word and a word constant or another such cell,
+//   `(i32.gt_s (i32.trunc_sat_f64_s LOAD) (i32.const 1))`, as the cells' float order: the read is
+//   the exact one of an integer cell (the emitter's `wordOf`, ir/numeric.js exactWord), and the
+//   lanes over such cells are the floats'.
 const WORD_ORDER = { 'f64.gt': 'i32.gt_s', 'f64.lt': 'i32.lt_s', 'f64.ge': 'i32.ge_s', 'f64.le': 'i32.le_s', 'f64.eq': 'i32.eq', 'f64.ne': 'i32.ne' }
+const FLOAT_ORDER = { 'i32.gt_s': 'f64.gt', 'i32.lt_s': 'f64.lt', 'i32.ge_s': 'f64.ge', 'i32.le_s': 'f64.le', 'i32.eq': 'f64.eq', 'i32.ne': 'f64.ne' }
 const wordOf = (x) => !isArr(x) || x.length !== 2 ? null
   : x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u' && isArr(x[1]) && (x[1][0] === 'i32.load8_u' || x[1][0] === 'i32.load16_u') ? x[1] : null
-const wordOrders = (n) => {
+const floatOf = (x) => !isArr(x) ? null : x.wordOf ?? (isI32Const(x) ? ['f64.const', constNum(x)] : null)
+const readAs = (n) => {
   if (!isArr(n)) return n
-  const a = n.length === 3 && WORD_ORDER[n[0]] ? wordOf(n[1]) : null, b = a ? wordOf(n[2]) : null
-  return b ? [WORD_ORDER[n[0]], wordOrders(a), wordOrders(b)] : n.map(wordOrders)
+  if (deadTee(n)) return readAs(n[2])
+  if (n.length === 3 && WORD_ORDER[n[0]]) {
+    const a = wordOf(n[1]), b = a ? wordOf(n[2]) : null
+    if (b) return [WORD_ORDER[n[0]], readAs(a), readAs(b)]
+  }
+  if (n.length === 3 && FLOAT_ORDER[n[0]] && (n[1].wordOf || n[2].wordOf)) {
+    const a = floatOf(n[1]), b = a ? floatOf(n[2]) : null
+    if (b) return [FLOAT_ORDER[n[0]], readAs(a), readAs(b)]
+  }
+  return n.map(readAs)
 }
 // A signed word's lanes, for an extreme of whole words kept in a float (MINMAX_WIDEN's shape).
 const WHOLE_WORD = { pre: 'i32x4', sign: 's', laneType: 'i32', lo: -2147483648, hi: 2147483647, extract: 'i32x4.extract_lane' }

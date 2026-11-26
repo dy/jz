@@ -2653,13 +2653,20 @@ for (let i = 0; i < N; i++) { ia[i] = (i * 2654435761) | 0; ua[i] = (i * 53 + 7)
 // sum, exact in any order, and taken back to a word at the merge, at any level.
 test('vectorize: a reduction under a condition lifts as the reduction of its masked operand', () => {
   const head = `const N = 67
-const pa = [], ta = new Float64Array(N), ia = new Int32Array(N)
-for (let i = 0; i < N; i++) { pa.push(((i * 37 + 11) % 64) * 0.25 - 3); ta[i] = ((i * 29 + 5) % 64) * 0.5 - 7; ia[i] = (i * 37 + 11) % 64 - 20 }
+const pa = [], wd = [], ta = new Float64Array(N), ia = new Int32Array(N)
+for (let i = 0; i < N; i++) { pa.push(((i * 37 + 11) % 64) * 0.25 - 3); wd.push((i * 37 + 11) % 64 - 20); ta[i] = ((i * 29 + 5) % 64) * 0.5 - 7; ia[i] = (i * 37 + 11) % 64 - 20 }
 `
   const LOOP = 'for (let i = 0; i < N; i++)'
   // [name, body, in lanes at 'speed', in lanes at level 2 (null: either)]
   const rows = [
     ['a sum where', `let s = 0.5; ${LOOP} if (pa[i] > 1) s += pa[i]; return s`, true, null],
+    // (a plain array of integers: its cells are floats read as words, and a word order between them is the
+    // cells' float order to the lanes, reduce.js readAs)
+    ['a sum where over integer cells', `let s = 0; ${LOOP} if (wd[i] > 1) s += wd[i]; return s`, true, null],
+    ['a count where over integer cells', `let n = 0; ${LOOP} if (wd[i] >= 3) n++; return n`, true, true],
+    ['a count where two integer cells order', `let n = 0; for (let i = 0; i < N - 1; i++) if (wd[i] < wd[i + 1]) n++; return n`, null, null],
+    ['a sum where the integer part of a fraction passes', `let s = 0.5; ${LOOP} if ((pa[i] | 0) > 1) s += pa[i]; return s`, null, null],
+    ['a count where the integer part of a fraction passes', `let n = 0; ${LOOP} if ((pa[i] | 0) >= 1) n++; return n`, null, null],
     ['a sum where, a typed array', `let s = 0.5; ${LOOP} if (ta[i] < 3) s += ta[i] * 0.5; return s`, true, null],
     ['a sum taken where', `let s = 100; ${LOOP} if (pa[i] > 1) s -= pa[i]; return s`, true, null],
     ['a sum where not, by a ternary', `let s = 0.5; ${LOOP} s = pa[i] > 1 ? s : s + pa[i]; return s`, null, null],
