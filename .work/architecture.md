@@ -82,7 +82,7 @@ Rules for every change here:
 | 11 | Meet the claims: every sentence of AGENTS.md and README the reference run contradicts (`.work/claims-for-the-owner.md`) | a reference run passes the claims gate: each gap closed, or an exception earned by measurement as AGENTS.md says | after phase 10 (the owner, 2026-11-15); the sentences stay as written until then |
 | 12 | Objects at the cost of functions: a method is a function its call sites call; then a field that holds null until it is given an array, an index no range bounds, a frame's protocol only where the path allocates, a pointer store's tests only where the value may be a pointer; a loop inside an arrow released as a function's is | each held-out program past 1.5 times V8 has its cause named by measurement, fixed as a class rule or entered `open` with its figure; deltablue answers | open ("To 1.1" below). Begun: a recursion's range, an integer element as a word, bodies that throw spliced (land-ac); the retired dispatchers and binders, a `while` as a `for` (branch next-w) |
 | 13 | Populations for meetings: a value leaving a loop, a key of every kind under every binding, a member access of every form on a receiver of every knowledge | the three populations in `test:generated`, green; each wrong answer of 2026-11-21 a cell of one | open |
-| 14 | The data cliffs: the `calls` gaps of `test/data-forms.js`, the sequence group first, then `simd: lost`; memory beside time (a loop that keeps its last result, wherever it stands and on both hosts) | no `calls` gap in the sequence group; the remaining count stated in README; the memory cells gated | open: 176 such cells of 640 gaps; memory in no gate |
+| 14 | The data cliffs: the `calls` gaps of `test/data-forms.js`, the sequence group first, then `simd: lost`; memory beside time (a loop that keeps its last result, wherever it stands and on both hosts) | no `calls` gap in the sequence group; the remaining count stated in README; the memory cells gated | the three criteria met at land-c1: 504 gaps of 938, none of the sequence group's by a call (README's own figures, held by the gate); test/memory-cells.js, 45 of 85 cells bounded on the JS host and 30 under WASI, the rest under three named gaps. Open, its body: 79 cells that lost their lanes (16 of the sequence group), 83 short by a call (records and keyed collections) |
 | 15 | The silent cliff's gate: each call of a dynamic helper inside a loop has an advisory at its source position, and each loop that allocates with no release has `heap-loop` from that decision | a listing of unexplained sites over the bench corpus, the held-out analogs and the data forms, empty or each row a named gap | open: measured before it is designed |
 | 16 | A second held-out set, registered before it is read | its first contact recorded after 12 to 14, whatever the figure | open |
 
@@ -4941,6 +4941,113 @@ Mutations, each failing a test (own/mutant-cliff.sh under the tools directory): 
 ### Next
 
 Phase 14's own criterion is the sequence group's calls: 44 cells of test/data-forms.js on main, the gather, the prefix store and the init call over an array held in a module `let` an init call sets, in a field of `this`, captured by a closure, or copied by a spread. Written on a branch off this landing, not committed: the read of an array a name may hold through the name itself, the name's test taken out of a loop that makes it every pass, and the built length of an array an init call builds through a module binding. With them the gather over such an array calls nothing in its loop (26 calls a pass on main) and its sum is in lanes.
+
+## The land-c1 landing: the sequence group's last calls, a wrong answer of main's, and phase 14's three criteria (2026-11-26)
+
+Five commits on d513c718a, the integrator's.
+
+### What landed
+
+`156b4e1f7`, arrays held where an init call, a constructor or a copy puts them, five parts, each general (the commit's message has each in full):
+
+- An array a binding may hold is read through the binding: its test, then the read of an array that is there, with the summary's verdict of the read reaching the emitter (module/array.js `directArray`, module/core.js for `.length`).
+- A test that never returns leaves the loop it holds in every pass (src/optimize/licm.js `hoistLoopGuards`), and the array it proves is a present one to the invariant hoist that follows.
+- A binding given a literal and built by its function has the built length (src/summary/index.js `lateSpan`): `xs = []; for (…) xs.push(v)` in an init call, where the build runs no code of the program's and cannot be left early (`staysIn`).
+- A loop that fills an array from 0 builds it (`buildsAlone` `fillSites`, `storeAt`, `steadyOf`).
+- A copy by spread has its source's length where it is made, and its elements' numbers (`copyCount`, `lengthHere`).
+
+`dd3045d01`: a built array takes its room whole at its literal (src/reps.js `builderCapacity`, src/summary/query.js `buildCapOf`, the pass `reserveBuilds`), through any binding; its counted pushes store with no test for room and write no binding back (module/array.js), its fill stores in the room (src/compile/emit-assign.js `storeFilledElement`). The loop that builds allocates nothing.
+
+`5dde536ec`: an array of Numbers is kept raw however the emitter makes it: `Array.from(…)`, an array's `map`, a literal that spreads Numbers (src/summary/query.js `taggedConstruction`, src/compile/numeric-arrays.js); a `map` over an array met built has its count (`arrayCallback` by `lengthHere`). And the fix of the wrong answer below (`handsOn`, and the query's `fill`).
+
+`44652666f`: README states how many of the data forms' cells fall short of their best form (504, 83 by a call, none over an array of numbers), as marked figures (scripts/bench-readme.mjs `forms`), and test/data-forms.js holds the statement and the sequence group's zero by rule.
+
+`e5df7a639`: test/memory-cells.js, the gate of what a loop that keeps only its last result keeps of its passes: seventeen ways of writing the loop at five levels on each host, each bounded or under a named gap.
+
+With them phase 14's own three criteria stand: no `calls` gap in the sequence group, the remaining count stated in README, the memory cells in a gate.
+
+### A wrong answer of main's, found and fixed
+
+Older than this landing: at levels 2, 3, 'size' and 'speed' a generic reader took the Numbers of an array kept raw for boxes, where it reached the array through a call. `new Array(n).fill(x).includes(NaN)` answered false for an `x` that is a NaN of any bits but the canonical ones, the sign-set NaN among them, which is what x86 makes of `0 / 0`: no trick with bytes is needed there. `join` after a `fill` printed a NaN whose bits spell an array's pointer or undefined as an empty field. And where the bits are the hole's (a NaN read off a Float64Array's bytes), `map`, `filter`, `forEach`, `every`, `some`, `reduce` and `slice` after a `fill` saw no element, as `rows.at(i).map(f)`, `rows.pop().map(f)` and `rows.shift().map(f)` did over rows of such Numbers. Eighteen of the 31 rows written for it differ from Node on main; a copy of what `at` hands on joins such NaNs as empty fields.
+
+The census of raw arrays (src/compile/numeric-arrays.js) reads each use by the kind the query answers for it, and holds that every value holding a candidate's array has a kind naming its cell. That is the solver's property. The query derives a call's kind again, by the method's result's type, and for `fill`, which returns its receiver, and `at`, `pop` and `shift`, which return an element, it named no array: the array stayed raw under the reader. Now the query names the receiver for `fill`, and the census reads a use of any other method's result through to its receiver (`handsOn`): a reader's, a copier's, an element path's. It was found by the rows I wrote for the new makers, not looked for.
+
+What other value the query names no cell for, where the solver does, is not known: found, not fixed, below.
+
+### I was wrong four times before this landed
+
+The first commit, as I wrote it and as it stood under three checks, answered wrong. A binding built by its function counted as whole where its statements run no code of the program's, and I wrote that a reader then meets it empty or whole. A build can also be left early with no code run: by a `throw` written in its loop, by a `return` ahead of the loop, by the TypeError a pushed value makes of a missing value's member. The binding then holds the array part built, or empty, and its readers took it for whole: a sum over it read zeros for the missing elements, at level 0 as at 'speed' (`let xs; const build = () => { xs = []; for (…) { if (i === 9) throw 1; xs.push(i) } }`, read after a caller's `catch`). No test failed, no check would have: I found it while asking what the next step may assume of a build. The statements must now also stay (src/summary/index.js `staysIn`): no `return`, no `throw` written, no operation that makes one. The rows leave a build every way the syntax allows, and eight mutations of the rule each fail one.
+
+The other three were checks that failed on tests I had not run.
+
+I committed the first part (as 06ffe5e40) having run the files it touches under the sweep and the quick tier, and called it ready for its check. The check's default leg failed two tests in files I had not run: test/header-hoist.js held that a loop reading an array its binding may not hold keeps the header reads inside, and test/nullable-arrays.js held that a loop over arrays an init call pushes keeps the holders' tests. Both pinned the limits the commit lifts, and both turn with it (now: the binding's test ahead of the loop and no header read inside; no test and no call in the loop, as for the arrays of fixed length). The commit was replayed with them.
+
+The second check, of the first two commits, failed three more, the same way: I had written "run `npm test` whole" into this landing's notes an hour before, and committed the second part on the files it touches again. Two tests of test/perf.js count the push helper's calls at level 0 in a program of two counted pushes, and test/minimal-output.js held the size tier's durable save in a program of one. The first two were right and the commit wrong: the reserve ran at level 0, the reference level, where no optimization should. It is now a pass of its own (`reserveBuilds`, src/passes.js), off at levels 0 and 1. The third's program takes its count from the caller.
+
+The third check failed one test more. My first fix of the wrong answer above gave the query the solver's rule for `at`, `pop` and `shift` too, and a test of BigInts answered 3n for 901n at level 2: with a kind for `arr.pop()`, the `++` of a parameter given it goes wrong. That wrong answer is main's own where the kind was known already (below); the census reads through those three calls instead, and the query is as it was for them.
+
+Nothing of the four reached main. The three failed checks each cost 25 minutes of the machine: a pin of a limit, or of a level, lives in whatever file its author chose, and `npm test` whole, not the touched files, is what finds it. The wrong answers no test would have found: a claim of what a reader can meet needs a row for each way the writer can stop.
+
+### What it gives, measured
+
+Raw calls of the export, one export a process, the least of seven batches, Node 25 on an M4, 256 elements at 'speed', taken under the load of other runs, main and then the first commit (the form is how the arrays are made and where they are held, test/data-forms.js):
+
+| | dot | isum | own | gather | mask | prefix |
+|---|---|---|---|---|---|---|
+| push@late | 163, 28 | 132, 19 | 127, 17 | 486, 127 | 157, 123 | 148, 143 |
+| index@late | 160, 28 | 129, 19 | 123, 17 | 470, 125 | 156, 121 | 145, 141 |
+| index@this | 156, 27 | 125, 15 | 17, 17 | 461, 128 | 150, 120 | 248, 133 |
+| index@closure | 167, 31 | 143, 22 | 103, 103 | 444, 126 | 162, 121 | 242, 133 |
+| spread@module | 166, 29 | 158, 17 | 17, 18 | 399, 123 | 266, 120 | 164, 130 |
+| spread@closure | 188, 28 | 169, 17 | 103, 16 | 475, 124 | 246, 121 | 330, 147 |
+
+The init call itself, four arrays of 256 elements a call, ns a call, the machine at rest, on main and with this landing:
+
+| | main, 'speed' | this | main, level 2 | this |
+|---|---|---|---|---|
+| pushes | 2,901 | 1,604 | 3,332 | 1,549 |
+| a fill | 5,829 | 920 | 5,246 | 930 |
+| `Array.from({ length })` | 1,637 | 802 | 1,572 | 724 |
+| a `map` of a fill | 2,828 | 1,467 | 3,086 | 1,472 |
+| a copy by spread | 3,667 | 2,158 | 4,378 | 2,098 |
+
+No kernel is slower. test/data-forms.json: 504 gaps of 938 where 553 (one cell is new: the `map` a closure holds runs a function entry more at 'speed' than at level 2, as every other maker's array there does, 17 ns a call where 15). The sequence group's cells that hold a call past the best form: none where 44; those that lost their lanes: 16 where 55.
+
+The bench corpus against main: 26 of 105 cases' bytes moved, 2,529 fewer at 'size' and 8,715 fewer at 'speed' in all (the largest: decode-qoa 1,164 and 2,001 fewer, entity 193 and 1,131, wordcount 157 and 1,114). Each was timed paired against main, six rounds: none slower beyond the noise between runs (async 0.97, mapstr 0.94, arraydowngrade 0.95, mapobj 0.98 of main's time; decode-qoa 1.005, threescene 1.007, webaudio 1.003, on the tree as checked). wordcount read 1.055 in one paired run and was timed again in one lane, four runs a tree: 502 to 625 us on main, 492 to 571 with the first two commits.
+
+The memory cells, a thousand passes of 66 KB that keep only the last: of 85 cells a host, 45 are bounded on the JS host and 30 under WASI (1 to 51 pages where 1,023 to 3,071). The gaps, named in the gate: level 1 and the size tier release no iteration (34 a host: the release's walk is off at the size tier, memory for size); an arrow that stays a closure (6 a host: its body throws, or holds a spliced `break`); a loop only the JS host's compaction bounds (15 under WASI: a loop inside the loop that carries the result, a for-of, an arrow called in a loop, an object literal's method, a module binding the pass assigns).
+
+### Wrong on the way, caught before a commit
+
+- With the fill counted as a build, the builder's own store asked for the built length by name and was answered: every store of the fill went in place into an empty array, which kept length 0 (wrong answers at level 0, a crash at 'speed'). Found by answering the gate's programs as Node before committing; the emitter now asks whether the store is the fill's (`arrayFill`), the plan leaves the fill's loop as written, and the rows run at five levels.
+- A store loop after a build's pushes was taken for a fill, and 'built and stored to in one function' went from 'in' to 'open': the sweep of test/fixed-length.js caught it. A build is by pushes or by fills as its first build statement is (`byFill`).
+- The summary's first round, where kinds are unknown, judged a push "not building" and marked the array resized elsewhere for the whole solve. The syntactic build is kept, the doubt recorded (`lateRuns`) and read once the solve has kinds.
+- Two tests of mine compared a fresh compiled instance with a host instance that had run the levels before it: a module binding carried a result across. One host instance a level.
+
+### The check
+
+On 5c19e4688, the five commits as checked (the commits as landed hold the same files: the third's message was corrected after, its bench paragraph being of an earlier build), every step exit 0 in 58 minutes at 8 jobs: the default leg 7,798 tests, level 3 armed 7,574, WASI 7,668, level 0 7,552, the self-compile gate 89, integration 241 of 242 with one skip, the examples at a geomean of 1.70 and 1.69 against V8, jz ahead on 25 of 25 twice. On a fresh hosted compiler (39,104,491 bytes): the kernel's parity and oracle tests 19 of 19, test/fixed-length.js 42 of 42, test/licm-loop-bounds.js 10 of 10, test/numeric-arrays.js 11 of 11. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 1,001 seconds. The generated suite whole, after that: 351 tests in 785 seconds at 8 jobs; the vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,254; and the vector populations on a fresh hosted compiler.
+
+Three checks before it failed in their default legs (above), and one was stopped when the first commit's wrong answers were found.
+
+Mutations, each failing a test: forty-four of the first commit (own/mutant-late.sh under the tools directory), nine of the second (own/mutant-room.sh), ten of the third (own/mutant-raw.sh, under the sweep of levels: the element path's is held at the size tier alone). Four parts no test holds. Three of the first: the summary's own exclusion of a fill's store from the stores inside the built length, whose reader is the reset's save of an array ahead of a loop; the count of a fill's loop being known, where a loop of no count gives no number and falls out at the stores' test; and a function's copy by spread taking no count from the pushes walked so far, which the built length's own rule refuses first. One of the third: the test of a `map`'s receiver's kind where no optional link stands; every program I could write with a receiver that is no array on some run gives the solver no clean cell for the call either.
+
+### Found, not fixed
+
+- **A wrong answer of main's with BigInts**: `function g(n) { n++; return n }` called as `g(arr[0])` over an array of one BigInt answers garbage at level 3 and at 'speed' (two calls, two answers). Met through the test above; not looked into.
+- The census of raw arrays trusts the query to name the array of every value that holds a candidate's. Four methods were found where it did not, and it now reads through any method call of no named array; a value the query cannot name that is no method call (a call of a builtin function, a member of an untyped object) is still trusted to have escaped its cell in the solver. A population of readers by the ways a receiver is spelled, each with Numbers whose bits spell a box, would be the check.
+- A build's push reads and writes the length word each round: 1.6 ns a push where the fill's store runs at 1. A header word a loop alone writes, kept in a local across a loop that calls nothing, would close it.
+- The memory gaps above: a loop the JS host's compaction alone bounds keeps a pass an iteration under WASI, where the loop's own release could carry the result out as it does for a loop that stands alone; the size tier keeps every pass.
+- threeanim's time by where its code is placed: an earlier build of the third commit took one cold helper out of its module, and its timed kernel, the same instructions, ran at 1.10 of main's time in every round (7.92 to 8.18 ms where 7.35 to 7.44, one lane). The commits as landed leave its bytes main's. The land-ac record measured the same between two builds of one kernel.
+- The bench's two lanes differ: `node bench/bench.mjs --targets=jz,jz-base --paired=6 --cases=webaudio` with one tree in both lanes reads 2.53 ms for `jz` and 2.34 for `jz at base` (wordcount: 548 us and 538), on main as on this tree: the first is compiled in process, the second by a child. A paired ratio of a case run alone carries that bias: compare in one lane, or with the trees swapped, before believing a few percent.
+- The sum bounded by a captured array's own length (`own`, index@closure) is unmoved at 103 ns: its bound is the length of a closure's capture, read each pass.
+- The dot product over arrays an init call builds stays out of lanes at level 2 (in at 'speed'): the ordered tier declines it, cause not found.
+- The tests' count of a store's canonicalization (test/numeric-arrays.js `canons`) looks for a temp by its name, which a pass ahead of the text renames: where it asserts none, it may find none of what is there.
+- Two figures of bench/README.md are stale against the dataset (the releases of Porffor and Bend it measured), which keeps `scripts/bench-readme.mjs --check` and the claims job's test of the docs' figures red on main.
+
+### Next
+
+Phase 14's body goes on past its criteria: the cells that lost their lanes (79, 16 of them in the sequence group), then the records and keyed collections, where all 83 calls gaps now are. Then phase 13's populations, phase 15's listing of unexplained sites, a second held-out set.
 
 ## Decisions taken
 
