@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { levels } from './_matrix.js'
+import { levels, onWasi } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 
 const tiers = () => levels(0, 1, 2, 3, 'size')
@@ -362,4 +362,42 @@ test('array holes: an element read twice inside the length keeps its hole for th
     const want = oracle(src).m()
     for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is(jz(src, { optimize }).exports.m(), want, `${name} @${optimize}`)
   }
+})
+
+// A loop that tests its counter against a length and stores at the counter
+// stores inside the length only where its body runs none of the program's code
+// between the two. A store through a setter runs it, as a read through a getter
+// does, and so does an `Object.assign` whose target has one or whose source has
+// the other: the code may leave another, shorter array under the name.
+test('array holes: a store through an accessor between the length test and a counted store may leave a hole', () => {
+  const swap = (decls, store) => `let ps = []
+    const short = [{ x: -1 }, { x: -2 }]
+    for (let i = 0; i < 8; i++) ps.push({ x: i })
+    let reads = 0
+    ${decls}
+    export let m = () => { for (let i = 0; i < ps.length; i++) { ${store}; ps[i] = { x: i * 2 } } return ps.length + ':' + (short[3] === undefined) + ':' + (short[5] ? short[5].x : -1) + ':' + short.length }`
+  const setter = `const o = { set v (x) { if (x === 5) ps = short } }`
+  const programs = {
+    'a member store': swap(setter, `o.v = i`),
+    'a store under a computed key': swap(`${setter}\nlet key = 'v'`, `o[key] = i`),
+    'Object.assign onto the setter\'s object': swap(setter, `Object.assign(o, { v: i })`),
+    'Object.assign from a getter\'s object': swap(`const g = { get v () { if (reads++ === 5) ps = short; return 1 } }, t = {}`, `Object.assign(t, g)`),
+  }
+  for (const [name, src] of Object.entries(programs)) for (const optimize of levels(0, 1, 2, 3, 'size', 'speed'))
+    is(jz(src, { optimize }).exports.m(), oracle(src).m(), `${name} @${optimize}`)
+  // (onto the array itself: the call makes it longer, the cells between are holes)
+  const grown = `const ps = []
+    for (let i = 0; i < 8; i++) ps.push({ x: i })
+    let told = false
+    export let m = () => { for (let i = 0; i < ps.length; i++) { if (i === 2) Object.assign(ps, { 12: { x: 99 } }); if (i === 3) told = ps[10] === undefined; ps[i] = { x: i * 2 } } return ps.length + ':' + told }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is(jz(grown, { optimize }).exports.m(), oracle(grown).m(), `onto the array @${optimize}`)
+  // (from a host object: its getter calls back into the module)
+  if (onWasi()) return
+  const host = `let ps = []
+    const short = [{ x: -1 }, { x: -2 }]
+    for (let i = 0; i < 8; i++) ps.push({ x: i })
+    export let swap = () => { ps = short; return 0 }
+    export let m = (from) => { for (let i = 0; i < ps.length; i++) { const t = {}; Object.assign(t, from); ps[i] = { x: i * 2 } } return ps.length + ':' + (short[3] === undefined) + ':' + (short[5] ? short[5].x : -1) + ':' + short.length }`
+  const run = (ex) => { let n = 0; return ex.m({ get v () { if (n++ === 5) ex.swap(); return 1 } }) }
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) is(run(jz(host, { optimize }).exports), run(oracle(host)), `from a host object @${optimize}`)
 })

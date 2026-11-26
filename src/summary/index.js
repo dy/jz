@@ -5427,6 +5427,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   let anyGetter = null   // whether the program defines a getter at all (a computed key may read it)
   const hasGetter = (prop) => membersByName.has(getterOf(prop)) || byProp.has(getterOf(prop))
   const getterAnywhere = () => anyGetter ??= [...membersByName.keys(), ...byProp.keys()].some(name => typeof name === 'string' && name.endsWith(ACCESSOR_GET))
+  // (a store runs a setter as a read runs a getter)
+  let anySetter = null
+  const hasSetter = (prop) => membersByName.has(setterOf(prop)) || byProp.has(setterOf(prop))
+  const setterAnywhere = () => anySetter ??= [...membersByName.keys(), ...byProp.keys()].some(name => typeof name === 'string' && name.endsWith(ACCESSOR_SET))
   const mathCall = (m) => m[0] === '()' && typeof m[1] === 'string' && m[1].startsWith('math.') && argList(m[2]).every(pureOperand)
   const pureOperand = (e) => {
     if (typeof e === 'number' || e == null) return true
@@ -5481,8 +5485,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return
       }
       if (CONVERTING_RESULTS.has(m[0]) && conversions) { for (let i = 1; i < m.length; i++) if (!pureOperand(m[i])) { runs = true; return } }
-      if ((m[0] === '.' || m[0] === '?.') && m.length === 3 && (typeof m[2] !== 'string' || hasGetter(m[2]))) { runs = true; return }
-      if (m[0] === '[]' && m.length === 3 && getterAnywhere()) { const r = nameKind(m[1]); if (r === null || !sequenceTag(tagOf(core(r)))) { runs = true; return } }
+      if ((m[0] === '.' || m[0] === '?.') && m.length === 3 && (typeof m[2] !== 'string' || hasGetter(m[2]) || hasSetter(m[2]))) { runs = true; return }
+      if (m[0] === '[]' && m.length === 3 && (getterAnywhere() || setterAnywhere())) { const r = nameKind(m[1]); if (r === null || !sequenceTag(tagOf(core(r)))) { runs = true; return } }
       for (let i = 1; i < m.length; i++) walk(m[i])
     }
     walk(body)
