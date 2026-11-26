@@ -4875,6 +4875,73 @@ Mutations, each failing a test (own/mutant-cliff.sh under the tools directory): 
 
 Committed on a branch off this landing, not checked: the extremes of integer elements at their width, an integer element's sum into a Number in 64-bit lanes, a word order read as the lanes' order, the address `i − k` folded: 98 of 115 in lanes at 'speed'.
 
+## The land-bk landing: the integer arrays' reductions, and a wrong answer of the landing before (2026-11-26)
+
+Nine commits on c3f32d5b9, the integrator's.
+
+### What landed
+
+- `9dd1e1239` A float extreme of integer elements folds at the elements' width, with its NaN canon or bare, and over whole signed words (src/optimize/vectorize/reduce.js).
+- `a92b59f40` An integer element's sum into a Number is kept in 64-bit lanes and merged once, where the loop's own adds are exact: tested on entry (`wideSum`, `reduceWrapper`).
+- `897f5c7eb` An extreme kept by a test folds at its integer elements' width, and a reduction that must be skipped where no strip runs lifts beside another: one test skips them all.
+- `c35070f50`, `aa8154383` An order between two words the emitter compared as floats is the words' own to the lanes, and a word order over a plain array's integer cells is the cells' float order (`readAs`).
+- `382b823e8` The reductions' address fold takes the cell a constant before the counter and an unshifted index (`foldAddr`); the general address proof's read through a staged base, asked for by nothing, goes.
+- `d90a2acec` The extreme of a plain array of integers is the float extreme of its cells: the recognizer reads the cell for the word (`exactOf`, `rebuilt`, `laneRead`).
+- `c2b2f710d` The changelog's entries.
+- `cf9bca8a7` A reduction over a Float32Array in f64 lanes keeps one accumulator: the fix of the wrong answer below.
+
+### I was wrong: main answered wrong for a day
+
+The landing before this one (land-bj, 45369ce1f) gave the float extreme kept by a test four accumulators. Over a Float32Array the f64 lanes read half a vector a round and widen it; the accumulators after the first read by a whole vector's offset, which that load does not take. `let m = -1e9; for (…) if (a[i] > m) m = a[i]` over 67 elements of a Float32Array answered 11.75 for 12.75 at level 3 and at 'speed', on main from 05:12Z until this landing, two hours. Level 2 and a build with the lanes off were not touched.
+
+It was found by CI on 8bbe10ce1, not by the landing's check: test/vector-alias-population.js ("f32 minIf sub (-9, 8) at 3") and test/vector-narrow-population.js ("f32 reduce max (8) at 'speed'"), natively, on WASI and on the hosted compiler. The check on this machine never ran the generated suite: its script left it to CI after the push. My rows for the four accumulators were over a plain array and a Float64Array, and I called the landing verified.
+
+The fix: no reduction takes more than one accumulator over those half-width loads (src/optimize/vectorize/reduce.js `reducePart`). test/simd.js holds nine reductions over a Float32Array at 0 to 67 elements, at levels 2, 3 and 'speed'; with the fix out the maximum of 9 elements fails.
+
+The check now runs what it left out, before a push (own/recheck-gen.sh under the tools directory): the generated suite whole, 13 minutes at 8 jobs.
+
+### What it gives, measured
+
+Raw calls of the export, one export a process, the least of seven batches, Node 25 on an M4, 256 elements at 'speed', main and then this (several taken under the load of a check or a conformance run):
+
+| | main | this |
+|---|---|---|
+| `Math.max(m, t[i])`, an Int32Array | 68 ns | 16 |
+| the same, a Uint8Array | 67 | 7 |
+| `Math.min(m, t[i])`, an Int16Array | 66 | 8 |
+| `s += t[i]`, an Int32Array into a Number | 74 | 17 |
+| the same counting down | 95 | 17 |
+| the same at level 2 | 86 | 25 |
+| a Uint8Array's sum by `forEach` | 123 | 7 |
+| `if (t[i] > m) m = t[i]` from `t[0]`, a Uint8Array | 73 | 12 |
+| `if (a[i] > m) m = a[i]` from `a[0]`, a plain array of integers | 90 | 26 |
+| a minimum and a maximum from the infinities, the same array | 647 | 40 |
+| `s += a[i]; t += a[i] * a[i]`, the same array | 142 | 32 |
+
+Node's own Int32Array sum ran at 71 ns beside them. The table of reductions: 101 of 115 programs in lanes at 'speed' where 73, 66 at level 2 where 43. test/vector-coverage.json 492 of 840 marks where 447. No bench case's bytes moved (105 of 105 equal at 'size' and at 'speed'): the bench corpus holds none of these loops.
+
+The minimum and maximum from the infinities at 647 ns was the slowest cell of the table: optimize/select-bits.js wrote each extreme as a pseudo-minimum of two splats, a chain of six or seven cycles a round. In lanes the loop no longer reaches that pass; the pass itself is unchanged, and a long scan that does not lift still meets it.
+
+### The check
+
+On c7a23abc9, the first eight commits on 8bbe10ce1 (the base moved after it by the held-out lane's record alone, bench/heldout.json), every step exit 0 in 53 minutes at 8 jobs: the default leg 7,786 tests, level 3 armed 7,565, WASI 7,656, level 0 7,543, the self-compile gate 89, integration 241 of 242 with one skip, the bench corpus's bytes unmoved against main in all 105 cases, the examples at a geomean of 1.71 and 1.73 against V8, jz ahead on 25 of 25 and on 24 of 25: blackhole at 1.00 in the second run where 1.08 in the first, taken while a mutant run of mine loaded the machine. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 972 seconds.
+
+On a fresh hosted compiler: the kernel's parity and oracle tests 19 of 19, test/fixed-length.js 37 of 37, test/simd.js 309 of 310: the one is the shape pin recorded three landings ago, in a file outside the hosted suite.
+
+That check was of the eight commits before the fix. On 0c04c2f7f, with the fix, what the fix can reach, every step exit 0: the generated suite whole, 350 tests in 782 seconds at 8 jobs (the two populations that failed on CI among them); test/simd.js and test/fixed-length.js under the sweep of levels, 348 tests; the quick tier, 1,254; and on a fresh hosted compiler the kernel's parity tests 19 of 19 and test/vector-alias-population.js, which had failed there on CI. The landing check's other legs and test262 were not run again on the fix: one line of the vectorizer, which takes a reduction back to the one accumulator it had before the landing before.
+
+Mutations, each failing a test (own/mutant-cliff.sh under the tools directory): four of the extremes at the elements' width, seven of the sum in 64-bit lanes, three of the shared skip, three of the orders, four of the address fold, six of the plain array's extremes. Four parts no test holds: a narrower element loaded signed and converted unsigned, which the emitter does not write; the unsigned whole word of the word order, whose extreme the emitter keeps in a float; a temp a statement writes again inside its value, which no code the emitter writes today reaches; and the mark's own operand, which no pass ahead of the lanes moves.
+
+### Found, not fixed
+
+- The table's 14 cells still out at 'speed': the sum of every other cell (5 kinds); a sum of squares and of magnitudes over a Uint8Array; a sum beside a sum of squares over an Int32Array and a Uint8Array; a sum where over those two; a count where over a Uint8Array; an xor over a Float64Array and a Uint8Array.
+- An extreme kept by `else if` beside another (`if (v < lo) lo = v; else if (v > hi) hi = v`) runs a cell a round.
+- The lifted loop's address through one temp where the tail had made a pointer of it (from the landing before): one WAT op a round.
+
+### Next
+
+Phase 14's own criterion is the sequence group's calls: 44 cells of test/data-forms.js on main, the gather, the prefix store and the init call over an array held in a module `let` an init call sets, in a field of `this`, captured by a closure, or copied by a spread. Written on a branch off this landing, not committed: the read of an array a name may hold through the name itself, the name's test taken out of a loop that makes it every pass, and the built length of an array an init call builds through a module binding. With them the gather over such an array calls nothing in its loop (26 calls a pass on main) and its sum is in lanes.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

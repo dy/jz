@@ -994,3 +994,22 @@ For whoever lands next:
 - An array made by counted pushes that nothing resizes has its length for every reader (src/summary/query.js `steadyLenOf`); the array methods' loop now asks for it. A callback that resizes its receiver leaves it no such length.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-cliff.sh` and `own/mutate.py` (the mutations by label, run by test name in seconds), `probe/in/a/minmax.mjs`, `maxforms.mjs`, `callbacks.mjs`, `reduce-kinds.mjs` (the timing inputs), `probe/funcs-diff.mjs` and `probe/case-funcs.mjs` (which functions of a bench case moved).
+
+## Branches of the land-bk landing (2026-11-26), tips before deletion
+
+```
+cf9bca8a7 narrow-x   the landing branch: nine commits on c3f32d5b9 (checked as c7a23abc9 and, with the fix, 0c04c2f7f, on 8bbe10ce1); the record's commit after it
+```
+
+For whoever lands next:
+
+- Run the generated suite whole before a push: `sh own/recheck-gen.sh <tree> <tag>` under the tools directory (13 minutes at 8 jobs, then the vectorizer's files under the sweep, the quick tier and the vector populations on a fresh hosted compiler). The landing check alone does not run it, and CI runs it after the push: land-bj put a wrong answer on main that way.
+- A reduction's accumulators after the first read by a whole vector's offset (reduce.js `offsetLoads`). A lowering that reads less than a vector a round (the f32 widening's `load64_zero`) keeps one, whatever the reduction: ask how a reduction loads before giving it more.
+- A row for a lift is a row per kind of array it can meet: a plain array, a Float64Array, a Float32Array, each integer width. The populations hold them all; a hand-written row holds what its author thought of.
+- A plain array of integers holds floats, each a word exactly, and the emitter reads them as words: `(i32.trunc_sat_f64_s LOAD)` marked `wordOf` (src/ir/numeric.js `exactWord`). A pass that wants the cell reads the mark (reduce.js `exactOf`), which counts only while the node still truncates the operand it was made with; a node rebuilt child by child loses it unless the rebuild carries it (`rebuilt`).
+- The reductions' recognizer reads a copy of each statement in three steps: dead tees out (`undead`), the statement's own lane tees and the earlier temps inlined, then the orders and word reads put in the lanes' terms (`readAs`). The function is never rewritten for the recognizer's sake.
+- A sum that may not be reordered as a float may still be exact as an integer: i64x2 lanes and one merge, under a test on entry that the loop's own adds would have been exact (`reduceWrapper` `exactly`). The same shape would take a sum of squares of bytes or a conditional integer sum.
+- A lift whose lanes start at a lane-width neutral must be skipped where no strip runs. The reductions of one loop share one skip.
+- The table's count is not the goal: phase 14 asks for the sequence group's `calls` cells in test/data-forms.js. `node test/data-forms.js --show=seq/<form>` prints a form's cells with their calls by name.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-cliff.sh` (the labels NW, WS, WM, WO, FO, FA, WX of this landing), `probe/in/a/words-ext256.mjs`, `words-two.mjs`, `narrow-max.mjs`, `i32-sums.mjs` (the timing inputs), `probe/wat-all.mjs`, `probe/steady-len.mjs`.
