@@ -861,3 +861,39 @@ const bytes = new Uint8Array([3, 200, 5, 250, 1, 9, 100, 2])
     if (lanes !== null && !belowOpt(2)) is(/v128/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no lanes'} at speed`)
   }
 })
+
+// An array method's loop walks an array inside the length it was built to as it walks one of
+// fixed length (module/array/callback.js hoistArrayValue): no test of the index against the
+// length at each element, no storage resolved again, so a fold of its elements is the loop
+// the lanes take. A callback that resizes its receiver leaves it no built length, and the
+// walk keeps its tests: an element pushed in the walk is not visited, one popped is skipped.
+test('built length: an array method walks a built array as a fixed one', () => {
+  const head = `${U}
+const N = 67
+const xs = []
+for (let i = 0; i < N; i++) xs.push(((i * 37 + 11) % 64) * 0.25 - 3)
+const grow = []
+for (let i = 0; i < 8; i++) grow.push(i + 0.5)
+const shrink = []
+for (let i = 0; i < 8; i++) shrink.push(i + 0.5)
+const made = () => { const out = []; for (let i = 0; i < 40; i++) out.push(i * 0.5 - 4); return out }
+`
+  // [name, body, in lanes at 'speed' (null: either)]
+  const rows = [
+    ['reduce', `return xs.reduce((s, x) => s + x, 0)`, true],
+    ['reduce with no seed', `return xs.reduce((s, x) => s + x)`, null],
+    ['forEach', `let s = 0; xs.forEach(x => { s += x }); return s`, true],
+    ['map then a sum', `let s = 0; const m = xs.map(x => x * 2); for (let i = 0; i < m.length; i++) s += m[i]; return s + m.length`, null],
+    ['filter', `const m = xs.filter(x => x > 2); return m.length * 1000 + m[0]`, null],
+    ['some, every, findIndex', `return (xs.some(x => x > 12) ? 1 : 0) + (xs.every(x => x > -4) ? 10 : 0) + xs.findIndex(x => x === 5.5) * 100`, null],
+    ['reduce over an array a function builds', `return made().reduce((s, x) => s + x, 0)`, null],
+    ['forEach with the index and the array', `let s = 0; xs.forEach((x, i, a) => { s += x * i + a.length }); return s`, null],
+    ['a callback that pushes to its receiver', `let s = 0; grow.forEach(x => { if (grow.length < 12) grow.push(x + 100); s += x }); return s * 1000 + grow.length`, null],
+    ['a callback that pops its receiver', `let s = 0; shrink.forEach((x, i) => { if (i === 2) { shrink.pop(); shrink.pop() } s += u(x) }); return s * 1000 + shrink.length`, null],
+  ]
+  for (const [name, body, lanes] of rows) {
+    const src = `${head}export const f = () => { ${body} }`
+    for (const optimize of levels(0, 2, 3, 'size', 'speed')) agree(src, 'f', [], { optimize }, `${name} at ${optimize}`)
+    if (lanes !== null && !belowOpt(2)) is(/v128\.load/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), lanes, `${name}: ${lanes ? 'in lanes' : 'no lanes'} at speed`)
+  }
+})

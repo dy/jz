@@ -46,8 +46,8 @@ export function hoistArrayValue(arr) {
     setup: ['local.set', `$${recv}`, asF64(emit(arr))],
     value: typed(['local.get', `$${recv}`], 'f64'),
     dense: ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) === true,
-    // (the length the summary fixes the receiver at, or -1)
-    len: ctx.summary?.at(ctx.func.current).fixedLenOfExpr(arr) ?? -1,
+    // (the length the summary fixes the receiver at, or the one it was built to and keeps, or -1)
+    len: ctx.summary?.at(ctx.func.current).fixedLenOfExpr(arr) ?? ctx.summary?.at(ctx.func.current).steadyLenOf(arr) ?? -1,
   }
 }
 
