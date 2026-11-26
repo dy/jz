@@ -5049,6 +5049,51 @@ Mutations, each failing a test: forty-four of the first commit (own/mutant-late.
 
 Phase 14's body goes on past its criteria: the cells that lost their lanes (79, 16 of them in the sequence group), then the records and keyed collections, where all 83 calls gaps now are. Then phase 13's populations, phase 15's listing of unexplained sites, a second held-out set.
 
+## The land-c4 landing: a build of Numbers made at its built length (2026-11-26)
+
+One commit on 07a26cf24, the integrator's.
+
+### What landed
+
+`2da1b028b`: an array of raw Numbers its function builds, by counted pushes or by a fill, is made at the length it will have once built (src/compile/numeric-arrays.js `builtCount`, the summary's exact count). Its pushes store at a counter of the function's own, set at the literal, and its fill stores in place: the loop that builds reads and writes no header word. A boxed build keeps its header's count as it grows. It is the reserve's pass (`reserveBuilds`).
+
+Nothing meets such an array short: nothing else names it until it is whole, a binding another function can name is built by statements that cannot be left early (`staysIn`, the landing before), and no walk of memory reads a raw array's cells.
+
+### What it gives, measured
+
+Raw calls of the init export, one a process, the least of seven batches, Node 25 on an M4 at rest, four arrays of 256 elements a call, ns a call, main and then this:
+
+| | main, 'speed' | this | main, level 2 | this |
+|---|---|---|---|---|
+| pushes | 1,603 | 751 | 1,583 | 787 |
+| a fill | 908 | 784 | 900 | 808 |
+
+The push loop of `xs = []; for (…) xs.push(i * 0.5)` is a store through a pointer and two additions. Ahead of the landing before this one the same init call by pushes took 2,901 ns.
+
+The bench corpus: 3 of 105 cases' bytes moved (arraynumeric, callback, mapint: 64 fewer at 'size' and 49 at 'speed' in all). Timed paired against main, six rounds: arraynumeric 0.781 of main's time in every round (0.767 to 0.789), callback 1.000, mapint 1.004. test/data-forms.json: four cells' ops fall (the pushes' init call 26,632 past the best form at level 2 where 36,872, the fill's 20,488 where 39,944); 504 gaps as before.
+
+### The check
+
+This time the whole core suite ran before the commit was made: `npm test`, 7,798 tests, exit 0 in 881 seconds at rest. The check on 2da1b028b after it, every step exit 0 in 55 minutes at 8 jobs: the default leg 7,798 tests, level 3 armed 7,574, WASI 7,668, level 0 7,552, the self-compile gate 89, integration 241 of 242 with one skip, the examples at a geomean of 1.69 and 1.70 against V8, jz ahead on 25 of 25 twice. On a fresh hosted compiler (39,112,081 bytes): the kernel's parity and oracle tests 19 of 19, test/fixed-length.js 42 of 42, test/numeric-arrays.js 11 of 11. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 876 seconds. The generated suite whole, after that: 351 tests in 830 seconds; the vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,254; the hosted populations, exit 0.
+
+Six mutations each fail a test (own/mutant-len.sh under the tools directory). One part no test holds: the restriction to raw arrays. With boxed builds made at their length too, four programs written to go wrong (records, arrays and strings pushed over memory that held boxes, each push allocating) answer as Node on both hosts. The restriction stands on its argument: a walk during a boxed build would take what its block held before for pointers.
+
+### Found, not fixed
+
+- No form's value loop takes lanes: `a[i] = i * 0.5` over a counter is a store an element a round in every form. The lanes the gate counts in the `new Array(n)` form's init call are its hole fill's, so the sequence group's eight init cells listed as having lost their lanes lost none of the values': an induction value in lanes (the counter as a vector, stepped) would be the lift, for all the forms at once.
+- A copy by spread's source keeps the boxed layout and its header's count (the spread is a generic reader): its init call is unmoved at 2.2 us.
+- The landing before's list stands: the BigInt `++` of a parameter given an element, the census's trust in the query past method calls, the memory gaps, the bench lanes' difference.
+
+### Found on main while this was under check, fixed in the landing after
+
+- The pass that declares the keys an object gains later gives every literal of a joined group every key of the group, an inherited name among them: `{ a, toString: f }` beside `{ a }` with a key stored later makes the second `{ a, toString: undefined, … }`, and `String(o)` on it throws a TypeError at levels 2 and 3 and at both tiers.
+- The same pass spends memory without bound: one key stored late on one record makes every literal of its group carry the whole group's layout. 20,000 records of one key beside three of eight keys each take 119 pages where 19, and 2.7 ms where 0.6.
+- A store through a setter is not counted as running the program's code between a loop's test of a length and its store at the counter: a setter that leaves a shorter array under the name makes the store land past its end, and the cells between read as values, not holes (`short[3] === undefined` false at levels 0 to 3 and at the speed tier).
+
+### Next
+
+Phase 14's body, the records first (in hand: the literals that meet in two key orders or with a key one lacks, and a record made by `Object.assign`), then the keyed collections, where the 83 calls gaps are; the induction value in lanes beside them.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

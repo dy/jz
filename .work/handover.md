@@ -1050,3 +1050,18 @@ For whoever lands next:
 - test/memory-cells.js names its gaps by rule (`GAPS`: a name, the cells it covers, a cause). A cell that becomes bounded fails until it is taken out of its name; `node test/memory-cells.js --show` prints every cell of the host (`JZ_TEST_HOST=wasi` for the other), `probe/mem-nocompact.mjs <tree>` the JS host's with the compaction off.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-late.sh`, `own/mutant-room.sh` and `own/mutate-late.py` (the labels LB, FB, SC, LL, LG, LD and RM of this landing; `SUF` keeps a copy's files apart), `own/mutant-raw.sh` and `own/mutate-raw.py` (RW), `own/time-late.sh <tree> <form file> [first export]`, `own/room-chain.sh <tree>`, `own/recheck-gen.sh <tree> <tag>`, `probe/steady-len.mjs`, `probe/build-cap.mjs`, `probe/wat-func.py`, `probe/form-src.mjs`, `probe/pins-late.mjs`, `probe/in/late/*.mjs`, `probe/raw-why.mjs` and `probe/raw-made.mjs` (which arrays are raw, and why not), `probe/readers-rows.mjs`, `probe/mem-nocompact.mjs`, `probe/in/raw/*.mjs`.
+
+## Branches of the land-c4 landing (2026-11-26), tips before deletion
+
+```
+2da1b028b land7-x  the landing branch: one commit on 07a26cf24; the record's commit after it
+```
+
+For whoever lands next:
+
+- A build's array is made at its built length only where it keeps raw Numbers (`builtCount`): the literal, the pushes and the fill each ask the same predicate by the builder's name, so the three agree by construction. A push of such a build never reads the header: a count read off it mid-build would be the final one.
+- The counter of a build's pushes is a local of the function that holds the literal and the pushes (`ctx.func.buildCounters`), set where the literal is emitted. Both are the summary's own conditions for a build: one function, one binding.
+- The lanes the data forms' gate counts in an init call of the `new Array(n)` form are the hole fill's. A form listed as having lost its lanes there lost none over its values: no form has any.
+- `npm test` whole, at rest, takes 15 minutes at 8 jobs: run it before the commit, then the check. This landing's check started with it known green.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-len.sh` and `own/mutate-len.py` (BL), `own/pre-chain.sh <tree> <tag> <base hashes>` (listings, quick, sweep, bench bytes ahead of a commit), `probe/in/raw/boxed-made.mjs`.
