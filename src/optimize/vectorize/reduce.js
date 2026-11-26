@@ -34,9 +34,19 @@ import { simdLoop, simdBound, stripOpen } from './scaffold.js'
 // lanes. Where the order is free (an integer's wrapping sum, a relaxed float's) both may lift
 // and the chooser takes the cheaper pass; where it is not, this one declines.
 
-// The tees of a statement that hold a pure load, inlined at the tee and at every read
+// The float an exact word read truncates (the emitter's mark `wordOf`, ir/numeric.js exactWord:
+// an element of a dense array of integers, each a word exactly), where the node still
+// truncates the operand the mark was made with; else null.
+const exactOf = (x) => isArr(x) && x[0] === 'i32.trunc_sat_f64_s' && x.length === 2 && x.wordOf != null && x.wordOf === x[1] ? x[1] : null
+// A node rebuilt child by child, the mark kept on the operand it now truncates.
+const rebuilt = (n, f) => { const out = n.map(f); if (exactOf(n)) out.wordOf = out[1]; return out }
+const copyOf = (n) => isArr(n) ? rebuilt(n, copyOf) : n
+// A lane's read: a load, or the exact word of one.
+const laneRead = (v) => isArr(v) && (v[0] in LOAD_OPS || isArr(exactOf(v)) && exactOf(v)[0] in LOAD_OPS)
+
+// The tees of a statement that hold a lane's read, inlined at the tee and at every read
 // of the local (a temp the load cache made for a lane read), each noted in `teed` with
-// its load; a local read past the loop keeps its tee.
+// its read; a local read past the loop keeps its tee.
 const inlineLaneTees = (stmt, outsideReads, teed) => {
   const tees = new Map(), written = new Set(), blocked = new Set()
   let straight = true
@@ -48,7 +58,7 @@ const inlineLaneTees = (stmt, outsideReads, teed) => {
       find(n[2], defined)
       if (written.has(n[1])) blocked.add(n[1])
       written.add(n[1]); defined.add(n[1])
-      if (op === 'local.tee' && n.length === 3 && typeof n[1] === 'string' && isArr(n[2]) && n[2][0] in LOAD_OPS
+      if (op === 'local.tee' && n.length === 3 && typeof n[1] === 'string' && laneRead(n[2])
           && !hasSideEffect(n[2]) && !outsideReads?.has(n[1])) tees.set(n[1], n[2])
       return
     }
@@ -68,8 +78,7 @@ const inlineLaneTees = (stmt, outsideReads, teed) => {
   for (const name of blocked) tees.delete(name)
   if (!straight || !tees.size) return stmt
   for (const [t, load] of tees) teed.set(t, load)
-  const clone = (n) => isArr(n) ? n.map(clone) : n
-  const sub = (n) => !isArr(n) ? n : (n[0] === 'local.tee' || n[0] === 'local.get') && tees.has(n[1]) ? clone(tees.get(n[1])) : n.map(sub)
+  const sub = (n) => !isArr(n) ? n : (n[0] === 'local.tee' || n[0] === 'local.get') && tees.has(n[1]) ? copyOf(tees.get(n[1])) : rebuilt(n, sub)
   return sub(stmt)
 }
 
@@ -99,7 +108,7 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
         // the temp is the arm's own: nothing past the loop reads what the lift leaves in it
         if (!(isArr(stage) && stage[0] === 'local.set' && stage.length === 3 && !hasSideEffect(stage[2]) && !usesLocal(stage[2], stage[1]) && !bl.outsideReads?.has(stage[1]) &&
             isArr(set) && set[0] === 'local.set' && set.length === 3 && set[1] !== stage[1])) return stmt
-        const t = stage[1], subst = (n) => isArr(n) ? (n[0] === 'local.get' && n[1] === t ? stage[2] : n.map(subst)) : n
+        const t = stage[1], subst = (n) => isArr(n) ? (n[0] === 'local.get' && n[1] === t ? stage[2] : rebuilt(n, subst)) : n
         set = ['local.set', set[1], subst(set[2])]
       }
       if (isArr(set) && set[0] === 'local.set' && set.length === 3 && !hasSideEffect(set[2]))
@@ -120,13 +129,13 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // none reads another's accumulator: a sum beside a sum of squares, a minimum beside a maximum.
   const isSet = (s) => isArr(s) && s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string'
   const temps = new Map(), groups = []
-  const inlined = (n) => !isArr(n) || !temps.size ? n : n[0] === 'local.get' && temps.has(n[1]) ? cloneNode(temps.get(n[1])) : n.map(inlined)
+  const inlined = (n) => !isArr(n) || !temps.size ? n : n[0] === 'local.get' && temps.has(n[1]) ? copyOf(temps.get(n[1])) : rebuilt(n, inlined)
   // (a statement's own tees first, which its reads after them see; then the temps of the statements
   // before it. A write a statement still holds inside it refuses the reduction where its operand is scanned.)
-  // (first as the recognizer reads it, `readAs`: without the tees nothing reads, so that the test's
-  // read of an element and the store's are one expression, and with its orders in the lanes'
-  // terms. The loop as written keeps its own: this is the recognizer's copy.)
-  const normal = (stmt, teed) => asSelectAssign(inlined(inlineLaneTees(readAs(stmt), bl.outsideReads, teed)))
+  // (first without the tees nothing reads, `undead`, so that the test's read of an element and the
+  // store's are one expression; last with its orders and its word reads in the lanes' terms,
+  // `readAs`. The loop as written keeps its own: this is the recognizer's copy.)
+  const normal = (stmt, teed) => asSelectAssign(readAs(inlined(inlineLaneTees(undead(stmt), bl.outsideReads, teed))))
   for (let i = 3; i < incIdx; i++) {
     const teed = new Map(), s = normal(loopNode[i], teed)
     if (!isSet(s)) return null
@@ -138,6 +147,9 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
       else if (hasSideEffect(s[2])) return null
       else temps.set(s[1], s[2])
     }
+    // (a local the statement still writes inside its value is no temp past it: a read of it after
+    // stays a read, of a local the body writes, and refuses)
+    walkAst(s[2], { enter: n => { if (n[0] === 'local.tee' || n[0] === 'local.set') temps.delete(n[1]) } })
     for (const [t, load] of teed) temps.set(t, load)
   }
   if (!groups.length) return null
@@ -181,6 +193,20 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
         // (named as the extreme it is: of integer elements it folds at their width, below, as
         // `Math.max` of them does. An integer is no NaN, and the sign of a zero is this tier's.)
         opName = minmax.isMax ? 'f64.max' : 'f64.min'
+      } else if (minmax && multiAcc && exactOf(minmax.exprNode)) {
+        // An extreme of integer cells kept in a word (`if (a[i] > m) m = a[i]` over a plain array
+        // of integers): the cells are floats, each a word exactly, so the float extreme of them,
+        // in the lanes the float extreme by a test takes, is the words' and goes back to a word
+        // at the merge. Exact: a word is no NaN, and the truncation has no zero's sign. Lanes no
+        // strip fed hold an infinity, which saturates to the word no word is beyond. With the
+        // four accumulators only: one lost to the loop as written (reducePart).
+        reduceEntry = {
+          simd: minmax.isMax ? 'f64x2.pmax' : 'f64x2.pmin',
+          extract: 'f64x2.extract_lane', laneType: 'f64',
+          identity: ['f64.const', minmax.isMax ? '-inf' : 'inf'],
+          minmaxSelect: true, isMax: minmax.isMax, pmaxF64: true, word: true,
+        }
+        exprNode = exactOf(minmax.exprNode)
       } else if (minmax) {
         // Synthetic entry: WASM has the SIMD i32x4.max_s/min_s but no scalar i32.max, so the
         // horizontal fold + merge below use select (flagged by minmaxSelect). Identity is the
@@ -332,7 +358,7 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
         exprNode = ['select', ['f64.const', x], ['f64.const', y], exprNode[3]]
       }
     }
-    if (!widen && accType !== (counted ? 'i32' : reduceEntry.accI32 ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
+    if (!widen && accType !== (counted || reduceEntry.accI32 || reduceEntry.word ? 'i32' : reduceEntry.accF64 ? 'f64' : reduceEntry.laneType)) return null
 
     // Bound must be loop-invariant: (local.get $L) or (i32.const N).
     const { bound, boundLocal } = bl
@@ -552,6 +578,13 @@ function reducePart(m, freshIdRef, multiAcc) {
       if (reduceEntry.canonC != null) mergeStmts.push(['local.set', accName,
         ['select', reduceEntry.canonC, ['local.get', accName],
           ['f64.ne', ['local.get', accName], ['local.get', accName]]]])
+    } else if (reduceEntry.word) {
+      // (the float extreme of exact words, back to its word)
+      const w = `$__simd_hw${id}`
+      extraDecls.push(['local', w, 'i32'])
+      mergeStmts.push(['local.set', w, ['i32.trunc_sat_f64_s', ['local.get', ht]]],
+        ['local.set', accName, ['select', ['local.get', w], ['local.get', accName],
+          [reduceEntry.isMax ? 'i32.gt_s' : 'i32.lt_s', ['local.get', w], ['local.get', accName]]]])
     } else {
       mergeStmts.push(['local.set', accName, minmaxSel(['local.get', accName], ['local.get', ht])])
     }
@@ -884,7 +917,7 @@ function wideSum(rhs, accName, fnLocals) {
   return { ...load, wide: load.wide ?? sign, fold: 2, mergeOp: rhs[0], exprNode: fed[1] }
 }
 // A statement as the reductions' recognizer reads it, a copy:
-// - without the tees of locals the function never reads (lift.js deadTee);
+// - without the tees of locals the function never reads (`undead`, lift.js deadTee);
 // - an order between two words the emitter compared as floats, `(f64.gt (f64.convert_i32_s a)
 //   (f64.convert_i32_s b))`, as the words' own signed order: each conversion is exact and keeps
 //   the order, and an unsigned byte or short is no negative word (the integer pass writes these
@@ -892,24 +925,27 @@ function wideSum(rhs, accName, fnLocals) {
 // - an order between a float cell read as a word and a word constant or another such cell,
 //   `(i32.gt_s (i32.trunc_sat_f64_s LOAD) (i32.const 1))`, as the cells' float order: the read is
 //   the exact one of an integer cell (the emitter's `wordOf`, ir/numeric.js exactWord), and the
-//   lanes over such cells are the floats'.
+//   lanes over such cells are the floats';
+// - such a read converted back to a float, `(f64.convert_i32_s (i32.trunc_sat_f64_s LOAD))`, as
+//   the cell: the number the word was read from (optimize/peephole.js holdWordNumbers).
 const WORD_ORDER = { 'f64.gt': 'i32.gt_s', 'f64.lt': 'i32.lt_s', 'f64.ge': 'i32.ge_s', 'f64.le': 'i32.le_s', 'f64.eq': 'i32.eq', 'f64.ne': 'i32.ne' }
 const FLOAT_ORDER = { 'i32.gt_s': 'f64.gt', 'i32.lt_s': 'f64.lt', 'i32.ge_s': 'f64.ge', 'i32.le_s': 'f64.le', 'i32.eq': 'f64.eq', 'i32.ne': 'f64.ne' }
 const wordOf = (x) => !isArr(x) || x.length !== 2 ? null
   : x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u' && isArr(x[1]) && (x[1][0] === 'i32.load8_u' || x[1][0] === 'i32.load16_u') ? x[1] : null
-const floatOf = (x) => !isArr(x) ? null : x.wordOf ?? (isI32Const(x) ? ['f64.const', constNum(x)] : null)
+const floatOf = (x) => !isArr(x) ? null : exactOf(x) ?? (isI32Const(x) ? ['f64.const', constNum(x)] : null)
+const undead = (n) => !isArr(n) ? n : deadTee(n) ? undead(n[2]) : rebuilt(n, undead)
 const readAs = (n) => {
   if (!isArr(n)) return n
-  if (deadTee(n)) return readAs(n[2])
   if (n.length === 3 && WORD_ORDER[n[0]]) {
     const a = wordOf(n[1]), b = a ? wordOf(n[2]) : null
     if (b) return [WORD_ORDER[n[0]], readAs(a), readAs(b)]
   }
-  if (n.length === 3 && FLOAT_ORDER[n[0]] && (n[1].wordOf || n[2].wordOf)) {
+  if (n.length === 3 && FLOAT_ORDER[n[0]] && (exactOf(n[1]) || exactOf(n[2]))) {
     const a = floatOf(n[1]), b = a ? floatOf(n[2]) : null
     if (b) return [FLOAT_ORDER[n[0]], readAs(a), readAs(b)]
   }
-  return n.map(readAs)
+  if (n[0] === 'f64.convert_i32_s' && n.length === 2 && exactOf(n[1])) return readAs(exactOf(n[1]))
+  return rebuilt(n, readAs)
 }
 // A signed word's lanes, for an extreme of whole words kept in a float (MINMAX_WIDEN's shape).
 const WHOLE_WORD = { pre: 'i32x4', sign: 's', laneType: 'i32', lo: -2147483648, hi: 2147483647, extract: 'i32x4.extract_lane' }

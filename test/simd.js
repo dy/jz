@@ -2570,6 +2570,61 @@ for (let i = 0; i < N; i++) { ua[i] = (i * 53 + 7) % 251; sa[i] = (i * 3737 + 11
   }
 })
 
+// An extreme of a plain array of integers. Its cells are floats, each a word exactly, and the
+// emitter reads them as words: kept in a word (`let m = a[0]; … if (a[i] > m) m = a[i]`) the
+// extreme had word lanes to ask for and float cells to load, and kept in a float from an infinity
+// each read went to a word and back. The reductions' recognizer reads the cell for the word
+// (reduce.js exactOf, readAs): the float extreme of the cells is the words', taken back to a word
+// at the merge where a word keeps it. With four accumulators, so at the speed tier alone.
+test('vectorize: an extreme of integer cells is the float extreme of the cells', () => {
+  const head = (n) => `const N = ${n}
+const wd = []; for (let i = 0; i < N; i++) wd.push((i * 37 + 11) % 251 - 90)
+const ex = []; for (let i = 0; i < N; i++) ex.push(i === 3 ? 2147483647 : i === 40 ? -2147483648 : (i * 37 + 11) % 251 - 90)
+`
+  const FROM = 'for (let i = 1; i < N; i++)', ALL = 'for (let i = 0; i < N; i++)'
+  // [name, body, the lanes' ops at 'speed' (null: none asked)]
+  const rows = [
+    ['a maximum kept in a word', `let m = wd[0]; ${FROM} if (wd[i] > m) m = wd[i]; return m`, ['f64x2.pmax']],
+    ['a minimum kept in a word', `let m = wd[0]; ${FROM} if (wd[i] < m) m = wd[i]; return m`, ['f64x2.pmin']],
+    ['a maximum kept where the cell is no less', `let m = wd[0]; ${FROM} if (wd[i] >= m) m = wd[i]; return m`, ['f64x2.pmax']],
+    ['a maximum by a ternary', `let m = wd[0]; ${FROM} m = wd[i] > m ? wd[i] : m; return m`, ['f64x2.pmax']],
+    ['a maximum of a named cell', `let m = wd[0]; ${FROM} { const v = wd[i]; if (v > m) m = v } return m`, ['f64x2.pmax']],
+    ['a minimum counting down', `let m = wd[N - 1]; for (let i = N - 2; i >= 0; i--) if (wd[i] < m) m = wd[i]; return m`, ['f64x2.pmin']],
+    ['a maximum among the greatest word', `let m = ex[0]; ${FROM} if (ex[i] > m) m = ex[i]; return m`, ['f64x2.pmax']],
+    ['a minimum among the least word', `let m = ex[0]; ${FROM} if (ex[i] < m) m = ex[i]; return m`, ['f64x2.pmin']],
+    ['a maximum from above every cell', `let m = 2147483647; ${ALL} if (wd[i] > m) m = wd[i]; return m`, ['f64x2.pmax']],
+    ['a minimum from above every cell', `let m = 2147483647; ${ALL} if (wd[i] < m) m = wd[i]; return m`, ['f64x2.pmin']],
+    ['a maximum from below every cell', `let m = -2147483648; ${ALL} if (wd[i] > m) m = wd[i]; return m`, ['f64x2.pmax']],
+    ['a maximum beside a sum', `let m = wd[0], s = 0; ${FROM} { if (wd[i] > m) m = wd[i]; s += wd[i] } return m * 1000 + s`, ['f64x2.pmax']],
+    ['a minimum and a maximum kept in words', `let lo = wd[0], hi = wd[0]; ${FROM} { if (wd[i] < lo) lo = wd[i]; if (wd[i] > hi) hi = wd[i] } return hi * 1000 + lo`, ['f64x2.pmin', 'f64x2.pmax']],
+    ['a minimum and a maximum from the infinities', `let lo = Infinity, hi = -Infinity; ${ALL} { if (wd[i] < lo) lo = wd[i]; if (wd[i] > hi) hi = wd[i] } return hi * 1000 + lo`, ['f64x2.pmin', 'f64x2.pmax']],
+    ['a maximum from minus infinity', `let m = -Infinity; ${ALL} if (wd[i] > m) m = wd[i]; return m`, ['f64x2.pmax']],
+  ]
+  for (const [name, body, ops] of rows) {
+    const src = head(67) + `export let f = () => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+    if (!ownedLevels('speed').length) continue
+    const text = funcWat(wat(src, { optimize: 'speed' }), 'f')
+    for (const op of ops) ok(text.includes(op), `${name}: ${op} at speed`)
+  }
+  // (every count of cells against the strips: none past the first, under one strip, one strip and a remainder)
+  for (const n of [1, 2, 5, 8, 9, 17]) {
+    const src = head(n) + `export let f = () => { ${rows[0][1]} }\nexport let g = () => { ${rows[12][1]} }`
+    for (const optimize of ownedLevels(2, 'speed')) {
+      const got = jz(src, { optimize }).exports, want = oracle(src)
+      is(got.f(), want.f(), `a maximum of ${n} at ${optimize}`)
+      is(got.g(), want.g(), `a minimum and a maximum of ${n} at ${optimize}`)
+    }
+  }
+  // (one accumulator lost to the loop as written: the word's extreme is left to it below the speed tier)
+  const src = head(67) + `export let f = () => { ${rows[0][1]} }`
+  if (ownedLevels(2).length) ok(!/f64x2\.pm/.test(funcWat(wat(src, { optimize: 2 }), 'f')), 'left to the loop as written at level 2')
+  if (ownedLevels('speed').length) {
+    const text = funcWat(wat(src, { optimize: 'speed' }), 'f')
+    ok(/\$__simd_acc\d+_3/.test(text) && /i32\.trunc_sat_f64_s\s*\(local\.(get|tee) \$__simd_h\d+/.test(text), 'four accumulators, and the folded extreme truncated at the merge')
+  }
+})
+
 // An integer element's sum into a Number, `s += t[i]` over an Int32Array or a narrower integer
 // array where no range holds `s` a word: kept in 64-bit lanes, where no sum of elements overflows,
 // and merged into the float once (reduce.js wideSum, reduceWrapper `exactly`). Four accumulators
