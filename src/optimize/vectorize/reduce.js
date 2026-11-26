@@ -572,6 +572,14 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   const writeCount = new Map()
   for (const s of body) writeCount.set(s[1], (writeCount.get(s[1]) || 0) + 1)
   for (const a of accSet) { if (writeCount.get(a) !== 1 || fnLocals.get(a) !== 'f64' || defs.has(a)) return null }
+  // A body that is only accumulators, each fed an integer element as it is loaded, is the wide
+  // accumulator's (optimize/wide-accumulator.js): carried as an integer its add is off the float
+  // chain, where the lanes here would convert two elements and still add them in the loop's order,
+  // a lane's extraction a round on top. Over an Int32Array the lift ran at 93 ns for 256 elements
+  // where the loop as written runs at 72; with no wide accumulator the loop as written runs at 79.
+  // (An f32 element's sum stays: its promotion in lanes ran at 86 ns at level 2 where 97 without.)
+  const whole = (e) => isArr(e) && CONVERT_LOW[e[0]] != null && e.length === 2 && isArr(e[1]) && LOW_INT_LOAD[e[1][0]] != null
+  if (body.every(s => accSet.has(s[1]) && whole(s[2][2]))) return refusedFor('cost')
 
   // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
   // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. BodyModel fact

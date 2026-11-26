@@ -14,9 +14,10 @@
 // to list, `node test/reduce-coverage.js --update`. A `.` at 'speed' is a way of writing the loop
 // that runs an element a round where another runs two to eight; at level 2 a float sum keeps the
 // loop's order, and its `.` is the tier's (README, "Float sums in lanes").
-// A V says the kernel is in lanes, not that the lanes win: an Int32Array's sum into a Number is
-// in lanes, two elements a round in the loop's order, and ran at 94 ns over 256 elements where
-// its scalar loop ran at 72 (2026-11-25, raw calls, an M4; found, not fixed).
+// A V says the kernel is in lanes, not that the lanes win, and one `.` is a choice: an
+// Int32Array's sum into a Number, two elements a round in the loop's order, ran at 93 ns over 256
+// elements where the loop as written runs at 72, so the lift is declined (reduce.js
+// tryReduceBitExact). Its lanes are a form not yet written: 64-bit lanes by extension.
 // The table is the JS host's: under wasi the tests return.
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'

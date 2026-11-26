@@ -10,7 +10,7 @@
   "scale0": {"2":"...............","speed":"..............."},
   "prefix": {"2":"...............","speed":"..............."},
   "dot": {"2":"VVVVVVVVVVVV...","speed":"VVVVVVVVVVVV..."},
-  "sum": {"2":"...VVVVVV......","speed":"VVVVVVVVV......"},
+  "sum": {"2":"...VVV.........","speed":"VVVVVV........."},
   "two": {"2":"VVVVVVVVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},
   "swap": {"2":"VVVVVVVVVVVVVVV","speed":"VVVVVVVVVVVVVVV"},
   "cond": {"2":"VVV...VVVVVVVVV","speed":"VVV...VVVVVVVVV"},

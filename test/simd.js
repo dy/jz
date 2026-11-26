@@ -2545,6 +2545,33 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// An integer element's sum into a Number is left as written: the tier that keeps the loop's order
+// would convert two elements a round and still add them in order, and the loop as written carries
+// its accumulator as an integer (optimize/wide-accumulator.js). Over an Int32Array of 256 the lift
+// ran at 93 ns where the loop runs at 72 (reduce.js tryReduceBitExact). The lanes keep what they
+// do work for: a product of two elements, and an f32 element's promotion.
+test('vectorize: an integer element\'s sum into a Number is left to the loop as written', () => {
+  const head = `const N = 67
+const ia = new Int32Array(N), ib = new Int32Array(N), ua = new Uint16Array(N), fa = new Float32Array(N)
+for (let i = 0; i < N; i++) { ia[i] = (i * 37 + 11) % 64 - 20; ib[i] = (i * 29 + 5) % 32 - 9; ua[i] = (i * 53 + 7) % 60000; fa[i] = ((i * 37 + 11) % 64) * 0.25 - 3 }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  // [name, body, converted in lanes at level 2]
+  const rows = [
+    ['an Int32Array\'s sum', `let s = 0.5; ${LOOP} s += ia[i]; return s`, false],
+    ['a Uint16Array\'s sum into a fraction', `let s = 0.5; ${LOOP} s += ua[i]; return s`, false],
+    ['two sums of integer elements', `let s = 0.5, t = 0.25; ${LOOP} { s += ia[i]; t += ib[i] } return s * 3 + t`, false],
+    ['a sum of products of integer elements', `let s = 0.5; ${LOOP} s += ia[i] * ib[i]; return s`, true],
+    ['a sum of an integer element and a float', `let s = 0.5, t = 0.25; ${LOOP} { s += ia[i]; t += fa[i] * 0.5 } return s * 3 + t`, true],
+    ['an f32 element\'s sum', `let s = 0.5; ${LOOP} s += fa[i]; return s`, true],
+  ]
+  for (const [name, body, lanes] of rows) {
+    const src = head + `export let f = () => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `${name} at ${optimize}`)
+    if (ownedLevels(2).length) is(/f64x2\.(convert_low|promote_low)/.test(funcWat(wat(src, { optimize: 2 }), 'f')), lanes, `${name}: ${lanes ? 'converted in lanes' : 'no conversion in lanes'} at level 2`)
+  }
+})
+
 // A reduction read whichever side holds its accumulator, and a sum taken from it: `s = a[i] + s`
 // is `s += a[i]`, every op of the table commuting, and `s -= a[i]` is the sum of the cells taken
 // from `s` once, so the lanes add and the merge subtracts (optimize/vectorize/reduce.js
