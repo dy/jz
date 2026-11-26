@@ -4754,6 +4754,69 @@ Every job green but `claims`, which stands as before. The test workflow took 52 
 
 The reductions' forms: the accumulator on either side, a sum taken from it, the cell before the counter over a plain array, and a table of every way of writing a reduction over every kind of array, in lanes or not, that only grows (written and passing on a branch off this landing: 65 of 115 in lanes at 'speed' where this landing has 53). Then the `while` loop that ends in its counter's step.
 
+## The land-bi landing: three more ways of writing a sum in lanes, the while loop over a plain array, a lift that lost declined, and a table of reductions (2026-11-26)
+
+Seven commits on bee5698de, the integrator's.
+
+### What landed
+
+- `f795ef7b0` A reduction lifts with its accumulator on either side (`s = a[i] + s`), as a sum taken from it (`s -= a[i]`: the lanes add, the merge subtracts), and of the cell before the counter over a plain array (src/optimize/vectorize/reduce.js `plainReduce`; addr-model.js `isInvariantBase`). The float sum's rule takes the two forms it had left to the word.
+- `af36663e8` test/reduce-coverage.js and its table: 23 ways of writing a reduction over 5 kinds of array, each in lanes or not at level 2 and at 'speed', every program answering as Node.
+- `dd62945c9` A read under a `while`'s test is inside the array until the counter is written (module/array.js; src/compile/emit/i32-bounds.js `rangeHere`), and a loop that writes a name an enclosing test bounds ends that bound (src/compile/emit/control-flow.js).
+- `5e7d2358b` The tier that keeps the loop's order leaves an integer element's sum into a Number to the loop as written (reduce.js `tryReduceBitExact`).
+- `f7cd4d629`, `9d552ac3b`, `41c4d3512` The changelog's entries.
+
+### What it gives, measured
+
+Raw calls of the export, one export a process, the least of seven batches, Node 25 on an M4, 256 elements at 'speed', main and then this:
+
+| | main | this |
+|---|---|---|
+| `s -= c[i]`, a plain array of integers | 78 ns | 17 |
+| `s += c[i - 1]`, a plain array of integers | 82 | 17 |
+| `s -= f[i]`, a plain array of fractions | 91 | 17 |
+| `s += f[i - 1]`, a plain array of fractions | 94 | 18 |
+| `s = f[i] + s`, a plain array of fractions | 91 | 17 |
+| `s -= t[i]`, a Float64Array | 89 | 15 |
+| `s = t[i] + s`, a Float64Array | 92 | 15 |
+| `s = (s - t[i]) \| 0`, an Int32Array | 67 | 16 |
+| `while (i < N) { s += c[i]; i++ }`, integers | 87 | 17 |
+| the same, fractions | 88 | 17 |
+| `do { … } while (i < N)`, fractions | 87 | 17 |
+| a `while`, a dot product | 105 | 26 |
+| a `while`, a maximum | 72 | 17 |
+| `s += t[i]`, an Int32Array into a Number | 92 | 73 |
+| the same at level 2 | 93 | 74 |
+
+The table of reductions: 60 of 115 programs in lanes at 'speed', 36 at level 2. No bench case's bytes moved (105 of 105 equal at 'size' and at 'speed'): the bench corpus holds none of these loops, which is why none of them had shown.
+
+### Three things found on the way
+
+- **The while loop's cause was one proof asking for the wrong range.** The read's fixed-length proof asked for the counter's hull over the whole body, and a `while`'s body holds its step, where the counter reaches the bound. The emitter already kept what the loop's test proves until the counter's first write, for another question. Two attempts before that were wrong and were taken back: rewriting the `while` as a `for` ahead of every reader cost the spellings gate 127 of its 470 cells (the readers know the `while` better than a `for` with no init), and lowering it as a `for` at the emitter lost the plans the emitter reads by the body's node.
+- **Using that fact for a read's bounds would have opened a load past the array**, and does not: an inner loop that writes the bounded name is emitted once for all its passes, and held the bound on every one. A loop that writes such a name now ends the bound. A test reads past the array at level 0 with the fix out.
+- **A lift on main was slower than its loop.** The tier that keeps the loop's order lifted an Int32Array's sum into a Number two elements a round, adds still in order: 92 ns where the loop as written, its accumulator carried as an integer, runs at 73. Weighing a lane's extraction in the cost model stops it and the tier's winners with it (a sum of squares at level 2, 86 ns in lanes, 95 without), so the tier declines exactly a body of bare integer-element accumulators. I had first extended that tier to the two new forms: an Int32Array's `s -= t[i]` went from 73 ns to 98, and the extension was taken out.
+
+So a mark in the table says a kernel is in lanes, not that the lanes win. Seven marks left the table at each level with the declined lift, each for a faster loop.
+
+### The check
+
+On 41c4d3512, every step exit 0 in 58 minutes at 8 jobs: the default leg 7,778 tests, level 3 armed 7,557, WASI 7,648, level 0 7,535, the self-compile gate 89, integration 241 of 242 with one skip, the bench corpus's bytes unmoved against main in all 105 cases, the examples at a geomean of 1.73 and 1.69 against V8, jz ahead on 25 of 25. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 1,158 seconds.
+
+On a fresh hosted compiler: the kernel's parity and oracle tests 19 of 19, test/fixed-length.js 36 of 36 with the new reads under a `while`'s test among them, test/simd.js 302 of 303: the one is the shape pin the landing before recorded, in a file outside the hosted suite.
+
+Thirty-one mutations each fail a test: twenty-four of the forms, the float sum's rule and the declined lift, seven of the read under a while's test less one. That one is a clause no test holds, an inner loop whose test writes the bounded name: its write is emitted ahead of its body and ends the bound there already, and the clause stands for an emitter that orders them otherwise.
+
+### Found, not fixed
+
+- **Idioms over a plain array where V8 is ahead at 'speed'** (raw, 256 elements, taken under the check's load, jz and then Node): `reduce` 126 ns and 53; `indexOf` and `includes` 58 and 33; a count under a condition 116 and 104; a minimum and a maximum kept by tests in one loop 484 and 172, where level 2 runs it at 95. The last is optimize/select-bits.js writing each extreme as a pseudo-minimum of two splats, a chain of six or seven cycles a round where the branch predicts.
+- An integer array's sum into a Number has no lanes: 64-bit lanes by extension are a form not written.
+- Two reductions in one loop, a sum or a count under a condition, every other cell, `forEach` and `reduce` over a plain array, a `while` counting down: the table lists each.
+- The hosted compiler's text with the lanes switched off equals its default's (from the landing before; cause not found).
+
+### Next
+
+Written on a branch off this landing, not committed: a tee nothing reads dissolved ahead of the vectorizer's recognizers (a plain array's two reads of one element were two expressions to them), and four accumulators for the float extreme kept by a test: 25 ns where 73 over a plain array and where 78 over a Float64Array. Then the minimum and maximum in one loop, `reduce` and `indexOf` over a plain array, and an integer array's sum in 64-bit lanes.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

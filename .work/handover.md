@@ -954,3 +954,25 @@ What this landing taught:
 
 - The first form of the rule was right by the count of ops and wrong by the clock in four forms. The gate's count is where to look, and a clock on each form the change touches is what decides.
 - I named a cause for a hosted failure from reading one file, wrote the fix, and the fix changed nothing: the cause was not the one I read. A cause is named when the fix that follows from it works.
+
+## Branches of the land-bi landing (2026-11-26), tips before deletion
+
+```
+41c4d3512 while-x    the landing branch: seven commits on bee5698de; the record's commit after it
+084d533dd red-x      its first three commits before the replay onto the held-out lane's record (deleted)
+```
+
+For whoever lands next:
+
+- `test/reduce-coverage.json` is the map of reductions: 23 ways of writing one over 5 kinds of array, V where the kernel is in lanes. A `.` at 'speed' is a way of writing a loop that runs an element a round where another runs two to eight. `node test/reduce-coverage.js --update` rewrites it; scripts/listings.mjs holds it with the other listings. A mark says in lanes, not faster: time what a mark gained.
+- A lift is not a win until it is timed against its own loop. The ordered tier's lift of an Int32Array's sum was a V on main and ran 26% slower than the loop it replaced.
+- The bench corpus moved by no byte in this landing or the one before it: it holds no reduction over a plain array, no `while` reduction, no sum taken from its accumulator. What a user writes over plain arrays is held by the gates alone (test/data-forms.js, test/reduce-coverage.js, test/spellings.js).
+- What a loop's test proves of its counter until the counter's first write is kept by the emitter (src/compile/emit/i32-bounds.js `loopGuardHi`, `rangeHere`). It is a fact of one emission position: a decision about a whole body must not read it.
+- The `while` loop is known to many readers in its own form (src/type/canonical-bounds.js, interval-proof.js, compile/loop-recurrence.js and others, 102 sites). Rewriting it as a `for` ahead of them costs more than it gives; so does lowering it as one at the emitter, which reads its plans by the body's node.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `probe/lifts.mjs` and `scratch-forms.mjs` (which spellings of a reduction lift), `probe/in/a/red-forms.mjs`, `while-forms.mjs`, `i32-sums.mjs`, `callbacks.mjs`, `minmax.mjs`, `maxforms.mjs` (the timing inputs of this landing and of what it found), `own/mutant-red.sh` (24 mutations) and `own/mutant-while.sh` (7), `probe/vec-ir.mjs`, `probe/parse-show.mjs`.
+
+What this landing taught:
+
+- Three times the first idea was the larger one and the wrong one: a rewrite of the loop where one proof asked for the wrong range; a weight in the cost model where one tier took a body it had no work for; an extension of that tier where its lift already lost. Each time the timing or a gate said so within minutes. Measure the small form first.
+- A soundness fact borrowed for a new question needs its limits read again. The loop test's bound was safe for the question it was kept for and unsafe for a read's bounds, in one shape: a nested loop that writes the name.
