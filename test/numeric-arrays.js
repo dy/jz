@@ -18,6 +18,17 @@ const BITS = `const bits = (hi, lo) => { const t = new Float64Array(1), w = new 
 const PAYLOADS = [[0x7FF88000, 0x1000], [0x7FF87FFF, 0xFFFFFFFF], [0x7FF80002, 0], [0xFFF80000, 0], [0x3FF00000, 0]]
 // the ARRAY_RAW aux a construction ORs into its pointer, as the emitter spells it
 const tagged = (text) => text.includes('0x0000000100000000')
+// the same in one export's own text, where the module holds the constant in a global of its own as where it is written out
+// (a helper of the runtime's may spell it for a test of its own: the module's whole text says nothing of one array)
+const taggedIn = (text, name) => {
+  const pooled = /\(global (\$\S+) i64\s*\(i64\.const 0x0000000100000000\)/.exec(text)?.[1]
+  // (the export's body is its own function, or the wrapper's where it was inlined there)
+  return [name, name + '$exp'].some(f => {
+    let fn
+    try { fn = funcWat(text, f) } catch { return false }
+    return tagged(fn) || pooled != null && fn.includes(`(global.get ${pooled})`)
+  })
+}
 // canonicalNumberIR's own test of its temp: `cn != cn` (read before watr, whose local coalescing renames the temp)
 const UNOPT = { level: 2, sourceInline: false, watr: false }
 const canons = (text) => (text.match(/\(f64\.ne \(local\.get \$\S*cn\d+\S*\) \(local\.get \$\S*cn\d+\S*\)\)/g) || []).length
@@ -310,4 +321,178 @@ test('numeric arrays: a store under the length of its own array keeps a pushed a
   }
   if (belowOpt(2)) return
   is(canons(funcWat(wat(src, { optimize: UNOPT }), 'bump')), 0, 'the store keeps its bits: no canonicalization')
+})
+
+// A reader of a call's result reads the array the call hands on. The query answers a method
+// by its result's type, so it names no array for `fill`, which returns its receiver and
+// leaves it raw, nor for `at`, `pop` and `shift`, which return an element. The census reads
+// through such a call (src/compile/numeric-arrays.js handsOn): the receiver and what it holds
+// keep the boxed layout. Where it did not, the array stayed raw under the reader:
+// a Number whose bits spell the hole was a hole to it, and `new Array(4).fill(x).map(f)`
+// called `f` for none of its four elements.
+test('numeric arrays: a reader of a call\'s result reads the array the call hands on', () => {
+  const four = '[h, h, h, h]', pairs = `[${four}, ${four}]`, tally = '() => { n++; return 1 }'
+  // [name, the statements after `const h = bits(hi, lo); let n = 0`]
+  const rows = [
+    ['fill, map', `new Array(4).fill(h).map(${tally}); return n`],
+    ['fill, filter', `return new Array(4).fill(h).filter(() => true).length`],
+    ['fill, forEach', `new Array(4).fill(h).forEach(() => { n++ }); return n`],
+    ['fill, every', `new Array(4).fill(h).every(() => { n++; return true }); return n`],
+    ['fill, some', `new Array(4).fill(h).some(() => { n++; return false }); return n`],
+    ['fill, reduce', `return new Array(4).fill(h).reduce((k) => k + 1, 0)`],
+    ['fill, includes', `return new Array(4).fill(h).includes(NaN) ? 1 : 0`],
+    ['fill, indexOf', `return new Array(4).fill(h).indexOf(1)`],
+    ['fill, join', `return new Array(3).fill(h).join('|')`],
+    ['fill, slice', `new Array(4).fill(h).slice(1).forEach(() => { n++ }); return n`],
+    ['fill, a spread, join', `return [...new Array(3).fill(h)].join('|')`],
+    ['fill, a spread, includes', `return [...new Array(4).fill(h)].includes(NaN) ? 1 : 0`],
+    ['at, fill, map', `const rows = [[1, 2, 3, 4], [5, 6, 7, 8]]; rows.at(1).fill(h).map(${tally}); return n`],
+    ['at, a spread, join', `const rows = ${pairs}; return [...rows.at(1)].join('|')`],
+    ['pop, a spread, includes', `const rows = ${pairs}; return [...rows.pop()].includes(NaN) ? 1 : 0`],
+    ['shift, concat, join', `const rows = ${pairs}; return [7].concat(rows.shift()).join('|')`],
+    ['fill, findIndex', `return new Array(4).fill(h).findIndex((v) => v !== v || v === 1)`],
+    // (handed to a function: the size tier reads the element where it is passed)
+    ['fill, an element', `return what(new Array(4).fill(h)[1])`],
+    ['at, an element', `const rows = ${pairs}; return what(rows.at(1)[2]) * 10 + what(rows.pop()[0])`],
+    ['at, an element a round', `const rows = ${pairs}; let s = 0; for (let i = 0; i < 4; i++) s += what(rows.at(0)[i]); return s`],
+    ['reverse', `const t = ${four}; t.reverse().map(${tally}); return n`],
+    ['sort', `const t = ${four}; t.sort().map(${tally}); return n`],
+    ['copyWithin', `const t = ${four}; t.copyWithin(0, 1).map(${tally}); return n`],
+    ['at', `const rows = ${pairs}; rows.at(1).map(${tally}); return n`],
+    ['pop', `const rows = ${pairs}; rows.pop().map(${tally}); return n`],
+    ['shift', `const rows = ${pairs}; rows.shift().map(${tally}); return n`],
+    ['find', `const rows = ${pairs}; rows.find(() => true).map(${tally}); return n`],
+    ['an element', `const rows = ${pairs}; rows[1].map(${tally}); return n`],
+    ['a choice', `const a = ${four}, b = ${four}; (lo & 1 ? a : b).map(${tally}); return n`],
+    ['an assignment', `let t; (t = ${four}).map(${tally}); return n + t.length`],
+    ['a call of the program\'s', `const mk = () => ${four}; mk().map(${tally}); return n`],
+  ]
+  const src = `${BITS}\nconst what = (v) => v === undefined ? 1 : v !== v ? 2 : 3\n` + rows.map(([, body], i) => `export let r${i} = (hi, lo) => { const h = bits(hi, lo); let n = 0; ${body} }`).join('\n')
+  const want = oracle(src)
+  for (const optimize of tiers()) {
+    const got = jz(src, { optimize }).exports
+    for (const [hi, lo] of PAYLOADS) rows.forEach(([name], i) =>
+      is(got[`r${i}`](hi, lo), want[`r${i}`](hi, lo), `${name} ${hi.toString(16)}:${lo.toString(16)} O${optimize}`))
+  }
+  // An element read over what a call hands on is the emitter's generic read, which cannot name
+  // the array. A program of these reads alone: which read a tier takes out of line depends on
+  // the program around it, and the size tier takes these.
+  const paths = `${BITS}
+    const kind = (v) => v === undefined ? 1 : v !== v ? 2 : 3
+    export const elem = (hi, lo) => { const h = bits(hi, lo); return kind(new Array(4).fill(h)[1]) }
+    export const elemNamed = (hi, lo) => { const h = bits(hi, lo); const t = new Array(4); return kind(t.fill(h)[2]) }
+    export const elemLoop = (hi, lo) => { const h = bits(hi, lo); const t = new Array(4); let s = 0; for (let i = 0; i < 4; i++) s += kind(t.fill(h)[i]); return s }
+    export const rowElem = (hi, lo) => { const h = bits(hi, lo); const rows = ${pairs}; return kind(rows.at(1)[2]) * 10 + kind(rows.pop()[0]) }
+    export const rowLoop = (hi, lo) => { const h = bits(hi, lo); const rows = ${pairs}; let s = 0; for (let i = 0; i < 4; i++) s += kind(rows.at(0)[i]); return s }
+    export const stored = (hi, lo) => { const h = bits(hi, lo); const rows = [[1, 2, 3, 4], [5, 6, 7, 8]]; rows.at(1)[2] = h; return kind(rows[1][2]) * 10 + kind(rows.at(1)[2]) }`
+  const host = oracle(paths)
+  for (const optimize of tiers()) {
+    const got = jz(paths, { optimize }).exports
+    for (const [hi, lo] of PAYLOADS) for (const name of ['elem', 'elemNamed', 'elemLoop', 'rowElem', 'rowLoop', 'stored'])
+      is(got[name](hi, lo), host[name](hi, lo), `${name} ${hi.toString(16)}:${lo.toString(16)} O${optimize}`)
+  }
+})
+
+// An array of Numbers is kept raw however the emitter makes it: by `Array.from`, by an
+// array's `map`, by a literal that spreads Numbers into it, as by a literal of its own
+// elements (src/summary/query.js taggedConstruction; the pointer tagged where the node is
+// emitted, src/compile/emit/dispatch.js). What the maker stores is a Number's bits either
+// way, so the array it fills is the cell's as a literal's is: a store after keeps its
+// bits, the release walk and the compaction read no element of it. A `map` makes an array
+// only of an array: of a receiver that is one on every run, reached by no optional link.
+test('numeric arrays: an array Array.from, map or a spread literal makes is raw', () => {
+  const SRC = 'const src = []; for (let i = 0; i < n; i++) src.push(i * 0.5)'
+  // [name, the statements ahead, the array's expression]
+  const makers = [
+    ['Array.from of a count', '', 'Array.from({ length: n }, (_, i) => i * 0.5)'],
+    // (its count is the source's, which no rule holds: the payload enters by a push, where a store at an index could leave a hole)
+    ['Array.from of a typed array', 'const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = i * 0.5', 'Array.from(t)', 'a.push(bits(hi, lo))', 'a[a.length - 1]'],
+    ['Array.from of an array, mapped', SRC, 'Array.from(src, (v, i) => v + i)', 'a.push(bits(hi, lo))', 'a[a.length - 1]'],
+    ['a map of a filled array', '', 'new Array(n).fill(0).map((_, i) => i * 0.5)'],
+    ['a map of a built array', SRC, 'src.map((v) => v * 3)'],
+    ['a copy by spread', SRC, '[...src]'],
+    ['a spread beside elements', SRC, '[9, ...src, 8]'],
+    ['two spreads', SRC, '[...src, ...src]'],
+  ]
+  // (the count a constant of the module: a store at an index a count of any value may not hold would leave a hole)
+  const program = (pre, make, n, put = 'a[1] = bits(hi, lo)', at = 'a[1]') => `${BITS}
+    const n = ${n}
+    export let f = (hi, lo) => {
+      ${pre}
+      const a = ${make}
+      ${put}
+      a.push(n)
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i] === a[i] ? a[i] : 1000
+      return [typeof a[1], a[1] === a[1], a[1] === undefined, a.length, s, a[0], a[a.length - 1]]
+    }
+    export let g = (hi, lo) => {
+      ${pre}
+      const a = ${make}
+      ${put}
+      const out = new Float64Array(1); out[0] = ${at}
+      const w = new Uint32Array(out.buffer)
+      return [w[1], w[0]]
+    }
+    let kept
+    export let h = () => { ${pre}; kept = ${make}; return kept.length }
+    export let last = () => kept[kept.length - 1]`
+  for (const [name, pre, make, put, at] of makers) for (const n of [2, 9]) {
+    const src = program(pre, make, n, put, at), want = oracle(src)
+    for (const optimize of tiers()) {
+      const got = jz(src, { optimize }).exports
+      for (const [hi, lo] of PAYLOADS) {
+        is(got.f(hi, lo), want.f(hi, lo), `${name} of ${n}: f(${hi.toString(16)}:${lo.toString(16)}) O${optimize}`)
+        is([got.h(), got.last()], [want.h(), want.last()], `${name} of ${n}: kept in a module binding O${optimize}`)
+        // (the bits a raw array keeps: a boxed one stores the canonical NaN)
+        if (raw(optimize)) is(got.g(hi, lo), [hi >>> 0, lo >>> 0], `${name} of ${n}: bits kept ${hi.toString(16)}:${lo.toString(16)} O${optimize}`)
+      }
+    }
+    // (the one a module binding keeps holds its pointer whole: a function's own may be read by its offset alone)
+    if (!belowOpt(2)) ok(taggedIn(wat(src, { optimize: { level: 2, sourceInline: false } }), 'h'), `${name} of ${n}: made raw`)
+  }
+
+  // What keeps the boxed layout, each answering as the host: a maker's array a generic reader
+  // reads; a `map` of a receiver that is no array on every run (the tag would be written
+  // into the typed array the other receiver's `map` returns); one through an optional link.
+  // `g` stores the payload and reads its bits back: a boxed array holds the canonical NaN.
+  const READ = `const out = new Float64Array(1); out[0] = a[0]; const w = new Uint32Array(out.buffer); return [w[1], w[0]]`
+  const boxed = [
+    ['a made array a generic reader reads', `${BITS}
+      export let f = (hi, lo) => { const a = Array.from({ length: 3 }, (_, i) => i + 1); a[1] = bits(hi, lo); return a.join(',') + a.slice(1).length }
+      export let g = (hi, lo) => { const a = Array.from({ length: 3 }, (_, i) => i + 1); a[0] = bits(hi, lo); if (a.join(',').length < 0) return [0, 0]; ${READ} }`, [[]]],
+    ['a map of what is an array on some runs and a typed array on others', `${BITS}
+      let any = [1, 2, 3]
+      export let swap = (k) => { any = k ? new Float64Array([4, 5, 6]) : [7, 8, 9]; return 0 }
+      export let f = (hi, lo) => { const r = any.map(v => v + 1); r[0] = bits(hi, lo); return [r.length, r[1], r[2], r[0] === r[0]] }
+      export let g = (hi, lo) => { const a = any.map(v => v + 1); a[0] = bits(hi, lo); ${READ} }`, [[], ['swap', 1], [], ['swap', 0], []]],
+    ['a map through an optional link', `${BITS}
+      const hold = { xs: [1, 2, 3] }
+      const pick = (c) => c ? hold : null
+      export let f = (hi, lo) => {
+        const a = pick(lo & 1)?.xs.map(v => v * 2), b = pick(hi & 1 ? 0 : 1)?.xs.map(v => v * 2)
+        if (a) a[0] = bits(hi, lo)
+        if (b) b[0] = bits(hi, lo)
+        return [a === undefined, a ? a.length + a[2] : -1, b === undefined, b ? b[0] === b[0] : -1]
+      }
+      export let g = (hi, lo) => { const a = pick(1)?.xs.map(v => v * 2); if (!a) return [0, 0]; a[0] = bits(hi, lo); ${READ} }`, [[]]],
+  ]
+  const nan = (hi, lo) => (hi & 0x7FF00000) === 0x7FF00000 && ((hi & 0xFFFFF) !== 0 || lo !== 0)
+  for (const [name, src, calls] of boxed) {
+    for (const optimize of tiers()) {
+      // (one instance each: the binding a call swaps is carried from call to call, as the host's)
+      const got = jz(src, { optimize }).exports, want = oracle(src)
+      for (const [hi, lo] of PAYLOADS) {
+        for (const [fn, ...args] of calls)
+          fn ? is(got[fn](...args), want[fn](...args), `${name}: ${fn} O${optimize}`) : is(got.f(hi, lo), want.f(hi, lo), `${name}: f(${hi.toString(16)}:${lo.toString(16)}) O${optimize}`)
+        is(got.g(hi, lo), nan(hi, lo) ? [0x7FF80000, 0] : [hi >>> 0, lo >>> 0], `${name}: a NaN stored is the canonical one ${hi.toString(16)}:${lo.toString(16)} O${optimize}`)
+      }
+    }
+    if (!belowOpt(2)) ok(!taggedIn(wat(src, { optimize: { level: 2, sourceInline: false } }), 'f'), `${name}: its array is not raw`)
+  }
+
+  // A maker called for what it does alone hands on no array.
+  const dropped = `let n = 0
+    export let f = () => { n = 0; Array.from({ length: 3 }, (_, i) => { n += i + 1; return i }); [1, 2, 3].map((v) => { n += v; return v }); [...[4, 5]]; return n }`
+  for (const optimize of tiers()) is(jz(dropped, { optimize }).exports.f(), oracle(dropped).f(), `makers for effect O${optimize}`)
 })

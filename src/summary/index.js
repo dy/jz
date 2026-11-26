@@ -3353,7 +3353,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); return ANY }
     for (let i = 2; i < n; i++) escape(ks[base + i])
     const typedRecv = tagOf(recv) === K.TYPED
-    const mayMiss = !typedRecv && (fixedLen(recv) < 0 || hasTag(elemOf(recv), K.ABSENT))
+    // (the receiver's count where the call meets it: fixed, or built and left alone since, `lengthHere`)
+    const count = typedRecv ? -1 : lengthHere(recv)
+    const mayMiss = !typedRecv && (count < 0 || hasTag(elemOf(recv), K.ABSENT))
     const finds = name === 'find' || name === 'findLast' || name === 'findIndex' || name === 'findLastIndex'
     const elem = typedRecv ? typedElemKind(recv) : mayMiss && finds ? orAbsent(elemOf(recv)) : elemOf(recv)
     const b = sp
@@ -3365,7 +3367,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // `map` makes as many elements as the receiver has, its callback's results
     if (name === 'map') {
       const item = mayMiss ? orAbsent(r) : r, nums = hasTag(item, K.NUMBER) ? callbackNums(paramOf(cb)) : NR_NONE
-      const out = arrayOf(node, item, nums, fixedLen(recv)); raiseElem(out, item, false, false, false, nums); return out
+      const out = arrayOf(node, item, nums, count); raiseElem(out, item, false, false, false, nums); return out
     }
     if (name === 'flatMap') { const out = arrayOf(node, K.NONE); raiseElem(out, tagOf(r) === K.ARRAY ? elemOf(r) : r); return out }
     // `filter` keeps some of the receiver's elements in an array of its own, of

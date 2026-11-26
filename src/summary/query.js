@@ -190,9 +190,11 @@ export function summaryQueries(facts, internal = false) {
     }
   }
   // An array construction whose arrays the emitter makes itself and can tag
-  // (compile/numeric-arrays.js): a literal of no hole and no spread, `new Array()`, `new Array(n)`.
-  const taggedConstruction = (n) => Array.isArray(n) && (n[0] === '[' && n.every((e, i) => i === 0 || e != null && !(Array.isArray(e) && e[0] === '...')) ||
-    n[0] === '()' && n[1] === 'new.Array' && (n.length === 2 || n.length === 3 && !(Array.isArray(n[2]) && (n[2][0] === ',' || n[2][0] === '...'))))
+  // (compile/numeric-arrays.js): a literal of no hole, `new Array()`, `new Array(n)`,
+  // `Array.from(…)`, and an array's `map` (its census holds the receiver to an array).
+  const taggedConstruction = (n) => Array.isArray(n) && (n[0] === '[' && n.every((e, i) => i === 0 || e != null) ||
+    n[0] === '()' && (n[1] === 'new.Array' ? n.length === 2 || n.length === 3 && !(Array.isArray(n[2]) && (n[2][0] === ',' || n[2][0] === '...'))
+      : n[1] === 'Array.from' || Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'map'))
   const classMember = (recv, name) => { const sid = layoutOf(recv); return sid !== UNKNOWN ? methods.get(sid)?.get(name) ?? null : null }
   // A property's accessor and binder names, built once per property.
   const getterNames = new Map(), binderNames = new Map()
@@ -574,6 +576,8 @@ export function summaryQueries(facts, internal = false) {
         }
         // The solver bound the callback and, for `map`/`flatMap`, filled the call's own cell.
         else if (t === K.ARRAY && paramOf(r) !== UNKNOWN && ARRAY_CALLBACK_RESULT.has(name)) result = ARRAY_CALLBACK_RESULT.get(name)(r, cells.get(n))
+        // (`fill` returns its receiver: the solver's rule, summary/index.js. A reader of the call reads that array.)
+        else if (t === K.ARRAY && name === 'fill') result = r
         else if (t === K.STRING && name === 'at') result = orAbsent(STRING)
         else if (t === K.STRING && name === 'codePointAt') result = orAbsent(NUMBER)
         else result = builtinMethodResult(r, name)

@@ -14,9 +14,15 @@
  * - its kind is NUMBER alone, so no store puts another value there and none
  *   leaves a hole (src/summary/query.js `numericArrayCandidates`);
  * - every array of it is made where the emitter tags it: a literal of no hole
- *   and no spread, `new Array()`, `new Array(n)`. The pointer carries
+ *   (a spread in it copies Numbers), `new Array()`, `new Array(n)`,
+ *   `Array.from(…)`, an array's `map`. The pointer carries
  *   ARRAY_RAW in its aux (layout.js), set there (`numericConstruction`), kept
  *   by growth (module/array.js arrGrow): every pointer to the array has it.
+ *   What such a construction stores is a Number's bits either way, canonical
+ *   or as read: the array a copy or a callback fills is the cell's as one a
+ *   literal fills. A `map` makes an array only of an array: its receiver is
+ *   one on every run, reached by no optional link (the emitter lifts such a
+ *   chain into a node of its own, which no plan names);
  *   A literal a function returns as lanes (a multi-value result) is made
  *   where a call builds the array of them, tagged by the function's result
  *   cell (`numericLanes`), so that cell must be the literal's;
@@ -31,7 +37,12 @@
  *
  * The census reads a use by the kind of what it uses. Every value holding an
  * array of a candidate has a kind naming the cell: a join that loses a cell
- * escapes it, and an escaped cell's elements are ANY, no candidate's.
+ * escapes it, and an escaped cell's elements are ANY, no candidate's. That is
+ * the solver's property; the census asks the query, which answers a builtin
+ * method's call by its result's type: it names the receiver for `fill`
+ * (summary/query.js methodResult) and no array for a method that hands on an
+ * element (`at`, `pop`, `shift`). A read of such a call's result is read
+ * through to the receiver (`handsOn`).
  *
  * The runtime reads the aux where it walks: compaction (core/compact.js) and
  * the release walk (core/reach.js) take no element of such an array for a
@@ -104,8 +115,21 @@ export function planNumericArrays(moduleRoots, funcs) {
   const views = new Map()
   const scoped = (key) => { let v = views.get(key); if (!v) views.set(key, v = s.at(key)); return v }
   const why = WHY ? [] : null
+  // A call of an array's method that may hand an array on where the query names none for it: the
+  // query answers a method by its result's type, and `at`, `pop` and `shift` return one of the
+  // receiver's elements (the solver knows, summary/index.js). Whatever reads such a result reads
+  // it generically, the emitter too, which asks the query which array a value is: the receiver
+  // and what it holds keep the boxed layout. → the receiver, or null.
+  const handsOn = (view, e) => {
+    if (!Array.isArray(e) || e[0] !== '()' && e[0] !== '?.()' || !member(e[1]) || typeof e[1][2] !== 'string' || view.arrayCellOf(e) != null) return null
+    const k = view.kindOfExpr(e), r = e[1][1]
+    if (tagOf(k) !== K.ANY && !(tagOf(k) === K.ARRAY && paramOf(k) === UNKNOWN)) return null
+    return tagOf(view.kindOfExpr(r)) === K.ARRAY ? r : null
+  }
   const readBy = (view, e, n) => {
     if (!holds(e)) return
+    const from = handsOn(view, e)
+    if (from != null) readBy(view, from, n)
     for (const c of view.arrayCellsReachedByExpr(e)) {
       if (why && made.size && !generic.has(c)) why.push([c, JSON.stringify(e).slice(0, 80), JSON.stringify(n)?.slice(0, 120)])
       generic.add(c)
@@ -114,6 +138,7 @@ export function planNumericArrays(moduleRoots, funcs) {
   // a use that reads the array `e` itself holds, not an array one of its elements holds
   const readOwn = (view, e) => {
     if (!holds(e)) return
+    if (handsOn(view, e) != null) { readBy(view, e, 'own'); return }
     const c = view.arrayCellOf(e)
     if (c != null && !generic.has(c)) { if (why) why.push([c, JSON.stringify(e).slice(0, 80), 'own']); generic.add(c) }
   }
@@ -146,8 +171,24 @@ export function planNumericArrays(moduleRoots, funcs) {
     while (Array.isArray(e) && (e[0] === '.' || e[0] === '?.' || e[0] === '[]' || e[0] === '?.[]')) e = e[1]
     return typeof e === 'string' && view.keyOfName(e) !== null && tagOf(view.kindOfExpr(e)) === K.NONE
   }
+  // A receiver reached through an optional link (`a?.b.map(f)`): emit/dispatch.js lifts the chain.
+  const optionalSpine = (e) => {
+    while (Array.isArray(e)) {
+      const op = e[0]
+      if (op === '?.' || op === '?.[]' || op === '?.()') return true
+      if (op !== '.' && op !== '[]' && op !== '()' && op !== '(') return false
+      e = e[1]
+    }
+    return false
+  }
   const visitCall = (n, view) => {
     const callee = n[1]
+    // a `map` that makes a candidate's arrays: of an array on every run, or the cell keeps the boxed layout
+    const makes = member(callee) ? made.get(n) : undefined
+    if (makes !== undefined && !generic.has(makes) && (tagOf(view.kindOfExpr(callee[1])) !== K.ARRAY || optionalSpine(callee[1]))) {
+      if (why) why.push([makes, JSON.stringify(callee[1]).slice(0, 80), 'a map of no array'])
+      generic.add(makes)
+    }
     // a call through a receiver or a callee no value reaches never runs: it reads nothing
     // (its arguments would hold `_matrix`, whose elements every call that runs reads as Numbers)
     if (unbound(view, member(callee) ? callee[1] : callee)) return
@@ -198,7 +239,8 @@ export function planNumericArrays(moduleRoots, funcs) {
     for (let i = 1; i < n.length; i++) {
       const c = n[i]
       if (c == null || typeof c === 'string' && nameAt(op, i)) continue
-      if (!served(view, n, i)) readBy(view, c, n)
+      // (an element path over what a call hands on is the emitter's generic one: it cannot name the array)
+      if (!served(view, n, i) || i === 1 && (op === '[]' || op === '.' || op === '?.') && handsOn(view, c) != null) readBy(view, c, n)
       visit(c, view)
     }
   }

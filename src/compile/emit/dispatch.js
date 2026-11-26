@@ -2557,6 +2557,6 @@ function emitNode(node, expect) {
   }
   if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
   // a construction of an array whose elements are raw Numbers tags its pointer (compile/numeric-arrays.js)
-  if (op === '[' || op === '()' && node[1] === 'new.Array') return numericConstruction(node, ir)
+  if (op === '[' || op === '()') return numericConstruction(node, ir)
   return ir
 }
