@@ -301,6 +301,18 @@ export const numericArrayExpr = (e) => {
   return c != null && cells.has(c)
 }
 
+/** The length the array of the builder `name` is made at, or null: a build whose array keeps raw
+ *  Numbers is made at its built length, the summary's exact count (summary/query.js buildCapOf),
+ *  so the loop that builds reads and writes no header: its pushes store at a counter of the
+ *  function's own (module/array.js), its fill stores in place (compile/emit-assign.js). No walk
+ *  of memory reads a raw array's cells, so none meets a cell not yet stored (a boxed array made
+ *  so would hand a walk whatever its block held before), and nothing else names the array until
+ *  it is whole (summary/index.js buildsAlone, staysIn). Under the reserve's pass
+ *  (`reserveBuilds`): off, a builder a function returns keeps the room the plan gave it and
+ *  its header's count. */
+export const builtCount = (name) => typeof name === 'string' && ctx.transform.optimize?.reserveBuilds !== false && numericArrayExpr(name)
+  ? ctx.summary?.at(ctx.func.current)?.buildCapOf?.(name) ?? null : null
+
 // ARRAY_RAW in the pointer's high word
 const RAW_BITS = '0x' + (ARRAY_RAW << (LAYOUT.AUX_SHIFT - 32)).toString(16).padStart(8, '0') + '00000000'
 

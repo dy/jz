@@ -21,7 +21,7 @@
 import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, exactWord, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, walk, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey, idxKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
-import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
+import { numericArrayExpr, numericArraysOn, builtCount } from '../src/compile/numeric-arrays.js'
 import { arrCellWat, arrCellHelper, HEAP_EXHAUSTED_THROW } from './core.js'
 import { arrayKeysOn } from './collection/identity.js'
 import { isPresentNumber, typedNumberOrMissingKey, valTypeOf } from '../src/kind.js'
@@ -859,7 +859,8 @@ export default (ctx) => {
   // === Array literal ===
 
   // `node`, the literal: one that makes an array of raw Numbers (compile/numeric-arrays.js) stores their bits.
-  const arrayLiteral = (elems, capacity = 0, node = null) => {
+  // (`made`: the length a build's array is made at, past its literal's own elements: `builtCount`)
+  const arrayLiteral = (elems, capacity = 0, node = null, made = null) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
     const raw = node != null && ctx.runtime.numericConstructions?.has(node)
     const value = e => e == null ? typed(['f64.const', `nan:${TOMB_NAN}`], 'f64') : raw ? storedValueNarrow(e) : taggedStoredValue(e)
@@ -901,7 +902,7 @@ export default (ctx) => {
       const minCap = configuredLiteralCap == null
         ? (len ? 0 : Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4))
         : Math.max(configuredLiteralCap | 0, 0)
-      const a = allocArray(len, Math.max(len, minCap, capacity))
+      const a = allocArray(made ?? len, Math.max(len, minCap, capacity, made ?? 0))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
         body.push(['f64.store', slotAddr(a.local, i), vals ? vals[i] : value(elems[i])])
@@ -925,9 +926,21 @@ export default (ctx) => {
       : sid != null ? count * structInline(ctx.schema.list[sid].length, ctx.schema.inlineCellI32?.has(sid)).cpe : count
     return cells <= 0x1ffffffe ? cells : null
   }
+  // The counter of the pushes of a build made at its built length (compile/numeric-arrays.js
+  // builtCount): where the next one stores, set at the literal to the count of its own elements.
+  const pushCounter = name => {
+    const counters = ctx.func.buildCounters ??= new Map()
+    let n = counters.get(name)
+    if (n === undefined) counters.set(name, n = tempI32('bn'))
+    return n
+  }
   // (the literal's node rides last: emit/dispatch.js SELF_AWARE_OPS)
   ctx.core.emit['['] = (...elems) => { const node = elems.pop(); return arrayLiteral(elems, 0, node) }
-  ctx.core.emit['[capacity'] = (name, elems, node = null) => arrayLiteral(elems, arrayCapacity(name) ?? 0, node)
+  ctx.core.emit['[capacity'] = (name, elems, node = null) => {
+    const made = builtCount(name)
+    const lit = arrayLiteral(elems, arrayCapacity(name) ?? 0, node, made)
+    return made == null ? lit : typed(['block', ['result', 'f64'], ['local.set', '$' + pushCounter(name), ['i32.const', elems.length]], lit], 'f64')
+  }
 
   // === Index read ===
 
@@ -1986,6 +1999,17 @@ export default (ctx) => {
     const current = reserved || typeof arr === 'string' && currentBinding(arr)
     const rawOffset = () => ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.OFFSET_MASK]]]
     const baseOf = () => current ? rawOffset() : ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
+    // A build made at its built length (`builtCount`): the values at the build's counter, no header read or written.
+    if (reserved && builtCount(arr) != null) {
+      const at = pushCounter(arr)
+      body.push(['local.set', `$${pushBase}`, rawOffset()])
+      for (const vv of lane) body.push(
+        ['f64.store', ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${at}`], ['i32.const', 3]]], vv],
+        ['local.set', `$${at}`, ['i32.add', ['local.get', `$${at}`], ['i32.const', 1]]])
+      if (void_) return typed(['block', ...body], 'void')
+      body.push(['f64.convert_i32_s', ['local.get', `$${at}`]])
+      return typed(['block', ['result', 'f64'], ...body], 'f64')
+    }
     if (inlineLen && inPlace) {
       // In place: the header at the pointer's own offset, its len and cap words
       // read as one. Where the cap holds the cells, the values go straight in.

@@ -1230,7 +1230,7 @@ test('built length: a build reserves its room at its literal and stores in it', 
   const SUM = (name, n) => `let s = 0; for (let i = 0; i < ${n}; i++) s += u(${name}[i]) * (i % 5 + 1)`
   const head = `${U}
 const N = 67
-let late, filled, pair, seeded, grown, beside
+let late, filled, pair, seeded, grown, beside, counted
 export const fillLate = () => { late = []; for (let i = 0; i < N; i++) late.push(i * 0.5 - 3); return 0 }
 export const fillFilled = () => { filled = []; for (let i = 0; i < N; i++) filled[i] = i + 0.5; return 0 }
 export const fillPair = () => { pair = []; for (let i = 0; i < N; i++) pair.push(i, -i); return 0 }
@@ -1255,6 +1255,12 @@ export const filledRecords = () => { const ps = []; for (let i = 0; i < N; i++) 
 export const filledRows = () => { const rs = []; for (let i = 0; i < N; i++) rs[i] = [i, i + 1]; let s = 0; for (let i = 0; i < N; i++) s += rs[i][0] * rs[i][1]; return s * 1000 + rs.length }
 export const stopped = () => { const xs = []; try { for (let i = 0; i < N; i++) { if (i === 9) throw 1; xs.push(i) } } catch (e) { return xs.length } return -1 }
 export const uncounted = (n) => { const xs = []; for (let i = 0; i < n; i++) xs.push(i); let s = 0; for (let i = 0; i < n; i++) s += xs[i]; return s * 1000 + xs.length }
+const made = () => { const xs = []; for (let i = 0; i < N; i++) xs.push(i * 0.5); return xs }
+export const madeSum = () => { const xs = made(); let s = 0; for (let i = 0; i < N; i++) s += xs[i]; return s * 1000 + xs.length }
+export const pushCount = () => { counted = [4, 5]; let n = 0, last = 0; for (let i = 0; i < N; i++) { last = counted.push(i * 2); n += last } return n * 1000 + last * 10 + counted.length % 10 }
+const three = (i) => { const t = [i, i + 1, i + 2]; return t[0] + t[2] }
+export const allocating = () => { const xs = []; for (let i = 0; i < 3000; i++) xs.push(three(i)); let s = 0; for (let i = 0; i < 3000; i++) s += xs[i]; return s * 10 + xs.length % 7 }
+export const joined = () => { const xs = []; for (let i = 0; i < N; i++) xs.push(i % 3); return xs.join('').length * 1000 + xs.length }
 `
   // [name, the calls in order]
   const runs = [
@@ -1275,6 +1281,10 @@ export const uncounted = (n) => { const xs = []; for (let i = 0; i < n; i++) xs.
     ['a build a throw stops', [['stopped']]],
     ['a count the caller gives', [['uncounted', 5], ['uncounted', 200], ['uncounted', 0]]],
     ['a binding another function pushes onto after its build', [['fillGrown'], ['more'], ['grownSum'], ['fillGrown'], ['more'], ['more'], ['grownSum']]],
+    ['the count each push returns', [['pushCount'], ['pushCount']]],
+    ['a builder a function returns', [['madeSum'], ['madeSum']]],
+    ['a build whose values call a function that allocates', [['allocating']]],
+    ['a build a generic reader reads', [['joined']]],
   ]
   const call = (m, [name, ...args]) => { try { return m[name](...args) } catch (e) { return 'throws' } }
   for (const optimize of levels(0, 2, 3, 'size', 'speed'))
@@ -1295,4 +1305,21 @@ export const uncounted = (n) => { const xs = []; for (let i = 0; i < n; i++) xs.
     for (const name of ['fillLate', 'fillFilled', 'fillPair', 'fillSeeded'])
       is(inLoops(text, name).join(' '), '', `${name} calls nothing and binds nothing in its loop at ${optimize}`)
   }
+  // An array of Numbers is made at its built length (compile/numeric-arrays.js builtCount): its
+  // pushes store at a counter of the function's own and its fill in place, so the loop that
+  // builds reads and writes no header word, only its elements' stores.
+  const headers = (text, name) => {
+    const out = [], go = (n, looped) => { if (!Array.isArray(n)) return; if ((n[0] === 'i32.load' || n[0] === 'i32.store' || n[0] === 'i64.load') && looped) out.push(n[0]); for (const c of n) go(c, looped || n[0] === 'loop') }
+    go(parseWat(funcWat(text, name)), false)
+    return out
+  }
+  for (const optimize of [2, 'speed']) {
+    const text = wat(head, { optimize })
+    for (const name of ['fillLate', 'fillFilled', 'fillPair', 'fillSeeded', 'pushCount'])
+      is(headers(text, name).join(' '), '', `${name} reads and writes no header in its loop at ${optimize}`)
+  }
+  // (the pass off: a builder a function returns keeps the room the plan gave it, and its pushes the header's count)
+  const apart = { level: 2, sourceInline: false, watr: false }
+  is(headers(wat(head, { optimize: apart }), 'made').join(' '), '', 'a returned builder reads no header in its loop')
+  ok(headers(wat(head, { optimize: { ...apart, reserveBuilds: false } }), 'made').length > 0, 'and reads it with the pass off')
 })

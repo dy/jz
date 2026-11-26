@@ -42,7 +42,7 @@ import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset, madeByCall } from '../../module/collection/durable.js'
 import { demandHostReceiver } from './func-exports.js'
 import { arrayRecordSlot } from './array-records.js'
-import { numericArrayExpr, numericArraysOn } from './numeric-arrays.js'
+import { numericArrayExpr, numericArraysOn, builtCount } from './numeric-arrays.js'
 import { markElem, markField } from '../ir/mem-alias.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
@@ -233,6 +233,11 @@ function storeFixedElement(arr, index, valueExpr, nullable) {
 function storeFilledElement(arr, index, valueExpr) {
   const base = tempI32('fb'), at = tempI32('fi')
   const len = ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]
+  // (an array made at its built length, numeric-arrays.js builtCount: the cell's store alone)
+  if (builtCount(arr) != null) return withTemp(valueExpr, t => [
+    ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(arr))], ['i64.const', LAYOUT.OFFSET_MASK]]]],
+    markElem(ctx.abi.array.ops.store(['local.get', `$${base}`], index, ['local.get', `$${t}`]), arr),
+    ['local.get', `$${t}`]])
   return withTemp(valueExpr, t => [
     ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(arr))], ['i64.const', LAYOUT.OFFSET_MASK]]]],
     ['local.set', `$${at}`, index],
