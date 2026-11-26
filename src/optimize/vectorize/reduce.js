@@ -291,14 +291,16 @@ export function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
     // (`m = Math.max(m, u8[i])`, acc f64) folds at the load's own width — exact,
     // since min/max never rounds and u8…i16 values are exact in f64. Only the one
     // horizontal result converts to f64 for the merge (+ re-canon for a NaN acc).
-    if (canonC != null && (opName === 'f64.max' || opName === 'f64.min') && accType === 'f64'
+    // (with its NaN canon or bare, where the dead-canon pass took it: optimize/nan-canon.js)
+    if ((opName === 'f64.max' || opName === 'f64.min') && accType === 'f64'
         && isArr(exprNode) && exprNode.length === 2 && MINMAX_CVT[exprNode[0]] && isArr(exprNode[1])) {
-      const w = MINMAX_WIDEN[exprNode[1][0]]
+      // (a whole signed word too, `Math.max(m, int32arr[i])`: exact in an f64 as the narrower are)
+      const w = MINMAX_WIDEN[exprNode[1][0]] ?? (exprNode[1][0] === 'i32.load' ? WHOLE_WORD : null)
       if (w && w.sign === MINMAX_CVT[exprNode[0]]) {
         const isMax = opName === 'f64.max'
         reduceEntry = {
           simd: `${w.pre}.${isMax ? 'max' : 'min'}_${w.sign}`,
-          extract: `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
+          extract: w.extract ?? `${w.pre}.extract_lane_${w.sign}`, laneType: w.laneType,
           identity: ['i32.const', isMax ? w.lo : w.hi],
           minmaxSelect: true, isMax, accF64: exprNode[0], canonC,
         }
@@ -522,7 +524,7 @@ function reducePart(m, freshIdRef, multiAcc) {
       // cross as the canonical NaN when the scalar tail is empty).
       mergeStmts.push(['local.set', accName,
         [opName, ['local.get', accName], [reduceEntry.accF64, ['local.get', ht]]]])
-      mergeStmts.push(['local.set', accName,
+      if (reduceEntry.canonC != null) mergeStmts.push(['local.set', accName,
         ['select', reduceEntry.canonC, ['local.get', accName],
           ['f64.ne', ['local.get', accName], ['local.get', accName]]]])
     } else {
@@ -831,6 +833,8 @@ export function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 // A float sum or product in lanes adds in another order than the loop: relaxedFloat's alone.
 const REASSOCIATES = new Set(['f64.add', 'f64.mul', 'f32.add', 'f32.mul'])
 const plainReduceEntry = (opName) => REASSOCIATES.has(opName) && !vecState.relaxF32 ? null : REDUCE_OP_LOOKUP.get(opName) ?? REDUCE_CANON[opName] ?? null
+// A signed word's lanes, for an extreme of whole words kept in a float (MINMAX_WIDEN's shape).
+const WHOLE_WORD = { pre: 'i32x4', sign: 's', laneType: 'i32', lo: -2147483648, hi: 2147483647, extract: 'i32x4.extract_lane' }
 // A condition over f64 values: its lanes are f64's (an element of another width in it fails the scan of its loads).
 const testsF64 = (c) => {
   let f64 = false

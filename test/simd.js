@@ -2545,6 +2545,35 @@ test('vectorize: a sum of a plain array\'s words is a float sum at the speed tie
   ok(/f64x2\.add/.test(text) && /\$__simd_acc\d+_3/.test(text) && !/trunc_sat/.test(text), 'float lanes, four accumulators, no conversion')
 })
 
+// `Math.max(m, t[i])` over an integer typed array keeps its extreme in a float and folds at the
+// elements' own width (reduce.js, MINMAX_WIDEN): sixteen bytes or eight shorts a vector, and four
+// whole signed words, each exact in an f64. With its NaN canon and bare, where only arithmetic
+// reads the extreme and the canon is gone (optimize/nan-canon.js): bare, the lift had no lanes.
+test('vectorize: a float extreme of integer elements folds at their width, with its canon or bare', () => {
+  const head = `const N = 67
+const ia = new Int32Array(N), ua = new Uint8Array(N), sa = new Int16Array(N), wa = new Uint32Array(N)
+for (let i = 0; i < N; i++) { ia[i] = (i * 2654435761) | 0; ua[i] = (i * 53 + 7) % 251; sa[i] = (i * 3737 + 11) % 60000 - 30000; wa[i] = (i * 2654435761) >>> 0 }
+`
+  const LOOP = 'for (let i = 0; i < N; i++)'
+  // [name, body, the lanes' op at 'speed' (null: no lanes asked)]
+  const rows = [
+    ['a maximum of whole words', `let m = -Infinity; ${LOOP} m = Math.max(m, ia[i]); return m`, 'i32x4.max_s'],
+    ['a minimum of whole words', `let m = Infinity; ${LOOP} m = Math.min(m, ia[i]); return m`, 'i32x4.min_s'],
+    ['a maximum of bytes', `let m = -Infinity; ${LOOP} m = Math.max(m, ua[i]); return m`, 'i8x16.max_u'],
+    ['a minimum of shorts', `let m = Infinity; ${LOOP} m = Math.min(m, sa[i]); return m`, 'i16x8.min_s'],
+    ['a maximum of whole words from a NaN', `let m = NaN; ${LOOP} m = Math.max(m, ia[i]); return m`, null],
+    ['a maximum of whole words that leaves the function as it is', `let m = -Infinity; ${LOOP} m = Math.max(m, ia[i]); return [m][0]`, null],
+    ['a maximum of unsigned words', `let m = -Infinity; ${LOOP} m = Math.max(m, wa[i]); return m`, null],
+    ['a maximum over no element', `let m = -Infinity; for (let i = 0; i < n; i++) m = Math.max(m, ia[i]); return m`, null, [0], [3], [67]],
+  ]
+  for (const [name, body, op, ...calls] of rows) {
+    const src = head + `export let f = (n) => { ${body} }`
+    for (const optimize of ownedLevels(2, 'speed')) for (const args of calls.length ? calls : [[]])
+      is(jz(src, { optimize }).exports.f(...args), oracle(src).f(...args), `${name} at ${optimize}${args.length ? ` over ${args[0]}` : ''}`)
+    if (op && ownedLevels('speed').length) ok(funcWat(wat(src, { optimize: 'speed' }), 'f').includes(op), `${name}: ${op} at speed`)
+  }
+})
+
 // A reduction under a condition, `if (c) acc = acc OP x`, is the reduction of `c ? x : N`, N the
 // op's neutral (reduce.js plainReduce): the lanes blend the operand with it by the test's mask.
 // A count under a test of f64 elements (`if (a[i] > t) n++`) has an integer accumulator and a
