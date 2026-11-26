@@ -521,7 +521,8 @@ function reducePart(m, freshIdRef, multiAcc) {
   // And the float extreme by a test (`if (a[i] > m) m = a[i]`, f64x2.pmax): its one accumulator
   // carries a compare and a select from round to round, where the loop as written carries a
   // branch that predicts. Over 256 elements one accumulator ran at 79 ns, the loop at 73.
-  const NACC = multiAcc && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing || reduceEntry.pmaxF64 === true || widen?.wide != null) ? 4 : 1
+  // (never over the half-width loads above: the accumulators after the first would read its elements again)
+  const NACC = multiAcc && !sawWidenF32 && (plainReduce && (laneType === 'f64' || laneType === 'f32') || narrowing || reduceEntry.pmaxF64 === true || widen?.wide != null) ? 4 : 1
   const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
   const laneBytes = lanes * stride
 

@@ -2570,6 +2570,40 @@ for (let i = 0; i < N; i++) { ua[i] = (i * 53 + 7) % 251; sa[i] = (i * 3737 + 11
   }
 })
 
+// A reduction over a Float32Array in f64 lanes reads half a vector a round and widens it. An
+// accumulator after the first would read those elements again, so such a reduction keeps one:
+// with four (the float extreme by a test had them for a day, 45369ce1f) a maximum of 67 elements
+// answered 11.75 for 12.75 at level 3 and at 'speed'.
+test('vectorize: a reduction over a Float32Array in f64 lanes keeps one accumulator', () => {
+  const head = (n) => `const N = ${n}
+const a = new Float32Array(N), b = new Float32Array(N)
+for (let i = 0; i < N; i++) { a[i] = ((i * 37 + 11) % 64) * 0.25 - 3; b[i] = ((i * 29 + 5) % 64) * 0.5 - 7 }
+`
+  const ALL = 'for (let i = 0; i < N; i++)'
+  const rows = [
+    ['a maximum by a test', `let m = -1e9; ${ALL} if (a[i] > m) m = a[i]; return m`],
+    ['a minimum by a test', `let m = 1e9; ${ALL} if (a[i] < m) m = a[i]; return m`],
+    ['a minimum and a maximum', `let lo = 1e9, hi = -1e9; ${ALL} { if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i] } return hi * 1000 + lo`],
+    ['a maximum of a difference', `let m = -1e9; ${ALL} if (a[i] - b[i] > m) m = a[i] - b[i]; return m`],
+    ['a maximum beside a sum', `let m = -1e9, s = 0; ${ALL} { if (a[i] > m) m = a[i]; s += b[i] } return m * 1000 + s`],
+    ['a sum', `let s = 0; ${ALL} s += a[i]; return s`],
+    ['a sum where', `let s = 0; ${ALL} if (a[i] > 2) s += a[i]; return s`],
+    ['a count where', `let n = 0; ${ALL} if (a[i] > 2) n++; return n`],
+    ['a wrapping integer sum', `let s = 0; ${ALL} s = (s + a[i]) | 0; return s`],
+  ]
+  // (every count of elements against the strips: none, under one strip, strips and a remainder)
+  for (const n of [0, 1, 2, 3, 5, 8, 9, 16, 17, 33, 67]) {
+    const src = head(n) + rows.map(([, body], i) => `export let f${i} = () => { ${body} }`).join('\n')
+    for (const optimize of ownedLevels(2, 3, 'speed')) {
+      const got = jz(src, { optimize }).exports, want = oracle(src)
+      rows.forEach(([name], i) => is(got[`f${i}`](), want[`f${i}`](), `${name} of ${n} at ${optimize}`))
+    }
+  }
+  if (!ownedLevels('speed').length) return
+  const text = funcWat(wat(head(67) + `export let f = () => { ${rows[0][1]} }`, { optimize: 'speed' }), 'f')
+  ok(/f64x2\.pmax/.test(text) && !/\$__simd_acc\d+_1/.test(text), 'the maximum in lanes at speed, one accumulator')
+})
+
 // An extreme of a plain array of integers. Its cells are floats, each a word exactly, and the
 // emitter reads them as words: kept in a word (`let m = a[0]; … if (a[i] > m) m = a[i]`) the
 // extreme had word lanes to ask for and float cells to load, and kept in a float from an infinity
