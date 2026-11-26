@@ -1217,3 +1217,82 @@ export const byAFunctionAtInit = () => { ${READ('qc', 'N')}; return s * 1000 + q
   ok(/v128\.load/.test(funcWat(text, 'sum')), 'the sum over the copy in lanes at speed')
   ok(!/\(call |f64\.eq|f64\.trunc/.test(funcWat(text, 'gather').match(/\(loop[\s\S]*/)?.[0] ?? '('), 'the gather over two copies calls nothing and reads its index as a word')
 })
+
+// A build's array takes its room at its literal: the length the summary holds for it once built
+// (src/summary/query.js buildCapOf, src/reps.js builderCapacity), whatever binding it is built
+// through. Its counted pushes then store with no test for room and its fill with no growth
+// (module/array.js `.push`, src/compile/emit-assign.js storeFilledElement), so the loop that
+// builds allocates nothing, and carries none of an allocating loop's machinery. A count the
+// summary does not hold exact reserves nothing and keeps its tests. Every program answers as
+// the host; an array built past its room would write over its neighbour.
+test('built length: a build reserves its room at its literal and stores in it', () => {
+  // (each array read by a loop of its own: a shared reader's parameter would join their cells, and no one of them would be a build)
+  const SUM = (name, n) => `let s = 0; for (let i = 0; i < ${n}; i++) s += u(${name}[i]) * (i % 5 + 1)`
+  const head = `${U}
+const N = 67
+let late, filled, pair, seeded, grown, beside
+export const fillLate = () => { late = []; for (let i = 0; i < N; i++) late.push(i * 0.5 - 3); return 0 }
+export const fillFilled = () => { filled = []; for (let i = 0; i < N; i++) filled[i] = i + 0.5; return 0 }
+export const fillPair = () => { pair = []; for (let i = 0; i < N; i++) pair.push(i, -i); return 0 }
+export const fillSeeded = () => { seeded = [9, 8, 7]; for (let i = 0; i < N; i++) seeded.push(i); return 0 }
+export const fillGrown = () => { grown = []; for (let i = 0; i < N; i++) grown.push(i); beside = [5, 6, 7, 8]; return 0 }
+export const more = () => { for (let i = 0; i < 9; i++) grown.push(100 + i); return beside[0] * 1000 + beside[3] * 100 + beside.length * 10 + grown[grown.length - 1] - 100 }
+export const grownSum = () => { let s = 0; for (let i = 0; i < grown.length; i++) s += grown[i] * (i % 5 + 1); return s * 1000 + grown.length }
+export const lateSum = () => { ${SUM('late', 'N + 2')}; return s * 1000 + late.length }
+export const filledSum = () => { ${SUM('filled', 'N + 2')}; return s * 1000 + filled.length }
+export const pairSum = () => { ${SUM('pair', '2 * N + 2')}; return s * 1000 + pair.length }
+export const seededSum = () => { ${SUM('seeded', 'N + 5')}; return s * 1000 + seeded.length }
+export const local = () => { const xs = []; for (let i = 0; i < N; i++) xs.push(i * 2); let s = 0; for (let i = 0; i < N; i++) s += xs[i]; return s * 1000 + xs.length }
+export const twoAtOnce = () => { const xs = [], ys = []; for (let i = 0; i < N; i++) { xs.push(i); ys.push(i * 3) } let s = 0; for (let i = 0; i < N; i++) s += xs[i] * 7 + ys[i]; return s * 1000 + xs.length + ys.length }
+export const neighbours = () => { const xs = []; for (let i = 0; i < N; i++) xs.push(1); const ys = []; for (let i = 0; i < N; i++) ys.push(2); const zs = []; for (let i = 0; i < N; i++) zs[i] = 3; let s = 0; for (let i = 0; i < N; i++) s += xs[i] * 100 + ys[i] * 10 + zs[i]; return s * 1000 + xs.length + ys.length + zs.length }
+export const nested = () => { const xs = []; for (let r = 0; r < 3; r++) for (let i = 0; i < N; i++) xs.push(r * 100 + i); let s = 0; for (let i = 0; i < 3 * N; i++) s += xs[i]; return s * 1000 + xs.length }
+export const longThenShort = () => { const xs = []; for (let i = 0; i < N; i++) xs[i] = i; for (let i = 0; i < 5; i++) xs[i] = -i; let s = 0; for (let i = 0; i < N; i++) s += xs[i]; return s * 1000 + xs.length }
+const deep = (d) => { const xs = []; for (let i = 0; i < 4; i++) xs.push(d > 0 ? deep(d - 1).length + i : i); return xs }
+export const reentered = () => { const xs = deep(3); return xs[0] * 1000 + xs[3] * 10 + xs.length }
+export const records = () => { const ps = []; for (let i = 0; i < N; i++) ps.push({ x: i, y: i * 0.5 }); let s = 0; for (let i = 0; i < N; i++) s += ps[i].x + ps[i].y; return s * 1000 + ps.length }
+export const rows = () => { const rs = []; for (let i = 0; i < N; i++) rs.push([i, i + 1]); let s = 0; for (let i = 0; i < N; i++) s += rs[i][0] * rs[i][1]; return s * 1000 + rs.length }
+export const filledRecords = () => { const ps = []; for (let i = 0; i < N; i++) ps[i] = { x: i, y: i * 0.5 }; let s = 0; for (let i = 0; i < N; i++) s += ps[i].x + ps[i].y; return s * 1000 + ps.length }
+export const filledRows = () => { const rs = []; for (let i = 0; i < N; i++) rs[i] = [i, i + 1]; let s = 0; for (let i = 0; i < N; i++) s += rs[i][0] * rs[i][1]; return s * 1000 + rs.length }
+export const stopped = () => { const xs = []; try { for (let i = 0; i < N; i++) { if (i === 9) throw 1; xs.push(i) } } catch (e) { return xs.length } return -1 }
+export const uncounted = (n) => { const xs = []; for (let i = 0; i < n; i++) xs.push(i); let s = 0; for (let i = 0; i < n; i++) s += xs[i]; return s * 1000 + xs.length }
+`
+  // [name, the calls in order]
+  const runs = [
+    ['a module binding an init call pushes', [['fillLate'], ['lateSum'], ['fillLate'], ['lateSum']]],
+    ['one an init call fills', [['fillFilled'], ['filledSum'], ['fillFilled'], ['filledSum']]],
+    ['two values a push', [['fillPair'], ['pairSum']]],
+    ['a literal with elements, then pushes', [['fillSeeded'], ['seededSum']]],
+    ['a function\'s own', [['local']]],
+    ['two built in one loop', [['twoAtOnce']]],
+    ['three built one after another', [['neighbours']]],
+    ['pushes of a loop in a loop', [['nested']]],
+    ['a fill, then a shorter one', [['longThenShort']]],
+    ['a builder that enters itself', [['reentered']]],
+    ['records', [['records']]],
+    ['arrays', [['rows']]],
+    ['records a fill stores', [['filledRecords']]],
+    ['arrays a fill stores', [['filledRows']]],
+    ['a build a throw stops', [['stopped']]],
+    ['a count the caller gives', [['uncounted', 5], ['uncounted', 200], ['uncounted', 0]]],
+    ['a binding another function pushes onto after its build', [['fillGrown'], ['more'], ['grownSum'], ['fillGrown'], ['more'], ['more'], ['grownSum']]],
+  ]
+  const call = (m, [name, ...args]) => { try { return m[name](...args) } catch (e) { return 'throws' } }
+  for (const optimize of levels(0, 2, 3, 'size', 'speed'))
+    for (const [name, calls] of runs) {
+      const got = run(head, { optimize }), want = oracle(head)
+      is(JSON.stringify(calls.map(c => call(got, c))), JSON.stringify(calls.map(c => call(want, c))), `${name} at ${optimize}`)
+    }
+  if (belowOpt(2)) return
+  // (the calls a function makes inside its loops, by name)
+  const inLoops = (text, name) => {
+    const out = [], go = (n, looped) => { if (!Array.isArray(n)) return; if ((n[0] === 'call' || n[0] === 'global.set') && looped) out.push(n[1]); for (const c of n) go(c, looped || n[0] === 'loop') }
+    go(parseWat(funcWat(text, name)), false)
+    return out
+  }
+  // (nor writes its binding there: the block the literal reserved is the one the binding holds throughout)
+  for (const optimize of [2, 'speed']) {
+    const text = wat(head, { optimize })
+    for (const name of ['fillLate', 'fillFilled', 'fillPair', 'fillSeeded'])
+      is(inLoops(text, name).join(' '), '', `${name} calls nothing and binds nothing in its loop at ${optimize}`)
+  }
+})

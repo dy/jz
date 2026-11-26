@@ -800,6 +800,9 @@ export function summaryQueries(facts, internal = false) {
       builtArrayStore: n => steadyStores.has(n),
       // A store that is its array's own build: `x[i] = v` in the loop that fills, from 0, an array its function builds (index.js fillSites).
       arrayFill: n => facts.fillStores?.has(n) === true,
+      // The elements the array a name builds will hold once built (index.js builds): what its literal reserves. Its pushes and
+      // its fill are counted, through this name alone and in its builder alone, so each of them lands in that room.
+      buildCapOf: name => { const key = keyOfAnywhere(name); return typeof key === 'number' ? facts.buildCaps?.get(key) ?? null : null },
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayDenseOfExpr: node => {

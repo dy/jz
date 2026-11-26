@@ -21,7 +21,7 @@ import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
-import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
+import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined, builderCapacity } from '../../reps.js'
 import { constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
 import { exprType, wholeKey, wholeOrMissKey, isTerminator, containsDeclOf } from '../../type.js'
@@ -1060,7 +1060,7 @@ export function emitDecl(...inits) {
     const tagged = boolTagged(name)
     let val = viewInit
     if (!val) {
-      if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
+      if (Array.isArray(init) && init[0] === '[' && builderCapacity(name) != null)
         val = numericConstruction(init, ctx.core.emit['[capacity'](name, init.slice(1), init))
       else {
         // a read buffer (plan/read-buffers.js): its constructor, entered first, takes no zero fill

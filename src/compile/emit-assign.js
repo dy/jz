@@ -27,7 +27,7 @@ import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
 import { K, NUMBER, kindOfVal, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
 import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { unbounded } from '../summary/contract.js'
-import { VAL, lookupValType, repOf } from '../reps.js'
+import { VAL, lookupValType, repOf, builderCapacity } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, keyIndex, temp, tempI32, tempI64, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
@@ -223,6 +223,22 @@ function storeFixedElement(arr, index, valueExpr, nullable) {
     ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptr], ['i64.const', LAYOUT.OFFSET_MASK]]]],
     ...saved,
     markElem(ctx.abi.array.ops.store(['local.get', `$${base}`], index, ['local.get', `$${t}`]), arr),
+    ['local.get', `$${t}`]])
+}
+
+/** The store of a loop that fills the array its function builds, the build's room reserved at
+ *  its literal (reps.js builderCapacity): the cell's own store, and the length the stored index
+ *  and one where the array is shorter (the loop fills from 0; a fill after it stores below a
+ *  length it must not take back). The block is the function's own and never moves. */
+function storeFilledElement(arr, index, valueExpr) {
+  const base = tempI32('fb'), at = tempI32('fi')
+  const len = ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]
+  return withTemp(valueExpr, t => [
+    ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(arr))], ['i64.const', LAYOUT.OFFSET_MASK]]]],
+    ['local.set', `$${at}`, index],
+    markElem(ctx.abi.array.ops.store(['local.get', `$${base}`], ['local.get', `$${at}`], ['local.get', `$${t}`]), arr),
+    ['if', ['i32.ge_u', ['local.get', `$${at}`], ['i32.load', len]],
+      ['then', ['i32.store', len, ['i32.add', ['local.get', `$${at}`], ['i32.const', 1]]]]],
     ['local.get', `$${t}`]])
 }
 
@@ -803,6 +819,9 @@ function emitElementStore(arr, idx, val, node) {
     // (or one the summary's walk holds there: a parameter whose every argument is an integer of the length, query.js presentArrayStore)
     if (len > 0) { const r = intExprRange(idx); if (r && r[0] >= 0 && r[1] < len || node != null && view.presentArrayStore(node)) return storeFixedElement(arr, asI32(emit(idx)), valueExpr, view.mayBeNullishExpr(arr)) }
   }
+  // 3c. The store that fills an array its function builds (summary arrayFill), in the room its literal reserved.
+  if (numericKey && typeof arr === 'string' && node != null && view?.arrayFill(node) && builderCapacity(arr) != null)
+    return storeFilledElement(arr, asI32(emit(idx)), valueExpr)
   // 3b. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
     const va = emit(arr)

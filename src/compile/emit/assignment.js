@@ -10,7 +10,8 @@ import {
   applyBindingWriteAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf, boolTagged, isPresentNumber } from '../../kind.js'
-import { VAL, repOf } from '../../reps.js'
+import { VAL, repOf, builderCapacity } from '../../reps.js'
+import { numericConstruction } from '../numeric-arrays.js'
 import { intExprRange } from '../../static.js'
 import { wholeKey, typedIdxProven } from '../../type.js'
 import { emitElementAssign, emitPropertyAssign } from '../emit-assign.js'
@@ -310,7 +311,9 @@ export const assignmentOps = {
     const objectLiteral = Array.isArray(val) && val[0] === '{}'
     let ev
     if (objectLiteral) ctx.schema.targetStack.push({ name, active: true })
-    try { ev = withInitializerScope(selfAccum ? name : null, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
+    // (a literal the binding's function then builds takes the build's room, as a declared builder's does: dispatch.js)
+    const reserved = Array.isArray(val) && val[0] === '[' && builderCapacity(name) != null
+    try { ev = reserved ? numericConstruction(val, ctx.core.emit['[capacity'](name, val.slice(1), val)) : withInitializerScope(selfAccum ? name : null, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
     finally { if (objectLiteral) ctx.schema.targetStack.pop() }
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBindingWriteAction(ev, val, name, repAction)

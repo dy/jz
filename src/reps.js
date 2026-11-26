@@ -129,6 +129,13 @@ const assertRepFields = (name, fields) => {
 /** @returns {ValueRep|undefined} */
 export const repOf = name => ctx.func.localReps?.get(name)
 
+/** The elements a builder's array will hold, which its literal reserves and its pushes need not test for:
+ *  the plan's (a function that returns the array it builds, compile/narrow/summaries.js) or the summary's
+ *  (any binding its function builds by counted pushes or a fill, summary/query.js buildCapOf: the pass
+ *  `reserveBuilds`, off at the reference levels). */
+export const builderCapacity = name => typeof name !== 'string' ? null
+  : ctx.func.localReps?.get(name)?.arrayCap ?? (ctx.transform.optimize?.reserveBuilds === false ? null : ctx.summary?.at(ctx.func.current)?.buildCapOf?.(name) ?? null)
+
 /** Two proofs of one binding's integer hull meet: the tighter of each side.
  * A disjoint pair is a bug in one of the provers. */
 export const meetRange = (name, range) => {

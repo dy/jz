@@ -17,7 +17,8 @@ import {
 } from '../../ir.js'
 import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { hostResultAs, methodValType } from '../../kind-traits.js'
-import { VAL, lookupValType, repOf } from '../../reps.js'
+import { VAL, lookupValType, repOf, builderCapacity } from '../../reps.js'
+import { withRefinements } from '../flow-types.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { representationProgramHasBigint } from '../representation-plan.js'
 import { mayHoldHostValue } from '../func-exports.js'
@@ -1122,7 +1123,13 @@ export function emitMethodCall(callee, parsed, callArgs, optional = false) {
   // rejects invalid receivers; routing through the boxed guard loses both
   // that carrier and the original charCodeAt bounds proof.
   const nativeString = typeof obj === 'string' && repOf(obj)?.carrier === 'jsstring'
-  if (!nativeString && view?.mayBeNullishExpr(obj) === true && !isPresentArrayElement(obj)) {
+  // A push of a build through its own binding (`xs = []; for (…) xs.push(v)`, the binding a `let`
+  // an init call sets) follows the assignment with nothing between: the binding holds its array.
+  // Through the name, the push finds the room its literal reserved (reps.js builderCapacity).
+  const building = typeof obj === 'string' && method === 'push' && builderCapacity(obj) != null
+  if (building && !ctx.func.refinements?.get(obj)?.notNullish && view?.mayBeNullishExpr(obj) === true)
+    return withRefinements(new Map([[obj, { val: VAL.ARRAY, notNullish: true }]]), callee, () => emitMethodCall(callee, parsed, callArgs, optional))
+  if (!building && !nativeString && view?.mayBeNullishExpr(obj) === true && !isPresentArrayElement(obj)) {
     // (the receiver's emission overwrites the statement's expectation: a dropped
     // call keeps it, so a builtin skips the result it would compute, `.push`'s length)
     const expect = ctx.func._expect

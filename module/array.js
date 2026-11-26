@@ -27,7 +27,7 @@ import { arrayKeysOn } from './collection/identity.js'
 import { isPresentNumber, typedNumberOrMissingKey, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
-import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
+import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal, builderCapacity } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { stubLogIR } from './core/stub-log.js'
 import { ctx, inc, err, strictCode, warnDeopt, holds, exprText, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
@@ -918,7 +918,7 @@ export default (ctx) => {
 
   // Capacity is a settled builder fact; visible length still comes from the literal.
   const arrayCapacity = name => {
-    const count = typeof name === 'string' ? ctx.func.localReps?.get(name)?.arrayCap : null
+    const count = builderCapacity(name)
     if (count == null) return null
     const union = inlineArrayUnion(name), sid = inlineArraySid(name)
     const cells = union ? Math.ceil(count * union.stride / 2)
@@ -1982,7 +1982,8 @@ export default (ctx) => {
     const pushBase = tempI32('pb')
     // An own-name-current receiver holds the live pointer (and a grow's result
     // is fresh), so its base is the raw offset; anything else follows forwarding.
-    const current = typeof arr === 'string' && currentBinding(arr)
+    // (so does a builder's, its room reserved at its literal: the block never moves)
+    const current = reserved || typeof arr === 'string' && currentBinding(arr)
     const rawOffset = () => ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.OFFSET_MASK]]]
     const baseOf = () => current ? rawOffset() : ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     if (inlineLen && inPlace) {
@@ -2101,7 +2102,8 @@ export default (ctx) => {
     // skips __set_len's tag/forward dispatch), update source variable (pointer
     // may have changed from grow), return new length
     body.push(['i32.store', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]], ['local.get', `$${len}`]])
-    if (!(inlineLen && inPlace)) writeBack(body)
+    // (a builder's binding holds the block its literal reserved: nothing to write back)
+    if (!reserved && !(inlineLen && inPlace)) writeBack(body)
     if (void_) return typed(['block', ...body], 'void')
     // structInline: `len` counts physical cells — `.push` returns the JS array
     // length, i.e. the logical element count (byte-stride unions carry it in

@@ -96,7 +96,8 @@ test('minimal: pure numeric module pulls no allocator', () => {
 
 test('minimal: alloc:false omits the uncallable arena-reset heal protocol', () => {
   if (skip) return
-  const src = 'export let f = () => { const a = []; a.push(1); return a.length }'
+  // (a count the caller gives: an array of a count the compiler holds takes its room at its literal, and its pushes save nothing)
+  const src = 'export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a.length }'
   const normal = wat(src, 'size')
   const standalone = compile(src, { wat: true, optimize: 'size', alloc: false })
   ok(normal.includes('$__durable_arr_snap'), 'ordinary output keeps _clear-time durable-array healing')

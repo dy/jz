@@ -7099,7 +7099,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       for (const count of b.pushes.values()) { len += count; if (count > most) most = count }
       // (loops that fill from 0 lie over one another: the longest is the length)
       if (b.filled) len = built[c] + most
-      if (!(stores.get(c) >= len)) roots.set(c, { len, init: false, fills: b.filled ? [...b.pushes.keys()] : null })
+      if (!(stores.get(c) >= len)) roots.set(c, { len, init: false, fills: b.filled ? [...b.pushes.keys()] : null, key: b.key })
     }
     for (const [c, g] of grown) {
       if (cell(c) !== c || !(built[c] >= 0) || unknown.has(c) || multiSite.has(c) || short.has(c) || roots.has(c)) { roots.delete(c); continue }
@@ -7180,6 +7180,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   queryFacts.builtLens = builtLens
   // (the stores that fill an array a function builds, by their target: the plan leaves their loop whole, plan/loops.js)
   queryFacts.fillStores = new Set()
+  // (and the room each such build's binding takes at its literal, by the binding: reps.js builderCapacity)
+  queryFacts.buildCaps = new Map()
+  for (const st of builtLens.values()) if (st.key != null) queryFacts.buildCaps.set(st.key, st.len)
   for (const st of builtLens.values()) if (st.fills) for (const node of st.fills) queryFacts.fillStores.add(node)
   // Publish settled hull records, not a closure over the solver and mutable
   // function inputs. No later round writes these buffers; queries borrow them.
