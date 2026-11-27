@@ -1,6 +1,6 @@
 /**
- * Declare in a literal the keys its objects gain later, where nothing reads
- * their key set.
+ * Declare in a literal the keys its objects gain later, and give the literals
+ * that meet one layout, where nothing reads their key set.
  *
  * State kept on a record the program built earlier (`params._lp1 += …` on
  * the options object a caller passed, `if (!p._buf) p._buf = …`) lands
@@ -20,11 +20,24 @@
  * objects nothing looks at.
  *
  * Sites the program joins (a parameter taking the literal of each caller, a
- * default `{}` beside the caller's object) declare together: every literal
- * of the group gets the group's keys, and when each one's own keys lead the
- * longest one's, one layout, so a read through the join is one slot. A
- * group with any site whose keys are seen declares nothing: a name bound to
- * its literals holds one layout.
+ * default `{}` beside the caller's object, the two arms of a choice, the
+ * elements of one array) declare together: every literal of the group gets
+ * the group's keys, and one layout, so a read through the join is one slot.
+ * A key one literal lacks is its slot, undefined. A group with any site
+ * whose keys are seen declares nothing: a name bound to its literals holds
+ * one layout. Nor does a group take one layout where the room its literals
+ * would leave unused is more than what they hold, or where a literal would
+ * be given a key that is more than a slot (an inherited name).
+ *
+ * A group with no key to declare takes one layout where its literals write
+ * the same keys in two orders (`{ x, y }` beside `{ y, x }`): nothing told
+ * the two apart but the order nothing reads. The entries of a literal move
+ * to the layout's order where each has no effect and cannot throw
+ * (exit-tests.js `speculative`: a name, a member of an object that is
+ * there, arithmetic over Numbers): they compute the same in any order.
+ * Literals of two sets of keys stay two layouts: the layout tells which
+ * keys an object has, and a read under a test of its kind is a slot of that
+ * layout, of the kind that layout holds.
  *
  * Left out: a name the literal inherits (`toString`, `constructor`), an
  * array-index key (canonical slot order), `length` and `__proto__`, a class
@@ -37,6 +50,7 @@ import { ctx } from '../../ctx.js'
 import { T, CLASS_T, isBrand, isArrayIndexKey, accessorOf } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
+import { speculative } from './exit-tests.js'
 
 const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
@@ -66,21 +80,24 @@ export const declareUnseenKeys = (ast) => {
 
   // Every static literal the summary made objects of, and the names bound to one.
   const lits = new Map()      // literal node → its sites
+  const scopes = new Map()    // literal node → the scope it stands in (its names' kinds)
   const bound = new Map()     // name → literal nodes
   const bind = (name, v) => { if (typeof name === 'string' && lits.has(v)) { let l = bound.get(name); if (!l) bound.set(name, l = []); l.push(v) } }
-  const visit = (n) => {
+  const visit = (n, at) => {
     if (!Array.isArray(n)) return
     if (n[0] === '{}' && !lits.has(n)) {
       const sites = view.literalSites(n)
       if (sites.length && sites.every(s => view.siteLayout(s) === view.siteLayout(sites[0])) &&
-        n.slice(1).every((p, i, all) => { const k = entryKey(p); return k !== null && !isBrand(k) && all.findIndex(q => entryKey(q) === k) === i })) lits.set(n, sites)
+        n.slice(1).every((p, i, all) => { const k = entryKey(p); return k !== null && !isBrand(k) && all.findIndex(q => entryKey(q) === k) === i })) { lits.set(n, sites); scopes.set(n, at) }
     }
-    for (let i = 1; i < n.length; i++) visit(n[i])
+    // (a closure's names are its own scope's: its literals' entries are not asked)
+    for (let i = 1; i < n.length; i++) visit(n[i], n[0] === '=>' ? null : at)
     if ((n[0] === '=' || n[0] === '??=') && typeof n[1] === 'string') bind(n[1], n[2])
   }
-  visit(ast)
-  for (const init of ctx.module.moduleInits ?? []) visit(init)
-  for (const fn of ctx.funcs.list) if (fn.body && !fn.raw) for (const r of frameRoots(fn)) visit(r)
+  const top = view.at('')
+  visit(ast, top)
+  for (const init of ctx.module.moduleInits ?? []) visit(init, top)
+  for (const fn of ctx.funcs.list) if (fn.body && !fn.raw) for (const r of frameRoots(fn)) visit(r, view.at(fn.sig))
   if (!lits.size) return false
 
   // Groups: the sites values join, a literal's sites, the literals one name holds.
@@ -104,13 +121,27 @@ export const declareUnseenKeys = (ast) => {
     if (own.some(keys => keys.some(k => accessorOf(k, accessors)) || ctx.schema.hidden.has(keys))) continue
     const side = []
     for (const s of sites) for (const k of view.sideKeys(s)) if (plain(k) && !side.includes(k)) side.push(k)
-    if (!side.length) continue
-    // One layout for the group: an order of all its keys that keeps each
-    // literal's entries in their order (they evaluate in it); the keys a
-    // literal lacks sit where the layout has them, undefined.
+    // Nothing to declare: literals of one layout stay as they are, and so do literals of two sets
+    // of keys, whose layouts tell which keys an object has (a read under a test of its kind is
+    // a slot of that layout, of the kind that layout holds). The same keys in two orders go on.
+    if (!side.length && (own.every(keys => keys.join('\0') === own[0].join('\0')) || !own.every(keys => keys.length === own[0].length && keys.every(k => own[0].includes(k))))) continue
     const entries = g.lits.map(n => n.slice(1).map(entryKey))
     const all = [...new Set([...entries.flat(), ...own.flat(), ...side])]
-    const one = mergeOrders(entries, all)
+    // What each literal's objects hold as written: its keys, and those stored on them later. The
+    // rest of the layout is room they never use: a group takes one layout where that room, over
+    // its literals, is no more than what they hold, and where no literal is given a key that is
+    // more than a slot (an inherited name: `toString: undefined` would answer for the prototype's).
+    const holds = g.lits.map((n, i) => new Set([...own[i], ...lits.get(n).flatMap(s => view.sideKeys(s)).filter(plain)]))
+    if (holds.some(h => all.some(k => !h.has(k) && !plain(k)))) continue
+    if (holds.reduce((room, h) => room + all.length - 2 * h.size, 0) > 0) continue
+    // One layout for the group: an order of all its keys that keeps each
+    // literal's entries in their order (they evaluate in it); the keys a
+    // literal lacks sit where the layout has them, undefined. Where the
+    // literals' orders disagree, an order that keeps those of the literals
+    // with an entry that has an effect or can throw: the entries of the
+    // others compute the same wherever they stand.
+    const moves = (node) => node.slice(1).every(p => typeof p === 'string' || scopes.get(node) != null && speculative(p[2], scopes.get(node)))
+    const one = mergeOrders(entries, all) ?? mergeOrders(entries.filter((_, i) => !moves(g.lits[i])), all)
     g.lits.forEach((node, i) => {
       const keys = one ?? [...entries[i], ...all.filter(k => !entries[i].includes(k))]
       if (keys.join('\0') !== entries[i].join('\0') || keys.join('\0') !== own[i].join('\0')) finals.set(node, keys)

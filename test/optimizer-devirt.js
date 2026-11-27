@@ -313,7 +313,8 @@ test('devirtSchemaReads: a field read straight off an element is dispatched as o
   // base. It reads and never writes, so the dispatch may run it once, where it stood. Under
   // `i < ps.length` the element is present with no test, and the read was a hash probe an
   // element where the same read through a local was a jump table.
-  const records = `const ps = []\nfor (let i = 0; i < 64; i++) { const p = i & 1 ? { x: i, y: i + 1 } : { y: i + 1, x: i }; ps.push(p) }`
+  // (a key more in one: the same keys in two orders are one layout, plan/declare-unseen-keys.js)
+  const records = `const ps = []\nfor (let i = 0; i < 64; i++) { const p = i & 1 ? { x: i, y: i + 1 } : { y: i + 1, x: i, z: 0 }; ps.push(p) }`
   const forms = {
     'under a count': `let s = 0; for (let i = 0; i < 64; i++) s += ps[i].x; return s`,
     'held in a local': `let s = 0; for (let i = 0; i < 64; i++) { const p = ps[i]; s += p.x } return s`,
@@ -535,7 +536,7 @@ test('monomorphic schema-slot devirtualization: singleton-schema dot-read compil
 test('polymorphic object prop reads use typed object dispatch', () => {
   const src = `
     const left = () => ({ x: 11, y: 100 })
-    const right = () => ({ y: 200, x: 22 })
+    const right = () => ({ y: 200, x: 22, z: 0 })
     export const hx = (w) => { const o = w == 0 ? left() : right(); return o.x }
     export const hy = (w) => { const o = w == 0 ? left() : right(); return o.y }
   `

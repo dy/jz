@@ -63,8 +63,9 @@ const tag = (k) => tagOf(core(k ?? 0))
 const missing = (k) => k == null || isNullable(k) || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
 const primitive = (k) => k != null && !missing(k) && (tag(k) === K.NUMBER || tag(k) === K.BOOL)
 
-/** Whether `e` can run in a pass the loop would not have reached: no effect, no throw. */
-const speculative = (e, view) => {
+/** Whether `e` can run where the program would not have run it (a pass the loop would not have
+ *  reached, another place among a literal's entries): no effect, no throw. */
+export const speculative = (e, view) => {
   if (typeof e === 'string') return true
   if (!Array.isArray(e)) return typeof e === 'number'
   const op = e[0]

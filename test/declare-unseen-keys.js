@@ -116,3 +116,98 @@ test('declared keys: Object.assign keeps what its target can tell', () => {
   agree(`export let f = (x) => { let l = [{ q: 1 }]; Object.assign(l[0], { b: x }, { c: 2, b: 5 }); return l[0].b + l[0].c + l[0].q }`, [['f', 3]])
   agree(`let mk = () => ({}); export let f = (x) => { let a = mk(), b = mk(); Object.assign(a, { s: x }); b.t = 2; return (a.s ?? 0) + (a.t ?? 10) + (b.s ?? 100) + b.t }`, [['f', 3]])
 })
+
+// Literals that meet (the elements of a list, the arms of a choice) with the
+// same keys in two orders take one layout: a read through the join is a slot.
+// Literals of two sets of keys stay two layouts, which tell their objects
+// apart (`lacks` below, and the pins of the reads by layout: test/splice.js,
+// test/struct-inline.js, test/optimizer-devirt.js).
+const total = `let total = (l) => { let s = 0; for (let i = 0; i < l.length; i++) { const p = l[i]; s += p.x * 2 + p.y * 3 + (p.m ?? 7) } return s }`
+const meet = `${total}
+export let elems = (n) => { const l = []; for (let i = 0; i < n; i++) l.push(i % 2 ? { x: i, y: i * 0.5 } : { y: i * 0.25, x: i + 1 }); return total(l) }
+export let arms = (n) => { let s = 0; for (let i = 0; i < n; i++) { const p = i % 3 ? { x: i, y: 2 } : { y: 5, x: i * 2 }; s += p.x - p.y } return s }
+export let member = (n) => { const o = { u: n, w: n * 2 }; const l = [{ x: o.u, y: o.w }, { y: o.u + 1, x: o.w - 1 }]; return total(l) }
+export let inArrow = (n) => { const l = [1, 2, 3].map(i => ({ y: i, x: i * 2 })); l.push({ x: n, y: n + 1 }); return total(l) }
+let k = 0
+let next = () => ++k
+export let oneCalls = (c, i) => { k = 0; const p = c ? { x: next(), y: next() } : { y: i, x: i * 2 }; return p.x * 10 + p.y }
+export let laterCalls = (c, i) => { k = 0; const p = c ? { y: i, x: i * 2 } : { x: next(), y: next() }; return p.x * 10 + p.y }
+export let other = (i, n, o) => typeof i + typeof n + typeof o`
+const meetCalls = [['elems', 9], ['arms', 9], ['member', 3], ['inArrow', 4], ['oneCalls', 0, 5], ['oneCalls', 1, 5], ['laterCalls', 0, 5], ['laterCalls', 1, 5]]
+
+test('one layout: literals that meet in two key orders agree with JS', () => agree(meet, meetCalls))
+
+test('one layout: a read through the join is a slot', () => {
+  for (const optimize of levels(2, 3)) {
+    const text = wat(meet, { optimize })
+    for (const fn of ['total', 'arms', 'oneCalls', 'laterCalls']) ok(!dynCalls(text, fn).length, `${fn} at ${optimize}: ${dynCalls(text, fn)}`)
+  }
+})
+
+// An entry moves only where it has no effect and cannot throw: a call, an
+// accessor, a conversion and a read that may throw each keep their place.
+test('one layout: an entry with an effect keeps its place', () => {
+  agree(`let k = 0
+    let next = () => ++k
+    export let calls = (c) => { k = 0; const p = c ? { x: next(), y: next() } : { y: next(), x: next() }; return p.x * 10 + p.y }
+    let seen = 0
+    const g = { get v () { return ++seen } }
+    export let getter = (c) => { seen = 0; const p = c ? { x: g.v, y: g.v } : { y: g.v, x: g.v }; return p.x * 10 + p.y }
+    export let thrower = (c, has) => { let n = 0; const o = has ? { q: 4 } : null; try { const p = c ? { x: n++, y: o.q } : { y: o.q, x: n++ }; return p.x * 10 + p.y + n * 100 } catch (e) { return -1 - n } }
+    let log = ''
+    const va = { valueOf: () => { log += 'a'; return 2 } }, vb = { valueOf: () => { log += 'b'; return 3 } }
+    export let converts = (c) => { log = ''; const p = c ? { x: va * 1, y: vb * 1 } : { y: vb * 1, x: va * 1 }; return log + (p.x * 10 + p.y) }
+    export let shadows = (c) => { log = ''; let a = 1, b = 2; const q = { x: a, y: b }; const mk = [(a, b) => ({ y: b * 1, x: a * 1 }), (a, b) => ({ y: b * 2, x: a * 2 })]; const p = c > 1 ? q : mk[c](va, vb); return log + (p.x * 10 + p.y) }
+    let before = (a, b) => a + b
+    let conv = (c, a, b) => { const q = { x: 1, y: 2 }; const p = c ? q : { y: b * 1, x: a * 1 }; return p.x * 10 + p.y }
+    let after = (a, b) => a - b
+    export let scoped = (c) => { log = ''; const r = conv(c, va, vb) + before(1, 2) + after(3, 4); return log + r }`,
+  [['calls', 0], ['calls', 1], ['getter', 0], ['getter', 1], ['thrower', 0, 0], ['thrower', 1, 0], ['thrower', 0, 1], ['thrower', 1, 1], ['converts', 0], ['converts', 1], ['shadows', 0], ['shadows', 1], ['shadows', 2], ['scoped', 0], ['scoped', 1]])
+})
+
+// Each operation that can tell a key order, or a key one literal lacks.
+const told = {
+  ...seen,
+  values: 'Object.values(o).join()',
+  in: '("m" in o) + ":" + ("x" in o)',
+  own: 'o.hasOwnProperty("m") + ":" + Object.hasOwn(o, "x")',
+  entries: 'Object.entries(o).join()',
+  spread: 'Object.keys({ ...o, z: 1 }).join()',
+  copy: 'Object.keys({ ...o }).join()',
+  rest: '(() => { const { x, ...others } = o; return x + Object.keys(others).join() })()',
+  alias: '((q) => Object.keys(q).join())(o)',
+  del: '(() => { let k = c ? "x" : "y"; delete o[k]; return Object.keys(o).join() + (o.x ?? "gone") })()',
+  computed: '(() => { const k = "n" + "ew"; o[k] = 1; return Object.keys(o).join() })()',
+}
+for (const [name, ask] of Object.entries(told)) test(`one layout: ${name} sees each literal's own keys in its own order`, () => {
+  agree(`export let order = (c) => { const o = c ? { x: 1, y: 2 } : { y: 3, x: 4 }; const r = o.x * 10 + o.y; return r + ':' + ${ask} }
+    export let lacks = (c) => { const o = c ? { m: 1, x: 2 } : { x: 4 }; const r = o.x * 10 + (o.m ?? 7); return r + ':' + ${ask} }`,
+  [['order', 0], ['order', 1], ['lacks', 0], ['lacks', 1]])
+})
+
+test('one layout: the host sees each literal as written', () => {
+  agree(`export let order = (c) => c ? { x: 1, y: 2 } : { y: 3, x: 4 }
+    export let lacks = (c) => c ? { m: 1, x: 2 } : { x: 4 }`, [['order', 0], ['order', 1], ['lacks', 0], ['lacks', 1]])
+})
+
+// `toString: undefined` in the literal that lacks it would answer for the prototype's.
+test('one layout: a literal is given no inherited name', () => {
+  agree(`let mk = (c) => c ? { a: 1, toString: () => 'mine' } : { a: 2 }
+    export let f = (c) => { const o = mk(c); o.late = 5; return String(o) + o.late + o.a }`, [['f', 0], ['f', 1]])
+})
+
+// A small record made many times beside larger ones of other keys keeps its
+// own size: the layout's room is no more than what the group's literals hold.
+test('one layout: a group whose literals hold little of it stays as written', () => {
+  const bigs = (p) => [1, 2, 3].map(g => `{ ${[1, 2, 3, 4, 5, 6, 7, 8].map(i => `${p}${g}${i}: ${i}`).join(', ')} }`).join(', ')
+  const src = `const alone = [], all = [], marked = []
+    export let small = (n) => { alone.length = 0; for (let i = 0; i < n; i++) alone.push({ v: i }); let s = 0; for (let i = 0; i < alone.length; i++) s += alone[i].v; return s }
+    export let many = (n) => { all.length = 0; all.push(${bigs('a')}); for (let i = 0; i < n; i++) all.push({ v: i }); let s = 0; for (let i = 0; i < all.length; i++) s += all[i].v ?? all[i].a11; return s }
+    export let late = (n) => { marked.length = 0; marked.push(${bigs('b')}); for (let i = 0; i < n; i++) marked.push({ w: i }); marked[0].tag = 9; let s = 0; for (let i = 0; i < marked.length; i++) s += marked[i].w ?? marked[i].tag; return s }`
+  agree(src, [['small', 50], ['many', 50], ['late', 50]])
+  for (const optimize of levels(2, 3)) {
+    const grown = (name) => { const { exports, memory } = jz(src, { optimize }); const at = memory.buffer.byteLength; exports[name](20000); return memory.buffer.byteLength - at }
+    const base = grown('small')
+    for (const name of ['many', 'late']) { const g = grown(name); ok(g <= base * 1.5, `${name} at ${optimize}: ${g / 65536} pages beside ${base / 65536}`) }
+  }
+})

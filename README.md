@@ -447,8 +447,8 @@ How the data is held should not change the cost of a loop over it: an array made
 by pushes, a fill, `Array.from`, `map` or a spread, held in a module constant, a
 binding an init call sets, a parameter, a field or a closure. `test/data-forms.js`
 compiles each combination, for arrays, records and keyed collections, and holds
-every cell to the best form of its kernel. <!-- fig:forms-short -->500<!-- /fig --> cells are listed short of it
-today (`test/data-forms.json`), <!-- fig:forms-calls -->77<!-- /fig --> of them by a call inside the loop that
+every cell to the best form of its kernel. <!-- fig:forms-short -->498<!-- /fig --> cells are listed short of it
+today (`test/data-forms.json`), <!-- fig:forms-calls -->73<!-- /fig --> of them by a call inside the loop that
 the best form does not make: <!-- fig:forms-seq-calls -->0<!-- /fig --> over an array of numbers, the rest over
 records and keyed collections.
 
