@@ -5258,14 +5258,21 @@ test('bigint: a field read through an object of several layouts is unboxed', () 
 // box's own bits. The write marks the binding (ir/bigint.js
 // applyBindingWriteAction), and the step of such a binding is the generic one,
 // which reads through the box and stores one (emit/incdec.js). The step's own
-// value put in a binding of its own (`const was = m++`) is not among the rows:
-// the emitter types it a Number where it has no type for the operand.
+// value (`const was = m++`, `String(++m)`) is a BigInt or a Number by the value
+// it meets: the emitter gives it no type where it has none for the operand
+// (kind/val-type-of.js), and a binding that takes it may hold a box.
 test('bigint: a local set from an element steps through its box', () => {
   const pre = 'let arr = []; arr.push(900n); '
   const src = `export let inc = () => { ${pre}let m = arr[0]; m++; return String(m) }
     export let dec = () => { ${pre}let m = arr[0]; m--; return String(m) }
     export let twice = () => { ${pre}let m = arr[0]; m++; m++; return String(m) }
     export let postSum = () => { ${pre}let m = arr[0]; const was = m--; return String(was + m) }
+    export let post = () => { ${pre}let m = arr[0]; const was = m++; return String(was) + ':' + String(m) }
+    export let before = () => { ${pre}let m = arr[0]; const now = ++m; return String(now) + ':' + String(m) }
+    export let beforeUsed = () => { ${pre}let m = arr[0]; return String(++m) + ':' + String(m--) + ':' + String(m) }
+    export let beforeAdded = () => { ${pre}let m = arr[0]; const now = ++m; return String(now + 1n) }
+    export let ofMap = () => { const mp = new Map([[1, 900n]]); let m = mp.get(1); const was = m++; return String(was) + ':' + String(m) }
+    export let missingValue = () => { let none = []; let m = none[0]; const was = m++; return String(was) + ':' + String(m) }
     export let thenAdd = () => { ${pre}let m = arr[0]; m++; m += 10n; return String(m * 2n) }
     export let thenAssign = () => { ${pre}let m = arr[0]; m = m + 5n; m++; return String(m) }
     export let missing = () => { let none = []; let m = none[0]; m++; return String(m) }
@@ -5279,7 +5286,7 @@ test('bigint: a local set from an element steps through its box', () => {
     export let param = () => { ${pre}return String(h(arr[0])) }
     export let inLoop = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m++; return String(m) }
     export let literal = () => { let m = 900n; m++; return String(m) }`
-  const calls = ['inc', 'dec', 'twice', 'postSum', 'thenAdd', 'thenAssign', 'missing', 'closure', 'kind', 'handed', 'compared', 'copy', 'param', 'inLoop', 'literal']
+  const calls = ['inc', 'dec', 'twice', 'post', 'before', 'beforeUsed', 'beforeAdded', 'ofMap', 'missingValue', 'postSum', 'thenAdd', 'thenAssign', 'missing', 'closure', 'kind', 'handed', 'compared', 'copy', 'param', 'inLoop', 'literal']
   for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
     const want = oracle(src), got = jz(src, { optimize }).exports
     for (const name of calls) is(String(got[name]()), String(want[name]()), `${name}() O${optimize}`)

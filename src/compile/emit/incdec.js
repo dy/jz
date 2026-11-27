@@ -116,8 +116,11 @@ export const incdecOps = {
       return writeVar(name, repAction === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits), void_)
     }
     const k = ctx.summary?.at(ctx.func.current).kindOfExpr(name)
-    if (hasBigintDomain(name) || k != null && hasTag(k, K.BIGINT) && !unbounded(k))
-      return writeVar(name, numericStep(name, fn, old), void_)
+    if (hasBigintDomain(name) || k != null && hasTag(k, K.BIGINT) && !unbounded(k)) {
+      // (the step's value is the stored one: a box where it is a BigInt, as the step itself says)
+      const stepped = writeVar(name, numericStep(name, fn, old), void_)
+      return void_ ? stepped : deferBigintBox(stepped, () => stepped)
+    }
     // The step takes the binding's number: one that may hold a missing value
     // steps from NaN, not from the payload of its undefined.
     if (old || v.type !== 'i32') return writeVar(name, typed([`f64.${fn}`, saveNumber(toNumF64(name, v), old), ['f64.const', 1]], 'f64'), void_)

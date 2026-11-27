@@ -505,6 +505,16 @@ VT['+1'] = VT['-1'] = (args) => {
 const numericUnaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
+// A step of an operand the emitter has no type for, which the summary lists a BigInt among (a
+// kind it bounds): a BigInt or a Number, by the value it meets. No type: the test is the step
+// emitter's own for its generic step (compile/emit/incdec.js numericStep).
+VT['++'] = VT['--'] = (args) => {
+  if (valTypeOf(args[0]) == null) {
+    const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(args[0])
+    if (k != null && (k & bitOf(K.BIGINT)) !== 0 && tagsOf(k) !== TAGS) return null
+  }
+  return numericUnaryVT(args)
+}
 // …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
 // Nullable container reads retain their BigInt payload for unary dispatch
 // and strict comparisons; the runtime handles the absent-key arm.

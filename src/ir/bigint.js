@@ -184,6 +184,8 @@ export function applyBigintRepresentationAction(ir, node, action) {
  *  read as the Number it spells. */
 export function applyBindingWriteAction(ir, node, name, action) {
   ir = applyBigintRepresentationAction(ir, node, action)
+  // (a value that is a box where it is a BigInt, a generic step's: the binding may hold one)
+  if (action === REP_EDGE_REJECT && typeof name === 'string' && ir && typeof ir.bigintBox === 'function') (ctx.func.taggedLocals ??= new Set()).add(name)
   if (action !== REP_EDGE_REJECT || valTypeOf(node) !== VAL.BIGINT || valTypeOf(name) === VAL.BIGINT) return ir
   // (the binding holds a box from here on, whatever the flow calls the name after this write:
   // a reader that takes its raw bits unboxes, and its step reads through the box, isTaggedLocal)
