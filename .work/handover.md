@@ -1104,3 +1104,20 @@ For whoever lands next:
 - A BigInt's carrier is asked of a receiver by all its layouts (module/schema.js `slotBigintBoxedIn`), not by a name's one: the per-name questions beside it (`slotBigintProvenAt`, `slotBigintRawAt`) still answer by one layout or a refinement's, and a new reader of a field through several layouts should check which it asks.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-closed.sh` and `own/mutate-closed.py` (CL), `own/mutant-big.sh` and `own/mutate-big.py` (BJ), `probe/in/keys/big-join.mjs`, `big-join2.mjs`, `big-join3.mjs`, `big-test.mjs` (the BigInt field through several layouts).
+
+## Branches of the land-c8 landing (2026-11-27), tips before deletion
+
+```
+cadff50b1 land13-x  the landing branch: two commits on 3efa36cb6 (5f5c5ba13, then the value's); the record's commit after it
+41f906193 inc-x     the same two on fef45818a (c64fb8517, 41f906193): the check ran on it
+```
+
+For whoever lands next:
+
+- A BigInt has two carriers, the raw bits and a box, and three parties say which a binding holds: the representation plan (`representationBindingWriteAction` and its kin), the emitter's flow record of the name (`valTypeOf`), and the mark a write leaves (`ctx.func.taggedLocals`). A write the plan leaves alone boxes; the flow then calls the name a BigInt, which most readers take for raw bits unless the mark says otherwise. A new reader or writer of a BigInt binding asks all three, as `readI64` does.
+- When a wrong answer shows in one shape (a parameter, at one level), try the plainest shape of it before listing it: this one was wrong in a three-statement program at level 0.
+- A probe of several small programs, each beside Node at each level (`probe/multi-agree.mjs <tree> <input with programs>` under the tools directory), finds a wrong answer's edges faster than one program with many exports: the exports of one program share the plan's decisions.
+
+- The emitter's type of an expression (`valTypeOf`) is a claim about its carrier as much as its kind: a Number's type on a value that may be a box sends it through a Number's conversions. `VT['++']` now declines where the step emitter takes its generic step; an operator whose result may be a BigInt by the value it meets should decline the same way.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-step.sh` and `own/mutate-step.py` (IS), `own/mutant-val.sh` and `own/mutate-val.py` (VS), `probe/multi-agree.mjs`, inputs `probe/in/keys/big-inc*.mjs`, `big-pre.mjs`, `big-val.mjs`, `big-step-test.mjs`.

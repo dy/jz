@@ -5205,6 +5205,47 @@ Mutations, each failing a test: eight of the first commit (own/mutant-closed.sh 
 
 The records' cells left: the tuple, the structure of arrays (keep/soa-wip.patch), the record with an open spread, the kernels that renew. Then the keyed collections.
 
+## The land-c8 landing: a local that took a boxed BigInt steps through its box, and the step's value is read as it is (2026-11-27)
+
+Two commits on 3efa36cb6, the integrator's. A wrong answer of main's, found on the way to the land-c1 landing and listed there as the BigInt `++` of a parameter given an element.
+
+### What landed
+
+`5f5c5ba13`: a write of a BigInt into a binding the representation plan leaves alone stores a box and now marks the binding (src/ir/bigint.js `applyBindingWriteAction`, `ctx.func.taggedLocals`); a marked binding's `++` and `--` take the generic step, which reads through the box and stores one (src/compile/emit/incdec.js).
+
+`cadff50b1`: the value of a step whose operand may be a BigInt has no type where the emitter has none for the operand (src/kind/val-type-of.js), keeps the mark that it may be a box through the binding's write (src/compile/emit/incdec.js), and marks a binding that takes it (`applyBindingWriteAction`).
+
+### The wrong answers
+
+`let arr = []; arr.push(900n); let m = arr[0]; m++` left `String(m)` "3" where 901, `m--` 230400 where 899, `m === 901n` false, at every level, level 0 among them; a parameter given such an element the same at level 3 and the speed tier. The local held the element's box, the flow recorded the name as a BigInt, and the step added one to the box's pointer.
+
+And the step's own value: `const was = m++` and `String(++m)`, m a BigInt from an element or from a Map's value, gave NaN, and `const now = ++m; now + 1n` the bits of a box plus one, at every level. The emitter typed an update a Number unless its operand was typed a BigInt.
+
+84 of the new test's 126 rows differ from Node on main.
+
+The land-c1 record lists it as garbage at level 3 and 'speed' from a parameter. That was its narrowest face: the local's own step was wrong at every level, which I had not tried.
+
+### The check
+
+The whole core suite ran before each commit: `npm test`, 7,831 tests, exit 0 each time.
+
+The check on 41f906193, every step exit 0 in 53 minutes at 8 jobs: the default leg 7,831 tests, level 3 armed 7,607, WASI 7,701, level 0 7,585, the self-compile gate 89, integration 241 of 242 with one skip, the examples at a geomean of 1.68 and 1.71 against V8, jz ahead on 25 of 25 twice, the bench corpus's bytes as main's in 105 of 105 cases. On a fresh hosted compiler (39,171,413 bytes): the kernel's parity and oracle tests 19 of 19, test/data.js 249 of 249. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 982 seconds. The generated suite whole, after that: 351 tests in 778 seconds; the vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,254; the hosted populations, exit 0.
+
+An earlier check of the first commit alone was stopped four minutes in, by me, to put the second commit under the same one. The commits as landed are the two checked (c64fb8517, 41f906193) replayed on 3efa36cb6, where the held-out lane's bot had moved main during the check: their tree differs from the checked one in bench/heldout.json alone, no file the check reads.
+
+Mutations, each failing the test: two of the first commit (own/mutant-step.sh under the tools directory), three of the second (own/mutant-val.sh). Two parts no test holds. Of the first: that only a binding the plan leaves alone steps the generic way; one both marked and covered by the plan is in no row of mine, and keeps the step it had. Of the second: that the update is left untyped only where the summary bounds the operand's kind; with it out a step of an operand of any kind has no type, which answers the same and types less.
+
+### Found, not fixed, each wrong on main
+
+- A parameter stepped by `++` that a BigInt may reach or may not (`g(arr[0])`, `g(map.get(k))`, a Number from another call) is given a BigInt literal's raw bits by `g(900n)`, which the generic step takes for a Number: 1 where 901, at levels 0 to 2 and the size tier, and with a Number caller at levels 0 and 1. The call passes the literal as it stands where the step wants a box.
+- `let m = arr[0]; for (…) m = m + 1n` throws a TypeError at levels 2 and 3 and the speed tier.
+- A BigInt handed by the host to a function that steps its parameter throws a TypeError at every level.
+- The earlier lists stand.
+
+### Next
+
+The three above are one area, a BigInt's carrier across a write the plan does not cover: the argument of a call, the assignment in a loop, the host's value. Then the records' cells left (the tuple, the structure of arrays, the record with an open spread, the kernels that renew) and the keyed collections.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
