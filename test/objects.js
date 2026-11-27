@@ -6,7 +6,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, belowOpt, levels, ownedLevels } from './_matrix.js'
-import { run, oracle, cases, jz, jzWat, compile, funcWat } from './util.js'
+import { run, oracle, cases, jz, jzWat, compile, funcWat, wat } from './util.js'
 import { parse } from '../src/parse.js'
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 
@@ -129,6 +129,47 @@ test('bulk object copies preserve BigInt field carriers across layouts', () => {
       is(f(), expected, `O${optimize}: ${body}`)
       is(f(), expected, `O${optimize}: repeat`)
     }
+  }
+})
+
+// `Object.assign` of literals onto a literal written at the call is one literal
+// (prepare/handlers.js assignedLiteral): each way its order, its stores or its
+// identity can be told answers as the call does, and the forms it leaves alone
+// (a repeated key, a source that is no literal) answer as before.
+const ASSIGNED = `let k = 0
+  let next = () => ++k
+  export let plain = (i) => { const p = Object.assign({ x: i * 0.5, y: i + 1 }, { vx: i % 7 - 3, vy: i % 5 * 0.25 }); return p.x + 2 * p.y + 3 * p.vx + 5 * p.vy }
+  export let keys = (i) => Object.keys(Object.assign({ b: i, a: 1 }, { d: 2 }, { c: 3 })).join()
+  export let json = (i) => JSON.stringify(Object.assign({ b: i }, {}, { a: [i, 2], s: 'q' }))
+  export let order = () => { k = 0; const p = Object.assign({ a: next(), b: next() }, { c: next() }, { d: next() }); return p.a * 1000 + p.b * 100 + p.c * 10 + p.d }
+  export let repeat = (i) => { k = 0; const p = Object.assign({ a: next(), b: i }, { a: next() }); return Object.keys(p).join() + p.a + p.b + k }
+  export let spreadIn = (i) => { const s = { b: i, z: 9 }; return JSON.stringify(Object.assign({ a: 1, ...s }, { c: 2, ...s })) }
+  export let repeatSpread = (i) => { const s = { b: i, a: 9 }; return JSON.stringify(Object.assign({ a: 1, ...s }, { a: 2 })) }
+  export let same = (i) => { const t = { a: i }; const r = Object.assign(t, { b: 2 }); return (r === t) + ':' + t.b }
+  export let fresh = (i) => { const a = Object.assign({ n: i }, { m: 1 }), b = Object.assign({ n: i }, { m: 1 }); a.n = 7; return (a === b) + ':' + b.n }
+  export let empty = () => Object.keys(Object.assign({}, {})).length
+  export let alone = (i) => Object.assign({ a: i }).a
+  export let named = (i) => { const s = { c: i }; return JSON.stringify(Object.assign({ a: 1 }, s, { b: 2 })) }
+  export let list = (n) => { const l = []; for (let i = 0; i < n; i++) l.push(Object.assign({ x: i, y: 2 }, { vx: 1, vy: i })); for (let i = 0; i < l.length; i++) { const p = l[i]; l[i] = Object.assign({ x: p.x + p.vx, y: p.y + p.vy }, { vx: p.vx, vy: p.vy }) } let s = 0; for (let i = 0; i < l.length; i++) s += l[i].x * 3 + l[i].y; return s }
+  export let host = (i) => Object.assign({ a: i }, { b: 'x' })
+  export let nested = (i) => Object.assign({ a: Object.assign({ p: i }, { q: 2 }) }, { b: 3 }).a.q
+  let seen = ''
+  export let setter = (i) => { seen = ''; const p = Object.assign({ set v (x) { seen += 'set' + x }, w: 1 }, { v: i }); return seen + ':' + Object.keys(p).join() + ':' + p.v }
+  export let getter = (i) => { seen = ''; const p = Object.assign({ w: 1 }, { get v () { seen += 'get'; return i } }); p.w = 2; return seen + ':' + p.v + ':' + seen }`
+
+test('Object.assign of literals onto a literal answers as the call', () => {
+  const calls = [['plain', 5], ['keys', 2], ['json', 3], ['order'], ['repeat', 4], ['spreadIn', 6], ['repeatSpread', 3], ['same', 1], ['fresh', 2], ['empty'], ['alone', 8],
+    ['named', 4], ['list', 9], ['host', 3], ['nested', 5], ['setter', 4], ['getter', 6]]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const want = oracle(ASSIGNED), got = jz(ASSIGNED, { optimize }).exports
+    for (const [name, ...args] of calls) is(JSON.stringify(got[name](...args)), JSON.stringify(want[name](...args)), `${name}(${args}) O${optimize}`)
+  }
+})
+
+test('Object.assign of literals onto a literal is one literal: a record read in place is never made', () => {
+  for (const optimize of levels(2, 3)) {
+    const body = funcWat(wat(ASSIGNED, { optimize }), 'plain')
+    ok(body && !/\.store/.test(body), `plain at ${optimize}: ${body?.match(/\w+\.store\w*/g)}`)
   }
 })
 

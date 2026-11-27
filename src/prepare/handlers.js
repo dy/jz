@@ -24,7 +24,7 @@ import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { addSource, ctx, declGlobal, derive, emitArity, err, here, holds, setFeature, warn } from '../ctx.js'
 import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
-import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, T, TYPEOF, accessorOf, alwaysReturns, blockList, classifyParam, isBlockBody, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
+import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, T, TYPEOF, ACCESSOR_GET, ACCESSOR_SET, accessorOf, alwaysReturns, blockList, classifyParam, isBlockBody, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
 import { HOST_GLOBALS, isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -346,6 +346,29 @@ function prepNode(node) {
 function ungroup(node) {
   while (Array.isArray(node) && node[0] === '()' && node.length === 2) node = node[1]
   return node
+}
+
+/** The one literal `Object.assign(lit, lit…)` makes: the target's entries, then each source's, as
+ *  they evaluate and as they are stored (a later source's key keeps the place its first store
+ *  gave it; a spread copies where it stands either way). Null where an argument is no literal of
+ *  static keys, where a key repeats (the staged form of a repeated key takes no spread beside
+ *  it), and where a key is an accessor's: a store through one is no definition. */
+function assignedLiteral(list) {
+  const items = [], seen = new Set()
+  if (!list.length) return null
+  for (const arg of list) {
+    const lit = ungroup(arg)
+    if (!Array.isArray(lit) || lit[0] !== '{}') return null
+    const own = lit.length === 1 || lit[1] == null ? [] : lit.length > 2 ? lit.slice(1) : Array.isArray(lit[1]) && lit[1][0] === ',' ? lit[1].slice(1) : [lit[1]]
+    for (const p of own) {
+      if (Array.isArray(p) && p[0] === '...' && p.length === 2) { items.push(p); continue }
+      const key = typeof p === 'string' ? p : Array.isArray(p) && p[0] === ':' && p.length === 3 && typeof p[1] === 'string' ? p[1] : null
+      if (key === null || seen.has(key) || key.endsWith(ACCESSOR_GET) || key.endsWith(ACCESSOR_SET)) return null
+      seen.add(key)
+      items.push(p)
+    }
+  }
+  return copyLoc(list[0], items.length ? ['{}', [',', ...items]] : ['{}'])
 }
 
 // A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE
@@ -1188,6 +1211,9 @@ const handlers = {
     if (folded !== undefined) return folded
 
     callee = resolveCallee(callee, args)
+    // `Object.assign` of literals onto a literal written at the call makes one object: that literal.
+    const assigned = callee === 'Object.assign' ? assignedLiteral(handlerArgs(args)) : null
+    if (assigned) return prep(assigned)
     args = renestSoleCommaArg(args)
 
     const preppedArgs = args.filter(a => a != null).map(prep)
