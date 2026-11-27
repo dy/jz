@@ -5485,3 +5485,44 @@ test('bigint: a BigInt handed to a parameter other kinds reach is a box', () => 
     }
   }
 })
+
+// A loop of a small constant count, and a for-in over an object of known keys,
+// are emitted as copies of the body, the counter a literal and the key a
+// string. The representation plan is keyed by the node, and a copy had none
+// of its source's facts: every edge on it answered as for no BigInt.
+// `for (let i = 0; i < 3; i++) m = m + 1n`, `m` a local holding a box, stored
+// the sum's raw word and threw a TypeError at the next copy's read, and
+// `mp.set(i, m + 1n)` stored the raw word, at levels 2, 3 and the speed tier.
+// A copy keeps its source's facts wherever nothing was replaced below the
+// node (compile/representation-plan/materialize.js representationCarryCopy).
+test('bigint: the copies an unrolled loop makes keep the plan\'s facts', () => {
+  const pre = 'let arr = []; arr.push(900n); '
+  const keys = 'const o = { a: 1, b: 2, c: 3 }; '
+  const src = `export let rebound = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m = m + 1n; return String(m) }
+    export let times = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m = m * 2n; return String(m) }
+    export let nested = () => { ${pre}let m = arr[0]; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) m = m + 1n; return String(m) }
+    export let twice = () => { ${pre}let m = arr[0]; for (let i = 0; i < 2; i++) m = m + 1n; return String(m) }
+    export let five = () => { ${pre}let m = arr[0]; for (let i = 0; i < 5; i++) m = m + 1n; return String(m) }
+    export let mapped = () => { let m = 900n; const mp = new Map(); for (let i = 0; i < 3; i++) mp.set(i, m + 1n); return String(mp.get(2)) + typeof mp.get(0) }
+    export let raw = () => { let m = 900n; for (let i = 0; i < 3; i++) m = m + 1n; return String(m) }
+    export let pushed = () => { ${pre}let m = arr[0]; const out = []; for (let i = 0; i < 3; i++) out.push(m * 2n); return out.map(String).join() }
+    export let indexed = () => { let m = 900n; const out = [0n, 0n, 0n]; for (let i = 0; i < 3; i++) out[i] = m + 1n; return out.map(String).join() }
+    export let field = () => { let m = 900n; const o = { n: 0n }; for (let i = 0; i < 3; i++) o.n = o.n + m; return String(o.n) }
+    export let stepped = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m++; return String(m) }
+    export let compound = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m += 2n; return String(m) }
+    export let counted = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m = m + BigInt(i); return String(m) }
+    export let typed = () => { const t = new BigInt64Array(3); let m = 5n; for (let i = 0; i < 3; i++) t[i] = m + 1n; return t.join() }
+    export let chosen = () => { const out = []; for (let i = 0; i < 3; i++) out.push(i % 2 ? 5n : 7); return out.map(String).join() + typeof out[0] + typeof out[1] }
+    export let chosenLocal = () => { let s = ''; for (let i = 0; i < 3; i++) { const r = i % 2 ? 5n : 7; s += String(r) + typeof r } return s }
+    export let either = () => { ${pre}const a = [5n, 7, 9n]; let s = ''; for (let i = 0; i < 3; i++) { const r = a[i] * a[i]; s += String(r) + typeof r } return s }
+    export let keyed =() => { ${pre}${keys}let m = arr[0]; for (const k in o) m = m + 1n; return String(m) }
+    export let keyedTimes = () => { ${pre}${keys}let m = arr[0]; for (const k in o) m = m * 2n; return String(m) }
+    export let keyedMap = () => { ${keys}let m = 900n; const mp = new Map(); for (const k in o) mp.set(k, m + 1n); return String(mp.get('c')) + typeof mp.get('a') }
+    export let keyedText = () => { ${pre}${keys}let m = arr[0]; let s = ''; for (const k in o) { m = m + 1n; s += k + String(m) } return s }
+    export let keyedField = () => { ${pre}const o = { x: 1n, y: 2n, z: 3n }; let m = arr[0]; for (const k in o) m = m + o[k]; return String(m) }
+    export let keyedSum = () => { const o = { p: 1n, q: 2n, r: 3n }; let s = 0n; for (const k in o) s = s + o[k]; return String(s) }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(answer(got[name]), answer(want[name]), `${name}() O${optimize}`)
+  }
+})

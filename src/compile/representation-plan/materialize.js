@@ -335,6 +335,34 @@ export const activeStorageSourceRep = (ctx, node) => {
 
 export const representationProgramHasBigint = ctx => programPlanRecord(ctx)?.bigint === true
 
+/** A copy the emitter makes of a statement it holds (an unrolled loop's body
+ *  with its counter a literal, a for-in's with its key) keeps its source's
+ *  facts, node for node. The plan is keyed by the node: a copy without them
+ *  answers every edge as for no BigInt, and `m = m + 1n` stored its raw word
+ *  in a binding that holds boxes. A counter's literal is a Number for a
+ *  Number and changes no node's facts. A key's string does: `o[k]`, a keyed
+ *  read, is the slot's own read as `o['a']`, so a node over a replaced key
+ *  keeps none. */
+export function representationCarryCopy(ctx, node, copy) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body || body.trivial) return
+  // whether `b` is `a` with nothing below it replaced but a name by a number
+  const walk = (a, b) => {
+    if (a === b) return true
+    if (!Array.isArray(b)) return false
+    if (!Array.isArray(a)) return typeof a === 'string' && b[0] == null && typeof b[1] === 'number'
+    let whole = true
+    for (let i = 1; i < a.length; i++) if (!walk(a[i], b[i])) whole = false
+    if (!whole) return false
+    const packed = body.nodeFacts.get(a)
+    if (packed != null) body.nodeFacts.set(b, packed)
+    if (body.materializedJoins.has(a)) body.materializedJoins.add(b)
+    return true
+  }
+  walk(node, copy)
+}
+
 /** Whether the active function's body plan is built: its locals are typed and
  *  the plan itself is solved before it is, with none to ask (activeBody). */
 export const representationBodyBuilt = ctx => {

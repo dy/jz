@@ -78,6 +78,7 @@ export {
   representationUnaryUpdateAction,
   representationProgramHasBigint,
   representationBodyBuilt,
+  representationCarryCopy,
   representationProgramRejectCount,
 } from './representation-plan/materialize.js'
 

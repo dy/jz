@@ -23,6 +23,7 @@ import {
 import { withControlFrame, withFinallyStack, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { assignedOver, extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
+import { representationCarryCopy } from '../representation-plan.js'
 import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.js'
 import { fuseProbeIf } from './fuse-probes.js'
 import { loopGuardHi } from './i32-bounds.js'
@@ -309,6 +310,7 @@ function unrollSmallConstFor(init, cond, step, body) {
   const out = []
   const emitCopy = value => {
     const copy = cloneWithSubst(body, new Map([[name, [null, value]]]))
+    representationCarryCopy(ctx, body, copy)
     out.push(...freshenUnrolledScalarBindings(copy, emitVoid(copy)))
   }
   if (values) for (const value of values) emitCopy(value)
@@ -472,7 +474,9 @@ function unrollForIn(init, cond, step, body) {
     // `continue` leaves this copy for the next; `break` leaves them all.
     frame.loop = `$fiuc${id}_${i}`
     const copy = outerTarget ? emitVoid(['=', target, ['str', key]]) : []
-    copy.push(...withRefinements(refs, realBody, () => emitVoid(cloneWithSubst(realBody, new Map([[target, ['str', key]]])))))
+    const keyed = cloneWithSubst(realBody, new Map([[target, ['str', key]]]))
+    representationCarryCopy(ctx, realBody, keyed)
+    copy.push(...withRefinements(refs, realBody, () => emitVoid(keyed)))
     return ['block', frame.loop, ...copy]
   }))
   // An open layout's tail: the pooled loop over the keys added at run time,
