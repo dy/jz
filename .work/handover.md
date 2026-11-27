@@ -1084,3 +1084,23 @@ For whoever lands next:
 - ugrep prints several files' matches in no fixed order: a before and an after are read one file at a time.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-keys.sh` and `own/mutate-keys.py` (KU), `own/mutant-assign.sh` and `own/mutate-assign.py` (BS, BT, BF), `own/split-b.py`, `own/cl-add.py`; probes `probe/agree.mjs <tree> <input.mjs> [levels]` (a program's calls beside Node's at each level), `probe/dyn-calls.mjs`, `probe/grow.mjs`, `probe/time-calls.mjs`, `probe/elem-kind.mjs`, `probe/host-getter.mjs`, `probe/bt-read.mjs`; inputs `probe/in/keys/*.mjs`.
+
+## Branches of the land-c6 landing (2026-11-27), tips before deletion
+
+```
+760fe07fd land12-x  the landing branch: two commits on 2eecea5ba (addf77651, then the BigInt fix); the record's commit after it
+f1ee211a3 land11-x  the same two on 842193038 (3dbf860ea, f1ee211a3): the WASI leg and level 0 ran on it
+13aedfaa4 disp-x    the same two before the new test took its WASI guard (b95325001, 13aedfaa4): the check ran on it
+```
+
+For whoever lands next:
+
+- Before guessing why a form is slow, read its kernel's text (`node probe/fn-wat.mjs <tree> <file> <level> <fn>` under the tools directory). The form with a key one lacks was listed for two landings as reading "by key": it read by a test of the layout all along, with dynamic arms behind the tests.
+- `closedGuardsFor` (module/schema.js) is the one place that says a receiver is one of its listed layouts and nothing else. It trusts what an unguarded read of a slot all layouts agree on (`commonSlot`) and a tag answered by layout already trust: that the summary's list is whole. A new reader of that fact asks it there.
+- The gate's `calls` count is of call sites in a kernel's loops, not of calls run; `run` is. A site behind a test that never passes counts.
+- A new test file runs on the WASI host too before the check (`JZ_TEST_HOST=wasi node test/index.js <file>`): mine passed a host object, which that host has none of, and the check's WASI leg failed on it alone.
+- After `git fetch`, fast-forward local main to origin/main first: the held-out lane's bot commits its record there while a check runs.
+
+- A BigInt's carrier is asked of a receiver by all its layouts (module/schema.js `slotBigintBoxedIn`), not by a name's one: the per-name questions beside it (`slotBigintProvenAt`, `slotBigintRawAt`) still answer by one layout or a refinement's, and a new reader of a field through several layouts should check which it asks.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-closed.sh` and `own/mutate-closed.py` (CL), `own/mutant-big.sh` and `own/mutate-big.py` (BJ), `probe/in/keys/big-join.mjs`, `big-join2.mjs`, `big-join3.mjs`, `big-test.mjs` (the BigInt field through several layouts).

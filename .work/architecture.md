@@ -5157,6 +5157,54 @@ Mutations, each failing a test: two of the first commit, five of the second and 
 
 The records' cells left: a key one lacks (above), the tuple (two calls in its step), the structure of arrays (above), the record with an open spread (hash objects), the kernels that renew (13 calls in the best form). Then the keyed collections.
 
+## The land-c6 landing: a read and a store through layouts the summary lists whole have no dynamic arm, and a BigInt field through several layouts is unboxed (2026-11-27)
+
+Two commits on 2eecea5ba, the integrator's. Phase 14's body, the records: the form the landing before left by key.
+
+### What landed
+
+`addf77651`: where the summary holds a receiver an object that is there and lists its layouts, at most four, every one holding the key, the read tests all but the last layout and loads the last one's slot behind no test, and the two stores (under a literal key, of a member) end in the last layout's store (module/schema.js `closedGuardsFor`, module/core.js `closedRead`, src/compile/emit-assign.js; pass `closedLayouts`, off at the reference levels and at the size tier).
+
+Before it such a read went through a table over every layout of the program holding the key with the dynamic read behind it, and such a store behind a test of each layout with the dynamic store behind those. The landing before named the lift as open and guessed at its cause; the cause was simpler than the guess: the reads and the stores already went by a test of the layout, and what cost was the arms for receivers the summary says cannot come; with them went the frame calls the kernel ran (three calls a pass, now one).
+
+`760fe07fd`: a BigInt field read through an object of several layouts is unboxed (src/ir/bigint.js `isSchemaSlotBigintPossible`, module/schema.js `slotBigintBoxedIn`).
+
+### A wrong of main's, fixed here
+
+`const o = c ? { n: 1n, y: 2 } : { y: 3, n: 4n }` gave `o.n === 4n` false, `o.n + 1n` and `Number(o.n)` a number near 2^63 and `String(o.n)` its digits, at every level, level 0 among them: 120 of the new test's 168 rows on main. Layouts that meet hold their BigInts boxed; the reader asked whether to unbox by the receiver's one layout, and a receiver of two had none to ask by. It asks by every layout the summary lists, for a name and for an expression. Found by a row written for the first commit (a BigInt field stored through two layouts), which failed at level 0, where that commit changes nothing.
+
+### What it gives, measured
+
+test/data-forms.json, the form with a key one lacks (`{ m, x, y, vx, vy }` beside `{ x, y, vx, vy }`), at level 2: the step kernel 29,440 operations a pass, no call site and one call run, where 89,088, seven and three; the sum 13,824 and no call site where 39,680 and three; the kernel that renews the records 16 call sites where 29. The form is still short of the best one by the layouts' tests and by lanes: 498 cells short as before, 69 of them by a call inside the loop where 73.
+
+The bench corpus: at 'speed' 3 of 105 cases' bytes move, pcmconvert 35,687 where 47,538, decode-dsd 510 fewer, webaudio 37 fewer; at 'size' none. Timed in one lane, main and this alternating, three rounds of 21 runs each, the medians' ratio: pcmconvert 1.001, decode-dsd 0.994, webaudio 1.002. No time moved.
+
+### Five pins turned
+
+Five tests pinned how a read through two layouts was lowered: test/data.js now holds that a binding of two layouts stores with no dynamic store; test/optimizer-devirt.js (two), test/field-cse.js and test/inference.js read the table, the typed dispatch and the dynamic read themselves and run with the pass off. They failed in the files nearest the change, run before the quick tier; the whole core suite after them found no other.
+
+### The check
+
+The whole core suite ran before each commit: `npm test`, 7,829 tests on the first and 7,830 on the two together, exit 0 each.
+
+The check ran on 13aedfaa4, the two commits before the new test took a guard: lint, audit, the bench corpus's bytes (3 cases at 'speed'), the self-compile gate 89, the default leg 7,830 tests, integration 241 of 242 with one skip, level 3 armed 7,606, the examples at a geomean of 1.72 and 1.70 against V8 with jz ahead on 25 of 25 twice. Its WASI leg failed: 7,699 of 7,700, the one a test of mine that hands the module a host object (test/closed-layouts.js), which the WASI host has none of. I had run the new file on the JS host alone. Level 0 did not run behind it. On f1ee211a3, which differs from the checked tree by that test's guard (two lines of test/closed-layouts.js), the WASI leg then ran whole, 7,700 tests, exit 0, and level 0, 7,584 tests, exit 0. The other legs were not run again: the guard is false on their host. The commits as landed are those two replayed on 2eecea5ba, where the held-out lane's bot had moved main during the check: their tree differs from f1ee211a3's in bench/heldout.json alone, no file the check reads.
+
+On a fresh hosted compiler (39,167,108 bytes), built from the checked tree: the kernel's parity and oracle tests 19 of 19, test/closed-layouts.js 5 of 5, test/data.js 248 of 248, test/inference.js 166 of 166, test/field-cse.js 13 of 13. test262: 4,137 passing, 4,045 rejected as they must be, none failing, in 991 seconds. The generated suite whole: 351 tests in 787 seconds; the vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,254; the hosted populations, exit 0.
+
+An earlier check of the first commit alone was stopped 26 minutes in, by me, to put the second commit under the same one.
+
+Mutations, each failing a test: eight of the first commit (own/mutant-closed.sh under the tools directory), two of the second (own/mutant-big.sh). Four parts no test holds. Three of the first: the two tests that the receiver is there, the summary's and the emitter's (the rows with a receiver that may be missing answer as Node with either out and with both: such a receiver does not reach the chain by the ways I wrote), and the member store's refusal where a layout's slot holds a raw BigInt (layouts that meet box their BigInts, so none of theirs is raw). One of the second: that any layout boxing the slot is enough where every one could be asked, for the same reason.
+
+### Found, not fixed
+
+- The form with a key one lacks is still 4.4 times the literal's operations in its step: a test of the layout an access, six a record, and no lanes. One layout for such literals would lift it where no reader tests the kind; the plan cannot ask that.
+- A receiver whose kind may be missing is declined, whatever test of that stands before the read (a `Map`'s `get` under `if (s === undefined)` is taken: the summary narrows its kind there). How often the refusal costs is not measured.
+- The earlier lists stand.
+
+### Next
+
+The records' cells left: the tuple, the structure of arrays (keep/soa-wip.patch), the record with an open spread, the kernels that renew. Then the keyed collections.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
