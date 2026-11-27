@@ -1065,3 +1065,22 @@ For whoever lands next:
 - `npm test` whole, at rest, takes 15 minutes at 8 jobs: run it before the commit, then the check. This landing's check started with it known green.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-len.sh` and `own/mutate-len.py` (BL), `own/pre-chain.sh <tree> <tag> <base hashes>` (listings, quick, sweep, bench bytes ahead of a commit), `probe/in/raw/boxed-made.mjs`.
+
+## Branches of the land-c5 landing (2026-11-27), tips before deletion
+
+```
+9b9c9e608 land10-x the landing branch: four commits on 53c31632b; the record's commit after it (land9-x: the same four, built and checked there)
+ddfb7a0f7 land8-x  the first build of the four, its keys commit giving one layout to literals of two sets of keys: eleven pins of the whole suite failed on it
+07a26cf24 keys-x   where the changes were written, uncommitted (the tools directory's keep/keysA.patch, keep/keysB.patch, keep/soa-wip.patch)
+```
+
+For whoever lands next:
+
+- A layout is a fact other passes read: its keys' order (the keys' observers), which keys it has (a read under a test of the object's kind, by a jump table or a packed carrier), which literals a slot took (a test of a tag). One layout for a group of literals (src/compile/plan/declare-unseen-keys.js) is taken where the group gains a key, or where its literals write the same keys in two orders. Giving one to literals of two sets of keys failed eleven pins: read test/optimizer-devirt.js, test/struct-inline.js and test/splice.js before trying it again.
+- `npm test` whole runs before a branch is called ready, not the files a change touches and the quick tier: the eleven were in six files none of which the change named.
+- An entry of a literal moves only by `speculative` (src/compile/plan/exit-tests.js): no effect, no throw. It is the one rule for "can run where the program would not have run it"; a new mover asks it, and a new kind of expression that qualifies is added there, with the loop's written-out form as its other reader.
+- "The body runs none of the program's code" (src/summary/index.js `bodyRunsCode`, `builtinCall`) is what lets a store at a loop's counter stand inside the length the loop tested. A call counts as code unless it is listed, and what is listed must be true of every argument it can take: `Object.assign` runs setters of its target and getters of its sources, a typed array made of an array converts the array's elements. A row for each (test/array-holes.js) has a setter, a getter or a `valueOf` leave another, shorter array under the name.
+- A stateful program needs an instance of Node's to the level it is compared at, as the tests' `oracle(src)` in the loop gives: my probe compared six levels against one instance and read the difference as jz's.
+- ugrep prints several files' matches in no fixed order: a before and an after are read one file at a time.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-keys.sh` and `own/mutate-keys.py` (KU), `own/mutant-assign.sh` and `own/mutate-assign.py` (BS, BT, BF), `own/split-b.py`, `own/cl-add.py`; probes `probe/agree.mjs <tree> <input.mjs> [levels]` (a program's calls beside Node's at each level), `probe/dyn-calls.mjs`, `probe/grow.mjs`, `probe/time-calls.mjs`, `probe/elem-kind.mjs`, `probe/host-getter.mjs`, `probe/bt-read.mjs`; inputs `probe/in/keys/*.mjs`.

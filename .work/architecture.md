@@ -5094,6 +5094,69 @@ Six mutations each fail a test (own/mutant-len.sh under the tools directory). On
 
 Phase 14's body, the records first (in hand: the literals that meet in two key orders or with a key one lacks, and a record made by `Object.assign`), then the keyed collections, where the 83 calls gaps are; the induction value in lanes beside them.
 
+## The land-c5 landing: a setter counts as code, `Object.assign` of literals is a literal, and the same keys in two orders are one layout (2026-11-27)
+
+Four commits on 53c31632b, the integrator's. Phase 14's body, the records.
+
+### What landed
+
+1. `3c6d930a2`: a store through a setter counts as running the program's code (src/summary/index.js `bodyRunsCode`, `hasSetter`).
+2. `80133bd98`: `Object.assign` among plain objects, in a program with no accessor, and a typed array made of a count run none of it (`builtinCall`): a loop that renews a list with either keeps the bound of its store at the counter.
+3. `48ad18b45`: `Object.assign(lit, lit…)` with static keys is the one literal it makes (src/prepare/handlers.js `assignedLiteral`).
+4. `9b9c9e608`: literals that meet with the same keys in two orders take one layout where nothing reads their keys (src/compile/plan/declare-unseen-keys.js); the entries of a literal move to the layout's order where each has no effect and cannot throw (src/compile/plan/exit-tests.js `speculative`). With it, two limits on what the pass did already where a group gains a key: no literal is given an inherited name, and a group takes one layout only where the room its literals leave unused is no more than what they hold.
+
+### Three wrongs of main's, fixed here
+
+- A store through a setter was not counted as code between a loop's test of a length and its store at the counter (the walk asked a member for its getter alone): a setter that leaves a shorter array under the name made the store land past that array's end, and the cells between read as values, not holes: `short[3] === undefined` false at levels 0, 1, 2 and 3 and at the speed tier. Found while writing the row that `Object.assign`'s rule needed: the row for a member store failed on main.
+- The pass that declares the keys an object gains later gave every literal of a joined group every key of the group, an inherited name among them: `{ a, toString: f }` beside `{ a }` with a key stored later made the second `{ a, toString: undefined, … }`, and `String(o)` on it threw a TypeError at levels 2 and 3 and at both tiers. Found by asking what the pass could hand a literal.
+- The same pass spent memory without bound: one key stored late on one record made every literal of its group carry the whole group's layout. 20,000 records of one key beside three of eight keys each took 119 pages where 19, and 2.7 ms where 0.6 (26 slots stored an object).
+
+### A wrong of mine, caught by the whole suite before the check
+
+The fourth commit's first build gave one layout to any literals that met, a key one lacks its slot holding undefined. The quick tier failed one pin with it and, that one mended by a rule for tags, the whole core suite run on the branch's tip failed eleven: test/inference.js (2), test/data.js, test/splice.js, test/struct-inline.js (2), test/optimizer-devirt.js (4), test/field-cse.js. Every one pins a read that goes by layout. jz reads a join of two layouts by a test of the layout already (a jump table, `devirtSchemaReads`; a packed carrier, compile/analyze/union-inline.js), and which keys an object has is what those read: under `k === 0`, an `{ k, x, y }` beside `{ k, r }` reads `o.x` as the Number that layout holds. One layout for the two gives that up. The commit as landed takes the same keys in two orders alone, where the layouts told nothing apart but an order nothing reads.
+
+What the first build measured stays measured and unlanded: the form with a key one lacks at the literal's cells, and pcmconvert at 29,933 bytes at 'speed' where 47,538 (its default range `{ min, max }` beside the formats' `{ C, min, max }`), its time unmoved (1.001 over three rounds in one lane). It was a branch of four commits, checked by nothing but its own tests and the quick tier, until `npm test` whole ran.
+
+### What it gives, measured
+
+test/data-forms.json: 498 cells short of their best form where 504, 73 of them by a call inside the loop where 83 (README's counts follow). By form, at level 2, operations a pass and calls:
+
+| form | kernel | main | this |
+|---|---|---|---|
+| keys in two orders | step | 88,576, 7 calls | 6,656 in lanes, none |
+| | sum | 39,680, 3 calls | 6,144, none |
+| | renew | 16 calls past the best form | 3 |
+| made by `Object.assign` | step | 24,576, 1 call | 6,656 in lanes, none |
+| | sum | 6,912, 1 call | 6,144, none |
+| | renew | 24 calls past the best form, 8,160 bytes a pass | the best form's |
+| held as a typed array | step | 34,048, 1 call | 22,272, none |
+| | sum | 24,064, 2 calls | 15,104, none |
+
+The bench corpus: no case's bytes move, 105 of 105 as main's at both tiers.
+
+### The check
+
+The whole core suite ran on the branch's tip before the check: `npm test`, 7,824 tests, exit 0 in 964 seconds. On the first build's tip it had failed eleven (above).
+
+The check on 9b9c9e608, every step exit 0 in 55 minutes at 8 jobs: the default leg 7,824 tests, level 3 armed 7,600, WASI 7,694, level 0 7,578, the self-compile gate 89, integration 241 of 242 with one skip, the examples at a geomean of 1.70 and 1.69 against V8, jz ahead on 25 of 25 twice, the bench corpus's bytes as main's in 105 of 105 cases. On a fresh hosted compiler (39,145,715 bytes): the kernel's parity and oracle tests 19 of 19, test/declare-unseen-keys.js 40 of 40, test/array-holes.js 22 of 22, test/objects.js 204 of 204. I also ran test/optimizer-devirt.js there, which the hosted suite does not (it calls the passes in the host on hand-written IR: test/index.js `KERNEL_EXCLUDE`): 33 of its 36 pass and 3 fail on a kernel, as 3 of 36 did in an earlier check's run of it before this landing (the two names both runs print are the same). test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 956 seconds. The generated suite whole, after that: 351 tests in 819 seconds; the vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,254; the hosted populations, exit 0.
+
+Mutations, each failing a test: two of the first commit, five of the second and four of the third (own/mutant-assign.sh under the tools directory), eight of the fourth (own/mutant-keys.sh). Three parts no test holds. One of the second: `Object.assign`'s test for a getter in the program; the row for a getter's object as the source answers as Node with it out, by a fact of the summary I did not trace. Two of the fourth, both refusals: a closure's literal is never moved, and a function's literal is judged by its own names rather than the module's; the inliner renames parameters apart, so my rows with a shadowed name do not make either matter.
+
+### Found, not fixed
+
+- Literals of two sets of keys that meet with no test of their kind (`{ m, x }` beside `{ x }`; a default `{ min, max }` beside `{ C, min, max }`) read and store through the join by key: 7 calls a pass of the data forms' step kernel. Two lifts are open. One layout for them, where no reader tests the kind: the plan cannot ask that today. Or their reads and stores by a test of the layout, which the reads of other programs get and these do not; why not is not traced.
+- A group that gains a key still takes one layout whatever its literals' keys (as before this landing, now inside the room's bound): a read under a test of the kind there is of the joined kind.
+- `Object.assign` with a source that is no literal (`Object.assign({}, a, b)`, `Object.assign({ d: 1 }, opts)`) stays the call. With one source it is the spread `{ d: 1, ...opts }` exactly; with two, a getter of the first could change what the second names, so it is that only in a program with no accessor.
+- A closure's literal (`ps.map(p => ({ y: p.y, x: p.x }))`) is never moved to another's order.
+- The data forms' structure of four plain arrays (`for (i < X.length) { X[i] += VX[i]; Y[i] += VY[i] }`) holds `Y` able to have holes: the counter is bounded by another array's length, a number the first solve has not got. A prototype (keep/soa-wip.patch under the tools directory) gives the counter the steady length and admits `Y` to the steady table; the kernel still runs the frame calls of arrays that are not kept raw (one of the four is). Unfinished.
+- test/limits.js 'statements, two a line at 10000 links, the level off' failed once on CI for 53c31632b (a CPU ratio of 6.0 where at most 6) and passed when run again: a timing pin at its edge on the runner.
+- jz gives `{ __proto__: v }` an own key where JavaScript sets the prototype, in a literal and through `Object.assign` alike: a standing divergence, met while testing the fold.
+- The earlier lists stand: the BigInt `++` of a parameter given an element, the census's trust in the query past method calls, the memory gaps, the bench lanes' difference, the induction value in lanes.
+
+### Next
+
+The records' cells left: a key one lacks (above), the tuple (two calls in its step), the structure of arrays (above), the record with an open spread (hash objects), the kernels that renew (13 calls in the best form). Then the keyed collections.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):
