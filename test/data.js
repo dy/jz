@@ -520,7 +520,8 @@ test('Map/Set: every hashing path finds a key the others stored', () => {
 // if (s === undefined) s = {...}`) has no layout prepare can bind, but the
 // summary proves the one layout every value it holds has: its stores take the
 // slot its reads take, behind the same nullish test, where they paid a
-// property hash each (`__dyn_set`). Bindings of two layouts keep the dynamic store.
+// property hash each (`__dyn_set`). A binding of two layouts the summary lists
+// whole stores behind a test of the layout (module/schema.js closedGuardsFor).
 test('a binding the summary shapes stores into the slot its reads use', () => {
   const one = `export let f = (n) => {
     const m = new Map()
@@ -549,7 +550,7 @@ test('a binding the summary shapes stores into the slot its reads use', () => {
   }
   const stores = (s) => (funcWat(compile(s, { optimize: 'speed', wat: true }), 'f').match(/call \$__dyn_set\b/g) || []).length
   is(stores(one), 0, 'one layout: slot stores')
-  ok(stores(mixed) > 0, 'two layouts: the dynamic store stays')
+  is(stores(mixed), 0, 'two layouts the summary lists whole: each store behind its layout\'s test')
 })
 
 // Map.prototype.set and Set.prototype.add store a key of -0 as +0 (ECMA-262

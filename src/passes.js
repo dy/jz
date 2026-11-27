@@ -125,6 +125,7 @@ export const PASS_NAMES = [
   'promoteLoopFields',        // a field a loop reads and writes through one receiver: a local for the loop (plan/loop-fields.js)
   'numericArrays',            // an array the program proves holds only Numbers keeps them raw: no canonicalization, no hole test (compile/numeric-arrays.js)
   'reserveBuilds',            // an array its function builds takes its room whole at its literal: its counted pushes and its fill store in it (reps.js builderCapacity)
+  'closedLayouts',            // a read or a store through an object of a few layouts the summary lists whole tests all but the last, with no dynamic arm (module/schema.js closedGuardsFor)
   'callChosenFunctions',      // a local holding one of several functions and only called: the choice of direct calls (plan/chosen-calls.js)
   'specializeCalledArgs',     // a parameter only called, given a named function: a copy calling it by name (plan/called-args.js)
   'splitByClosureArgs',       // a parameter called or read through, given different closures by different calls: a copy per set (plan/called-args.js)

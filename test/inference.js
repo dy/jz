@@ -465,6 +465,8 @@ test('array element schema from callers: heterogeneous literal elements stay gen
   // `y` in a different slot of each → no common slot, so the read tests the
   // shape (a guard per layout) with the generic dyn-get behind the misses.
   // Proves the positive case above isn't a vacuous always-fires fold.
+  // (The chain with no dyn-get behind it, for layouts the summary lists whole,
+  // is off: module/schema.js closedGuardsFor, test/closed-layouts.js.)
   const wat = compile(`
     const dispatch = (ops) => {
       let s = 0
@@ -473,7 +475,7 @@ test('array element schema from callers: heterogeneous literal elements stay gen
     }
     const build = (d) => dispatch([d])
     export const main = () => (build({x: 1, y: 2}) + build({y: 4, z: 3})) | 0
-  `, { wat: true })
+  `, { wat: true, optimize: { closedLayouts: false } })
   ok(count(wat, /\$__dyn_get_/g) > 0, 'heterogeneous element shapes must stay generic')
 })
 

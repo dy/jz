@@ -78,8 +78,9 @@ test('field cse: the guards of one event read its type once', () => {
   ok(!/type: '/.test(open) && open.includes("'z'"), 'every tag is a value')
   agrees(open, [[0], [1], [2]], 'open tag')
   const count = (text) => (text.match(/\$__dyn_get/g) || []).length
-  const on = wat(open, { optimize: { level: 2, devirtSchemaReads: false } })
-  const off = wat(open, { optimize: { level: 2, loadCSE: false, devirtSchemaReads: false } })
+  // (so is the emitter's chain for a receiver of layouts the summary lists whole, which calls nothing to count)
+  const on = wat(open, { optimize: { level: 2, devirtSchemaReads: false, closedLayouts: false } })
+  const off = wat(open, { optimize: { level: 2, loadCSE: false, devirtSchemaReads: false, closedLayouts: false } })
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
 })
 

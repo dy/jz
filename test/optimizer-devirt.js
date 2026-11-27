@@ -324,7 +324,8 @@ test('devirtSchemaReads: a field read straight off an element is dispatched as o
   }
   for (const [name, body] of Object.entries(forms)) {
     const src = `${records}\nexport const f = () => { ${body} }`
-    for (const optimize of levels(2, 'speed')) ok(/br_table/.test(compile(src, { wat: true, optimize })), `${name}: a jump table at ${optimize}`)
+    // (the emitter's own chain for a receiver of layouts the summary lists whole is off: the pass's reads are these)
+    for (const level of levels(2, 'speed')) ok(/br_table/.test(compile(src, { wat: true, optimize: { level, closedLayouts: false } })), `${name}: a jump table at ${level}`)
     for (const optimize of levels(0, 2, 3, 'speed', 'size')) is(run(src, { optimize }).f(), oracle(src).f(), `${name} at ${optimize}`)
   }
 })
@@ -540,7 +541,8 @@ test('polymorphic object prop reads use typed object dispatch', () => {
     export const hx = (w) => { const o = w == 0 ? left() : right(); return o.x }
     export const hy = (w) => { const o = w == 0 ? left() : right(); return o.y }
   `
-  const wat = compile(src, { wat: true })
+  // (the emitter's own chain for a receiver of layouts the summary lists whole is off: the dispatch is what this reads)
+  const wat = compile(src, { wat: true, optimize: { closedLayouts: false } })
   ok(/\(i32\.const 3\)[\s\S]*?\(call \$__dyn_get_expr_t/.test(wat), 'expected OBJECT-typed dynamic slot dispatch')
   const { hx, hy } = run(src)
   is(hx(0), 11)

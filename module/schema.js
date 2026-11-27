@@ -9,7 +9,7 @@
 
 import { typed, asF64, asI64, canonicalNumberIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
-import { K, NUMBER, hasTag } from '../src/summary/kind.js'
+import { K, NUMBER, NULL_BITS, hasTag, tagOf } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, inc, declGlobal } from '../src/ctx.js'
 import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
@@ -427,6 +427,21 @@ export function initSchema(ctx) {
     const guards = []
     for (const sid of shapes) { const slot = ctx.schema.list[sid]?.indexOf(prop) ?? -1; if (slot >= 0) guards.push({ sid, slot }) }
     return guards.length ? guards : null
+  }
+  /** The guards of a receiver that is one of a few layouts and nothing else: the summary holds
+   *  it an object that is there and lists its layouts (`shapes`, or the expression's), and every
+   *  one holds `prop`. The last then needs no test, and no dynamic arm stands behind the chain.
+   *  Null otherwise, at the reference levels (pass `closedLayouts`), and at the size tier,
+   *  which shares the dispatcher's call instead of a chain a read (module/core.js shapeGuardsOn). */
+  ctx.schema.closedGuardsFor = (obj, prop, shapes = null) => {
+    if (ctx.transform.optimize?.closedLayouts === false || ctx.transform.optimize?.leanRuntime) return null
+    const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
+    if (k == null || tagOf(k) !== K.OBJECT || (k & NULL_BITS) !== 0) return null
+    shapes ??= view.shapesOfExpr(obj)
+    if (!shapes || shapes.length > 4) return null
+    const guards = []
+    for (const sid of shapes) { const slot = ctx.schema.list[sid]?.indexOf(prop) ?? -1; if (slot < 0) return null; guards.push({ sid, slot }) }
+    return guards
   }
   ctx.schema.guardedSlotOf = (prop) => {
     const bucket = byProp.get(prop)

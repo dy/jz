@@ -2530,6 +2530,26 @@ export default (ctx) => {
       : guards.length || m.missing ? read : typed(['block', ['result', 'f64'], ['drop', va], read], 'f64')
   }
 
+  // A receiver that is one of a few layouts and nothing else, every one holding `prop`
+  // (module/schema.js closedGuardsFor): its slot behind each layout's guard, the last
+  // layout's behind none. No dynamic lookup remains, as for a mixed receiver above.
+  function closedRead(va, obj, prop) {
+    if (typeof prop !== 'string' || va?.type !== 'f64' || va.ptrKind != null || va.cellI32) return null
+    if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) !== VAL.OBJECT) return null
+    const guards = ctx.schema.closedGuardsFor(obj, prop)
+    if (!guards) return null
+    // A receiver that does not repeat (an element read, a call) is read once into a local.
+    const t = isRepeatableRead(va) ? null : temp('cr')
+    const recv = t ? typed(['local.get', `$${t}`], 'f64') : va
+    const last = guards[guards.length - 1]
+    const rest = () => {
+      const off = ['i32.wrap_i64', ['i64.and', asI64(typed(cloneIR(recv), 'f64')), ['i64.const', LAYOUT.OFFSET_MASK]]]
+      return schemaValueIR(cloneIR(recv), last.slot, typed(ctx.abi.object.ops.load(off, last.slot), 'f64'), last.sid)
+    }
+    const read = emitSchemaSlotGuardedMulti(recv, guards.slice(0, -1), rest, prop)
+    return t ? typed(['block', ['result', 'f64'], ['local.set', `$${t}`, va], read], 'f64') : read
+  }
+
   function emitPropAccess(va, obj, prop) {
     va = numberCarrierIR(obj, va)
     if (typeof prop === 'string') { const record = recordRead(va, obj, prop); if (record) return record }
@@ -2620,7 +2640,7 @@ export default (ctx) => {
     // receiver still evaluated for what it does.
     if (schemaIdx < 0 && ctx.summary?.at(ctx.func.current)?.absentMember?.(obj, prop))
       return typeof obj === 'string' ? undefExpr() : typed(['block', ['result', 'f64'], ['drop', va], undefExpr()], 'f64')
-    if (schemaIdx < 0) { const mixed = mixedRead(va, obj, prop); if (mixed) return mixed }
+    if (schemaIdx < 0) { const mixed = mixedRead(va, obj, prop) ?? closedRead(va, obj, prop); if (mixed) return mixed }
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
       // an ARRAY value that may have relocated. Extract the payload offset from

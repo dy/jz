@@ -791,20 +791,24 @@ function emitElementStore(arr, idx, val, node) {
   // proves, else the dynamic store. The receiver is a pure read, emitted per
   // use (no frame temp); the value is evaluated once, after it.
   if (litKey != null && ctx.schema.guardsFor && !ctx.transform.optimize?.leanRuntime && isPureChain(arr) && !(ctx.types.anyDelete && mayBeDeleted(arr))) {
-    const guards = ctx.schema.guardsFor(shapesOf(arr), litKey)
+    // (a receiver that is one of its layouts and nothing else, module/schema.js closedGuardsFor:
+    // the last layout's store stands where the dynamic one would)
+    const closed = ctx.schema.closedGuardsFor(arr, litKey, shapesOf(arr))
+    const guards = closed ?? ctx.schema.guardsFor(shapesOf(arr), litKey)
     if (guards) {
-      ensureDynSetAllowed(arr)
-      inc('__dyn_set')
+      if (!closed) { ensureDynSetAllowed(arr); inc('__dyn_set') }
       const bits = () => asI64(asF64(emit(arr)))
       return withTemp(valueExpr, t => {
         const val = () => ['local.get', '$' + t]
-        let chain = ['drop', ['call', '$__dyn_set', bits(), asI64(keyExpr), ['i64.reinterpret_f64', val()]]]
-        for (let i = guards.length - 1; i >= 0; i--) {
+        const offset = () => ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
+        const last = closed ? guards[guards.length - 1] : null
+        let chain = last ? storeObjectField(offset(), last.slot, val(), null, null, arr)
+          : ['drop', ['call', '$__dyn_set', bits(), asI64(keyExpr), ['i64.reinterpret_f64', val()]]]
+        for (let i = guards.length - (last ? 2 : 1); i >= 0; i--) {
           const { sid, slot } = guards[i]
-          const off = ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
           chain = ['if',
             ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
-            ['then', storeObjectField(off, slot, val(), null, null, arr)],
+            ['then', storeObjectField(offset(), slot, val(), null, null, arr)],
             ['else', chain]]
         }
         return [chain, val()]
@@ -1104,18 +1108,22 @@ function recordStore(obj, prop, val) {
 const shapesOf = (obj) => (typeof obj === 'string' ? ctx.func.refinements?.get(obj)?.shapes : null) ?? ctx.summary?.at(ctx.func.current).shapesOfExpr(obj)
 function guardedFieldStore(obj, prop, val, slow) {
   if (ctx.transform.optimize?.leanRuntime || ctx.types.anyDelete && mayBeDeleted(obj)) return null
-  const one = ctx.schema.guardedSlotOf?.(prop)
-  const all = one ? [one] : ctx.schema.guardsFor(shapesOf(obj), prop)
+  // (a receiver that is one of its layouts and nothing else, module/schema.js closedGuardsFor:
+  // the last layout's store stands where the dynamic one would)
+  const closed = ctx.schema.closedGuardsFor(obj, prop, shapesOf(obj))
+  const one = closed ? null : ctx.schema.guardedSlotOf?.(prop)
+  const all = closed ?? (one ? [one] : ctx.schema.guardsFor(shapesOf(obj), prop))
   // a slot holding a raw BigInt carrier takes its value through the dynamic store's conversion
   const guards = all?.filter(({ sid, slot }) => !ctx.schema.slotRawBigint?.get(sid)?.has(slot))
   if (!guards?.length) return null
   const r = tempI64('gsr'), v = temp('gsv')
   const bits = () => ['local.get', `$${r}`], value = () => typed(['local.get', `$${v}`], 'f64')
-  let chain = ['drop', slow(bits(), value())]
-  for (let i = guards.length - 1; i >= 0; i--) {
-    const { sid, slot } = guards[i]
-    chain = ['if', ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
-      ['then', storeObjectField(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], slot, value(), val, sid)],
+  const store = ({ sid, slot }) => storeObjectField(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], slot, value(), val, sid)
+  const last = closed && guards.length === closed.length ? guards[guards.length - 1] : null
+  let chain = last ? store(last) : ['drop', slow(bits(), value())]
+  for (let i = guards.length - (last ? 2 : 1); i >= 0; i--) {
+    chain = ['if', ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(guards[i].sid)]],
+      ['then', store(guards[i])],
       ['else', chain]]
   }
   return block64(['local.set', `$${r}`, asI64(asF64(emit(obj)))], ['local.set', `$${v}`, storedValue(val)], chain, value())

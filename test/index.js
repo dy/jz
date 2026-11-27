@@ -142,6 +142,7 @@ const TESTS = [
   'typed-length',
   'length-words',
   'declare-unseen-keys',
+  'closed-layouts',
   'integral-loops',
   'boxed-counters',
   'rules',
