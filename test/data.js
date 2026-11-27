@@ -5445,3 +5445,43 @@ test('bigint: the sum of a BigInt and a value of open kind is a BigInt, text or 
     for (const c of [1, 0]) is(answer(conv.g, c), answer(oracle(converting).g, c), `a side with no flag where a conversion may run, g(${c}) O${optimize}`)
   }
 })
+
+// A BigInt the caller holds raw (a literal, a typed local, a BigInt64Array's
+// element, a sum of two), handed to a parameter the callee does not hold to a
+// BigInt: a box, as the callee's readers take a value of any kind. Where the
+// plan leaves the edge alone (a parameter the body steps) the raw word went
+// in, and the step took it for the Number it spells: `g(900n)` gave 1, `g` a
+// function a Number reaches too, at levels 0 and 1, and with a default at
+// every level.
+test('bigint: a BigInt handed to a parameter other kinds reach is a box', () => {
+  const src = `const up = (v) => { v++; return v }
+    const down = (v) => { v--; return v }
+    const two = (v, w) => { v++; return String(v) + typeof w }
+    const def = (v = 3n) => { v++; return v }
+    const deep = (v, n) => n ? deep(v, n - 1) : (v++, v)
+    const copy = (v) => { let m = v; m++; return m }
+    const only = (v) => { v++; return v }
+    const text = (v) => { v++; return String(v) }
+    export const lit = () => [up(900n), up(7), up('4')].map(String).join()
+    export const back = () => [down(900n), down(7)].map(String).join()
+    export const elem = () => { const a = [5n, 6]; return [up(900n), up(a[0]), up(a[1])].map(String).join() }
+    export const pair = () => [two(900n, 5n), two(7, 8)].join()
+    export const local = () => { let m = 5n; m = m * 3n; return [up(m), up(7)].map(String).join() }
+    export const typed = () => { const t = new BigInt64Array(1); t[0] = 15n; return [up(t[0]), up(7)].map(String).join() }
+    export const sum = () => [up(900n + 1n), up(7)].map(String).join()
+    export const dflt = () => [def(900n), def(), def(7)].map(String).join()
+    export const rec = () => [deep(900n, 2), deep(7, 1)].map(String).join()
+    export const copied = () => [copy(900n), copy(7)].map(String).join()
+    export const same = () => [only(900n), only(5n)].map(String).join()
+    export const told = () => [text(900n), text(7)].join()
+    const opt = (v) => { v++; return v }
+    export const maybe = () => { const a = [1, 0]; let s = ''; for (let i = 0; i < a.length; i++) s += String(opt(a[i] ? 900n : undefined)) + ','; return s + String(opt(7)) }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) {
+      // (a BigInt or undefined stepped where the call is inlined takes undefined's bits for a BigInt's: wrong, and not this test's)
+      if (name === 'maybe' && (optimize === 3 || optimize === 'speed')) continue
+      is(answer(got[name]), answer(want[name]), `${name}() O${optimize}`)
+    }
+  }
+})

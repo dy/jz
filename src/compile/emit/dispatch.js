@@ -18,7 +18,7 @@ import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, collectAssignedNames, commaList, firstRefKind, isBlockBody, isReassigned, onEveryPath, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
-  keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readI64, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined, builderCapacity } from '../../reps.js'
@@ -478,6 +478,14 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT, func = n
           ['else', boxBigInt(asI64(tGet))]]], 'f64')
     }
   }
+  // An edge the plan leaves as it is (a parameter its body writes, where it
+  // cannot follow every write) into a parameter the callee does not hold to a
+  // BigInt: the callee's readers take a value of any kind, a BigInt a box, as
+  // every generic slot holds one. Its raw word would read as the Number it
+  // spells (`g(900n)`, `g` stepping a parameter a Number reaches too).
+  if (node !== undefined && func && param != null && param.val !== VAL.BIGINT && repAction === REP_EDGE_REJECT &&
+      valTypeOf(node) === VAL.BIGINT && !nodeIsNullishBigintMerge(node))
+    return asParamType(boxBigInt(readI64(node, ir)), param.type)
   const view = func && ir.type !== 'i32' && ctx.summary?.at(func.sig)
   const generic = view && (view.kindOfExpr(param?.name) !== NUMBER ||
     func.defaults && Object.hasOwn(func.defaults, param?.name) && view.defaultMayRun(param.name))
