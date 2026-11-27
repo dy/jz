@@ -5252,3 +5252,36 @@ test('bigint: a field read through an object of several layouts is unboxed', () 
     for (const [name, ...args] of calls) is(String(got[name](...args)), String(want[name](...args)), `${name}(${args}) O${optimize}`)
   }
 })
+
+// A local set from an array's element holds the element's box (a generic slot's
+// BigInt is one), and the flow then knows the name a BigInt: `m++` stepped the
+// box's own bits. The write marks the binding (ir/bigint.js
+// applyBindingWriteAction), and the step of such a binding is the generic one,
+// which reads through the box and stores one (emit/incdec.js). The step's own
+// value put in a binding of its own (`const was = m++`) is not among the rows:
+// the emitter types it a Number where it has no type for the operand.
+test('bigint: a local set from an element steps through its box', () => {
+  const pre = 'let arr = []; arr.push(900n); '
+  const src = `export let inc = () => { ${pre}let m = arr[0]; m++; return String(m) }
+    export let dec = () => { ${pre}let m = arr[0]; m--; return String(m) }
+    export let twice = () => { ${pre}let m = arr[0]; m++; m++; return String(m) }
+    export let postSum = () => { ${pre}let m = arr[0]; const was = m--; return String(was + m) }
+    export let thenAdd = () => { ${pre}let m = arr[0]; m++; m += 10n; return String(m * 2n) }
+    export let thenAssign = () => { ${pre}let m = arr[0]; m = m + 5n; m++; return String(m) }
+    export let missing = () => { let none = []; let m = none[0]; m++; return String(m) }
+    export let closure = () => { ${pre}let m = arr[0]; const bump = () => { m++ }; bump(); bump(); return String(m) }
+    export let kind = () => { ${pre}let m = arr[0]; m++; return typeof m }
+    export let handed = () => { ${pre}let m = arr[0]; m++; const out = [m]; return String(out[0]) + ':' + typeof out[0] }
+    export let compared = () => { ${pre}let m = arr[0]; m++; return m === 901n }
+    function g (n) { let m = n; m++; return m }
+    export let copy = () => { ${pre}return String(g(arr[0])) }
+    function h (n) { n++; return n }
+    export let param = () => { ${pre}return String(h(arr[0])) }
+    export let inLoop = () => { ${pre}let m = arr[0]; for (let i = 0; i < 3; i++) m++; return String(m) }
+    export let literal = () => { let m = 900n; m++; return String(m) }`
+  const calls = ['inc', 'dec', 'twice', 'postSum', 'thenAdd', 'thenAssign', 'missing', 'closure', 'kind', 'handed', 'compared', 'copy', 'param', 'inLoop', 'literal']
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of calls) is(String(got[name]()), String(want[name]()), `${name}() O${optimize}`)
+  }
+})

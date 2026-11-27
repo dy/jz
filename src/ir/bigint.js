@@ -184,7 +184,11 @@ export function applyBigintRepresentationAction(ir, node, action) {
  *  read as the Number it spells. */
 export function applyBindingWriteAction(ir, node, name, action) {
   ir = applyBigintRepresentationAction(ir, node, action)
-  return action === REP_EDGE_REJECT && valTypeOf(node) === VAL.BIGINT && valTypeOf(name) !== VAL.BIGINT ? boxBigInt(readI64(node, ir)) : ir
+  if (action !== REP_EDGE_REJECT || valTypeOf(node) !== VAL.BIGINT || valTypeOf(name) === VAL.BIGINT) return ir
+  // (the binding holds a box from here on, whatever the flow calls the name after this write:
+  // a reader that takes its raw bits unboxes, and its step reads through the box, isTaggedLocal)
+  if (typeof name === 'string') (ctx.func.taggedLocals ??= new Set()).add(name)
+  return boxBigInt(readI64(node, ir))
 }
 
 /** Box a BigInt whose carrier the plan could not settle: a NaN-box (a box
@@ -269,7 +273,7 @@ export const isSchemaSlotBigintPossible = (node) =>
  *  parameter fed from an array element (module/array/callback.js).
  *  RepresentationPlan owns general carriers; this transient marks the
  *  locals no plan names. */
-const isTaggedLocal = (name) => ctx.func.taggedLocals?.has(name) === true
+export const isTaggedLocal = (name) => ctx.func.taggedLocals?.has(name) === true
 
 /** Extract raw i64 bits, unboxing when the plan, the tagged-local fact, or
  *  the schema-slot census says the emitted value is a PTR.BIGINT box. */

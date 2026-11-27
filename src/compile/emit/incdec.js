@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  asF64, asI32, asI64, boxBigInt, deferBigintBox, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, temp, tempI32, toNumF64, typed, writeVar,
+  asF64, asI32, asI64, boxBigInt, deferBigintBox, fromI64, rawBigInt, isConst, isTaggedLocal, maybeUnboxBigInt, readI64, readVar, temp, tempI32, toNumF64, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -107,7 +107,10 @@ export const incdecOps = {
     // non-REJECT action puts ++/-- on the same i64 path as +=/>>= instead of
     // silently f64-adding the box pointer bits.
     const repAction = representationUnaryUpdateAction(ctx, name)
-    if (valTypeOf(name) === VAL.BIGINT || repAction !== REP_EDGE_REJECT) {
+    // (a binding that took a box where it was written holds boxes, whatever the flow calls it:
+    // ir/bigint.js applyBindingWriteAction. Its step is the generic one below, which reads the box.)
+    const tagged = repAction === REP_EDGE_REJECT && isTaggedLocal(name)
+    if (!tagged && (valTypeOf(name) === VAL.BIGINT || repAction !== REP_EDGE_REJECT)) {
       const current = repAction !== REP_EDGE_REJECT ? maybeUnboxBigInt(asF64(v)) : readI64(name, v)
       const rawBits = [`i64.${fn}`, saveBigint(current, old), ['i64.const', 1]]
       return writeVar(name, repAction === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits), void_)
