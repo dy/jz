@@ -77,6 +77,7 @@ export {
   representationCompoundAssignAction,
   representationUnaryUpdateAction,
   representationProgramHasBigint,
+  representationBodyBuilt,
   representationProgramRejectCount,
 } from './representation-plan/materialize.js'
 

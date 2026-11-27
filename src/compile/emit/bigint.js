@@ -15,8 +15,9 @@ import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../..
 import { VAL } from '../../reps.js'
 import { K, core, hasTag, tagOf, tagsOf, bitOf, NULL_BITS } from '../../summary/kind.js'
 import {
-  REP_EDGE_BOX, representationComputedExprAction, representationProgramHasBigint,
+  REP_EDGE_BOX, representationBodyBuilt, representationComputedExprAction, representationProgramHasBigint,
 } from '../representation-plan.js'
+import { unbounded } from '../../summary/contract.js'
 import { emit } from './dispatch.js'
 
 
@@ -102,16 +103,24 @@ export function bigintMixReject(op, a, b) {
 //              or a param of a NON-exported internal function). See the
 //              heuristic's own scoping note below for why both restrictions
 //              (never-reassigned AND exported-function-only) are required.
-function bigIntDomain(node) {
+function bigIntDomain(node, own) {
   // The feature proof applies to every domain consumer, including the raw
   // arithmetic fallback. A host-visible schema alone cannot introduce a
   // BigInt path in a program whose representation plan excludes BigInt.
   if (!representationProgramHasBigint(ctx)) return 'skip'
   const view = ctx.summary?.at(ctx.func.current)
-  const vt = valTypeOf(node) ?? view?.valOfExpr(node)
+  // (`own`: the node's type where the caller has it, the type table's own asking for an operand)
+  if (own === undefined) own = valTypeOf(node)
   const summaryKind = view?.kindOfExpr(node) ?? K.NONE
   const summaryTag = tagOf(core(summaryKind))
   const summaryBigint = hasTag(summaryKind, K.BIGINT)
+  // An operator's result the run decides is itself such a value, a box where it
+  // is a BigInt. The type table gave it no type for that reason alone
+  // (numericByRun); a sum has others, and is one where the summary lists a
+  // BigInt for it among kinds it bounds.
+  if (own == null && Array.isArray(node) &&
+      (BY_RUN_OPS.has(node[0]) || node[0] === '+' && node.length === 3 && summaryBigint && !unbounded(summaryKind))) return 'tagged'
+  const vt = own ?? view?.valOfExpr(node)
   const summaryExactBigint = summaryTag === K.BIGINT
   const summaryOnlyNumberBigint = summaryBigint && [K.STRING, K.BOOL, K.TYPED,
     K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH,
@@ -127,9 +136,11 @@ function bigIntDomain(node) {
   // causing arithmetic to reinterpret the box as a Number.
   // Ordinary array slots remain tagged even when an opaque key also names
   // length or a property.
-  if (summaryTag !== K.NUMBER && (isPlanTaggedBigint(node) ||
-      Array.isArray(node) && (valTypeOf(node[1]) === VAL.TYPED ||
-        valTypeOf(node[1]) === VAL.ARRAY) && isTaggedElemRead(node) ||
+  // (a value the plan boxes where it is a BigInt: none before the body's plan is built, which
+  // its locals are typed ahead of, and the type table asks here by then)
+  if (summaryTag !== K.NUMBER && (representationBodyBuilt(ctx) && isPlanTaggedBigint(node) ||
+      // (the read's shape first: its receiver's type is a walk down a chain for any other node)
+      isTaggedElemRead(node) && (valTypeOf(node[1]) === VAL.TYPED || valTypeOf(node[1]) === VAL.ARRAY) ||
       ((summaryOnlyNumberBigint || hostField) && isSchemaSlotBigintPossible(node)))) return 'tagged'
   if ((vt === VAL.BIGINT || summaryExactBigint) &&
       (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
@@ -163,6 +174,35 @@ function bigIntDomain(node) {
       !(ctx.func.body && isReassigned(ctx.func.body, node))) return null
   return 'skip'
 }
+
+const settles = dom => dom === 'bigint' || dom === 'number'
+/** Whether an operator's result is a Number or a BigInt by the run: the emitter
+ *  forks on its operands' flags (bigIntUnary's tagged arm, bigIntJointDispatch)
+ *  and no operand settles the domain. Such a result is a value of any kind, its
+ *  BigInt a box, and has no type: the type table asks here (ctx.bridge.byRun,
+ *  kind/val-type-of.js) with the operands' types, which it has. One operand is a
+ *  unary operator's. An operand typed a BigInt settles it whatever its carrier:
+ *  an element of an array of BigInts is a box (the tagged domain) and a BigInt
+ *  for certain. */
+export const numericByRun = (a, b, ta, tb) => {
+  const domA = bigIntDomain(a, ta)
+  if (b == null) return domA === 'tagged' && ta !== VAL.BIGINT
+  if (ta === VAL.BIGINT || tb === VAL.BIGINT || settles(domA)) return false
+  const domB = bigIntDomain(b, tb)
+  return !settles(domB) && domainsCanMix(domA, domB, true)
+}
+// The operators whose type the test above alone withholds (kind/val-type-of.js).
+const BY_RUN_OPS = new Set(['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>', '~'])
+
+/** Whether a sum of a BigInt and `open`, a side of no type (`vt`, null), is the
+ *  generic one's: a side that may be a string joins a BigInt as text (`v + 1n`
+ *  is 's1'), and the `+` emitter sends such a side with a run-time flag, or any
+ *  side where an object's conversion may run, through its generic sum
+ *  (compile/emit/arithmetic.js). The sum is then a value of any kind and has no
+ *  type (ctx.bridge.joinsBigint, kind/val-type-of.js). A side without a flag
+ *  is added as a BigInt, as before. */
+export const joinsBigint = (open, vt) => vt == null && mayConcatenate(open, vt) &&
+  (ctx.funcs.runtimeRoots.has('__jz_tp_num') || isFlagged(bigIntDomain(open, vt)))
 
 /** True when the operand has a statically classifiable BigInt runtime arm. */
 export const hasBigintDomain = node => {
@@ -242,10 +282,9 @@ const isFlagged = dom => dom === 'census' || dom === 'tagged'
 // No evidence about the operand at all (bigIntDomain's `null` and 'skip').
 const isUnresolved = dom => dom == null || dom === 'skip'
 const NUMERIC_TAGS = bitOf(K.NUMBER) | bitOf(K.BIGINT) | bitOf(K.BOOL) | NULL_BITS
-const mayConcatenate = node => {
+const mayConcatenate = (node, val = valTypeOf(node)) => {
   // Flow guards and staged references can be more precise than the summary.
   // In particular, a known BigInt result must keep its raw-payload contract.
-  const val = valTypeOf(node)
   if (val === VAL.NUMBER || val === VAL.BIGINT || val === VAL.BOOL) return false
   const tags = tagsOf(ctx.summary?.at(ctx.func.current)?.kindOfExpr(node) ?? 0)
   return !tags || (tags & ~NUMERIC_TAGS) !== 0
@@ -256,8 +295,8 @@ const mayConcatenate = node => {
 // a raw carrier in the BigInt arm and coerces as a Number in the other.
 const mirrorsPartner = (domA, domB) =>
   (isFlagged(domA) && isUnresolved(domB)) || (isFlagged(domB) && isUnresolved(domA))
-export function bigIntDomainsCanMix(a, b, allowUnresolved) {
-  const domA = bigIntDomain(a), domB = bigIntDomain(b)
+export const bigIntDomainsCanMix = (a, b, allowUnresolved) => domainsCanMix(bigIntDomain(a), bigIntDomain(b), allowUnresolved)
+function domainsCanMix(domA, domB, allowUnresolved) {
   // A flagged operand beside an unresolved one takes the joint dispatch
   // whatever the partner: the unconditional i64 path the callers fall to
   // otherwise would read a plain Number's bits as a carrier (`out.length -
@@ -355,20 +394,27 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, generic) 
   // control flow, not a `select` — unlike bigIntUnary's arm, boxBigInt's own
   // $__alloc call is gated by THIS if (only the taken branch's code runs), so
   // no wasted-allocation hazard exists at this level.
-  const bigResult = box ? boxBigInt(rawBigIR) : rawBigInt(fromI64(rawBigIR))
+  // With no definite side and no operand typed a BigInt the result is a Number
+  // or a BigInt by the run (numericByRun): a value of any kind, its BigInt a
+  // box, and marked so: an edge of the plan that boxes takes it as it is
+  // (ir/bigint.js applyBigintRepresentationAction). Over an operand typed a
+  // BigInt the fork stays (the operand may be missing) and its BigInt arm raw.
+  const byRun = !definite && valTypeOf(a) !== VAL.BIGINT && valTypeOf(b) !== VAL.BIGINT
+  const bigResult = box || byRun ? boxBigInt(rawBigIR) : rawBigInt(fromI64(rawBigIR))
   const bothBranch = definite ? (definite === 'bigint' ? bigResult : numResult)
     : typed(['if', ['result', 'f64'], flagA ?? flagB, ['then', bigResult], ['else', numResult]], 'f64')
   const emitOperand = (dom, node) => dom === 'census' || dom === 'tagged'
     ? materializeDeferredBigint(emit(node)) : emit(node)
   // With a partner the flagged side's flag stands for both: no domain check to fail.
   if (!partnerA && !partnerB) ctx.runtime.throws = true
-  return typed(['block', ['result', 'f64'],
+  const out = typed(['block', ['result', 'f64'],
     ['local.set', `$${ta}`, asF64(emitOperand(domA, a))],
     ['local.set', `$${tb}`, asF64(emitOperand(domB, b))],
     ...(fta ? [['local.set', `$${fta}`, flagIR(domA, getA)]] : []),
     ...(ftb ? [['local.set', `$${ftb}`, flagIR(domB, getB)]] : []),
     partnerA || partnerB ? bothBranch
       : typed(['if', ['result', 'f64'], ['i32.eq', flagA, flagB], ['then', bothBranch], ['else', throwIR]], 'f64')], 'f64')
+  return byRun ? deferBigintBox(out, () => out) : out
 }
 
 // The runtime twin of bigintMixReject's compile-time literal proof.
@@ -482,13 +528,18 @@ export function bigIntUnary(node, mkI64, mkNumber, box) {
   if (bigIntDomain(node) === 'tagged') {
     const t = temp('unaryBig'), get = typed(['local.get', `$${t}`], 'f64')
     const raw = mkI64(maybeUnboxBigInt(get))
-    return typed(['block', ['result', 'f64'],
+    // An operand of no type: a Number or a BigInt by the run (numericByRun), a value of any kind,
+    // its BigInt a box, and marked so: an edge of the plan that boxes takes it as it is
+    // (ir/bigint.js applyBigintRepresentationAction). One typed a BigInt gives a BigInt, raw.
+    const byRun = valTypeOf(node) !== VAL.BIGINT
+    const out = typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
       ['if', ['result', 'f64'], isBigIntBox(get, t),
-        ['then', box ? boxBigInt(raw) : rawBigInt(fromI64(raw))],
+        ['then', box || byRun ? boxBigInt(raw) : rawBigInt(fromI64(raw))],
         // This arm has already excluded BigInt. The operand's coarse static
         // kind must not turn its Number result into a BigInt conversion error.
         ['else', mkNumber(toNumF64(null, coerceNullishToNum(get)))]]], 'f64')
+    return byRun ? deferBigintBox(out, () => out) : out
   }
   const emitted = emit(node)
   const deferred = emitted && typeof emitted.bigintBox === 'function'

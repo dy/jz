@@ -264,6 +264,25 @@ test('parse list: chains of 1,000 links compile', () => {
   }
 })
 
+// A chain of BigInt operators, and one of operators the run decides (its
+// operand an element of an array of Numbers and BigInts): the type of a link
+// is one walk down the chain. Typed twice a link (once for the emitter's test
+// of whether the run decides the result, once by the rule) 24 links took 48
+// seconds, and a receiver's type asked of every node that is no read doubled
+// it again.
+test('parse list: chains of BigInt operators compile', () => {
+  const chains = {
+    bigsub: [1000, n => `export let f = (x) => { const m = BigInt(x); return String(m${R(n, i => ` - ${i % 3}n`).join('')}) }`],
+    bigmul: [1000, n => `export let f = (x) => { const m = BigInt(x); return String(${R(n, () => '1n').join(' * ')} * m) }`],
+    byrun: [200, n => `export let f = (x) => { const a = [5n, 7, 9n, 2]; const v = a[x & 3]; return String(v${R(n, i => i % 2 ? ' + v' : ' - v').join('')}) }`],
+    open: [1000, n => `export let f = (x) => { const t = typeof x; return t + (x${R(n, i => ` - ${i % 4}`).join('')}) }`],
+  }
+  for (const [kind, [n, gen]] of Object.entries(chains)) {
+    const src = gen(n), want = oracle(src).f, got = run(src).f
+    for (const x of [3, 999, 2]) is(String(got(x)), String(want(x)), `${kind} of ${n} links, f(${x})`)
+  }
+})
+
 // [name, source, the argument lists to call f with]
 const N = 100, xs = (...a) => a.map(v => [v])
 const PROGRAMS = [

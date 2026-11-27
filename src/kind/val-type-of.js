@@ -477,10 +477,23 @@ VT['.'] = (args) => {
 }
 
 // Arithmetic expressions: BigInt if either operand is BigInt, else number.
-const numericBinaryVT = (args) =>
-  valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
-for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
-// The binary sibling of censusBigintUnaryVT below (.work/archive/todo.md
+// The rule of the arithmetic and bitwise operators, each operand typed once: a
+// chain's type is one walk down it (typed again by a second rule, 10,000
+// links never ended).
+// An operator the emitter forks by the run, no operand settling whether the
+// result is a Number or a BigInt (an element of an array holding both, a
+// parameter both reach): the result is a value of any kind and has no type. The
+// emitter's own test (compile/emit/bigint.js numericByRun), so the two agree.
+// Else a BigInt where an operand is typed one, or where the census below
+// holds (`unary`: of the one operand), and a Number.
+const numericVT = (unary) => (args) => {
+  const ta = valTypeOf(args[0]), tb = args[1] != null ? valTypeOf(args[1]) : undefined
+  if (ctx.bridge.byRun?.(args[0], args[1], ta, tb) === true) return null
+  const census = unary ? args[1] == null && censusMaybeUndefinedKind(args[0]) === VAL.BIGINT
+    : censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT
+  return census || ta === VAL.BIGINT || tb === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
+}
+// The binary sibling of the unary census below (.work/archive/todo.md
 // §deletion-sweep §14) — generalizes VT['+']'s own both-census-BIGINT branch
 // (kept there, unchanged) to the other 8 arithmetic/bitwise ops: emit.js's
 // `bigIntJointDispatch` (see its own doc comment) makes their WASM
@@ -489,12 +502,8 @@ for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
 // operand paired with an unproven/proven-NUMBER other side must NOT
 // upgrade — that combination resolves via `bigIntJointDispatch`'s own
 // runtime branch (may genuinely throw or yield a real Number), never a
-// static BIGINT claim. Excludes `u-` (unary — censusBigintUnaryVT below
-// already covers it).
-const censusBigintBinaryVT = (base) => (args) =>
-  censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT
-    ? VAL.BIGINT : base(args)
-for (const op of NUMERIC_BINARY_OPS) if (op !== 'u-') VT[op] = censusBigintBinaryVT(numericBinaryVT)
+// static BIGINT claim. Excludes `u-` (unary: its own census below).
+for (const op of NUMERIC_BINARY_OPS) if (op !== 'u-') VT[op] = numericVT(false)
 // Member updates preserve BigInt; all other primitive operands become Number.
 // An object may return either numeric kind from its conversion hook.
 VT['+1'] = VT['-1'] = (args) => {
@@ -518,10 +527,7 @@ VT['++'] = VT['--'] = (args) => {
 // …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
 // Nullable container reads retain their BigInt payload for unary dispatch
 // and strict comparisons; the runtime handles the absent-key arm.
-const censusBigintUnaryVT = (base) => (args) =>
-  args[1] == null && censusMaybeUndefinedKind(args[0]) === VAL.BIGINT ? VAL.BIGINT : base(args)
-VT['u-'] = censusBigintUnaryVT(numericBinaryVT)
-VT['~'] = censusBigintUnaryVT(numericUnaryVT)
+VT['u-'] = VT['~'] = numericVT(true)
 VT['>>>'] = VT['u+'] = () => VAL.NUMBER
 VT.nan = () => VAL.NUMBER   // parse.js's self-describing `NaN` marker
 
@@ -552,7 +558,11 @@ VT['+'] = (args) => {
   // Object coercion can produce a string, number or BigInt. Consumers such
   // as String() must inspect the result rather than assume a numeric carrier.
   if (ta === VAL.OBJECT || tb === VAL.OBJECT) return null
-  if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+  // Beside a BigInt, a side that may be a string joins it as text: the sum is
+  // the run's to decide, the emitter's generic one (compile/emit/bigint.js joinsBigint).
+  if (ta === VAL.BIGINT && tb === VAL.BIGINT) return VAL.BIGINT
+  if (ta === VAL.BIGINT || tb === VAL.BIGINT)
+    return ctx.bridge.joinsBigint?.(ta === VAL.BIGINT ? args[1] : args[0], ta === VAL.BIGINT ? tb : ta) === true ? null : VAL.BIGINT
   // A BigInt payload on both operands selects the joint runtime dispatch.
   // One unknown operand alone does not prove that both domains agree.
   if (censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT)

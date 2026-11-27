@@ -22,9 +22,10 @@ import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { numberOrMissing } from './arithmetic.js'
 import { emitInstanceof } from './instanceof.js'
-import { representationProvesBigint, representationStorageWriteAction } from '../representation-plan.js'
+import { representationProgramHasBigint, representationProvesBigint, representationStorageWriteAction } from '../representation-plan.js'
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 import { positionArgs } from '../../bridge.js'
+import { unbounded } from '../../summary/contract.js'
 import { withRefinements } from '../flow-types.js'
 
 // The kinds whose storage moves as it grows (layout.js FORWARDING_MASK; a
@@ -980,7 +981,19 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // call, or property read. toNumF64 already elides proven numeric carriers.
   const numA = vta === VAL.NUMBER || (vta == null && va.type === 'i32' && va.ptrKind == null)
   const numB = vtb === VAL.NUMBER || (vtb == null && vb.type === 'i32' && vb.ptrKind == null)
-  if ((numB && !numA) || (numA && !numB)) {
+  // A side of no type that may be a BigInt (a box: a value the summary lists a
+  // BigInt for among kinds it bounds, an operator's result the run decides
+  // among them) compares with a Number mathematically (ES2024 7.2.13 step 4),
+  // as the shared helper does: ToNumber would refuse it. A side of unbounded
+  // kind converts as before: a `typeof` anywhere makes a program one that may
+  // hold BigInts, and every comparison of an untyped value in it would grow.
+  const bigintMayReach = (n, vt) => {
+    if (vt != null || !representationProgramHasBigint(ctx)) return false
+    const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(n)
+    return k != null && !unbounded(k) && hasTag(k, K.BIGINT)
+  }
+  const boxBeside = numA !== numB && (numA ? bigintMayReach(b, vtb) : bigintMayReach(a, vta))
+  if (numA !== numB && !boxBeside) {
     const ta = temp('cmp'), tb = temp('cmp')
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${ta}`, asF64(va)], ['local.set', `$${tb}`, asF64(vb)],
@@ -994,7 +1007,7 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // Every remaining non-numeric pair may compare as strings after
   // ToPrimitive. Keep the common two-number check inline; share coercion,
   // string dispatch and unordered handling across all four operators.
-  if (!numA && !numB) {
+  if (!numA && !numB || boxBeside) {
     ctx.module.include('string')
     ctx.module.include('number')
     const ta = temp('cmp'), tb = temp('cmp')
@@ -1002,7 +1015,7 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     const getA = ['local.get', `$${ta}`], getB = ['local.get', `$${tb}`]
     const slow = [`f64.${f64op}`, ['call', '$__cmp',
       ['i64.reinterpret_f64', getA], ['i64.reinterpret_f64', getB]], ['f64.const', 0]]
-    const result = vta == null && vtb == null
+    const result = vta == null && vtb == null || boxBeside
       ? ['if', ['result', 'i32'], ['i32.and', ['f64.eq', getA, getA], ['f64.eq', getB, getB]],
         ['then', [`f64.${f64op}`, getA, getB]], ['else', slow]] : slow
     return typed(['block', ['result', 'i32'],

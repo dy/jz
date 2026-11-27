@@ -5292,3 +5292,156 @@ test('bigint: a local set from an element steps through its box', () => {
     for (const name of calls) is(String(got[name]()), String(want[name]()), `${name}() O${optimize}`)
   }
 })
+
+// An operator whose operands are a Number or a BigInt by the run (elements of
+// an array holding both, parameters both reach) answers a Number or a BigInt
+// by the run too. The emitter forks on the operands' flags; where no operand
+// settles the domain its result is a value of any kind, its BigInt a box, and
+// has no type (compile/emit/bigint.js numericByRun; kind/val-type-of.js). The
+// BigInt arm kept its raw word and the result was typed a Number: read at once
+// (`String(v * w)`, `typeof -v`, a comparison, another operator, a binding) it
+// was the Number that word spells, at every level.
+const answer = (f, ...args) => { try { return String(f(...args)) } catch (e) { return 'throws ' + e.constructor.name } }
+const BOTH = 'const a = [5n, 7, 9n, 2]; '
+const asElements = (e) => e.replace(/\bv\b/g, 'a[i]').replace(/\bw\b/g, 'a[j]')
+const PAIRS = [[0, 2], [1, 3], [0, 1], [2, 0], [3, 1]]
+test('bigint: an operator over values a Number or a BigInt by the run answers as JavaScript', () => {
+  const readers = {
+    neg: 'String(-v)', not: 'String(~v)', notNot: 'String(~~v)', mul: 'String(v * w)', sub: 'String(v - w)', add: 'String(v + w)',
+    div: 'String(v / w)', rem: 'String(v % w)', and: 'String(v & w)', or: 'String(v | w)', xor: 'String(v ^ w)', shl: 'String(v << w)', shr: 'String(v >> w)',
+    kind: 'typeof (v * w)', kindNeg: 'typeof -v', same: '(v * w) === 45n', loose: '(v * w) == 45', chain: 'String(v * w * w)', negMul: 'String(-v * w)',
+    num: 'Number(v * w)', text: '`${v * w}`', back: 'v * w', backNeg: '-v', cond: '(v - v) ? 1 : 0',
+    negOf: 'String(-(v * w))', notOf: 'String(~(v - w))', leftBig: 'String(2n * v)', leftNum: 'String(3 - v)', plus: 'String(v + 1n)',
+  }
+  // each reader over locals, over the elements themselves, and over the parameters of a function of its own
+  const src = Object.entries(readers).map(([name, e]) => `export const ${name}L = (i, j) => { ${BOTH}const v = a[i], w = a[j]; return ${e} }
+    export const ${name}E = (i, j) => { ${BOTH}return ${asElements(e)} }
+    const ${name}G = (v, w) => ${e}
+    export const ${name}P = (i, j) => { ${BOTH}return ${name}G(a[i], a[j]) }`).join('\n') + `
+    export const heldL = (i, j) => { ${BOTH}const v = a[i], w = a[j]; const m = v * w; return String(m) + typeof m }
+    export const heldE = (i, j) => { ${BOTH}const m = a[i] * a[j]; return String(m) + typeof m }
+    const heldG = (v, w) => { const m = v * w; return String(m) + typeof m }
+    export const heldP = (i, j) => { ${BOTH}return heldG(a[i], a[j]) }
+    export const pushedL = (i, j) => { ${BOTH}const v = a[i], w = a[j]; const out = []; out.push(v * w, -v); return String(out[0]) + String(out[1]) }
+    export const thenL = (i, j) => { ${BOTH}const v = a[i], w = a[j]; let m = v * w; m = m - w; m++; return String(m) }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) for (const args of PAIRS)
+      is(answer(got[name], ...args), answer(want[name], ...args), `${name}(${args}) O${optimize}`)
+  }
+})
+
+// The other side of the test above: operands the compiler types BigInts and
+// holds in boxes (the elements of an array of BigInts, a Map's values). Their
+// carrier is the tagged one and their kind is settled: the result is a BigInt,
+// typed one and raw, whatever reads it. A first cut of the change above boxed
+// it by the carrier alone and left the type a BigInt's: `const arr = [900n];
+// let m = arr[0]; m = -m; String(m)` gave a number near 2^63 at level 0.
+test('bigint: an operator over BigInts held in boxes answers a BigInt', () => {
+  const held = {
+    lit: 'const arr = [900n, 7n]; ',
+    pushed: 'let arr = []; arr.push(900n, 7n); ',
+    map: 'const mp = new Map([[0, 900n], [1, 7n]]); const arr = [mp.get(0), mp.get(1)]; ',
+  }
+  const readers = {
+    neg: 'let m = arr[0]; m = -m; return String(m) + typeof m',
+    not: 'let m = arr[0]; m = ~m; return String(m) + typeof m',
+    negHeld: 'let m = arr[0]; const k = -m; return String(k) + typeof k',
+    negRead: 'let m = arr[0]; return String(-m)',
+    square: 'let m = arr[0]; m = m * m; return String(m) + typeof m',
+    product: 'let m = arr[0], w = arr[1]; const k = m * w; return String(k) + typeof k',
+    diff: 'let m = arr[0], w = arr[1]; return String(m - w)',
+    elems: 'const k = arr[0] * arr[1]; return String(k) + typeof k',
+    elemNeg: 'const k = -arr[0]; return String(k) + typeof k',
+    rebound: 'let k = arr[0]; k = arr[0] * arr[1]; k = k - arr[1]; return String(k) + typeof k',
+    negTwice: 'let m = arr[0]; m = -m; m = -m; return String(m)',
+    negLess: 'let m = arr[0]; return -m < 0n',
+    negLessNum: 'let m = arr[0]; return -m < 0',
+    back: 'let m = arr[0], w = arr[1]; return m * w',
+    pushedOut: 'let m = arr[0], w = arr[1]; const out = []; out.push(m * w, -m); return String(out[0]) + String(out[1])',
+    stepped: 'let m = arr[0], w = arr[1]; let k = m * w; k++; return String(k)',
+    shifted: 'let m = arr[0], w = arr[1]; const k = m << w; return String(k)',
+    divided: 'let m = arr[0], w = arr[1]; const q = m / w, r = m % w; return String(q) + ":" + String(r)',
+    param: 'const g = (v, w) => { const k = v * w; return String(k) + typeof k }; return g(arr[0], arr[1])',
+    paramNeg: 'const g = (v) => { v = -v; return String(v) }; return g(arr[0])',
+    // one such operand beside one that is a Number or a BigInt by the run: still a BigInt, or a TypeError
+    besideLeft: 'const both = [5n, 7]; const k = arr[0] * both[0]; return String(k) + typeof k',
+    besideRight: 'const both = [5n, 7]; const k = both[0] * arr[1]; return String(k) + typeof k',
+    besideNumber: 'const both = [5n, 7]; return String(arr[0] * both[1])',
+    besideLeftRead: 'const both = [5n, 7]; return String(arr[0] * both[0])',
+    besideName: 'let m = arr[0]; const both = [5n, 7]; return String(m * both[0]) + ":" + String(both[0] - m) + typeof (m * both[0])',
+    besideNames: 'let m = arr[0]; const both = [5n, 7]; const v = both[0]; return String(m * v) + ":" + String(v - m)',
+    besideRightRead: 'const both = [5n, 7]; return String(both[0] * arr[1]) + typeof (both[0] - arr[1])',
+  }
+  for (const [how, pre] of Object.entries(held)) {
+    const src = Object.entries(readers).map(([name, body]) => `export let ${name} = () => { ${pre}${body} }`).join('\n')
+    for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+      const want = oracle(src), got = jz(src, { optimize }).exports
+      for (const name of Object.keys(readers)) is(answer(got[name]), answer(want[name]), `${how}: ${name}() O${optimize}`)
+    }
+  }
+})
+
+// A value that may be a BigInt, compared with a Number: the two compare
+// mathematically (ES2024 7.2.13 step 4). A side of no type beside a Number was
+// converted by ToNumber, which refuses a BigInt: `v > 6`, `v` an element of an
+// array of both, threw a TypeError at every level.
+test('bigint: a value that may be a BigInt compares with a Number', () => {
+  const readers = {
+    gt: 'v > 6', lt: 'v < 6', ge: 'v >= 5', flip: '6 > v', frac: 'v > 6.5', prod: '(v * w) > 20', prodLe: '(v * w) <= 45', prodFlip: '20 < (v * w)',
+    negLt: '-v < 0', notLt: '~v < 0', diff: '(v - w) < 0', both: '(v * w) > w', prods: '(v * w) > (w * v)', eq: 'v == 5', strict: 'v === 5', ne: '(v * w) != 45',
+  }
+  const src = Object.entries(readers).map(([name, e]) => `export const ${name}L = (i, j) => { ${BOTH}const v = a[i], w = a[j]; return ${e} }
+    export const ${name}E = (i, j) => { ${BOTH}return ${asElements(e)} }`).join('\n') + `
+    export const local = (i, j) => { ${BOTH}const v = a[i]; const n = i + 6; return v > n }
+    const more = (v, n) => v > n
+    export const param = (i, j) => { ${BOTH}return more(a[i], j + 4) }
+    export const past = (i, j) => { ${BOTH}return a[i + 9] > 6 }
+    export const text = (i, j) => { const b = [5n, '7', 9n, 'x']; return b[i] > 6 }
+    export const count = (i, j) => { ${BOTH}let c = 0; for (let k = 0; k < i + 1; k++) { const v = a[k]; if (-v < -6) c++ } return c }`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) for (const args of PAIRS)
+      is(answer(got[name], ...args), answer(want[name], ...args), `${name}(${args}) O${optimize}`)
+  }
+})
+
+// The sum of a BigInt and a value of open kind: a BigInt beside a BigInt, text
+// beside a string (`'s' + 1n` is 's1'), a TypeError beside a Number. The
+// emitter's generic sum answers all three, a BigInt as a box; the sum was
+// typed a BigInt and read as a raw word: `String(v + 1n)`, `v` a BigInt the
+// host handed, gave a number near 2^63 at every level, and a string's bits
+// where the sum was text.
+test('bigint: the sum of a BigInt and a value of open kind is a BigInt, text or a TypeError by the run', () => {
+  const readers = {
+    back: 'v + 1n', str: 'String(v + 1n)', num: 'Number(v + 1n)', text: '`${v + 1n}`', toStr: '(v + 1n).toString()', hex: '(v + 1n).toString(16)',
+    kind: 'typeof (v + 1n)', same: '(v + 1n) === 42n', loose: '(v + 1n) == 42n', lt: '(v + 1n) < 50n', mul: 'String((v + 1n) * 2n)', sub: 'String((v + 1n) - 1n)',
+    again: 'String(v + 1n + 1n)', neg: 'String(-(v + 1n))', left: 'String(1n + v)', cond: '(v + 1n) ? "y" : "n"',
+    held: '{ const m = v + 1n; return String(m) + typeof m }', stepped: '{ let m = v + 1n; m++; return String(m) }', more: '{ let m = v + 1n; m += 5n; return String(m) }',
+    pushed: '{ const out = []; out.push(v + 1n); return String(out[0]) }', elem: '{ const out = [v + 1n]; return String(out[0]) }',
+    field: '{ const o = { n: v + 1n }; return String(o.n) }', value: '{ const m = new Map(); m.set(1, v + 1n); return String(m.get(1)) }',
+    arg: '{ const h = (x) => String(x); return h(v + 1n) }',
+  }
+  // each reader in a function an element of several kinds reaches, and in an export the host calls
+  const src = Object.entries(readers).map(([name, e]) => `const ${name}G = (v) => ${e}
+    export const ${name} = (c) => { const a = [41n, 's', 7, -3n, 9007199254740993n]; return ${name}G(a[c]) }
+    export const ${name}H = (v) => ${e}`).join('\n')
+  const hosted = [41n, -3n, 9007199254740993n, 's', 7]
+  // A side with no run-time flag (a field of two layouts) is added as a BigInt, the sum typed one;
+  // where an object's conversion may run the emitter's sum is the generic one for it too.
+  const flagless = `const f = (o) => String(o.n + 1n)
+    export const g = (c) => f(c ? { n: 5n } : { n: 's' })`
+  const converting = `const unit = { valueOf() { return 2 } }
+    ${flagless.replace('f(c', 'String(unit * 2) + f(c')}`
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(readers)) {
+      for (let c = 0; c < 5; c++) is(answer(got[name], c), answer(want[name], c), `${name}(${c}) O${optimize}`)
+      for (const v of hosted) is(answer(got[name + 'H'], v), answer(want[name + 'H'], v), `${name}H(${typeof v} ${v}) O${optimize}`)
+    }
+    // (beside a string such a side is still added as a BigInt: `g(0)` is not 's1' yet)
+    is(answer(jz(flagless, { optimize }).exports.g, 1), '6', `a side with no flag, a BigInt O${optimize}`)
+    const conv = jz(converting, { optimize }).exports
+    for (const c of [1, 0]) is(answer(conv.g, c), answer(oracle(converting).g, c), `a side with no flag where a conversion may run, g(${c}) O${optimize}`)
+  }
+})

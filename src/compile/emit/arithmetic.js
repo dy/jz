@@ -5,7 +5,7 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, missToNaN, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, deferBigintBox, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, missToNaN, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some, isReassigned, walkAst, literalNumber, ACCESSOR_GET } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf, stringMayMiss } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
@@ -16,6 +16,7 @@ import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
 import { TO_PRIMITIVE_METHODS } from '../../member-uses.js'
+import { representationProgramHasBigint } from '../representation-plan.js'
 // whether an expression is at least one in magnitude: a literal, or a name or expression the range solver holds off (-1, 1)
 const atLeastOne = (e) => {
   if (Array.isArray(e) && e[0] == null) return typeof e[1] === 'number' && Math.abs(e[1]) >= 1
@@ -430,17 +431,20 @@ const stringOrNumericPrimitive = (node) => {
 
 // Unknown addition shares one coercion path. The numeric guard keeps ordinary
 // numbers inline; the helper owns ToPrimitive, string precedence and BigInts.
+// Its sum is a value of any kind, a box where it is a BigInt (`v + 1n`, `v` of
+// open kind): marked so, a reader of its bits unboxes (ir/bigint.js readI64).
 const genericAdd = (a, b, slowOnly = false) => {
   ctx.module.include('string')
   inc('__add_slow')
   const va = storedValue(a), vb = storedValue(b)
   const slow = (x, y) => ['call', '$__add_slow', ['i64.reinterpret_f64', x], ['i64.reinterpret_f64', y]]
-  if (slowOnly) return typed(slow(va, vb), 'f64')
+  const boxed = (sum) => representationProgramHasBigint(ctx) ? deferBigintBox(sum, () => sum) : sum
+  if (slowOnly) return boxed(typed(slow(va, vb), 'f64'))
   const x = temp('add'), y = temp('add')
   const readX = () => ['local.get', `$${x}`], readY = () => ['local.get', `$${y}`]
-  return block64(['local.set', `$${x}`, va], ['local.set', `$${y}`, vb],
+  return boxed(block64(['local.set', `$${x}`, va], ['local.set', `$${y}`, vb],
     ['if', ['result', 'f64'], ['i32.and', ['f64.eq', readX(), readX()], ['f64.eq', readY(), readY()]],
-      ['then', ['f64.add', readX(), readY()]], ['else', slow(readX(), readY())]])
+      ['then', ['f64.add', readX(), readY()]], ['else', slow(readX(), readY())]]))
 }
 
 export const arithmeticOps = {

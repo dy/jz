@@ -335,4 +335,11 @@ export const activeStorageSourceRep = (ctx, node) => {
 
 export const representationProgramHasBigint = ctx => programPlanRecord(ctx)?.bigint === true
 
+/** Whether the active function's body plan is built: its locals are typed and
+ *  the plan itself is solved before it is, with none to ask (activeBody). */
+export const representationBodyBuilt = ctx => {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  return handle != null && ctx.plans.representationData.get(handle)?.body != null
+}
+
 export const representationProgramRejectCount = ctx => programPlanRecord(ctx)?.rejects || 0
