@@ -5246,6 +5246,67 @@ Mutations, each failing the test: two of the first commit (own/mutant-step.sh un
 
 The three above are one area, a BigInt's carrier across a write the plan does not cover: the argument of a call, the assignment in a loop, the host's value. Then the records' cells left (the tuple, the structure of arrays, the record with an open spread, the kernels that renew) and the keyed collections.
 
+## The land-c11 landing: an operator's result the run decides is a value of any kind, a BigInt handed to an open parameter is a box, and an unrolled loop's copies keep the plan's facts (2026-11-27)
+
+Three commits on ec5241d6d, the integrator's. Wrong answers of main's, found from the three the land-c8 record left: each of the three opened onto a wider one.
+
+### What landed
+
+`6942d2f75`: where the run decides whether an operator's result is a Number or a BigInt (its operands elements of an array holding both, parameters both reach), the result is a value of any kind, its BigInt a box, and has no type. The emitter boxes the BigInt arm where no operand settles the domain and none is typed a BigInt, and marks the result (src/compile/emit/bigint.js `numericByRun`, the joint dispatch, the tagged unary); the type table asks the emitter's own test through the bridge (src/kind/val-type-of.js, `ctx.bridge.byRun`); a result the run decides is a tagged operand of the next operator. The sum of a BigInt and a side that may be a string has no type where the emitter's sum is the generic one (`joinsBigint`), and the generic sum's result is marked a value that may be a box (src/compile/emit/arithmetic.js). A side the summary lists a BigInt for, among kinds it bounds, compares with a Number through the shared comparator (src/compile/emit/comparisons.js).
+
+`b76f96251`: a BigInt the caller holds raw, handed over an edge the plan leaves alone to a parameter the callee does not hold to a BigInt, is boxed (src/compile/emit/dispatch.js `coerceArg`).
+
+`4920d4cd3`: a copy the emitter makes of a loop's body (a loop of a small constant count, a for-in over an object of known keys) keeps its source's facts in the representation plan, node for node, but for a node over a for-in's replaced key (src/compile/representation-plan/materialize.js `representationCarryCopy`, src/compile/emit/control-flow.js).
+
+### The wrong answers
+
+Over `const a = [5n, 7, 9n, 2]`: `String(a[i] * a[j])` gave 2.2e-322 for 45, `typeof -a[i]` "number", `(a[i] * a[j]) === 45n` false, `const m = a[i] * a[j]; String(m)` 'NaN', `a[i] > 6` a TypeError, at every level, level 0 among them; the same through locals and through a function's parameters. The emitter already forked such an operator on its operands' flags; the BigInt arm kept its raw word and the node was typed a Number.
+
+`String(v + 1n)`, `v` of open kind: a number near 2^63 for a BigInt the host hands, and a box's bits where a string makes the sum 's1'. The generic sum answered right; the sum was typed a BigInt and its box read as a raw word.
+
+`const g = (v) => { v++; return v }` called as `g(900n)` and as `g(7)`: 1 for 901 at levels 0 and 1, and with a default at every level.
+
+`let arr = []; arr.push(900n); let m = arr[0]; for (let i = 0; i < 3; i++) m = m + 1n`: a TypeError at levels 2, 3 and the speed tier, and `mp.set(i, m + 1n)` the sum's raw word stored; the same in a for-in. The plan is keyed by the node and a copy of the body had no facts.
+
+2,048 of the six new tests' 6,028 rows differ from Node on main.
+
+The land-c8 record listed three wrong answers. The first is the third above, narrower there than it was. The second, `m = m + 1n` in a loop, is the fourth: a loop the emitter unrolls. The third was no wrong answer and I was wrong to list it: a BigInt the host hands to a function whose parameter has no BigInt evidence is refused by the host boundary, which says so in the error.
+
+### Five wrongs of mine on the way
+
+- The first commit as I first made it was wrong at level 0, where main is right, and I had it under the landing check. It boxed by the carrier alone: over `const arr = [900n, 7n]`, `let m = arr[0]; m = -m; String(m)` gave a number near 2^63, twelve of sixty programs of a probe I wrote for the third commit. The type table is asked before the plan exists and typed the result a BigInt; the emitter boxed it; a binding read the box as a raw word. The whole core suite, the sweep of levels and my own tests passed with it. I stopped the check and made the commit again: an operand typed a BigInt settles the domain, and the probe is a test.
+- The same first commit compiled without bound. The type table typed each operand twice a link, once for the emitter's test and once by its own rule, and the emitter's domain asked a receiver's type of every node before the node's shape: a product of 24 BigInts took 48 seconds, in any program that may hold BigInts. My correction of the level 0 wrong took the cost to every program, and the quick tier's chain file timed out: that is how I found it. One rule types each operand once now, and test/parse-list.js holds four chains.
+- I dropped the results' marks because my tests passed without them. Three older tests' level 0 rows failed under the sweep (the plan's boxing edge boxed the box), and the marks went back. A part is unheld only when the whole suite under the sweep passes without it.
+- A first rule for the comparison sent every untyped side through the comparator in a program that may hold BigInts. A `typeof` or a `catch` alone makes a program one (src/compile/program-facts/walk-facts.js): 12 of the corpus's 105 cases moved, mapobj by 1,468 bytes at 'speed' and from 430 to 489 µs in the one round timed. The rule that landed asks for a kind the summary bounds.
+- I started a second chain of pre-commit runs while the first was still in its sweep, on one tree and one output file. Nothing of the first run is quoted here.
+
+### The check
+
+The whole core suite ran on the three commits' tree before any was made: `npm test`, 7,838 tests, exit 0; the quick tier 1,255; the changed test files, the loop files and the vectorizer's under the sweep of levels, 423 tests; the four changed files on the WASI host, 306.
+
+The check on 4920d4cd3, every step exit 0 in 58 minutes at 8 jobs: the default leg 7,838 tests, level 3 armed 7,614, WASI 7,708, level 0 7,592, the self-compile gate 89, integration 241 of 242 with one skip, the examples at a geomean of 1.72 against V8 twice, jz ahead on 25 of 25 both times, the bench corpus's bytes moved in 5 of 105 cases. On a fresh hosted compiler (39,188,306 bytes): the kernel's parity and oracle tests 19 of 19, test/data.js 255 of 255, test/bigint-tag.js 30 of 30, test/parse-list.js 16 of 16, test/typed-any-view.js 5 of 5. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 990 seconds. The generated suite whole, after that: 350 of 351 tests in 1,745 seconds. The one is test/limits.js's 2 MB source at the default level, whose child was stopped at its 900 second limit. Alone the row passes in half a second; the same source compiles in 68 ms by this tree and in 66 by main's; the file run whole again passed, 29 of 29. I do not know why the child stopped that once, and the change does not reach it by anything I can see. The vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,255; the hosted populations, exit 0.
+
+An earlier check, of the first cut of the first two commits, was stopped nine minutes in, by me, when I found the first cut wrong.
+
+Mutations (own/mutant-run.sh and own/mutant-copy.sh under the tools directory): 40, of which 29 fail a test. Eleven parts no test holds. Of the first commit, nine: the joint dispatch's mark, now that an operand typed a BigInt settles the domain; that a sum is a tagged operand only where the summary bounds its kind; that a side that settles the domain by its domain is not the run's, on either side; that a side typed a BigInt in a binary operator is not, on either side (the table then gives no type where the summary still answers); that a side beside a BigInt is asked whether it may concatenate; that a side of unbounded kind beside a Number keeps its conversion; that a program without BigInts keeps its comparisons as they were. Of the second, two: that a parameter held to a BigInt is not boxed into; that the box is made only where the plan leaves the edge alone. The third's eight each fail a test.
+
+The bench corpus against main: 5 of 105 cases' bytes move, 158 bytes in all at 'size' and 5,814 at 'speed' (arraydowngrade 27 and 78 fewer, stdlib-dists 279 and 341 more, stdlib-special 187 and 1,462 more, watr 100 and 139 more, webaudio 381 fewer and 3,950 more). Timed in one lane, a tree at main's commit and the first cut's alternating, two rounds; the first cut's bytes are the landed tree's in all 105 cases. stdlib-dists half a percent slower in both rounds (103,996 and 104,223 µs beside 104,743 and 104,705), the other four within the rounds' own spread. Compile time, one run each at 'speed': a product of 1,000 BigInts 515 ms where main takes 330, a chain of 1,000 operators the run decides 9.6 seconds where 5.3.
+
+### Found, not fixed, each wrong on main
+
+- `m = -m` in a loop, `m` a local set from an array's element, throws a TypeError at every level, and `m = i > c ? m + 1n : m` in a loop reads the raw word as a Number. The plan leaves such a binding alone and its readers do not test for a box. For `-m`: the plan holds a write ready to box only where the written expression is typed a BigInt (src/compile/representation-plan/body-data.js `edgeMaterializable`), and `-m` is typed by its operand, which has no type. A trial that holds such a write ready (keep/byrun-ready-trial.patch under the tools directory) answers right at levels 0 and 1 and the size tier; at 2 and up the loop's copy over a Number guard (src/compile/plan/integral-loops.js) then throws.
+- Two for-in loops over objects of one key set, one of Numbers and one of BigInts, in two functions: the sum over the BigInts is a number near 2^63 at levels 2, 3 and the speed tier.
+- A string beside a BigInt through a side with no run-time flag (a field of two layouts, `{ n: 5n }` and `{ n: 's' }`: `o.n + 1n`) is added as a BigInt.
+- A value of a kind the summary cannot bound, a BigInt at run time, compared with a Number throws a TypeError.
+- `BigInt.asIntN(8, v + 1n)`, the sum a string: -13 where a SyntaxError.
+- A BigInt or undefined that is stepped takes undefined's bits for a BigInt's: the open entry 9 of the correctness ledger. Through an inlined call at level 3 and the speed tier, as a local's copy at every level.
+- Seen at level 0, not measured: a local set from an array's element is unboxed and boxed again where it is declared, one allocation a declaration.
+- The earlier lists stand.
+
+### Next
+
+The BigInt carrier is left here with its list. The records' cells left (the tuple, the structure of arrays, the record with an open spread, the kernels that renew), then the keyed collections.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

@@ -1121,3 +1121,23 @@ For whoever lands next:
 - The emitter's type of an expression (`valTypeOf`) is a claim about its carrier as much as its kind: a Number's type on a value that may be a box sends it through a Number's conversions. `VT['++']` now declines where the step emitter takes its generic step; an operator whose result may be a BigInt by the value it meets should decline the same way.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-step.sh` and `own/mutate-step.py` (IS), `own/mutant-val.sh` and `own/mutate-val.py` (VS), `probe/multi-agree.mjs`, inputs `probe/in/keys/big-inc*.mjs`, `big-pre.mjs`, `big-val.mjs`, `big-step-test.mjs`.
+
+## Branches of the land-c11 landing (2026-11-27), tips before deletion
+
+```
+4920d4cd3 land15-x  the landing branch: three commits on ec5241d6d (6942d2f75, b76f96251, then the copies'); the record's commit after it
+ffabf0627 big2-x    a first cut of the first two (ea98fa22e, ffabf0627): wrong at level 0, never landed
+```
+
+For whoever lands next:
+
+- A change of what an operator emits for a BigInt is probed over both kinds of operand before it is called verified: the ones the run decides (an array of Numbers and BigInts) and the ones typed a BigInt and held in a box (an array of BigInts alone, a Map of them). The suite had rows of neither; test/data.js has both now. My first cut passed the whole core suite and the sweep of levels, and was wrong at level 0 in a three-statement program.
+- The emitter's type of an expression is a claim about its carrier (the land-c8 note). The type table now asks the emitter itself where the two could differ: `ctx.bridge.byRun(a, b)` and `ctx.bridge.joinsBigint(open, vt)` are the emitter's own tests (src/compile/emit/bigint.js), bound on the bridge in src/compile/emit.js. A new operator path that forks by the run goes through `numericByRun`, or the table and the emitter part again.
+- The type table is asked before a body's plan exists: its locals are typed first (`inferLocals`), and the plan is solved over them. A query that reads the body's plan throws there (`activeBody`); `representationBodyBuilt(ctx)` says whether it is built. What the table answers before and after must agree for every expression a binding is typed from: an operand typed a BigInt settles the domain for that reason.
+- One descent of `valTypeOf` a level. A test that asks an operand's type twice doubles the work at every level of a chain (`x + 1n + 1n + …`): `bigIntDomain(node, own)` and `joinsBigint(open, vt)` take the type the caller has.
+- A program counts as one that may hold BigInts by a `typeof` or a `catch` alone (src/compile/program-facts/walk-facts.js `hasBigint`). A rule gated on `representationProgramHasBigint` reaches most programs: bound it by a kind the summary bounds, and read the bench corpus's bytes before believing it narrow.
+- A part of a change is unheld only when the whole suite under the sweep of levels passes without it.
+- The pre-commit chain and a bench lane are batteries: `pgrep -f pre-chain` before starting another. The bench lane's base lanes are slow (the stdlib cases' builds): `BT_MAIN=<a worktree at main's commit> sh own/bt-lane.sh <tree> <tag> <cases>`.
+- A copy of a statement the emitter makes has no fact in the plan unless `representationCarryCopy` gives it one. A new emit-time copy (a loop version made while emitting) calls it; a copy that replaces a name by something of another emitter (a key by its string) carries nothing over the replaced name.
+
+Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-run.sh` and `own/mutate-run.py` (BR), `own/mutant-copy.sh` and `own/mutate-copy.py` (UR), `own/bt-lane.sh`, inputs `probe/in/keys/big-mixed.mjs`, `big-boxed.mjs`, `big-cmp.mjs`, `big-add.mjs`, `big-arg.mjs`, `big-host.mjs`, `big-loop.mjs`, `big-unroll.mjs`, `big-forin.mjs`, `big-join4.mjs`; `keep/byrun-ready-trial.patch`.
