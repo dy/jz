@@ -5220,3 +5220,35 @@ test('result carriers: an any parameter keeps JS semantics through a local copy'
       is(actual(...args), expected(...args), `O${optimize || 0}: ${args}`)
   }
 })
+
+// A BigInt field read through an object that is one of several layouts, the
+// field in a slot of its own in each: joined layouts hold their BigInts boxed,
+// and a reader that takes the raw bits unboxes (ir/bigint.js
+// isSchemaSlotBigintPossible; module/schema.js slotBigintBoxedIn). It took the
+// box's own bits for the payload: `o.n === 4n` false, `String(o.n)` a number
+// near 2^63, at every level.
+test('bigint: a field read through an object of several layouts is unboxed', () => {
+  const two = 'c ? { n: 1n, y: 2 } : { y: 3, n: 4n }'
+  const src = `const l = [{ n: 1n, y: 2 }, { y: 3, n: 4n }]
+    export let str = (c) => { const o = ${two}; return String(o.n) + ':' + ('' + o.n) }
+    export let eq = (c) => { const o = ${two}; return o.n === (c ? 1n : 4n) }
+    export let plus = (c) => { const o = ${two}; return String(o.n + 1n) }
+    export let num = (c) => { const o = ${two}; return Number(o.n) }
+    export let store = (c) => { const o = ${two}; const was = o.n; o.n = 9n; o.n += was; return String(o.n) + ':' + o.y }
+    export let held = (c) => { const o = ${two}; const was = o.n; return String(was * 3n) }
+    export let ret = (c) => { const o = ${two}; return String(o.n) }
+    export let chosen = (c) => String((${two}).n + 10n)
+    export let param = (c) => { const f = (o) => o.n + 10n; return String(f(${two})) }
+    export let three = (c) => { const o = c === 0 ? { n: 1n, y: 2 } : c === 1 ? { y: 3, n: 4n } : { z: 0, y: 5, n: 9n }; return String(o.n + 1n) }
+    export let elem = (c) => String(l[c].n + 1n) + ':' + (l[c].n === (c ? 4n : 1n))
+    export let loop = () => { let s = 0n; for (let i = 0; i < l.length; i++) s += l[i].n; return String(s) }
+    export let mixed = (c) => { const o = c ? { n: 1n, y: 2 } : { y: 3, n: 5 }; return typeof o.n + ':' + String(o.n) }
+    export let same = (c) => { const o = c ? { n: 1n, y: 2 } : { n: 4n, y: 3 }; return String(o.n + 1n) }`
+  const calls = [['str', 0], ['str', 1], ['eq', 0], ['eq', 1], ['plus', 0], ['plus', 1], ['num', 0], ['num', 1], ['store', 0], ['store', 1], ['held', 0], ['held', 1],
+    ['ret', 0], ['ret', 1], ['chosen', 0], ['chosen', 1], ['param', 0], ['param', 1], ['three', 0], ['three', 1], ['three', 2], ['elem', 0], ['elem', 1], ['loop'],
+    ['mixed', 0], ['mixed', 1], ['same', 0], ['same', 1]]
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const [name, ...args] of calls) is(String(got[name](...args)), String(want[name](...args)), `${name}(${args}) O${optimize}`)
+  }
+})

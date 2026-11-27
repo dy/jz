@@ -761,8 +761,12 @@ export function initSchema(ctx) {
    *  charge, exactly the pre-fix behavior for that narrow edge). */
   ctx.schema.slotBigintBoxedAt = (varName, prop) => {
     const id = ctx.schema.idOf(varName) ?? ctx.summary?.at(ctx.func.current)?.sidOf(varName)
-    return id != null && ctx.schema.slotBigintBoxedBySid(id, prop)
+    return id != null ? ctx.schema.slotBigintBoxedBySid(id, prop) : ctx.schema.slotBigintBoxedIn(varName, prop)
   }
+  /** A receiver of layouts the summary lists (a name bound to a choice of literals, the choice
+   *  itself): a read through it meets a box where any of them boxes the slot. */
+  ctx.schema.slotBigintBoxedIn = (recv, prop) =>
+    ctx.summary?.at(ctx.func.current)?.shapesOfExpr(recv)?.some(sid => ctx.schema.slotBigintBoxedBySid(sid, prop)) === true
 
   /** READ-usable fact: narrower than slotBigintBoxedBySid above by one
    *  clause — the slot's census must ALSO be uniformly BIGINT (slotTypes,

@@ -56,10 +56,11 @@ test('closed layouts: a receiver that may be missing, or of layouts not listed, 
     export let gone = (c) => { const o = c ? { x: 1, y: 2 } : { y: 3, x: 4, z: 5 }; let k = 'x'; if (c > 1) delete o[k]; return (o.x ?? -1) * 10 + o.y }
     export let lacksOne = (c) => { const o = c ? { x: 1, y: 2 } : { y: 3, z: 5 }; return (o.x ?? -1) * 10 + o.y }
     export let storeLacks = (c) => { const o = c ? { x: 1, y: 2 } : { y: 3, z: 5 }; o.x = 6; return o.x * 10 + o.y }
+    export let big = (c) => { const o = c ? { n: 1n, y: 2 } : { y: 3, n: 4n }; const was = o.n; o.n = 9n; o.n += was; return String(o.n) + ':' + o.y }
     export let mixedKinds = (c) => { const o = c ? { v: 1.5, y: 2 } : { y: 3, v: 'text' }; const was = o.v; o.v = c ? 'now' : 2.5; return was + ':' + o.v + ':' + o.y }`,
   [['missing', 0], ['missing', 1], ['missing', 2], ['stored', 0], ['stored', 1], ['stored', 2], ['undef', 0], ['undef', 1], ['undef', 5],
     ['parsed', 0], ['parsed', 1], ['parsed', 2], ['gone', 0], ['gone', 1], ['gone', 2], ['lacksOne', 0], ['lacksOne', 1], ['storeLacks', 0], ['storeLacks', 1],
-    ['mixedKinds', 0], ['mixedKinds', 1]])
+    ['big', 0], ['big', 1], ['mixedKinds', 0], ['mixedKinds', 1]])
 })
 
 test('closed layouts: a host object in the receiver\'s place reads as JS', () => {

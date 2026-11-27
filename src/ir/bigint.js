@@ -258,10 +258,11 @@ export function isBigIntBox(f64expr, t = null) {
  *  BigInt result to NaN once the read pre-decodes the box — this narrower,
  *  readI64-scoped version is required instead. */
 export const isSchemaSlotBigintPossible = (node) =>
-  Array.isArray(node) && node[0] === '.' &&
-  typeof node[1] === 'string' && typeof node[2] === 'string' &&
-  ctx.schema.slotBigintBoxedAt?.(node[1], node[2]) === true &&
-  ctx.schema.slotBigintProvenAt?.(node[1], node[2]) !== true
+  Array.isArray(node) && node[0] === '.' && typeof node[2] === 'string' &&
+  (typeof node[1] === 'string'
+    ? ctx.schema.slotBigintBoxedAt?.(node[1], node[2]) === true && ctx.schema.slotBigintProvenAt?.(node[1], node[2]) !== true
+    // (a receiver that is no name, of several layouts the summary lists: a choice of literals, an inlined argument)
+    : ctx.schema.slotBigintBoxedIn?.(node[1], node[2]) === true)
 
 /** Emission-tier fact for a local the emitter itself bound from a tagged
  *  carrier: a BigInt/nullish ternary's boxed arm, an inline callback
