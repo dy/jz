@@ -49,7 +49,8 @@
  * (optimize/static-scratch.js), which a test naming the arrays would end. An
  * array the loop only reads, apart from every store by proof, is left: its
  * reads leave the loop on their own (optimize/licm.js). A loop left with
- * nothing to test holds its cells where it stands, uncopied.
+ * nothing to test holds its cells where it stands, uncopied. At most 16 cells,
+ * the arrays the loop stores into first, and 6 pairs.
  * Arrays, objects and strings are other storage. With a memory other threads
  * write nothing is held: a cell the loop left unwritten is stored back as read.
  * An integer cell is a word by its conversion. Speed tiers.
@@ -72,6 +73,7 @@ import { withBodyTypedFacts } from './flow-state.js'
 import { invalidateRewrittenBody } from './analyze/body-facts.js'
 import { representationProgramHasBigint } from './representation-plan.js'
 import { CONVERT } from './carry-elements.js'
+import { intExprRange } from '../static.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from './analyze-scans.js'
 
 const isArr = Array.isArray
@@ -81,6 +83,8 @@ const num = (v) => [null, v]
 const HELD = { 0: CONVERT[0], 1: CONVERT[1], 2: CONVERT[2], 3: e => ['&', e, num(65535)], 4: CONVERT[4],
   6: e => ['()', 'math.fround', e], 7: CONVERT[7] }
 const NOT_HELD = /^(?:Big|Float16|Uint8Clamped)/
+// The integers an integer element holds, by its code.
+const RANGE = { 0: [-128, 127], 1: [0, 255], 2: [-32768, 32767], 3: [0, 65535], 4: [-2147483648, 2147483647] }
 const BIG = /^new\.Big/
 // The most tests of two arrays a loop's entry runs, and the most cells it holds.
 const MAX_PAIRS = 6, MAX_CELLS = 16
@@ -212,8 +216,7 @@ function planOf(L, view, distinct, defOf) {
   const arrays = [...by.keys()]
   if (writesNames(L, new Set([...arrays, ...q.present]))) return null
   const stored = (R) => by.get(R).some(a => a.write)
-  const held = new Map()
-  let count = 0
+  const fit = []
   for (const R of arrays) {
     const code = heldCode(ctorOf(R, view))
     if (code == null) continue
@@ -224,11 +227,16 @@ function planOf(L, view, distinct, defOf) {
       if (k == null || (a.write && !a.plain)) { ok = false; break }
       ;(cells.get(k) ?? cells.set(k, []).get(k)).push(a)
     }
-    if (!ok) continue
-    held.set(R, { code, cells })
-    count += cells.size
+    if (ok) fit.push([R, { code, cells }])
   }
-  if (count > MAX_CELLS) return null
+  // the arrays the loop stores into go first: their elements wait behind a store every round, a read array's cost a load
+  const held = new Map()
+  let count = 0
+  for (const first of [true, false]) for (const [R, h] of fit) {
+    if (stored(R) !== first || count + h.cells.size > MAX_CELLS) continue
+    held.set(R, h)
+    count += h.cells.size
+  }
   // the pairs to tell apart: by proof, by a test, or not at all (two module bindings; one array made of the other)
   const global = (x) => ctx.scope.globals?.has(x) && !ctx.func.locals?.has(x)
   const made = (x) => global(x) && ctx.scope.freshTypedGlobals?.has('$' + x)
@@ -299,10 +307,20 @@ export function holdLoopCells(body, facts, distinct, reanalyze) {
       s.written = cloneWithSubst(s.L, new Map(), ren)
       for (const [a, b] of ren) view?.alias(b, a, false)
     }
+    // A value its element already holds needs no conversion: a float64's Number, another cell of the
+    // element's kind (a cell is a converted element), an integer inside the element's range.
+    const kinds = new Map()
+    const fits = (code, value) => {
+      if (code === 7) return valTypeOf(value) === VAL.NUMBER
+      if (typeof value === 'string' && kinds.get(value) === code) return true
+      const r = RANGE[code] ? intExprRange(value) : null
+      return r != null && r[0] >= RANGE[code][0] && r[1] <= RANGE[code][1]
+    }
     // the cells: every read first (a store's value may read one), then the stores
     for (const [R, { code, cells: at }] of s.plan.held) for (const [k, list] of at) {
       const c = `${T}lc${freshId(ctx)}_${R}`, read = ['[]', R, num(k)]
       view?.alias(c, read, true)
+      kinds.set(c, code)
       cells.push({ c, R, k, code, read, list, back: null })
       for (const a of list) if (!a.write) a.holder[a.at] = c
     }
@@ -310,7 +328,7 @@ export function holdLoopCells(body, facts, distinct, reanalyze) {
       if (!a.write) continue
       const n = a.node, op = n[0], c = cell.c
       const value = op === '=' ? n[2] : op === '++' ? ['+', c, num(1)] : op === '--' ? ['-', c, num(1)] : [op.slice(0, -1), c, n[2]]
-      a.holder[a.at] = ['=', c, cell.code === 7 && valTypeOf(value) === VAL.NUMBER ? value : HELD[cell.code](value)]
+      a.holder[a.at] = ['=', c, fits(cell.code, value) ? value : HELD[cell.code](value)]
       if (!cell.back) cell.back = ['[]', cell.R, num(cell.k)]
     }
     const held = ['{}', [';', ...cells.map(x => ['let', ['=', x.c, x.read]]), s.L, ...cells.filter(x => x.back).map(x => ['=', x.back, x.c])]]

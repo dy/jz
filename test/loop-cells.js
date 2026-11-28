@@ -228,6 +228,25 @@ const SHAPES = {
       let s = st[1]
       for (let i = 0; i < n; i++) s = s * 0.5 + out[i]
       return s }`,
+  // values an element already holds, and values that only look it: a masked integer, another cell of the kind,
+  // a cell of another kind (-1 in an Int16 is 255 in a Uint8), a fraction inside the range, a negative zero,
+  // an integer past the range
+  fits: `const f = (a, b, out, n) => {
+      for (let i = 0; i < n; i++) {
+        a[0] = (i * 37) & 255
+        a[1] = a[0]
+        b[0] = -1 - (i & 3)
+        a[2] = b[0]
+        b[1] = (i & 7) * 0.5 + 0.75
+        b[2] = (i & 1) * -0
+        a[3] = (i * 301) & 1023
+        out[i] = a[0] + a[1] * 2 + a[2] * 3 + a[3] * 11 + b[0] * 5 + b[1] * 7 + (1 / b[2] > 0 ? 1 : -1000)
+      } }
+    export let run = (n, stop) => { const a = new Uint8Array(4), b = new Int16Array(3), out = new Float64Array(n)
+      f(a, b, out, n)
+      let s = a[2] + a[3] + b[1] + (1 / b[2] > 0 ? 1 : -1000)
+      for (let i = 0; i < n; i++) s = s * 0.5 + out[i]
+      return s }`,
   // an accumulator in an element, the signal read beside it; then the accumulator in the signal
   accum: `const total = (acc, x, n) => { for (let i = 0; i < n; i++) acc[0] += x[i] * x[i] }
     export let run = (n, stop) => {
@@ -295,6 +314,10 @@ test('loop cells: the held copy of the predictor\'s loop loads and stores no sta
   ok(held.some(l => !l.includes('(i32.load16_s') && !l.includes('(i32.store16')), 'a copy holds the state in locals: no load, no store of it')
   ok(held.some(l => !l.includes('(i32.load16_s') && count(l, /\(i32\.mul/g) >= 4), 'and multiplies the cells as words: its locals are i32')
   ok(held.some(l => count(l, /\(i32\.load16_s/g) === 19), 'beside the loop as written, for arrays that share bytes')
+  // a stored value its element holds already keeps no conversion: the history's three moves and the clamped sample,
+  // of the eight stores a round (the four weights wrap)
+  const final = loopsOf(funcWat(compile(src, { optimize: 'speed', wat: true }), 'run')).filter(l => l.includes('(f32.store') && !l.includes('(i32.load16_s'))
+  ok(final.length > 0 && final.every(l => count(l, /\(i32\.extend16_s/g) + count(l, /\(i32\.shr_s\s*\(i32\.shl/g) === 4), 'the held copy sign-extends the four weights alone')
   // the size tier and the reference level hold nothing
   is(compile(src, { optimize: 'size', wat: true }), compile(src, { optimize: { level: 'size', loopCells: false }, wat: true }))
   is(compile(src, { optimize: 0, wat: true }), compile(src, { optimize: { level: 0, loopCells: false }, wat: true }))
@@ -354,6 +377,14 @@ test('loop cells: which loops hold their cells', () => {
     export let run = (n) => { const st = new Int32Array(${cells}), out = new Float64Array(n); f(st, out, n); return st[${cells - 1}] + (n ? out[n - 1] : 0) }`
   is(holds(wide(16)), true, 'sixteen cells')
   is(holds(wide(17)), false, 'seventeen cells')
+  // a state of two beside fifteen coefficients, seventeen cells: the state is held, the coefficients are read where they are
+  // (`f` calls itself, so no caller takes its body and its loops are its own)
+  const beside = `const f = (st, co, out, n, d) => { if (d > 0) return f(st, co, out, n, d - 1); for (let i = 0; i < n; i++) { st[0] = st[0] * co[0] + ${Array.from({ length: 14 }, (_, k) => `co[${k + 1}]`).join(' + ')}; st[1] += st[0]; out[i] = st[1] } }
+    const mk = (n, d) => d > 0 ? mk(n, d - 1) : new Float64Array(n)
+    export let run = (n) => { const st = mk(2, 1), co = mk(15, 1), out = mk(n, 1); for (let k = 0; k < 15; k++) co[k] = 0.01 * k; f(st, co, out, n, 1); return st[1] }`
+  is(holds(beside), true, 'two cells stored into beside fifteen only read')
+  const storesIn = (optimize) => loopsOf(funcWat(compile(beside, { optimize, wat: true }), 'f')).map(l => count(l, /\(f64\.store/g))
+  ok(storesIn('speed').some(c => c === 1) && storesIn(CELLS_OFF).every(c => c === 3), 'a copy stores the output alone: the state is the array held')
   is(holds(THROWS.row), true, 'a table\'s row that may be missing: tested where the loop is entered')
   is(holds(THROWS.missing), true, 'an output that may be missing')
   is(holds(THROWS.rebound), false, 'a row the loop rebinds')
@@ -368,6 +399,7 @@ test('loop cells: which loops hold their cells', () => {
       for (let i = 0; i < out.length; i++) { st[0] += 0.5; out[i] = st[0] + st[1] }
       return out[out.length - 1] }
     export let run = (n) => f(new Float64Array(2), n, 1)`), true, 'an output as long as the state')
+  is(holds(SHAPES.fits), true, 'stores of values the elements hold already')
   is(holds(SHAPES.valued), false, 'a store whose value is read')
   is(holds(SHAPES.called), false, 'a call')
   is(holds(SHAPES.rebound), false, 'an array rebound in the loop')
