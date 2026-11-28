@@ -5307,6 +5307,49 @@ The bench corpus against main: 5 of 105 cases' bytes move, 158 bytes in all at '
 
 The BigInt carrier is left here with its list. The records' cells left (the tuple, the structure of arrays, the record with an open spread, the kernels that renew), then the keyed collections.
 
+## The land-c12 landing: a loop's typed elements at fixed indexes are locals while it runs (2026-11-28)
+
+One commit on 88aee585e, the integrator's: `058c6a9a5`. It was made and checked as 52d365ac0 on 591201186; two records of the held-out lane's bot moved main while the check ran, and the commit landed is its cherry-pick onto them, the same tree but for bench/heldout.json. The owner's steer of 2026-11-27 put numeric and DSP code first (best in class there, strings after, dynamic programs held to V8, BigInt wrongs listed and not chased); this is the first landing under it.
+
+### What landed
+
+src/compile/loop-cells.js `holdLoopCells`, beside the carried elements in src/compile/analyze-for-emit.js (levels 2, 3 and 'speed'; `loopCells`). A `for` or a `while` whose typed arrays are read and written at integer literals is compiled twice: behind a test at its entry (each held array long enough, apart from every other typed array of the loop where either is stored into) the elements are locals, loaded before the loop and stored after it; the other copy is the loop as written. The test of two arrays is module/typedarray.js `__typed_apart`, their bytes' spans compared, an owned array's or a view's.
+
+A typed array has no allocation cell in the summary (a kind is 32 bits, tags over a 16-bit parameter, and a typed array's parameter is its element), `distinctParams` is a proof by the calls' text, and the marks of src/ir/mem-alias.js are the plain arrays' and the fields'. So every memory pass stopped at a store into any typed array. The test at the entry is what LLVM calls a run-time check of the loop's pointers; the cells behind it are its scalar promotion.
+
+The rules, each with a test in test/loop-cells.js: the loop reaches its end (no return, throw, label, call but a `Math` function of Numbers, accessor, setter, conversion; nothing in it throws: a receiver that may be missing is a name tested at the entry, arithmetic or a store over what may be a BigInt declines, a length set declines); every typed array of the loop is named where it is entered; a held array's stores are statements; two parameters proven distinct and two module bindings that only hold arrays they made are apart by proof; two module bindings not proven apart, and two arrays one declared from the other, are neither tested nor held (optimize/static-scratch.js has those); an array only read and apart by proof is licm's; nothing to test, no copy.
+
+### Measured
+
+decode-qoa: 1,459 µs on main, 1,131 with the commit (three rounds each, the trees alternating): 0.775. Against V8, four paired rounds: 0.778 (0.968 on main). Its slice loop loaded two Int16Array(4) 19 times and stored them 8 times a sample. The bench corpus's bytes: 1 case of 105 moves, decode-qoa by 2,664 at 'speed'.
+
+The typed-array record's `advance` (test/data-forms.js): 0.53 ns a round where 2.12 (V8 1.42); the same over Int32Array 0.34 where 0.71, over Int16Array 0.56 where 1.57.
+
+### The check
+
+The whole core suite ran on the tree before the commit: `npm test`, 7,847 tests, exit 0; the quick tier 1,255; the new file and the five whose pins or programs the pass reaches under the sweep of levels, 64 tests; test/loop-cells.js alone 9 tests, 4,536 assertions under the sweep and 2,472 on the WASI host.
+
+The check on 52d365ac0 (the tree landed, but for bench/heldout.json), every step exit 0 in 54 minutes at 8 jobs: the default leg 7,847 tests, level 3 armed 7,623, WASI 7,717, level 0 7,601, the self-compile gate 89, integration 241 of 242 with one skip, the examples at a geomean of 1.70 against V8 twice, jz ahead on 25 of 25 both times, the bench corpus's bytes moved in 1 of 105 cases. On a fresh hosted compiler (39,261,503 bytes, 73,197 more than the last landing's): the kernel's parity and oracle tests 19 of 19, test/loop-cells.js 9 of 9, test/carry-elements.js 6 of 6, test/optimizer-licm.js 33 of 33, test/scalar-unroll.js 5 of 5, test/static-scratch.js 7 of 7. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 960 seconds. The generated suite whole, after that: 351 of 351 in 780 seconds (the 2 MB source of test/limits.js, stopped once in the last landing's run, passed). The vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,255; the hosted populations, exit 0.
+
+Mutations (own/mutant-cells.sh under the tools directory): 59, of which 42 fail a test. The 17 are in the commit's message, each with why.
+
+### Found on the way, about the measures
+
+- The data-forms gate counts lanes, and for `advance` the form it calls best was the one with lanes through memory: two lane loads, an add and a lane store a round, the next round's load waiting behind the store. Held in locals the loop is two scalar adds and four times as fast, and the listing gains two cells for it (`rec/box/advance` at 2 and 'speed', `simd: lost`); README's count of cells short of the best form goes from 498 to 500. The literal record's `advance`, listed the same way, is the same scalar loop. A count of lanes is no measure of such a kernel. Of the 24 `advance` cells listed `simd: lost` I measured two forms', the literal record's and the typed-array record's: neither is short of the form with lanes.
+- `CLAIM_UNMET` (bench/claims.mjs) still names decode-qoa, decode-wav, decode-tta and decode-alac against V8, on evidence of 2026-11-06. Here, on main before this commit, four paired rounds each: decode-qoa 0.968, decode-wav 0.605, decode-tta 0.971, decode-alac 0.945. A reference run would say what the runners say; I have not started one.
+- The owner's audio project (bench/results.json there, against sox, ffmpeg, librosa and Pedalboard, whole tasks with process start) trails on wav_decode (246 ms; sox 50, ffmpeg 73), resample (450; ffmpeg 292), stretch (3,089; ffmpeg 665), pitch (2,829; ffmpeg 821), fft (664; librosa 444) and mfcc (707; librosa 604). It imports no jz: those kernels run as JavaScript on V8.
+- jz against native C here (Apple silicon, 128-bit lanes on both sides, one pass of the native lane): alpha 0.78, bytebeat 0.73, delayline 0.84, wav 0.95, blur 0.72, conv2d 0.75, resample 0.79; behind on heat 1.40, biquad 1.16, spmv 1.13, bezfit 1.06. heat's loop is five lane loads and seven float operations a pair of cells; native fuses `c + K*lap` (K a power of two: exact, so its answer is the same), which wasm's strict lanes cannot. Rotating vector loops, which optimize/rotate-loops.js skips, changes nothing (nine vector cases within 0.7%).
+- biquad's sample loop, its eight stages written out, is 73 float loads, 33 stores and 40 multiplies a sample: 72 elements at fixed indexes, past the pass's 16.
+
+### Found, not fixed
+
+- BigInt, not chased: at level 0, `a[1] ||= 9n; a[2] &&= a[2] + 1n; a[0] ??= 4n` on a BigInt64Array in a loop answers wrong (main too: level 0 holds nothing).
+- The earlier lists stand.
+
+### Next
+
+The cells past 16 (biquad: the state before the coefficients); a sign extension of a value already in its range (the held history's `r << 16 >> 16` after a clamp); a loop whose arrays the host hands, of no known constructor; plain arrays' elements; then the gate's measure for kernels whose lanes go through memory.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

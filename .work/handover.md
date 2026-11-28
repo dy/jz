@@ -1141,3 +1141,14 @@ For whoever lands next:
 - A copy of a statement the emitter makes has no fact in the plan unless `representationCarryCopy` gives it one. A new emit-time copy (a loop version made while emitting) calls it; a copy that replaces a name by something of another emitter (a key by its string) carries nothing over the replaced name.
 
 Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-run.sh` and `own/mutate-run.py` (BR), `own/mutant-copy.sh` and `own/mutate-copy.py` (UR), `own/bt-lane.sh`, inputs `probe/in/keys/big-mixed.mjs`, `big-boxed.mjs`, `big-cmp.mjs`, `big-add.mjs`, `big-arg.mjs`, `big-host.mjs`, `big-loop.mjs`, `big-unroll.mjs`, `big-forin.mjs`, `big-join4.mjs`; `keep/byrun-ready-trial.patch`.
+
+## Branches of the land-c12 landing (2026-11-28), tips before deletion
+
+```
+058c6a9a5 heat-x    the landing branch: the cells' commit cherry-picked onto 88aee585e (two records of the held-out
+                    lane's bot moved main while the check ran); the record's commit after it. Before that the branch
+                    stood at 591201186, the lane's main tree while the cells were timed, and held the trial of rotated
+                    vector loops (no change measured; nothing committed)
+52d365ac0 tuple-x   the commit as made and checked, on 591201186; b8b2282e0 after it, a first record naming that base,
+                    not landed
+```
