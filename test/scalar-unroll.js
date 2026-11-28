@@ -50,8 +50,9 @@ const agrees = (src, label) => {
     for (const n of [0, 1, 2.5, -3]) ok(Object.is(f(n), host(n)), `${label}, f(${n}) at ${optimize}: ${f(n)} for ${host(n)}`)
   }
 }
-// The emitter's own unroll of a small counted loop is off: the count is the plan's.
-const loops = (src, level) => (wat(src, { optimize: { level, smallConstForUnroll: false } }).match(/\(loop/g) || []).length
+// The emitter's own unroll of a small counted loop is off: the count is the plan's. So are the
+// held cells: a written-out stage loop leaves literal indexes, which copy the loop around it.
+const loops = (src, level) => (wat(src, { optimize: { level, smallConstForUnroll: false, loopCells: false } }).match(/\(loop/g) || []).length
 
 test('scalar unroll: passes over a scratch array agree with JS', () => agrees(passes('6'), 'passes'))
 test('scalar unroll: stages over a state array agree with JS', () => agrees(stages('4'), 'stages'))

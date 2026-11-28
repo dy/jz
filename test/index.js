@@ -237,6 +237,7 @@ const TESTS = [
   'sentinel-guard',
   'twin-locals',
   'carry-elements',
+  'loop-cells',
   'carry-stores',
   'sink-stores',
   'share-quotients',

@@ -1768,6 +1768,20 @@ export default (ctx) => {
   }
   const typedLen = (objIR, et, isView) => ['i32.shr_u', byteLenIR(objIR, isView), ['i32.const', SHIFT[et]]]
 
+  // Whether two typed arrays' bytes miss each other (compile/loop-cells.js): each
+  // one's data and byte length, an owned array's or a view's, the two spans apart.
+  // Asked of receivers that are there (the test before it rejects a missing one);
+  // one the plan does not type answers that they may meet.
+  ctx.core.emit['__typed_apart'] = (a, b) => {
+    const ra = resolveElem(a, true), rb = resolveElem(b, true)
+    if (!ra || !rb) return typed(['i32.const', 0], 'i32')
+    const pa = tempI32('apa'), pb = tempI32('apb')
+    return typed(['i32.or',
+      ['i32.ge_u', ['local.tee', `$${pa}`, typedDataAddr(emit(a), ra.isView)],
+        ['i32.add', ['local.tee', `$${pb}`, typedDataAddr(emit(b), rb.isView)], byteLenIR(emit(b), rb.isView)]],
+      ['i32.ge_u', ['local.get', `$${pb}`], ['i32.add', ['local.get', `$${pa}`], byteLenIR(emit(a), ra.isView)]]], 'i32')
+  }
+
   // A typed receiver never relocates: decode its offset directly, then use
   // aux for element width and view indirection in both raw readers and writers.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.

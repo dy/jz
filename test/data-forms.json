@@ -373,6 +373,8 @@
   "rec/tuple/sum/speed": {"ops":1024},
   "rec/box/step/2": {"simd":"lost"},
   "rec/box/step/speed": {"simd":"lost"},
+  "rec/box/advance/2": {"simd":"lost"},
+  "rec/box/advance/speed": {"simd":"lost"},
   "rec/box/renew/2": {"simd":"lost","calls":5},
   "rec/box/renew/speed": {"simd":"lost","calls":4,"ops":13106},
   "rec/box/sum/2": {"ops":8960},

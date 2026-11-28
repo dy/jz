@@ -141,6 +141,7 @@ const LEVEL_PRESETS = Object.freeze({
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
     sentinelGuards: false,    // a sentinel guard copies its loop or block suffix — speed-only
     carryElements: false,     // a carried element adds a read before its loop and a local — speed-only
+    loopCells: false,         // held cells keep the loop as written beside the copy that holds them: speed-only
     arrayViews: false,        // an array slice view keeps the ordinary slice beside its range copy — speed-for-size
     versionTypedBounds: false,// typed-bounds loop versioning duplicates every proven nest (guarded fast arm + checked twin, ×1.5-3 on small kernels) — the branchless checked reads alone are the size-tier lowering; speed-only trade
     wideAccumulator: false,   // i64-carried accumulator versions the loop (guarded fast clone + the f64 original) — speed-only

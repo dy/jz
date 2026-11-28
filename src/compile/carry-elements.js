@@ -52,7 +52,7 @@ const litOf = (x) => {
   return null
 }
 // A store's conversion to its element code, in source form: what a read of the element returns.
-const CONVERT = {
+export const CONVERT = {
   0: e => ['>>', ['<<', e, num(24)], num(24)],
   1: e => ['&', e, num(255)],
   2: e => ['>>', ['<<', e, num(16)], num(16)],

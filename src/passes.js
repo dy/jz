@@ -146,6 +146,7 @@ export const PASS_NAMES = [
   'sentinelGuards',           // one range test versions a sentinel-bounded cursor's reads (compile/sentinel-guard.js)
   'twinLocals',               // a versioned counted loop's checked twin writes locals of its own (compile/twin-locals.js)
   'carryElements',            // an element a loop stores for its next pass stays in a local (compile/carry-elements.js)
+  'loopCells',                // the typed elements a loop reads and writes at fixed indexes stay in locals, its arrays tested apart (compile/loop-cells.js)
   'arrayViews',               // a slice read only as a spread source keeps its array and a range (compile/array-view.js)
   'wordLocals',               // a local every read of which re-applies ToInt32 holds its word (compile/analyze-scans.js narrowWordLocals)
   'intervalRanges',           // interprocedural interval fixpoints (argument and store hulls); omitted by the compile-budget tiers

@@ -618,8 +618,9 @@ test('param-distinctness: a function returning what it allocates hands each call
       proc(src, dst, 256); proc(src, dst, 256); proc(src, dst, 256)
       return (dst[255] * 1000) | 0
     }`
+  // (the proof alone: held cells would take the loads out behind a test of the two arrays, proven or not)
   const hoisted = (src) => {
-    const wat = compile(src, { wat: true, optimize: 'speed' })
+    const wat = compile(src, { wat: true, optimize: { level: 'speed', loopCells: false } })
     let fn = funcWat(wat, 'proc')
     if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
     return !/f64\.load/.test(fn.slice(fn.indexOf('(loop')))

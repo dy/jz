@@ -30,6 +30,7 @@ import { cseLoads, hoistLoopFields, UNTYPED, ARRAY, TYPED_ANY } from './cse-load
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
+import { holdLoopCells } from './loop-cells.js'
 import { withBodyTypedFacts } from './flow-state.js'
 import { typedIdxProven, receiverMayBeAbsent } from '../type/loop-versioning.js'
 import { invalidateIntervalProof, bindingFlows, flowNumbers, WORD_VALUE, WHOLE_VALUE } from '../type/interval-proof.js'
@@ -437,6 +438,12 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block && _o && _o.sentinelGuards !== false && guardSentinels(body, bodyFacts)) {
     bodyFacts = reanalyzeBody(body)
     ctx.func.locals = bodyFacts.locals
+  }
+  // Loop cells (compile/loop-cells.js) hold the typed elements a loop reads and
+  // writes at fixed indexes in locals, behind one test that its arrays are apart.
+  if (block && _o && _o.loopCells !== false) {
+    const held = holdLoopCells(body, bodyFacts, distinct, () => reanalyzeBody(body))
+    if (held) { bodyFacts = held; ctx.func.locals = bodyFacts.locals }
   }
   // Twin locals (compile/twin-locals.js) version a counted loop in the source
   // when its checked twin would widen the fast copy's locals.
