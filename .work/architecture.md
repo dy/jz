@@ -5350,6 +5350,51 @@ Mutations (own/mutant-cells.sh under the tools directory): 59, of which 42 fail 
 
 The cells past 16 (biquad: the state before the coefficients); a sign extension of a value already in its range (the held history's `r << 16 >> 16` after a clamp); a loop whose arrays the host hands, of no known constructor; plain arrays' elements; then the gate's measure for kernels whose lanes go through memory.
 
+## The land-c13 landing: a held element's store keeps no conversion its value needs none of; the arrays a loop stores into are held first (2026-11-28)
+
+One commit on e75c6895d, the integrator's: `03b8edb18`. It was made and checked as 094c67b6d on 25c947791; two records of the held-out lane's bot moved main while the check ran (the run I had started after the landing before), and the commit landed is its cherry-pick onto them, the same tree but for bench/heldout.json. A refinement of the loop's cells of the landing before.
+
+### What landed
+
+src/compile/loop-cells.js `fits`: a store into a held element keeps its value unconverted where the element already holds it, another cell of the element's kind, an integer inside its range (src/static.js `intExprRange`), a float64's Number. decode-qoa's held slice loop sign-extended eight values a sample; four were moves of history cells and the clamped sample, and it extends the four weights' sums alone: 1,087 µs where 1,136 (four rounds each, the trees alternating: 0.957; 0.745 of the main before the cells).
+
+The cap of 16 cells takes the arrays the loop stores into first, then the ones it only reads while they fit; before, a state of two cells beside twenty coefficients held nothing.
+
+### The check
+
+The whole core suite ran on the tree before the commit: `npm test`, 7,847 tests, exit 0; the quick tier 1,255; the new file's kernels with the five other files under the sweep of levels, 64 tests; test/loop-cells.js alone 9 tests, 4,648 assertions under the sweep and 2,530 on the WASI host.
+
+The check on 094c67b6d, every step exit 0 in 55 minutes at 8 jobs: the default leg 7,847 tests, level 3 armed 7,623, WASI 7,717, level 0 7,601, the self-compile gate 89, integration 241 of 242 with one skip, the bench corpus's bytes moved in 1 of 105 cases (decode-qoa, 12 fewer at 'speed'). The examples: a geomean of 1.72 against V8 twice, jz ahead on 24 of 25 the first time and 25 of 25 the second. The one was blackhole at 1.00: V8's time moved (13,055 µs where 13,850 to 13,900 in the three runs beside it), jz's did not (13,097; 13,063 to 13,134). On a fresh hosted compiler (39,264,219 bytes): the kernel's parity and oracle tests 19 of 19, test/loop-cells.js 9 of 9, test/carry-elements.js 6 of 6. test262 after it: 4,137 passing, 4,045 rejected as they must be, none failing, in 883 seconds. The generated suite whole, after that: 351 of 351 in 781 seconds. The vectorizer's files and test/fixed-length.js under the sweep of levels, 353 tests; the quick tier, 1,255; the hosted populations, exit 0.
+
+Mutations of this commit's lines (own/mutant-cells.sh under the tools directory): five, each failing a test. My first kernel for them answered Infinity for every input and passed with two of them taken out; the mutations found it.
+
+### Measured on x86 (a probe, published nowhere)
+
+`gh workflow run bench.yml -f reference=false -f cases=decode-qoa,biquad` at 25c947791 (run 46128662038, a Xeon 6975P-C runner): decode-qoa jz 2,508 µs, V8 2,622: 0.957, where bench/results-ci.json, measured before the cells on another runner, has 2,511 and 2,394: 1.049. By the ratios the cells gave about 9% there, where they gave 22% on Apple silicon: sixteen general registers hold less of eight cells and a loop. biquad there: jz 5,415, native C 4,319, clang's wasm 6,382, V8 15,338.
+
+### Found: closures over shared state
+
+Measured on main 25c947791, ns a round, jz and V8, each shape beside the same state in the loop's locals:
+
+| shape | jz | V8 | jz, locals | V8, locals |
+|---|---|---|---|---|
+| one closure, one variable | 1.04 | 5.90 | 1.04 | 1.03 |
+| two closures in an object, two variables | 6.06 | 1.79 | 0.36 | 0.46 |
+| a closure calling a closure | 4.64 | 2.48 | 0.42 | 0.65 |
+| function declarations, one called twice | 6.67 | 4.09 | 0.95 | 1.66 |
+| a bit reader (decode-tta's `makeBits`) | 17.36 | 12.50 | 6.16 | 8.57 |
+
+A factory that returns closures over variables they share is where jz is behind V8 by 1.4 to 3.4 times, and 3 to 17 times off what it makes of the same state in locals. The factory is spliced, the literal it returns is split and the calls name the lambdas, but the lambdas stay closures: an environment, a heap cell a captured variable, float arithmetic through the call, and watr's inlining after it leaves the cells in memory. src/compile/plan/inline.js `inlineLocalLambdas` leaves them for four reasons: it reads `const f = ARROW` as a declaration of one name only; it runs before the literal is split; a lambda called inside another lambda is no candidate, and the pass is one level; a body with a `break` is refused whatever the break leaves, and `while (bit()) c++` calls in a loop's test. A trial of the first two (a declaration split a name, the pass again after the literals) takes the second row from 6.06 to 0.41.
+
+### Found, not fixed
+
+- biquad's eight stages are written out by the emitter (src/compile/emit/control-flow.js `unrollSmallConstFor`), after the cells' pass, which sees `state[sb + k]` inside a loop and holds nothing. By hand, in a kernel of its shape: as written 11.55 ns a sample, the 32 state cells in locals 6.78, state and the 40 coefficients in locals 11.30. So the state before the coefficients, and the stage loop written out before the pass; on x86, 32 float cells are past its sixteen registers and unmeasured.
+- The earlier lists stand.
+
+### Next
+
+The closures: the two reasons tried, then a lambda's calls inside its sibling lambdas, then the loop's test and the `break`; then decode-tta, whose bit reader is the last row.
+
 ## Decisions taken
 
 - Normalization is value-exact and runs before the summary (kinds unknown there):

@@ -1152,3 +1152,13 @@ Under `/Users/div/projects/jz/.claude/worktrees/tools/`: `own/mutant-run.sh` and
 52d365ac0 tuple-x   the commit as made and checked, on 591201186; b8b2282e0 after it, a first record naming that base,
                     not landed
 ```
+
+## Branches of the land-c13 landing (2026-11-28), tips before deletion
+
+```
+094c67b6d heat-x    the commit as made and checked, on 25c947791 (the store that keeps no conversion; the arrays stored
+                    into first); landed as 03b8edb18, its cherry-pick onto e75c6895d made on main itself
+b8b2282e0 tuple-x   the landing before as first recorded (52d365ac0 and a record naming its old base); it now carries,
+                    uncommitted, the trial of local lambdas (a declaration split a name, the pass to a fixpoint and
+                    again after the literals are split)
+```
